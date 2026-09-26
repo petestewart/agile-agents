@@ -10,6 +10,7 @@ import {
   activityDelivery,
   ancestorTitles,
   buildStreamTree,
+  cardDot,
   dependencyEdges,
   diffLineKind,
   eventTime,
@@ -292,5 +293,18 @@ describe('T341: an Activity row reads without raw ids', () => {
     expect(eventTime(new Date(2026, 8, 25, 15, 6, 6, 920).toISOString())).toBe('2026-09-25 15:06');
     expect(eventTime(new Date(2026, 0, 3, 4, 5).toISOString())).toBe('2026-01-03 04:05');
     expect(eventTime('not a time')).toBe('not a time');
+  });
+});
+
+describe('cardDot (T349)', () => {
+  test("a child waiting on your answer wears the rail's needs-you amber", () => {
+    expect(cardDot('question')).toBe('amber');
+    expect(cardDot('question')).toBe(streamDot({ agent_status: 'question', human_status: 'open' }));
+  });
+
+  test('a real block and every other state keep the plain label', () => {
+    for (const state of ['blocked', 'working', 'done', 'idle'] as const) {
+      expect(cardDot(state)).toBeUndefined();
+    }
   });
 });

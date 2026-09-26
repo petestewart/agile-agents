@@ -25,6 +25,7 @@ export function cardState(s: Stream): CardState {
   if (s.delivery_state !== undefined && DONE_DELIVERY.has(s.delivery_state.status)) return 'done';
   switch (s.agent.status) {
     case 'question':
+      return 'question';
     case 'blocked':
       return 'blocked';
     case 'working':
@@ -115,6 +116,27 @@ export class CardService {
       if (before !== undefined && sameCard(before, next)) return undefined;
       return { ...next, updated_at: this.now() };
     });
+  }
+
+  /**
+   * T349: a card stored before the `question` state reads `blocked` for a
+   * node waiting on the human. Rewrites those on daemon start; idempotent
+   * (`refresh` writes only on a change). Returns the cards rewritten.
+   */
+  async refreshQuestionCards(): Promise<number> {
+    let rewritten = 0;
+    for (const s of this.options.streams.list()) {
+      if (s.agent.status !== 'question') continue;
+      let stored: StatusCard | undefined;
+      try {
+        stored = this.options.store.getCard(s.id);
+      } catch {
+        continue; // a corrupt card is refused where it is read, never defaulted here
+      }
+      if (stored?.state !== 'blocked') continue;
+      if ((await this.refresh(s))?.state === 'question') rewritten++;
+    }
+    return rewritten;
   }
 
   /** `read_card`: a sibling's, ancestor's or descendant's card (any card for the Director). */

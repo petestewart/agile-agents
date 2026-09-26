@@ -516,6 +516,15 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     });
   }
 
+  // T349: cards written before the `question` state read `blocked` for a node waiting on you.
+  if (cardService) {
+    try {
+      await cardService.refreshQuestionCards();
+    } catch (err) {
+      console.error('agiled: could not refresh question cards:', err);
+    }
+  }
+
   // T284: the import index, changed exports on cards, and `symbol_changed`.
   const symbolWatcher =
     store && streamService

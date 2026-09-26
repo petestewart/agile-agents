@@ -6,7 +6,12 @@
  */
 
 import type { InboxItem, NodeRole, SessionRef, Stream } from '@agile-agents/shared';
-import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from './feed-types';
+import type {
+  CockpitProjectRow,
+  CockpitRepoRow,
+  CockpitStatusCard,
+  CockpitStreamRow,
+} from './feed-types';
 
 /** §9.2's five dots. */
 export type StreamDot = 'amber' | 'blue' | 'grey' | 'green' | 'red';
@@ -62,6 +67,15 @@ export const DOT_LABEL: Record<StreamDot, string> = {
   green: 'landed',
   red: 'blocked',
 };
+
+/**
+ * T349 (D36 D3): a Children card's dot. A child waiting on your answer
+ * (`question`) wears the rail's needs-you amber; every other state, a real
+ * `blocked` included, keeps its plain label.
+ */
+export function cardDot(state: CockpitStatusCard['state']): StreamDot | undefined {
+  return state === 'question' ? 'amber' : undefined;
+}
 
 export interface StreamTreeNode {
   row: CockpitStreamRow;
