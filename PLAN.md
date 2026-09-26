@@ -2097,6 +2097,22 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui/app/lib/shell.test.ts packages/daemon/src/coordination`; the Director, rules and delivery e2e.
 - **Notes:** Branch T381-qa-wording.
 
+### Ticket: T382 ∥ Running shows each node's agent and model; model names read one way
+- **Priority:** P1
+- **Status:** In progress
+- **Owner:** worker
+- **Scope:** From T368 and T369: the cockpit row carries no session fields, so Running can't say which agent/model/effort a live node runs; and model names read two ways (`Claude Opus 5.5 · low` in the composer and header, `claude/claude-opus-5-5 · low` in the details panel's session rows and Settings' "starts with" chips).
+- **Acceptance Criteria:** `CockpitStreamRow` carries the live agent's vendor, model and effort (additive, absent when nothing is live); Running shows it in words; every place a person reads a model uses `sessionLabel`; the e2e pins move with it.
+- **Validation Steps:** `bun test packages/ui packages/daemon/src/feed/snapshot.test.ts`; the Running, session-defaults and node-page e2e; the whole control-room e2e and the walkthrough.
+
+### Ticket: T383 ∥ Events pages through the whole log
+- **Priority:** P1
+- **Status:** In progress
+- **Owner:** worker
+- **Scope:** From T368: `/api/events` is capped at 200 (`ACTIVITY_MAX`), so Events' "Show more" ends there and a repo card's recent events filter that global list (a quiet repo's older events fall outside it).
+- **Acceptance Criteria:** `GET /api/events` takes a cursor (`before=<event id>`) and a limit, newest first; Events' "Show more" fetches the next page until the log ends and says so; a repo card asks for its own repo's events.
+- **Validation Steps:** `bun test packages/daemon/src/events packages/daemon/src/http.test.ts packages/ui`; the Events and Repos e2e; the whole control-room e2e and the walkthrough.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
