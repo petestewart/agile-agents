@@ -35,6 +35,7 @@ export const INBOX_ITEM_KINDS = [
   'rule_accept',
   'rule_batch',
   'plan_approve',
+  'plan_waiting',
   'proposal',
   'blocked',
   'done',

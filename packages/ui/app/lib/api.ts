@@ -190,6 +190,11 @@ export function approvePlan(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/plan/approve`);
 }
 
+/** T344: a `plan_waiting` card's "Start parts anyway": the waiting parts start without a plan. */
+export function startWaitingParts(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/plan/start-parts`);
+}
+
 /** T282: a coordinator's `proposal` card: Apply performs it as you, Dismiss drops it. */
 export function decideProposal(id: string, decision: 'apply' | 'dismiss'): Promise<unknown> {
   return post(`/api/proposals/${encodeURIComponent(id)}/${decision}`);

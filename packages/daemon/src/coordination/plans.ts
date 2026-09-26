@@ -240,6 +240,46 @@ export class PlanService {
     return !child.sessions.some((s) => s.id.slice(0, ULID_TIME_CHARS) >= since);
   }
 
+  /** T344: the node's live parts still waiting for its plan (`waitingForPlan`). */
+  waitingParts(node: string): Stream[] {
+    const owned = approvedOwners(this.get(node));
+    return liveChildrenOf(node, this.options.streams.list()).filter((c) =>
+      this.waitingForPlan(c, owned),
+    );
+  }
+
+  /**
+   * T344: the human's "Start parts anyway": every part still waiting for
+   * the node's plan starts now, without one. Returns the parts started.
+   */
+  async startWaitingParts(node: string): Promise<string[]> {
+    const start = this.options.start;
+    if (start === undefined) throw new Error('parts cannot be started here');
+    this.options.streams.get(node);
+    const parts = this.waitingParts(node);
+    if (parts.length === 0) return [];
+    await this.options.streams.appendThread('daemon', node, {
+      kind: 'event',
+      body: `started without a plan by human: ${parts.map((p) => p.title).join(', ')}`.slice(
+        0,
+        800,
+      ),
+    });
+    const started: string[] = [];
+    for (const part of parts) {
+      try {
+        await start(part.id);
+        started.push(part.id);
+      } catch (err) {
+        await this.options.streams.appendThread('daemon', part.id, {
+          kind: 'event',
+          body: `could not start the agent: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+    return started;
+  }
+
   /** T336: every part the approved `saved` first gives paths to, and still waiting, starts now. */
   private async startWaiting(before: Plan | undefined, saved: Plan): Promise<void> {
     const start = this.options.start;

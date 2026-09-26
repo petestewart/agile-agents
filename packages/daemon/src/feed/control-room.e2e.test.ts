@@ -1332,7 +1332,15 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
   };
   const verbs = new VerbService({ store, streams, questions, docs, rules });
   const landing = new DeliveryService({ store, streams, gates });
-  const inbox = new InboxService({ streams, questions, gates, rules });
+  // T344: plans as the daemon wires them: an approval (or "Start parts anyway") starts parts.
+  const contracts = new ContractService({ store, streams });
+  const plans = new PlanService({
+    store,
+    streams,
+    contracts,
+    start: (id) => attach.startWithPending(id),
+  });
+  const inbox = new InboxService({ streams, questions, gates, rules, plans, contracts });
   const prChecks: string[] = [];
   const http = startHttpServer({
     port: 0,
@@ -1355,7 +1363,8 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
       attach: (id) => attach.attach(id),
       stop: (id) => attach.stop(id),
     }),
-    plans: new PlanService({ store, streams, contracts: new ContractService({ store, streams }) }),
+    plans,
+    contracts,
     docs,
     feedPollIntervalMs: 50,
   });
@@ -3385,6 +3394,105 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
             .readThread(parts[0]?.id as string, { limit: 50 })
             .entries.some((e) => e.agent_only === true && e.body.endsWith('read it by id')),
         ).toBe(true);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('waiting for the plan (Playwright e2e, T344)', () => {
+  browserTest(
+    'parts wait on a stopped coordinator: a card with Wake coordinator and Start parts anyway',
+    async () => {
+      const hang: FakeAgentScript = { steps: [{ type: 'hang' }] };
+      // The coordinator (Wake), then the two parts (Start parts anyway).
+      const cockpit = await startStreamCockpit([hang, hang, hang]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'Sale prices',
+          goal: 'g',
+          project: shop.id,
+        });
+        const parts = [];
+        for (const repo of ['demo', 'web']) {
+          parts.push(
+            await cockpit.streams.create('human', {
+              title: `${repo} part`,
+              goal: 'g',
+              project: shop.id,
+              parent: node.id,
+              repo,
+            }),
+          );
+        }
+        // The coordinator ended its turn without a plan; the split made the parts wait.
+        await cockpit.store.updateStream('daemon', node.id, (before) => ({
+          ...before,
+          sessions: [
+            { id: ulid(), vendor: 'claude', model: 'm', role: 'coordinator', status: 'stopped' },
+          ],
+        }));
+        for (const part of parts) {
+          await cockpit.streams.appendThread('daemon', part.id, {
+            kind: 'event',
+            body: `${WAITING_FOR_PLAN}this part starts when "Sale prices"'s plan is approved`,
+          });
+        }
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-testid="inbox"] [data-kind="plan_waiting"][data-id="${node.id}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        expect(await page.locator(`${card} .kind`).textContent()).toContain('waiting for the plan');
+        expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
+          'demo part, web part wait for the plan',
+        );
+
+        // Wake coordinator: the node's coordinator runs, and the card goes while it does.
+        await page.locator(`${card} [data-testid="plan-wake"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
+        const woken = cockpit.streams.get(node.id).sessions.at(-1);
+        expect(woken?.role).toBe('coordinator');
+        expect(woken?.status).not.toBe('stopped');
+
+        // Stopped again with no plan: the card is back.
+        await cockpit.attach.stop(node.id, undefined, { detach: true });
+        await page.locator(card).waitFor({ state: 'visible' });
+
+        // Start parts anyway: both parts get their worker, and the card goes.
+        await page.locator(`${card} [data-testid="plan-start-parts"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
+        for (const part of parts) {
+          await waitUntil(`${part.title} started`, () =>
+            cockpit.streams.get(part.id).sessions.some((s) => s.role === 'worker'),
+          );
+        }
+
+        // A part that ran and was detached is not waiting again: the card stays gone.
+        const first = parts[0] as (typeof parts)[number];
+        await cockpit.attach.stop(first.id, undefined, { detach: true });
+        await waitUntil(
+          'the part detached',
+          () => cockpit.streams.get(first.id).agent.status === 'idle',
+        );
+        await page.locator('[data-testid="inbox"]').waitFor();
+        await Bun.sleep(300);
+        expect(await page.locator(card).count()).toBe(0);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${first.id}"]`).waitFor();
+        expect(
+          await page
+            .locator(
+              `[data-testid="stream-tree"] [data-stream="${first.id}"] [data-testid="waiting-for-plan"]`,
+            )
+            .count(),
+        ).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
