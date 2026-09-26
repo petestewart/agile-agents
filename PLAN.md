@@ -2019,6 +2019,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** walkthrough green.
 - **Validation Steps:** `bun run test:walkthrough`.
 
+### Ticket: T370 A daemon shutdown leaves mid-work nodes idle
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by the T361 worker: `AttachService.stopAll()` (the daemon's shutdown) stopped sessions with no reason, so a killed worker's exit read as a finished turn: `agent.status: done`, an inbox "worker finished" card and "Ready to merge" on the rail after every restart. Stop with a daemon reason instead.
+- **Acceptance Criteria:** Test: a node mid-work when the daemon stops is `idle`, its session `stopped: the daemon stopped`, not stopped by the human.
+- **Validation Steps:** `bun test packages/daemon/src/attach`; CLI daemon e2e.
+- **Notes:** Branch T370-daemon-shutdown. Non-e2e daemon+CLI 2080/0; `daemon.e2e`, `stream.e2e` green. Daemon +10.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Todo
