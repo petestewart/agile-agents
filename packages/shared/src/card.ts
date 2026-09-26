@@ -12,7 +12,13 @@ import { UlidSchema, formatZodError } from './ids';
 export const CARD_DOING_MAX = 200;
 export const CARD_FILES_MAX = 200;
 
-export const CARD_STATES = ['working', 'blocked', 'done', 'idle'] as const;
+/**
+ * T349 (D36 D3): `question` is a node waiting on the human's answer, so a
+ * parent's Children card reads it as needing the operator, not as stuck.
+ * Additive: a card written before it (a question child then read `blocked`)
+ * still loads, and the daemon rewrites it on start (`refreshQuestionCards`).
+ */
+export const CARD_STATES = ['working', 'question', 'blocked', 'done', 'idle'] as const;
 export const CardStateSchema = z.enum(CARD_STATES);
 export type CardState = z.infer<typeof CardStateSchema>;
 

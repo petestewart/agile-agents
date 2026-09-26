@@ -10,6 +10,7 @@ import {
   activityDelivery,
   ancestorTitles,
   buildStreamTree,
+  cardDot,
   dependencyEdges,
   diffLineKind,
   eventLabel,
@@ -303,5 +304,18 @@ describe('eventLabel (T347, D36 D5)', () => {
       'pr merged',
     );
     expect(eventLabel({ type: 'child_status', payload: {} })).toBe('child status');
+  });
+});
+
+describe('cardDot (T349)', () => {
+  test("a child waiting on your answer wears the rail's needs-you amber", () => {
+    expect(cardDot('question')).toBe('amber');
+    expect(cardDot('question')).toBe(streamDot({ agent_status: 'question', human_status: 'open' }));
+  });
+
+  test('a real block and every other state keep the plain label', () => {
+    for (const state of ['blocked', 'working', 'done', 'idle'] as const) {
+      expect(cardDot(state)).toBeUndefined();
+    }
   });
 });

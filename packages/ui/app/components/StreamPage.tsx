@@ -68,6 +68,7 @@ import { useShell } from '../lib/shell';
 import {
   DOT_LABEL,
   activityDelivery,
+  cardDot,
   diffLineKind,
   eventLabel,
   eventTime,
@@ -953,6 +954,20 @@ function ProjectControls({
   );
 }
 
+/** T349: the rail's needs-you dot on a child that is waiting on your answer. */
+function CardDot({ state }: { state: CockpitStatusCard['state'] }): JSX.Element | null {
+  const dot = cardDot(state);
+  if (dot === undefined) return null;
+  return (
+    <span
+      className="cr-dot cr-card-dot"
+      data-dot={dot}
+      data-testid="status-card-dot"
+      aria-label={DOT_LABEL[dot]}
+    />
+  );
+}
+
 /** T283 (§14.5): the children's status cards, on the parent's page. */
 function ChildCards({
   cards,
@@ -981,7 +996,11 @@ function ChildCards({
               data-node={card.node}
               data-state={card.state}
             >
-              <strong>{titleOf(card.node)}</strong> <span className="cr-dim">{card.state}</span>
+              <CardDot state={card.state} />
+              <strong>{titleOf(card.node)}</strong>{' '}
+              <span className="cr-dim" data-testid="status-card-state">
+                {card.state}
+              </span>
               {card.doing !== '' && (
                 <>
                   {' — '}

@@ -115,7 +115,7 @@ export interface CockpitCardError {
 export interface CockpitStatusCard {
   node: string;
   doing: string;
-  state: 'working' | 'blocked' | 'done' | 'idle';
+  state: 'working' | 'question' | 'blocked' | 'done' | 'idle';
   files: string[];
   exports_changed: string[];
   relies_on: string[];
