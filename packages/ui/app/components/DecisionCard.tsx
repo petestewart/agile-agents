@@ -430,7 +430,7 @@ export function Card({
               type="button"
               className="cr-link"
               data-testid="rule-open"
-              onClick={() => openRules({ status: 'all', scope: 'all', rule: item.id })}
+              onClick={() => openRules({ status: 'proposed', scope: 'all', rule: item.id })}
             >
               Open in Knowledge
             </button>
