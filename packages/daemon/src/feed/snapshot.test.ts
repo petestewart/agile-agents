@@ -12,14 +12,16 @@ import { GateService } from '../gates';
 import { runInit } from '../init';
 import { QuestionService } from '../questions';
 import { StateStore } from '../store';
+import { buildEvent } from '../store/events';
 import { StreamService } from '../streams';
-import { COCKPIT_ARCHIVED_MAX, buildCockpitFrame, buildSnapshot } from './snapshot';
+import { COCKPIT_ARCHIVED_MAX, RecentEvents, buildCockpitFrame, buildSnapshot } from './snapshot';
 
 let repo: string;
 let store: StateStore;
 let gates: GateService;
 let streams: StreamService;
 let questions: QuestionService;
+let stateRoot: string;
 
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), 'agile-feed-snapshot-'));
@@ -30,6 +32,7 @@ beforeEach(() => {
   Bun.spawnSync(['git', 'add', '-A'], { cwd: repo });
   Bun.spawnSync(['git', 'commit', '-q', '-m', 'initial commit'], { cwd: repo });
   const init = runInit(repo);
+  stateRoot = init.stateRoot;
   store = StateStore.open(init.stateRoot);
   gates = new GateService(store);
   streams = new StreamService(store);
@@ -275,5 +278,46 @@ describe('T382: the live agent a row names', () => {
     const rows = buildCockpitFrame(streams).streams;
     expect(rows.find((r) => r.id === ended)).not.toHaveProperty('live_agent');
     expect(rows.find((r) => r.id === ended)?.live).toBeUndefined();
+  });
+});
+
+describe('T404: the recent events a connect sends', () => {
+  const n = (events: readonly { data?: unknown }[]) =>
+    events.map((e) => (e.data as { n?: number }).n);
+
+  test('the log up to an offset once, then each batch; the newest `limit`, oldest first', async () => {
+    await store.appendEvent(buildEvent('tool_call', { data: { n: 1 } }));
+    const seam = Bun.file(join(stateRoot, 'log', 'events.jsonl')).size;
+    await store.appendEvent(buildEvent('tool_call', { data: { n: 2 } }));
+    const recent = new RecentEvents(3);
+    recent.load(store, seam);
+    // Only what the seam covers: the second event comes as the tailer's batch.
+    expect(n(recent.list()).at(-1)).toBe(1);
+    recent.add([buildEvent('tool_call', { data: { n: 2 } })]);
+    recent.add([
+      buildEvent('tool_call', { data: { n: 3 } }),
+      buildEvent('tool_call', { data: { n: 4 } }),
+    ]);
+    expect(n(recent.list())).toEqual([2, 3, 4]);
+    // The snapshot takes them as they are, up to its own limit; it does not read the log.
+    const snapshot = buildSnapshot(store, gates, 2, undefined, undefined, undefined, recent.list());
+    expect(n(snapshot.events)).toEqual([3, 4]);
+  });
+
+  test('a line that is not an event is reported and left out', () => {
+    const recent = new RecentEvents(10);
+    const errors: string[] = [];
+    recent.add([{ kind: 'nope' }, buildEvent('tool_call', { data: { n: 5 } })], (err) =>
+      errors.push(err.message),
+    );
+    expect(recent.list()).toHaveLength(1);
+    expect(errors).toHaveLength(1);
+  });
+
+  test('it never keeps more than a quarter over its limit', () => {
+    const recent = new RecentEvents(4);
+    for (let n = 0; n < 50; n += 1) recent.add([buildEvent('tool_call', { data: { n } })]);
+    expect(n(recent.list())).toEqual([46, 47, 48, 49]);
+    expect((recent as unknown as { events: unknown[] }).events.length).toBeLessThanOrEqual(5);
   });
 });

@@ -24,6 +24,7 @@ import {
   isAgentRole,
   liveChildrenOf,
   nodeRole,
+  validateEvent,
 } from '@agile-agents/shared';
 import { stoppedByHuman } from '../events/wake';
 import type { GateService } from '../gates';
@@ -75,8 +76,10 @@ export function buildSnapshot(
    * snapshot or published afterwards by the tailer, never both.
    */
   eventsEndOffset?: number,
+  /** T404: the newest events, kept by `RecentEvents`; the log is not read when given. */
+  recent?: readonly Event[],
 ): FeedSnapshot {
-  const events = store.listEvents(eventsEndOffset).slice(-eventLimit);
+  const events = (recent ?? store.listEvents(eventsEndOffset)).slice(-eventLimit);
   // T389: a deleted (archived) node's asks wait with it, as Needs me leaves them out.
   const archived = new Set(
     store
@@ -100,6 +103,44 @@ export function buildSnapshot(
       : {}),
     status: { needs_you: hil.length + openQuestions.length },
   };
+}
+
+/**
+ * T404: the newest events up to the feed tailer's seam, kept in memory. The
+ * log is read once when the server starts, then each batch the tailer reads
+ * is added, so a `/ws` connect no longer re-reads and re-validates the whole
+ * `events.jsonl`. Its events are exactly the log's up to the tailer's offset,
+ * so a line is either in a connect's snapshot or published afterwards, never both.
+ */
+export class RecentEvents {
+  private events: Event[] = [];
+
+  constructor(private readonly limit: number = DEFAULT_SNAPSHOT_EVENT_LIMIT) {}
+
+  /** The log up to `endOffset`. A corrupt log throws, with its path, as `listEvents` does. */
+  load(store: StateStore, endOffset: number): void {
+    this.events = store.listEvents(endOffset).slice(-this.limit);
+  }
+
+  /** One tailer batch. A line that isn't an event is reported and left out. */
+  add(batch: readonly unknown[], onError?: (err: Error) => void): void {
+    for (const raw of batch) {
+      try {
+        this.events.push(validateEvent(raw));
+      } catch (err) {
+        onError?.(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+    // Trimmed in batches: at most a quarter over the limit between trims.
+    if (this.events.length > this.limit + Math.ceil(this.limit / 4)) {
+      this.events = this.events.slice(-this.limit);
+    }
+  }
+
+  /** The newest events, oldest first, at most the limit. */
+  list(): Event[] {
+    return this.events.slice(-this.limit);
+  }
 }
 
 /** One row of the stream tree (§9.2): title, nesting, and the status pair the dot is derived from client-side. */

@@ -2297,6 +2297,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** control-room e2e `T387`.
 - **Notes:** Branch T403-card-opens-chat. The shell's `select(id, {tab})` carries the tab; the page reads it when it opens.
 
+### Ticket: T404 A connect doesn't re-read the event log
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: every `/ws` connect read and validated the whole `events.jsonl` to send its newest 200 events.
+- **Acceptance Criteria:** `RecentEvents` holds the newest events up to the tailer's offset: the log is read once when the server starts, then each tailer batch is added. A connect's snapshot comes from it, so a line is still either in the snapshot or published afterwards, never both. With a corrupt log each connect reads it and is refused, as before. `/api/snapshot` is unchanged.
+- **Validation Steps:** `bun test packages/daemon/src/feed/snapshot.test.ts packages/daemon/src/http.test.ts` (the log is read once across two connects); feed e2e.
+- **Notes:** Branch T404-snapshot-ring.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
