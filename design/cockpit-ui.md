@@ -229,7 +229,20 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   card) change where they are read; Enter or leaving saves, Esc cancels.
 - **Notifications** (Settings → General, per browser, off by default): one
   browser notification at a time for what is new in Needs me while the tab is
-  away; a click opens it. Never for what was there at load.
+  away; a click opens it. Never for what was there at load. They go through
+  the service worker (`registration.showNotification`, T394) where one is
+  active, which Android Chrome and an installed iOS app require; its
+  `notificationclick` focuses the cockpit tab and opens the node.
+- **When something throws** (T394): the main view, a node's tab body
+  (`TabBoundary`) and each overlay sit in an `ErrorBoundary`. The card says
+  what happened in words, with Try again, Reload and Copy details; the
+  sidebar keeps working, and going somewhere else resets it. A view whose code
+  a rebuild removed reads "A new version of the cockpit is available" with
+  Reload only.
+- **Loading on demand** (T394): views off the first screen load through
+  `lazyNamed()` (`ErrorBoundary.tsx`) and are warmed once the first screen is
+  idle. A new heavy view or tab does the same, and nothing on the first screen
+  imports it statically (a static import pulls it back into the main file).
 
 ## 8. Tests and markup
 

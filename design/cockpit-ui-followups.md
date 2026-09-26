@@ -18,16 +18,29 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   slow to drop the item. Removing it optimistically would need a way back
   when it doesn't go.
 
-- Notifications on Android Chrome and an installed iOS app need the service
-  worker's `showNotification` (`new Notification()` throws there); the hook
-  stays quiet and Send a test says the browser didn't show it.
-  (`lib/use-notify.ts`, `public/sw.js`)
 
 
 - The live steps block could also name the step in progress or how long the
   turn has run (a node's and the Director's alike).
 
 ## P3 — cleanup, hardening, decisions
+
+- The UI's main file still carries zod and every shared schema (~90 KB):
+  the UI imports small helpers from `@agile-agents/shared`, whose index pulls
+  in schema modules that can't be tree-shaken. A schema-free entry for the UI
+  would drop them. (T394)
+- `AddRepo` (17.5 KB) stays in the main file because `NewStream.tsx` imports
+  it statically and New node is always mounted for `n`; loading
+  `AddRepoDialog` lazily there would move it out. (T394)
+- The shell's first effect drops query params it doesn't own
+  (`lib/shell.tsx`); Settings' `section` survives only because a deep link
+  preloads Settings before the first render. Another lazy screen reading its
+  own params would hit the same problem. (T394)
+- `sw.js` still sends every request through its fetch handler, which recent
+  Chrome no longer needs for install. Removing it takes the worker out of
+  every request's path; check installability on the browsers in use first.
+  Its `openWindow` branch (no cockpit tab open) isn't covered end to end:
+  Chromium won't open a window from a synthetic click. (T394)
 
 
 - `GET /api/repos/:name/events` (T245) still caps at 200 unpaged; nothing in

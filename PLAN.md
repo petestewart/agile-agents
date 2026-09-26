@@ -2210,11 +2210,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T394 ∥ Resilience and load: error boundaries, code-split views, service-worker notifications
 - **Priority:** P1
-- **Status:** In progress
+- **Status:** Done
 - **Owner:** worker
 - **Scope:** One component throwing blanks the whole cockpit (no error boundary); the app ships as one 590 KB script; notifications can't show on Android or an installed iOS app (they need the service worker).
 - **Acceptance Criteria:** Each view and a node page's tab body sit in an error boundary with a card in words (Try again, Reload, Copy details) that resets on navigation; the heavy views load on demand with a quiet fallback and the main chunk shrinks (no Vite size warning); notifications go through `registration.showNotification` when a worker is active, with clicks focusing the tab on the node, and fall back to `new Notification`.
 - **Validation Steps:** `bun test packages/ui`; the installable e2e; new e2e for the boundary; the whole control-room e2e and the walkthrough.
+- **Notes:** Branch T394-resilience (worker), merged. `ErrorBoundary.tsx` (page, tab, overlay, app) with `lib/boundary.ts`; a failed chunk download reads "A new version of the cockpit is available". Knowledge, Settings, the lenses, the Director, New project, DiffView and ProjectOverview load on demand (`lazyNamed`); React is its own chunk; the rest are warmed 1.5 s after load. The main file went from 591 KB (175 KB gzip) to about 359 KB (108 KB gzip); no Vite warning. The daemon serves `assets/` as immutable. A deep link to a lazy view preloads it before the first render (Settings' `section` survives). Notifications go through the worker when one is active, and `sw.js` handles `notificationclick`. New e2e: the page, tab and chunk-failure cards, and the fallback without a worker; T388's test runs through the worker. Two flaky tests fixed on the way (T388's close check, T367's Permissions race). Deferred items are in the follow-ups.
 
 ### Ticket: T395 Rows say when they last changed; j/k in the tree
 - **Priority:** P2
