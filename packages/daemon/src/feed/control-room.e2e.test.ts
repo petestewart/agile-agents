@@ -3335,7 +3335,9 @@ describe("the agent's steps in the chat (Playwright e2e, T392)", () => {
         );
         // T405: and for how long, from the line that started the turn.
         expect(
-          await page.locator('[data-testid="thinking"] [data-testid="thinking-time"]').textContent(),
+          await page
+            .locator('[data-testid="thinking"] [data-testid="thinking-time"]')
+            .textContent(),
         ).toMatch(/^\d+s$/);
         // A command and a path read as code; the failed one says so.
         expect(await live.nth(1).locator('code').textContent()).toBe('bun test');
@@ -3950,6 +3952,60 @@ describe('add a repo from Settings (Playwright e2e, T206, T367)', () => {
         await waitUntil('the project with its repo', () =>
           cockpit.projects.list().some((p) => p.name === 'Writing' && p.repos.includes('blog')),
         );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'T408: New node → Add a repository… opens on demand and picks the repo it added',
+    async () => {
+      const scratch = mkdtempSync(join(tmpdir(), 'agile-newnode-repo-e2e-'));
+      const userHome = join(scratch, 'home');
+      const shop = join(userHome, 'shop');
+      mkdirSync(shop, { recursive: true });
+      git(['init', '-q', '-b', 'main'], shop);
+      git(
+        [
+          '-c',
+          'user.email=t@example.com',
+          '-c',
+          'user.name=T',
+          'commit',
+          '-q',
+          '--allow-empty',
+          '-m',
+          'init',
+        ],
+        shop,
+      );
+      const cockpit = await startCockpit({ userHome });
+      let page: Page | undefined;
+      try {
+        await cockpit.projects.create({ name: 'Store' });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="new-stream-open"]').click();
+        await page.locator('[data-testid="new-stream-add-repo"]').click();
+        const browser = '[data-testid="add-repo-browser"]';
+        await page.locator(`${browser}[data-path="${userHome}"]`).waitFor({ state: 'visible' });
+        await page.locator(`${browser} [data-testid="add-repo-dir"][data-name="shop"]`).click();
+        await waitForText(page, '[data-testid="add-repo-status"]', 'shop is a git repository.');
+        await page.locator('[data-testid="settings-repo-add-save"]').click();
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'detached' });
+        // Registered, and New node (still open) is now on it.
+        expect(cockpit.store.getRepos().shop?.path).toBe(realpathSync(shop));
+        await page.locator('[data-testid="new-stream-repo"][data-value="shop"]').waitFor();
+        // Opened again, the dialog starts fresh.
+        await page.locator('[data-testid="new-stream-add-repo"]').click();
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'visible' });
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'detached' });
+        expect(await page.locator('[data-testid="new-stream-repo"]').isVisible()).toBe(true);
       } finally {
         await teardown([page]);
         await cockpit.stop();

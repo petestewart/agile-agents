@@ -71,6 +71,7 @@ const WARM: ReadonlyArray<() => Promise<unknown>> = [
   ...Object.values(LAZY_VIEWS).map((view) => () => view.preload()),
   () => NewProject.preload(),
   () => import('./components/DiffView'),
+  () => import('./components/AddRepo'),
   () => import('./components/ProjectOverview'),
 ];
 

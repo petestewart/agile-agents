@@ -14,7 +14,7 @@
  */
 
 import type { SessionDefaultsStatus } from '@agile-agents/shared';
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import {
   type RepoRow,
   attachSession,
@@ -29,12 +29,15 @@ import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from '../lib
 import { type NewStreamPreset, isShortcut, useShell } from '../lib/shell';
 import { ROLE_LABEL } from '../lib/status';
 import { newNodeDefaults, projectOutline, splitRepos, titleFromGoal } from '../lib/tree';
-import { AddRepoDialog } from './AddRepo';
+import { lazyNamed } from './ErrorBoundary';
 import { Icon } from './Icon';
 import { type PickOption, PickerField } from './Pickers';
 import { type SessionChoice, SessionFields } from './SessionPicker';
 import { ROLE_GLYPH } from './StreamTree';
 import { Button, Dialog, EmptyState, Field, Kbd, RepoIcon, repoKindLabel, useToast } from './ui';
+
+// T408: loaded when first opened (New node is always mounted, for `n`); warmed after load (`App.tsx`).
+const AddRepoDialog = lazyNamed(() => import('./AddRepo'), 'AddRepoDialog');
 
 const LAST_PROJECT_KEY = 'agile.newnode.project';
 
@@ -548,14 +551,18 @@ function NewStreamForm({
           </p>
         )}
       </div>
-      <AddRepoDialog
-        open={addingRepo}
-        onClose={() => setAddingRepo(false)}
-        onAdded={(added) => {
-          setRepo(added);
-          feed?.refresh();
-        }}
-      />
+      {addingRepo && (
+        <Suspense fallback={null}>
+          <AddRepoDialog
+            open
+            onClose={() => setAddingRepo(false)}
+            onAdded={(added) => {
+              setRepo(added);
+              feed?.refresh();
+            }}
+          />
+        </Suspense>
+      )}
     </Dialog>
   );
 }
