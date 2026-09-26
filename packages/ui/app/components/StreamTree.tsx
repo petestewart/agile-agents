@@ -10,7 +10,8 @@
  * localStorage; a folded row whose subtree waits on you shows that dot.
  * T333 (D34): drag a row onto another row in its project to move it there
  * (onto the project row: to the top level). The daemon refuses what D34
- * refuses; the rail shows why.
+ * refuses; the rail shows why. T424: a row shows a grip on hover, and the
+ * legend says rows drag.
  *
  * T365 (design/cockpit-ui.md): the rail shows every project by default and
  * never switches on its own. A project's ⋯ has "Show only this project",
@@ -20,6 +21,11 @@
  * offers Undo; Deleted (in the sidebar, below) restores. A drop the rail
  * refuses says why. The arrow keys walk the rows (one tab stop), Enter
  * opens, F2 renames. The ? next to Projects explains the dots.
+ *
+ * T424 (finding 17): a node whose changes overlap another live node's (T227)
+ * carries a neutral two-squares mark, a button that names the other node and
+ * the files and opens it (a menu when there are several). A parent or a
+ * project carries it only while folded, for the nodes hidden inside it.
  */
 
 import {
@@ -34,7 +40,7 @@ import {
 import { createPortal } from 'react-dom';
 import { archiveStream, moveStream, unarchiveStream, updateStream } from '../lib/api';
 import { useOptionalFeed } from '../lib/feed-context';
-import type { CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
+import type { CockpitOverlap, CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
 import { isShortcut, useShell } from '../lib/shell';
 import { type NodeStatusKey, ROLE_LABEL, nodeStatus, statusOf } from '../lib/status';
 import {
@@ -46,13 +52,17 @@ import {
   subtreeNeedsYou,
 } from '../lib/streams';
 import {
+  DRAG_NOTE,
   LEGEND_NOTE,
   LEGEND_ORDER,
+  OVERLAP_NOTE,
+  type OverlapMark,
   ROLE_NOTE,
   checkMove,
   deleteQuestion,
   legendRow,
   moveTargets,
+  overlapMark,
   subtreeIds,
 } from '../lib/tree';
 import { Icon, type IconName } from './Icon';
@@ -86,6 +96,8 @@ export const ROLE_GLYPH: Record<CockpitStreamRow['role'], IconName> = {
   work: 'git-branch',
   conversation: 'message-square',
 };
+
+const NO_OVERLAPS: readonly CockpitOverlap[] = [];
 
 const COLLAPSED_KEY = 'agile.rail.collapsed';
 const DELETED_OPEN_KEY = 'agile.rail.deleted';
@@ -149,6 +161,10 @@ interface TreeContext {
   onRowKey(event: ReactKeyboardEvent<HTMLButtonElement>, node: StreamTreeNode, open: boolean): void;
   filterProject: string | undefined;
   projectName(id: string | undefined): string | undefined;
+  /** T424: T227's overlap pairs, and every row (the other node may sit in another project). */
+  overlaps: readonly CockpitOverlap[];
+  allRows: readonly CockpitStreamRow[];
+  openNode(id: string): void;
 }
 
 /** Where a row's menu opens: above it when there is no room below in the sidebar. */
@@ -173,6 +189,7 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
   const tabbable = ctx.tabStop === id;
   const [placement, setPlacement] = useState<'top' | 'bottom'>('bottom');
   const refusal = drag.over?.id === id ? drag.over.reason : undefined;
+  const overlap = overlapMark(id, ctx.overlaps, ctx.allRows, !open);
   const itemRef = useRef<HTMLDivElement>(null);
   // The open node stays in sight: a node just made, restored or opened from Needs me.
   useEffect(() => {
@@ -271,6 +288,7 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
         ref={itemRef}
         className="cr-tree-item"
         data-drop-refused={refusal !== undefined ? 'true' : undefined}
+        data-overlap={overlap !== undefined ? 'true' : undefined}
         onPointerEnter={(e) => setPlacement(menuPlacement(e.currentTarget))}
         onContextMenu={(e: ReactMouseEvent<HTMLDivElement>) => {
           e.preventDefault();
@@ -298,6 +316,7 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
           data-stream={id}
           tabIndex={tabbable ? 0 : -1}
           draggable={!isProject}
+          data-dragging={drag.dragging === id ? 'true' : undefined}
           data-drop-target={drag.over?.id === id && refusal === undefined ? 'true' : undefined}
           onDragStart={(e) => {
             e.dataTransfer.effectAllowed = 'move';
@@ -335,6 +354,12 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
             ctx.onRowKey(e, node, open);
           }}
         >
+          {/* T424: rows drag (T333); the grip says so on hover, left of the row. */}
+          {!isProject && (
+            <span className="cr-tree-grip" aria-hidden="true">
+              <Icon name="grip-vertical" size={14} />
+            </span>
+          )}
           {/* A project row shows a dot only when its status is news (a coordinator's question, work, a merge). */}
           {!isProject || !QUIET_PROJECT.has(status.key) ? (
             <StatusDot row={row} status={status} />
@@ -357,15 +382,6 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
               </span>
             )}
           </span>
-          {row.overlap && (
-            <span
-              className="cr-overlap"
-              data-testid="overlap-mark"
-              title="Overlapping changes with another live node"
-            >
-              <Icon name="alert-triangle" size={13} label="overlapping changes" />
-            </span>
-          )}
           {row.visibility_advisory && (
             <span className="cr-visibility" data-testid="visibility-advisory">
               visibility advisory
@@ -380,6 +396,14 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
             />
           )}
         </button>
+        {overlap !== undefined && (
+          <OverlapButton
+            mark={overlap}
+            tabbable={tabbable}
+            placement={placement}
+            onOpen={ctx.openNode}
+          />
+        )}
         <span className="cr-tree-actions">
           <IconButton
             icon="plus"
@@ -424,6 +448,78 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
   );
 }
 
+/**
+ * T424: the overlap mark: a button that opens the node the tooltip names, or
+ * with several, a small menu of them.
+ */
+function OverlapButton({
+  mark,
+  tabbable,
+  placement,
+  onOpen,
+}: {
+  mark: OverlapMark;
+  tabbable: boolean;
+  placement: 'top' | 'bottom';
+  onOpen(id: string): void;
+}): JSX.Element {
+  const only = mark.targets.length === 1 ? mark.targets[0] : undefined;
+  const glyph = <Icon name="overlap" size={13} strokeWidth={2} />;
+  if (only !== undefined) {
+    return (
+      <span className="cr-tree-overlap">
+        <button
+          type="button"
+          className="cr-tree-overlap-btn"
+          data-testid="overlap-mark"
+          data-kind={mark.kind}
+          data-target={only.id}
+          tabIndex={tabbable ? 0 : -1}
+          title={`${mark.text}\nClick to open ${only.title}`}
+          aria-label={`${mark.text}. Open ${only.title}`}
+          onClick={() => onOpen(only.id)}
+        >
+          {glyph}
+        </button>
+      </span>
+    );
+  }
+  return (
+    <span className="cr-tree-overlap">
+      <Menu
+        label={mark.text}
+        testid="overlap-menu"
+        align="end"
+        placement={placement}
+        items={mark.targets.map(
+          (t): MenuItem => ({
+            label: t.title,
+            icon: 'arrow-right',
+            hint: t.files,
+            title: t.line,
+            testid: 'overlap-open',
+            onSelect: () => onOpen(t.id),
+          }),
+        )}
+        trigger={(props) => (
+          <button
+            {...props}
+            type="button"
+            className="cr-tree-overlap-btn"
+            data-testid="overlap-mark"
+            data-kind={mark.kind}
+            tabIndex={tabbable ? 0 : -1}
+            title={mark.text}
+            aria-label={`${mark.text}. Choose one to open`}
+          >
+            {glyph}
+          </button>
+        )}
+      />
+    </span>
+  );
+}
+
 /** The rows a keyboard walk visits, in order (folded subtrees skipped). */
 function visibleIds(nodes: readonly StreamTreeNode[], fold: Fold, out: string[] = []): string[] {
   for (const node of nodes) {
@@ -445,7 +541,7 @@ function Legend(): JSX.Element {
     const side = el.closest('.cr-sidebar')?.getBoundingClientRect();
     const beside = side !== undefined && side.right + 8 + 340 <= window.innerWidth;
     setAt({
-      top: Math.round(Math.max(8, Math.min(box.top - 8, window.innerHeight - 560))),
+      top: Math.round(Math.max(8, Math.min(box.top - 8, window.innerHeight - 632))),
       left: Math.round(beside && side ? side.right + 8 : 8),
     });
   }, []);
@@ -512,17 +608,23 @@ function Legend(): JSX.Element {
           </ul>
           <div className="cr-legend-hd">Marks</div>
           <ul className="cr-legend-list">
-            <li>
-              <span className="cr-legend-mark cr-overlap">
-                <Icon name="alert-triangle" size={13} />
+            <li data-mark="overlap">
+              <span className="cr-legend-mark cr-legend-glyph">
+                <Icon name="overlap" size={13} strokeWidth={2} />
               </span>
-              <span className="cr-legend-hint">Overlaps another live node’s changes</span>
+              <span className="cr-legend-hint">{OVERLAP_NOTE}</span>
             </li>
-            <li>
+            <li data-mark="needs-you">
               <span className="cr-legend-mark">
                 <span className="cr-dot cr-tree-hidden-dot" data-dot="amber" />
               </span>
               <span className="cr-legend-hint">On a folded row: something inside needs you</span>
+            </li>
+            <li data-mark="drag">
+              <span className="cr-legend-mark cr-legend-glyph">
+                <Icon name="grip-vertical" size={14} />
+              </span>
+              <span className="cr-legend-hint">{DRAG_NOTE}</span>
             </li>
           </ul>
         </div>
@@ -555,6 +657,7 @@ export function StreamTree({
   } = useShell();
   const toast = useToast();
   const copy = useCopy();
+  const overlaps = useOptionalFeed()?.cockpit?.overlaps ?? NO_OVERLAPS;
   const sectionRef = useRef<HTMLElement>(null);
   const [filter, setFilter] = useState('');
   const filterRef = useRef<HTMLInputElement>(null);
@@ -749,6 +852,9 @@ export function StreamTree({
     onRowKey,
     filterProject: project,
     projectName,
+    overlaps,
+    allRows,
+    openNode: select,
   };
   const empty = allRows.length === 0 && projects.length === 0;
 

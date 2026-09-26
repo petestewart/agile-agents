@@ -719,7 +719,9 @@ legend {
   color: var(--red-text);
   background: var(--red-weak);
 }
-.cr-status-pill .cr-dot {
+/* A pill drops the halo; a hollow dot (stopped, waiting) keeps its ring (T424). */
+.cr-status-pill .cr-dot[data-status="needs_you"],
+.cr-status-pill .cr-dot[data-status="blocked"] {
   box-shadow: none;
 }
 
@@ -1644,7 +1646,8 @@ ul.cr-error {
 }
 .cr-tree-row[data-status="closed"] .title,
 .cr-tree-row[data-status="merged"] .title,
-.cr-tree-row[data-status="not_started"] .title {
+.cr-tree-row[data-status="not_started"]:not([data-role="project"], [data-role="coordinating"])
+  .title {
   color: var(--text-muted);
 }
 .cr-tree-label {
@@ -1673,9 +1676,71 @@ ul.cr-error {
   font-size: var(--text-xs);
   color: var(--text-faint);
 }
-.cr-overlap {
-  color: var(--amber-text);
-  flex: none;
+/*
+ * T424: the overlap mark — a neutral button right of the title (left of the
+ * + and ⋯ while they show) that names and opens the other node — and the
+ * drag grip, left of a row on hover (never on touch).
+ */
+.cr-tree-overlap {
+  position: absolute;
+  top: 5px;
+  right: 4px;
+  z-index: 1;
+  display: flex;
+}
+.cr-tree-overlap-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cr-tree-overlap-btn:hover,
+.cr-tree-overlap-btn[aria-expanded="true"] {
+  color: var(--text);
+  background: var(--bg-active);
+}
+.cr-legend-glyph {
+  color: var(--text-muted);
+}
+.cr-tree-item[data-overlap] > .cr-tree-row {
+  padding-right: 28px;
+}
+.cr-tree-item[data-overlap]:hover > .cr-tree-overlap,
+.cr-tree-item[data-overlap]:has(:focus-visible) > .cr-tree-overlap,
+.cr-tree-item[data-overlap]:has(.cr-tree-actions [aria-expanded="true"]) > .cr-tree-overlap {
+  right: 58px;
+}
+.cr-tree-item[data-overlap]:hover > .cr-tree-row,
+.cr-tree-item[data-overlap]:has(:focus-visible) > .cr-tree-row,
+.cr-tree-item[data-overlap]:has(.cr-tree-actions [aria-expanded="true"]) > .cr-tree-row {
+  padding-right: 80px;
+}
+.cr-tree-grip {
+  position: absolute;
+  left: -14px;
+  top: 8px;
+  display: flex;
+  color: var(--text-faint);
+  opacity: 0;
+  cursor: grab;
+  transition: opacity 0.1s;
+}
+.cr-tree-item:hover > .cr-tree-row .cr-tree-grip {
+  opacity: 1;
+}
+.cr-tree-grip:hover {
+  color: var(--text-muted);
+}
+.cr-tree-row[draggable="true"][data-dragging] {
+  opacity: 0.5;
+  cursor: grabbing;
 }
 .cr-visibility {
   font-size: var(--text-xs);
@@ -1719,6 +1784,15 @@ ul.cr-error {
   }
   .cr-tree-item > .cr-tree-row {
     padding-right: 58px;
+  }
+  .cr-tree-item[data-overlap] > .cr-tree-row {
+    padding-right: 80px;
+  }
+  .cr-tree-item[data-overlap] > .cr-tree-overlap {
+    right: 58px;
+  }
+  .cr-tree-grip {
+    display: none;
   }
 }
 
@@ -5876,21 +5950,18 @@ span.cr-answering-q {
   background: var(--accent-weak);
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
+/* T424: one status per count, its dot drawn by StatusDot as in the list. */
 .cr-ov-count-dot {
+  display: flex;
   flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--gray);
 }
-.cr-ov-count[data-tone="amber"] .cr-ov-count-dot {
-  background: var(--amber);
+.cr-ov-count-dot .cr-dot[data-status="needs_you"],
+.cr-ov-count-dot .cr-dot[data-status="blocked"] {
+  box-shadow: none;
 }
-.cr-ov-count[data-tone="blue"] .cr-ov-count-dot {
-  background: var(--blue);
-}
-.cr-ov-count[data-tone="purple"] .cr-ov-count-dot {
-  background: var(--purple);
+/* Where the list's next group starts, a little more room. */
+.cr-ov-count[data-group-start] {
+  margin-left: 8px;
 }
 .cr-ov-clear {
   margin-left: 2px;
@@ -8698,10 +8769,6 @@ div.cr-lens-ev:hover {
   font-weight: 500;
   color: var(--text-faint);
 }
-.cr-lens-table-hd,
-.cr-lens-run .cr-lens-row {
-  grid-template-columns: 136px minmax(0, 1fr) 96px 208px 132px 64px;
-}
 /* T395: when the node last changed. */
 .cr-lens-table-hd > :nth-child(6) {
   text-align: right;
@@ -8711,9 +8778,6 @@ div.cr-lens-ev:hover {
   color: var(--text-faint);
   text-align: right;
   white-space: nowrap;
-}
-.cr-lens-table-hd {
-  padding-right: 44px;
 }
 .cr-lens-run {
   display: flex;
@@ -8734,6 +8798,7 @@ div.cr-lens-ev:hover {
 .cr-lens-run-role {
   font-size: var(--text-sm);
   color: var(--text-muted);
+  white-space: nowrap;
 }
 .cr-lens-run-repo,
 .cr-lens-run-agent {
@@ -8756,38 +8821,75 @@ div.cr-lens-ev:hover {
 .cr-lens-run-repo > svg {
   flex: none;
 }
+/*
+ * T424 (finding 37): wider than a phone, the header and every row share the
+ * table's columns (subgrid), so Status is as wide as its widest pill, Role,
+ * Agent, Repo and Updated fit their words (Agent and Repo up to a cap), and
+ * Node gets the rest (at least 280px).
+ */
+@media (min-width: 901px) {
+  .cr-lens-table {
+    display: grid;
+    grid-template-columns:
+      max-content minmax(280px, 2fr) max-content fit-content(240px)
+      fit-content(180px) max-content 36px;
+    column-gap: 12px;
+  }
+  /* Its rule runs under the ⋯ column too; Updated keeps the rows' right padding. */
+  .cr-lens-table-hd {
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    padding-right: 0;
+  }
+  .cr-lens-table-hd > :nth-child(6) {
+    padding-right: 10px;
+  }
+  .cr-lens-table > .cr-lens-rows,
+  .cr-lens-run {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    column-gap: normal;
+  }
+  .cr-lens-run .cr-lens-row {
+    grid-column: 1 / 7;
+    grid-template-columns: subgrid;
+  }
+}
 /* T382: narrower than the five columns fit, the agent drops under the path. */
 @media (max-width: 1200px) and (min-width: 901px) {
-  .cr-lens-table-hd,
-  .cr-lens-run .cr-lens-row {
-    grid-template-columns: 136px minmax(0, 1fr) 96px 132px 64px;
+  .cr-lens-table {
+    grid-template-columns:
+      max-content minmax(240px, 2fr) max-content fit-content(180px)
+      max-content 36px;
   }
   .cr-lens-table-hd > :nth-child(4) {
     display: none;
   }
   .cr-lens-run .cr-lens-row {
-    grid-template-areas: "status path role repo age" "status agent role repo age";
+    grid-column: 1 / 6;
+    grid-template-rows: auto auto;
     row-gap: 1px;
     padding-top: 8px;
     padding-bottom: 8px;
   }
   .cr-lens-run-status {
-    grid-area: status;
+    grid-area: 1 / 1 / 3 / 2;
   }
   .cr-lens-run .cr-lens-path {
-    grid-area: path;
-  }
-  .cr-lens-run-role {
-    grid-area: role;
+    grid-area: 1 / 2 / 2 / 3;
   }
   .cr-lens-run-agent {
-    grid-area: agent;
+    grid-area: 2 / 2 / 3 / 3;
+  }
+  .cr-lens-run-role {
+    grid-area: 1 / 3 / 3 / 4;
   }
   .cr-lens-run-repo {
-    grid-area: repo;
+    grid-area: 1 / 4 / 3 / 5;
   }
   .cr-lens-run-age {
-    grid-area: age;
+    grid-area: 1 / 5 / 3 / 6;
   }
 }
 .cr-lens-run-menu {
@@ -8865,6 +8967,10 @@ div.cr-lens-ev:hover {
 .cr-lens-dep-state {
   flex: none;
   margin-left: auto;
+}
+/* T424: the waiting node's pill sits over its links' pills (their ⋯ is 30px, 10px apart). */
+.cr-lens-dep-hd {
+  padding-right: 44px;
 }
 .cr-lens-dep-edge[data-satisfied] .cr-lens-dep-text {
   color: var(--text-muted);

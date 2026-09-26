@@ -2,10 +2,13 @@
  * T387: a project's Overview — the first tab on its root node's page, like
  * Linear's project page: what the project is doing at a glance.
  *
- *  - The counts by status, your move first ("2 need you · 1 ready to
- *    merge · 3 working · 5 done"); a count filters the list.
+ *  - The counts by status, your move first ("1 needs you · 1 blocked ·
+ *    1 ready to merge · 3 working · 2 not started"); a count filters the
+ *    list. T424: each count is one status, with that status's own dot and
+ *    word, and the counts are the list's own grouping, so they agree.
  *  - Its nodes as rows (status, where it sits, repo, agent, age): your move,
- *    working, idle; merged and closed fold under "Done".
+ *    in progress, not running; done, merged and closed fold under
+ *    "Finished".
  *  - Its repos: icon, kind and what Merge does there.
  *  - Its recent events, with a link to Events.
  *
@@ -19,14 +22,14 @@ import { useFeed } from '../lib/feed-context';
 import type { CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
 import { deliveryHint, deliveryWords, eventDetail, eventTitle, runningAgent } from '../lib/lenses';
 import {
-  type OverviewBucket,
+  type OverviewStatus,
   RECENT_EVENTS,
-  bucketOf,
   createdAt,
   lastChange,
   openNodesOn,
   overviewCounts,
   overviewGroups,
+  overviewStatus,
   pathUnder,
   projectNodes,
   projectRepoNames,
@@ -37,18 +40,9 @@ import { ago, nodeStatus } from '../lib/status';
 import { eventTime } from '../lib/streams';
 import { Icon } from './Icon';
 import { EventGlyph } from './Lenses';
-import { Button, EmptyState, RepoIcon, Spinner, StatusPill, repoKindLabel } from './ui';
+import { Button, EmptyState, RepoIcon, Spinner, StatusDot, StatusPill, repoKindLabel } from './ui';
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
-
-/** The status tone a count's dot shows. */
-const BUCKET_TONE: Record<OverviewBucket, string> = {
-  you: 'amber',
-  ready: 'amber',
-  working: 'blue',
-  idle: 'gray',
-  done: 'purple',
-};
 
 // ---------------------------------------------------------------- recent activity
 
@@ -267,7 +261,7 @@ function NodeRow({
         className="cr-ov-row"
         data-testid="overview-node"
         data-stream={row.id}
-        data-bucket={bucketOf(row)}
+        data-status={overviewStatus(row)}
         data-agent={agent !== undefined ? 'true' : undefined}
         onClick={() => select(row.id)}
         title={`${row.title} — ${status.hint}`}
@@ -331,15 +325,15 @@ function NodeList({
   rows: readonly CockpitStreamRow[];
   root: string;
   repos: ReadonlyMap<string, CockpitRepoRow>;
-  filter: OverviewBucket | undefined;
+  filter: OverviewStatus | undefined;
 }): JSX.Element {
   const [doneOpen, setDoneOpen] = useState(false);
   const groups = overviewGroups(nodes, filter);
   return (
     <div className="cr-ov-groups" data-testid="overview-nodes">
       {groups.map((group) => {
-        // Done folds, unless its count was the one clicked.
-        const folds = group.key === 'done' && filter !== 'done';
+        // Finished folds, unless one of its counts was the one clicked.
+        const folds = group.key === 'finished' && filter === undefined;
         const open = !folds || doneOpen;
         return (
           <section
@@ -483,7 +477,7 @@ export function ProjectOverview({
 }): JSX.Element {
   const { cockpit } = useFeed();
   const { openNewStream } = useShell();
-  const [filter, setFilter] = useState<OverviewBucket | undefined>(undefined);
+  const [filter, setFilter] = useState<OverviewStatus | undefined>(undefined);
 
   const rows = cockpit?.streams ?? [];
   const nodes = useMemo(() => projectNodes(rows, root), [rows, root]);
@@ -509,12 +503,12 @@ export function ProjectOverview({
   const counts = overviewCounts(nodes);
   // A filter whose nodes all moved on shows everything again.
   const shown =
-    filter !== undefined && counts.some((c) => c.bucket === filter) ? filter : undefined;
+    filter !== undefined && counts.some((c) => c.status === filter) ? filter : undefined;
   const projectRow = cockpit.projects.find((p) => p.id === project);
   const repoNames = projectRepoNames(projectRow?.repos, nodes);
 
   // The list sits right under the counts, so a count filters it in place.
-  const pick = (bucket: OverviewBucket): void => setFilter(shown === bucket ? undefined : bucket);
+  const pick = (status: OverviewStatus): void => setFilter(shown === status ? undefined : status);
 
   return (
     <div className="cr-ov" data-testid="project-overview">
@@ -581,25 +575,30 @@ export function ProjectOverview({
               aria-label="Filter the nodes by status"
               data-testid="overview-summary"
             >
-              {counts.map((c) => (
+              {counts.map((c, i) => (
                 <button
-                  key={c.bucket}
+                  key={c.status}
                   type="button"
                   className="cr-ov-count"
                   data-testid="overview-count"
-                  data-bucket={c.bucket}
-                  data-tone={BUCKET_TONE[c.bucket]}
-                  aria-pressed={shown === c.bucket}
+                  data-status={c.status}
+                  data-group={c.group}
+                  // A little more room where the list's next group starts.
+                  data-group-start={i > 0 && counts[i - 1]?.group !== c.group ? 'true' : undefined}
+                  aria-pressed={shown === c.status}
                   title={
-                    shown === c.bucket
+                    shown === c.status
                       ? 'Show every node'
                       : c.count === 1
                         ? 'Show only this one'
                         : `Show only these ${c.count}`
                   }
-                  onClick={() => pick(c.bucket)}
+                  onClick={() => pick(c.status)}
                 >
-                  <span className="cr-ov-count-dot" aria-hidden="true" />
+                  {/* The dot its rows show: the same status, the same shape. */}
+                  <span className="cr-ov-count-dot" aria-hidden="true">
+                    {c.rows[0] !== undefined && <StatusDot row={c.rows[0]} />}
+                  </span>
                   {c.text}
                 </button>
               ))}

@@ -278,6 +278,10 @@ export const LEGEND_NOTE: Record<NodeStatusKey, string> = {
   closed: 'Closed without merging',
 };
 
+/** T424: the legend's marks: the overlap button, and that rows drag. */
+export const OVERLAP_NOTE = 'Overlaps another node; click to open it';
+export const DRAG_NOTE = 'Drag a row to move it (or ⋯ → Move to…)';
+
 /** The legend's one-line gloss per kind of node. */
 export const ROLE_NOTE: Record<NonNullable<StatusInput['role']>, string> = {
   project: 'The root and its settings',
@@ -285,3 +289,90 @@ export const ROLE_NOTE: Record<NonNullable<StatusInput['role']>, string> = {
   work: 'Code on its own branch',
   conversation: 'Talks and researches; no repo',
 };
+
+// ---------------------------------------------------------------- overlaps (T424)
+
+/** T227's overlap pairs as the frame sends them (`CockpitOverlap`). */
+export interface OverlapPair {
+  nodes: readonly [string, string] | readonly string[];
+  files: readonly string[];
+}
+
+/** Where an overlap mark leads: a node to open, and what it says about it. */
+export interface OverlapTarget {
+  id: string;
+  title: string;
+  /** The shared files in words, for the menu's hint: "src/ledger.ts and 1 more file". */
+  files: string;
+  /** One line for its tooltip: "Overlaps Fix rounding in totals on src/ledger.ts". */
+  line: string;
+}
+
+/**
+ * What a row's overlap mark says and where it leads. `own`: the node's own
+ * changes overlap others' (it opens them). `inside`: its subtree is folded
+ * and a node inside it overlaps (it opens that one). An open parent, or a
+ * project, shows no mark: the rows under it carry their own.
+ */
+export interface OverlapMark {
+  kind: 'own' | 'inside';
+  /** Each target once, in the frame's order. */
+  targets: OverlapTarget[];
+  /** The tooltip and the accessible name: one line per overlap. */
+  text: string;
+}
+
+/** "src/ledger.ts", "a.ts and b.ts", "a.ts and 2 more files". */
+export function filesText(files: readonly string[]): string {
+  const [first, second] = files;
+  if (first === undefined) return 'the same files';
+  if (second === undefined) return first;
+  if (files.length === 2) return `${first} and ${second}`;
+  return `${first} and ${files.length - 1} more files`;
+}
+
+/**
+ * T424 (finding 17): the mark on row `id`, or `undefined` for none. `folded`
+ * is whether its subtree is hidden (a folded parent, or project, speaks for
+ * the nodes inside it). Titles come from `rows`; a node the cockpit no
+ * longer knows reads "another node".
+ */
+export function overlapMark(
+  id: string,
+  overlaps: readonly OverlapPair[],
+  rows: readonly Row[],
+  folded: boolean,
+): OverlapMark | undefined {
+  const titleOf = (node: string): string =>
+    rows.find((r) => r.id === node)?.title ?? 'another node';
+  const targets: OverlapTarget[] = [];
+  const lines: string[] = [];
+  const add = (target: string, files: readonly string[], line: string): void => {
+    if (!lines.includes(line)) lines.push(line);
+    if (targets.some((t) => t.id === target)) return;
+    targets.push({ id: target, title: titleOf(target), files: filesText(files), line });
+  };
+
+  for (const pair of overlaps) {
+    if (!pair.nodes.includes(id)) continue;
+    for (const other of pair.nodes) {
+      if (other === id) continue;
+      add(other, pair.files, `Overlaps ${titleOf(other)} on ${filesText(pair.files)}`);
+    }
+  }
+  if (targets.length > 0) return { kind: 'own', targets, text: lines.join('\n') };
+  if (!folded) return undefined;
+
+  const inside = new Set(subtreeIds(rows, id).slice(1));
+  for (const pair of overlaps) {
+    const [a, b] = pair.nodes;
+    if (a === undefined || b === undefined) continue;
+    // Said once per pair, from the side inside the fold (the first when both are).
+    const [node, other] = inside.has(a) ? [a, b] : inside.has(b) ? [b, a] : [];
+    if (node === undefined || other === undefined) continue;
+    const line = `${titleOf(node)} overlaps ${titleOf(other)} on ${filesText(pair.files)}`;
+    add(node, pair.files, line);
+    if (inside.has(other)) add(other, pair.files, line);
+  }
+  return targets.length > 0 ? { kind: 'inside', targets, text: lines.join('\n') } : undefined;
+}

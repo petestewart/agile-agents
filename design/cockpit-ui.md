@@ -85,7 +85,13 @@ Roles keep their design names but are explained where shown: **Conversation**
   `PageHeader`.
 - A project's root node opens on an **Overview** tab (T387): counts by status
   (your move first, each a filter), its nodes grouped by status, its repos and
-  its recent activity; the root's chat is the next tab. Other nodes open on
+  its recent activity; the root's chat is the next tab. T424: each count is
+  one status key (§6) with that status's own dot and word ("1 needs you",
+  "1 blocked", "3 not started", "1 closed"; a conversation that replied counts
+  as "replied"), and the counts are the list's own grouping
+  (`lib/overview.ts` `overviewGroups`), so a count always equals the rows it
+  filters to. The list's groups are **Your move**, **In progress**, **Not
+  running** and **Finished** (folded) — never a status's own word. Other nodes open on
   their chat. A Needs me card opens its node on the chat, root or not, since
   that's where the card is (T403).
 
@@ -174,6 +180,13 @@ Screen-level building blocks built on these (reuse them rather than copy):
 - `Lenses.tsx` (Repos, Running, Dependencies, Events; logic in
   `lib/lenses.ts`) — event titles (`eventTitle`) and routing words
   (`ROUTE_REASON`) are shared with a node's Activity tab and the Director.
+  T424: Running follows the rail's "Show only this project" (the URL's
+  `project`): only that project's nodes, their paths without the project's
+  name (`lensPath`), its subtitle "In Shop: …" and **Show all projects** when
+  others run elsewhere; its header and rows share one grid (CSS subgrid), so
+  Status is as wide as its widest pill and Node gets the room (at least
+  280px); its subtitle counts one status each, in the Overview's words.
+  Dependencies shows both ends' statuses as `StatusPill`s.
 - `lib/defaults.ts` `resolvedFor` — what a new session starts with, with the
   project step (P5) before the repo's, as attach resolves it.
 
@@ -194,12 +207,13 @@ One mapping from a cockpit row to what the UI shows, in precedence order:
 | done | done, nothing to merge (coordinating); a conversation reads "Replied" | Done / Replied | green |
 | waiting | waiting for the plan, or waits on another node | Waiting | gray |
 | working | a turn in flight | Working | blue (animated) |
-| not_started | its agent never ran | Not started | gray, hollow |
+| not_started | its agent never ran (any role: T424, a project root or a coordinator too — the daemon's `never_started`) | Not started | gray, hollow |
 | stopped | you stopped it | Stopped | gray, hollow |
 | idle | anything else | Idle | gray |
 
 The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
-`streamDot()` returns it, so older tests read the same.
+`streamDot()` returns it, so older tests read the same. A pill drops the
+needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
 
 ## 7. Patterns
 
@@ -208,6 +222,16 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   but a node's uses `PageHeader` (§5).
 - **Lists** are rows (40px, hover background, click opens), not stacks of
   bordered cards. Cards are for things that need a decision.
+- **The rail's marks** (T424): a node whose changes overlap another live
+  node's (T227) carries a neutral two-squares mark (`Icon` `overlap`, never
+  the alert triangle, which means blocked or critical). It is a button: its
+  tooltip names the other node and the files ("Overlaps Fix rounding in
+  totals on src/ledger.ts") and a click opens that node; with several, a
+  small menu of them. A parent or a project carries it only while folded,
+  for the nodes hidden inside it (`lib/tree.ts` `overlapMark`). Rows drag
+  (T333): a 6-dot grip shows left of a row on hover (not on touch), `grab`
+  over it, and the dragged row dims. The legend (the `?` by Projects) lists
+  both marks, and "Drag a row to move it (or ⋯ → Move to…)".
 - **Decision cards** (`Card` in `Inbox.tsx`): a title line (kind icon, what it
   is, node path, age), the body, and actions on one row, primary first.
   A question with `options` shows each as a button; typing is always allowed.

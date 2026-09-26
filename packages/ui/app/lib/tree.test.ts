@@ -7,10 +7,12 @@ import {
   LEGEND_ORDER,
   checkMove,
   deleteQuestion,
+  filesText,
   legendRow,
   moveTargets,
   newNodeDefaults,
   outline,
+  overlapMark,
   projectOutline,
   searchOutline,
   splitRepos,
@@ -244,5 +246,81 @@ describe('the legend', () => {
   test('every status is listed once, and its row reads as that status', () => {
     expect(new Set(LEGEND_ORDER).size).toBe(14);
     for (const key of LEGEND_ORDER) expect(nodeStatus(legendRow(key)).key).toBe(key);
+  });
+});
+
+describe('T424: the overlap mark', () => {
+  // a1x and a2 (both in Shop, under a) change src/ledger.ts; a2 and c (Blog) change api.ts.
+  const rows = [
+    ...ROWS.map((r) =>
+      r.id === 'a1x'
+        ? { ...r, title: 'Add CSV import' }
+        : r.id === 'a2'
+          ? { ...r, title: 'Fix rounding in totals' }
+          : r,
+    ),
+  ];
+  const one = [{ nodes: ['a1x', 'a2'] as [string, string], files: ['src/ledger.ts'] }];
+  const two = [...one, { nodes: ['c', 'a2'] as [string, string], files: ['api.ts', 'b.ts'] }];
+
+  test('the files in words', () => {
+    expect(filesText(['src/ledger.ts'])).toBe('src/ledger.ts');
+    expect(filesText(['a.ts', 'b.ts'])).toBe('a.ts and b.ts');
+    expect(filesText(['a.ts', 'b.ts', 'c.ts'])).toBe('a.ts and 2 more files');
+    expect(filesText([])).toBe('the same files');
+  });
+
+  test('its own overlap names the other node and the file, and leads there', () => {
+    expect(overlapMark('a1x', one, rows, false)).toEqual({
+      kind: 'own',
+      targets: [
+        {
+          id: 'a2',
+          title: 'Fix rounding in totals',
+          files: 'src/ledger.ts',
+          line: 'Overlaps Fix rounding in totals on src/ledger.ts',
+        },
+      ],
+      text: 'Overlaps Fix rounding in totals on src/ledger.ts',
+    });
+    const both = overlapMark('a2', two, rows, false);
+    expect(both?.targets.map((t) => t.id)).toEqual(['a1x', 'c']);
+    expect(both?.text).toBe(
+      'Overlaps Add CSV import on src/ledger.ts\nOverlaps c on api.ts and b.ts',
+    );
+  });
+
+  test('an open parent or project shows none; folded, it speaks for the nodes inside', () => {
+    expect(overlapMark('a', one, rows, false)).toBeUndefined();
+    expect(overlapMark('root', one, rows, false)).toBeUndefined();
+    expect(overlapMark('b', one, rows, true)).toBeUndefined();
+    const folded = overlapMark('a1', one, rows, true);
+    expect(folded).toEqual({
+      kind: 'inside',
+      targets: [
+        {
+          id: 'a1x',
+          title: 'Add CSV import',
+          files: 'src/ledger.ts',
+          line: 'Add CSV import overlaps Fix rounding in totals on src/ledger.ts',
+        },
+      ],
+      text: 'Add CSV import overlaps Fix rounding in totals on src/ledger.ts',
+    });
+    // Both sides inside: one line for the pair, both nodes to open.
+    const root = overlapMark('root', one, rows, true);
+    expect(root?.targets.map((t) => t.id)).toEqual(['a1x', 'a2']);
+    expect(root?.text).toBe('Add CSV import overlaps Fix rounding in totals on src/ledger.ts');
+    // Blog folded: its node c overlaps a Shop node.
+    expect(overlapMark('root2', two, rows, true)?.text).toBe(
+      'c overlaps Fix rounding in totals on api.ts and b.ts',
+    );
+  });
+
+  test('a node the cockpit no longer knows reads "another node"; no overlaps, no mark', () => {
+    expect(
+      overlapMark('a1x', [{ nodes: ['a1x', 'gone'], files: ['x.ts'] }], rows, false)?.text,
+    ).toBe('Overlaps another node on x.ts');
+    expect(overlapMark('a1x', [], rows, false)).toBeUndefined();
   });
 });

@@ -7,19 +7,23 @@ import { describe, expect, test } from 'bun:test';
 import { type RoutedEvent, ulid } from '@agile-agents/shared';
 import type { CockpitStreamRow } from './feed-types';
 import {
-  bucketOf,
+  OVERVIEW_ORDER,
+  type OverviewStatus,
   createdAt,
   isProjectEvent,
   lastChange,
   openNodesOn,
   overviewCounts,
+  overviewGroupOf,
   overviewGroups,
+  overviewStatus,
   overviewSummary,
   pathUnder,
   projectNodes,
   projectRepoNames,
   recentProjectEvents,
 } from './overview';
+import { LEGEND_ORDER } from './tree';
 
 function row(id: string, extra: Partial<CockpitStreamRow> = {}): CockpitStreamRow {
   return {
@@ -57,55 +61,132 @@ const merged = row('merged', { parent: 'root', human_status: 'landed' });
 const closed = row('closed', { parent: 'root', human_status: 'closed' });
 const finished = row('finished', { parent: 'root', role: 'coordinating', agent_status: 'done' });
 
-describe('buckets', () => {
-  test('each status lands in one bucket; your move is needs you, blocked or no changes', () => {
-    expect(bucketOf(needs)).toBe('you');
-    expect(bucketOf(blocked)).toBe('you');
-    expect(bucketOf(empty)).toBe('you');
-    expect(bucketOf(ready)).toBe('ready');
-    expect(bucketOf(working)).toBe('working');
-    expect(bucketOf(pr)).toBe('working');
-    expect(bucketOf(fresh)).toBe('idle');
-    // A conversation that replied goes on: open, not done.
-    expect(bucketOf(replied)).toBe('idle');
-    expect(bucketOf(merged)).toBe('done');
-    expect(bucketOf(closed)).toBe('done');
-    expect(bucketOf(finished)).toBe('done');
+describe('statuses', () => {
+  test('each node is one status key, with a replied conversation told apart from finished work', () => {
+    expect(overviewStatus(needs)).toBe('needs_you');
+    expect(overviewStatus(blocked)).toBe('blocked');
+    expect(overviewStatus(empty)).toBe('no_changes');
+    expect(overviewStatus(ready)).toBe('ready');
+    expect(overviewStatus(working)).toBe('working');
+    expect(overviewStatus(pr)).toBe('pr_open');
+    expect(overviewStatus(fresh)).toBe('not_started');
+    // A conversation that replied goes on: open, not finished.
+    expect(overviewStatus(replied)).toBe('replied');
+    expect(overviewStatus(merged)).toBe('merged');
+    expect(overviewStatus(closed)).toBe('closed');
+    expect(overviewStatus(finished)).toBe('done');
+  });
+
+  test('every status key sits in exactly one group, in one order', () => {
+    const keys: OverviewStatus[] = [...LEGEND_ORDER, 'replied'];
+    expect([...OVERVIEW_ORDER].sort()).toEqual([...keys].sort());
+    expect(new Set(OVERVIEW_ORDER).size).toBe(OVERVIEW_ORDER.length);
+    expect(overviewGroupOf(needs)).toBe('you');
+    expect(overviewGroupOf(blocked)).toBe('you');
+    expect(overviewGroupOf(empty)).toBe('you');
+    expect(overviewGroupOf(ready)).toBe('you');
+    expect(overviewGroupOf(working)).toBe('in_progress');
+    expect(overviewGroupOf(pr)).toBe('in_progress');
+    expect(overviewGroupOf(fresh)).toBe('not_running');
+    expect(overviewGroupOf(replied)).toBe('not_running');
+    expect(overviewGroupOf(merged)).toBe('finished');
+    expect(overviewGroupOf(closed)).toBe('finished');
+    expect(overviewGroupOf(finished)).toBe('finished');
   });
 });
 
 describe('counts', () => {
-  test('your move first, only what is there, in words', () => {
+  test('one per status, your move first, only what is there, in the status’s own words', () => {
     const nodes = [merged, working, needs, ready, closed, fresh, blocked, pr];
-    expect(overviewCounts(nodes).map((c) => [c.bucket, c.count])).toEqual([
-      ['you', 2],
+    expect(overviewCounts(nodes).map((c) => [c.status, c.count])).toEqual([
+      ['needs_you', 1],
+      ['blocked', 1],
       ['ready', 1],
-      ['working', 2],
-      ['idle', 1],
-      ['done', 2],
+      ['working', 1],
+      ['pr_open', 1],
+      ['not_started', 1],
+      ['merged', 1],
+      ['closed', 1],
     ]);
     expect(overviewSummary(nodes)).toBe(
-      '2 need you · 1 ready to merge · 2 working · 1 idle · 2 done',
+      '1 needs you · 1 blocked · 1 ready to merge · 1 working · 1 PR open · 1 not started · 1 merged · 1 closed',
     );
   });
 
-  test('one reads "needs you"; none reads "No nodes yet"', () => {
+  test('T424: the audit’s project — no count mixes two statuses', () => {
+    // Needs you and Blocked were "2 need you"; Closed was "1 done"; three Not started and an Idle were "4 idle".
+    const idle = row('idle', { parent: 'root', live: true });
+    const fresh2 = row('fresh2', { parent: 'root', never_started: true });
+    const fresh3 = row('fresh3', { parent: 'root', role: 'coordinating', never_started: true });
+    const nodes = [needs, blocked, ready, working, idle, fresh, fresh2, fresh3, closed];
+    expect(overviewSummary(nodes)).toBe(
+      '1 needs you · 1 blocked · 1 ready to merge · 1 working · 1 idle · 3 not started · 1 closed',
+    );
+  });
+
+  test('plural words; one reads "needs you"; none reads "No nodes yet"', () => {
+    const needs2 = row('needs2', { parent: 'root', agent_status: 'question' });
+    const pr2 = row('pr2', { parent: 'root', agent_status: 'done', pr_open: true });
+    const empty2 = row('empty2', {
+      parent: 'root',
+      agent_status: 'done',
+      human_status: 'waiting_on_you',
+      nothing_to_merge: true,
+    });
+    const replied2 = row('replied2', {
+      parent: 'root',
+      role: 'conversation',
+      agent_status: 'done',
+    });
+    expect(overviewSummary([needs, needs2, pr, pr2, empty, empty2, replied, replied2])).toBe(
+      '2 need you · 2 with no changes · 2 PRs open · 2 replied',
+    );
     expect(overviewSummary([needs, working])).toBe('1 needs you · 1 working');
     expect(overviewSummary([])).toBe('No nodes yet');
     expect(overviewCounts([])).toEqual([]);
+  });
+
+  test('the counts are the list’s grouping: each count is exactly its rows, in the list’s order', () => {
+    const nodes = [
+      merged,
+      fresh,
+      working,
+      ready,
+      needs,
+      replied,
+      pr,
+      blocked,
+      closed,
+      empty,
+      finished,
+    ];
+    const groups = overviewGroups(nodes);
+    const counts = overviewCounts(nodes);
+    expect(counts).toEqual(groups.flatMap((g) => g.counts));
+    for (const group of groups) {
+      expect(group.rows).toEqual(group.counts.flatMap((c) => c.rows));
+      for (const c of group.counts) {
+        expect(c.count).toBe(c.rows.length);
+        expect(c.rows.every((r) => overviewStatus(r) === c.status)).toBe(true);
+        expect(c.group).toBe(group.key);
+        // A count's filter shows exactly its rows.
+        expect(overviewGroups(nodes, c.status).flatMap((g) => g.rows)).toEqual(c.rows);
+      }
+    }
+    expect(counts.reduce((n, c) => n + c.count, 0)).toBe(nodes.length);
   });
 });
 
 describe('groups', () => {
   const nodes = [merged, fresh, working, ready, needs, replied, pr, blocked, closed, empty];
 
-  test('your move, working, idle, done; the most pressing first, then the tree order', () => {
+  test('your move, in progress, not running, finished; the most pressing first, then the tree order', () => {
     const groups = overviewGroups(nodes);
     expect(groups.map((g) => [g.key, g.title])).toEqual([
       ['you', 'Your move'],
-      ['working', 'Working'],
-      ['idle', 'Idle'],
-      ['done', 'Done'],
+      ['in_progress', 'In progress'],
+      ['not_running', 'Not running'],
+      ['finished', 'Finished'],
     ]);
     expect(groups.map((g) => g.rows.map((r) => r.id))).toEqual([
       ['needs', 'blocked', 'empty', 'ready'],
@@ -138,14 +219,13 @@ describe('groups', () => {
     expect(lastChange({ id: 'not-a-ulid' })).toBeUndefined();
   });
 
-  test('a count keeps only its bucket; empty groups are left out', () => {
+  test('a count keeps only its status; empty groups are left out', () => {
     expect(overviewGroups(nodes, 'ready').map((g) => g.rows.map((r) => r.id))).toEqual([['ready']]);
-    expect(overviewGroups(nodes, 'you')[0]?.rows.map((r) => r.id)).toEqual([
-      'needs',
-      'blocked',
-      'empty',
+    expect(overviewGroups(nodes, 'needs_you')[0]?.rows.map((r) => r.id)).toEqual(['needs']);
+    expect(overviewGroups(nodes, 'closed').map((g) => [g.key, g.rows.map((r) => r.id)])).toEqual([
+      ['finished', ['closed']],
     ]);
-    expect(overviewGroups(nodes, 'done').map((g) => g.key)).toEqual(['done']);
+    expect(overviewGroups(nodes, 'idle')).toEqual([]);
     expect(overviewGroups([working])).toHaveLength(1);
     expect(overviewGroups([])).toEqual([]);
   });

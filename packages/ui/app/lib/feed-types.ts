@@ -90,7 +90,7 @@ export interface CockpitStreamRow {
   merged_outside?: true;
   /** T395: its last change (ISO): creation, its agent's last status or its thread's last line. Absent from an older daemon. */
   updated_at?: string;
-  /** T361: a work node or conversation whose agent never ran. Absent from an older daemon. */
+  /** T361: an open node whose agent never ran (T424: any role, a project root too). Absent from an older daemon. */
   never_started?: true;
   /** T361: the human stopped its agent; nothing is live and it is still open. Absent from an older daemon. */
   stopped?: true;
