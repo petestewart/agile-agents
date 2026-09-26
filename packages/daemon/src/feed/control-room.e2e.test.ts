@@ -757,6 +757,8 @@ describe('cockpit shell (Playwright e2e)', () => {
         // Back to Needs me: allow the routed call with a reason.
         await page.locator('[data-view="inbox"]').click();
         const gateCard = `[data-id="${gate.id}"]`;
+        // T364: the note is a small "Add a note" affordance that opens an input.
+        await page.locator(`${gateCard} [data-testid="gate-add-note"]`).click();
         await page.locator(`${gateCard} [data-testid="gate-note"]`).fill('pin it to 1.2.3');
         await page.locator(`${gateCard} [data-testid="gate-approve"]`).click();
         await page.locator(gateCard).waitFor({ state: 'detached' });
@@ -816,12 +818,17 @@ describe('cockpit shell (Playwright e2e)', () => {
         )) as number;
         expect(pageOverflow).toBeLessThanOrEqual(0);
 
-        await page.locator(`${card} [data-testid="answer-input"]`).fill('main');
-        await page.locator(`${card} [data-testid="answer-send"]`).click();
-        await page.locator(card).waitFor({ state: 'detached' });
+        // T364: on the node page a question card has no input of its own (the
+        // page's composer answers it, T363), so it is answered from Needs me.
+        // T363 re-points this step at the node page's composer.
+        expect(await page.locator(`${card} [data-testid="answer-input"]`).count()).toBe(0);
         // T360: the views live in the drawer at phone width.
         await page.locator('[data-testid="rail-toggle"]').click();
         await page.locator('[data-view="inbox"]').click();
+        const listed = `[data-testid="inbox"] ${card}`;
+        await page.locator(`${listed} [data-testid="answer-input"]`).fill('main');
+        await page.locator(`${listed} [data-testid="answer-send"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
         await waitForCount(page, '[data-testid="inbox-empty"]', 1);
       } finally {
         await teardown([page]);
@@ -833,6 +840,141 @@ describe('cockpit shell (Playwright e2e)', () => {
 });
 
 // ---- T163: the rules screen (design/cockpit-design.md §5, §9) ----------
+
+describe('Needs me and the decision cards (Playwright e2e, T364)', () => {
+  browserTest(
+    "a question's choices answer with one click, in Needs me and on the node page; j/k and Enter; the filter",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const csv = await cockpit.streams.create('human', { title: 'csv dialect', goal: 'g' });
+        const pricing = await cockpit.streams.create('human', { title: 'pricing', goal: 'g' });
+        const session = ulid();
+        const asked = await cockpit.questions.raise({
+          stream: csv.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session,
+          text: 'Which delimiter should the parser treat as canonical?',
+          options: ['comma', 'semicolon', 'tab'],
+        });
+        // An older question: its choices are only in its text.
+        const written = await cockpit.questions.raise({
+          stream: pricing.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session,
+          text: 'Which competitor should I start with? (A) Linear (B) Height',
+        });
+        const gate = await cockpit.gates.request('classifier_review', {
+          policy: cockpit.store.getPolicy(),
+          stream: pricing.id,
+          summary: 'editing a dependency manifest is never automatic',
+          call: { tool: 'Edit', path: '/tmp/wt/package.json', fingerprint: '0123456789abcdef' },
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-testid="inbox"] [data-id="${asked.id}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        expect(await page.locator(`${card} .kind`).textContent()).toBe('Question');
+        const choices = page.locator(`${card} [data-testid="answer-choice"]`);
+        expect(await choices.count()).toBe(3);
+        expect(await choices.nth(1).textContent()).toContain('semicolon');
+        // Typing is still there in the list, for an answer that isn't a choice.
+        expect(await page.locator(`${card} [data-testid="answer-input"]`).count()).toBe(1);
+
+        // The written choices are buttons too, and the text no longer repeats them.
+        const other = `[data-testid="inbox"] [data-id="${written.id}"]`;
+        expect(await page.locator(`${other} [data-testid="answer-choice"]`).count()).toBe(2);
+        expect(
+          (await page.locator(`${other} [data-testid="inbox-context"]`).textContent())?.trim(),
+        ).toBe('Which competitor should I start with?');
+
+        // The filter: questions, decisions (the gate), all.
+        const filter = '[data-testid="inbox-filter"]';
+        await page.locator(`${filter} [data-value="decisions"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
+        expect(await page.locator(`[data-testid="inbox"] [data-id="${gate.id}"]`).count()).toBe(1);
+        await page.locator(`${filter} [data-value="all"]`).click();
+        await page.locator(card).waitFor({ state: 'visible' });
+
+        // One click answers with the choice's text, verbatim.
+        await choices.nth(1).click();
+        await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
+        expect(cockpit.delivered[0]?.question.id).toBe(asked.id);
+        expect(cockpit.delivered[0]?.question.answer).toBe('semicolon');
+        await page.locator(card).waitFor({ state: 'detached' });
+
+        // j focuses the first card; Enter opens its node.
+        await page.locator('[data-testid="inbox"] h1').click();
+        await page.keyboard.press('j');
+        const focused = async (id: string): Promise<boolean> =>
+          (await page?.evaluate<boolean>(
+            `document.activeElement?.getAttribute('data-id') === ${JSON.stringify(id)}`,
+          )) === true;
+        await waitUntilAsync('j to focus the first card', () => focused(written.id));
+        await page.keyboard.press('j');
+        await waitUntilAsync('j to move to the next card', () => focused(gate.id));
+        await page.keyboard.press('k');
+        await page.keyboard.press('Enter');
+        await page.locator(`[data-testid="stream-page"][data-stream="${pricing.id}"]`).waitFor();
+
+        // On the node page the card has its choices and no input of its own:
+        // the page's composer answers it.
+        const full = `[data-testid="stream-needs"] [data-id="${written.id}"]`;
+        await page.locator(full).waitFor({ state: 'visible' });
+        expect(await page.locator(`${full} [data-testid="answer-input"]`).count()).toBe(0);
+        expect(await page.locator(`${full} [data-testid="answer-send"]`).count()).toBe(0);
+        expect(await page.locator(`${full} [data-testid="answer-hint"]`).textContent()).toContain(
+          'or type your answer below',
+        );
+        await page.locator(`${full} [data-testid="answer-choice"]`, { hasText: 'Height' }).click();
+        await waitUntil('the second answer', () => cockpit.delivered.length > 1);
+        expect(cockpit.delivered[1]?.question.answer).toBe('Height');
+        await page.locator(full).waitFor({ state: 'detached' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a first run shows the three steps with their state, and each step opens its place',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const empty = '[data-testid="inbox-empty"][data-state="first-run"]';
+        await page.locator(empty).waitFor({ state: 'visible' });
+        const step = (id: string): string =>
+          `${empty} [data-testid="setup-step"][data-step="${id}"]`;
+        for (const id of ['repo', 'project', 'node']) {
+          expect(await page.locator(step(id)).getAttribute('data-done')).toBe('false');
+        }
+        // Add a repository opens Settings.
+        await page.locator('[data-testid="setup-repo"]').click();
+        await page.locator('[data-testid="settings"]').waitFor({ state: 'visible' });
+        await page.locator('[data-view="inbox"]').click();
+        // Create a project opens the New project dialog.
+        await page.locator('[data-testid="setup-project"]').click();
+        await page.locator('[data-testid="new-project"]').waitFor({ state: 'visible' });
+        // A project made (here through the service) ticks its step, live.
+        await cockpit.projects.create({ name: 'shop' });
+        await waitForAttr(page, step('project'), 'data-done', 'true');
+        expect(await page.locator(step('repo')).getAttribute('data-done')).toBe('false');
+        expect(await page.locator(step('node')).getAttribute('data-done')).toBe('false');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
 
 describe('rules screen (Playwright e2e, T163)', () => {
   browserTest(
@@ -1535,10 +1677,17 @@ describe('stream page (Playwright e2e, T161)', () => {
         git(['add', 'parser.ts'], worktree);
         git(['commit', '-q', '-m', 'semicolon parser'], worktree);
 
-        // ---- answer, on the stream page.
-        await page.locator(`${card} [data-testid="answer-input"]`).fill('semicolon');
-        await page.locator(`${card} [data-testid="answer-send"]`).click();
-        await page.locator(card).waitFor({ state: 'detached' });
+        // ---- answer. T364: the node page's card has no input of its own (its
+        // composer answers, T363), so this answers from Needs me and comes back.
+        // T363 re-points this step at the node page's composer.
+        expect(await page.locator(`${card} [data-testid="answer-input"]`).count()).toBe(0);
+        await page.locator('[data-view="inbox"]').click();
+        const listed = `[data-testid="inbox"] [data-id="${questionId}"]`;
+        await page.locator(`${listed} [data-testid="answer-input"]`).fill('semicolon');
+        await page.locator(`${listed} [data-testid="answer-send"]`).click();
+        await page.locator(listed).waitFor({ state: 'detached' });
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
         await page
           .locator('[data-testid="thread-entry"]', { hasText: 'continuing with semicolon' })
           .waitFor();
@@ -2070,7 +2219,7 @@ describe('Merge wording and hold tone (Playwright e2e, T347)', () => {
         const card = `[data-kind="done"][data-id="${stream.id}"]`;
         await page.locator(`${card} [data-testid="land"]`).waitFor();
         expect(await page.locator(`${card} [data-testid="land"]`).textContent()).toBe('Merge');
-        expect(await page.locator(`${card} .kind`).textContent()).toContain('ready to merge');
+        expect(await page.locator(`${card} .kind`).textContent()).toContain('Ready to merge');
         expect(await page.locator(card).textContent()).not.toMatch(/\bland\b/i);
 
         // D9: a ship-check hold is news (neutral), a real refusal stays red.
@@ -2412,7 +2561,7 @@ describe('the Knowledge screen (Playwright e2e, T266)', () => {
         await page.goto(`${cockpit.base}/`);
         const card = `[data-testid="inbox"] [data-id="${decision.id}"]`;
         await page.locator(card).waitFor({ state: 'visible' });
-        expect(await page.locator(`${card} .kind`).textContent()).toContain('decision proposed');
+        expect(await page.locator(`${card} .kind`).textContent()).toContain('Decision proposed');
 
         // The Knowledge screen filters by kind and enforcement.
         await page.locator('[data-view="rules"]').click();
@@ -3457,7 +3606,7 @@ describe('waiting for the plan (Playwright e2e, T344)', () => {
         await page.goto(`${cockpit.base}/`);
         const card = `[data-testid="inbox"] [data-kind="plan_waiting"][data-id="${node.id}"]`;
         await page.locator(card).waitFor({ state: 'visible' });
-        expect(await page.locator(`${card} .kind`).textContent()).toContain('waiting for the plan');
+        expect(await page.locator(`${card} .kind`).textContent()).toContain('Waiting for the plan');
         expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
           'demo part, web part wait for the plan',
         );
