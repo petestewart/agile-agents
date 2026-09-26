@@ -26,6 +26,7 @@ import { MobileBar, Sidebar } from './components/Sidebar';
 import { StreamPage } from './components/StreamPage';
 import { useFeed } from './lib/feed-context';
 import { type ShellView, useShell } from './lib/shell';
+import { useNeedsMeNotifications } from './lib/use-notify';
 
 /** T360: the browser tab says where you are and how much waits on you. */
 const VIEW_TITLE: Record<ShellView, string> = {
@@ -69,6 +70,8 @@ export function App(): JSX.Element {
   useEffect(() => {
     document.title = `${waiting}${pageTitle} · agile`;
   }, [waiting, pageTitle]);
+  // T388: a browser notification when something new needs you while you're away (opt-in, Settings).
+  useNeedsMeNotifications();
 
   return (
     <div className="cr-root" data-rail={railOpen ? 'open' : 'closed'}>
