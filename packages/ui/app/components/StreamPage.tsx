@@ -82,6 +82,7 @@ import {
 } from './NodeDetails';
 import { type Crumb, NodeHeader } from './NodeHeader';
 import { ActivityView, DocsView, KnowledgeView, PlanView } from './NodeViews';
+import { ProjectOverview } from './ProjectOverview';
 import { SessionPicker } from './SessionPicker';
 import {
   Button,
@@ -124,6 +125,7 @@ function errorText(err: unknown): string {
 }
 
 const TAB_LABEL: Record<NodeTab, string> = {
+  overview: 'Overview',
   thread: 'Chat',
   diff: 'Changes',
   plan: 'Plan',
@@ -299,7 +301,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const copy = useCopy();
   const [page, setPage] = useState<StreamPagePayload | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
-  const [tab, setTab] = useState<NodeTab>('thread');
+  // `undefined` is the node's own first tab (T387: a project root's Overview, else the chat).
+  const [tab, setTab] = useState<NodeTab | undefined>(undefined);
   const [draft, setDraft] = useState('');
   const drafts = useRef(new Map<string, string>());
   const [busy, setBusy] = useState(false);
@@ -353,14 +356,14 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       .catch(() => setRepos([]));
   }, []);
 
-  // A different node opened: back to its chat, its own draft, nothing half-open.
+  // A different node opened: back to its first tab, its own draft, nothing half-open.
   const lastId = useRef(id);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `id` is the trigger.
   useEffect(() => {
     drafts.current.set(lastId.current, draft);
     lastId.current = id;
     setDraft(drafts.current.get(id) ?? '');
-    setTab('thread');
+    setTab(undefined);
     setActionError(undefined);
     setPicker(undefined);
     setModal(undefined);
@@ -521,15 +524,19 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     mergeable,
     landReady: page.land?.ready === true,
   });
+  // T387: a project's root, known from the page itself (no parent, a project) before the frame names it.
+  const projectRoot =
+    rootOf !== undefined || (stream.parent === undefined && stream.project !== undefined);
   const tabs = nodeTabs({
     role,
+    projectRoot,
     hasRepo: stream.repo !== undefined,
     hasChildren: children.length > 0,
     hasPlanItem: cards.some((c) => c.kind === 'plan_approve'),
     knowledge: page.rules.length,
     docs: page.docs.length,
   });
-  const shownTab: NodeTab = tabs.includes(tab) ? tab : 'thread';
+  const shownTab: NodeTab = tab !== undefined && tabs.includes(tab) ? tab : (tabs[0] ?? 'thread');
   const waits = stream.waits_on ?? [];
   const linkOptions = rows.filter((r) => r.id !== stream.id && !waits.some((w) => w.node === r.id));
   const chosenLink = linkChoice || linkOptions[0]?.id || '';
@@ -1142,6 +1149,18 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         <div className="cr-node-body" data-tab={shownTab}>
           {shownTab === 'thread' ? (
             chat
+          ) : shownTab === 'overview' && stream.project !== undefined ? (
+            <div className="cr-node-pane" data-tab-body="overview">
+              <div className="cr-node-pane-col">
+                <ProjectOverview
+                  project={stream.project}
+                  root={stream.id}
+                  waiting={cards.length}
+                  onOpenChat={() => setTab('thread')}
+                  onEditRepos={() => setDetailsOpen(true)}
+                />
+              </div>
+            </div>
           ) : (
             <div className="cr-node-pane">
               <div className="cr-node-pane-col">

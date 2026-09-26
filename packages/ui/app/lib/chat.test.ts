@@ -343,6 +343,23 @@ describe('the header', () => {
     ).toContain('plan');
   });
 
+  test('T387: a project root opens on its Overview, the chat one tab away', () => {
+    expect(
+      nodeTabs({ role: 'project', projectRoot: true, hasRepo: false, knowledge: 0, docs: 0 }),
+    ).toEqual(['overview', 'thread', 'plan', 'activity']);
+    expect(
+      nodeTabs({ role: 'project', projectRoot: true, hasRepo: false, knowledge: 1, docs: 2 }),
+    ).toEqual(['overview', 'thread', 'plan', 'activity', 'rules', 'docs']);
+    // A top-level node that is no project's root (no project record) has no Overview.
+    expect(nodeTabs({ role: 'project', hasRepo: false, knowledge: 0, docs: 0 })[0]).toBe('thread');
+    // Any other node opens on its chat.
+    for (const role of ['coordinating', 'work', 'conversation'] as const) {
+      const tabs = nodeTabs({ role, hasRepo: role === 'work', knowledge: 0, docs: 0 });
+      expect(tabs[0]).toBe('thread');
+      expect(tabs).not.toContain('overview');
+    }
+  });
+
   test('the details panel: the stored choice, else open on a wide window', () => {
     expect(detailsOpenFrom(null, 1400)).toBe(true);
     expect(detailsOpenFrom(null, 1000)).toBe(false);

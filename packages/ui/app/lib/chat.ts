@@ -479,11 +479,17 @@ export function headerActions(input: HeaderActionsInput): HeaderActions {
 
 // ---------------------------------------------------------------- tabs
 
-export type NodeTab = 'thread' | 'diff' | 'plan' | 'activity' | 'rules' | 'docs';
+export type NodeTab = 'overview' | 'thread' | 'diff' | 'plan' | 'activity' | 'rules' | 'docs';
 
-/** The tabs that apply to a node, in order; an empty one is left out rather than shown empty. */
+/**
+ * The tabs that apply to a node, in order; an empty one is left out rather
+ * than shown empty. The first is the one the page opens on: T387: a
+ * project's root opens on its Overview, any other node on its chat.
+ */
 export function nodeTabs(input: {
   role: 'project' | 'coordinating' | 'work' | 'conversation' | undefined;
+  /** T387: the root of a project (not just a node with no parent). */
+  projectRoot?: boolean;
   hasRepo: boolean;
   /** Parts or tangents under it: a plan may split them. */
   hasChildren?: boolean;
@@ -491,7 +497,7 @@ export function nodeTabs(input: {
   knowledge: number;
   docs: number;
 }): NodeTab[] {
-  const tabs: NodeTab[] = ['thread'];
+  const tabs: NodeTab[] = input.projectRoot ? ['overview', 'thread'] : ['thread'];
   if (input.hasRepo) tabs.push('diff');
   if (
     input.role === 'coordinating' ||
