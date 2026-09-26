@@ -170,6 +170,17 @@ describe('T205 + Repo in place', () => {
       expect(bodies(part.id)).toContain(
         `waiting for the plan: this part starts when "Sale prices"'s plan is approved`,
       );
+      // T347 (D36 D12): the "read it by id" pointer is for the part's agent only.
+      const pointer = streams
+        .readThread(part.id, { limit: 50 })
+        .entries.find((e) => e.body.endsWith('read it by id'));
+      expect(pointer?.agent_only).toBe(true);
+      expect(
+        streams
+          .readThread(part.id, { limit: 50 })
+          .entries.filter((e) => e.body.startsWith('waiting for the plan'))
+          .every((e) => e.agent_only === undefined),
+      ).toBe(true);
     }
     expect(
       bodies(node.id).some((b) => b.includes('wait for the plan: write it with plan_write')),

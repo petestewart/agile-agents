@@ -273,7 +273,7 @@ export class InboxService {
         stream.agent.progress ??
           (stream.agent.status === 'done'
             ? // Name both exits, so a stream you won't land has a way out.
-              'worker finished — land or close the stream'
+              'worker finished — merge or close the stream'
             : 'blocked'),
       ),
       ...(stream.agent.progress !== undefined ? withDetail(stream.agent.progress) : {}),

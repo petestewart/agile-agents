@@ -209,7 +209,8 @@ export interface StreamDiff {
 /** T161: mirror of `delivery/service.ts`'s `LandOutcome` — the Land button's "after". */
 export type LandOutcome =
   | { status: 'gated'; gate: HilRequest; line: string }
-  | { status: 'refused'; reason: string; line: string }
+  /** T347: `held` is a ship-check or waits-on hold: news, not a failure. */
+  | { status: 'refused'; reason: string; line: string; held?: true }
   | { status: 'blocked'; target: string; conflicts: string[]; line: string }
   | { status: 'landed'; target: string; sha: string; line: string }
   /** PR mode: the branch was pushed and its PR opened (or updated). A success. */

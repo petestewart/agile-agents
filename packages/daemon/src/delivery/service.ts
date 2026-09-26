@@ -96,8 +96,11 @@ export const ALLOW_ALL_DIFF_RULES: DiffRules = {
 export type LandOutcome =
   /** A `land` gate was raised and is still pending; approving it lands the stream. */
   | { status: 'gated'; gate: HilRequest; line: string }
-  /** The gate was answered `deny`, or a diff-level rule refused the diff. */
-  | { status: 'refused'; reason: string; line: string }
+  /**
+   * The gate was answered `deny`, or a diff-level rule refused the diff.
+   * T347 (D36 D9): `held` marks a hold (ship check, waits-on), news rather than a failure.
+   */
+  | { status: 'refused'; reason: string; line: string; held?: true }
   /** Merge conflict: nothing merged, worktree kept, stream blocked. */
   | { status: 'blocked'; target: string; conflicts: string[]; line: string }
   | { status: 'landed'; target: string; sha: string; line: string }
@@ -201,7 +204,7 @@ export class DeliveryService {
           held_by: [{ reason: 'waits_on', detail: line }],
         });
         await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
-        return { status: 'refused', reason: line, line };
+        return { status: 'refused', reason: line, line, held: true };
       }
     }
 
@@ -415,7 +418,7 @@ export class DeliveryService {
     }
     // A route waits on its gate; a deny (or a gateless route) ends the call.
     if (verdict.gate !== undefined) return { status: 'gated', gate: verdict.gate, line };
-    return { status: 'refused', reason: verdict.reason, line };
+    return { status: 'refused', reason: verdict.reason, line, held: true };
   }
 
   /** A failed merge: nothing moved; the stream is blocked with the files named. */

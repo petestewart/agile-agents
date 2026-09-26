@@ -360,6 +360,7 @@ describe('waits on + auto-merge (T228, P8, P19)', () => {
     await expect(streams.wait('human', a.id, b.id)).rejects.toThrow(/cycle/);
     const held = await landing.land(b.id);
     expect(held.status).toBe('refused');
+    expect(held.status === 'refused' && held.held).toBe(true);
     expect(streams.get(b.id).delivery_state?.held_by?.[0]?.reason).toBe('waits_on');
     expect((await landing.land(a.id)).status).toBe('landed');
     expect(streams.get(b.id).waits_on?.[0]?.satisfied_at).toBeDefined();

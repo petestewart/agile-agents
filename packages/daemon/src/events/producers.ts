@@ -267,7 +267,8 @@ export function summarize(
       return `${pr} ${what}. Merge main in, resolve, run the tests, push.`;
     }
     case 'pr_merged':
-      if (self) return 'Your PR merged; the stream is done.';
+      // T347 (D36 D5): a direct merge had no PR.
+      if (self) return `Your ${p.pr === undefined ? 'change' : 'PR'} merged; the stream is done.`;
       return `${name(event.subject)} merged into ${String(p.repo)} main (${String(p.sha).slice(0, 12)}).`;
     case 'pr_closed':
       return `${pr} was closed without merging by ${String(p.login ?? 'someone')}.`;

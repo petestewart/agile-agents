@@ -93,6 +93,16 @@ describe('stream-transition producers (T244)', () => {
   });
 });
 
+describe('pr_merged summary (T347, D36 D5)', () => {
+  test('a direct merge (no PR) tells its node "Your change merged"; a PR merge "Your PR merged"', () => {
+    const base = { id: 'E-1', type: 'pr_merged', subject: 'S-1', repo: 'api', routing: [] };
+    const direct = { ...base, payload: { repo: 'api', sha: 'abc' } } as unknown as RoutedEvent;
+    const pr = { ...base, payload: { pr: 3, repo: 'api', sha: 'abc' } } as unknown as RoutedEvent;
+    expect(summarize(direct, 'S-1')).toBe('Your change merged; the stream is done.');
+    expect(summarize(pr, 'S-1')).toBe('Your PR merged; the stream is done.');
+  });
+});
+
 describe('payload trimming', () => {
   test('a long file list stays under the payload cap and validates', () => {
     const files = Array.from({ length: 500 }, (_, i) => `src/${'deep/'.repeat(40)}file-${i}.ts`);

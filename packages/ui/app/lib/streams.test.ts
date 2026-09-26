@@ -12,6 +12,7 @@ import {
   buildStreamTree,
   dependencyEdges,
   diffLineKind,
+  eventLabel,
   eventTime,
   filterStreamRows,
   groupByRepo,
@@ -292,5 +293,15 @@ describe('T341: an Activity row reads without raw ids', () => {
     expect(eventTime(new Date(2026, 8, 25, 15, 6, 6, 920).toISOString())).toBe('2026-09-25 15:06');
     expect(eventTime(new Date(2026, 0, 3, 4, 5).toISOString())).toBe('2026-01-03 04:05');
     expect(eventTime('not a time')).toBe('not a time');
+  });
+});
+
+describe('eventLabel (T347, D36 D5)', () => {
+  test('a direct merge reads "merged"; a PR merge "pr merged"; other types in words', () => {
+    expect(eventLabel({ type: 'pr_merged', payload: { repo: 'api', sha: 'abc' } })).toBe('merged');
+    expect(eventLabel({ type: 'pr_merged', payload: { pr: 2, repo: 'api', sha: 'abc' } })).toBe(
+      'pr merged',
+    );
+    expect(eventLabel({ type: 'child_status', payload: {} })).toBe('child status');
   });
 });

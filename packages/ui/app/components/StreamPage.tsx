@@ -58,6 +58,7 @@ import type {
   CockpitCardError,
   CockpitProjectRow,
   CockpitStatusCard,
+  CockpitStreamRow,
   LandOutcome,
   StreamDiff,
   StreamPagePayload,
@@ -68,6 +69,7 @@ import {
   DOT_LABEL,
   activityDelivery,
   diffLineKind,
+  eventLabel,
   eventTime,
   isLiveSession,
   isThinking,
@@ -89,7 +91,7 @@ const TABS: ReadonlyArray<{ tab: Tab; label: string }> = [
   { tab: 'docs', label: 'Docs' },
 ];
 
-/** Decision cards only: `blocked`/`done` are this page's own status and Land button. */
+/** Decision cards only: `blocked`/`done` are this page's own status and Merge button. */
 function needsYou(items: readonly InboxItem[], stream: string): InboxItem[] {
   return items.filter(
     (item) => item.stream === stream && item.kind !== 'blocked' && item.kind !== 'done',
@@ -318,7 +320,7 @@ function ActivityView({
     <ul className="cr-docs" data-testid="activity">
       {rows.map((row) => (
         <li key={row.event.id} data-testid="activity-row" data-event={row.event.id}>
-          <span data-testid="activity-type">{row.event.type.replace(/_/g, ' ')}</span>
+          <span data-testid="activity-type">{eventLabel(row.event)}</span>
           {row.event.repo ? <span className="cr-dim"> · {row.event.repo}</span> : null}
           <span className="cr-dim"> · </span>
           <span className="cr-dim" data-testid="activity-because">
@@ -404,6 +406,11 @@ const OUTCOME_TONE: Record<LandOutcome['status'], 'ok' | 'info' | 'bad'> = {
   refused: 'bad',
   blocked: 'bad',
 };
+
+/** T347 (D36 D9): a ship-check or waits-on hold is news, not an error; real refusals stay red. */
+function outcomeTone(outcome: LandOutcome): 'ok' | 'info' | 'bad' {
+  return outcome.status === 'refused' && outcome.held ? 'info' : OUTCOME_TONE[outcome.status];
+}
 
 function LandPanel({
   page,
@@ -631,7 +638,7 @@ function LandPanel({
       )}
       {outcome && !(conflicts && conflicts.length > 0) && (
         <p
-          className={`cr-land-result ${OUTCOME_TONE[outcome.status]}`}
+          className={`cr-land-result ${outcomeTone(outcome)}`}
           data-testid="land-result"
           data-status={outcome.status}
           aria-live="polite"
@@ -646,26 +653,33 @@ function LandPanel({
           data-status="refused"
           role="alert"
         >
-          {openPr ? 'Check failed' : 'Land refused'}: {refused}
+          {openPr ? 'Check failed' : 'Merge refused'}: {refused}
         </p>
       )}
     </section>
   );
 }
 
-/** T321 (§10): the node's Jira/Linear link; linking sets the goal from the issue. */
+/**
+ * T321 (§10): the node's Jira/Linear link; linking sets the goal from the issue.
+ * T347 (D36 D1): offered behind **Tracker issue…**, and only when the node's
+ * project has a tracker; a node already linked always shows its link.
+ */
 function TrackerLinkField({
   stream,
+  project,
   rollup,
   busy,
   act,
 }: {
   stream: StreamPagePayload['stream'];
+  project: CockpitProjectRow | undefined;
   rollup: StreamPagePayload['rollup'];
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void> | void;
-}): JSX.Element {
+}): JSX.Element | null {
   const [key, setKey] = useState('');
+  const [opened, setOpened] = useState(false);
   const link = stream.external_link;
   if (link !== undefined) {
     return (
@@ -706,6 +720,23 @@ function TrackerLinkField({
       </p>
     );
   }
+  if (project?.tracker === undefined) return null;
+  if (!opened) {
+    return (
+      <div className="cr-actions">
+        <button
+          type="button"
+          className="cr-btn"
+          data-testid="tracker-link-open"
+          title="Link this node to a Jira or Linear issue, or create one"
+          disabled={busy}
+          onClick={() => setOpened(true)}
+        >
+          Tracker issue…
+        </button>
+      </div>
+    );
+  }
   return (
     <form
       className="cr-actions"
@@ -717,7 +748,7 @@ function TrackerLinkField({
       }}
     >
       <label className="cr-dim">
-        Link{' '}
+        Issue key{' '}
         <input
           data-testid="tracker-link-input"
           placeholder="SHOP-11"
@@ -750,20 +781,24 @@ const AUTONOMY_LEVELS = ['advise', 'organise', 'run'] as const;
 /**
  * T282 (§9 Autonomy): how far this node's coordinator acts on its own. On
  * a project root it sets the project's level; elsewhere it overrides it.
+ * T347 (D36 D6): only where a coordinator runs, a coordinating node or a root.
  */
 function AutonomyPicker({
   stream,
+  role,
   project,
   busy,
   act,
 }: {
   stream: StreamPagePayload['stream'];
+  role: CockpitStreamRow['role'] | undefined;
   project: CockpitProjectRow | undefined;
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void> | void;
 }): JSX.Element | null {
   if (project === undefined) return null;
   const isRoot = project.root === stream.id;
+  if (!isRoot && role !== 'coordinating') return null;
   const inherited = project.autonomy?.coordinator ?? 'advise';
   const value = isRoot ? inherited : (stream.autonomy ?? 'inherit');
   return (
@@ -1247,7 +1282,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               disabled={busy || linkOptions.length === 0}
               onClick={() => setLinking((v) => !v)}
             >
-              Link
+              Waits on…
             </button>
           )}
           {open && stream.parent !== undefined && (
@@ -1283,9 +1318,17 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             ))}
           </ul>
         )}
-        <TrackerLinkField stream={stream} rollup={page.rollup} busy={busy} act={act} />
+        <TrackerLinkField
+          key={stream.id}
+          stream={stream}
+          project={cockpit?.projects.find((p) => p.id === stream.project)}
+          rollup={page.rollup}
+          busy={busy}
+          act={act}
+        />
         <AutonomyPicker
           stream={stream}
+          role={row?.role}
           project={cockpit?.projects.find((p) => p.id === stream.project)}
           busy={busy}
           act={act}
@@ -1450,6 +1493,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           )}
           <ol className="cr-thread" data-testid="thread" ref={threadRef}>
             {page.thread.map((entry, i) => {
+              // T347 (D36 D12): a line written for the agent stays off your thread view.
+              if (entry.agent_only) return null;
               const hit = ruleHitOf(entry);
               if (hit !== undefined) {
                 return (

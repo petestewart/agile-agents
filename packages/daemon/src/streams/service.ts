@@ -38,6 +38,8 @@ export interface ThreadAppendInput {
   kind: ThreadEntryKind;
   body: string;
   ref?: string;
+  /** T347: written for the agent; hidden from the cockpit's thread view. */
+  agent_only?: true;
 }
 
 export interface ThreadPageOptions {
@@ -468,6 +470,7 @@ export class StreamService {
       kind: input.kind,
       body: input.body,
       ...(input.ref !== undefined ? { ref: input.ref } : {}),
+      ...(input.agent_only ? { agent_only: true } : {}),
     });
   }
 

@@ -173,7 +173,7 @@ describe('agile inbox / agile answer against a daemon on a temp AGILE_HOME', () 
       agent: { status: 'done' },
     });
     const done = await cli(['inbox']);
-    expect(done.out).toContain('worker finished — land or close the stream');
+    expect(done.out).toContain('worker finished — merge or close the stream');
   });
 
   test('a routed tool call shows as a gate card and `agile answer <HIL-id> yes` decides it (T138)', async () => {

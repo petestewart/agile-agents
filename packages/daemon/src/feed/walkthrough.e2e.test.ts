@@ -990,45 +990,88 @@ test.skipIf(!RUN)(
     });
 
     // ---------------------------------------------------------- 4.1
-    await step('4.1', 'the ledger-lite part waits on the agile-test-repo part (Link)', async () => {
-      await openNode('ledger-lite part');
-      await streamPage().locator('[data-testid="link-wait"]').click();
-      await page
-        .locator('[data-testid="link-wait-select"]')
-        .selectOption({ label: 'agile-test-repo part' });
-      await page.getByRole('button', { name: 'Wait on' }).click();
-      await checkText(
-        'the page lists waits on agile-test-repo part',
-        page.locator('[data-testid="waits-on"]'),
-        /waits on agile-test-repo part/,
-      );
-      check(
-        'with an Unlink button',
-        (await page
-          .locator('[data-testid="waits-on"]')
-          .getByRole('button', { name: 'Unlink' })
-          .count()) === 1,
-        await textOf(page.locator('[data-testid="waits-on"]')),
-      );
-      await openView('Dependencies');
-      const edge = page.locator('[data-testid="dep-edge"]');
-      await checkText(
-        'Dependencies shows the link',
-        edge,
-        /ledger-lite part waits on agile-test-repo part/,
-      );
-      await edge.getByRole('button', { name: 'agile-test-repo part' }).click();
-      await checkText(
-        'clicking a name opens that node',
-        page.locator('[data-testid="stream-title"]'),
-        'agile-test-repo part',
-        5_000,
-      );
-    });
+    await step(
+      '4.1',
+      'the ledger-lite part waits on the agile-test-repo part (Waits on…)',
+      async () => {
+        await openNode('ledger-lite part');
+        // T347 (D36 D12): the split's "read it by id" pointer is for the agent, not your thread.
+        await checkText(
+          "the part's thread shows its plan line",
+          page.locator('[data-testid="thread"]'),
+          /plan v\d+ approved: you own/,
+        );
+        await checkNotText(
+          "the part's thread has no agent-only line",
+          page.locator('[data-testid="thread"]'),
+          /read it by id/,
+        );
+        await checkText(
+          'the button reads Waits on…',
+          streamPage().locator('[data-testid="link-wait"]'),
+          'Waits on…',
+        );
+        await streamPage().locator('[data-testid="link-wait"]').click();
+        await page
+          .locator('[data-testid="link-wait-select"]')
+          .selectOption({ label: 'agile-test-repo part' });
+        await page.getByRole('button', { name: 'Wait on' }).click();
+        // T347 (D36 D1, D6): Shop has no tracker yet (8.2), so no tracker field; a work
+        // node has no coordinator, so no Coordinator autonomy picker.
+        check(
+          'no Tracker issue… before the project has a tracker',
+          (await streamPage().locator('[data-testid="tracker-link-open"]').count()) === 0,
+          await textOf(streamPage()),
+        );
+        check(
+          'no Coordinator autonomy on a work node',
+          (await streamPage().locator('[data-testid="autonomy"]').count()) === 0,
+          await textOf(streamPage()),
+        );
+        await checkText(
+          'the page lists waits on agile-test-repo part',
+          page.locator('[data-testid="waits-on"]'),
+          /waits on agile-test-repo part/,
+        );
+        check(
+          'with an Unlink button',
+          (await page
+            .locator('[data-testid="waits-on"]')
+            .getByRole('button', { name: 'Unlink' })
+            .count()) === 1,
+          await textOf(page.locator('[data-testid="waits-on"]')),
+        );
+        await openView('Dependencies');
+        const edge = page.locator('[data-testid="dep-edge"]');
+        await checkText(
+          'Dependencies shows the link',
+          edge,
+          /ledger-lite part waits on agile-test-repo part/,
+        );
+        await edge.getByRole('button', { name: 'agile-test-repo part' }).click();
+        await checkText(
+          'clicking a name opens that node',
+          page.locator('[data-testid="stream-title"]'),
+          'agile-test-repo part',
+          5_000,
+        );
+      },
+    );
 
     // ---------------------------------------------------------- 4.2
     let prNumber = 0;
     await step('4.2a', 'the agile-test-repo part is done; Diff and Delivery', async () => {
+      // T347 (D36 D7): the Needs me card for finished work says Merge, as the Delivery panel does.
+      await openView('Needs me');
+      const doneCard = page.locator('[data-testid="inbox"] .cr-group', {
+        hasText: 'agile-test-repo part',
+      });
+      await checkText('its Needs me card reads ready to merge', doneCard, /ready to merge/);
+      await checkText(
+        'with a Merge button',
+        doneCard.locator('[data-kind="done"] [data-testid="land"]'),
+        /^Merge$/,
+      );
       await openNode('agile-test-repo part');
       await checkText(
         'the line under its title reads agent done',
@@ -1110,9 +1153,9 @@ test.skipIf(!RUN)(
       );
       await openView('Needs me');
       await checkNotText(
-        'with its PR open, the part is not "ready to land" (it merges on GitHub)',
+        'with its PR open, the part is not "ready to merge" (it merges on GitHub)',
         page.locator('[data-testid="inbox"] .cr-group', { hasText: 'agile-test-repo part' }),
-        /ready to land/i,
+        /ready to (merge|land)/i,
       );
       await openNode('agile-test-repo part');
       const pull = world.gh.pulls.find((p) => p.number === prNumber);
@@ -1505,7 +1548,9 @@ test.skipIf(!RUN)(
         '[data-testid="repo-view"] .cr-group[data-repo="ledger-lite"] [data-testid="repo-events"]',
       );
       await checkText('Repos shows main changed under ledger-lite', events, /main changed/);
-      await checkText('Repos shows pr merged under ledger-lite', events, /pr merged/);
+      // T347 (D36 D5): ledger-lite merges direct, so its merges read "merged", not "pr merged".
+      await checkText('Repos shows merged under ledger-lite', events, /(^|\| )merged · /);
+      await checkNotText('a direct merge is not called a PR merge', events, /pr merged/);
       await checkText(
         'the events are labelled',
         page.locator('[data-testid="repo-view"] .cr-group[data-repo="ledger-lite"] .cr-lens-sub'),
@@ -1725,6 +1770,13 @@ test.skipIf(!RUN)(
         page.locator('[data-testid="delivery-state"]'),
         /Delivery: direct · held/,
       );
+      // T347 (D36 D9): a ship-check hold is news, not an error: neutral, not red.
+      const tone = (await page.locator('[data-testid="land-result"]').getAttribute('class')) ?? '';
+      check(
+        'the held line is neutral, not error red',
+        /\binfo\b/.test(tone) && !/\bbad\b/.test(tone),
+        tone,
+      );
       const panelText = await textOf(page.locator('[data-testid="land-panel"]'));
       check(
         'the held reason reads once on the panel',
@@ -1855,9 +1907,9 @@ test.skipIf(!RUN)(
       );
       await openView('Needs me');
       await checkNotText(
-        'a conversation that answered is not "ready to land"',
+        'a conversation that answered is not "ready to merge"',
         page.locator('[data-testid="inbox"] .cr-group', { hasText: 'Cents check' }),
-        /ready to land/i,
+        /ready to (merge|land)/i,
       );
       await openNode('Cents check');
       await tab('Knowledge in scope').click();
@@ -2143,9 +2195,13 @@ test.skipIf(!RUN)(
       await pickProject('Shop');
       await allStreams();
       await newStream('Tracker epic', 'Placeholder until linked', true);
+      // T347 (D36 D1): the field opens from "Tracker issue…" (Shop has a tracker since 8.2).
+      await page
+        .locator('[data-testid="tracker-link-open"]', { hasText: 'Tracker issue…' })
+        .click();
       const input = page.locator('[data-testid="tracker-link-input"]');
       check(
-        'the Link field placeholder is SHOP-11',
+        'the Issue key field placeholder is SHOP-11',
         (await input.getAttribute('placeholder')) === 'SHOP-11',
         (await input.getAttribute('placeholder')) ?? '',
       );
@@ -2297,6 +2353,7 @@ test.skipIf(!RUN)(
       await page
         .locator('[data-testid="stream-title"]', { hasText: 'Tracker follow-up' })
         .waitFor();
+      await page.locator('[data-testid="tracker-link-open"]').click();
       await page.locator('[data-testid="tracker-create-issue"]').click();
       await checkText(
         'the node reads Linked to …',
@@ -2452,4 +2509,19 @@ async function check3_4Rail(): Promise<void> {
     /ledger-lite part.*agile-test-repo part|agile-test-repo part.*ledger-lite part/,
     5_000,
   );
+  // T347 (D36 D11): "waiting for the plan" sits under the part's title, which is not cut off.
+  for (const part of ['ledger-lite part', 'agile-test-repo part']) {
+    const partRow = railRow(part);
+    await checkText(
+      `${part} is marked waiting for the plan`,
+      partRow.locator('[data-testid="waiting-for-plan"]'),
+      'waiting for the plan',
+    );
+    const title = partRow.locator('.title');
+    check(
+      `${part}'s title is not truncated`,
+      await title.evaluate((el) => el.scrollWidth <= el.clientWidth),
+      await textOf(title),
+    );
+  }
 }

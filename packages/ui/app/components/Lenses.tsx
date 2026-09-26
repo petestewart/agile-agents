@@ -18,6 +18,7 @@ import {
   DOT_LABEL,
   ancestorTitles,
   dependencyEdges,
+  eventLabel,
   groupByRepo,
   runningRows,
   streamDot,
@@ -47,7 +48,7 @@ function RepoEvents({
       <ul className="cr-lens-list" data-testid="repo-events">
         {events.map((e) => (
           <li key={e.id} className="cr-dim" data-testid="repo-event" data-event={e.id} title={e.at}>
-            {e.type.replace(/_/g, ' ')}
+            {eventLabel(e)}
             {e.subject ? ` · ${titleOf(e.subject)}` : ''}
           </li>
         ))}
@@ -265,7 +266,7 @@ export function EventLog(): JSX.Element {
         <ul className="cr-lens-list">
           {events.map((e) => (
             <li key={e.id} data-testid="event-log-row" data-event={e.id} data-type={e.type}>
-              <strong>{e.type.replace(/_/g, ' ')}</strong>
+              <strong>{eventLabel(e)}</strong>
               {e.subject ? (
                 <>
                   {' · '}

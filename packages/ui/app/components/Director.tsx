@@ -8,7 +8,7 @@ import type { AutonomyProposal } from '@agile-agents/shared';
 import { type FormEvent, useEffect, useState } from 'react';
 import { type DirectorPayload, decideProposal, getDirector, sayToDirector } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
-import { activityDelivery, eventTime } from '../lib/streams';
+import { activityDelivery, eventLabel, eventTime } from '../lib/streams';
 import { ThreadBody } from './StreamPage';
 
 function errorText(err: unknown): string {
@@ -199,7 +199,7 @@ export function DirectorPage(): JSX.Element {
         <ul className="cr-docs" data-testid="director-activity">
           {(page?.activity ?? []).map((row) => (
             <li key={row.event.id} data-testid="director-activity-row">
-              <span>{row.event.type.replace(/_/g, ' ')}</span>
+              <span>{eventLabel(row.event)}</span>
               <span
                 className="cr-dim"
                 title={[row.session, row.event.at].filter(Boolean).join(' · ')}
