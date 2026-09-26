@@ -4425,6 +4425,9 @@ button.cr-answering-q {
   gap: 8px 16px;
 }
 .cr-diff-summary-main {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
 }
 .cr-diff-branch {
@@ -4441,19 +4444,6 @@ button.cr-answering-q {
   border: 1px solid var(--border);
   border-radius: 5px;
   overflow-wrap: anywhere;
-}
-.cr-diff-wt {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 5px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-.cr-diff-wt .cr-icon {
-  flex: none;
 }
 .cr-diff-summary-side {
   display: flex;

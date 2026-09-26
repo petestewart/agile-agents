@@ -3000,49 +3000,53 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
         // T415: frames are held here and let go after the next line has focus, as a
         // slow runner does, so focus returning to the line just commented can't take
         // the keyboard back from it.
-        await p.evaluate(() => {
-          const w = window as unknown as {
-            requestAnimationFrame: typeof requestAnimationFrame;
-            releaseFrames: () => void;
-          };
-          const raf = w.requestAnimationFrame.bind(window);
-          const held: FrameRequestCallback[] = [];
-          w.requestAnimationFrame = (cb) => {
+        // (Strings, as elsewhere in this file: the daemon's tsconfig has no DOM types.)
+        await p.evaluate(`{
+          const raf = window.requestAnimationFrame.bind(window);
+          const held = [];
+          window.requestAnimationFrame = (cb) => {
             held.push(cb);
             return 0;
           };
-          w.releaseFrames = () => {
-            w.requestAnimationFrame = raf;
+          window.releaseFrames = () => {
+            window.requestAnimationFrame = raf;
             for (const cb of held.splice(0)) raf(cb);
           };
-        });
+        }`);
         // One comment from the gutter's +, added with the button.
         const splitLine = file('src/import.ts').locator('[data-line="add"]', {
           hasText: 'text.split',
         });
         await splitLine.hover();
         await splitLine.locator('[data-testid="diff-comment-add"]').click();
+        // T413: the box opens on that file, and says so.
+        await waitForText(
+          p,
+          '[data-testid="diff-file"][data-path="src/import.ts"] [data-testid="diff-comment-where"]',
+          'Comment on src/import.ts:2',
+        );
         await p
           .locator('[data-testid="diff-comment-input"]')
           .fill('Quoted fields can hold commas.');
         await p.locator('[data-testid="diff-comment-submit"]').click();
         await p.locator('[data-testid="diff-comment"]', { hasText: 'Quoted fields' }).waitFor();
         await waitForText(p, '[data-testid="review-count"]', '1 comment on 1 file');
-
         // One from the keyboard: the focused line, C, then Ctrl+Enter.
         const readmeLine = file('README.md').locator('[data-line="add"]', {
           hasText: 'Imports CSV',
         });
         await readmeLine.focus();
         await p.evaluate(
-          () =>
-            new Promise<void>((done) => {
-              (window as unknown as { releaseFrames: () => void }).releaseFrames();
-              requestAnimationFrame(() => done());
-            }),
+          'new Promise((done) => { window.releaseFrames(); requestAnimationFrame(() => done()); })',
         );
         await p.keyboard.press('c');
-        await p.locator('[data-testid="diff-comment-input"]').fill('Say which delimiter.');
+        // T413: the box opened under README's line before a word is typed.
+        const readmeInput = file('README.md').locator('[data-testid="diff-comment-input"]');
+        await readmeInput.waitFor();
+        expect(
+          await file('src/import.ts').locator('[data-testid="diff-comment-input"]').count(),
+        ).toBe(0);
+        await readmeInput.fill('Say which delimiter.');
         await p.keyboard.press('Control+Enter');
         await p
           .locator('[data-testid="diff-comment"]', { hasText: 'Say which delimiter.' })
@@ -3123,6 +3127,107 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
         await teardown([page]);
         await cockpit.stop();
         rmSync(promptLog, { force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('a comment being written stays on its file (Playwright e2e, T413)', () => {
+  browserTest(
+    'a new comment on another file leaves the text where it was written, as a comment, and names its file',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const stream = await cockpit.streams.create('human', {
+          title: 'csv import',
+          goal: 'import a csv',
+          repo: 'demo',
+          project: shop.id,
+        });
+        const worktree = join(cockpit.repo, '.worktrees', 's-draft');
+        git(['worktree', 'add', '-q', '-b', 's-draft', worktree, 'main'], cockpit.repo);
+        mkdirSync(join(worktree, 'src'));
+        writeFileSync(
+          join(worktree, 'src', 'import.ts'),
+          'export const a = 1;\nexport const b = 2;\n',
+        );
+        writeFileSync(join(worktree, 'src', 'ledger.ts'), 'export const cents = 100;\n');
+        git(['add', '-A'], worktree);
+        git(['commit', '-q', '-m', 'two files'], worktree);
+        await cockpit.streams.update('daemon', stream.id, {
+          branch: 's-draft',
+          worktree,
+          agent: { status: 'done' },
+        });
+
+        const p = await openPage();
+        page = p;
+        await p.goto(`${cockpit.base}/?node=${stream.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        await p.locator('.cr-tabs [data-tab="diff"]').click();
+        const file = (path: string) => p.locator(`[data-testid="diff-file"][data-path="${path}"]`);
+        const line = (path: string, text: string) =>
+          file(path).locator('[data-line="add"]', { hasText: text });
+        const plus = async (path: string, text: string) => {
+          await line(path, text).hover();
+          await line(path, text).locator('[data-testid="diff-comment-add"]').click();
+        };
+        await file('src/ledger.ts').waitFor();
+
+        // Type on import.ts:1, then + on ledger.ts:1: the text does not come along.
+        await plus('src/import.ts', 'const a');
+        await file('src/import.ts')
+          .locator('[data-testid="diff-comment-input"]')
+          .fill('IMPORT-NOTE');
+        await plus('src/ledger.ts', 'cents');
+        const ledgerInput = file('src/ledger.ts').locator('[data-testid="diff-comment-input"]');
+        await ledgerInput.waitFor();
+        expect(await ledgerInput.inputValue()).toBe('');
+        await waitForText(
+          p,
+          '[data-testid="diff-file"][data-path="src/ledger.ts"] [data-testid="diff-comment-where"]',
+          'Comment on src/ledger.ts:1',
+        );
+        // …it stayed on import.ts, added as a comment there.
+        await file('src/import.ts')
+          .locator('[data-testid="diff-comment"]', { hasText: 'IMPORT-NOTE' })
+          .waitFor();
+        expect(await file('src/ledger.ts').locator('[data-testid="diff-comment"]').count()).toBe(0);
+        await waitForText(p, '[data-testid="review-count"]', '1 comment on 1 file');
+
+        // Shift on the next line of the same file carries the text: one comment on a range.
+        await ledgerInput.fill('LEDGER-NOTE');
+        await plus('src/import.ts', 'const a');
+        await file('src/import.ts')
+          .locator('[data-testid="diff-comment-input"]')
+          .fill('RANGE-NOTE');
+        await line('src/import.ts', 'const b').hover();
+        await line('src/import.ts', 'const b')
+          .locator('[data-testid="diff-comment-add"]')
+          .click({ modifiers: ['Shift'] });
+        await waitForText(
+          p,
+          '[data-testid="diff-file"][data-path="src/import.ts"] [data-testid="diff-comment-where"]',
+          'Comment on src/import.ts:1–2',
+        );
+        expect(
+          await file('src/import.ts').locator('[data-testid="diff-comment-input"]').inputValue(),
+        ).toBe('RANGE-NOTE');
+        await file('src/import.ts')
+          .locator('[data-testid="diff-comment-input"]')
+          .press('Control+Enter');
+        await waitForText(p, '[data-testid="review-count"]', '3 comments on 2 files');
+        await file('src/ledger.ts')
+          .locator('[data-testid="diff-comment"]', { hasText: 'LEDGER-NOTE' })
+          .waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
       }
     },
     TEST_BUDGET_MS,

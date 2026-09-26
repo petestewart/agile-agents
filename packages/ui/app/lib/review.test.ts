@@ -12,11 +12,13 @@ import {
   lineLabel,
   lineRef,
   newComment,
+  openAt,
   orderComments,
   reviewSummary,
   roomAfter,
   rowKey,
   rowsBetween,
+  whereLabel,
 } from './review';
 
 const PATCH = [
@@ -282,6 +284,91 @@ describe('the draft', () => {
   test('the room left is the cap less the draft and its blank line', () => {
     expect(roomAfter('')).toBe(MESSAGE_MAX);
     expect(roomAfter('abc\n')).toBe(MESSAGE_MAX - 5);
+  });
+});
+
+describe('T413: a comment being written stays on its file', () => {
+  let n = 0;
+  const nextId = () => `k${++n}`;
+  const draftOn = (path: string, start: string, end: string, text: string) => ({
+    comments: [],
+    draft: { path, start, end, text },
+  });
+
+  test('where it sits reads with its file: path:line, a removed line says so', () => {
+    expect(whereLabel('src/ledger.ts', { lines: '1', removed: false })).toBe('src/ledger.ts:1');
+    expect(whereLabel('src/ledger.ts', { lines: '2', removed: true })).toBe(
+      'src/ledger.ts:2 (removed)',
+    );
+  });
+
+  test('a line on another file opens a fresh comment; the text stays as a comment where it was', () => {
+    const before = draftOn('src/import.ts', 'n1', 'n1', 'Quoted fields?');
+    const { review, kept } = openAt(before, files, ledgerTs, 'n1', false, nextId);
+    expect(review.draft).toEqual({ path: 'src/ledger.ts', start: 'n1', end: 'n1', text: '' });
+    expect(kept?.path).toBe('src/import.ts');
+    expect(kept?.lines).toBe('1');
+    expect(kept?.body).toBe('Quoted fields?');
+    expect(review.comments).toEqual([kept as NonNullable<typeof kept>]);
+  });
+
+  test('another line of the same file does the same; only Shift carries the text (a range)', () => {
+    const before = draftOn('src/import.ts', 'n1', 'n1', 'One comment');
+    const moved = openAt(before, files, importTs, 'n3', false, nextId);
+    expect(moved.review.draft?.text).toBe('');
+    expect(moved.kept?.body).toBe('One comment');
+    const stretched = openAt(before, files, importTs, 'n3', true, nextId);
+    expect(stretched.kept).toBeUndefined();
+    expect(stretched.review.draft).toEqual({
+      path: 'src/import.ts',
+      start: 'n1',
+      end: 'n3',
+      text: 'One comment',
+    });
+    // Shift across a hunk is no range: a fresh comment there, the text kept where it was.
+    const across = openAt(
+      draftOn('src/ledger.ts', 'n1', 'n1', 'x'),
+      files,
+      ledgerTs,
+      'n10',
+      true,
+      nextId,
+    );
+    expect(across.review.draft?.start).toBe('n10');
+    expect(across.kept?.body).toBe('x');
+  });
+
+  test('a line the comment already covers changes nothing; an empty draft just moves', () => {
+    const before = draftOn('src/import.ts', 'n1', 'n2', 'range');
+    expect(openAt(before, files, importTs, 'n2', false, nextId)).toEqual({ review: before });
+    const empty = draftOn('src/import.ts', 'n1', 'n1', '  ');
+    const moved = openAt(empty, files, ledgerTs, 'n3', false, nextId);
+    expect(moved.kept).toBeUndefined();
+    expect(moved.review).toEqual({
+      comments: [],
+      draft: { path: 'src/ledger.ts', start: 'n3', end: 'n3', text: '' },
+    });
+  });
+
+  test('an edit in progress is saved when you comment elsewhere; an unchanged one just closes', () => {
+    const made = newComment(importTs, 'n1', 'n1', 'old words', 'c1');
+    const comment = made as NonNullable<typeof made>;
+    const editing = (text: string) => ({
+      comments: [comment],
+      draft: { path: comment.path, start: 'n1', end: 'n1', text, editing: 'c1' },
+    });
+    const saved = openAt(editing('new words'), files, ledgerTs, 'n1', false, nextId);
+    expect(saved.kept?.body).toBe('new words');
+    expect(saved.review.comments.map((c) => c.body)).toEqual(['new words']);
+    expect(saved.review.draft?.path).toBe('src/ledger.ts');
+    const same = openAt(editing('old words'), files, ledgerTs, 'n1', false, nextId);
+    expect(same.kept).toBeUndefined();
+    expect(same.review.comments).toEqual([comment]);
+  });
+
+  test('a draft whose lines left the diff stays open rather than be lost', () => {
+    const before = draftOn('gone.ts', 'n1', 'n1', 'keep me');
+    expect(openAt(before, files, ledgerTs, 'n1', false, nextId)).toEqual({ review: before });
   });
 });
 
