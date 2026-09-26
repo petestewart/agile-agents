@@ -27,9 +27,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   the UI imports small helpers from `@agile-agents/shared`, whose index pulls
   in schema modules that can't be tree-shaken. A schema-free entry for the UI
   would drop them. (T394)
-- `AddRepo` (17.5 KB) stays in the main file because `NewStream.tsx` imports
-  it statically and New node is always mounted for `n`; loading
-  `AddRepoDialog` lazily there would move it out. (T394)
 - The shell's first effect drops query params it doesn't own
   (`lib/shell.tsx`); Settings' `section` survives only because a deep link
   preloads Settings before the first render. Another lazy screen reading its

@@ -2334,6 +2334,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T407`.
 - **Notes:** Branch T407-repo-events-paged. The response gains `more` and `total`; `events` is unchanged.
 
+### Ticket: T408 Add repository loads when opened
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From T394's report: `AddRepo` sat in the main script because New node (always mounted, for `n`) imported it statically.
+- **Acceptance Criteria:** New node renders `AddRepoDialog` only while it is open, loaded on demand and warmed after the first screen; the main script shrinks; the flow is unchanged.
+- **Validation Steps:** control-room e2e `T408` (new: New node → Add a repository… adds the repo and picks it; opened again, it starts fresh), `T367`, `T373`.
+- **Notes:** Branch T408-addrepo-lazy. Main script 359 KB → 337 KB (108 → 101 KB gzip).
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
