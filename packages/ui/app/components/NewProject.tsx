@@ -6,17 +6,22 @@
  * (local, GitHub, SSH) and where it lives. On create the rail stays on (or
  * goes back to) All projects — it never switches on its own — and the new
  * project's root page opens, so the next step (a first node) is one click.
+ * T373: "Add a repository…" opens the Add repository dialog on top; the
+ * repo it adds comes back ticked.
  */
 
 import { useEffect, useState } from 'react';
 import { createProject } from '../lib/api';
+import { useFeed } from '../lib/feed-context';
 import { useShell } from '../lib/shell';
+import { AddRepoDialog } from './AddRepo';
 import { Icon } from './Icon';
 import { useRepoList } from './NewStream';
 import { Button, Dialog, Field, RepoIcon, repoKindLabel, useToast } from './ui';
 
 export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
-  const { setProject, select, setView } = useShell();
+  const { setProject, select } = useShell();
+  const { refresh } = useFeed();
   const toast = useToast();
   const repos = [...useRepoList()].sort((a, b) => a.name.localeCompare(b.name));
   const [name, setName] = useState('');
@@ -50,11 +55,9 @@ export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
     }
   };
 
-  // TODO(T367): open Settings' AddRepoDialog here, then tick the new repo, instead of leaving for Settings.
-  const addRepo = (): void => {
-    onClose();
-    setView('settings');
-  };
+  // T373: Add a repository opens Settings' dialog on top; the new repo arrives ticked.
+  const [adding, setAdding] = useState(false);
+  const addRepo = (): void => setAdding(true);
 
   const toggle = (repo: string, on: boolean): void =>
     setChosen((prev) => (on ? [...prev, repo] : prev.filter((x) => x !== repo)));
@@ -157,6 +160,14 @@ export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
           {error}
         </p>
       )}
+      <AddRepoDialog
+        open={adding}
+        onClose={() => setAdding(false)}
+        onAdded={(added) => {
+          setChosen((prev) => (prev.includes(added) ? prev : [...prev, added]));
+          refresh();
+        }}
+      />
     </Dialog>
   );
 }

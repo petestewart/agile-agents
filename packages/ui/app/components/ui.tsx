@@ -21,6 +21,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { type NodeStatus, type StatusInput, type StatusTone, nodeStatus } from '../lib/status';
 import { streamDot } from '../lib/streams';
 import { Icon, type IconName } from './Icon';
@@ -634,10 +635,14 @@ export function Dialog({
     </>
   );
 
-  return (
+  // T373: in a portal, so a dialog opened from inside another dialog's form
+  // (New project → Add repository) never nests one form in another; React
+  // still bubbles its submit through the component tree, so it stops here.
+  return createPortal(
     <div
       className="cr-modal"
       data-testid={testid}
+      onSubmit={(e) => e.stopPropagation()}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -666,7 +671,8 @@ export function Dialog({
           body
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -821,6 +827,8 @@ export interface RepoRemoteLike {
 /** "Local", "GitHub · SSH", "GitLab · HTTPS", "Remote · SSH". */
 export function repoKindLabel(remote: RepoRemoteLike | undefined): string {
   if (remote === undefined) return 'Local only';
+  // T373: a clone of a folder on this machine (a `file` remote) is local too.
+  if (remote.protocol === 'file') return 'Local clone';
   const host =
     remote.kind === 'github'
       ? 'GitHub'
@@ -851,7 +859,9 @@ export function RepoIcon({
         ? 'github'
         : remote.kind === 'gitlab'
           ? 'gitlab'
-          : 'globe';
+          : remote.protocol === 'file'
+            ? 'folder'
+            : 'globe';
   const label = repoKindLabel(remote);
   return (
     <span

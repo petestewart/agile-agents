@@ -3057,6 +3057,74 @@ describe('add a repo from Settings (Playwright e2e, T206, T367)', () => {
   );
 
   browserTest(
+    'T373: New project → Add a repository… adds it on top and brings it back ticked; nothing else submits',
+    async () => {
+      const scratch = mkdtempSync(join(tmpdir(), 'agile-newproject-repo-e2e-'));
+      const userHome = join(scratch, 'home');
+      const blog = join(userHome, 'Projects', 'blog');
+      mkdirSync(blog, { recursive: true });
+      git(['init', '-q', '-b', 'main'], blog);
+      git(
+        [
+          '-c',
+          'user.email=t@example.com',
+          '-c',
+          'user.name=T',
+          'commit',
+          '-q',
+          '--allow-empty',
+          '-m',
+          'init',
+        ],
+        blog,
+      );
+      const cockpit = await startCockpit({ userHome });
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="new-project-open"]').click();
+        await page.locator('[data-testid="new-project-name"]').fill('Writing');
+        await page.locator('[data-testid="new-project-add-repo"]').click();
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'visible' });
+        // Escape closes only the dialog on top.
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'detached' });
+        expect(await page.locator('[data-testid="new-project"]').isVisible()).toBe(true);
+
+        await page.locator('[data-testid="new-project-add-repo"]').click();
+        const browser = '[data-testid="add-repo-browser"]';
+        const dir = (name: string) =>
+          `${browser} [data-testid="add-repo-dir"][data-name="${name}"]`;
+        await page.locator(`${browser}[data-path="${userHome}"]`).waitFor({ state: 'visible' });
+        await page.locator(dir('Projects')).dblclick();
+        await page.locator(dir('blog')).click();
+        await waitForText(page, '[data-testid="add-repo-status"]', 'blog is a git repository.');
+        await page.locator('[data-testid="settings-repo-add-save"]').click();
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'detached' });
+
+        // The repo is registered and ticked; the project was not created by that submit.
+        expect(cockpit.store.getRepos().blog?.path).toBe(realpathSync(blog));
+        expect(cockpit.projects.list().some((p) => p.name === 'Writing')).toBe(false);
+        const box = page.locator('[data-testid="new-project-repo"][data-repo="blog"]');
+        await box.waitFor({ state: 'visible' });
+        expect(await box.isChecked()).toBe(true);
+
+        await page.locator('[data-testid="new-project-create"]').click();
+        await page.locator('[data-testid="new-project"]').waitFor({ state: 'detached' });
+        await waitUntil('the project with its repo', () =>
+          cockpit.projects.list().some((p) => p.name === 'Writing' && p.repos.includes('blog')),
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
     'T367: clone from a local bare repo, and see it listed with its icon',
     async () => {
       const scratch = mkdtempSync(join(tmpdir(), 'agile-repo-clone-e2e-'));
