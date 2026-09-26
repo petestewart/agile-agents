@@ -6274,6 +6274,232 @@ describe('coordinator autonomy (Playwright e2e, T282)', () => {
   );
 });
 
+describe('project overview (Playwright e2e, T387)', () => {
+  browserTest(
+    "a project's root opens on its Overview: counts, its nodes your move first, repos and recent events; a row opens its node; the Chat tab still works",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home, delivery: 'pr' } });
+        const shop = await cockpit.projects.create({ name: 'Shop', repos: ['api'] });
+        const blog = await cockpit.projects.create({ name: 'Blog' });
+        const docs = await cockpit.projects.create({ name: 'Docs' });
+        const make = (title: string, extra: Record<string, unknown> = {}) =>
+          cockpit.streams.create('human', { title, goal: 'g', project: shop.id, ...extra });
+        const asks = await make('Pick a currency');
+        const ready = await make('Add salePrice', { repo: 'api' });
+        const feature = await make('Show sale prices');
+        const working = await make('Show the sale badge', { parent: feature.id, repo: 'api' });
+        const fresh = await make('Research pricing tiers');
+        const merged = await make('Update the README', { repo: 'api' });
+        const closed = await make('Old checkout experiment');
+        const elsewhere = await cockpit.streams.create('human', {
+          title: 'Launch post',
+          goal: 'g',
+          project: blog.id,
+        });
+        await cockpit.streams.update('daemon', asks.id, { agent: { status: 'question' } });
+        await cockpit.streams.update('daemon', ready.id, { agent: { status: 'done' } });
+        await cockpit.streams.update('daemon', working.id, { agent: { status: 'working' } });
+        await cockpit.store.updateStream('daemon', working.id, (s) => ({
+          ...s,
+          sessions: [
+            {
+              id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+              vendor: 'claude',
+              model: 'claude-sonnet-4-6',
+              effort: 'high',
+              role: 'worker',
+              status: 'running',
+            },
+          ],
+        }));
+        await cockpit.streams.update('daemon', merged.id, { human: { status: 'landed' } });
+        await cockpit.streams.close('human', closed.id);
+        // Events: two on Shop's nodes, one on Blog's (not Shop's to show).
+        const onMerged = await routeAndEmit(
+          cockpit.events,
+          {
+            type: 'pr_merged',
+            subject: merged.id,
+            repo: 'api',
+            payload: { repo: 'api', sha: 'abc123' },
+            by: 'daemon',
+          },
+          cockpit.streams.list(),
+        );
+        const onWorking = await routeAndEmit(
+          cockpit.events,
+          { type: 'human_line', subject: working.id, by: 'human', payload: { body: 'hi' } },
+          cockpit.streams.list(),
+        );
+        const onBlog = await routeAndEmit(
+          cockpit.events,
+          { type: 'human_line', subject: elsewhere.id, by: 'human', payload: { body: 'hi' } },
+          cockpit.streams.list(),
+        );
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const tree = '[data-testid="stream-tree"]';
+        await page.locator(`${tree} [data-stream="${shop.root}"]`).click();
+        const overview = `[data-testid="stream-page"][data-stream="${shop.root}"] [data-testid="project-overview"]`;
+        await page.locator(overview).waitFor({ state: 'visible' });
+        // Overview is the first tab and the one open; the chat is the next.
+        const tabs = '[data-testid="stream-page"] .cr-node-tabs button';
+        expect(
+          await page
+            .locator(tabs)
+            .evaluateAll((els) => els.slice(0, 2).map((el) => el.getAttribute('data-tab'))),
+        ).toEqual(['overview', 'thread']);
+        expect(
+          await page.locator(`${tabs}[data-tab="overview"]`).getAttribute('aria-current'),
+        ).toBe('page');
+
+        // The counts, your move first.
+        const counts = `${overview} [data-testid="overview-count"]`;
+        await waitForCount(page, counts, 5);
+        expect(
+          await page
+            .locator(counts)
+            .evaluateAll((els) =>
+              els.map((el) => [el.getAttribute('data-bucket'), el.textContent]),
+            ),
+        ).toEqual([
+          ['you', '1 needs you'],
+          ['ready', '1 ready to merge'],
+          ['working', '1 working'],
+          ['idle', '2 idle'],
+          ['done', '2 done'],
+        ]);
+
+        // The nodes: your move, working, idle; merged and closed folded under Done.
+        const rows = `${overview} [data-testid="overview-node"]`;
+        const shown = (): Promise<Array<string | null>> =>
+          page
+            ?.locator(rows)
+            .evaluateAll((els) => els.map((el) => el.getAttribute('data-stream'))) ??
+          Promise.resolve([]);
+        const showing = (what: string, ids: string[]): Promise<void> =>
+          waitUntilAsync(what, async () => (await shown()).join() === ids.join());
+        expect(await shown()).toEqual([asks.id, ready.id, working.id, feature.id, fresh.id]);
+        const row = (id: string): string => `${rows}[data-stream="${id}"]`;
+        expect(await page.locator(`${row(ready.id)} .cr-status-pill`).textContent()).toBe(
+          'Ready to merge',
+        );
+        expect(
+          await page.locator(`${row(working.id)} [data-testid="overview-node-path"]`).textContent(),
+        ).toBe('Show sale prices › Show the sale badge');
+        expect(
+          await page
+            .locator(`${row(working.id)} [data-testid="overview-node-agent"]`)
+            .textContent(),
+        ).toBe('Claude Sonnet 4.6 · high');
+        expect(await page.locator(`${row(working.id)} [data-testid="repo-icon"]`).count()).toBe(1);
+        expect(await page.locator(`${row(working.id)}`).textContent()).toContain('api');
+        await page.locator(`${overview} [data-testid="overview-done-toggle"]`).click();
+        await page.locator(row(closed.id)).waitFor({ state: 'visible' });
+        expect(await shown()).toEqual([
+          asks.id,
+          ready.id,
+          working.id,
+          feature.id,
+          fresh.id,
+          merged.id,
+          closed.id,
+        ]);
+
+        // A count filters the list; again (or Show all) shows everything.
+        await page.locator(`${counts}[data-bucket="idle"]`).click();
+        expect(
+          await page.locator(`${counts}[data-bucket="idle"]`).getAttribute('aria-pressed'),
+        ).toBe('true');
+        await showing('only the idle nodes', [feature.id, fresh.id]);
+        expect(await page.locator(`${overview} [data-testid="overview-group"]`).count()).toBe(1);
+        await page.locator(`${counts}[data-bucket="idle"]`).click();
+        await waitForCount(page, rows, 7);
+        await page.locator(`${counts}[data-bucket="ready"]`).click();
+        await showing('only the node ready to merge', [ready.id]);
+        await page.locator(`${overview} [data-testid="overview-filter-clear"]`).click();
+        await waitForCount(page, rows, 7);
+
+        // The project's repos, and its events (not Blog's), newest first.
+        const repo = `${overview} [data-testid="overview-repo"][data-repo="api"]`;
+        expect(
+          await page.locator(`${repo} [data-testid="overview-repo-delivery"]`).textContent(),
+        ).toBe('Opens pull requests');
+        expect(await page.locator(`${repo} [data-testid="repo-icon"]`).count()).toBe(1);
+        expect(await page.locator(repo).textContent()).toContain('2 open nodes');
+        const events = `${overview} [data-testid="overview-event"]`;
+        await waitForCount(page, events, 2);
+        expect(
+          await page
+            .locator(events)
+            .evaluateAll((els) => els.map((el) => el.getAttribute('data-event'))),
+        ).toEqual([onWorking.id, onMerged.id]);
+        expect(await page.locator(`${events}[data-event="${onBlog.id}"]`).count()).toBe(0);
+        expect(
+          await page.locator(`${events}[data-event="${onMerged.id}"]`).textContent(),
+        ).toContain('Merged · Update the README');
+
+        // A row opens its node, on its chat.
+        await page.locator(row(ready.id)).click();
+        await page
+          .locator(`[data-testid="stream-page"][data-stream="${ready.id}"]`)
+          .waitFor({ state: 'visible' });
+        expect(await page.locator(`${tabs}[data-tab="overview"]`).count()).toBe(0);
+        expect(await page.locator(`${tabs}[data-tab="thread"]`).getAttribute('aria-current')).toBe(
+          'page',
+        );
+        expect(new URL(page.url()).searchParams.get('node')).toBe(ready.id);
+
+        // Something on the root's own chat: the Overview says so, and Open chat goes there.
+        const question = await cockpit.questions.raise({
+          stream: shop.root,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session: ulid(),
+          text: 'Which currency should the shop default to?',
+        });
+        // A deep link to the root opens on its Overview too.
+        await page.goto(`${cockpit.base}/?node=${shop.root}`);
+        await page.locator(overview).waitFor({ state: 'visible' });
+        await page.locator(`${overview} [data-testid="overview-root-waiting"]`).waitFor();
+        await page.locator(`${overview} [data-testid="overview-open-chat"]`).click();
+        expect(await page.locator(`${tabs}[data-tab="thread"]`).getAttribute('aria-current')).toBe(
+          'page',
+        );
+        await page.locator('[data-testid="goal-card"]').waitFor({ state: 'visible' });
+        await page.locator(`[data-testid="stream-needs"] [data-id="${question.id}"]`).waitFor();
+        expect(await page.locator(overview).count()).toBe(0);
+        // The Overview tab goes back.
+        await page.locator(`${tabs}[data-tab="overview"]`).click();
+        await page.locator(overview).waitFor({ state: 'visible' });
+
+        // An empty project: "No nodes yet", and New node files into it.
+        await page.locator(`${tree} [data-stream="${docs.root}"]`).click();
+        const empty = `[data-testid="stream-page"][data-stream="${docs.root}"] [data-testid="overview-empty"]`;
+        await page.locator(empty).waitFor({ state: 'visible' });
+        expect(await page.locator(empty).textContent()).toContain('No nodes yet');
+        await page.locator(`${empty} [data-testid="overview-new-node"]`).click();
+        await page.locator('[data-testid="new-stream-goal"]').fill('write the guide');
+        await page.locator('[data-testid="new-stream-start"]').uncheck();
+        await page.locator('[data-testid="new-stream-create"]').click();
+        await waitUntil('the node to exist', () =>
+          cockpit.streams.list().some((s) => s.title === 'write the guide'),
+        );
+        const guide = cockpit.streams.list().find((s) => s.title === 'write the guide');
+        expect(guide?.project).toBe(docs.id);
+        expect(guide?.parent).toBe(docs.root);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('tracker link field (Playwright e2e, T321)', () => {
   browserTest(
     'Link on the stream page pulls the goal from the (fake) issue; Unlink clears it',

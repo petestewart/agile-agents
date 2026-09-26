@@ -85,6 +85,7 @@ The cockpit is `http://127.0.0.1:4600/`.
 | Anywhere | **Ctrl K** (**⌘K** on a Mac, or the search icon at the top of the sidebar) opens the command palette: find a node by part of its title or path, a project, a view or an action (New node, New project, switch theme, Keyboard shortcuts); ↑↓ and Enter. **?** lists every keyboard shortcut; **g** then a letter goes to a view (**g i** Needs me, **g k** Knowledge…) |
 | **Settings** | Sections on the left: **General** (theme: System, Light, Dark; **Notifications**: a switch, off by default and kept per browser, that asks the browser's permission and then tells you when something new needs you while the tab is in the background, with **Send a test**; the daemon), **Agents** (session defaults, global, per repo and per project, each card saying what a new agent there starts with, e.g. `Claude Opus 5.5 · low`), **Repositories** (**Add repository**: a folder, or a URL to clone; per repo its icon, delivery, auto-merge, visibility), **Classifier** (the TypeSafe API key), **Trackers** (Jira, Linear), **Permissions** (who decides) |
 | A node's page | A chat with its agent. The header: path, title (click it to rename), status, role, repo and branch, then **Start agent** (its chevron picks another model), **Stop** while it works (**⋯** → **Stop agent** while it waits on you), **Merge** when there is something to merge, the details toggle and **⋯** (**Review changes…**, **Restart agent**, **Waits on…**, **Add repository…**, **Tracker issue…**, **Copy branch name**, **Close node…**, **Delete node…**). Tabs **Chat**, **Changes**, **Plan**, **Activity**, **Knowledge**, **Docs**, only where they apply. The chat opens with the goal (**Edit** changes it; the agent reads the change). What needs you (questions, gates, plans, proposals) sits at the end of the chat, and the composer answers an open question. The **Details** panel: **Delivery** (Check now, Mark landed, Resolve), **Agent** (sessions), **Children**, **Waits on**, **Tracker** (**Link**, **Create issue**; then **Unlink**, **Import children**; only when the node's project has a tracker), **Coordinator autonomy** on a coordinating node or a project root (and, on a project root, **Director autonomy** and the project's tracker) |
+| A project's page (its root) | Opens on **Overview**: the counts by status, your move first (`2 need you · 1 ready to merge · 3 working · 2 idle · 5 done`; a count shows only those nodes, **Show all** brings the rest back), the project's nodes as rows (status, where it sits, repo, the agent it runs, age; your move, then **Working**, then **Idle**; merged and closed fold under **Done**), its repositories (host icon, kind, what Merge does there, open nodes; **Edit** opens the details) and its recent events (**All events** opens Events). A click on a row opens that node. When the project's own chat waits on you, a line says so with **Open chat**. **Chat** is the next tab; the header, the other tabs and the **Details** panel are a node page's (above). An empty project reads **No nodes yet** with **New node** |
 
 ### The CLI
 
@@ -882,7 +883,10 @@ press **Save**, then use `linear` wherever 8.2 says `jira`.
 The project's tracker, status push and status map are on the project
 root's page.
 
-- [ ] In the rail click **Shop** (the project root). Under the pickers, set
+- [ ] In the rail click **Shop** (the project root). It opens on **Overview**:
+      the counts (`… done` among them), and under the folded **Done**,
+      **Shop note** reads **Merged**. **Chat** is the next tab.
+- [ ] In the details panel, under the pickers, set
       **Tracker** to `Jira`, tick **push status**, fill **In progress**
       `In Progress`, **In review** `In Review`, **Done** `Done`, and press
       **Save tracker**.

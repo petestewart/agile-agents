@@ -2255,6 +2255,18 @@ test.skipIf(!RUN)(
         ).find((p) => p.name === 'Shop')?.id ?? '';
       await pickProject('Shop');
       await openNode('Shop');
+      // T387: the root opens on its Overview; Shop note, merged in 5.3b, is under Done.
+      await checkText(
+        'the root opens on its Overview, with its counts',
+        page.locator('[data-testid="overview-summary"]'),
+        /\d+ done/,
+      );
+      await page.locator('[data-testid="overview-done-toggle"]').click();
+      await checkText(
+        'Shop note reads Merged under Done',
+        page.locator('[data-testid="overview-group"][data-group="done"]'),
+        /Merged\s*Shop note/,
+      );
       const form = page.locator('[data-testid="project-tracker-form"]');
       await form.locator('[data-testid="project-tracker-system"]').selectOption({ label: 'Jira' });
       await form.locator('[data-testid="project-tracker-push"]').check();
