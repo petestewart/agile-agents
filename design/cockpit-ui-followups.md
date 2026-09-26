@@ -26,6 +26,14 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   `resolveSessionDefaults` does take a named model across vendors, so this is
   the resolution's question first.
 
+- Notifications on Android Chrome and an installed iOS app need the service
+  worker's `showNotification` (`new Notification()` throws there); the hook
+  stays quiet and Send a test says the browser didn't show it.
+  (`lib/use-notify.ts`, `public/sw.js`)
+- An item seen once in a session never notifies again (a node that is ready,
+  gets a reply and finishes again notifies the first time only). Pete to say
+  whether a new `done` should.
+
 ## P3 — cleanup, hardening, decisions
 
 - `GET /api/repos/:name/events` (T245) still caps at 200 unpaged; nothing in
@@ -57,7 +65,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 
 ## Not built (ideas for a next UX pass)
 
-- Browser notifications when something new needs you (opt-in).
 - A project overview on the root page (children by status, repos, recent
   activity) instead of the root node's chat.
 - Keyboard: `j`/`k` in the tree beyond the rail's arrow keys; `g i`-style

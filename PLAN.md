@@ -2152,11 +2152,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T388 ∥ Opt-in browser notifications when something new needs you
 - **Priority:** P2
-- **Status:** In progress
+- **Status:** Done
 - **Owner:** worker
 - **Scope:** From the follow-ups' "not built": the cockpit is a tab you keep open all day, but nothing tells you when a new question, gate or merge arrives while you are elsewhere.
 - **Acceptance Criteria:** Settings → General has a Notifications switch (per browser, off by default, asks the browser's permission on turning on, says when the browser blocks it); with it on and the tab hidden, a new Needs me item raises one notification naming what and where, a click focuses the tab on that node; nothing for items already there at load, nothing while the tab is visible; the title's `(n)` count stays.
 - **Validation Steps:** `bun test packages/ui` (the pure "which items are new" logic); a control-room e2e with a granted permission.
+- **Notes:** Branch T388-notifications. `lib/notify.ts` (pure, 24 tests) and `lib/use-notify.ts`; one notification at a time (tag `agile-needs-me`), several items become "N new things need you"; a click opens the node or Needs me; Settings → General's Notifications card says On, Off, Blocked or Not available in words, with Send a test. Two e2e tests (granted, blocked/dismissed/missing); control-room 72/0, walkthrough green.
 
 ### Ticket: T389 P3 hardening: repo names, a waiting part's line, deleted nodes' asks
 - **Priority:** P3
