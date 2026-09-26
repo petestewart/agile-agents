@@ -5,6 +5,7 @@ import { type RepoEntry, RepoSettingsPatchSchema, formatZodError } from '@agile-
 import { RpcParamError } from '../gates/rpc';
 import { repoFromRemoteUrl } from '../github/rest';
 import type { RpcMethodHandler } from '../rpc';
+import { parseRemoteUrl } from './remote-url';
 import type { StateStore } from './store';
 
 function gitOut(args: string[], cwd: string): string | undefined {
@@ -77,17 +78,6 @@ export function assertRepoHasCommits(name: string, entry: RepoEntry): void {
   if (emptyRepoMessage(name, entry) !== undefined) throw new EmptyRepoError(name, entry);
 }
 
-/** The host of a git remote URL (`git@host:o/r`, `https://host/o/r`), lowercased. */
-function remoteHost(url: string): string | undefined {
-  const scp = /^[^@/\s]+@([^:/\s]+):/.exec(url.trim());
-  if (scp?.[1]) return scp[1].toLowerCase();
-  try {
-    return new URL(url.trim()).hostname.toLowerCase();
-  } catch {
-    return undefined;
-  }
-}
-
 export interface StateRpcOptions {
   /**
    * T221/T222: whether `gh` can supply a token. The pr refusal asks it;
@@ -133,7 +123,7 @@ export async function setRepoSettings(
         `state.repo_set: pr delivery needs a remote; ${name} has no remote ${remote}`,
       );
     }
-    if (remoteHost(url) !== 'github.com') {
+    if (parseRemoteUrl(url)?.host !== 'github.com') {
       throw new RpcParamError(
         `state.repo_set: pr delivery needs a GitHub remote; ${remote} is not on github.com`,
       );
@@ -179,7 +169,7 @@ export function buildStateRpcMethods(
         throw new RpcParamError('state.repo_add: path is required');
       }
       assertGitToplevel(path);
-      return store.addRepo(name, { ...entry, path: realpathSync(path) });
+      return store.addRepo(name, { ...entry, path: realpathSync(path) }, { by: 'human' });
     },
   };
 }

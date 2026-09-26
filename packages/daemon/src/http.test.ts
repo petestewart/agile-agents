@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,6 +16,7 @@ import {
   type Event,
   type KnowledgeItem,
   type Policy,
+  type RepoRemote,
   type SessionDefaultsStatus,
   classifierQuestion,
   examplesOf,
@@ -27,7 +36,7 @@ import { runInit } from './init';
 import { KnowledgeService } from './knowledge';
 import { ProjectService } from './projects';
 import { QuestionService } from './questions';
-import { StateStore } from './store';
+import { type DirListing, RepoRemoteCache, StateStore } from './store';
 import { StreamService } from './streams';
 
 // T121: gates are raised on a stream; the HIL routes only need an id, the
@@ -1000,5 +1009,240 @@ describe('T160 cockpit routes', () => {
       ws.close();
       await slow.stop();
     }
+  });
+});
+
+describe('T362 folder picker, clone by URL, repo remotes', () => {
+  let scratch: string;
+  let userHome: string;
+  let store: StateStore;
+  let stateRoot: string;
+  let picker: HttpServerHandle;
+
+  function git(args: string[], cwd: string): void {
+    const r = Bun.spawnSync(['git', ...args], { cwd, stdout: 'ignore', stderr: 'pipe' });
+    if (r.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr.toString()}`);
+  }
+
+  function repoAt(path: string): string {
+    mkdirSync(path, { recursive: true });
+    git(['init', '-q', '-b', 'main'], path);
+    return path;
+  }
+
+  beforeEach(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'agile-http-picker-'));
+    userHome = join(scratch, 'home');
+    mkdirSync(join(userHome, 'Projects'), { recursive: true });
+    stateRoot = runInit(join(scratch, 'agile-home')).stateRoot;
+    store = StateStore.open(stateRoot);
+    const streams = new StreamService(store);
+    picker = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      feedPollIntervalMs: 20,
+      userHome,
+    });
+  });
+
+  afterEach(async () => {
+    await picker.stop();
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  const url = (path: string) => `http://127.0.0.1:${picker.port}${path}`;
+  const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+    fetch(url(path), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+
+  test('GET /api/fs/dirs lists folders from home by default; same-origin and loopback Host only', async () => {
+    repoAt(join(userHome, 'Projects', 'shop'));
+    mkdirSync(join(userHome, 'Projects', 'notes'));
+    const res = await fetch(url('/api/fs/dirs?path=~/Projects'));
+    expect(res.status).toBe(200);
+    const listing = (await res.json()) as DirListing;
+    expect(listing).toEqual({
+      path: join(userHome, 'Projects'),
+      parent: userHome,
+      home: userHome,
+      is_git: false,
+      entries: [
+        { name: 'notes', path: join(userHome, 'Projects', 'notes'), git: false },
+        { name: 'shop', path: join(userHome, 'Projects', 'shop'), git: true },
+      ],
+    });
+    const byDefault = (await (await fetch(url('/api/fs/dirs'))).json()) as DirListing;
+    expect(byDefault.path).toBe(userHome);
+    const typed = (await (
+      await fetch(
+        url(`/api/fs/dirs?path=${encodeURIComponent(join(userHome, 'Projects'))}&prefix=SH`),
+      )
+    ).json()) as DirListing;
+    expect(typed.entries.map((e) => e.name)).toEqual(['shop']);
+
+    expect((await fetch(url('/api/fs/dirs?path=~/nope'))).status).toBe(404);
+    const relative = await fetch(url('/api/fs/dirs?path=Projects'));
+    expect(relative.status).toBe(400);
+    expect(((await relative.json()) as { error: string }).error).toContain('must be absolute');
+    const foreign = await fetch(url('/api/fs/dirs'), {
+      headers: { origin: 'http://evil.example' },
+    });
+    expect(foreign.status).toBe(403);
+    // A DNS-rebound page: same-origin to the browser, but its own name as Host.
+    const rebound = await fetch(url('/api/fs/dirs'), {
+      headers: { host: `evil.example:${picker.port}`, 'sec-fetch-site': 'same-origin' },
+    });
+    expect(rebound.status).toBe(403);
+    const localhost = await fetch(url('/api/fs/dirs'), {
+      headers: { host: `localhost:${picker.port}` },
+    });
+    expect(localhost.status).toBe(200);
+  });
+
+  test('POST /api/repos/clone clones a local bare repo, registers it, and its row says where it came from', async () => {
+    const work = repoAt(join(scratch, 'work', 'shop'));
+    writeFileSync(join(work, 'README.md'), 'hi\n');
+    git(['add', '.'], work);
+    git(
+      [
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@t',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '-qm',
+        'init',
+      ],
+      work,
+    );
+    const bare = join(scratch, 'remotes', 'shop.git');
+    mkdirSync(join(scratch, 'remotes'));
+    git(['clone', '-q', '--bare', work, bare], scratch);
+
+    const foreign = await post(
+      '/api/repos/clone',
+      { url: bare },
+      { origin: 'http://evil.example' },
+    );
+    expect(foreign.status).toBe(403);
+
+    const res = await post('/api/repos/clone', { url: bare });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      repos: Array<{ name: string; path: string; remote?: RepoRemote }>;
+      repo: string;
+      path: string;
+    };
+    const dest = realpathSync(join(userHome, 'Projects', 'shop'));
+    expect(body.repo).toBe('shop');
+    expect(body.path).toBe(dest);
+    expect(body.repos).toEqual([
+      expect.objectContaining({
+        name: 'shop',
+        path: dest,
+        remote: { kind: 'other', protocol: 'file', url: bare, name: 'shop' },
+      }),
+    ]);
+    expect(store.listEvents().at(-1)).toMatchObject({ kind: 'repos_put', agent: 'human' });
+
+    const again = await post('/api/repos/clone', { url: bare });
+    expect(again.status).toBe(409);
+    const bad = await post('/api/repos/clone', { url: 'ext::sh -c x' });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toContain('not a git URL');
+  });
+
+  test('GET /api/repos and the cockpit frame carry each repo remote; a local-only repo has none', async () => {
+    const shop = repoAt(join(scratch, 'shop'));
+    git(
+      ['remote', 'add', 'origin', 'https://x-access-token:s3cr3t@github.com/acme/shop.git'],
+      shop,
+    );
+    const scratchpad = repoAt(join(scratch, 'scratchpad'));
+    expect((await post('/api/repos', { name: 'shop', path: shop })).status).toBe(200);
+    expect((await post('/api/repos', { name: 'scratchpad', path: scratchpad })).status).toBe(200);
+
+    const listed = (await (await fetch(url('/api/repos'))).json()) as {
+      repos: Array<{ name: string; remote?: RepoRemote }>;
+    };
+    const github: RepoRemote = {
+      kind: 'github',
+      protocol: 'https',
+      url: 'https://github.com/acme/shop.git',
+      owner: 'acme',
+      name: 'shop',
+    };
+    expect(listed.repos.find((r) => r.name === 'shop')?.remote).toEqual(github);
+    expect(listed.repos.find((r) => r.name === 'scratchpad')?.remote).toBeUndefined();
+
+    // The frame answers from the cache (warmed by the list above).
+    const frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(frame.repos).toEqual([
+      { name: 'shop', delivery: 'direct', remote: github },
+      { name: 'scratchpad', delivery: 'direct' },
+    ]);
+    expect(JSON.stringify(frame)).not.toContain('s3cr3t');
+  });
+
+  test('the frame never waits on git: a cold cache is read in the background and the frame re-pushed', async () => {
+    const shop = repoAt(join(scratch, 'shop'));
+    git(['remote', 'add', 'origin', 'git@gitlab.com:acme/shop.git'], shop);
+    await store.addRepo('shop', { path: shop });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const remotes = new RepoRemoteCache({
+      read: async () => {
+        await gate;
+        return 'git@gitlab.com:acme/shop.git';
+      },
+    });
+    const cold = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams: new StreamService(store),
+      feedPollIntervalMs: 20,
+      repoRemotes: remotes,
+    });
+    const frames: CockpitFrame[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${cold.port}/ws`);
+    ws.onmessage = (event) => {
+      const frame = JSON.parse(event.data as string) as { type: string };
+      if (frame.type === 'cockpit') frames.push(frame as CockpitFrame);
+    };
+    try {
+      const deadline = Date.now() + 5000;
+      while (frames.length === 0 && Date.now() < deadline) await Bun.sleep(10);
+      expect(frames[0]?.repos).toEqual([{ name: 'shop', delivery: 'direct' }]);
+      release();
+      while (frames.length < 2 && Date.now() < deadline) await Bun.sleep(10);
+      expect(frames.at(-1)?.repos[0]?.remote).toMatchObject({ kind: 'gitlab', protocol: 'ssh' });
+    } finally {
+      ws.close();
+      await cold.stop();
+    }
+  });
+
+  test('/api/repos/clone is the settings of a registered repo named clone when the body has no url', async () => {
+    const clone = repoAt(join(scratch, 'clone'));
+    expect((await post('/api/repos', { name: 'clone', path: clone })).status).toBe(200);
+    const res = await post('/api/repos/clone', { auto_merge: true });
+    expect(res.status).toBe(200);
+    expect(store.getRepos().clone?.auto_merge).toBe(true);
   });
 });

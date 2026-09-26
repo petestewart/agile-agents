@@ -708,12 +708,12 @@ export class StateStore {
     return validateReposConfig(readYamlFile(path) ?? {});
   }
 
-  async putRepos(repos: unknown): Promise<ReposConfig> {
+  async putRepos(repos: unknown, options: { by?: string } = {}): Promise<ReposConfig> {
     return this.mutate(() => {
       const validated = validateReposConfig(repos);
       const relPath = 'repos.yaml';
       writeYamlFileAtomic(this.abs(relPath), validated);
-      const event = buildEvent('repos_put');
+      const event = buildEvent('repos_put', { agent: options.by });
       return { result: validated, event };
     });
   }
@@ -723,7 +723,7 @@ export class StateStore {
    * existing registry so `agile repo add` is additive; re-adding the same
    * name replaces that entry.
    */
-  async addRepo(name: string, entry: unknown): Promise<ReposConfig> {
+  async addRepo(name: string, entry: unknown, options: { by?: string } = {}): Promise<ReposConfig> {
     // §14.8 defaults written out, so a repo added after the migration looks migrated.
     const next = {
       ...this.getRepos(),
@@ -733,7 +733,7 @@ export class StateStore {
         ...(entry as object),
       }),
     };
-    return this.putRepos(next);
+    return this.putRepos(next, options);
   }
 
   // ------------------------------------------------------ Streams + threads
