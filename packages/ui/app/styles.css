@@ -7745,10 +7745,46 @@ div.cr-lens-ev:hover {
   flex: none;
   color: var(--text-faint);
 }
+/* T383: under the log, the next page (with what it will search), or where the log ends. */
 .cr-lens-showmore {
   display: flex;
-  justify-content: center;
-  padding: 14px 0 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0 4px;
+}
+.cr-lens-showmore-note {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  text-align: center;
+}
+.cr-lens-older-error {
+  display: block;
+  margin: 8px 0 0;
+  font-size: var(--text-sm);
+  color: var(--red-text);
+  text-align: center;
+}
+.cr-lens-showmore .cr-lens-older-error {
+  margin: 0;
+}
+.cr-lens-log-end {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 6px;
+  padding: 0 10px;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  text-align: center;
+}
+.cr-lens-log-end::before,
+.cr-lens-log-end::after {
+  content: "";
+  flex: 1 1 24px;
+  height: 1px;
+  background: var(--border);
 }
 
 @media (max-width: 900px) {

@@ -346,8 +346,18 @@ export function filterEvents(
   titleOf: (id: string) => string,
   label: (event: RoutedEvent) => string,
 ): RoutedEvent[] {
+  const matches = eventMatcher(filter, titleOf, label);
+  return events.filter(matches);
+}
+
+/** T383: `filterEvents`' test for one event (a search of older pages stops at a match). */
+export function eventMatcher(
+  filter: EventFilter,
+  titleOf: (id: string) => string,
+  label: (event: RoutedEvent) => string,
+): (event: RoutedEvent) => boolean {
   const words = filter.query.toLowerCase().split(/\s+/).filter(Boolean);
-  return events.filter((event) => {
+  return (event) => {
     if (filter.family !== 'all' && eventFamily(event.type) !== filter.family) return false;
     if (filter.repo !== undefined && event.repo !== filter.repo) return false;
     if (words.length === 0) return true;
@@ -361,7 +371,7 @@ export function filterEvents(
       .join(' ')
       .toLowerCase();
     return words.every((word) => hay.includes(word));
-  });
+  };
 }
 
 export interface EventDay<T> {
@@ -385,4 +395,136 @@ export function groupByDay<T extends Pick<RoutedEvent, 'at'>>(
     else out.push({ day, events: [event] });
   }
   return out;
+}
+
+// ---------------------------------------------------------------- Event log pages (T383)
+
+/** One page as the daemon sends it: newest first, whether older ones exist, and how many in all. */
+export interface LogPage<T> {
+  events: T[];
+  more: boolean;
+  total: number;
+}
+
+/**
+ * What the Events page holds of the log: the newest events, unbroken,
+ * newest first (the daemon's order; the last one is the cursor for the
+ * next page), and how many pages that took.
+ */
+export interface LoadedLog<T> extends LogPage<T> {
+  pages: number;
+}
+
+export function firstPage<T>(page: LogPage<T>): LoadedLog<T> {
+  return { events: page.events, more: page.more, total: page.total, pages: 1 };
+}
+
+/**
+ * The next older page under what is loaded. It was read from `cursor`; if
+ * that is no longer the oldest event loaded (the log started again, or the
+ * repo changed), the page no longer follows on and is dropped.
+ */
+export function appendOlder<T extends { id: string }>(
+  log: LoadedLog<T>,
+  page: LogPage<T>,
+  cursor: string,
+): LoadedLog<T> {
+  if (log.events.at(-1)?.id !== cursor) return log;
+  const have = new Set(log.events.map((e) => e.id));
+  return {
+    events: [...log.events, ...page.events.filter((e) => !have.has(e.id))],
+    more: page.more,
+    total: page.total,
+    pages: log.pages + 1,
+  };
+}
+
+/**
+ * Live events on top: a fresh newest page over what is loaded. What sits
+ * above the first event already loaded is new. When none of the page is
+ * loaded, more arrived than a page holds, so the loaded pages no longer join
+ * on: the log starts again from the fresh page. Unchanged, it is the same
+ * object (nothing re-renders).
+ */
+export function mergeNewest<T extends { id: string }>(
+  log: LoadedLog<T>,
+  head: LogPage<T>,
+): LoadedLog<T> {
+  const have = new Set(log.events.map((e) => e.id));
+  const fresh: T[] = [];
+  for (const event of head.events) {
+    if (!have.has(event.id)) {
+      fresh.push(event);
+      continue;
+    }
+    if (fresh.length === 0 && head.total === log.total) return log;
+    return { ...log, events: [...fresh, ...log.events], total: head.total };
+  }
+  if (fresh.length === 0 && log.events.length === 0 && head.total === log.total) return log;
+  return firstPage(head);
+}
+
+/** What is loaded, and how much of it the type filter and the search let through. */
+export interface LogView {
+  loaded: number;
+  total: number;
+  more: boolean;
+  pages: number;
+  /** How many loaded events pass the type filter and the search. */
+  matched: number;
+  /** The type filter or the search is on (the repo filter is the daemon's, so `total` counts it). */
+  narrowed: boolean;
+}
+
+const count = (n: number): string => n.toLocaleString('en-US');
+const eventsWord = (n: number): string => `${count(n)} ${n === 1 ? 'event' : 'events'}`;
+
+/** The toolbar's count: how much of the log is showing, and of how much. */
+export function logCount(v: LogView): string {
+  if (!v.narrowed)
+    return v.more ? `${count(v.loaded)} of ${eventsWord(v.total)}` : eventsWord(v.total);
+  return v.more
+    ? `${count(v.matched)} of ${count(v.loaded)} loaded`
+    : `${count(v.matched)} of ${eventsWord(v.total)}`;
+}
+
+/** Under the list: a button for the next page (with what it will do), the end of the log, or nothing. */
+export type LogFooter =
+  | { kind: 'more'; label: string; note?: string }
+  | { kind: 'end'; note: string }
+  | { kind: 'none' };
+
+export function logFooter(v: LogView, pageSize: number): LogFooter {
+  if (v.more && !v.narrowed) {
+    const next = Math.min(pageSize, v.total - v.loaded);
+    return { kind: 'more', label: next > 0 ? `Show ${count(next)} more` : 'Show more' };
+  }
+  if (v.more) {
+    return {
+      kind: 'more',
+      label: 'Search older events',
+      note: `Searched the latest ${count(v.loaded)} of ${eventsWord(v.total)}.`,
+    };
+  }
+  if (v.narrowed) {
+    return {
+      kind: 'end',
+      note: `${v.total === 1 ? 'Searched the only event' : `Searched all ${eventsWord(v.total)}`}. That’s everything.`,
+    };
+  }
+  return v.pages > 1 ? { kind: 'end', note: 'That’s everything.' } : { kind: 'none' };
+}
+
+/** The empty state when the filters let nothing through: older pages may still hold a match. */
+export function noMatchWords(v: LogView): { title: string; body: string } {
+  if (v.more) {
+    return {
+      title: `No matches in the latest ${eventsWord(v.loaded)}`,
+      body: 'Older events may match. Search further back, or clear the filters.',
+    };
+  }
+  return {
+    title: 'No events match',
+    body: `Nothing in the ${v.total === 1 ? 'one event' : eventsWord(v.total)} matches these filters.`,
+  };
 }

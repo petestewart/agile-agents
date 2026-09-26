@@ -56,6 +56,7 @@ import { type DeliveryService, LandRefusedError } from './delivery';
 import type { DirectorService } from './director/service';
 import type { DocsService } from './docs';
 import type { RoutedEventService } from './events';
+import { EVENT_PAGE_MAX, type EventPageQuery, UnknownEventError } from './events/service';
 import {
   type CockpitFrame,
   type EventTailerHandle,
@@ -706,7 +707,9 @@ async function handleDirectorRoute(
  *
  *   GET /api/streams/:id/activity  every event routed to the node: reason, delivery status, session or digest
  *   GET /api/repos/:name/events    every event on the repo
- *   GET /api/events                T338: the event log, every routed event, newest first
+ *   GET /api/events                T338: the event log, every routed event, newest first.
+ *                                  T383: a page of it, `{events, more, total}`: `?before=<event id>`
+ *                                  (only older ones), `?limit=` (1–500, default 200), `?repo=<name>`
  *   GET /api/repos/:name/knowledge T265: the repo's accepted standards and architecture
  */
 function handleActivityRoute(
@@ -719,7 +722,19 @@ function handleActivityRoute(
   const repo = url.pathname.match(/^\/api\/repos\/([^/]+)\/events$/);
   if (url.pathname === '/api/events') {
     if (!feed?.events) return errorResponse(503, 'events not available');
-    return jsonResponse({ events: feed.events.recent() });
+    const query = eventPageQuery(url.searchParams);
+    if (typeof query === 'string') return errorResponse(400, query);
+    try {
+      return jsonResponse(feed.events.page(query));
+    } catch (err) {
+      if (err instanceof UnknownEventError) {
+        return errorResponse(
+          400,
+          `no event ${quoted(err.id)} in the log: before must be the id of an event a page listed`,
+        );
+      }
+      return errorResponse(500, messageOf(err));
+    }
   }
   const norms = url.pathname.match(/^\/api\/repos\/([^/]+)\/knowledge$/);
   if (norms) {
@@ -743,6 +758,35 @@ function handleActivityRoute(
   } catch (err) {
     return errorResponse(500, messageOf(err));
   }
+}
+
+/** A query value as it reads in an error: quoted, and cut short when long. */
+function quoted(value: string): string {
+  return JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value);
+}
+
+/** T383: `/api/events`'s query, or what is wrong with it in words. */
+function eventPageQuery(params: URLSearchParams): EventPageQuery | string {
+  const query: EventPageQuery = {};
+  const limit = params.get('limit');
+  if (limit !== null) {
+    const n = /^\d{1,6}$/.test(limit) ? Number(limit) : Number.NaN;
+    if (!(n >= 1 && n <= EVENT_PAGE_MAX)) {
+      return `limit must be a whole number from 1 to ${EVENT_PAGE_MAX}, not ${quoted(limit)}`;
+    }
+    query.limit = n;
+  }
+  const before = params.get('before');
+  if (before !== null) {
+    if (before.trim() === '') return 'before must be the id of an event, not empty';
+    query.before = before;
+  }
+  const repo = params.get('repo');
+  if (repo !== null) {
+    if (repo.trim() === '') return 'repo must be a repo name, not empty';
+    query.repo = repo;
+  }
+  return query;
 }
 
 /**

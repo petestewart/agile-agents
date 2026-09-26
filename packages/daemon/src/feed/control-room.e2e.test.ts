@@ -5670,6 +5670,119 @@ describe('a direct merge reads "merged" (Playwright e2e, T347)', () => {
   );
 });
 
+describe('the event log pages (Playwright e2e, T383)', () => {
+  browserTest(
+    "Events pages from the daemon to the log's end; a repo card reads its own repo's events",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        // Two repos, so Events offers the repo filter.
+        await cockpit.store.putRepos({ api: { path: cockpit.home }, web: { path: cockpit.home } });
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const quiet = await cockpit.streams.create('human', {
+          title: 'api: quiet change',
+          goal: 'g',
+          project: shop.id,
+          repo: 'api',
+        });
+        const busy = await cockpit.streams.create('human', {
+          title: 'busy talk',
+          goal: 'g',
+          project: shop.id,
+        });
+        // The api event first, then more than a whole old cap (200) of newer events elsewhere.
+        const onApi = await routeAndEmit(
+          cockpit.events,
+          {
+            type: 'pr_merged',
+            subject: quiet.id,
+            repo: 'api',
+            payload: { repo: 'api', sha: 'abc123' },
+            by: 'daemon',
+          },
+          cockpit.streams.list(),
+        );
+        const rows = cockpit.streams.list();
+        for (let i = 0; i < 205; i++) {
+          await routeAndEmit(
+            cockpit.events,
+            { type: 'human_line', subject: busy.id, by: 'human', payload: { body: `line ${i}` } },
+            rows,
+          );
+        }
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        // The repo card asks for api's own events, so the old one still shows.
+        await page.locator('[data-view="repos"]').click();
+        await waitForText(
+          page,
+          `[data-testid="repo-view"] [data-repo="api"] [data-event="${onApi.id}"] [data-testid="repo-event-text"]`,
+          'Merged · api: quiet change',
+        );
+
+        // Events: the newest page, then older pages from the daemon until the log ends.
+        await page.locator('[data-view="events"]').click();
+        const logRows = page.locator('[data-testid="event-log-row"]');
+        await waitForText(page, '[data-testid="event-log-count"]', '100 of 206 events');
+        expect(await logRows.count()).toBe(100);
+        expect(await page.locator('[data-testid="event-log-end"]').count()).toBe(0);
+        const more = page.locator('[data-testid="event-log-more"]');
+        expect(await more.textContent()).toBe('Show 100 more');
+        await more.click();
+        await waitForText(page, '[data-testid="event-log-count"]', '200 of 206 events');
+        expect(await logRows.count()).toBe(200);
+        expect(await more.textContent()).toBe('Show 6 more');
+        await more.click();
+        await waitForText(page, '[data-testid="event-log-count"]', '206 events');
+        expect(await logRows.count()).toBe(206);
+        await page.locator(`[data-testid="event-log"] [data-event="${onApi.id}"]`).waitFor();
+        await waitForText(page, '[data-testid="event-log-end"]', 'That’s everything.');
+        expect(await more.count()).toBe(0);
+
+        // A live event goes on top of the loaded pages.
+        const live = await routeAndEmit(
+          cockpit.events,
+          { type: 'human_line', subject: busy.id, by: 'human', payload: { body: 'live one' } },
+          cockpit.streams.list(),
+        );
+        // The feed pushes on a log event; a thread line is one.
+        await cockpit.streams.appendThread('human', busy.id, { kind: 'line', body: 'nudge' });
+        await page.locator(`[data-testid="event-log"] [data-event="${live.id}"]`).waitFor();
+        await waitForText(page, '[data-testid="event-log-count"]', '207 events');
+        expect(await logRows.first().getAttribute('data-event')).toBe(live.id);
+
+        // The repo filter asks the daemon: api's one event, however far back.
+        await page.locator('[data-testid="event-log-repo-filter"]').selectOption('api');
+        await waitForText(page, '[data-testid="event-log-count"]', '1 event');
+        expect(await logRows.count()).toBe(1);
+        await page.locator(`[data-testid="event-log"] [data-event="${onApi.id}"]`).waitFor();
+        await page.locator('[data-testid="event-log-repo-filter"]').selectOption('');
+        await waitForText(page, '[data-testid="event-log-count"]', '100 of 207 events');
+
+        // A search covers what is loaded and offers to search further back.
+        await page.locator('[data-testid="event-log-search"]').fill('quiet change');
+        await page.locator('[data-testid="event-log"] .cr-empty').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="event-log"] .cr-empty').textContent()).toContain(
+          'No matches in the latest 100 events',
+        );
+        await page.locator('[data-testid="event-log-more"]').click();
+        await page.locator(`[data-testid="event-log"] [data-event="${onApi.id}"]`).waitFor();
+        await waitForText(
+          page,
+          '[data-testid="event-log-end"]',
+          'Searched all 207 events. That’s everything.',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('conversation tangents (Playwright e2e, T332)', () => {
   browserTest(
     "Branch off a line makes a seeded tangent; its finished summary reaches the parent's thread",
