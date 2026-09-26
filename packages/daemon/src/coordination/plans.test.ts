@@ -400,6 +400,62 @@ describe('T336: parts wait for the plan', () => {
     expect(started).toEqual([api.id, docs.id]);
   });
 
+  /** A session that ran on `id` and ended as `how` left it: the agent back to idle (attach's exit path). */
+  const ranAndEnded = (id: string, how: 'detach' | 'stop', at = Date.now()) =>
+    store.updateStream('daemon', id, (before) => ({
+      ...before,
+      agent: { ...before.agent, status: 'idle' },
+      sessions: [
+        ...before.sessions,
+        {
+          id: ulid(at),
+          vendor: 'claude',
+          model: 'm',
+          role: 'worker',
+          status: 'stopped',
+          ...(how === 'stop' ? { ended_reason: 'stopped: moved' } : {}),
+        },
+      ],
+    }));
+
+  test('a part started after the split, then detached, no longer waits', async () => {
+    const { api } = await planned();
+    await splitWaits(api.id);
+    expect(plans.waitingForPlan(streams.get(api.id))).toBe(true);
+    await ranAndEnded(api.id, 'detach', Date.now() + 5);
+    expect(plans.waitingForPlan(streams.get(api.id))).toBe(false);
+  });
+
+  test('a part started after the split, then stopped by the daemon, no longer waits', async () => {
+    const { api } = await planned();
+    await splitWaits(api.id);
+    await ranAndEnded(api.id, 'stop', Date.now() + 5);
+    expect(plans.waitingForPlan(streams.get(api.id))).toBe(false);
+  });
+
+  test("a first part carrying the node's older sessions still waits until it starts", async () => {
+    const { api } = await planned();
+    // The split moved the node's earlier sessions onto its first part, then wrote the line.
+    await ranAndEnded(api.id, 'detach', Date.now() - 60_000);
+    await ranAndEnded(api.id, 'stop', Date.now() - 30_000);
+    await splitWaits(api.id);
+    expect(plans.waitingForPlan(streams.get(api.id))).toBe(true);
+    await ranAndEnded(api.id, 'detach', Date.now() + 5);
+    expect(plans.waitingForPlan(streams.get(api.id))).toBe(false);
+  });
+
+  test('approval after a started part was detached does not start it again', async () => {
+    const { node, api, web, started } = await planned();
+    for (const part of [api, web]) await splitWaits(part.id);
+    await ranAndEnded(api.id, 'detach', Date.now() + 5);
+    await plans.write(node.id, [
+      { child: api.id, owns: ['prices.ts'] },
+      { child: web.id, owns: ['shop.html'] },
+    ]);
+    await plans.approve(node.id);
+    expect(started).toEqual([web.id]);
+  });
+
   test('a "Start later" child the plan names is not started (only split parts wait)', async () => {
     const { node, api, docs, started } = await planned();
     await splitWaits(api.id);

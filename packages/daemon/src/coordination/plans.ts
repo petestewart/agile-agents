@@ -19,6 +19,7 @@ import {
   UlidSchema,
   liveChildrenOf,
   nodeRole,
+  ulid,
   validatePlan,
 } from '@agile-agents/shared';
 import type { EmitRouted } from '../events/producers';
@@ -55,6 +56,14 @@ export const WAITING_FOR_PLAN = 'waiting for the plan: ';
 
 /** How far into a part's thread the reshape's line can be (its pointer, then this). */
 const WAITING_LINE_WITHIN = 10;
+
+/** A ULID's first 10 characters are its millisecond time, so they sort as the time does. */
+const ULID_TIME_CHARS = 10;
+
+/** The time prefix of a ULID made at `ms` (a session id's start time, for comparison). */
+function ulidTimePrefix(ms: number): string {
+  return ulid(ms).slice(0, ULID_TIME_CHARS);
+}
 
 function isLive(s: Stream['sessions'][number]): boolean {
   return s.status !== 'stopped' && s.status !== 'error';
@@ -219,11 +228,16 @@ export class PlanService {
     }
     if (!parent.sessions.some((s) => s.role === 'coordinator')) return false;
     if ((owned ?? approvedOwners(this.get(parent.id))).has(child.id)) return false;
-    return this.options.streams
+    const line = this.options.streams
       .readThread(child.id, { limit: WAITING_LINE_WITHIN })
-      .entries.some(
+      .entries.find(
         (e) => e.by === 'daemon' && e.kind === 'event' && e.body.startsWith(WAITING_FOR_PLAN),
       );
+    if (line === undefined) return false;
+    // Started since the split made it wait (then detached or stopped): it ran, it no longer
+    // waits. Sessions from before the line (the node's own, moved to its first part) don't count.
+    const since = ulidTimePrefix(Date.parse(line.ts));
+    return !child.sessions.some((s) => s.id.slice(0, ULID_TIME_CHARS) >= since);
   }
 
   /** T344: the node's live parts still waiting for its plan (`waitingForPlan`). */
