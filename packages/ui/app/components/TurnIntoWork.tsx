@@ -8,12 +8,19 @@
  */
 
 import { START_ON_GOAL } from '@agile-agents/shared';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { type GoalDraft, addRepoToStream, draftGoal, sayOnStream, updateStream } from '../lib/api';
 import type { CockpitRepoRow } from '../lib/feed-types';
 import { Icon } from './Icon';
 import { type PickOption, PickerField } from './Pickers';
 import { Button, Dialog, Field, Kbd, RepoIcon, repoKindLabel } from './ui';
+
+/** T431: what a draft that arrived after you typed says, before "Use it instead". */
+const DRAFT_READY: Record<GoalDraft['from'], string> = {
+  model: 'A draft from the conversation is ready.',
+  reply: 'Its last reply is ready as a goal.',
+  question: 'Its question is ready as a goal.',
+};
 
 const GOAL_HINT: Record<GoalDraft['from'], string> = {
   model: 'Drafted from the conversation: edit it as you like.',
@@ -34,8 +41,12 @@ export function TurnIntoWorkDialog({
   onClose: () => void;
   onDone: (repo: string | undefined) => void;
 }): JSX.Element {
-  const [goal, setGoal] = useState<string | undefined>(undefined);
-  const [from, setFrom] = useState<GoalDraft['from']>('question');
+  const [goal, setGoal] = useState('');
+  // T431: the draft takes seconds (a model call); the box is yours meanwhile, and a
+  // draft that lands after you started typing waits behind "Use the draft".
+  const [draft, setDraft] = useState<GoalDraft | undefined>(undefined);
+  const [drafting, setDrafting] = useState(true);
+  const typed = useRef(false);
   const [repo, setRepo] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -45,10 +56,13 @@ export function TurnIntoWorkDialog({
     draftGoal(node)
       .then((d) => {
         if (!live) return;
-        setGoal(d.goal);
-        setFrom(d.from);
+        setDraft(d);
+        if (!typed.current) setGoal(d.goal);
       })
-      .catch(() => live && setGoal(current));
+      .catch(() => {
+        if (live && !typed.current) setGoal(current);
+      })
+      .finally(() => live && setDrafting(false));
     return () => {
       live = false;
     };
@@ -114,7 +128,7 @@ export function TurnIntoWorkDialog({
             type="submit"
             variant="primary"
             busy={busy}
-            disabled={goal === undefined || goal.trim() === ''}
+            disabled={goal.trim() === ''}
             data-testid="turn-into-work-start"
           >
             Start the work
@@ -125,16 +139,41 @@ export function TurnIntoWorkDialog({
       <div className="cr-ask">
         <Field
           label="Goal"
-          hint={goal === undefined ? 'Drafting the goal from the conversation…' : GOAL_HINT[from]}
+          hint={
+            drafting ? (
+              'Drafting the goal from the conversation… or write your own.'
+            ) : draft && goal !== draft.goal && goal.trim() !== '' ? (
+              <>
+                {DRAFT_READY[draft.from]}{' '}
+                <button
+                  type="button"
+                  className="cr-link"
+                  data-testid="turn-into-work-use-draft"
+                  onClick={() => setGoal(draft.goal)}
+                >
+                  Use it instead
+                </button>
+              </>
+            ) : draft ? (
+              GOAL_HINT[draft.from]
+            ) : (
+              'Say what the work should do and what done looks like.'
+            )
+          }
         >
           <textarea
             className="cr-ask-input"
             data-testid="turn-into-work-goal"
+            data-drafting={drafting ? 'true' : undefined}
             aria-label="Goal"
+            aria-busy={drafting}
             rows={5}
-            value={goal ?? ''}
-            disabled={goal === undefined}
-            onChange={(e) => setGoal(e.target.value)}
+            value={goal}
+            placeholder={drafting ? 'Drafting from the conversation…' : 'What should be done?'}
+            onChange={(e) => {
+              typed.current = true;
+              setGoal(e.target.value);
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();

@@ -5586,13 +5586,25 @@ describe('Turn into work (Playwright e2e, T422, D42)', () => {
         });
         await page.goto(`${cockpit.base}/?node=${research.id}`);
         await page.locator(`[data-testid="stream-page"][data-stream="${research.id}"]`).waitFor();
+        // T431: a slow draft (a model call) never blocks the box nor overwrites what you typed.
+        let release: () => void = () => {};
+        const held = new Promise<void>((done) => {
+          release = done;
+        });
+        await page.route('**/draft-goal', async (route) => {
+          await held;
+          await route.continue();
+        });
         await page.locator('[data-testid="node-menu-trigger"]').click();
         await page.locator('[data-testid="turn-into-work-menu"]').click();
-        // Nothing said yet: its question.
-        await waitUntilAsync(
-          'the question',
-          async () => (await goal.inputValue()) === 'what limits the importer?',
-        );
+        await page.locator('[data-testid="turn-into-work-goal"][data-drafting="true"]').waitFor();
+        await goal.fill('Find the largest file the importer takes and why.');
+        release();
+        // Nothing said yet: the draft is its question, offered, not forced.
+        await page.locator('[data-testid="turn-into-work-use-draft"]').waitFor();
+        expect(await goal.inputValue()).toBe('Find the largest file the importer takes and why.');
+        await page.locator('[data-testid="turn-into-work-use-draft"]').click();
+        expect(await goal.inputValue()).toBe('what limits the importer?');
         await goal.fill('Find the largest file the importer takes and why.');
         await page.locator('[data-testid="turn-into-work-start"]').click();
         await waitUntil('the research start', () =>
