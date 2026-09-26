@@ -2417,7 +2417,11 @@ describe('session defaults (Playwright e2e, T170)', () => {
         );
 
         // T401: a vendor with no effort setting: the level can't be picked, and the label drops it.
+        const model = page.locator(card('-field-model'));
+        expect(await model.getAttribute('placeholder')).toBe('inherit (claude-opus-5-5)');
         await page.locator(card('-field-vendor')).selectOption('gemini');
+        // T402: Gemini doesn't inherit a Claude model.
+        expect(await model.getAttribute('placeholder')).toBe('inherit (Gemini default model)');
         const effort = page.locator(card('-field-effort'));
         expect(await effort.isDisabled()).toBe(true);
         expect(await effort.getAttribute('title')).toBe(

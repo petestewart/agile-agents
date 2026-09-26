@@ -50,6 +50,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D37** (2026-09-26, Pete): upgrade Bun past 1.3.11 if a release fixes the child-process pipe bugs (fd double-close, EBADF on epoll_ctl); verified on a branch with the full suite and CI before the pin moves. Otherwise stay on 1.3.11 with the existing workarounds.
 - **D38** (2026-09-26, Pete): no global `Host` check on the daemon's read routes. The cockpit must stay reachable from a phone through a tunnel (D15). Writes keep their same-origin check (403 otherwise); the folder browser and clone keep their loopback-`Host` check (T362). A Host allowlist (loopback plus configured tunnel names) stays an option if DNS rebinding ever matters more than reach.
 - **D39** (2026-09-26, Pete, to confirm): a browser notification fires every time a node finishes (or asks, or is blocked), including a second finish after your reply; the same card only leaving a frame and coming back does not notify again. As built in T391.
+- **D40** (2026-09-26, to confirm): in the D17 order a model belongs to its vendor. A model named at a step counts only when that step runs the resolved vendor (its own vendor, else the vendor of the steps below it). A repo set to Gemini no longer inherits the home's Claude model: it gets Gemini's own default. Vendor and effort still resolve field by field. As built in T402.
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -2277,6 +2278,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** `EFFORT_VENDORS` in `packages/shared` names the vendors with an effort mapping, and a daemon test keeps it equal to the provider registry's. Labels drop the level for any other vendor (the tooltip says "(ignored)"); the Effort control is disabled there, and says why.
 - **Validation Steps:** `bun test packages/ui packages/daemon/src/attach/resolve.test.ts`; control-room e2e `T379` (picking Gemini disables Effort; the label reads "Gemini default model").
 - **Notes:** Branch T401-effort-where-used.
+
+### Ticket: T402 A model belongs to its vendor
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: `resolveSessionDefaults` took the first named model at any step, so a repo set to Gemini with a Claude model in the home config started Gemini with `claude-sonnet-4-6`, and Settings showed that model as the repo's inherited placeholder.
+- **Acceptance Criteria:** Per D40, a step's model counts only when that step runs the resolved vendor; otherwise the vendor's own default (the built-in model for Claude). The Settings and picker placeholders name what an empty model field inherits for the vendor picked there.
+- **Validation Steps:** `bun test packages/shared/src/session-defaults.test.ts`; control-room e2e `T379` (picking Gemini makes the placeholder "inherit (Gemini default model)").
+- **Notes:** Branch T402-model-follows-vendor. D40 is to confirm.
 
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0

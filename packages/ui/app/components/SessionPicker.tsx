@@ -17,6 +17,7 @@ import {
   type ProjectSessionDefaults,
   type ResolvedSessionDefaults,
   type SessionDefaultsStatus,
+  resolveSessionDefaults,
   vendorTakesEffort,
 } from '@agile-agents/shared';
 import { useEffect, useId, useRef, useState } from 'react';
@@ -51,6 +52,18 @@ export function SessionFields({
   const listId = useId();
   const vendor = value.vendor || inherit?.vendor || status.builtin.vendor;
   const suggestions = status.known_models[vendor as keyof typeof status.known_models] ?? [];
+  // T402: the model an empty field inherits, for the vendor picked here (another
+  // vendor never takes the inherited one).
+  const inheritedModel =
+    inherit &&
+    (resolveSessionDefaults({
+      ...(value.vendor ? { flags: { vendor: value.vendor } } : {}),
+      home: {
+        default_vendor: inherit.vendor,
+        ...(inherit.model !== undefined ? { default_model: inherit.model } : {}),
+      },
+    }).model ??
+      `${vendorLabel(vendor)} default model`);
   // T401: a vendor with no effort setting never gets the level; say so rather than offer it.
   const noEffort = vendorTakesEffort(vendor)
     ? undefined
@@ -136,9 +149,7 @@ export function SessionFields({
         data-testid={`${testid}-model`}
         list={listId}
         value={value.model}
-        placeholder={
-          inherit ? `inherit (${inherit.model ?? `${inherit.vendor} default model`})` : 'model id'
-        }
+        placeholder={inheritedModel ? `inherit (${inheritedModel})` : 'model id'}
         onChange={(e) => onChange({ ...value, model: e.target.value })}
       />
       <datalist id={listId}>
