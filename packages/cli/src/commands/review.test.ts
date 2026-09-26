@@ -63,7 +63,7 @@ describe('agile review', () => {
   test('refuses a second live reviewer on the same stream', async () => {
     await capture(() => runReview(daemon.socketPath, parseArgs([stream]), false));
     await expect(runReview(daemon.socketPath, parseArgs([stream]), false)).rejects.toThrow(
-      /already has a live reviewer session/,
+      /already has a live reviewer/,
     );
   });
 });

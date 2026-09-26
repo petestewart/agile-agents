@@ -145,7 +145,7 @@ describe('Branch off (T332, D33)', () => {
     ).rejects.toThrow(/tangent has no repo/);
     await expect(newStream('x', { seed_line: 0 })).rejects.toThrow(/needs a parent/);
     await expect(newStream('x', { parent: root.id, seed_line: 0 })).rejects.toThrow(
-      /only a conversation branches off; .* is project/,
+      'only a conversation branches off; Shop is project',
     );
   });
 });
@@ -485,9 +485,14 @@ describe('move (T333, D34)', () => {
     const other = await newStream('post', { project: blog.id });
     await expect(streams.move(a.id, grandchild.id)).rejects.toThrow(/inside a's subtree/);
     await expect(streams.move(a.id, a.id)).rejects.toThrow(/subtree/);
-    await expect(streams.move(a.id, other.id)).rejects.toThrow(/only within its project/);
+    // T371: projects by name, never by id.
+    await expect(streams.move(a.id, other.id)).rejects.toThrow(
+      'post is in Blog, a in Shop: a node moves only within its project',
+    );
     await expect(streams.move(a.id, blog.id)).rejects.toThrow(/only within its project/);
-    await expect(streams.move(shop.root, a.id)).rejects.toThrow(/project root/);
+    await expect(streams.move(shop.root, a.id)).rejects.toThrow(
+      'Shop is a project root; it cannot move',
+    );
     await expect(streams.move(a.id, ulid())).rejects.toThrow(/unknown parent/);
     await expect(streams.move(a.id, `P-${ulid()}`)).rejects.toThrow(/unknown project/);
     expect(streams.get(a.id).parent).toBe(shop.root);

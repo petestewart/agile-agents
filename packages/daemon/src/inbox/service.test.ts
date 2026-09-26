@@ -159,6 +159,22 @@ describe('InboxService.list', () => {
     expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
   });
 
+  test('T371: with no progress line, a done or blocked card says what to do, in the cockpit’s words', async () => {
+    await streams.update('daemon', child.id, { agent: { status: 'done' } });
+    const done = inbox.list().find((i) => i.stream === child.id);
+    expect(done?.context).toBe(
+      'The agent finished. Look over the changes, then merge — or close the node if you won’t.',
+    );
+    await streams.update('daemon', child.id, { agent: { status: 'blocked' } });
+    const blocked = inbox.list().find((i) => i.stream === child.id);
+    expect(blocked?.context).toBe(
+      'The agent is stuck and needs a hand. Open the node to see where it stopped.',
+    );
+    // The agent's own last line wins over the stock one.
+    await streams.update('agent', child.id, { agent: { progress: 'need the API key' } });
+    expect(inbox.list().find((i) => i.stream === child.id)?.context).toBe('need the API key');
+  });
+
   test('T336: a coordinating node whose coordinator finished is not "ready to land"', async () => {
     const grandchild = await streams.create('human', {
       title: 'api part',

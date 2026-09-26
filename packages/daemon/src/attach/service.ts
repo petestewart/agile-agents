@@ -78,9 +78,11 @@ export class StreamBusyError extends Error {
     public readonly stream: string,
     public readonly session: string,
     role: SessionRole = 'worker',
+    /** The node's title, which the message names (T371); the id when absent. */
+    title?: string,
   ) {
     super(
-      `stream ${stream} already has a live ${role} session (${session}); stop it before attaching`,
+      `${title ?? `node ${stream}`} already has a live ${role === 'reviewer' ? 'reviewer' : 'agent'}; stop it before starting another`,
     );
     this.name = 'StreamBusyError';
   }
@@ -89,7 +91,7 @@ export class StreamBusyError extends Error {
 /** The stream names a repo that is no longer registered in `repos.yaml`. */
 export class UnregisteredRepoError extends Error {
   constructor(public readonly repo: string) {
-    super(`stream repo ${repo} is not registered in repos.yaml`);
+    super(`repo ${repo} is not registered in this home`);
     this.name = 'UnregisteredRepoError';
   }
 }
@@ -598,7 +600,7 @@ export class AttachService {
     // same worktree, but never beside a second reviewer (§4.2). A node has
     // one agent, worker or coordinator.
     const busy = isAgentRole(role) ? liveAgent(stream) : liveSession(stream, role);
-    if (busy !== undefined) throw new StreamBusyError(stream.id, busy.id, role);
+    if (busy !== undefined) throw new StreamBusyError(stream.id, busy.id, role, stream.title);
 
     const repos = store.getRepos();
     const repoEntry = stream.repo === undefined ? undefined : repos[stream.repo];
@@ -634,7 +636,7 @@ export class AttachService {
         const host = stream.helper_of !== undefined ? streams.get(stream.helper_of) : undefined;
         if (host !== undefined && host.branch === undefined) {
           throw new Error(
-            `helper ${stream.id}: its parent ${host.id} has no branch yet; start the parent first`,
+            `${stream.title} is a helper, and its parent ${host.title} has no branch yet; start the parent's agent first`,
           );
         }
         const created = await createWorktree(

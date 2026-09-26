@@ -122,7 +122,7 @@ test('T260: migrated seed proposals collapse into one card; agent proposals stay
     ['rule_accept', lesson.id],
   ]);
   const batch = items[0];
-  expect(batch?.context).toBe('2 proposed rules from migration');
+  expect(batch?.context).toBe('2 proposed knowledge items imported from the old rules');
   expect(batch?.rules).toEqual([a.id, b.id]);
   expect(batch?.stream).toBeUndefined();
   expect(validateInboxItem(batch).kind).toBe('rule_batch');
