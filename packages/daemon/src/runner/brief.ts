@@ -65,6 +65,8 @@ export interface BuildBriefInput {
   };
   /** T281: this child's part of its parent's approved plan. */
   plan?: ChildPlanView;
+  /** T339: the repo's own check commands (repos.yaml `checks`, else package.json scripts). */
+  checks?: readonly string[];
   /** T330 (§4.4): the registered repos it may read (a work node: the others than its own). */
   readableRepos?: readonly { name: string; path: string }[];
   /** T330: the session runs in a worktree of its own (a work node), not a session dir. */
@@ -191,6 +193,10 @@ const AUTONOMY_HINT: Record<Autonomy, string> = {
   run: '`add_child`, `add_waits_on` and `set_owner` apply at once; a routine (additive) contract change with `routine: true` applies too.',
 };
 
+/** T338: people read what agents write; ids are for tool calls only. */
+export const NAMES_HINT =
+  'When you write for people (thread lines, questions, notes), name nodes and contracts by their title, never by id; ids are for tool calls.';
+
 /** P20 (T280): what a coordinator coordinates, and how far it may act on its own. */
 export function coordinatorSection(
   children: readonly Stream[],
@@ -199,6 +205,7 @@ export function coordinatorSection(
   contracts: readonly Contract[] = [],
   cards?: ReadonlyMap<string, StatusCard | { error: string }>,
 ): string {
+  const contractTitle = (id: string) => contracts.find((c) => c.id === id)?.title ?? id;
   const lines =
     children.length === 0
       ? ['none yet']
@@ -209,7 +216,9 @@ export function coordinatorSection(
             return `${head}${c.agent.progress ? ` — ${c.agent.progress}` : ''}`;
           if ('error' in card) return `${head}; card unreadable: ${card.error}`;
           return `${head}; card: ${card.state}, ${card.files.length} files${
-            card.relies_on.length > 0 ? `, relies on ${card.relies_on.join(', ')}` : ''
+            card.relies_on.length > 0
+              ? `, relies on ${card.relies_on.map(contractTitle).join(', ')}`
+              : ''
           }${card.doing !== '' ? ` — ${card.doing}` : ''}`;
         });
   const planLine =
@@ -222,7 +231,14 @@ export function coordinatorSection(
         }.`;
   return section(
     'Your children',
-    [...lines, '', `Autonomy: **${autonomy}**. ${AUTONOMY_HINT[autonomy]}`, planLine].join('\n'),
+    [
+      ...lines,
+      '',
+      `Autonomy: **${autonomy}**. ${AUTONOMY_HINT[autonomy]}`,
+      planLine,
+      'A child’s `ask` about the plan, a contract or a sibling comes to you first (`child_question`): answer it with `answer_child`, or pass it to the operator.',
+      NAMES_HINT,
+    ].join('\n'),
   );
 }
 
@@ -246,9 +262,18 @@ export function planSection(view: ChildPlanView): string {
   }
   lines.push(
     '',
-    'Settle details with a sibling directly (`ask_sibling`, `reply_sibling`; your coordinator sees a copy). Anything that changes the plan, a contract or who owns what goes to your coordinator: agree it with the sibling first, then `propose_contract` with them in `with`.',
+    'Settle details with a sibling directly (`ask_sibling`, `reply_sibling`; your coordinator sees a copy). Anything that changes the plan, a contract or who owns what goes to your coordinator: agree it with the sibling first, then `propose_contract` with them in `with`. An `ask` about the plan, a contract or a sibling goes to your coordinator first.',
+    NAMES_HINT,
   );
   return section('Your part of the plan', lines.join('\n'));
+}
+
+/** T339: the repo's own check commands, so an agent never fetches a tool to check its work. */
+export function checksSection(checks: readonly string[]): string {
+  return section(
+    'Checks',
+    `${checks.map((c) => `- \`${c}\``).join('\n')}\n\nUse these to test, typecheck, lint and build. Don't install or fetch tools (\`bunx tsc\`, \`npx <tool>\`, \`bun add\`) to check your work.`,
+  );
 }
 
 /** One pass of the assembler at a given thread-tail length and doc body cap. */
@@ -283,6 +308,9 @@ function assemble(
   }
 
   if (input.plan !== undefined) parts.push(planSection(input.plan));
+
+  if (input.checks !== undefined && input.checks.length > 0)
+    parts.push(checksSection(input.checks));
 
   const babysit = babysitSection(stream);
   if (babysit !== undefined) parts.push(babysit);

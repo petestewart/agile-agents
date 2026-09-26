@@ -22,6 +22,9 @@ import type {
   Stream,
   StreamCreateInput,
   ThreadEntry,
+  TrackerSettings,
+  TrackerSettingsInput,
+  TrackerSettingsStatus,
 } from '@agile-agents/shared';
 import type {
   ActivityEntry,
@@ -50,8 +53,18 @@ export function createStream(input: StreamCreateInput): Promise<Stream> {
 }
 
 /** T208: the rail's "New project". */
-export function createProject(name: string): Promise<Project> {
-  return post('/api/projects', { name }) as Promise<Project>;
+export function createProject(name: string, repos: string[] = []): Promise<Project> {
+  return post('/api/projects', { name, repos }) as Promise<Project>;
+}
+
+/** T338: the project's tracker block (system, push status, status map); `null` removes it. */
+export function setProjectTracker(id: string, tracker: TrackerSettings | null): Promise<unknown> {
+  return post(`/api/projects/${encodeURIComponent(id)}`, { tracker });
+}
+
+/** T338: the event log, every routed event, newest first. */
+export async function getEvents(): Promise<RoutedEvent[]> {
+  return (await get<{ events: RoutedEvent[] }>('/api/events')).events;
 }
 
 /** A question card: the typed text reaches the asking session verbatim (§3.3). */
@@ -94,6 +107,19 @@ export function saveClassifierKey(apiKey: string): Promise<ClassifierKeyStatus> 
 /** T167: Settings' Remove — deletes the config key; an env key still applies. */
 export function removeClassifierKey(): Promise<ClassifierKeyStatus> {
   return post('/api/settings/classifier/key/remove') as Promise<ClassifierKeyStatus>;
+}
+
+/** T326: Settings → Trackers — Jira's base URL/email and whether each token is set. Never a token. */
+export async function getTrackerSettings(): Promise<TrackerSettingsStatus> {
+  const res = await fetch('/api/settings/trackers');
+  const payload = (await res.json()) as TrackerSettingsStatus & { error?: string };
+  if (!res.ok) throw new Error(payload.error ?? `tracker settings read failed (${res.status})`);
+  return payload;
+}
+
+/** T326: one tracker write (`null` removes a field); the reply is the status, not the token. */
+export function saveTrackerSettings(input: TrackerSettingsInput): Promise<TrackerSettingsStatus> {
+  return post('/api/settings/trackers', input) as Promise<TrackerSettingsStatus>;
 }
 
 /** T163: the rules screen's edit (`RulePatchSchema` on the daemon side). */
@@ -167,6 +193,21 @@ export function approvePlan(id: string): Promise<unknown> {
 /** T282: a coordinator's `proposal` card: Apply performs it as you, Dismiss drops it. */
 export function decideProposal(id: string, decision: 'apply' | 'dismiss'): Promise<unknown> {
   return post(`/api/proposals/${encodeURIComponent(id)}/${decision}`);
+}
+
+/** T321: link the node to a tracker issue (its text becomes the goal); `null` unlinks. */
+export function linkNode(id: string, key: string | null): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/link`, { key });
+}
+
+/** T323: one linked child per issue in the node's epic; already-linked issues are skipped. */
+export function importChildren(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/import-children`);
+}
+
+/** T324: "Create issue" for an unlinked node; `project` defaults to the nearest linked ancestor's. */
+export function createNodeIssue(id: string, project?: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/issue`, project ? { project } : {});
 }
 
 /** T282: the node's coordinator autonomy override; `null` inherits the project's. */

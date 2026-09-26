@@ -64,6 +64,11 @@ export const RepoEntrySchema = z
       .object({ owner: z.string().min(1), repo: z.string().min(1) })
       .strict()
       .optional(),
+    /**
+     * T339: the repo's own check commands, handed to agents in the brief.
+     * Absent means the worktree's `package.json` scripts (test, typecheck, lint, build).
+     */
+    checks: z.array(z.string().min(1)).optional(),
     /** The branch this repo's work delivers to; the migration carries `target_branch` over. */
     main_branch: z.string().min(1).optional(),
     visibility: z

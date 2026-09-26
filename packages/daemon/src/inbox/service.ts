@@ -25,7 +25,7 @@ import type { ContractService } from '../coordination/contracts';
 import type { PlanService } from '../coordination/plans';
 import type { GateService } from '../gates/service';
 import type { KnowledgeService } from '../knowledge/service';
-import type { QuestionService } from '../questions/service';
+import { type QuestionService, withCoordinator } from '../questions/service';
 import type { StreamService } from '../streams/service';
 
 /** The full text behind a clipped context, as a spreadable field. */
@@ -64,6 +64,8 @@ export class InboxService {
     const items: InboxItem[] = [];
 
     for (const question of this.deps.questions.listOpen()) {
+      // T338: a part's question is with its coordinator first.
+      if (withCoordinator(question, byId.get(question.coordinator ?? ''))) continue;
       const item = this.questionItem(question, byId);
       if (item) items.push(item);
     }

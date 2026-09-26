@@ -416,6 +416,82 @@ describe('T160 cockpit routes', () => {
     }
   });
 
+  test('T326: tracker settings — same-origin writes stamped human; no route ever returns a token', async () => {
+    const jiraToken = 'jira-token-T326-never-echoed';
+    const linearToken = 'lin_api_T326_never_echoed';
+    const bodies: string[] = [];
+    const post = async (body: unknown, headers: Record<string, string> = {}) => {
+      const res = await fetch(url('/api/settings/trackers'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+      bodies.push(await res.clone().text());
+      return res;
+    };
+    const read = async () => {
+      const text = await (await fetch(url('/api/settings/trackers'))).text();
+      bodies.push(text);
+      return JSON.parse(text);
+    };
+
+    expect(await read()).toEqual({ jira: { token_set: false }, linear: { token_set: false } });
+    // Cross-origin is refused before anything is written.
+    const cross = await post(
+      { system: 'linear', token: linearToken },
+      { origin: 'http://evil.example' },
+    );
+    expect(cross.status).toBe(403);
+    expect((await read()).linear.token_set).toBe(false);
+    // Strict body; linear takes no base URL; jira's first token needs one.
+    expect((await post({ system: 'linear', token: linearToken, extra: 1 })).status).toBe(400);
+    expect(
+      (await post({ system: 'linear', token: linearToken, base_url: 'https://x.example' })).status,
+    ).toBe(400);
+    expect((await post({ system: 'github', token: linearToken })).status).toBe(400);
+    const noBase = await post({ system: 'jira', token: jiraToken });
+    expect(noBase.status).toBe(400);
+    expect(((await noBase.json()) as { error: string }).error).toContain('base URL');
+
+    const jira = await post({
+      system: 'jira',
+      base_url: 'https://shop.atlassian.net',
+      email: 'pete@example.com',
+      token: jiraToken,
+    });
+    expect(jira.status).toBe(200);
+    expect(await jira.json()).toEqual({
+      jira: { token_set: true, base_url: 'https://shop.atlassian.net', email: 'pete@example.com' },
+      linear: { token_set: false },
+    });
+    expect((await post({ system: 'linear', token: linearToken })).status).toBe(200);
+    expect((await read()).linear.token_set).toBe(true);
+    const onDisk = readFileSync(join(stateRoot, 'config.yaml'), 'utf8');
+    expect(onDisk).toContain(jiraToken);
+    expect(onDisk).toContain(linearToken);
+    expect(readHomeConfigFile(stateRoot).trackers?.jira?.email).toBe('pete@example.com');
+
+    // Email removed with null; clearing a token leaves the base URL.
+    expect((await post({ system: 'jira', email: null })).status).toBe(200);
+    const cleared = await post({ system: 'jira', token: null });
+    expect(await cleared.json()).toEqual({
+      jira: { token_set: false, base_url: 'https://shop.atlassian.net' },
+      linear: { token_set: true },
+    });
+    expect(readFileSync(join(stateRoot, 'config.yaml'), 'utf8')).not.toContain(jiraToken);
+
+    for (const body of bodies) {
+      expect(body).not.toContain(jiraToken);
+      expect(body).not.toContain(linearToken);
+    }
+    const events = readFileSync(join(stateRoot, 'log', 'events.jsonl'), 'utf8');
+    expect(events).not.toContain(jiraToken);
+    expect(events).not.toContain(linearToken);
+    const puts = store.listEvents().filter((e) => e.kind === 'home_config_put');
+    expect(puts.length).toBeGreaterThan(0);
+    expect(puts.every((e) => e.agent === 'human')).toBe(true);
+  });
+
   test('T170: session defaults — read every step, write home and repo through the store, stamped human', async () => {
     const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
       fetch(url(path), { method: 'POST', headers, body: JSON.stringify(body) });
@@ -653,6 +729,7 @@ describe('T160 cockpit routes', () => {
         name: 'shop',
         root: shop.root,
         autonomy: { coordinator: 'advise', director: 'advise' },
+        repos: [],
       },
     ]);
     const roles = Object.fromEntries(frame.streams.map((r) => [r.id, [r.role, r.project]]));

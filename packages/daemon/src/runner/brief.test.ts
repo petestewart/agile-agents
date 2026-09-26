@@ -4,6 +4,7 @@ import { ulid, validateKnowledgeItem } from '@agile-agents/shared';
 import {
   BRIEF_CHAR_CEILING,
   BRIEF_THREAD_ENTRIES,
+  NAMES_HINT,
   buildBrief,
   coordinatorSection,
   readRoleBrief,
@@ -362,6 +363,71 @@ describe('coordinator brief: children cards (T283)', () => {
     );
     expect(out).toContain('card: working, 2 files, relies on C-sale — adding salePrice');
     expect(out).toContain(`card unreadable: corrupt card file /h/cards/${web.id}.yaml:3`);
+  });
+
+  test('T338: relies_on reads as contract titles, and the brief asks for names, not ids', () => {
+    const api = makeStream({ title: 'api' });
+    const contract = {
+      id: 'C-01J00000000000000000000000',
+      node: api.id,
+      title: 'GET /price/:id',
+      body: 'returns cents',
+      parties: [api.id],
+      version: 1,
+      history: [],
+    };
+    const out = coordinatorSection(
+      [api],
+      'advise',
+      undefined,
+      [contract],
+      new Map([
+        [
+          api.id,
+          {
+            node: api.id,
+            doing: '',
+            state: 'working' as const,
+            files: [],
+            exports_changed: [],
+            relies_on: [contract.id],
+            updated_at: new Date().toISOString(),
+          },
+        ],
+      ]),
+    );
+    expect(out).toContain('relies on GET /price/:id');
+    expect(out).toContain(NAMES_HINT);
+  });
+});
+
+describe('the Checks section (T339)', () => {
+  test('lists the repo check commands and says not to fetch tools', () => {
+    const brief = buildBrief({
+      role: 'worker',
+      stream: makeStream(),
+      ancestors: [],
+      thread: [],
+      docs: [],
+      rules: [],
+      checks: ['bun run test', 'bun run typecheck'],
+    });
+    expect(brief).toContain('## Checks');
+    expect(brief).toContain('- `bun run test`\n- `bun run typecheck`');
+    expect(brief).toContain("Don't install or fetch tools");
+  });
+
+  test('is left out when there are no checks', () => {
+    const input = {
+      role: 'worker' as const,
+      stream: makeStream(),
+      ancestors: [],
+      thread: [],
+      docs: [],
+      rules: [],
+    };
+    expect(buildBrief(input)).not.toContain('## Checks');
+    expect(buildBrief({ ...input, checks: [] })).not.toContain('## Checks');
   });
 });
 

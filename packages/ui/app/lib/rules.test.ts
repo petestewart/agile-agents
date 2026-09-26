@@ -8,12 +8,15 @@ import { type KnowledgeItem as Rule, validateKnowledgePatch } from '@agile-agent
 import type { RuleReportRow } from './feed-types';
 import {
   DEFAULT_RULES_FILTER,
+  createOf,
   draftOf,
+  emptyDraft,
   evalDeadlineMs,
   filterRules,
   formatFiredAt,
   patchOf,
   ruleScopes,
+  scopeChoices,
   sortRules,
 } from './rules';
 
@@ -150,5 +153,31 @@ describe('T169', () => {
 
   test('last fired shows date and minute', () => {
     expect(formatFiredAt('2026-09-23T14:02:33.123Z')).toBe('2026-09-23 14:02');
+  });
+});
+
+describe('T338: New rule name and scope picker', () => {
+  test('a name reaches the create body; an empty one is left out', () => {
+    const named = createOf({ ...emptyDraft(), name: ' money ', text: 'cents' });
+    expect('input' in named && named.input.name).toBe('money');
+    const unnamed = createOf({ ...emptyDraft(), text: 'cents' });
+    expect('input' in unnamed && 'name' in unnamed.input).toBe(false);
+  });
+
+  test('scopes are offered by name: global, repos, projects, nodes', () => {
+    const node = '01J8Z3K4M5N6P7Q8R9S0T1V2W3';
+    const choices = scopeChoices({
+      repos: [{ name: 'api', delivery: 'direct' }],
+      projects: [{ id: `P-${node}`, name: 'Shop', root: node }],
+      streams: [
+        { id: node, title: 'Shop', role: 'project', agent_status: 'idle', human_status: 'open' },
+      ],
+    });
+    expect(choices).toEqual([
+      { value: 'global', label: 'Global' },
+      { value: 'repo:api', label: 'Repo: api' },
+      { value: `project:P-${node}`, label: 'Project: Shop' },
+      { value: `subtree:${node}`, label: 'Node and below: Shop' },
+    ]);
   });
 });

@@ -5,7 +5,7 @@
  * routed to `hil`, never `allow` (`hasUnsafeShellConstruct`).
  */
 
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join as joinPath, relative, resolve, sep } from 'node:path';
 
@@ -345,6 +345,35 @@ export function isRepoScriptCommand(tokens: string[]): boolean {
   if (!REPO_SCRIPT_SUBCOMMANDS.has(sub)) return false;
   if ((sub === 'install' || sub === 'i') && isNewDependencyInstall(tokens)) return false;
   return true;
+}
+
+const CHECK_SCRIPTS = ['test', 'typecheck', 'lint', 'build'] as const;
+
+/**
+ * T339: the repo's own check commands, from the worktree's `package.json`
+ * `scripts` (test, typecheck, lint, build), run with the runner its
+ * lockfile names (bun, then pnpm, then yarn, else npm). Empty when there is no readable `package.json`.
+ */
+export function repoScriptChecks(worktreePath: string): string[] {
+  let scripts: unknown;
+  try {
+    scripts = JSON.parse(readFileSync(joinPath(worktreePath, 'package.json'), 'utf8')).scripts;
+  } catch {
+    return [];
+  }
+  if (typeof scripts !== 'object' || scripts === null) return [];
+  const has = (f: string) => existsSync(joinPath(worktreePath, f));
+  const runner =
+    has('bun.lock') || has('bun.lockb')
+      ? 'bun'
+      : has('pnpm-lock.yaml')
+        ? 'pnpm'
+        : has('yarn.lock')
+          ? 'yarn'
+          : 'npm';
+  return CHECK_SCRIPTS.filter(
+    (s) => typeof (scripts as Record<string, unknown>)[s] === 'string',
+  ).map((s) => `${runner} run ${s}`);
 }
 
 // git: global-option-aware subcommand lookup

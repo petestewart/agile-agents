@@ -409,6 +409,59 @@ export async function runStreamWait(
   return 0;
 }
 
+/** T321: `node link <id> <KEY> [--system jira|linear]` or `node link <id> --remove`. */
+export async function runStreamLink(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'node-id');
+  const remove = hasFlag(args.options, 'remove');
+  const key = remove ? null : requirePositional(args, 1, 'issue-key');
+  const system = optionalString(args.options, 'system');
+  const node = await callRpc<Stream>(socketPath, 'node.link', {
+    id,
+    key,
+    ...(system !== undefined ? { system } : {}),
+  });
+  if (json) {
+    printJson(node);
+    return 0;
+  }
+  const link = node.external_link;
+  console.log(
+    link
+      ? `agile node link: ${id} linked to ${link.key} (${link.system}); goal set from the issue`
+      : `agile node link: ${id} has no link`,
+  );
+  return 0;
+}
+
+/** T323: `node import-children <id>`: one linked child per issue in the node's epic (idempotent). */
+export async function runStreamImportChildren(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'node-id');
+  const result = await callRpc<{ created: Stream[]; skipped: string[] }>(
+    socketPath,
+    'node.import_children',
+    { id },
+  );
+  if (json) {
+    printJson(result);
+    return 0;
+  }
+  for (const c of result.created) {
+    console.log(`  ${c.id}  ${c.external_link?.key ?? ''}  ${c.title}`);
+  }
+  console.log(
+    `agile node import-children: ${id}: ${result.created.length} created, ${result.skipped.length} already linked`,
+  );
+  return 0;
+}
+
 /** T282: `node set <id> --autonomy advise|organise|run|inherit`. */
 export async function runStreamSetAutonomy(
   socketPath: string,

@@ -5,11 +5,17 @@
  */
 
 import { existsSync } from 'node:fs';
+import { trackerStatus } from '@agile-agents/shared';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
 import { Bus, buildBusRpcMethods } from './bus';
 import { type Classifier, ClassifierKeyService, JevClassifier } from './classifier';
-import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
+import {
+  type AgileConfig,
+  type DiscoverConfigOptions,
+  discoverConfig,
+  readHomeConfigFile,
+} from './config';
 import { AutonomyService } from './coordination/autonomy';
 import { CardService } from './coordination/cards';
 import { ContractService } from './coordination/contracts';
@@ -49,6 +55,11 @@ import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
 import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
 import { MainSync, OverlapTracker, SymbolWatcher } from './sync';
+import { trackerFromConfig } from './trackers/create';
+import { TrackerLinks } from './trackers/link';
+import { TrackerStatusPush } from './trackers/push';
+import { buildTrackerRpcMethods } from './trackers/rpc';
+import { buildTrackerSettingsRpcMethods } from './trackers/settings';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -122,7 +133,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     : undefined;
   // A merge (land or a PR merged) hands the node to the retro (§17: after `merged`).
   // Every back-reference in this graph is read lazily through a closure,
-  // so construction order is never a trap.
+  // so construction order is never a trap. One the startup migration can
+  // reach before it is built is a `let`, so it reads as `undefined` (T337).
+  let trackerPush: TrackerStatusPush | undefined;
   const streamService: StreamService | undefined = store
     ? new StreamService(store, {
         // T244: record changes that are routed events (child_status, pr_merged, …).
@@ -130,6 +143,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           if (emitRouted) await emitTransitions(emitRouted)(before, after);
           // T283: the node's status card follows its record.
           await cardService?.refresh(after);
+          // T324: Node → tracker (off unless the project turns it on); never blocks the update.
+          void trackerPush?.onUpdated(before, after);
         },
       })
     : undefined;
@@ -178,6 +193,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           streams: streamService,
           contracts: contractService,
           ...(emitRouted ? { emit: emitRouted } : {}),
+          // T338: approval supersedes the parts' questions it answers (the service is built below).
+          questions: {
+            supersedeByPlan: async (node, version) =>
+              questionService?.supersedeByPlan(node, version),
+          },
           // T336: a part waiting for the plan starts when the approved plan gives it paths.
           start: async (id: string): Promise<unknown> => {
             if (attachService === undefined) throw new Error('attach is not available');
@@ -534,6 +554,47 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       : undefined;
   prPoller?.start();
 
+  // T321: tracker links — the goal from the issue; edits as `external_changed`.
+  const trackersConfig = () => {
+    try {
+      return readHomeConfigFile(config.home).trackers;
+    } catch {
+      return undefined;
+    }
+  };
+  const trackerLinks =
+    store && streamService
+      ? new TrackerLinks({
+          streams: streamService,
+          project: (id) => {
+            try {
+              return store.getProject(id);
+            } catch {
+              return undefined;
+            }
+          },
+          configured: () => {
+            const t = trackersConfig();
+            return (['jira', 'linear'] as const).filter((s) => t?.[s]?.token !== undefined);
+          },
+          tracker: (system) => trackerFromConfig(system, trackersConfig()),
+          ...(emitRouted ? { emit: emitRouted } : {}),
+        })
+      : undefined;
+  trackerLinks?.start();
+  if (store) {
+    trackerPush = new TrackerStatusPush({
+      project: (id) => {
+        try {
+          return store.getProject(id);
+        } catch {
+          return undefined;
+        }
+      },
+      tracker: (system) => trackerFromConfig(system, trackersConfig()),
+    });
+  }
+
   // T205: "+ Repo" in place (projects-design §7), over the attach service's sessions.
   const repoInPlace =
     store && streamService && attachService
@@ -547,6 +608,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store && gateService && bus
       ? {
           ...buildStateRpcMethods(store, { githubAuth }),
+          ...buildTrackerSettingsRpcMethods(store),
           ...buildBusRpcMethods(bus),
           ...buildGateRpcMethods(gateService),
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
@@ -567,6 +629,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
               })
             : {}),
           ...(projectService ? buildProjectRpcMethods(projectService) : {}),
+          ...(trackerLinks ? buildTrackerRpcMethods(trackerLinks) : {}),
           ...(directorService ? buildDirectorRpcMethods(directorService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...(rulesService ? buildKnowledgeRpcMethods(rulesService, ruleEvals) : {}),
@@ -632,6 +695,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(planService ? { plans: planService } : {}),
     ...(contractService ? { contracts: contractService } : {}),
     ...(autonomyService ? { autonomy: autonomyService } : {}),
+    ...(trackerLinks ? { trackerLinks } : {}),
     githubAuth,
   });
 
@@ -666,6 +730,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       ...(classifierKey ? { classifierStatus: () => classifierKey.status() } : {}),
       // T221 (§18): whether `gh` can supply a token, never the token.
       githubAuth,
+      // T320 (D31): configured or not, read per call; never a token.
+      trackerStatus: () => {
+        try {
+          return trackerStatus(readHomeConfigFile(config.home).trackers);
+        } catch {
+          return trackerStatus(undefined);
+        }
+      },
     });
     await rpc.listening;
   } catch (err) {
@@ -699,6 +771,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         if (gateTimer) clearInterval(gateTimer);
         overlapTracker?.stop();
         prPoller?.stop();
+        trackerLinks?.stop();
         mainSync?.stop();
         // Sessions are child processes: stop them first so their exit writes land.
         attachService?.delivery.stop();

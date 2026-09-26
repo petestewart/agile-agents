@@ -43,6 +43,11 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D30** (2026-09-24, Pete): Phases 7–13 are built on stacked branches. `claude/phase-7` comes off the current integration tip, and each `claude/phase-N` comes off `claude/phase-(N-1)`. Ticket branches `T###-<slug>` fork from their phase branch and merge back `--no-ff`. Pete reviews each phase at its QA ticket and lands the phases in order. A fix found in phase N while phase N+1 exists is made on phase N and merged forward into every later phase branch, never cherry-picked backwards.
 - **D31** (2026-09-24, Pete): P17 approved. Jira and Linear tokens may be stored in the home `config.yaml`, the second written credential exception after the TypeSafe key (D16), with the same rules: written only through the store at mode 0600, never printed, logged, committed or sent to the browser; Settings shows only whether a token is set. T320 is unblocked.
 - **D32** (2026-09-24, Pete): proposed decisions P1–P16 and P18–P20 (design/projects-design.md §19) accepted as written. Q5–Q24 are closed by D31 and D32.
+- **D33** (2026-09-25, Pete): conversations can have children (tangents). A conversation whose children are all conversations stays a conversation; it becomes coordinating only once a child has a repo. A tangent is started from a thread line ("Branch off") or `node new --parent`; when it finishes it posts a short summary event to the parent's thread. Amends P1.
+- **D34** (2026-09-25, Pete): the tree can be restructured by hand. Move a node under another parent in the same project (drag in the rail, or `agile node move <id> --parent <id|project>`); moving to the project root detaches it. Refused: into its own subtree, across projects, while the parent's plan is awaiting approval. Roles are re-derived; both parents get a thread line; a moved work node keeps its branch and worktree. Merging conversations is out of scope. Amends §6's "never by hand".
+- **D35** (2026-09-26, Pete): a part's question about shared things (a sibling, a contract, owned paths, the plan) goes to its coordinator first (`child_question` event, coordinator-only `answer_child` verb). The coordinator answers or passes it up; a stopped coordinator sends it to the inbox; plan approval supersedes held (not passed-up) questions. As built in T338.
+- **D36** (2026-09-26, Pete): the T341 walkthrough decisions, as recommended. D1 "Waits on…" / "Tracker issue…" labels, tracker field only with a project tracker. D2 the open node and filter live in the URL. D3 a "question" state on Children cards. D4 coordinator wakes stay; ended sessions collapse in the list. D5 a direct merge's event is "merged". D6 the coordinator autonomy picker only on coordinating nodes and project roots. D7 "Merge" everywhere, not "Land". D8 deferred to real-agent QA (T342). D9 a ship-check hold is neutral, not error red. D10 accepting a decision wakes the conversation. D11 part titles aren't truncated by "waiting for the plan". D12 daemon lines meant for the agent are hidden from the human thread.
+- **D37** (2026-09-26, Pete): upgrade Bun past 1.3.11 if a release fixes the child-process pipe bugs (fd double-close, EBADF on epoll_ctl); verified on a branch with the full suite and CI before the pin moves. Otherwise stay on 1.3.11 with the existing workarounds.
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -1587,55 +1592,224 @@ agile tail --director
 
 ### Ticket: T320 Tracker port, fakes and credentials
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** `daemon/trackers` with one port (get issue, list epic children, add comment, add link, transition status, create issue) and two adapters (Jira REST, Linear GraphQL). There are fake servers for both, as in T220. Credentials follow P17 **only once Pete has approved it as a D-entry**. `agile daemon status` reports each tracker as configured or not.
 - **Acceptance Criteria:** Adapter tests against the fakes. The token never appears in logs or events (asserted).
 - **Validation Steps:** `bun test packages/daemon/src/trackers`.
 - **Notes:** P17 approved (D31). First ticket of Phase 13.
+- T320: sonnet review APPROVE. Port + Jira REST/Linear GraphQL adapters + local fakes (T220 pattern); `trackers` config block; store.setTrackerToken (0600); daemon status shows configured/not. credentials.test.ts asserts no token leak. Daemon +926 (≈430 fakes). Gap: no way to set a token → T326. merge 40d9291.
+
 
 ### Ticket: T321 Link a node; pull its goal; edits as events
 - **Priority:** P1
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** `agile node link <id> SHOP-11` and a Link field on the stream page. Linking sets the goal from the title, description and acceptance criteria. A poller (5 min) emits `external_changed` on edits and updates the goal with a thread line.
 - **Acceptance Criteria:** Against the fake: link, edit the description in the fake, then the event and the goal update.
 - **Validation Steps:** `bun test packages/daemon/src/trackers packages/daemon/src/events`.
 - **Notes:** After T320.
+- T321: sonnet review APPROVE. TrackerLinks: goal from issue title+description (delimited, 8k cap); 5-min poller emits external_changed to the node; node.link RPC, POST /api/streams/:id/link, `agile node link`, stream-page field. Injection test. Daemon +338. Follow-up: a tracker edit overwrites a locally edited goal (no goal-edit path exists yet). AC come from the description. merge 78e8a05.
+
 
 ### Ticket: T322 ∥ Roll-up
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** An unlinked node resolves to its nearest linked ancestor. The PR body mentions that issue (fills T224's line). The linked node shows progress as children merged/total.
 - **Acceptance Criteria:** Unit tests for resolution and the PR body.
 - **Validation Steps:** `bun test packages/daemon/src/trackers packages/daemon/src/delivery`.
 - **Notes:** After T321.
+- T322: sonnet review BLOCKING (tracker key/url unescaped in the PR body) → fixed: key limited to [A-Za-z0-9_-], link only for http(s), parens encoded; tests for javascript: urls and key injection. Manager checked the fix. rollupLink resolves to the nearest linked ancestor; stream page shows m/t merged. Daemon +95. merge 28bdfa0.
+
 
 ### Ticket: T323 ∥ Import an epic's children
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** An "Import children" button and `agile node import-children <id>` create one linked child per issue in the epic. It is idempotent: already-linked issues are skipped.
 - **Acceptance Criteria:** A test against the fake: running it twice creates each child once.
 - **Validation Steps:** `bun test packages/daemon/src/trackers`.
 - **Notes:** After T321.
+- T323: sonnet review BLOCKING (concurrent imports could duplicate children) → fixed: imports serialised per parent node, linked set recomputed inside the lock, concurrent test. Manager checked the lock. node.import_children RPC, POST /api/streams/:id/import-children, `agile node import-children`, cockpit button for epics. Children are not started and do not inherit the repo (manager call, matches create). Daemon +79. merge f447f9e.
+
 
 ### Ticket: T324 Status push and create issue
 - **Priority:** P2
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:**
   - A per-project `push_status` (off by default) and `status_map`: in progress, in review and done are pushed, and the PR link is added as a link or comment. The app never closes an issue or edits its text.
   - "Create issue" is a click only.
 - **Acceptance Criteria:** Against the fake: with `push_status` off, nothing is sent; with it on, the mapped transitions are sent. There is no call that edits text (asserted on the fake's request log).
 - **Validation Steps:** `bun test packages/daemon/src/trackers`.
 - **Notes:** After T321.
+- T324: sonnet review APPROVE. trackers/push.ts: forward-only phase push (in progress / in review / done) only with push_status on and a status_map entry (no defaults); only transitionStatus + addLink. Create issue only via same-origin POST /api/streams/:id/issue (actor human; no RPC/MCP). Daemon +143. Follow-ups: no roll-up push from unlinked nodes; a failed push is not retried; no e2e for the Create issue button. merge e20ba79.
+
+
+### Ticket: T326 ∥ Tracker tokens in Settings and the CLI
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** D31's write path, which T320 left out. Settings gets a Trackers section (Jira base URL, email, token; Linear token) that shows only whether each token is set, with Set and Clear. An HTTP write route (same-origin, actor human) and `agile tracker set jira|linear` (token read from stdin or a prompt, never an argument) both go through `store.setTrackerToken`. The token is never returned by any route.
+- **Acceptance Criteria:** Route tests (403 cross-origin; GET never includes the token); CLI test; e2e: set a token in Settings, the screen shows "set", the page source never contains it.
+- **Validation Steps:** `bun test packages/daemon/src/trackers packages/cli`; `bun run test:e2e`.
+- **Notes:** After T320. Found in T320 review; T325's live check needs it.
+- T326: sonnet review APPROVE. store.setTrackerSettings (atomic 0600; Jira base_url with the first token); GET/POST /api/settings/trackers (token_set only; same-origin 403; actor human); `agile tracker status|set|clear` (stdin or no-echo prompt; argv token refused); Settings Trackers section. Merged phase-13 in after T321 (RPC builder renamed buildTrackerSettingsRpcMethods). Daemon +143. merge 78293ee.
+
+
+### Ticket: T327 Project tracker settings from the CLI
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** T324's per-project `tracker` block (system, `push_status`, `status_map`) had no way to be set. `agile project set <id> [--tracker jira|linear|none] [--push-status on|off] [--status-map in_progress=<Name>,in_review=<Name>,done=<Name>]`, merged into the current block through the existing `project.update` RPC. No cockpit project settings screen exists, so no UI.
+- **Acceptance Criteria:** CLI parse/merge tests; round-trip through a real daemon; invalid blocks refused.
+- **Validation Steps:** `bun test packages/cli packages/daemon/src/projects`.
+- **Notes:** Found while writing Pete's Phase 13 live check. Full bun test 2335/0. CLI-only (daemon delta 0); manager reviewed the diff. merge 02f8e68.
+
+### Ticket: T328 LIVE-CHECKLIST for the whole stage
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** §6.1: `LIVE-CHECKLIST.md` rewritten as the Phases 7–13 walkthrough (orientation, setup, repos and projects, coordination, PR delivery, cross-project overlap, knowledge, Director, trackers, day to day), home `~/.agile-walkthrough`.
+- **Acceptance Criteria:** Every non-vendor block run as pasted in a scratch home; vendor blocks marked.
+- **Validation Steps:** Pete runs it on his Mac.
+- **Notes:** Asked for by Pete before cleanup. 42 blocks run under `zsh -f` (stand-in repos, stub gh, fake Jira, real classifier). Docs only. Found: the Director restarts a dying vendor session with no backoff → T329. merge fa59415.
+
+### Ticket: T329 Director restart backoff
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** `DirectorService.wake()` restarts a Director session that dies at start immediately, 3–4 times a second (≈5,500 `director_put` events, ≈1,800 thread lines and one `sessions/` dir per attempt in 9 minutes). Add backoff and a cap; after repeated start failures, stop and put one card in the inbox with the error.
+- **Acceptance Criteria:** A test with a vendor that dies at start: bounded attempts, backoff, one inbox card, no event flood.
+- **Validation Steps:** `bun test packages/daemon/src/director`.
+- **Notes:** Found in T328. Fix on claude/phase-12, merged forward.
+- T329: sonnet review APPROVE. A start fails if start() throws or the session exits before its first turn ends; retries back off 5/10/20/40 s (5 min cap), give up after 5 with one Director-thread line naming the vendor error; `director say` resets. No per-retry thread lines or director_put. Thread line instead of an inbox card (inbox items need a stream) — Pete to confirm. Daemon +99. merge 8a7bc1e on phase-12, forwarded.
+
+
+### Ticket: T330 Conversation nodes read repos; one message, one thread entry
+- **Priority:** P0
+- **Status:** In Progress
+- **Owner:** opus:worker-T330
+- **Scope:** From Pete's walkthrough §3.2: a conversation agent could not read the registered repos (design §4: a conversation "may read repos") and did not know where they were. Give it the visibility read scope on the hook and ACP paths, list readable repos (name, path) in its brief. Also: one agent message was split across several thread entries mid-sentence; keep one message in one entry.
+- **Acceptance Criteria:** Read allowed for a registered repo, denied for the agile home and an unlisted private repo; the brief lists repos; a long message stays one entry.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/permissions packages/daemon/src/runner`.
+- **Notes:** Fixed on the earliest phase that has the code, merged forward.
+
+### Ticket: T331 Collapse nodes in the rail
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Pete: a caret before any node with children collapses or expands its subtree (double-click toggles too); state kept per viewer; a collapsed row still shows an attention dot from its subtree.
+- **Acceptance Criteria:** Playwright: collapse hides children, expand shows them, state survives reload.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** Fixed on the earliest phase that has the rail, merged forward.
+- T331: sonnet review APPROVE. Caret, double-click and Left/Right toggle; folds in localStorage (try/catch); folded rows show the amber dot; filter opens folds. Merged on phase-7 and forward to 13 (phase-8 conflict in StreamTree.tsx resolved keeping the overlap mark, visibility badge and dot). Double-click also opens the stream — Pete to confirm.
+
+
+### Ticket: T335 Walkthrough cockpit-first from 3.4
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Pete: LIVE-CHECKLIST from 3.4 on uses the cockpit, CLI only where no UI exists.
+- **Acceptance Criteria:** Labels from packages/ui source; non-agent steps clicked through in a real cockpit.
+- **Validation Steps:** Pete's walkthrough.
+- **Notes:** Docs only. Found: the ship check let an untested diff through in 1 of 5 real-classifier runs (4 held at 0.80–0.83).
+
+### Ticket: T336 Coordinator plans first after a split
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Pete's run: after "+ Repo" split a node, the parts started at once with the node's whole goal and raised questions before the coordinator's plan existed. The coordinator starts first; parts wait for plan approval and get scoped goals; no Land card on a coordinating node; coordinator may run read-only Bash; a node woken by a coordinator note gets the note text and event id.
+- **Acceptance Criteria:** Tests for the split ordering, part hold until approval, scoped goals, the wake note.
+- **Validation Steps:** `bun test packages/daemon/src/streams packages/daemon/src/events packages/daemon/src/coordination`.
+- **Notes:** Stacked: T336-split-coordinator → phase-7, T336-coordinator-wake → 9, T336-plan-gate → 11, T336-coordinator-reads → 12, T336-on-13/14 carry the T338 conflict resolution; merged and forwarded 7→14. Causes: an answer with no live session set idle (read as a human stop); parts started before any plan; a woken session got its events only after its first turn; `git -C`/`cd` denied for the coordinator. Parts made by a split wait for plan approval (marked by the split's own daemon thread line; Start later children don't auto-start). Review (sonnet), 3 rounds: blockers fixed — read-only git is an allowlist (isReadOnlyGitAtom), the `git -C` exemption is coordinator-only within read scope, option-attached paths (`-O/x`) are scope-checked; APPROVE. QA (sonnet): PASS on Pete's sequence. Follow-ups T343 (repo-config drivers, reviewer git), T344, T345.
+
+### Ticket: T337 trackerPush used before init at startup
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Startup migration raises questions → StreamService.update → onUpdated hook reads `trackerPush`, a const declared later: "Cannot access 'trackerPush' before initialization". Declare it before the StreamService; the push is skipped during migration.
+- **Acceptance Criteria:** Regression test fails on the old code, passes on the new; status pushes still reach the tracker.
+- **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/tracker`.
+- **Notes:** Branch T337-trackerpush-init (d18b826). Review (sonnet): APPROVE, regression confirmed against old code. QA (sonnet): PASS, reproduced on a legacy-shaped home before the fix, clean after. merge 8e6a3cf.
+
+### Ticket: T338 Names, not ids, and the cockpit gaps from the walkthrough
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** (1) Everywhere the user reads text (plan owners, hold/satisfied lines, cards, agent text via briefs), show node/contract/plan titles as links, never raw ids; briefs tell agents to use titles. (2) Parts' questions about shared things go to the coordinator first; approving a plan resolves questions it answers. (3) Cockpit gaps: project/node ids copyable where scopes need them (or a scope picker); Director autonomy picker per project; project tracker / push status / status map controls; Name field on Knowledge → New rule; New project with repos; PR review/check/auto-merge state in the Delivery panel; an event-log view.
+- **Acceptance Criteria:** Tests per item; e2e for the new controls.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** From Pete's walkthrough and T335's gap list. May split. Pete (2026-09-25): the Plan tab must label things: an "Owners" list by part name and each contract under a "Contract" heading. Branch T338-names-and-gaps, merge 1ab8062. (c) adds Question.coordinator/passed_up_at, the child_question event and the coordinator-only answer_child verb; proposed D35, awaiting Pete. Review (sonnet): blocker (plan approval superseded passed-up questions) fixed; APPROVE. QA (sonnet): PASS incl. hostile-text rendering. Merge with T340: both PR lines kept (T340 status line + T338 detail line; duplicate info, tidy in T341); T338 PR link now http(s)-only; T338 e2e moved its Merge click to a node without an open PR.
+
+### Ticket: T339 Agents know the repo's own check commands
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Pete's run: the ledger-lite part tried `bunx tsc --noEmit` (not in the repo, so it would fetch TypeScript) and waited on a human decision, instead of using the repo's own scripts. Put the repo's check commands in the brief: the `scripts` of the worktree's package.json (test, typecheck, lint, build) or a per-repo `checks` list in repos.yaml when set, with "use these; don't install or fetch tools". When a command is held or denied for fetching a tool, the reason names the repo's own scripts.
+- **Acceptance Criteria:** Brief test lists the scripts; a repo with `checks` set uses them; the hold reason suggests them.
+- **Validation Steps:** `bun test packages/daemon/src/runner packages/daemon/src/attach`.
+- **Notes:** Branch T339-repo-checks, merge 797903e. Review (sonnet): APPROVE; nits applied (yarn runner, unit tests). QA (sonnet): PASS (brief Checks, repos.yaml override, bunx/npx/bun add holds name the scripts, no package.json → no section). Adds optional `checks` to repo entries (sibling of protected_branches).
+
+### Ticket: T340 An auto-merged PR shows as merged
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Pete's run: the PR auto-merged but the cockpit kept showing the Merge banner, and clicking Merge re-showed it. Show the PR's real state (merged, checks, review); replace the Merge button with PR status and "Check now" when GitHub merges it.
+- **Acceptance Criteria:** A PR merged outside the cockpit shows merged after a poll or "Check now"; e2e.
+- **Validation Steps:** `bun test packages/daemon/src/delivery`; `bun run test:e2e`.
+- **Notes:** Branch T340-pr-merged-state off phase-8, merge d74da34 on phase-8, forward to 14. Causes: Merge on an open PR re-delivered and wrote pr_open without reading GitHub; a held re-deliver dropped the PR from the poller. deliverPr reads the PR first (merged → record + refuse; closed → human deliver opens a new one, agent push refuses, D8); Check now (pollNow, 5 s cooldown, POST /api/streams/:id/pr-check). Review (sonnet): blocker (agent push could open a PR) fixed; APPROVE, verified on phase-9. QA (sonnet): PASS twice.
+
+### Ticket: T343 Reviewer read-only git uses the allowlist
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Found in T336 review: the reviewer role's own read-only git check refuses `-c` but not `--config-env`, so a reviewer session can run a crafted git alias (command execution inside its worktree). Use T336's `isReadOnlyGitAtom` allowlist for the reviewer too; keep `--no-pager` working if reviewers rely on it. Fix on the earliest phase with the reviewer check, merge forward.
+- **Acceptance Criteria:** Tests: reviewer denied `-c`, `--config-env`, `GIT_*=` prefixes, `--ext-diff`, `--output`; allowed plain `git log/diff/show/status`.
+- **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`.
+- **Notes:** Branch T343-reviewer-git-allowlist off phase-7, merged 7→14. Reviewer (and coordinator) git: strict allowlist `isReadOnlyGitAtom` (one leading `--no-pager` allowed, `-O<path>` refused); spawn env `readOnlyGitEnv` for every non-engineer role: GIT_ATTR_SOURCE=empty tree, GIT_CONFIG_* core.fsmonitor=false, core.hooksPath=/dev/null, core.pager=cat, gpg.*program=/usr/bin/false, GIT_PAGER=cat (diff.external NOT set: an empty value kills every diff). Engineer: git config writes held; .git writes denied; any git path argument outside the worktree or into .git held; --unsafe-paths denied; clone/worktree add/submodule add held; -c/--config-env/--exec-path and program-running env prefixes held. info/attributes and repo config are protected by the write layer (and the tier-0 sandbox), not the env. A pattern rule's deny now beats a role hold (both tiers). Review (sonnet): 5 rounds, APPROVE. QA (sonnet): PASS (twice; the first missed that the env broke every reviewer diff, caught by the manager).
+
+### Ticket: T344 Nudge when parts wait on a plan that never comes
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** After T336, parts made by a split wait for the coordinator's plan. If the coordinator stops or never writes a plan, they wait silently. Surface it: a "waiting for the plan" inbox card on the node once its coordinator is idle with no plan, or after a timeout.
+- **Acceptance Criteria:** Test: coordinator ends with no plan → a card; plan approved → card gone.
+- **Validation Steps:** `bun test packages/daemon/src/inbox packages/daemon/src/coordination`.
+- **Notes:** From the T336 worker.
+
+### Ticket: T345 Workers may cd within their worktree
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Workers are denied `cd` (e.g. `cd sub && bun test`). Allow `cd` to a directory inside the worktree, with later relative paths resolved from there (as T336 does for coordinators); `tree` on the read-only list.
+- **Acceptance Criteria:** Tests: `cd ./sub && bun test` allowed (a bare `cd sub` is denied with a fix-it reason); `cd .. && …`, `cd /` and the agile home denied.
+- **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`.
+- **Notes:** Branch T345-worker-cd off phase-11, merged 11→14. Worker `cd` only to `./`, `../`, `/`, `~`, `.`, `..` targets that realpath inside the worktree and not under .git; a bare name is denied with "use `cd ./name`" (CDPATH/cdable_vars); any command mentioning CDPATH is held (workers, reviewers) or denied (coordinators); spawn env CDPATH=''; later relative paths are checked from every possible cwd (`&&` replaces, `;`/`||`/`&`/pipe/`sh -c` accumulate; >16 fails closed); coordinator shares the tracker (fixes a `;`-after-failed-cd write); `tree` read-only (not -o/-R). Review (sonnet): CDPATH bypass found and fixed; APPROVE. Also found: a lone `&` bypass (pre-existing) → ci-fix-lone-ampersand on phase-7.
+
+### Ticket: T341 Walkthrough QA in a browser with the fake agent
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Pete (2026-09-25): before he runs the walkthrough again, a QA agent drives LIVE-CHECKLIST end to end in the cockpit (Playwright, Chromium) with the fake agent, fake GitHub and fake Jira, screenshots every step, and checks what appears where. Every bug found is fixed (on the earliest phase) and re-run until clean. Only real-agent behaviour is left for Pete.
+- **Acceptance Criteria:** A run report with a screenshot per step and zero open findings; the scripted scenario lives in the repo as a reusable e2e (`test:walkthrough`, not in CI by default if slow).
+- **Validation Steps:** the scenario passes twice in a row.
+- **Notes:** Branch T341-walkthrough-qa off phase-14, merged. `bun run build && bun run test:walkthrough` (AGILE_WALKTHROUGH=1) drives LIVE-CHECKLIST 3.4–9.2 in a real cockpit with fake agent/GitHub/Jira/classifier, screenshot per step. 16 fixes (one PR line, plan v1, code-styled globs, no Land card for project conversations / PR-open nodes, grey dots, held reason once, named ship-check items, role-named composer, readable activity rows, project names in Director drafts, "you" in the Director thread, Needs me heading, Repos labels, "its turn finished", "human line"). Runs clean twice (39 steps, 0 findings). Review (sonnet): APPROVE. 12 decisions (D1–D12) and 15 checklist wording changes put to Pete.
+
+### Ticket: T342 QA with a real agent
+- **Priority:** P1
+- **Status:** Blocked
+- **Owner:** —
+- **Scope:** Pete: "eventually I need you to be able to QA with a real agent." Run the T341 scenario against real Claude Code sessions in the cloud container, a real GitHub test repo and optionally a real tracker sandbox, and report agent-behaviour findings (like the `bunx tsc` choice) as well as app bugs. The daemon still holds no vendor credential (§7): the key lives only in the environment the vendor harness is spawned with.
+- **Acceptance Criteria:** One full real-agent run in the cloud with a report; secrets never printed or logged.
+- **Validation Steps:** —
+- **Notes:** Blocked on Pete adding, in the cloud environment's settings: `ANTHROPIC_API_KEY` (for Claude Code in the container), `GH_TOKEN` (fine-grained, write to a throwaway test repo only), and optionally a Linear or Jira sandbox token. Network must allow api.anthropic.com and api.github.com.
 
 ### Ticket: T325 Phase 13 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Black-box QA against the fakes. Daemon line count, plus the full §6.1 walkthrough on the final branch. Pete links a node to a real issue in whichever tracker he uses.
 - **Acceptance Criteria:** QA ACCEPT. Live: the goal is pulled from the issue, an edit shows as an event, and with `push_status` on the issue moves to in review when the PR opens. §6.1 is met.
 - **Validation Steps:** Pete, on his Mac, after adding the tracker token in Settings (P17), with a real issue key typed in place of the example key below:
@@ -1651,6 +1825,39 @@ agile node show $N --json | jq -r '.goal, .external_link.url'
 ```
 
 - **Notes:** `SHOP-1` is an example. Pete types his own issue key, because there is no shared test tracker. This is the one command in the phase that can't be pasted unchanged.
+- T325: sonnet QA ACCEPT against the fake Jira/Linear servers (credentials, link + real 5-min poll, roll-up injection, import twice, push on/off, never edits text or closes). typecheck, lint, bun test, test:integration, test:e2e green. §6.1: offline gate met; daemon line count NOT met (30,494 vs D18 < 20,000; ~430 are the tracker fakes) — Pete to decide; live walkthrough needs Pete.
+
+
+### Phase 14 — Tree flexibility
+
+Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stacked on `claude/phase-13`.
+
+### Ticket: T332 ∥ Conversation tangents
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T332
+- **Scope:** Per D33: `nodeRole()` keeps a conversation whose children are all conversations as `conversation`; a "Branch off" action on a thread line (cockpit) and `node new --parent` on a conversation create a child conversation seeded with that line and its own question; the parent's agent is not replaced by a coordinator; a finished tangent emits a short summary event to the parent (routed, capped, the tangent's own words as data). Update design/projects-design.md §6/P1.
+- **Acceptance Criteria:** Role tests (conversation with conversation children stays conversation; becomes coordinating when a child gets a repo); e2e: Branch off from a line creates the child with the seed; a finished tangent's summary reaches the parent.
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/streams packages/daemon/src/events`; `bun run test:e2e`.
+- **Notes:** —
+
+### Ticket: T333 ∥ Move nodes by hand
+- **Priority:** P1
+- **Status:** In Progress
+- **Owner:** opus:worker-T333
+- **Scope:** Per D34: `agile node move <id> --parent <id|project>`, an HTTP route (same-origin, actor human) and drag-and-drop in the rail. Refuse moves into its own subtree, across projects, or while the parent's plan awaits approval. Re-derive roles; a thread line on the old and new parent; a work node keeps its branch and worktree. Update design/projects-design.md §6.
+- **Acceptance Criteria:** Service tests for every refusal and for roles after a move; CLI test; e2e drag moves a node and the rail updates.
+- **Validation Steps:** `bun test packages/daemon/src/streams packages/cli`; `bun run test:e2e`.
+- **Notes:** —
+
+### Ticket: T334 Phase 14 QA and Pete's look
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Black-box QA of tangents and moves; daemon line count.
+- **Acceptance Criteria:** QA ACCEPT.
+- **Validation Steps:** QA script; Pete in the cockpit.
+- **Notes:** After T332 and T333.
 
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
@@ -1665,6 +1872,16 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Q5–Q24. The proposed decisions P1–P20 in `design/projects-design.md` §19 are open until Pete confirms each one as a D-entry. Tickets assume them. P17 (tracker tokens in `config.yaml`, a second credential exception) must be approved before T320.
 
 ## 10. Discovered Issues Log
+
+- 2026-09-26 (T345 worker): a lone `&` was not a command separator in `splitCommandSegments`, so `echo hi & cat /etc/passwd` and `true & rm -rf ~` were auto-allowed for engineers since phase 7. Fixed on ci-fix-lone-ampersand (6ea669a), merged 7→14; reviewed (sonnet) APPROVE.
+- 2026-09-26 (T344 review): T336's `waitingForPlan` re-flagged a part that had started and gone idle, so plan approval could restart it and the rail/card said "waiting" again. Fixed on ci-fix-waiting-started (3e8724d, phase-11): waiting ends once a session starts after the split's waiting line (ULID time). Merged 11→14; reviewed and QA'd (sonnet).
+- 2026-09-25 (CI, phase 9): T131's rule "a reviewer's exit sets `agent.status` done when no worker is live" reversed. A reviewer that died at spawn marked a never-worked stream done. A review is not work, so a reviewer exit now only posts "review finished: N findings"; only a worker (from phase 11, a coordinator) exit moves `agent.status`. Branch ci-fix-review-status (81569dc) on phase-7, merged forward 7→14.
+
+- 2026-09-25 Pete: tangents (D33) and manual moves (D34) approved → Phase 14 on `claude/phase-14`. Cleanup phase starts after Pete finishes the walkthrough.
+
+- 2026-09-25 Pete (walkthrough): wants conversation nodes to have children (tangents / research branches that don't clog the main thread), and disagrees with "you never restructure the tree by hand" — wants manual restructuring. Both change the design (§6 roles, P1); proposals put to Pete before tickets.
+
+- Phase 13 complete on `claude/phase-13` (2026-09-25): T320–T324, T326 merged, T325 QA ACCEPT; awaiting Pete's look. All planned tickets for Phases 7–13 are Done. Open for Pete: daemon is 30,494 lines against D18's < 20,000.
 
 - Phase 12 complete on `claude/phase-12` (2026-09-25): T300–T303, T305 merged (plus T290/T291 on phase-11), T304 QA ACCEPT; awaiting Pete's look. Phase 13 proceeds on `claude/phase-13`.
 

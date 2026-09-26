@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Project, Stream } from '@agile-agents/shared';
+import type { Project, Stream, TrackerSettings } from '@agile-agents/shared';
 import { runCli } from './index';
 import { type TestDaemon, startTestDaemon } from './test-support';
 
@@ -128,6 +128,41 @@ describe('agile project against a daemon on a temp AGILE_HOME', () => {
 
     const shown = JSON.parse((await cli(['project', 'show', project.id, '--json'])).out);
     expect(shown).toEqual({ ...updated, autonomy: { coordinator: 'organise', director: 'run' } });
+
+    // T327: the tracker block, through project.update, round-trips from disk.
+    const tracked = await cli([
+      'project',
+      'set',
+      twoP.id,
+      '--tracker',
+      'jira',
+      '--push-status',
+      'on',
+      '--status-map',
+      'in_progress=In Progress,in_review=Code Review,done=Done',
+      '--json',
+    ]);
+    expect(tracked.err).toBe('');
+    const tracker: TrackerSettings = {
+      system: 'jira',
+      push_status: true,
+      status_map: { in_progress: 'In Progress', in_review: 'Code Review', done: 'Done' },
+    };
+    expect((JSON.parse(tracked.out) as Project).tracker).toEqual(tracker);
+    const reread = JSON.parse((await cli(['project', 'show', twoP.id, '--json'])).out) as Project;
+    expect(reread.tracker).toEqual(tracker);
+    expect((await cli(['project', 'show', twoP.id])).out).toContain(
+      'jira push_status=on status_map=in_progress=In Progress',
+    );
+    const off = await cli(['project', 'set', twoP.id, '--push-status', 'off', '--json']);
+    expect((JSON.parse(off.out) as Project).tracker).toEqual({ ...tracker, push_status: false });
+    const bad = await cli(['project', 'set', twoP.id, '--status-map', 'review=X']);
+    expect(bad.code).toBe(1);
+    const none = await cli(['project', 'set', twoP.id, '--tracker', 'none', '--json']);
+    expect((JSON.parse(none.out) as Project).tracker).toBeUndefined();
+    const orphan = await cli(['project', 'set', twoP.id, '--push-status', 'on']);
+    expect(orphan.code).toBe(1);
+    expect(orphan.err).toMatch(/no tracker/);
     const listed = JSON.parse((await cli(['project', 'list', '--json'])).out) as Project[];
     expect(listed.map((p) => p.id)).toEqual([project.id, twoP.id]);
     const table = await cli(['project', 'list']);

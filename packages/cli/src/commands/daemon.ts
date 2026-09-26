@@ -28,6 +28,7 @@ import {
 import {
   type ClassifierKeyStatus,
   type ResolvedSessionDefaults,
+  type TrackerStatus,
   formatSessionDefaults,
   resolveSessionDefaults,
 } from '@agile-agents/shared';
@@ -295,6 +296,8 @@ export interface DaemonStatusReport {
   classifier?: ClassifierKeyStatus;
   /** T221: from `daemon.status` — whether `gh` can supply a token, never the token. */
   githubAuth?: 'available' | 'unavailable';
+  /** T320 (D31): from `daemon.status` — each tracker configured or not, never a token. */
+  trackers?: TrackerStatus;
   /** T170 (D17): what a session attached with nothing named gets (home config + built-in). */
   sessionDefaults?: ResolvedSessionDefaults;
 }
@@ -312,11 +315,13 @@ export async function withClassifierStatus(
     const status = await callRpc<{
       classifier?: ClassifierKeyStatus;
       github?: { auth: 'available' | 'unavailable' };
+      trackers?: TrackerStatus;
     }>(report.socketPath, 'daemon.status', {}, { timeoutMs: 2000 });
     return {
       ...report,
       ...(status.classifier ? { classifier: status.classifier } : {}),
       ...(status.github ? { githubAuth: status.github.auth } : {}),
+      ...(status.trackers ? { trackers: status.trackers } : {}),
     };
   } catch {
     return report;
@@ -370,5 +375,8 @@ export function formatDaemonStatus(report: DaemonStatusReport): string {
   const github = report.githubAuth
     ? `\nGitHub auth: ${report.githubAuth === 'available' ? 'available' : 'unavailable (run `gh auth login`)'}`
     : '';
-  return `${running}${classifier}${github}${defaults}`;
+  const trackers = report.trackers
+    ? `\ntrackers: jira ${report.trackers.jira} · linear ${report.trackers.linear}`
+    : '';
+  return `${running}${classifier}${github}${trackers}${defaults}`;
 }

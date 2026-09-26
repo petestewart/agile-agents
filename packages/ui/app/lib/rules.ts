@@ -27,7 +27,7 @@ import {
   rulePatternArgs,
   rulePatternFromArgs,
 } from '@agile-agents/shared';
-import type { RuleReportRow } from './feed-types';
+import type { CockpitFrame, RuleReportRow } from './feed-types';
 
 /** What the rules screen shows. `source` is a `source.by` — the inbox's migration card sets it. */
 export interface RulesFilter {
@@ -89,6 +89,8 @@ export function sortRules(
 
 /** The edit form's fields, as typed. */
 export interface RuleDraft {
+  /** T338: the item's short name (≤ 64); empty leaves it unnamed (or unchanged on an edit). */
+  name: string;
   text: string;
   question: string;
   criteriaTrue: string;
@@ -113,6 +115,7 @@ export function draftOf(rule: Rule): RuleDraft {
   const classifier = classifierCheckOf(rule);
   const pattern = itemPattern(rule);
   return {
+    name: rule.name ?? '',
     text: rule.text,
     question: classifier?.question ?? '',
     criteriaTrue: classifier?.criteria?.true ?? '',
@@ -131,6 +134,7 @@ export function draftOf(rule: Rule): RuleDraft {
 /** T167: the "New rule" form's starting point. */
 export function emptyDraft(): RuleDraft {
   return {
+    name: '',
     text: '',
     question: '',
     criteriaTrue: '',
@@ -199,8 +203,10 @@ export function patchOf(draft: RuleDraft): { patch: RulePatch } | { error: strin
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+  const name = draft.name.trim();
   return {
     patch: {
+      ...(name.length > 0 ? { name } : {}),
       text,
       kind: draft.kind,
       paths,
@@ -229,6 +235,30 @@ export function createOf(draft: RuleDraft): { input: RuleCreateInput } | { error
       ...(draft.critical ? { critical: true } : {}),
     },
   };
+}
+
+/** T338: one choice of the "New rule" scope picker: the wire spelling and what it reads as. */
+export interface ScopeChoice {
+  value: string;
+  label: string;
+}
+
+/** T338: every scope a new item can take, named: global, each repo, each project, each node. */
+export function scopeChoices(
+  cockpit: Pick<CockpitFrame, 'streams' | 'projects' | 'repos'> | undefined,
+): ScopeChoice[] {
+  return [
+    { value: 'global', label: 'Global' },
+    ...(cockpit?.repos ?? []).map((r) => ({ value: `repo:${r.name}`, label: `Repo: ${r.name}` })),
+    ...(cockpit?.projects ?? []).map((p) => ({
+      value: `project:${p.id}`,
+      label: `Project: ${p.name}`,
+    })),
+    ...(cockpit?.streams ?? []).map((s) => ({
+      value: `subtree:${s.id}`,
+      label: `Node and below: ${s.title}`,
+    })),
+  ];
 }
 
 /**

@@ -7,7 +7,7 @@
 
 import { existsSync, unlinkSync } from 'node:fs';
 import { type Server, type Socket, createServer } from 'node:net';
-import type { ClassifierKeyStatus } from '@agile-agents/shared';
+import type { ClassifierKeyStatus, TrackerStatus } from '@agile-agents/shared';
 
 export interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -56,6 +56,8 @@ export interface DaemonStatus {
   classifier?: ClassifierKeyStatus;
   /** T221: whether `gh auth token` yields a token; never the token. */
   github?: { auth: 'available' | 'unavailable' };
+  /** T320 (D31): each tracker configured or not; never a token. */
+  trackers?: TrackerStatus;
 }
 
 export interface RpcServerOptions {
@@ -69,6 +71,8 @@ export interface RpcServerOptions {
   classifierStatus?: () => ClassifierKeyStatus;
   /** Reported under `github` by `daemon.status`. */
   githubAuth?: () => Promise<boolean>;
+  /** Reported under `trackers` by `daemon.status`. */
+  trackerStatus?: () => TrackerStatus;
 }
 
 function namespaceOf(method: string): string | undefined {
@@ -88,6 +92,7 @@ export function buildMethods(options: RpcServerOptions): Record<string, RpcMetho
       ...(options.githubAuth
         ? { github: { auth: (await options.githubAuth()) ? 'available' : 'unavailable' } }
         : {}),
+      ...(options.trackerStatus ? { trackers: options.trackerStatus() } : {}),
     }),
     ...options.extraMethods,
   };

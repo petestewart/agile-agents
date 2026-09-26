@@ -131,10 +131,12 @@ export class RoutedEventService {
 
   /** T245: the repo view's events: every event on `repo`, newest first. */
   forRepo(repo: string, limit = ACTIVITY_MAX): RoutedEvent[] {
-    return [...this.index().values()]
-      .filter((e) => e.repo === repo)
-      .reverse()
-      .slice(0, limit);
+    return this.recent(limit, (e) => e.repo === repo);
+  }
+
+  /** T338: the event log: every routed event (or those `keep` passes), newest first. */
+  recent(limit = ACTIVITY_MAX, keep: (e: RoutedEvent) => boolean = () => true): RoutedEvent[] {
+    return [...this.index().values()].filter(keep).reverse().slice(0, limit);
   }
 
   pendingFor(node: string): PendingDelivery[] {

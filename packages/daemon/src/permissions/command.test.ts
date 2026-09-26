@@ -27,6 +27,7 @@ import {
   pushRefspecs,
   redirectionTargets,
   refspecDestBranch,
+  repoScriptChecks,
   resolveTargetPath,
   scriptExecutionPath,
   splitCommandSegments,
@@ -613,6 +614,61 @@ describe('isRepoLocalBin (T030 QA round 2 real node_modules/.bin check, hardened
     } finally {
       rmSync(outsideBinDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('repoScriptChecks (T339)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(joinPath(tmpdir(), 'agile-perm-checks-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function pkg(scripts: unknown): void {
+    writeFileSync(joinPath(dir, 'package.json'), JSON.stringify({ scripts }));
+  }
+  const SCRIPTS = { build: 'b', dev: 'd', lint: 'l', test: 't', typecheck: 'tc' };
+
+  test.each([
+    ['bun.lock', 'bun'],
+    ['bun.lockb', 'bun'],
+    ['pnpm-lock.yaml', 'pnpm'],
+    ['yarn.lock', 'yarn'],
+    [undefined, 'npm'],
+  ])('lockfile %p runs with %p, in test/typecheck/lint/build order', (lock, runner) => {
+    pkg(SCRIPTS);
+    if (lock !== undefined) writeFileSync(joinPath(dir, lock), '');
+    expect(repoScriptChecks(dir)).toEqual(
+      ['test', 'typecheck', 'lint', 'build'].map((s) => `${runner} run ${s}`),
+    );
+  });
+
+  test('several lockfiles: bun, then pnpm, then yarn, then npm', () => {
+    pkg({ test: 't' });
+    writeFileSync(joinPath(dir, 'yarn.lock'), '');
+    expect(repoScriptChecks(dir)).toEqual(['yarn run test']);
+    writeFileSync(joinPath(dir, 'pnpm-lock.yaml'), '');
+    expect(repoScriptChecks(dir)).toEqual(['pnpm run test']);
+    writeFileSync(joinPath(dir, 'bun.lock'), '');
+    expect(repoScriptChecks(dir)).toEqual(['bun run test']);
+  });
+
+  test('no package.json is empty', () => {
+    expect(repoScriptChecks(dir)).toEqual([]);
+  });
+
+  test('malformed package.json is empty', () => {
+    writeFileSync(joinPath(dir, 'package.json'), '{ not json');
+    expect(repoScriptChecks(dir)).toEqual([]);
+  });
+
+  test('a non-string script value, or non-object scripts, is skipped', () => {
+    pkg({ test: 't', lint: 42, build: { cmd: 'x' } });
+    expect(repoScriptChecks(dir)).toEqual(['npm run test']);
+    pkg('bun test');
+    expect(repoScriptChecks(dir)).toEqual([]);
   });
 });
 

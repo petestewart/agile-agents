@@ -218,10 +218,15 @@ export function summarize(
       const paths = list(p.paths);
       return `The plan changed: ${String(p.summary)}. You own ${paths || 'no paths yet'}.`;
     }
+    case 'external_changed':
+      // T321: daemon-built (key + which fields); the tracker's text is only in the goal.
+      return `${String(p.key)}'s ${String(p.summary)}. Your goal was updated from the issue; check it still holds.`;
     case 'director_request':
       // T302: a daemon notice (a stuck node) is not the operator speaking.
       if (event.by === 'daemon') return String(p.body);
       return `The operator writes to you: ${String(p.body)}. Reply on your thread.`;
+    case 'child_question':
+      return `Child ${String(p.title)} asks you first (${String(p.question)}): ${String(p.text)}. Answer with \`answer_child\` {question, answer}; if only the operator can decide it, \`answer_child\` {question} alone passes it on.`;
     case 'coordinator_note':
       // T286: a daemon notice (a contract decision) is not the coordinator speaking.
       if (event.by === 'daemon') return String(p.body);

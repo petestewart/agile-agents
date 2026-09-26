@@ -54,6 +54,7 @@ import type { DirectorService } from './director/service';
 import type { DocsService } from './docs';
 import type { RoutedEventService } from './events';
 import {
+  type CockpitFrame,
   type EventTailerHandle,
   buildCockpitFrame,
   buildSnapshot,
@@ -85,6 +86,14 @@ import {
   setRepoSettings,
 } from './store';
 import type { RepoInPlaceService, StreamService } from './streams';
+import type { TrackerLinks } from './trackers/link';
+import { TrackerError } from './trackers/port';
+import {
+  TRACKER_INPUT_ERROR,
+  applyTrackerSettings,
+  parseTrackerSettings,
+  readTrackerSettings,
+} from './trackers/settings';
 
 /** The installable-app files served at site root, with their content types. */
 const INSTALLABLE_FILES: Record<string, string> = {
@@ -172,6 +181,8 @@ export interface HttpServerOptions {
   contracts?: ContractService;
   /** T282: the Apply/Dismiss on a coordinator's proposal card. */
   autonomy?: AutonomyService;
+  /** T321: the stream page's Link field. */
+  trackerLinks?: TrackerLinks;
   /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
 }
@@ -408,6 +419,20 @@ interface FeedContext {
   plans?: PlanService;
   contracts?: ContractService;
   autonomy?: AutonomyService;
+  trackerLinks?: TrackerLinks;
+}
+
+/** The cockpit frame (§9), as `/api/cockpit` and the `/ws` push send it. */
+function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
+  return buildCockpitFrame(
+    streams,
+    feed.inbox,
+    feed.projects,
+    feed.store.getRepos(),
+    (id) => feed.store.getCard(id),
+    feed.contracts,
+    (s) => feed.plans?.waitingForPlan(s) === true,
+  );
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -433,6 +458,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     plans: options.plans,
     contracts: options.contracts,
     autonomy: options.autonomy,
+    trackerLinks: options.trackerLinks,
   };
 }
 
@@ -488,6 +514,54 @@ async function handleSettingsRoute(
   } catch {
     // Store errors are generic already; this keeps any future one from quoting the key.
     return errorResponse(500, 'could not save the classifier key');
+  }
+}
+
+/**
+ * T326 (D31): Settings' trackers:
+ *
+ *   GET  /api/settings/trackers  Jira's base URL and email, and whether each token is set (never a token)
+ *   POST /api/settings/trackers  `{system, base_url?, email?, token?}` (`null` removes), live at once
+ *
+ * Writes are same-origin only and stamped `human`. No response, error or
+ * event ever carries a token: a bad body gets a fixed message, never zod's.
+ */
+async function handleTrackerSettingsRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/trackers') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (req.method === 'GET') {
+    try {
+      return jsonResponse(readTrackerSettings(feed.store));
+    } catch {
+      return errorResponse(500, 'could not read the tracker settings');
+    }
+  }
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return errorResponse(400, TRACKER_INPUT_ERROR);
+  }
+  const input = parseTrackerSettings(body);
+  if (!input) return errorResponse(400, TRACKER_INPUT_ERROR);
+  try {
+    return jsonResponse(await applyTrackerSettings(feed.store, input, 'human'));
+  } catch (err) {
+    // The store's messages never quote a value; anything else gets a fixed one.
+    const message = messageOf(err);
+    return errorResponse(
+      400,
+      message.startsWith('config.yaml would not validate')
+        ? message
+        : 'could not save the tracker settings',
+    );
   }
 }
 
@@ -583,6 +657,7 @@ async function handleDirectorRoute(
  *
  *   GET /api/streams/:id/activity  every event routed to the node: reason, delivery status, session or digest
  *   GET /api/repos/:name/events    every event on the repo
+ *   GET /api/events                T338: the event log, every routed event, newest first
  *   GET /api/repos/:name/knowledge T265: the repo's accepted standards and architecture
  */
 function handleActivityRoute(
@@ -593,6 +668,10 @@ function handleActivityRoute(
   if (req.method !== 'GET') return undefined;
   const node = url.pathname.match(/^\/api\/streams\/([^/]+)\/activity$/);
   const repo = url.pathname.match(/^\/api\/repos\/([^/]+)\/events$/);
+  if (url.pathname === '/api/events') {
+    if (!feed?.events) return errorResponse(503, 'events not available');
+    return jsonResponse({ events: feed.events.recent() });
+  }
   const norms = url.pathname.match(/^\/api\/repos\/([^/]+)\/knowledge$/);
   if (norms) {
     if (!feed?.rules) return errorResponse(503, 'knowledge not available');
@@ -655,7 +734,7 @@ async function handlePlanRoute(
  *
  *   POST /api/proposals/:id/apply|dismiss  the human decides a coordinator's proposal card
  *   POST /api/streams/:id/autonomy         `{autonomy: level|null}`: the node's override
- *   POST /api/projects/:id                 `{autonomy: {coordinator?, director?}}`: the project's levels
+ *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null}`: the project's levels and (T338) tracker settings
  */
 async function handleAutonomyRoute(
   req: Request,
@@ -690,6 +769,7 @@ async function handleAutonomyRoute(
     return jsonResponse(
       await feed.projects.update(decodeURIComponent(project?.[1] ?? ''), {
         autonomy: body.autonomy,
+        ...(body.tracker !== undefined ? { tracker: body.tracker } : {}),
       }),
     );
   } catch (err) {
@@ -697,6 +777,47 @@ async function handleAutonomyRoute(
       return errorResponse(409, err.message);
     }
     if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T321: `POST /api/streams/:id/link` `{key: "SHOP-11" | null}` links (or unlinks) the node.
+ * T324: `POST /api/streams/:id/issue` `{project?: "SHOP"}` creates an issue and links it.
+ */
+async function handleLinkRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  const m = url.pathname.match(/^\/api\/streams\/([^/]+)\/(link|issue|import-children)$/);
+  if (!m || req.method !== 'POST') return undefined;
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  if (!feed?.trackerLinks) return errorResponse(503, 'tracker links not available');
+  const id = UlidSchema.safeParse(decodeURIComponent(m[1] ?? ''));
+  if (!id.success) return errorResponse(400, `invalid stream id: ${m[1]}`);
+  try {
+    // T323: `POST /api/streams/:id/import-children` creates one linked child per epic issue.
+    if (m[2] === 'import-children')
+      return jsonResponse(await feed.trackerLinks.importChildren(id.data));
+    const body = await readJsonBody(req);
+    if (m[2] === 'issue') {
+      // T324: "Create issue", a human click only (no RPC, so no agent path).
+      const project = body.project;
+      if (project !== undefined && typeof project !== 'string') {
+        return errorResponse(400, 'invalid issue: project is a key (SHOP)');
+      }
+      return jsonResponse(await feed.trackerLinks.createIssue(id.data, project ? { project } : {}));
+    }
+    const key = body.key;
+    if (key !== null && (typeof key !== 'string' || key.trim() === '')) {
+      return errorResponse(400, 'invalid link: key is an issue key (SHOP-11) or null');
+    }
+    return jsonResponse(await feed.trackerLinks.link(id.data, key));
+  } catch (err) {
+    if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
+    if (err instanceof TrackerError) return errorResponse(400, err.message);
     return errorResponse(400, messageOf(err));
   }
 }
@@ -1094,16 +1215,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         // The cockpit frame (§9): the stream tree and the inbox.
         if (url.pathname === '/api/cockpit' && req.method === 'GET') {
           if (!feed?.streams) return errorResponse(503, 'streams not available');
-          return jsonResponse(
-            buildCockpitFrame(
-              feed.streams,
-              feed.inbox,
-              feed.projects,
-              feed.store.getRepos(),
-              (id) => feed.store.getCard(id),
-              (s) => feed.plans?.waitingForPlan(s) === true,
-            ),
-          );
+          return jsonResponse(cockpitFrame(feed, feed.streams));
         }
 
         if (url.pathname === '/api/policy' && req.method === 'GET') {
@@ -1126,6 +1238,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           }
         }
 
+        const trackerRoute = await handleTrackerSettingsRoute(req, url, feed, sameOrigin);
+        if (trackerRoute) return trackerRoute;
         const settingsRoute = await handleSettingsRoute(req, url, feed, sameOrigin);
         if (settingsRoute) return settingsRoute;
 
@@ -1134,6 +1248,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         const autonomyRoute = await handleAutonomyRoute(req, url, feed, sameOrigin);
         if (autonomyRoute) return autonomyRoute;
+
+        const linkRoute = await handleLinkRoute(req, url, feed, sameOrigin);
+        if (linkRoute) return linkRoute;
 
         const planRoute = await handlePlanRoute(req, url, feed, sameOrigin);
         if (planRoute) return planRoute;
@@ -1268,18 +1385,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
               ),
             );
             if (feed.streams) {
-              ws.send(
-                JSON.stringify(
-                  buildCockpitFrame(
-                    feed.streams,
-                    feed.inbox,
-                    feed.projects,
-                    feed.store.getRepos(),
-                    (id) => feed.store.getCard(id),
-                    (s) => feed.plans?.waitingForPlan(s) === true,
-                  ),
-                ),
-              );
+              ws.send(JSON.stringify(cockpitFrame(feed, feed.streams)));
             }
           }
         },
@@ -1302,19 +1408,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         // push the cockpit frame once per batch (§3.3 "push, do not poll").
         if (feed.streams && newEvents.length > 0) {
           try {
-            server.publish(
-              FEED_WS_TOPIC,
-              JSON.stringify(
-                buildCockpitFrame(
-                  feed.streams,
-                  feed.inbox,
-                  feed.projects,
-                  feed.store.getRepos(),
-                  (id) => feed.store.getCard(id),
-                  (s) => feed.plans?.waitingForPlan(s) === true,
-                ),
-              ),
-            );
+            server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, feed.streams)));
           } catch (err) {
             console.error(messageOf(err));
           }

@@ -25,6 +25,14 @@ describe('RepoEntry (T111)', () => {
     expect(entry.vendor).toBe('claude');
   });
 
+  test('T339: `checks` is an optional list of commands', () => {
+    expect(validateRepoEntry({ path: '/a' }).checks).toBeUndefined();
+    expect(validateRepoEntry({ path: '/a', checks: ['make check'] }).checks).toEqual([
+      'make check',
+    ]);
+    expect(() => validateRepoEntry({ path: '/a', checks: [''] })).toThrow(/invalid repo entry/);
+  });
+
   test('is .strict(): an unknown key is rejected', () => {
     expect(() => validateRepoEntry({ path: '/repos/ledger', branch: 'main' })).toThrow(
       /invalid repo entry/,

@@ -310,10 +310,17 @@ describe('T336: parts wait for the plan', () => {
   /** A node that has had its coordinator, and the plan service as the daemon wires it. */
   async function planned() {
     const started: string[] = [];
+    const superseded: string[] = [];
     plans = new PlanService({
       store,
       streams,
       contracts,
+      // T338 beside T336: approval supersedes held questions and starts waiting parts.
+      questions: {
+        supersedeByPlan: async (node, version) => {
+          superseded.push(`${node}@${version}`);
+        },
+      },
       start: async (id) => {
         started.push(id);
       },
@@ -325,7 +332,7 @@ describe('T336: parts wait for the plan', () => {
         { id: ulid(), vendor: 'claude', model: 'm', role: 'coordinator', status: 'stopped' },
       ],
     }));
-    return { ...tree, started };
+    return { ...tree, started, superseded };
   }
   /** What the split writes on a part it makes to wait (repo-in-place.ts). */
   const splitWaits = (id: string) =>
@@ -335,14 +342,14 @@ describe('T336: parts wait for the plan', () => {
     });
 
   test('approval starts each part it first gives paths to, and only those', async () => {
-    const { node, api, web, docs, started } = await planned();
+    const { node, api, web, docs, started, superseded } = await planned();
     for (const part of [api, web, docs]) await splitWaits(part.id);
     // web already ran and finished.
     await streams.update('daemon', web.id, { agent: { status: 'done' } });
     expect(plans.waitingForPlan(streams.get(api.id))).toBe(true);
     expect(plans.waitingForPlan(streams.get(web.id))).toBe(false);
     // The cockpit row says so.
-    const rows = buildCockpitFrame(streams, undefined, undefined, {}, undefined, (s) =>
+    const rows = buildCockpitFrame(streams, undefined, undefined, {}, undefined, undefined, (s) =>
       plans.waitingForPlan(s),
     ).streams;
     expect(rows.find((r) => r.id === api.id)?.waiting_for_plan).toBe(true);
@@ -355,6 +362,7 @@ describe('T336: parts wait for the plan', () => {
     expect(started).toEqual([]);
     await plans.approve(node.id);
     expect(started).toEqual([api.id]);
+    expect(superseded).toEqual([`${node.id}@1`]);
     expect(plans.waitingForPlan(streams.get(api.id))).toBe(false);
 
     // docs is in no approved plan yet: it still waits, and the change that gives it paths starts it.

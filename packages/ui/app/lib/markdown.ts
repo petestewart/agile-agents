@@ -18,10 +18,19 @@
  * module ever emits is its own fixed tag strings. So a reply containing
  * `<img src=x onerror=alert(1)>` renders as that literal text, not as an
  * element; there is no path by which source text becomes a tag, an
- * attribute, or a URL. Links are deliberately NOT supported for the same
- * reason — a `[text](javascript:…)` target would be the one place source
- * text reached an attribute.
+ * attribute, or a URL. Markdown links are deliberately NOT supported for
+ * the same reason — a `[text](javascript:…)` target would be the one place
+ * source text reached an attribute.
+ *
+ * T338: two link kinds are, both made here, never from Markdown syntax: a
+ * bare `http://`/`https://` URL (the only scheme the pattern in `names.ts`
+ * matches; it stops at quotes and angle brackets, so the escaped text it
+ * puts in `href` cannot leave the attribute), and a node/project/contract
+ * id the cockpit knows, shown as its title (escaped) with the id kept only
+ * as `data-node`/`title`.
  */
+
+import { NO_NAMES, type Names, type Token, tokenize } from './names';
 
 /**
  * The placeholder character inline code is parked behind while the bold and
@@ -47,15 +56,26 @@ export function escapeHtml(text: string): string {
  * then italic. `&#39;`/`&quot;` entities left by `escapeHtml` contain no
  * `*`/`_`/`` ` ``, so they cannot be corrupted by these passes.
  */
-function renderInline(escaped: string): string {
+function renderInline(escaped: string, names: Names): string {
   const code: string[] = [];
+  const links: string[] = [];
+  const link = (html: string) => {
+    links.push(html);
+    return `${SENTINEL}LINK${links.length - 1}${SENTINEL}`;
+  };
   // `` `code` `` — stashed behind a placeholder built from `SENTINEL`, which
   // `renderMarkdown` has already stripped from the source, so no input can
-  // forge one.
+  // forge one. A span that is exactly a known id reads as its title.
   let out = escaped.replace(/`([^`]+)`/g, (_m, body: string) => {
+    const only = tokenize(body, names);
+    if (only.length === 1 && only[0]?.kind === 'ref') return link(linkHtml(only[0]));
     code.push(body);
     return `${SENTINEL}CODE${code.length - 1}${SENTINEL}`;
   });
+  // T338: URLs and known ids, stashed too so the emphasis passes never reach an attribute.
+  out = tokenize(out, names)
+    .map((t) => (t.kind === 'text' ? t.text : link(linkHtml(t))))
+    .join('');
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/__([^_]+)__/g, '<strong>$1</strong>');
   out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
@@ -64,7 +84,19 @@ function renderInline(escaped: string): string {
     new RegExp(`${SENTINEL}CODE(\\d+)${SENTINEL}`, 'g'),
     (_m, i: string) => `<code>${code[Number(i)]}</code>`,
   );
+  out = out.replace(
+    new RegExp(`${SENTINEL}LINK(\\d+)${SENTINEL}`, 'g'),
+    (_m, i: string) => links[Number(i)] as string,
+  );
   return out;
+}
+
+/** A URL or id token of already-escaped text as its anchor. */
+function linkHtml(t: Exclude<Token, { kind: 'text' }>): string {
+  if (t.kind === 'url') {
+    return `<a href="${t.url}" target="_blank" rel="noopener noreferrer">${t.url}</a>`;
+  }
+  return `<a href="#${escapeHtml(t.id)}" class="cr-ref" data-node="${escapeHtml(t.ref.node)}" title="${escapeHtml(t.id)}">${escapeHtml(t.ref.title)}</a>`;
 }
 
 /** `- item` / `* item` / `+ item`. */
@@ -79,7 +111,7 @@ const FENCE = /^\s{0,3}```(.*)$/;
  * (see this file's header for why), and is the only thing this module
  * returns.
  */
-export function renderMarkdown(source: string): string {
+export function renderMarkdown(source: string, names: Names = NO_NAMES): string {
   const lines = source.replaceAll(SENTINEL, '').replace(/\r\n?/g, '\n').split('\n');
   const out: string[] = [];
   let paragraph: string[] = [];
@@ -89,7 +121,7 @@ export function renderMarkdown(source: string): string {
     if (paragraph.length === 0) return;
     // A single newline inside a paragraph is a visible line break — the EM
     // writes its replies that way and collapsing them reads as a wall.
-    out.push(`<p>${paragraph.map((l) => renderInline(escapeHtml(l))).join('<br>')}</p>`);
+    out.push(`<p>${paragraph.map((l) => renderInline(escapeHtml(l), names)).join('<br>')}</p>`);
     paragraph = [];
   }
 
@@ -129,7 +161,7 @@ export function renderMarkdown(source: string): string {
     if (heading) {
       flushAll();
       const level = (heading[1] as string).length;
-      out.push(`<h${level}>${renderInline(escapeHtml(heading[2] as string))}</h${level}>`);
+      out.push(`<h${level}>${renderInline(escapeHtml(heading[2] as string), names)}</h${level}>`);
       continue;
     }
 
@@ -141,7 +173,7 @@ export function renderMarkdown(source: string): string {
       if (list && list.ordered !== wantOrdered) flushList();
       if (!list) list = { ordered: wantOrdered, items: [] };
       const text = (ordered ? ordered[1] : (bullet as RegExpExecArray)[1]) as string;
-      list.items.push(renderInline(escapeHtml(text)));
+      list.items.push(renderInline(escapeHtml(text), names));
       continue;
     }
 

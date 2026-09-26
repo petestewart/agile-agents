@@ -57,6 +57,7 @@ import {
 } from '../events/wake';
 import { settingsFileName } from '../hook/settings';
 import type { RuleStatsOutcome } from '../knowledge/service';
+import { repoScriptChecks } from '../permissions/command';
 import { nodeReadScope } from '../permissions/policy-tables';
 import type { BriefDoc } from '../runner/brief';
 import { buildBrief } from '../runner/brief';
@@ -584,6 +585,10 @@ export class AttachService {
       docs: this.options.docs?.docsForStream(stream.id) ?? [],
       // §5.3: the accepted rules in scope for this stream and its ancestors.
       rules: this.options.rules?.inScope(stream.id) ?? [],
+      // T339: the repo's own check commands, for a session that has its worktree.
+      ...(repoEntry !== undefined && worktreePath !== undefined
+        ? { checks: repoEntry.checks ?? repoScriptChecks(worktreePath) }
+        : {}),
       ...(role === 'coordinator'
         ? {
             coordinator: {

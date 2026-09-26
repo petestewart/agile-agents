@@ -1370,6 +1370,31 @@ describe('decidePermission — T030 QA round 2 / opus round 3: dlx forms gated o
     makeExecutableBin(realWorktree, 'biome');
     expect(decideInRealWorktree('yarn dlx biome check .').kind).toBe('hil');
   });
+
+  // T339: a held tool fetch names the repo's own scripts instead.
+  test('bunx tsc --noEmit (not installed) is held, and the reason names the repo scripts', () => {
+    writeFileSync(
+      joinPath(realWorktree, 'package.json'),
+      JSON.stringify({ scripts: { test: 'bun test', typecheck: 'tsc -b', dev: 'vite' } }),
+    );
+    writeFileSync(joinPath(realWorktree, 'bun.lock'), '{}');
+    const decision = decideInRealWorktree('bunx tsc --noEmit');
+    expect(decision.kind).toBe('hil');
+    if (decision.kind === 'hil') {
+      expect(decision.reason).toContain(
+        "use the repo's own scripts instead: bun run test, bun run typecheck",
+      );
+      expect(decision.reason).not.toContain('dev');
+    }
+  });
+
+  test('npm install typescript with no package.json points at the brief', () => {
+    const decision = decideInRealWorktree('npm install typescript');
+    expect(decision.kind).toBe('hil');
+    if (decision.kind === 'hil') {
+      expect(decision.reason).toContain("use the repo's own check commands from your brief");
+    }
+  });
 });
 
 describe('T280: the coordinator table on the ACP path (P20)', () => {

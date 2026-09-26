@@ -756,6 +756,44 @@ describe('the brief is written beside the session logs (T145)', () => {
   }, 20_000);
 });
 
+describe("the brief carries the repo's own check commands (T339)", () => {
+  async function briefFor(): Promise<string> {
+    const stream = await makeStream('demo');
+    const { session } = await attachService.attach(stream.id);
+    const path = join(home, 'sessions', session.id, 'brief.md');
+    await waitFor(() => existsSync(path));
+    return readFileSync(path, 'utf8');
+  }
+
+  function commitPackageJson(): void {
+    writeFileSync(
+      join(repo, 'package.json'),
+      JSON.stringify({ scripts: { lint: 'biome check .', test: 'bun test' } }),
+    );
+    writeFileSync(join(repo, 'bun.lock'), '{}');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'scripts']);
+  }
+
+  test("the worktree's package.json scripts, run with its lockfile's runner", async () => {
+    commitPackageJson();
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const brief = await briefFor();
+    expect(brief).toContain('## Checks');
+    expect(brief).toContain('- `bun run test`\n- `bun run lint`');
+  }, 20_000);
+
+  test('a repo with `checks` set uses them instead', async () => {
+    commitPackageJson();
+    await store.putRepos({
+      demo: { path: repo, protected_branches: ['main'], checks: ['make check'] },
+    });
+    const brief = await briefFor();
+    expect(brief).toContain('- `make check`');
+    expect(brief).not.toContain('bun run test');
+  }, 20_000);
+});
+
 describe('a gate and a question in the same turn (T145)', () => {
   const POLICY: Policy = {
     gates: { land: 'human', rule_accept: 'human', classifier_review: 'human' },

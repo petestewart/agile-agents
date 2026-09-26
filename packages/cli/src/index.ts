@@ -49,6 +49,8 @@ import {
   runStreamAddRepo,
   runStreamArchive,
   runStreamClose,
+  runStreamImportChildren,
+  runStreamLink,
   runStreamList,
   runStreamNew,
   runStreamSay,
@@ -57,6 +59,7 @@ import {
   runStreamWait,
 } from './commands/stream';
 import { runDirectorTail, runNodeEvents, runTail } from './commands/tail';
+import { runTrackerClear, runTrackerSet, runTrackerStatus } from './commands/tracker';
 
 export const PACKAGE_NAME = '@agile-agents/cli';
 
@@ -79,6 +82,8 @@ function usage(): string {
     '  project list [--all]       projects (--all includes archived)',
     '  project show <id>',
     '  project set <id> [--name n] [--repo a,b] [--vendor v] [--model m] [--effort e] [--delivery direct|pr] [--auto-merge on|off] [--coordinator-autonomy|--director-autonomy advise|organise|run]',
+    '                             [--tracker jira|linear|none] [--push-status on|off]',
+    '                             [--status-map in_progress=<Name>,in_review=<Name>,done=<Name>]  (quote names with spaces; key= clears one)',
     '  node new --title <t> --goal <g> --project <P-id> [--parent <id>] [--repo <name>] [--label l]… [--no-start]',
     "                             [--helper-of <id>]: a same-repo helper off that node's branch, merged back into it",
     "                             starts the node's agent unless --no-start",
@@ -92,6 +97,8 @@ function usage(): string {
     '  node add-repo <id> <repo>  + Repo in place: conversation → work, work → coordinating with parts',
     '  node switch-repo <id> <repo>  move a work node with nothing committed to another repo',
     '  node wait <id> --on <id>… [--remove]  hold delivery until each --on node is merged',
+    '  node link <id> <KEY> [--system jira|linear] | --remove  link a tracker issue; its text becomes the goal',
+    '  node import-children <id>        one linked child per issue in the linked epic (idempotent)',
     '  node set <id> --autonomy advise|organise|run|inherit  this node\u2019s coordinator autonomy',
     '  stream …                   alias of `node`',
     '  knowledge list [--status proposed|accepted|retired] [--scope global|repo:<n>|project:<id>|subtree:<id>]',
@@ -125,6 +132,10 @@ function usage(): string {
     '  tail --node <id> --events  the node\u2019s routed events: reason, delivery status, session or digest (--follow)',
     '  tail --director            the Director\u2019s thread (--follow)',
     '  director say "<line>"      a line to the Director; its reply lands on its thread',
+    '  tracker status             Jira/Linear: base URL, email, whether each token is set (never the token)',
+    '  tracker set jira|linear [--base-url <url>] [--email <addr>|--no-email] [--no-token]',
+    '                             token read from stdin or a no-echo prompt, never an argument',
+    '  tracker clear jira|linear  remove the token from config.yaml',
     '  gate list                  list open HIL requests',
     '  inbox                      everything waiting on you, across all streams, oldest first',
     '  answer <id> <text|yes|no>  answer an inbox item: Q-… takes the answer text, HIL-… takes yes|no [note]',
@@ -284,6 +295,15 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         console.error(usage());
         return 1;
 
+      // T326 (D31): tracker settings; the token never travels as an argument.
+      case 'tracker': {
+        if (sub === 'status') return await runTrackerStatus(socketPath, json);
+        if (sub === 'set') return await runTrackerSet(socketPath, parseArgs(restArgv), json);
+        if (sub === 'clear') return await runTrackerClear(socketPath, parseArgs(restArgv), json);
+        console.error(usage());
+        return 1;
+      }
+
       case 'project': {
         const projectArgs = parseArgs(restArgv);
         if (sub === 'new') return await runProjectNew(socketPath, projectArgs, json);
@@ -305,6 +325,10 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'archive') return await runStreamArchive(socketPath, parseArgs(restArgv), json);
         if (sub === 'say') return await runStreamSay(socketPath, parseArgs(restArgv), json);
         if (sub === 'wait') return await runStreamWait(socketPath, parseArgs(restArgv), json);
+        if (sub === 'link') return await runStreamLink(socketPath, parseArgs(restArgv), json);
+        if (sub === 'import-children') {
+          return await runStreamImportChildren(socketPath, parseArgs(restArgv), json);
+        }
         if (sub === 'set') {
           return await runStreamSetAutonomy(socketPath, parseArgs(restArgv), json);
         }

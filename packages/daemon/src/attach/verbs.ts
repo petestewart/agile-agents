@@ -16,6 +16,7 @@ import {
   CoordinatorChangeSchema,
   DIRECTOR_NODE,
   type KnowledgeScope,
+  type QuestionId,
   type RoutedEvent,
   type SessionRole,
   type StatusCard,
@@ -40,6 +41,9 @@ import type { QuestionService } from '../questions/service';
 import { NotFoundError, type StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { type TestRunOutput, runTestRun } from '../tools/test-run';
+
+/** Session statuses with a process behind them. */
+const LIVE: ReadonlySet<string> = new Set(['starting', 'running', 'idle']);
 
 /** A verb called from a session that is not (or no longer) attached. */
 export class UnknownSessionError extends Error {
@@ -163,17 +167,78 @@ export class VerbService {
     };
   }
 
-  /** §1.4: a question is raised on the caller's stream. */
+  /**
+   * §1.4: a question is raised on the caller's stream. T338: a part's
+   * question about a shared thing goes to its live coordinator first.
+   */
   async ask(input: unknown): Promise<{ id: string }> {
     const { session, text } = validateVerbInput('ask', input);
     const caller = this.caller(session);
+    const coordinator = this.coordinatorFirst(caller.stream, text);
     const question = await this.options.questions.raise({
       stream: caller.stream,
       raised_by: session as AgentId,
       session,
       text,
+      ...(coordinator !== undefined ? { coordinator } : {}),
     });
+    if (coordinator !== undefined) {
+      const child = this.options.streams.get(caller.stream);
+      await this.options.emitRouted?.({
+        type: 'child_question',
+        subject: child.id,
+        by: 'daemon',
+        ...(child.project !== undefined ? { project: child.project } : {}),
+        payload: {
+          child: child.id,
+          title: child.title.slice(0, 200),
+          question: question.id,
+          text: question.text.slice(0, 200),
+        },
+      });
+    }
     return { id: question.id };
+  }
+
+  /**
+   * T338 (§9): the parent, when `node` is a part of its plan, the parent
+   * has a live coordinator, and `text` is about a shared thing: it names a
+   * sibling, one of the parent's contracts or a path a sibling owns, or
+   * speaks of the plan, a contract or ownership.
+   */
+  private coordinatorFirst(node: string, text: string): string | undefined {
+    const { streams, plans, contracts } = this.options;
+    const parentId = streams.get(node).parent;
+    if (parentId === undefined || plans === undefined || this.options.emitRouted === undefined)
+      return undefined;
+    const plan = plans.get(parentId);
+    if (plan === undefined) return undefined;
+    const parent = streams.get(parentId);
+    if (!parent.sessions.some((s) => s.role === 'coordinator' && LIVE.has(s.status)))
+      return undefined;
+    const lower = text.toLowerCase();
+    const siblings = streams.list().filter((s) => s.parent === parentId && s.id !== node);
+    const shared = [
+      ...siblings.flatMap((s) => [s.id, s.title]),
+      ...(contracts?.forNode(parentId) ?? []).flatMap((c) => [c.id, c.title]),
+      ...plan.owners.filter((o) => o.child !== node).flatMap((o) => o.owns),
+    ];
+    const named = shared.some((word) => word.length >= 3 && lower.includes(word.toLowerCase()));
+    return named || /\b(contracts?|the plan|owns|ownership|owners?)\b/i.test(text)
+      ? parentId
+      : undefined;
+  }
+
+  /** T338: the coordinator answers a part's question sent to it first, or passes it up. */
+  async answerChild(input: unknown): Promise<unknown> {
+    const { session, question, answer } = validateVerbInput('answer_child', input);
+    const caller = this.coordinatorCaller(session, 'answer_child');
+    const q = this.options.questions.get(question as QuestionId);
+    if (q.coordinator !== caller.stream) {
+      throw new Error(`answer_child: ${question} was not sent to you`);
+    }
+    if (answer === undefined) return this.options.questions.passUp(q.id);
+    return this.options.questions.answer(q.id, { answer, by: `agent:${session}` });
   }
 
   async progress(input: unknown): Promise<ThreadEntry> {
@@ -693,6 +758,7 @@ export function verbHandlers(
     add_waits_on: (input) => service.addWaitsOn(input),
     set_owner: (input) => service.setOwner(input),
     note_child: (input) => service.noteChild(input),
+    answer_child: (input) => service.answerChild(input),
     propose_contract: (input) => service.proposeContract(input),
     decide_contract: (input) => service.decideContract(input),
     ask_sibling: (input) => service.askSibling(input),

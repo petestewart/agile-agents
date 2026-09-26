@@ -10,7 +10,8 @@
 
 import type { KnowledgeItem, RoutedEvent } from '@agile-agents/shared';
 import { useEffect, useState } from 'react';
-import { getRepoEvents, getRepoKnowledge } from '../lib/api';
+import { getEvents, getRepoEvents, getRepoKnowledge } from '../lib/api';
+import { useFeed } from '../lib/feed-context';
 import type { CockpitOverlap, CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
 import { useShell } from '../lib/shell';
 import {
@@ -21,6 +22,7 @@ import {
   runningRows,
   streamDot,
 } from '../lib/streams';
+import { Linked } from './Markdown';
 
 /** T245: the repo's recent events (main moved, PRs), newest first. */
 function RepoEvents({
@@ -216,6 +218,68 @@ export function DependenciesLens({ rows }: { rows: readonly CockpitStreamRow[] }
               </li>
             );
           })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/**
+ * T338: the event log — every routed event, newest first: what happened,
+ * to which node, and who it was routed to and why. Re-read on every pushed
+ * frame.
+ */
+export function EventLog(): JSX.Element {
+  const { cockpit } = useFeed();
+  const [events, setEvents] = useState<RoutedEvent[] | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `cockpit` (the pushed frame) is the re-read trigger.
+  useEffect(() => {
+    let live = true;
+    getEvents()
+      .then((e) => live && setEvents(e))
+      .catch((err: unknown) => live && setError(err instanceof Error ? err.message : String(err)));
+    return () => {
+      live = false;
+    };
+  }, [cockpit]);
+  return (
+    <section className="cr-inbox" data-testid="event-log">
+      <div className="cr-inbox-hd">
+        <h1>Events</h1>
+      </div>
+      {error ? (
+        <p className="cr-error">{error}</p>
+      ) : events === undefined ? (
+        <p className="cr-dim">Loading…</p>
+      ) : events.length === 0 ? (
+        <p className="cr-calm">No events yet.</p>
+      ) : (
+        <ul className="cr-lens-list">
+          {events.map((e) => (
+            <li key={e.id} data-testid="event-log-row" data-event={e.id} data-type={e.type}>
+              <strong>{e.type.replace(/_/g, ' ')}</strong>
+              {e.subject ? (
+                <>
+                  {' · '}
+                  <Linked text={e.subject} />
+                </>
+              ) : null}
+              {e.repo ? <span className="anc"> · {e.repo}</span> : null}
+              {e.routing.length > 0 && (
+                <span className="anc" data-testid="event-log-routing">
+                  {' → '}
+                  {e.routing.map((r, i) => (
+                    <span key={r.node}>
+                      {i > 0 ? ', ' : ''}
+                      <Linked text={r.node} /> ({r.because.replace(/_/g, ' ')})
+                    </span>
+                  ))}
+                </span>
+              )}
+              <span className="anc"> · {e.at.slice(0, 16).replace('T', ' ')}</span>
+            </li>
+          ))}
         </ul>
       )}
     </section>
