@@ -380,6 +380,27 @@ describe('one live worker per stream (§2.3)', () => {
     expect(streams.get(stream.id).sessions.length).toBe(1);
   });
 
+  test('T396: two starts at once (a wake and a click) give one agent', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    const [first, second] = await Promise.allSettled([
+      attachService.attach(stream.id),
+      attachService.attach(stream.id),
+    ]);
+    expect(first.status).toBe('fulfilled');
+    expect(second.status).toBe('rejected');
+    expect(second.status === 'rejected' && second.reason).toBeInstanceOf(StreamBusyError);
+    expect(streams.get(stream.id).sessions).toHaveLength(1);
+    // A line sent with start while a start is in flight starts nothing more.
+    const [started, said] = await Promise.all([
+      attachService.attach(stream.id).catch(() => undefined),
+      attachService.say(stream.id, 'hello', { start: true }),
+    ]);
+    expect(started).toBeUndefined();
+    expect(said.started).toBeUndefined();
+    expect(streams.get(stream.id).sessions).toHaveLength(1);
+  }, 30_000);
+
   test('a reviewer may run beside a live worker, but only one reviewer at a time', async () => {
     attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
     const stream = await makeStream();
