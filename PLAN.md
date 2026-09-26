@@ -1772,12 +1772,12 @@ agile tail --director
 
 ### Ticket: T344 Nudge when parts wait on a plan that never comes
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** After T336, parts made by a split wait for the coordinator's plan. If the coordinator stops or never writes a plan, they wait silently. Surface it: a "waiting for the plan" inbox card on the node once its coordinator is idle with no plan, or after a timeout.
 - **Acceptance Criteria:** Test: coordinator ends with no plan → a card; plan approved → card gone.
 - **Validation Steps:** `bun test packages/daemon/src/inbox packages/daemon/src/coordination`.
-- **Notes:** From the T336 worker.
+- **Notes:** Branch T344-plan-nudge off phase-14, merged. Derived `plan_waiting` Needs me card on a coordinating node (parts waiting, no live coordinator, no plan awaiting approval) with Wake coordinator and Start parts anyway (POST /api/streams/:id/plan/start-parts, same-origin). Review found T336's waitingForPlan re-firing after a started part went idle → ci-fix-waiting-started. Review+QA (sonnet): APPROVE/PASS after the fix.
 
 ### Ticket: T345 Workers may cd within their worktree
 - **Priority:** P2
