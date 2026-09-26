@@ -772,7 +772,7 @@ test.skipIf(!RUN)(
         await checkText(
           'the plan card sits under Needs you',
           card.locator('.kind'),
-          'plan to approve',
+          'Plan to approve',
         );
         await checkText('the card names the owners', card, /ledger-lite part/);
         await checkText('the card names the contract', card, /Ledger entry JSON/);
@@ -799,7 +799,7 @@ test.skipIf(!RUN)(
         await checkText(
           'Needs me: plan to approve card',
           inboxCard.locator('.kind'),
-          'plan to approve',
+          'Plan to approve',
         );
         await checkText(
           'the card is grouped under Ledger export',
@@ -903,7 +903,7 @@ test.skipIf(!RUN)(
     await step('3.4e', 'a question card, answered inline', async () => {
       await openView('Needs me');
       const q = page.locator('[data-testid="inbox"] .cr-card[data-kind="question"]');
-      await checkText('a question card', q.locator('.kind'), 'question');
+      await checkText('a question card', q.locator('.kind'), 'Question');
       await checkText('the question text', q, /pretty JSON or one line/);
       const input = q.locator('[data-testid="answer-input"]');
       check(
@@ -967,7 +967,7 @@ test.skipIf(!RUN)(
     await step('3.4f', 'a coordinator proposal: Apply, and one Activity row', async () => {
       await openView('Needs me');
       const card = page.locator('[data-testid="inbox"] .cr-card[data-kind="proposal"]');
-      await checkText('a coordinator proposal card', card.locator('.kind'), 'coordinator proposal');
+      await checkText('a coordinator proposal card', card.locator('.kind'), 'Coordinator proposal');
       check(
         'the card has Apply',
         (await card.getByRole('button', { name: 'Apply' }).count()) === 1,
@@ -1075,7 +1075,7 @@ test.skipIf(!RUN)(
       const doneCard = page.locator('[data-testid="inbox"] .cr-group', {
         hasText: 'agile-test-repo part',
       });
-      await checkText('its Needs me card reads ready to merge', doneCard, /ready to merge/);
+      await checkText('its Needs me card reads Ready to merge', doneCard, /Ready to merge/);
       await checkText(
         'with a Merge button',
         doneCard.locator('[data-kind="done"] [data-testid="land"]'),
@@ -1737,7 +1737,7 @@ test.skipIf(!RUN)(
       await checkText(
         'Needs me has a standard proposed card',
         page.locator('[data-testid="inbox"] .cr-card[data-kind="rule_accept"] .kind'),
-        'standard proposed',
+        'Standard proposed',
       );
     });
 
@@ -1916,7 +1916,7 @@ test.skipIf(!RUN)(
       const card = page.locator('[data-testid="inbox"] .cr-card[data-kind="rule_accept"]', {
         hasText: 'integer cents',
       });
-      await checkText('a decision proposed card', card.locator('.kind'), 'decision proposed');
+      await checkText('a Decision proposed card', card.locator('.kind'), 'Decision proposed');
       // Its first turn ended with nothing open, so its session ended (T137);
       // accepting the decision wakes it with the decision (D36 D10, T351).
       const reacted = claim(cents, 'worker', async (_session, prompt) => {
