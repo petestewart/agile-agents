@@ -2060,6 +2060,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/feed/control-room.e2e.test.ts -t "T373|New project"`.
 - **Notes:** Branch T373-integration-polish, merged after T363. `Dialog` portals to `document.body` and stops its submit from bubbling (React bubbles through portals); `isShortcut` is off while `[aria-modal]` exists; a `file` remote is "Local clone" with a folder icon; New project and New node embed `AddRepoDialog`. Related e2e 15/15 after merge.
 
+### Ticket: T378 A repo name taken by another folder is a clash, not a silent replace
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From T367: `POST /api/repos` with a name already registered for another folder silently replaced that repo, and any re-add reset its delivery, visibility and GitHub settings to a fresh repo's.
+- **Acceptance Criteria:** http test: 409 on a clash; the same folder (another spelling) re-registers keeping its settings.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts packages/daemon/src/store`; CLI `repo.e2e`.
+- **Notes:** Branch T378-repo-name-clash. `state.repo_add` merges onto the existing entry; the HTTP route answers 409 for a different folder (the CLI keeps re-registering, since there is no `repo remove`). Also T376 (a question reads once on its page) and T377 (a project's repos editable on its root) were merged by the manager with their own tests.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Todo

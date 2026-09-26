@@ -1151,6 +1151,34 @@ describe('T362 folder picker, clone by URL, repo remotes', () => {
     expect(localhost.status).toBe(200);
   });
 
+  test('T378: POST /api/repos refuses a name taken by another folder; the same folder re-registers keeping its settings', async () => {
+    const shop = repoAt(join(scratch, 'work', 'shop'));
+    const other = repoAt(join(scratch, 'work', 'other'));
+    expect((await post('/api/repos', { name: 'shop', path: shop })).status).toBe(200);
+    await store.putRepos({
+      ...store.getRepos(),
+      shop: {
+        ...(store.getRepos().shop as object),
+        visibility: { mode: 'private', projects: ['P-01ARZ3NDEKTSV4RRFFQ69G5FAV'] },
+      } as never,
+    });
+    const clash = await post('/api/repos', { name: 'shop', path: other });
+    expect(clash.status).toBe(409);
+    expect(((await clash.json()) as { error: string }).error).toContain('already registered');
+    expect(store.getRepos().shop?.path).toBe(realpathSync(shop));
+    // The same folder (another spelling) re-registers and keeps what was set on it.
+    const again = await post('/api/repos', {
+      name: 'shop',
+      path: `${shop}/`,
+      protected_branches: ['main', 'release'],
+    });
+    expect(again.status).toBe(200);
+    expect(store.getRepos().shop).toMatchObject({
+      protected_branches: ['main', 'release'],
+      visibility: { mode: 'private', projects: ['P-01ARZ3NDEKTSV4RRFFQ69G5FAV'] },
+    });
+  });
+
   test('POST /api/repos/clone clones a local bare repo, registers it, and its row says where it came from', async () => {
     const work = repoAt(join(scratch, 'work', 'shop'));
     writeFileSync(join(work, 'README.md'), 'hi\n');

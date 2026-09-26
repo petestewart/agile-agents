@@ -169,7 +169,14 @@ export function buildStateRpcMethods(
         throw new RpcParamError('state.repo_add: path is required');
       }
       assertGitToplevel(path);
-      return store.addRepo(name, { ...entry, path: realpathSync(path) }, { by: 'human' });
+      // T378: re-registering a name keeps what was set on it (delivery, visibility,
+      // GitHub, defaults) instead of resetting it to a fresh repo's.
+      const existing = store.getRepos()[name];
+      return store.addRepo(
+        name,
+        { ...(existing ?? {}), ...entry, path: realpathSync(path) },
+        { by: 'human' },
+      );
     },
   };
 }

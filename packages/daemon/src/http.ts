@@ -8,6 +8,7 @@
  * store the feed routes 503 and `/ws` sends only the hello frame.
  */
 
+import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   ClassifierKeyInputSchema,
@@ -942,12 +943,33 @@ async function handleRepoRoute(
   } catch {
     return errorResponse(400, 'invalid repo: body must be JSON {name, path, protected_branches?}');
   }
+  // T378: from the cockpit, a name already registered for another folder is a
+  // clash, not a replace (the CLI keeps `agile repo add` re-registering).
+  const taken =
+    typeof body.name === 'string' && typeof body.path === 'string'
+      ? feed.store.getRepos()[body.name]
+      : undefined;
+  if (taken !== undefined && !samePath(taken.path, body.path as string)) {
+    return errorResponse(
+      409,
+      `a repository named ${String(body.name)} is already registered (${taken.path}); pick another name`,
+    );
+  }
   try {
     await buildStateRpcMethods(feed.store)['state.repo_add']?.(body);
     forget(body.name);
     return jsonResponse({ repos: await list() });
   } catch (err) {
     return errorResponse(400, messageOf(err));
+  }
+}
+
+/** T378: two spellings of one folder (symlinks, a trailing slash) are the same path. */
+function samePath(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
   }
 }
 
