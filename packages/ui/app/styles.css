@@ -1245,6 +1245,28 @@ ul.cr-error {
   display: none;
 }
 
+.cr-main > .cr-offline {
+  position: absolute;
+  z-index: 30;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  flex: none;
+  overflow: visible;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--amber-text);
+  background: var(--bg-raised);
+  border: 1px solid var(--amber);
+  border-radius: 999px;
+  box-shadow: var(--shadow-md);
+  white-space: nowrap;
+}
+
 /* ==== Sidebar ==== */
 .cr-sidebar {
   display: flex;

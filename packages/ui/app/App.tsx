@@ -11,7 +11,9 @@
  * one navigation, a drawer below 900px (design/cockpit-ui.md §3).
  */
 
+import { useEffect, useState } from 'react';
 import { DirectorPage } from './components/Director';
+import { Icon } from './components/Icon';
 import { Inbox } from './components/Inbox';
 import { DependenciesLens, EventLog, RepoView, RunningLens } from './components/Lenses';
 import { NewStream } from './components/NewStream';
@@ -20,7 +22,34 @@ import { Settings } from './components/Settings';
 import { MobileBar, Sidebar } from './components/Sidebar';
 import { StreamPage } from './components/StreamPage';
 import { useFeed } from './lib/feed-context';
-import { useShell } from './lib/shell';
+import { type ShellView, useShell } from './lib/shell';
+
+/** T360: the browser tab says where you are and how much waits on you. */
+const VIEW_TITLE: Record<ShellView, string> = {
+  inbox: 'Needs me',
+  repos: 'Repos',
+  running: 'Running',
+  deps: 'Dependencies',
+  rules: 'Knowledge',
+  director: 'Director',
+  events: 'Events',
+  settings: 'Settings',
+  stream: 'Node',
+};
+
+/** True once the socket has been down for a moment (not the first connect, not a blip). */
+function useLostConnection(connected: boolean): boolean {
+  const [lost, setLost] = useState(false);
+  useEffect(() => {
+    if (connected) {
+      setLost(false);
+      return;
+    }
+    const timer = setTimeout(() => setLost(true), 2000);
+    return () => clearTimeout(timer);
+  }, [connected]);
+  return lost;
+}
 
 export function App(): JSX.Element {
   const { snapshot, connected, cockpit, refresh } = useFeed();
@@ -29,6 +58,14 @@ export function App(): JSX.Element {
   const items = cockpit?.inbox ?? [];
   const projects = cockpit?.projects ?? [];
   const repos = cockpit?.repos ?? [];
+  const lost = useLostConnection(connected);
+
+  const nodeTitle = selected !== undefined ? rows.find((r) => r.id === selected)?.title : undefined;
+  const pageTitle = view === 'stream' && nodeTitle !== undefined ? nodeTitle : VIEW_TITLE[view];
+  const waiting = items.length > 0 ? `(${items.length}) ` : '';
+  useEffect(() => {
+    document.title = `${waiting}${pageTitle} · agile`;
+  }, [waiting, pageTitle]);
 
   return (
     <div className="cr-root" data-rail={railOpen ? 'open' : 'closed'}>
@@ -43,6 +80,12 @@ export function App(): JSX.Element {
       <div className="cr-scrim" onClick={toggleRail} />
       <main className="cr-main">
         <MobileBar connected={connected} name={snapshot?.project?.name ?? 'agile'} />
+        {lost && (
+          <div className="cr-offline" role="status" data-testid="offline-banner">
+            <Icon name="alert-circle" size={14} />
+            Lost the daemon — reconnecting. Is <code>agiled</code> running?
+          </div>
+        )}
         {view === 'settings' ? (
           <Settings />
         ) : view === 'repos' ? (
