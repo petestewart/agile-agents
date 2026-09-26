@@ -33,6 +33,7 @@ import {
 } from '@agile-agents/shared';
 import type { ProjectService } from '../projects/service';
 import type { QuestionService } from '../questions/service';
+import { branchLabel } from '../runner/worktrees';
 import type { StreamService } from '../streams/service';
 import { buildEvent } from './events';
 import type { StateStore } from './store';
@@ -198,7 +199,7 @@ export async function migrateHome(deps: HomeMigrationDeps): Promise<HomeMigratio
         s.human.status !== 'landed' &&
         s.human.status !== 'closed',
     )
-    .map((s) => `${s.branch} (${s.repo ?? 'no repo'}, stream ${s.id} "${s.title}")`)
+    .map((s) => `${s.title}: branch ${branchLabel(s.branch ?? '')} in ${s.repo ?? 'no repo'}`)
     .sort();
   result.parent_branches = parentBranches;
   if (parentBranches.length > 0) {

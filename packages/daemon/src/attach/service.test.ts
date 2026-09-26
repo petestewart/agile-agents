@@ -373,6 +373,10 @@ describe('one live worker per stream (§2.3)', () => {
     await waitFor(() => streams.get(stream.id).sessions.some((s) => s.status === 'running'));
 
     await expect(attachService.attach(stream.id)).rejects.toThrow(StreamBusyError);
+    // T371: the node by its title; the session id stays on the error, not in its words.
+    await expect(attachService.attach(stream.id)).rejects.toThrow(
+      `${stream.title} already has a live agent; stop it before starting another`,
+    );
     expect(streams.get(stream.id).sessions.length).toBe(1);
   });
 

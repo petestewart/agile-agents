@@ -251,7 +251,7 @@ export class StreamService {
     const host = this.store.getStream(parent);
     const role = nodeRole(host, liveChildrenOf(parent, all), all);
     if (role !== 'conversation') {
-      throw new StreamProjectError(`only a conversation branches off; ${parent} is ${role}`);
+      throw new StreamProjectError(`only a conversation branches off; ${host.title} is ${role}`);
     }
     const line = this.store.readThread(parent)[input.seed_line ?? -1];
     if (line === undefined) {
@@ -391,6 +391,16 @@ export class StreamService {
     return updated;
   }
 
+  /** A project by name for a message (T371); its id when it can't be read. */
+  private projectName(project: string | undefined): string {
+    if (project === undefined) return 'no project';
+    try {
+      return this.store.getProject(project).name;
+    } catch {
+      return project;
+    }
+  }
+
   /**
    * T333 (D34): moves `id` under `target` — a node, or a project id for its
    * root — in the same project. Refused: a project root, into its own
@@ -404,7 +414,9 @@ export class StreamService {
   async move(id: string, target: string): Promise<Stream> {
     const node = this.get(id);
     const from = node.parent;
-    if (from === undefined) throw new NodeMoveError(`${id} is a project root; it cannot move`);
+    if (from === undefined) {
+      throw new NodeMoveError(`${node.title} is a project root; it cannot move`);
+    }
     let to = target;
     if (target.startsWith('P-')) {
       try {
@@ -419,7 +431,7 @@ export class StreamService {
     const parent = this.get(to);
     if (parent.project !== node.project) {
       throw new NodeMoveError(
-        `${parent.title} is in ${parent.project ?? 'no project'}, ${node.title} in ${node.project ?? 'none'}: a node moves only within its project`,
+        `${parent.title} is in ${this.projectName(parent.project)}, ${node.title} in ${this.projectName(node.project)}: a node moves only within its project`,
       );
     }
     for (let cur: string | undefined = to; cur !== undefined; cur = this.get(cur).parent) {
