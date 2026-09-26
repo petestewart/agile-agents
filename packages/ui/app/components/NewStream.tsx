@@ -19,17 +19,7 @@ export function NewStream({
   rows: readonly CockpitStreamRow[];
   projects: readonly CockpitProjectRow[];
 }): JSX.Element | null {
-  const { newStreamOpen, setNewStreamOpen, select, selected, project } = useShell();
-  const [title, setTitle] = useState('');
-  const [goal, setGoal] = useState('');
-  const [parent, setParent] = useState('');
-  const [repo, setRepo] = useState('');
-  // T204: the node starts its agent on create unless this is ticked.
-  const [startLater, setStartLater] = useState(false);
-  const [repoNames, setRepoNames] = useState<string[]>([]);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [busy, setBusy] = useState(false);
-  const titleRef = useRef<HTMLInputElement>(null);
+  const { newStreamOpen, setNewStreamOpen, selected } = useShell();
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -44,23 +34,49 @@ export function NewStream({
     return () => window.removeEventListener('keydown', onKey);
   }, [newStreamOpen, setNewStreamOpen]);
 
-  // Each opening starts clean, parented under the open stream by default.
-  useEffect(() => {
-    if (!newStreamOpen) return;
-    setTitle('');
-    setGoal('');
-    setRepo('');
-    setStartLater(false);
-    setError(undefined);
-    // T206: the picker lists what is registered now, including repos added in Settings.
-    listRepos()
-      .then((repos) => setRepoNames(repos.map((r) => r.name)))
-      .catch(() => setRepoNames([]));
-    setParent(selected ?? '');
-    titleRef.current?.focus();
-  }, [newStreamOpen, selected]);
-
   if (!newStreamOpen) return null;
+  // T353: each opening (and a change of the open node) mounts a fresh form
+  // whose first render already holds the default parent. Resetting it in an
+  // effect after mount left one render with the last opening's parent, which
+  // a fast reader (or a quick submit) could see as "— none —".
+  return <NewStreamForm key={selected ?? ''} rows={rows} projects={projects} />;
+}
+
+function NewStreamForm({
+  rows,
+  projects,
+}: {
+  rows: readonly CockpitStreamRow[];
+  projects: readonly CockpitProjectRow[];
+}): JSX.Element {
+  const { setNewStreamOpen, select, selected, project } = useShell();
+  const [title, setTitle] = useState('');
+  const [goal, setGoal] = useState('');
+  // Parented under the open stream by default.
+  const [parent, setParent] = useState(selected ?? '');
+  const [repo, setRepo] = useState('');
+  // T204: the node starts its agent on create unless this is ticked.
+  const [startLater, setStartLater] = useState(false);
+  const [repoNames, setRepoNames] = useState<string[]>([]);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const titleRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    // T206: the picker lists what is registered now, including repos added in Settings.
+    let live = true;
+    listRepos()
+      .then((repos) => {
+        if (live) setRepoNames(repos.map((r) => r.name));
+      })
+      .catch(() => {
+        if (live) setRepoNames([]);
+      });
+    titleRef.current?.focus();
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const submit = async (event: FormEvent): Promise<void> => {
     event.preventDefault();

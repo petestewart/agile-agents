@@ -2527,6 +2527,48 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
   );
 
   browserTest(
+    'T353: "New stream" shows the open node as its parent from its first render',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const epic = await cockpit.streams.create('human', {
+          title: 'Tracker epic',
+          goal: 'g',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const tree = page.locator('[data-testid="stream-tree"]');
+        const row = tree.locator(`[data-stream="${epic.id}"]`);
+        await row.waitFor({ state: 'visible' });
+        const dialog = page.locator('[data-testid="new-stream"]');
+        const checked = page.locator('[data-testid="new-stream-parent"] option:checked');
+        for (let i = 0; i < 5; i++) {
+          // The last opening had no parent (nothing open)…
+          await tree.locator('.cr-tree-row', { hasText: 'All streams' }).click();
+          await page.locator('[data-testid="new-stream-open"]').click();
+          expect(await checked.textContent()).toBe('— none —');
+          await page.keyboard.press('Escape');
+          await dialog.waitFor({ state: 'detached' });
+          // …so this one, read at once, must already show the open node, not that stale "none".
+          await row.locator('.title').first().click();
+          await page.locator('[data-testid="stream-title"]', { hasText: 'Tracker epic' }).waitFor();
+          await page.locator('[data-testid="new-stream-open"]').click();
+          expect(await checked.textContent()).toBe('Tracker epic');
+          await page.keyboard.press('Escape');
+          await dialog.waitFor({ state: 'detached' });
+        }
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
     '`/` focuses the tree filter, which keeps matches and their ancestors',
     async () => {
       const cockpit = await startCockpit();

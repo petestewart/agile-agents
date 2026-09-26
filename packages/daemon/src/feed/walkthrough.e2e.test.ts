@@ -1241,7 +1241,9 @@ test.skipIf(!RUN)(
       world.gh.addReview(prNumber, { state: 'APPROVED', user: 'teammate' });
       await openNode('agile-test-repo part');
       const checkNow = page.locator('[data-testid="stream-pr-check"]');
-      if ((await checkNow.count()) > 0) await checkNow.click();
+      // A nudge only: the poller may merge first and take the button away between the
+      // count and the click (T353); the Delivery check below waits for the merge either way.
+      if ((await checkNow.count()) > 0) await checkNow.click({ timeout: 2_000 }).catch(() => {});
       await checkText(
         'Delivery: pr · merged',
         page.locator('[data-testid="delivery-state"]'),
@@ -2319,7 +2321,9 @@ test.skipIf(!RUN)(
       world.gh.setCheck(pull?.head ?? '', 'changelog', 'success');
       world.gh.addReview(n, { state: 'APPROVED', user: 'teammate' });
       const checkNow = page.locator('[data-testid="stream-pr-check"]');
-      if ((await checkNow.count()) > 0) await checkNow.click();
+      // A nudge only: the poller may merge first and take the button away between the
+      // count and the click (T353); the Delivery check below waits for the merge either way.
+      if ((await checkNow.count()) > 0) await checkNow.click({ timeout: 2_000 }).catch(() => {});
       await checkText(
         'Delivery: pr · merged',
         page.locator('[data-testid="delivery-state"]'),
