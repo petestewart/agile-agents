@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { checkStreamPr, landStream, markStreamLanded } from '../lib/api';
 import { deliveryBadge, deliveryStateWords, tidyIds } from '../lib/chat';
+import { mergeRefusal } from '../lib/errors';
 import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
 import { branchName } from '../lib/inbox';
 import { isLiveSession } from '../lib/streams';
@@ -280,7 +281,8 @@ export function DeliveryPanel({
           data-status="refused"
           role="alert"
         >
-          {openPr ? 'Check failed' : 'Merge refused'}: {refused}
+          {/* T425: the daemon's reason in words, never "Merge refused: merge refused: …". */}
+          {openPr ? 'Check failed.' : 'Couldn’t merge.'} {mergeRefusal(refused).text}
         </p>
       )}
       {stream.delivery_state && (

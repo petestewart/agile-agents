@@ -80,6 +80,7 @@ import { useShell } from '../lib/shell';
 import type { StatusInput } from '../lib/status';
 import { groupSteps, turnStartedAt } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
+import { titleFromGoal } from '../lib/tree';
 import { ChatScroll, ContextMeter, MessageList, StepsFold, Thinking, useSteps } from './Chat';
 import { type NodeCommands, useNodeCommands } from './CommandPalette';
 import { Composer, type ComposerHandle } from './Composer';
@@ -667,10 +668,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const branchOff = (line: number) =>
     act(async () => {
       const created = await createStream({
-        title: question.split('\n')[0]?.slice(0, 80) || question,
+        // T425: cut at a word like New node's; the cheap model names it better (D41).
+        title: titleFromGoal(question) || question.slice(0, 60),
         goal: question,
         parent: stream.id,
         seed_line: line,
+        auto_title: true,
       });
       setBranching(undefined);
       setTangentQuestion('');

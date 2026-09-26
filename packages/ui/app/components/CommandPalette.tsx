@@ -217,7 +217,8 @@ export function CommandPalette({
   rows: readonly CockpitStreamRow[];
   projects: readonly CockpitProjectRow[];
 }): JSX.Element | null {
-  const { select, selected, setView, setNewStreamOpen, setNewProjectOpen, openRules } = useShell();
+  const { select, selected, setView, setNewStreamOpen, setNewProjectOpen, openRules, openAsk } =
+    useShell();
   const [open, setOpen] = useState(false);
   const [recent, setRecent] = useState<string[]>(loadRecent);
 
@@ -253,8 +254,8 @@ export function CommandPalette({
   }, [selected]);
 
   const actions = useMemo(
-    () => ({ select, setView, setNewStreamOpen, setNewProjectOpen, openRules }),
-    [select, setView, setNewStreamOpen, setNewProjectOpen, openRules],
+    () => ({ select, setView, setNewStreamOpen, setNewProjectOpen, openRules, openAsk }),
+    [select, setView, setNewStreamOpen, setNewProjectOpen, openRules, openAsk],
   );
   const close = useCallback(() => setOpen(false), []);
   // The node already open is where you are, not somewhere to go; the rest fills from what changed.
@@ -293,6 +294,8 @@ function PaletteDialog({
     setNewStreamOpen: (open: boolean) => void;
     setNewProjectOpen: (open: boolean) => void;
     openRules: (filter?: RulesFilter) => void;
+    /** T425: Ask (T419), aimed at the open node, else the Director. */
+    openAsk: () => void;
   };
   /** T416: the node open now, and what its page offers. */
   here?: NodeCommands;
@@ -394,6 +397,18 @@ function PaletteDialog({
         icon: 'plus',
         hint: 'N',
         run: () => actions.setNewStreamOpen(true),
+      },
+      {
+        entry: {
+          key: 'action:ask',
+          group: 'actions',
+          title: 'Ask a question…',
+          subtitle: here ? 'About the open node, in its own thread' : 'The Director, or any node',
+          keywords: ['question', 'conversation', 'director', 'talk'],
+        },
+        icon: 'message-square',
+        hint: 'A',
+        run: () => actions.openAsk(),
       },
       {
         entry: {

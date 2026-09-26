@@ -2471,6 +2471,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/streams/titles.test.ts packages/daemon/src/http.test.ts -t T422`; control-room e2e `T422`.
 - **Notes:** Branch T422-turn-into-work. `START_ON_GOAL` lives in shared, so the cockpit and the tests say the same line.
 
+### Ticket: T425 Loose ends from T416 and T419
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Delivery read "Merge refused: merge refused: …"; `a` opened Ask on top of a focused card's choice; Ask had no palette entry or `?` line; a branched-off tangent's title was its first 80 characters.
+- **Acceptance Criteria:** Delivery says "Couldn’t merge." (or "Check failed.") and the reason in words (`mergeRefusal`); Ask's key yields to a handler that took it; ⌘K "Ask a question…" (A) opens Ask aimed at the open node, else the Director; the `?` sheet lists A; a tangent's title is `titleFromGoal` of its question, then named by the cheap model (D41).
+- **Validation Steps:** `bun test packages/ui`; control-room e2e `T368` (palette), `T332`, `T419`, `T416`.
+- **Notes:** Branch T425-leftovers.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
