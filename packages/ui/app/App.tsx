@@ -17,16 +17,17 @@
  * navigating resets it.
  */
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect } from 'react';
 import { Ask } from './components/Ask';
 import { CommandPalette } from './components/CommandPalette';
 import { ErrorBoundary, PageLoading, lazyNamed } from './components/ErrorBoundary';
-import { Icon } from './components/Icon';
 import { Inbox } from './components/Inbox';
 import { NewStream } from './components/NewStream';
 import { Shortcuts } from './components/Shortcuts';
 import { MobileBar, Sidebar } from './components/Sidebar';
 import { StreamPage } from './components/StreamPage';
+import { Spinner, useToast } from './components/ui';
+import { unarchiveStream } from './lib/api';
 import { useFeed } from './lib/feed-context';
 import { type ShellView, useShell } from './lib/shell';
 import { useNeedsMeNotifications } from './lib/use-notify';
@@ -111,28 +112,58 @@ const VIEW_TITLE: Record<ShellView, string> = {
   stream: 'Node',
 };
 
-/** True once the socket has been down for a moment (not the first connect, not a blip). */
-function useLostConnection(connected: boolean): boolean {
-  const [lost, setLost] = useState(false);
+/**
+ * T416 (finding 24): a `?node=` link to a node that is gone lands on Needs
+ * me and says so — deleted (with Restore, since that's what you'd want
+ * next) or never there (a wrong link).
+ */
+function useMissingNodeToast(): void {
+  const { missingNode, clearMissingNode, select } = useShell();
+  const toast = useToast();
   useEffect(() => {
-    if (connected) {
-      setLost(false);
+    if (missingNode === undefined) return;
+    clearMissingNode();
+    const { id, archived, title } = missingNode;
+    if (!archived) {
+      toast({
+        title: 'That node no longer exists',
+        body: 'It was deleted, or the link is wrong.',
+        tone: 'info',
+        duration: 8000,
+      });
       return;
     }
-    const timer = setTimeout(() => setLost(true), 2000);
-    return () => clearTimeout(timer);
-  }, [connected]);
-  return lost;
+    toast({
+      title: title !== undefined ? `“${title}” was deleted` : 'That node was deleted',
+      body: 'It’s under Deleted at the foot of the sidebar. Restore brings it back.',
+      tone: 'info',
+      duration: 10000,
+      action: {
+        label: 'Restore',
+        onClick: () => {
+          unarchiveStream(id)
+            .then(() => select(id))
+            .catch((err: unknown) =>
+              toast({
+                title: 'Could not restore it',
+                body: err instanceof Error ? err.message : String(err),
+                tone: 'error',
+              }),
+            );
+        },
+      },
+    });
+  }, [missingNode, clearMissingNode, select, toast]);
 }
 
 export function App(): JSX.Element {
-  const { snapshot, connected, cockpit, refresh } = useFeed();
+  const { snapshot, connected, offline, cockpit, refresh } = useFeed();
   const { view, selected, railOpen, toggleRail, newProjectOpen, setNewProjectOpen } = useShell();
   const rows = cockpit?.streams ?? [];
   const items = cockpit?.inbox ?? [];
   const projects = cockpit?.projects ?? [];
   const repos = cockpit?.repos ?? [];
-  const lost = useLostConnection(connected);
+  useMissingNodeToast();
 
   const nodeTitle = selected !== undefined ? rows.find((r) => r.id === selected)?.title : undefined;
   const pageTitle = view === 'stream' && nodeTitle !== undefined ? nodeTitle : VIEW_TITLE[view];
@@ -159,10 +190,14 @@ export function App(): JSX.Element {
       <div className="cr-scrim" onClick={toggleRail} />
       <main className="cr-main">
         <MobileBar connected={connected} name={snapshot?.project?.name ?? 'agile'} />
-        {lost && (
+        {/* T416 (finding 7): in the column's flow, above the page — never over its controls. */}
+        {offline && (
           <output className="cr-offline" data-testid="offline-banner">
-            <Icon name="alert-circle" size={14} />
-            Lost the daemon — reconnecting. Is <code>agiled</code> running?
+            <Spinner size={13} />
+            <span>
+              <strong>Reconnecting to the daemon…</strong> Nothing you do is sent until it’s back.
+              Is <code>agiled</code> running?
+            </span>
           </output>
         )}
         <ErrorBoundary area="page" resetKey={place}>

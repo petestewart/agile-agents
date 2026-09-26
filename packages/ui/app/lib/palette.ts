@@ -5,10 +5,19 @@
  * ranked groups out, so `bun test` covers it.
  */
 
-export type PaletteGroupId = 'recent' | 'nodes' | 'projects' | 'views' | 'actions';
+export type PaletteGroupId =
+  | 'node'
+  | 'recent'
+  | 'needs'
+  | 'nodes'
+  | 'projects'
+  | 'views'
+  | 'actions';
 
 export const GROUP_LABEL: Record<PaletteGroupId, string> = {
+  node: 'This node',
   recent: 'Recent',
+  needs: 'Needs me',
   nodes: 'Nodes',
   projects: 'Projects',
   views: 'Go to',
@@ -101,22 +110,32 @@ export function scoreEntry(query: string, entry: PaletteEntry): number {
 
 /** Per group, at most this many results for a typed query. */
 const GROUP_LIMIT: Record<Exclude<PaletteGroupId, 'recent'>, number> = {
+  node: 12,
+  needs: 6,
   nodes: 8,
   projects: 4,
   views: 8,
   actions: 6,
 };
 
+/** On a tie, the node open now first (its actions), then what waits on you. */
 const GROUP_ORDER: readonly Exclude<PaletteGroupId, 'recent'>[] = [
+  'node',
+  'needs',
   'nodes',
   'projects',
   'views',
   'actions',
 ];
 
+/** With nothing typed, the list shows this many recent nodes and Needs me items. */
+export const EMPTY_RECENT = 5;
+export const EMPTY_NEEDS = 5;
+
 /**
- * The palette's list. With no query: the recent nodes (most recent first),
- * then every view and action. With a query: each group's matches, best
+ * The palette's list. With no query: what you can do to the node open now
+ * (T416: "This node"), the recent nodes (most recent first), what waits on
+ * you, then every view and action. With a query: each group's matches, best
  * first, and the groups ordered by their best match, so Enter on the first
  * row runs the best one.
  */
@@ -131,15 +150,25 @@ export function paletteResults(
     const recentItems = recent
       .map((id) => byKey.get(`node:${id}`))
       .filter((e): e is PaletteEntry => e !== undefined)
-      .slice(0, 5);
+      .slice(0, EMPTY_RECENT);
     const groups: PaletteGroup[] = [];
-    if (recentItems.length > 0) {
-      groups.push({ id: 'recent', label: GROUP_LABEL.recent, items: recentItems });
-    }
-    for (const id of ['views', 'actions'] as const) {
-      const items = entries.filter((e) => e.group === id);
+    const push = (id: PaletteGroupId, items: PaletteEntry[]): void => {
       if (items.length > 0) groups.push({ id, label: GROUP_LABEL[id], items });
-    }
+    };
+    push(
+      'node',
+      entries.filter((e) => e.group === 'node'),
+    );
+    push('recent', recentItems);
+    push('needs', entries.filter((e) => e.group === 'needs').slice(0, EMPTY_NEEDS));
+    push(
+      'views',
+      entries.filter((e) => e.group === 'views'),
+    );
+    push(
+      'actions',
+      entries.filter((e) => e.group === 'actions'),
+    );
     return groups;
   }
   const recentRank = new Map(recent.map((id, i) => [`node:${id}`, i]));
@@ -176,6 +205,34 @@ export function moveActive(active: number, delta: number, count: number): number
 // ---------------------------------------------------------------- recent nodes
 
 export const RECENT_MAX = 8;
+
+/**
+ * T416 (finding 21): the recent nodes with nothing typed — the ones you
+ * opened here (newest first), then, to fill `max`, the nodes that changed
+ * last (`updated_at`), so a first visit has them too. Never the node open
+ * now, a project's root (its project row stands for it) or a node gone.
+ */
+export function recentNodes(
+  opened: readonly string[],
+  rows: ReadonlyArray<{ id: string; role?: string; updated_at?: string }>,
+  current: string | undefined,
+  max = EMPTY_RECENT,
+): string[] {
+  const usable = new Map(rows.filter((r) => r.role !== 'project').map((r) => [r.id, r]));
+  const out: string[] = [];
+  for (const id of opened) {
+    if (out.length >= max) return out;
+    if (id !== current && usable.has(id) && !out.includes(id)) out.push(id);
+  }
+  const byChange = [...usable.values()]
+    .filter((r) => r.updated_at !== undefined)
+    .sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''));
+  for (const row of byChange) {
+    if (out.length >= max) break;
+    if (row.id !== current && !out.includes(row.id)) out.push(row.id);
+  }
+  return out;
+}
 
 /** `id` to the front of the recent list, once, capped. */
 export function pushRecent(recent: readonly string[], id: string, max = RECENT_MAX): string[] {

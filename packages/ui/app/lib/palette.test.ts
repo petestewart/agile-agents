@@ -14,6 +14,7 @@ import {
   paletteResults,
   parseRecent,
   pushRecent,
+  recentNodes,
   scoreEntry,
 } from './palette';
 
@@ -181,5 +182,55 @@ describe('keys', () => {
     expect(isPaletteKey(key('k', {}))).toBe(false);
     expect(isPaletteKey(key('k', { ctrl: true, shift: true }))).toBe(false);
     expect(isPaletteKey(key('j', { ctrl: true }))).toBe(false);
+  });
+});
+
+describe('T416: This node, Needs me and the recent nodes', () => {
+  const HERE: PaletteEntry[] = [
+    { key: 'this:0', group: 'node', title: 'Merge' },
+    { key: 'this:1', group: 'node', title: 'Open Changes' },
+    { key: 'this:2', group: 'node', title: 'Copy branch name' },
+  ];
+  const NEEDS: PaletteEntry[] = Array.from({ length: 7 }, (_, i) => ({
+    key: `needs:${i}`,
+    group: 'needs' as const,
+    title: i === 0 ? 'Answer: Should amounts be stored as cents?' : `Merge: node ${i}`,
+    keywords: ['merge'],
+  }));
+
+  test('no query: this node first, then recent, what waits on you (five), views, actions', () => {
+    const groups = paletteResults('', [...ENTRIES, ...HERE, ...NEEDS], ['a']);
+    expect(groups.map((g) => g.id)).toEqual(['node', 'recent', 'needs', 'views', 'actions']);
+    expect(groups[0]?.label).toBe('This node');
+    expect(groups[0]?.items.map((e) => e.title)).toEqual([
+      'Merge',
+      'Open Changes',
+      'Copy branch name',
+    ]);
+    expect(groups[2]?.label).toBe('Needs me');
+    expect(groups[2]?.items).toHaveLength(5);
+  });
+
+  test('"merge" finds this node\'s Merge first', () => {
+    const first = flatResults(paletteResults('merge', [...ENTRIES, ...HERE, ...NEEDS]))[0];
+    expect(first?.key).toBe('this:0');
+  });
+
+  test('a Needs me item is found by its words', () => {
+    const groups = paletteResults('amounts', [...ENTRIES, ...NEEDS]);
+    expect(flatResults(groups)[0]?.key).toBe('needs:0');
+  });
+
+  test('recentNodes: the opened ones first, then what changed last; never the open node or a root', () => {
+    const rows = [
+      { id: 'a', role: 'work', updated_at: '2026-09-26T10:00:00Z' },
+      { id: 'b', role: 'work', updated_at: '2026-09-26T12:00:00Z' },
+      { id: 'c', role: 'conversation', updated_at: '2026-09-26T11:00:00Z' },
+      { id: 'root', role: 'project', updated_at: '2026-09-26T13:00:00Z' },
+      { id: 'd', role: 'work' },
+    ];
+    expect(recentNodes(['c', 'gone'], rows, 'b')).toEqual(['c', 'a']);
+    expect(recentNodes([], rows, undefined)).toEqual(['b', 'c', 'a']);
+    expect(recentNodes(['a', 'b', 'c'], rows, undefined, 2)).toEqual(['a', 'b']);
   });
 });

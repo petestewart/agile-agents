@@ -33,6 +33,12 @@ export interface ComposerProps {
   sendTestid?: string;
   /** Marks the box (e.g. `answer`) so it can take the question's accent. */
   mode?: string;
+  /**
+   * T416: why Send is off for now (the daemon is away: "Reconnecting to the
+   * daemon…"), as its tooltip. The text stays editable, and Enter still
+   * calls `onSend`, so the page can say what happened.
+   */
+  sendBlocked?: string;
 }
 
 export interface ComposerHandle {
@@ -60,6 +66,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     inputTestid = 'composer-input',
     sendTestid = 'composer-send',
     mode,
+    sendBlocked,
   },
   ref,
 ): JSX.Element {
@@ -149,8 +156,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             className="cr-compose-send"
             data-testid={sendTestid}
             aria-label="Send"
-            title="Send (Enter)"
-            disabled={busy || disabled || text.length === 0}
+            title={sendBlocked ?? 'Send (Enter)'}
+            data-blocked={sendBlocked !== undefined ? 'true' : undefined}
+            disabled={busy || disabled || text.length === 0 || sendBlocked !== undefined}
           >
             {busy ? <Spinner size={14} /> : <Icon name="arrow-up" size={16} strokeWidth={2.25} />}
           </button>

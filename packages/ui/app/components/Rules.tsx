@@ -342,6 +342,7 @@ export function Rules(): JSX.Element {
           <PageHeader
             title="Knowledge"
             icon="book-open"
+            subtitle="What your agents know and must follow. Agents propose; you accept."
             actions={
               <Button
                 icon="plus"
@@ -355,11 +356,7 @@ export function Rules(): JSX.Element {
                 Add knowledge
               </Button>
             }
-          >
-            <p className="cr-kn-lede">
-              What your agents know and must follow. Agents propose; you accept.
-            </p>
-          </PageHeader>
+          />
 
           <div className="cr-kn-tabs" data-review={counts.review > 0 ? 'true' : undefined}>
             <Tabs

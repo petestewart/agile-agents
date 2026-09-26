@@ -1166,6 +1166,15 @@ test.skipIf(!RUN)(
 
     await step('4.2b', 'Merge pushes and opens a PR with auto-merge', async () => {
       await page.locator('[data-testid="stream-land"]').click();
+      // T416: the first Merge in a browser asks what it will do; "Don't ask again" makes every
+      // later Merge one click (the rest of this walkthrough's merges).
+      await checkText(
+        'the first Merge asks: Open a pull request for “agile-test-repo part” into main?',
+        page.locator('[data-testid="merge-confirm"] h2'),
+        /^Open a pull request for “agile-test-repo part” into main/,
+      );
+      await page.locator('[data-testid="merge-confirm-never"]').check();
+      await page.locator('[data-testid="merge-confirm-confirm"]').click();
       const result = page.locator('[data-testid="land-result"]');
       const line = await checkText(
         'the panel shows pushed <branch> to origin; opened PR #N into main: https://github.com/petestewart/agile-test-repo/pull/N',

@@ -75,15 +75,15 @@ The cockpit is `http://127.0.0.1:4600/`.
 | Place | What it holds |
 |---|---|
 | Sidebar | **New node (n)**; the views below (**Needs me** with its count, **Director**, **Knowledge**, and under *Views* **Running**, **Repos**, **Dependencies**, **Events**); *Projects*: **?** (what the dots and icons mean), **+** (new project), a filter, and every project's tree with a status dot and a role icon per node and a ⚠ mark on overlapping nodes. On hover a row shows **+** (a new node under it) and **⋯** (Open, New child node, Rename, Move to, Copy node id, Delete; right-click opens it too); a project's **⋯** has **Show only this project**, undone with the chip's **×**. **Deleted (n)** below the tree restores deleted nodes; **Settings** at the bottom. Below 900px wide it is a drawer behind the ☰ button |
-| **Needs me** | The inbox, grouped by project, then node, oldest first, with a filter (**All** · **Questions** · **Decisions** · **Merges**): questions (a button per choice, or type and **Answer**), actions to allow (**Allow**/**Deny**, **Add a note**), knowledge proposals (**Accept**/**Retire**), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (**Merge**, **View changes**). `j`/`k` move between cards; Enter opens a card's node |
+| **Needs me** | The inbox, grouped by project, then node, oldest first, with a filter (**All** · **Questions** · **Decisions** · **Merges**): questions (a button per choice, or type and **Answer**), a blocked agent (type in `Reply to unblock…` and **Reply**), actions to allow (**Allow**/**Deny**, **Add a note**), knowledge proposals (**Accept**/**Retire**), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (the agent's last line, what it overlaps, **Merge**, **View changes**). `j`/`k` move between cards; on a focused question **A**/**B** (or **1**/**2**) pick a choice; Enter opens a card's node |
 | **Repos** | A card per repo: its kind (Local only, GitHub · SSH…) and delivery in words (**Merges directly** or **Opens pull requests**, **Auto-merge**), its live work nodes across projects (ancestors greyed, status in words), overlaps as a warning naming both nodes and the files, its recent events, and its norms (a click opens the item in Knowledge) |
 | **Running** | Nodes with a live agent, your move first: status, the node's path, role, the agent it runs in words (`Claude Opus 5.5 · low`; `Reviewer · …` when only a reviewer runs; the ids on hover) and repo; **⋯** → **Stop agent** |
 | **Dependencies** | Every "waits on" link, across projects, grouped by the node that waits: what it waits on and that node's status; **⋯** → **Remove link** (with Undo) |
 | **Knowledge** | Every knowledge item, split into **To review**, **Rules**, **Standards**, **Architecture** and **Decisions** (retired items fold at the bottom); search and scope/enforcement filters; a click opens an item's side panel: Accept/Retire, Edit, Test examples |
 | **Director** | A chat with the Director, like a node's: its drafts wait on you at the end of the chat as cards (**Create**/**Dismiss**); the **Details** panel has its **Activity** and what it may do in each project |
 | **Events** | Every routed event, newest first, by day: what happened (and a line of detail), to which node, and who it was routed to and why; filter by type (**All** · **Messages** · **Merges and PRs** · **Coordination** · **Knowledge**), by repo, or search; **Show more** for older ones |
-| Anywhere | **Ctrl K** (**⌘K** on a Mac, or the search icon at the top of the sidebar) opens the command palette: find a node by part of its title or path, a project, a view or an action (New node, New project, switch theme, Keyboard shortcuts); ↑↓ and Enter. **?** lists every keyboard shortcut; **g** then a letter goes to a view (**g i** Needs me, **g k** Knowledge…) |
-| **Settings** | Sections on the left: **General** (theme: System, Light, Dark; **Notifications**: a switch, off by default and kept per browser, that asks the browser's permission and then tells you when something new needs you while the tab is in the background, with **Send a test**; the daemon), **Agents** (session defaults, global, per repo and per project, each card saying what a new agent there starts with, e.g. `Claude Opus 5.5 · low`), **Repositories** (**Add repository**: a folder, or a URL to clone; per repo its icon, delivery, auto-merge, visibility), **Classifier** (the TypeSafe API key), **Trackers** (Jira, Linear), **Permissions** (who decides) |
+| Anywhere | **Ctrl K** (**⌘K** on a Mac, or the search icon at the top of the sidebar) opens the command palette: on a node's page **This node** first (Merge, Start/Stop agent, Open Changes, Close node…, Copy branch name…), then recent nodes, what waits on you (`Answer: …`, `Merge: …`), the views and the actions (New node, New project, switch theme, Keyboard shortcuts); type to find a node by part of its title or path, a project, a view or an action; ↑↓ and Enter. **?** lists every keyboard shortcut; **g** then a letter goes to a view (**g i** Needs me, **g k** Knowledge…) |
+| **Settings** | Sections on the left: **General** (theme: System, Light, Dark; **Notifications**: a switch, off by default and kept per browser, that asks the browser's permission and then tells you when something new needs you while the tab is in the background, with **Send a test**; the daemon), **Agents** (session defaults, global, per repo and per project, each card saying what a new agent there starts with, e.g. `Claude Opus 5.5 · low`), **Repositories** (**Add repository**: a folder, or a URL to clone; per repo its icon, delivery, auto-merge, visibility), **Classifier** (the TypeSafe API key), **Trackers** (Jira, Linear). General also says what is **Always yours** (merging, accepting knowledge, allowing an action the classifier was unsure of, answering questions) |
 | A node's page | A chat with its agent. The header: path, title (click it to rename), status, role, repo and branch, then **Start agent** (its chevron picks another model), **Stop** while it works (**⋯** → **Stop agent** while it waits on you), **Merge** when there is something to merge, the details toggle and **⋯** (**Ask an agent to review…**, **Restart agent**, **Waits on…**, **Add repository…**, **Tracker issue…**, **Copy branch name**, **Close node…**, **Delete node…**). Tabs **Chat**, **Changes**, **Plan**, **Activity**, **Knowledge**, **Docs**, only where they apply. The chat opens with the goal (**Edit** changes it; the agent reads the change), unless the goal only repeats the title or the node is a project's root: then the goal is in **Details** → **About**, with its **Edit**. What needs you (questions, gates, plans, proposals) sits at the end of the chat, and the composer answers an open question. The **Details** panel: **Delivery** (Check now, Mark as merged, Resolve), **Agent** (sessions), **Children** (every child with its status, not on a project's root), **Waits on**, **Tracker** (**Link**, **Create issue**; then **Unlink**, **Import children**; only when the node's project has a tracker), **Coordinator autonomy** on a coordinating node or a project root (and, on a project root, **Director autonomy** and the project's tracker) |
 | A project's page (its root) | Opens on **Overview**: the counts by status, your move first (`2 need you · 1 ready to merge · 3 working · 2 idle · 5 done`; a count shows only those nodes, **Show all** brings the rest back), the project's nodes as rows (status, where it sits, repo, the agent it runs, age; your move, then **Working**, then **Idle**; merged and closed fold under **Done**), its repositories (host icon, kind, what Merge does there, open nodes; **Edit** opens the details) and its recent events (**All events** opens Events). A click on a row opens that node. When the project's own chat waits on you, a line says so with **Open chat**. **Chat** is the next tab; the header, the other tabs and the **Details** panel are a node page's (above). An empty project reads **No nodes yet** with **New node** |
 
@@ -464,7 +464,13 @@ If the coordinator already proposed this link, press **Apply** on its card in
       `The <branch> branch is N commits ahead of main.` (the branch by its
       name; the whole `stream/…` name is its tooltip) and, when some apply,
       `Checked before merge: …`. Press
-      **Merge** at the top of the page.
+      **Merge** at the top of the page. The first Merge in this browser asks
+      `Open a pull request for “agile-test-repo part” into main?` (on a
+      direct repo, `Merge “…” into main (N files)?`): tick **Don’t ask again**
+      and press **Open pull request**; every later Merge is one click. A merge
+      the daemon refuses says why under the header's **Merge**
+      (`Couldn’t merge. …`), with the fix it names as a button when there is
+      one (**Ask the agent to rebase** sends the agent a prepared message).
 - [ ] The ship checks run first, then the branch is pushed and a PR opens.
       The panel shows `pushed <branch> to origin; opened PR #N into main: https://github.com/petestewart/agile-test-repo/pull/N`
       and `Pull request · PR open`; the panel's status line reads
@@ -980,11 +986,13 @@ child should be a small task an agent can do in agile-test-repo (for example
       time). A long card has **Show more**; **Open** (or the node's name above
       it) opens its node. The filter narrows it to **Questions**,
       **Decisions** or **Merges**; `j`/`k` move between cards and Enter opens
-      one's node. The badge on **Needs me** counts them. With nothing
-      waiting it reads `You’re all caught up`.
+      one's node; on a focused question **A**/**B** (or **1**/**2**) picks
+      that choice. A `Blocked` card takes a reply (`Reply to unblock…`),
+      which goes to its node and wakes the agent. The badge on **Needs me**
+      counts them. With nothing waiting it reads `You’re all caught up`.
 - [ ] **Settings** → **General** → **Notifications**: turn on
       `Tell me when something new needs me` and choose **Allow** in the
-      browser's prompt; the card reads `On`, and **Send a test** shows a
+      browser's prompt; the switch reads on, and **Send a test** shows a
       notification. Switch to another tab or app and raise a question (or let
       an agent finish): one notification names it and its node
       (`Question on …`, `Ready to merge: …`; several at once read
@@ -1020,9 +1028,12 @@ child should be a small task an agent can do in agile-test-repo (for example
       who it was routed to and why (a chip per node). The type buttons, the
       repo list and the search narrow it.
 - [ ] Press **Ctrl K** (**⌘K** on a Mac), type part of a node's title and
-      press Enter: its page opens. With nothing typed the palette lists the
-      nodes you opened last. Type `Knowledge` and press Enter: Knowledge
-      opens. Press **?** (not in a text box): the keyboard shortcuts; Esc
+      press Enter: its page opens. With nothing typed the palette lists
+      **This node** (what the node's header and **⋯** offer) on a node's
+      page, the nodes you opened last (filled up with the ones that changed
+      last) and what waits on you. Type `Knowledge` and press Enter: Knowledge
+      opens. A link to a node that no longer exists opens Needs me and says
+      `That node no longer exists`; one to a deleted node offers **Restore**. Press **?** (not in a text box): the keyboard shortcuts; Esc
       closes them. **g** then **i** goes to Needs me.
 - [ ] **CLI only:** the raw event log (every event, not only routed ones):
       `agile tail | tail -20`, `agile tail --follow` to keep watching (Ctrl-C
@@ -1041,7 +1052,11 @@ agile daemon status
 
 - [ ] `stop` prints `agiled stopped: pid=…`; `status` then says
       `agiled is not running`, and the cockpit's sidebar shows
-      `reconnecting…` instead of `live`. After `start` it reconnects with every
+      `reconnecting…` instead of `live`; a bar at the top of the page reads
+      `Reconnecting to the daemon…`, and Send, Merge on the cards and the
+      other write buttons are off (hover one: `Reconnecting to the daemon…`).
+      A message sent anyway reads `Couldn’t reach the daemon; your message
+      wasn’t sent.` under the composer, and keeps it for **Retry**. After `start` it reconnects with every
       node, thread and event intact. Stopping the daemon stops every agent
       session: open a node that was mid-work and press **Restart agent** (or
       just send it a message: that starts it again).

@@ -496,8 +496,46 @@ export function statusText(item: InboxItem): string {
 }
 
 /** The daemon's line for a finished agent that left none (`DONE_TEXT`): it talks about merging. */
-const DONE_STOCK =
+export const DONE_STOCK =
   'The agent finished. Look over the changes, then merge — or close the node if you won’t.';
+
+/**
+ * T416: a Ready to merge card's own line — the agent's last progress line,
+ * or `undefined` when it left none and the daemon's stock sentence stands
+ * in (every such card would read the same, so the card says less instead).
+ * The daemon sends only `agent.progress` here, not the agent's last chat
+ * message.
+ */
+export function doneLine(item: Pick<InboxItem, 'context' | 'detail'>): string | undefined {
+  const text = fullText(item).trim();
+  return text === '' || text === DONE_STOCK ? undefined : text;
+}
+
+/** T416: the nodes a node's changes overlap (T227's pairs), by title, for "Overlaps …". */
+export function overlapTitles(
+  node: string,
+  overlaps: ReadonlyArray<{ nodes: readonly [string, string] | readonly string[] }>,
+  titleOf: (id: string) => string | undefined,
+): string[] {
+  const out: string[] = [];
+  for (const pair of overlaps) {
+    if (!pair.nodes.includes(node)) continue;
+    for (const other of pair.nodes) {
+      if (other === node) continue;
+      const title = titleOf(other);
+      if (title !== undefined && !out.includes(title)) out.push(title);
+    }
+  }
+  return out;
+}
+
+/** "Overlaps Fix rounding in totals", "Overlaps A and B", "Overlaps A, B and 2 more". */
+export function overlapText(titles: readonly string[]): string | undefined {
+  if (titles.length === 0) return undefined;
+  if (titles.length === 1) return `Overlaps ${titles[0]}`;
+  if (titles.length <= 3) return `Overlaps ${titles.slice(0, -1).join(', ')} and ${titles.at(-1)}`;
+  return `Overlaps ${titles.slice(0, 2).join(', ')} and ${titles.length - 2} more`;
+}
 
 /** T380: a finished card's text when its branch has nothing to merge. */
 export const NO_CHANGES_TEXT =
@@ -514,7 +552,11 @@ export function noChangesText(item: InboxItem): string {
 
 export type NeedsMeFilter = 'all' | 'questions' | 'decisions' | 'merges';
 
-/** Questions (and a blocked agent) want your words; merges want a Merge; the rest are decisions. */
+/**
+ * Questions (and a blocked agent, which a reply unblocks: its card has a
+ * "Reply to unblock…" field) want your words; merges want a Merge; the rest
+ * are decisions.
+ */
 export function filterOf(item: InboxItem): Exclude<NeedsMeFilter, 'all'> {
   if (item.kind === 'question' || item.kind === 'blocked') return 'questions';
   if (item.kind === 'done' || isLandGate(item)) return 'merges';
@@ -655,4 +697,97 @@ export function setupSteps(
 /** First run: no repository, or no project, yet (the setup steps show instead of "all caught up"). */
 export function isFirstRun(steps: readonly SetupStep[]): boolean {
   return steps.some((step) => (step.id === 'repo' || step.id === 'project') && !step.done);
+}
+
+// ---------------------------------------------------------------- paths
+
+/** T416: the one separator between a node's ancestors, everywhere a path is written. */
+export const PATH_SEP = ' › ';
+
+/** "Shop › Show sale prices › api: add salePrice" (root first). */
+export function nodePath(titles: readonly string[]): string {
+  return titles.filter((t) => t !== '').join(PATH_SEP);
+}
+
+// ---------------------------------------------------------------- choice keys
+
+/** The keycap a choice wears, and the keys that pick it on a focused card: A (or 1) for the first. */
+export function choiceKey(index: number): string {
+  return String.fromCharCode(65 + index);
+}
+
+/** Which choice a key picks on a focused card: `a`/`A`/`1` the first … `f`/`F`/`6` the sixth. */
+export function choiceIndexOfKey(key: string, count: number): number | undefined {
+  let index: number | undefined;
+  if (/^[a-f]$/i.test(key)) index = key.toUpperCase().charCodeAt(0) - 65;
+  else if (/^[1-6]$/.test(key)) index = Number(key) - 1;
+  return index !== undefined && index < count ? index : undefined;
+}
+
+// ---------------------------------------------------------------- merging
+
+/** What the first Merge asks (T416): "Merge “Add CSV import” into main (2 files)?" and what it does. */
+export function mergeQuestion(input: {
+  node: string;
+  target?: string;
+  files?: number;
+  /** The repo delivers by pull request: Merge pushes and opens one. */
+  pr?: boolean;
+}): { title: string; body: string; confirm: string } {
+  const target = input.target ?? 'its target branch';
+  const size =
+    input.files !== undefined ? ` (${input.files} ${input.files === 1 ? 'file' : 'files'})` : '';
+  if (input.pr) {
+    return {
+      title: `Open a pull request for “${input.node}” into ${target}${size}?`,
+      body: 'Merge pushes the branch and opens its pull request; it merges on GitHub once its checks pass.',
+      confirm: 'Open pull request',
+    };
+  }
+  return {
+    title: `Merge “${input.node}” into ${target}${size}?`,
+    body: `Its commits go onto ${target} now, and the node is done. The cockpit can’t undo a merge.`,
+    confirm: 'Merge',
+  };
+}
+
+// ---------------------------------------------------------------- the palette's Needs me rows
+
+/** T416: what running a Needs me item from ⌘K does, in words: "Answer: Should amounts…". */
+export function itemCommand(item: InboxItem, row?: Parameters<typeof doneCardOf>[0]): string {
+  const node = item.stream_path.at(-1) ?? 'a node';
+  const text = (s: string, max = 70): string => {
+    const line = (s.split('\n').find((l) => l.trim() !== '') ?? '').trim().replace(/\s+/g, ' ');
+    return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
+  };
+  switch (item.kind) {
+    case 'question':
+      return `Answer: ${text(questionView(item).text)}`;
+    case 'gate':
+      return isLandGate(item) ? `Approve the merge: ${node}` : `Allow or deny: ${node}`;
+    case 'rule_accept': {
+      const k = knowledgeView(item);
+      return `Accept or retire: ${k.name ?? text(k.text, 60)}`;
+    }
+    case 'rule_batch':
+      return `Review knowledge: ${item.rules?.length ?? 0} items`;
+    case 'plan_approve':
+      return `Approve the plan: ${node}`;
+    case 'plan_waiting':
+      return `Waiting for the plan: ${node}`;
+    case 'proposal':
+      return `Apply or dismiss: ${text(proposalOf(item).summary, 60)}`;
+    case 'done': {
+      const done = doneCardOf(row);
+      return done === 'no_changes'
+        ? `Close: ${node}`
+        : done === 'merged_outside'
+          ? `Mark as merged: ${node}`
+          : done === 'waiting'
+            ? `Waiting to merge: ${node}`
+            : `Merge: ${node}`;
+    }
+    case 'blocked':
+      return `Unblock: ${node}`;
+  }
 }
