@@ -155,7 +155,8 @@ export function resolveChromiumExecutable(): string {
  * Reproduced outside the suite by spawning a 5-stdio child, killing it,
  * spawning another and forcing a GC: the second child's fd 3/4 sockets are
  * closed; with the first child's sockets kept reachable they never are.
- * Three-stdio children (the daemon's own) show no stale close.
+ * Three-stdio children (the daemon's own) show no stale close. Bun 1.4.0
+ * and later no longer make the stale close (T352); the pin stays, harmless.
  */
 interface StdioSocket {
   on(event: 'error', listener: (err: Error) => void): unknown;
