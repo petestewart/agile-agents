@@ -1955,19 +1955,21 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T361 ∥ Agents follow role changes; question choices; delete and restore; a message starts a stopped node
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** (1) A move or a new child that changes a node's derived role restarts its live agent in the new role (worker ↔ coordinator), as + Repo already does, with a thread line saying so. (2) An agent's `ask` may carry `options` (the Question schema has them); the inbox item carries them (InboxItem `options`, question kind only, `.strict()`), so the cockpit can offer them as buttons. (3) HTTP `POST /api/streams/:id/archive` (stops live sessions, archives the subtree, removes clean worktrees; branches kept) and `.../unarchive`; `GET /api/streams?archived=1` or a cockpit field listing archived nodes. (4) `POST /api/streams/:id/say` with `start: true`: on a node with no live agent that is open, the line starts its agent with the session defaults and is its first prompt. (5) Cockpit rows (`feed/snapshot.ts` `CockpitStreamRow`) carry `never_started: true` (a work node or conversation whose agent never ran) and `stopped: true` (`stoppedByHuman` with nothing live, and not closed/landed/archived), so the rail can show them.
 - **Acceptance Criteria:** Service tests for each; existing suites green.
 - **Validation Steps:** `bun test packages/shared packages/daemon`; `bun run typecheck`.
+- **Notes:** Branch T361-daemon-ux, merge f47bece. `StreamService.onTreeChanged` → `AttachService.followRoles`: move, create-child, close, archive, restore re-check the node and its ancestors and restart a live agent whose role changed (same vendor/model/effort, a daemon stop, a thread line). `ask` takes 2–6 `options`; InboxItem `options` (question only). `POST /api/streams/:id/archive|unarchive` (subtree, one `archive_id` per delete, refuses a root; worktrees/branches kept; cockpit `archived`). `say {start}` starts a node with no live agent with its line in the brief. Rows carry `never_started`/`stopped`. Daemon +379. Open: `say {start}` would start a part waiting for its plan (the cockpit never sends it there); `stopAll()` on daemon shutdown may mark mid-work nodes done (read, not reproduced); archived nodes' items still counted in `buildSnapshot`'s `needs_you`.
 
 ### Ticket: T362 ∥ Browse folders, clone by URL, a repo's remote kind
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** `GET /api/fs/dirs?path=` (same-origin; child directories of an absolute path, each flagged when it is a git toplevel; home and parent for navigation); `POST /api/repos/clone {url, dest?, name?}` (https, ssh `git@host:o/r`, `owner/repo` shorthand for GitHub; clones with the user's own git credentials into `dest`, default a projects folder, then registers it); repo rows (`/api/repos`, cockpit `repos`) carry `remote: {kind: 'github' | 'gitlab' | 'other' | 'none', protocol?: 'https' | 'ssh', url?}`.
 - **Acceptance Criteria:** Unit tests with temp dirs and a local bare repo as the clone source; no network in tests.
 - **Validation Steps:** `bun test packages/daemon/src/http.test.ts packages/daemon/src/store`; `bun run typecheck`.
+- **Notes:** Branch T362-repo-picker-api, merge 6fcde72. `GET /api/fs/dirs` (same-origin + loopback Host; `prefix` for autocomplete; 500 cap), `POST /api/repos/clone` (https, ssh, file, `o/r`; user's own git credentials, no prompts, 10 min timeout, credentials stripped from errors; registers through `state.repo_add`), repo rows and the cockpit carry `remote {kind, protocol, url, owner?, name?}` from a 60s background cache. Daemon +870. Open: GET routes lack the loopback Host check (DNS rebinding); repo names unvalidated (`__proto__`); `resolveMainBranch` runs git per `GET /api/repos`.
 
 ### Ticket: T363 A node's page is a chat
 - **Priority:** P0
