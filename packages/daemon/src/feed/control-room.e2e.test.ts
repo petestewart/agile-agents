@@ -2997,6 +2997,25 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
         ).toBe(1);
         expect(await p.locator('[data-testid="review-bar"]').count()).toBe(0);
 
+        // T415: frames are held here and let go after the next line has focus, as a
+        // slow runner does, so focus returning to the line just commented can't take
+        // the keyboard back from it.
+        await p.evaluate(() => {
+          const w = window as unknown as {
+            requestAnimationFrame: typeof requestAnimationFrame;
+            releaseFrames: () => void;
+          };
+          const raf = w.requestAnimationFrame.bind(window);
+          const held: FrameRequestCallback[] = [];
+          w.requestAnimationFrame = (cb) => {
+            held.push(cb);
+            return 0;
+          };
+          w.releaseFrames = () => {
+            w.requestAnimationFrame = raf;
+            for (const cb of held.splice(0)) raf(cb);
+          };
+        });
         // One comment from the gutter's +, added with the button.
         const splitLine = file('src/import.ts').locator('[data-line="add"]', {
           hasText: 'text.split',
@@ -3015,6 +3034,13 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
           hasText: 'Imports CSV',
         });
         await readmeLine.focus();
+        await p.evaluate(
+          () =>
+            new Promise<void>((done) => {
+              (window as unknown as { releaseFrames: () => void }).releaseFrames();
+              requestAnimationFrame(() => done());
+            }),
+        );
         await p.keyboard.press('c');
         await p.locator('[data-testid="diff-comment-input"]').fill('Say which delimiter.');
         await p.keyboard.press('Control+Enter');
