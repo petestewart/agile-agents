@@ -192,17 +192,18 @@ describe('tangent_summary (T332, D33)', () => {
     expect(summary.endsWith('…')).toBe(true);
   });
 
-  test('a blocked tangent is still child_status; a conversation child of a coordinating node is not a tangent', async () => {
+  test('a blocked tangent is still child_status; a conversation under a node that is not one tells it nothing (D42)', async () => {
     const { root, tangent } = await tree();
     await tangents.update('daemon', tangent.id, { agent: { status: 'blocked' } });
     expect(emitted.map((e) => e.type)).toEqual(['child_status']);
-    // Under the project root (not a conversation): child_status, as before.
+    // D42: a question asked under the project root is the human's own talk.
     const research = await tangents.create('human', {
       title: 'Research',
       goal: 'g',
       parent: root.id,
     });
     await tangents.update('daemon', research.id, { agent: { status: 'done' } });
-    expect(emitted.map((e) => e.type)).toEqual(['child_status', 'child_status']);
+    await tangents.update('daemon', research.id, { agent: { status: 'question' } });
+    expect(emitted.map((e) => e.type)).toEqual(['child_status']);
   });
 });

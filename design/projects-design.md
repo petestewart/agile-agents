@@ -88,6 +88,12 @@ A conversation can have children of its own, called **tangents** (D33). A tangen
 - **The parent keeps its role.** A conversation whose children are all conversations stays a conversation: its agent is a worker, not a coordinator. It becomes coordinating only once a child has a repo, or a child is itself coordinating.
 - **Finishing.** When the tangent's agent finishes (`agent.status` becomes `done`), a `tangent_summary` event goes to the parent (§15), and the parent's thread gets a line quoting it. The summary is the tangent agent's last line, capped at 600 characters. It is the tangent's own words, so it reaches the parent's agent as quoted data, never as instructions. It does not wake a parent with no live agent (P11); the parent reads it on its next turn.
 
+**D42: a conversation at any level.** A conversation can sit under any node, not just a conversation: a question to the project root ("the engineering manager"), a coordinating node ("the tech lead") or a work node ("the developer on the ticket"), in its own thread so the parent's stays on its work.
+
+- **It never reshapes the tree.** A node's *parts* are its live children that are not its helpers and not conversations. Only parts make a node coordinating (or give a root its coordinator), are held for a plan (T336), or ask their coordinator first (T338). A question asked under a working work node leaves it work: its agent is not restarted as a coordinator.
+- **It tells its parent nothing by itself.** A conversation under a node that is not a conversation sends no `child_status`: its asks are the human's. What it concludes goes up only when the human sends it (Send to parent). Tangents of a conversation keep D33's summary.
+- **It grows in place.** "+ Repo" on a conversation, tangents or not, makes it a work node in place (same thread, a branch and worktree); its conversations stay conversations.
+
 ## 3. Views
 
 Only the tree is stored. Every view is a filter or grouping over it, so the views never disagree and never go stale.

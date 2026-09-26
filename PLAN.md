@@ -52,6 +52,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D39** (2026-09-26, Pete, to confirm): a browser notification fires every time a node finishes (or asks, or is blocked), including a second finish after your reply; the same card only leaving a frame and coming back does not notify again. As built in T391.
 - **D40** (2026-09-26, to confirm): in the D17 order a model belongs to its vendor. A model named at a step counts only when that step runs the resolved vendor (its own vendor, else the vendor of the steps below it). A repo set to Gemini no longer inherits the home's Claude model: it gets Gemini's own default. Vendor and effort still resolve field by field. As built in T402.
 - **D41** (2026-09-26, Pete): a node created without a title gets one from a one-shot cheap LLM call (Haiku) through the user's own `claude` login, off the create path; the first-line title stands until it returns, and stays if the CLI is missing or the call fails. The daemon still holds no vendor credentials. As built in T414.
+- **D42** (2026-09-26, Pete): a conversation can be asked at any level (the Director, a project root, a coordinator, a work node) as its own node, and never reshapes the tree: a node's parts are its live children that are neither helpers nor conversations, and only parts make a node coordinating, wait for a plan or ask a coordinator first. A side conversation's status doesn't wake its parent; its conclusion goes up when the human sends it. It can grow into work in place. Widens D33 (design/projects-design.md §2). Built in T418–T422: the rule, Ask from anywhere, the parent's state in its brief, Send to parent, Turn into work.
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -2415,6 +2416,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** Children lists every child with `StatusPill` from `nodeStatus` (none on a root); a draft never moves files (its text is added where it was written; Shift in the same hunk makes a range; the footer names the file); branches read as their slug everywhere with the full name on hover and in Copy; system rows and Details in plain words; Activity rows are the Events rows with the routing reason as a chip; the Knowledge tab reuses the Knowledge list row; "Ask an agent to review…"; the phone header about half as tall; a long title truncates with the pills beside it and `titleFromGoal` cuts at a word ≤60 with no "…"; no Goal card on roots or when it repeats the title (the goal moves to Details → About with Edit); role badges are muted text with an icon.
 - **Validation Steps:** `bun test packages/ui`; the whole control-room e2e (84/0) and the walkthrough, with the new draft-comment e2e.
 - **Notes:** Branch T413-node-page-words (worker), merged. The Activity, Plan, Knowledge and Docs tabs load on demand (main script 339 → 331 KB).
+
+### Ticket: T418 A conversation never reshapes the tree (D42)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete's model: ask a question at any level, as its own thread. Today a repo-less child counted as a part: under a work node it made the node coordinating and restarted its agent as a coordinator; under a coordinator it waited for the plan and asked the coordinator first.
+- **Acceptance Criteria:** `partsOf` / `isConversationNode` in shared; `nodeRole` counts parts only; a root gets its coordinator only for parts; `waitingForPlan`, coordinator-first and Needs me's "has parts" leave conversations out; a conversation under a non-conversation sends no `child_status`; "+ Repo" on a conversation with tangents makes it work in place.
+- **Validation Steps:** `bun test` (0 fail; new D42 tests in shared, attach, coordination, inbox, producers, repo-in-place), the walkthrough.
+- **Notes:** Branch T418-conversations-never-parts. Tests that built parts without a repo now give them one.
 
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0

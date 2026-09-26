@@ -73,10 +73,16 @@ async function session(stream: Stream, role: 'worker' | 'coordinator', live = tr
   return id;
 }
 
+/** A part: a child with a repo (D42: a repo-less child is a conversation, not a part). */
+async function part(title: string, parent: string, repo: string): Promise<Stream> {
+  const child = await streams.create('human', { title, goal: 'g', parent });
+  return store.updateStream('daemon', child.id, (before) => ({ ...before, repo }));
+}
+
 async function shop(coordinatorLive = true) {
   const node = await streams.create('human', { title: 'Sale prices', goal: 'g' });
-  const api = await streams.create('human', { title: 'api part', goal: 'g', parent: node.id });
-  const web = await streams.create('human', { title: 'web part', goal: 'g', parent: node.id });
+  const api = await part('api part', node.id, 'api');
+  const web = await part('web part', node.id, 'web');
   await plans.write(node.id, [
     { child: api.id, owns: ['prices.ts'] },
     { child: web.id, owns: ['shop.html'] },
@@ -91,6 +97,22 @@ async function shop(coordinatorLive = true) {
 }
 
 const inboxIds = () => inbox.list().map((i) => i.id);
+
+test('D42: a conversation under a coordinator asks the human, not the coordinator', async () => {
+  const s = await shop();
+  const side = await streams.create('human', {
+    title: 'Why web part?',
+    goal: 'why does web part own shop.html?',
+    parent: s.node.id,
+  });
+  const sideAgent = await session(side, 'worker');
+  const { id } = await verbs.ask({
+    session: sideAgent,
+    text: 'Should the plan change who owns shop.html?',
+  });
+  expect(questions.get(id as never).coordinator).toBeUndefined();
+  expect(inboxIds()).toContain(id);
+});
 
 describe('coordinator first (T338)', () => {
   test('a shared-thing question goes to the coordinator, not the inbox; answer_child answers it', async () => {

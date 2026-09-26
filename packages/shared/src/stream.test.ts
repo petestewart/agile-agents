@@ -8,8 +8,10 @@ import {
   assertNoStreamCycle,
   assertNoWaitsOnCycle,
   assertStreamWrite,
+  isConversationNode,
   liveChildrenOf,
   nodeRole,
+  partsOf,
   quoteThreadBody,
   ulid,
   validateSessionRef,
@@ -383,10 +385,17 @@ describe('nodeRole (P1)', () => {
     ['no parent is a project', { id: ROOT }, [], 'project'],
     ['a project root with children is still a project', { id: ROOT }, [{ id: CHILD }], 'project'],
     [
-      'a live child makes it coordinating',
+      'a live child with a repo makes it coordinating',
+      { ...node, repo: 'shop' },
+      [{ id: GRANDCHILD, repo: 'shop' }],
+      'coordinating',
+    ],
+    // D42: a conversation child never reshapes its parent.
+    [
+      'D42: a conversation under a work node leaves it work',
       { ...node, repo: 'shop' },
       [{ id: GRANDCHILD }],
-      'coordinating',
+      'work',
     ],
     [
       'a helper of another node still counts',
@@ -433,6 +442,18 @@ describe('nodeRole (P1)', () => {
     // A closed work grandchild no longer counts.
     const closed = [parent, tangent, { ...work, human: { status: 'closed' as const } }];
     expect(nodeRole(parent, liveChildrenOf(CHILD, closed), closed)).toBe('conversation');
+  });
+
+  test('D42: parts leave conversations out; a conversation node is told apart', () => {
+    const work = stream({ id: CHILD, parent: ROOT, repo: 'shop' });
+    const side = stream({ id: GRANDCHILD, parent: CHILD });
+    const part = stream({ id: ulid(9), parent: CHILD, repo: 'shop' });
+    expect(partsOf(CHILD, [work, side]).map((s) => s.id)).toEqual([]);
+    expect(nodeRole(work, liveChildrenOf(CHILD, [work, side]), [work, side])).toBe('work');
+    expect(partsOf(CHILD, [work, side, part]).map((s) => s.id)).toEqual([part.id]);
+    expect(isConversationNode(side, [work, side])).toBe(true);
+    expect(isConversationNode(part, [work, side, part])).toBe(false);
+    expect(isConversationNode(stream({ id: ROOT }), [])).toBe(false);
   });
 
   test('liveChildrenOf drops closed and archived children', () => {

@@ -176,11 +176,13 @@ describe('InboxService.list', () => {
   });
 
   test('T336: a coordinating node whose coordinator finished is not "ready to land"', async () => {
-    const grandchild = await streams.create('human', {
+    // A part has a repo (D42: a repo-less child is a conversation, not a part).
+    const made = await streams.create('human', {
       title: 'api part',
       goal: 'g',
       parent: child.id,
     });
+    const grandchild = await store.updateStream('daemon', made.id, (b) => ({ ...b, repo: 'api' }));
     await streams.update('daemon', child.id, { agent: { status: 'done' } });
     await streams.update('daemon', root.id, { agent: { status: 'done' } });
     expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
@@ -190,6 +192,14 @@ describe('InboxService.list', () => {
     await streams.update('daemon', grandchild.id, { agent: { status: 'done' } });
     expect(inbox.list().find((i) => i.stream === child.id)?.kind).toBe('blocked');
     expect(inbox.list().find((i) => i.stream === grandchild.id)?.kind).toBe('done');
+  });
+
+  test('D42: a work node with a question asked under it still comes to you when it finishes', async () => {
+    const made = await streams.create('human', { title: 'work', goal: 'g', parent: root.id });
+    const work = await store.updateStream('daemon', made.id, (b) => ({ ...b, repo: 'api' }));
+    await streams.create('human', { title: 'why?', goal: 'g', parent: work.id });
+    await streams.update('daemon', work.id, { agent: { status: 'done' } });
+    expect(inbox.list().find((i) => i.stream === work.id)?.kind).toBe('done');
   });
 
   test('T336: a project root\'s coordinator finishing is not "ready to land"', async () => {
