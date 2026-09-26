@@ -2269,6 +2269,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui/app/lib/chat.test.ts`.
 - **Notes:** Branch T400-reviewer-working.
 
+### Ticket: T401 Effort only where the vendor uses it
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: a Gemini session read "Gemini default model · low" though only Claude's adapter maps an effort level (D12); the pickers offered a level that is never sent.
+- **Acceptance Criteria:** `EFFORT_VENDORS` in `packages/shared` names the vendors with an effort mapping, and a daemon test keeps it equal to the provider registry's. Labels drop the level for any other vendor (the tooltip says "(ignored)"); the Effort control is disabled there, and says why.
+- **Validation Steps:** `bun test packages/ui packages/daemon/src/attach/resolve.test.ts`; control-room e2e `T379` (picking Gemini disables Effort; the label reads "Gemini default model").
+- **Notes:** Branch T401-effort-where-used.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

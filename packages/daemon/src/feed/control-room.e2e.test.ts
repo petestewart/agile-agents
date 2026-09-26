@@ -2415,6 +2415,17 @@ describe('session defaults (Playwright e2e, T170)', () => {
           'the project session cleared',
           () => cockpit.store.getProject(shop.id).session === undefined,
         );
+
+        // T401: a vendor with no effort setting: the level can't be picked, and the label drops it.
+        await page.locator(card('-field-vendor')).selectOption('gemini');
+        const effort = page.locator(card('-field-effort'));
+        expect(await effort.isDisabled()).toBe(true);
+        expect(await effort.getAttribute('title')).toBe(
+          'Gemini has no effort setting; the level is not used',
+        );
+        await page.locator(card('-save')).click();
+        await waitForText(page, card('-resolved'), 'Gemini default model');
+        expect(cockpit.store.getProject(shop.id).session).toEqual({ vendor: 'gemini' });
       } finally {
         await teardown([page]);
         await cockpit.stop();

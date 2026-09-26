@@ -17,10 +17,11 @@ import {
   type ProjectSessionDefaults,
   type ResolvedSessionDefaults,
   type SessionDefaultsStatus,
+  vendorTakesEffort,
 } from '@agile-agents/shared';
 import { useEffect, useId, useRef, useState } from 'react';
 import { getSessionDefaults } from '../lib/api';
-import { agentLabel } from '../lib/chat';
+import { agentLabel, vendorLabel } from '../lib/chat';
 import { resolvedFor } from '../lib/defaults';
 import { Button, Dialog, Field, Spinner } from './ui';
 
@@ -50,6 +51,10 @@ export function SessionFields({
   const listId = useId();
   const vendor = value.vendor || inherit?.vendor || status.builtin.vendor;
   const suggestions = status.known_models[vendor as keyof typeof status.known_models] ?? [];
+  // T401: a vendor with no effort setting never gets the level; say so rather than offer it.
+  const noEffort = vendorTakesEffort(vendor)
+    ? undefined
+    : `${vendorLabel(vendor)} has no effort setting; the level is not used`;
   if (layout === 'stack') {
     return (
       <div className="cr-picker-fields" data-testid={testid}>
@@ -88,11 +93,16 @@ export function SessionFields({
             <option key={m} value={m} />
           ))}
         </datalist>
-        <Field label="Effort" htmlFor={`${listId}-effort`}>
+        <Field
+          label="Effort"
+          htmlFor={`${listId}-effort`}
+          {...(noEffort !== undefined ? { hint: `${noEffort}.` } : {})}
+        >
           <select
             id={`${listId}-effort`}
             aria-label="Effort"
             data-testid={`${testid}-effort`}
+            disabled={noEffort !== undefined}
             value={value.effort}
             onChange={(e) => onChange({ ...value, effort: e.target.value })}
           >
@@ -139,6 +149,8 @@ export function SessionFields({
       <select
         aria-label="Effort"
         data-testid={`${testid}-effort`}
+        disabled={noEffort !== undefined}
+        {...(noEffort !== undefined ? { title: noEffort } : {})}
         value={value.effort}
         onChange={(e) => onChange({ ...value, effort: e.target.value })}
       >

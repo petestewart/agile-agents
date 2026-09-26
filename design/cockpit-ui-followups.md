@@ -17,10 +17,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   action refreshes the frame at once, so this is only seen when the daemon is
   slow to drop the item. Removing it optimistically would need a way back
   when it doesn't go.
-- Effort shows for a vendor that ignores it: a Gemini session's "Worker
-  started · Gemini default model · low" and its Settings chip say "low" though
-  the daemon never sends it. Drop effort from the label where the provider
-  has none (`lib/chat.ts` `sessionLabel`, the provider registry knows).
 - Settings → Agents: a repo set to another vendor still shows the global
   Claude model as its inherited placeholder (`SessionPicker.tsx` `SessionFields`);
   `resolveSessionDefaults` does take a named model across vendors, so this is

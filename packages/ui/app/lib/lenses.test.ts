@@ -106,8 +106,8 @@ describe('Running', () => {
     expect(
       agent({ role: 'coordinator', vendor: 'gemini', model: 'default', effort: 'high' }),
     ).toEqual({
-      text: 'Gemini default model · high',
-      title: 'Coordinator: gemini/default · high effort',
+      text: 'Gemini default model',
+      title: 'Coordinator: gemini/default · high effort (ignored)',
     });
     expect(agent({ role: 'reviewer', vendor: 'codex', model: 'gpt-9' })).toEqual({
       text: 'Reviewer · Codex · gpt-9',

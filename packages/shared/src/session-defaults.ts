@@ -26,6 +26,19 @@ export const SESSION_VENDORS = ['claude', 'gemini', 'cursor', 'grok', 'pi', 'cod
 export const SessionVendorSchema = z.enum(SESSION_VENDORS);
 export type SessionVendor = z.infer<typeof SessionVendorSchema>;
 
+/**
+ * T401 (D12): the vendors whose adapter maps an effort level to something
+ * (`ACP_PROVIDERS[v].effort`; a daemon test keeps the two in step). For any
+ * other the level is recorded but never sent ("effort … ignored by …"), so
+ * the cockpit leaves it out of labels.
+ */
+export const EFFORT_VENDORS: readonly SessionVendor[] = ['claude'];
+
+/** T401: whether `vendor` does anything with an effort level. */
+export function vendorTakesEffort(vendor: string): boolean {
+  return (EFFORT_VENDORS as readonly string[]).includes(vendor);
+}
+
 /** D17's step 4. */
 export const BUILTIN_SESSION_DEFAULTS = {
   vendor: 'claude',

@@ -6,7 +6,12 @@
  * so plain `bun test` covers every rule here; the components only render.
  */
 
-import type { InboxItem, SessionRef, ThreadEntry } from '@agile-agents/shared';
+import {
+  type InboxItem,
+  type SessionRef,
+  type ThreadEntry,
+  vendorTakesEffort,
+} from '@agile-agents/shared';
 import type { IconName } from '../components/Icon';
 import { isLiveSession, ruleHitOf } from './streams';
 
@@ -47,10 +52,15 @@ export function modelLabel(vendor: string, model: string | undefined): string {
   return model;
 }
 
-/** "Claude Opus 5.5 · low": what a session runs, or what one would start with. */
+/**
+ * "Claude Opus 5.5 · low": what a session runs, or what one would start with.
+ * T401: the effort only for a vendor that uses it ("Gemini default model").
+ */
 export function sessionLabel(session: { vendor: string; model?: string; effort?: string }): string {
   const model = modelLabel(session.vendor, session.model);
-  return session.effort ? `${model} · ${session.effort}` : model;
+  return session.effort && vendorTakesEffort(session.vendor)
+    ? `${model} · ${session.effort}`
+    : model;
 }
 
 /**
@@ -66,14 +76,20 @@ export function agentLabel(session: { vendor: string; model?: string; effort?: s
   return `${vendorLabel(session.vendor)} · ${label}`;
 }
 
-/** T382: the raw ids behind a label, for its tooltip: "claude/claude-opus-5-5 · low effort". */
+/**
+ * T382: the raw ids behind a label, for its tooltip: "claude/claude-opus-5-5 ·
+ * low effort" ("gemini/default · low effort (ignored)", T401).
+ */
 export function sessionIdText(session: {
   vendor: string;
   model?: string;
   effort?: string;
 }): string {
   const model = session.model === undefined || session.model === '' ? 'default' : session.model;
-  return `${session.vendor}/${model}${session.effort ? ` · ${session.effort} effort` : ''}`;
+  if (!session.effort) return `${session.vendor}/${model}`;
+  // T401: a vendor without an effort setting records the level but never gets it.
+  const ignored = vendorTakesEffort(session.vendor) ? '' : ' (ignored)';
+  return `${session.vendor}/${model} · ${session.effort} effort${ignored}`;
 }
 
 /** Who wrote a thread line, for the chat's name row. */
