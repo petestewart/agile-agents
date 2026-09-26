@@ -1,1 +1,135 @@
-# agile-agents
+# Agile Agents
+
+A cockpit for running coding agents, for one person. You keep one tab open. Your agents (Claude Code, Gemini CLI, Codex and others) work in parallel, each on its own branch, and the cockpit brings you what needs you: a question, an action to allow, a plan to approve, work ready to merge.
+
+One long-lived daemon, `agiled`, holds all state in one directory of plain YAML, JSONL and Markdown. Agents run under your own vendor login. Nothing is written into your repos except the code the work produces, on a branch you merge.
+
+## What it does
+
+- **Projects and nodes.** A project is a tree of nodes. Each node has a goal, a chat thread and a status. What a node *is* follows from its shape:
+
+  | Role | Children | Repo | Its agent |
+  |---|---|---|---|
+  | project (the root) | its top-level nodes | the repos it uses | coordinates its parts, once it has any |
+  | conversation | none | none | answers, researches, explains |
+  | work | none | one, with a branch and a worktree | writes code, then delivers it |
+  | coordinating | parts | its parts' | plans, splits work, tracks its parts |
+
+- **Needs me.** Everything waiting on you, across every node, answered in place: questions with clickable choices, actions to allow, plans to approve, knowledge to accept, work to merge (with its diff size). Replies you haven't read are listed first. Optional browser notifications tell you while you're in another app.
+- **Ask from anywhere.** Press `A` to ask a question at the level you choose: the Director, a project, a coordinator, or the agent on one ticket. The question gets its own thread, and its agent sees what the node it's about is doing. A conclusion can be sent up to that node, or the conversation can **turn into the work** it concluded, in place.
+- **Agents that split work.** Coordinators and the Director plan and create child nodes. How far they go on their own is set per project: at Advise they propose and you click to apply; at Organise they create nodes and start agents themselves and tell you; Run also lets them approve routine contract changes and restart stuck work. Merging and accepting knowledge stay yours at every level. A worker's proposed follow-up is one click from being a node.
+- **A chat per node.** You see the agent's steps live ("Claude is working · 1m 12s"), how full its context is, and a Changes tab where you can comment on any line of the diff and send the comments as one review.
+- **Knowledge that is enforced.** Standards, architecture notes and decisions apply to a repo, a project or a subtree. Hooks enforce them while the agent works, and ship checks enforce them before anything merges. A pattern or a classifier check does the checking.
+- **Delivery per repo.** Either direct (Merge merges the branch into main) or by pull request (the app opens it and the agent looks after it until it merges). Merging is always yours.
+- **The Director.** An agent above all projects that you talk to about everything at once.
+- **Tracker links.** A node can link a Jira or Linear issue, and an epic can import its children as nodes.
+
+## Requirements
+
+- [Bun](https://bun.sh) 1.4.2 or newer, and git.
+- At least one vendor harness, logged in with your own account. [Claude Code](https://claude.com/claude-code) is the default. Gemini CLI, Codex, Cursor, Grok CLI and Pi are also supported over ACP.
+- Optional: `gh`, logged in, for pull-request delivery; a Jira or Linear token for tracker links; a TypeSafe key for classifier checks.
+
+## Install
+
+```sh
+git clone https://github.com/petestewart/agile-agents.git
+cd agile-agents
+bun install
+bun run build
+cd packages/cli && bun link && cd -   # puts `agile` on your PATH (~/.bun/bin)
+```
+
+After pulling new code, run `bun install && bun run build`, then `agile daemon stop && agile daemon start`, and reload the cockpit tab.
+
+## First run
+
+```sh
+agile init            # creates the home (~/.agile, or $AGILE_HOME)
+agile daemon start    # starts agiled in the background
+```
+
+Open **http://127.0.0.1:4600/**. With nothing set up yet, Needs me walks you through three steps:
+
+1. **Add a repository.** Browse to a git repository on this machine, or paste a GitHub, SSH or HTTPS URL to clone one.
+2. **Create a project** and tick the repositories it uses.
+3. **Start a node.** Press `N`, write what you want done, and pick a repository (or none, for a conversation). The agent starts at once. Leave the title empty and a short one is written for you (one quick Claude Haiku call through your `claude` login).
+
+`agile daemon status` says whether the daemon is running, where its home is, and which model a new session will use.
+
+## Keys
+
+| Key | What it does |
+|---|---|
+| `N` | New node (under the open node) |
+| `A` | Ask about the open node, or the Director |
+| `⌘K` / `Ctrl K` | Search and run anything: nodes, views, this node's actions, what needs you |
+| `?` | Every shortcut |
+| `G` then `I` / `D` / `K` / `R` / `E` / `S` | Needs me, Director, Knowledge, Running, Events, Settings |
+| `J` / `K` | Next or previous card in Needs me, or node in the tree |
+| `A` / `B`, `1` / `2` | Pick a choice on a focused question |
+| `Enter` / `Shift+Enter` | Send / new line, in the composer and in a diff comment |
+| `Esc` | Close a dialog, menu or panel |
+
+## The CLI
+
+Everything in the cockpit can also be done from `agile`. Run it with no arguments for the full usage.
+
+```sh
+agile repo add ~/code/shop --name shop
+agile project new --name Shop --repo shop
+agile node new --project P-… --title "Add CSV import" --goal "…" --repo shop
+agile inbox                     # what waits on you
+agile answer Q-… "Use integer cents"
+agile deliver <node>            # ship checks, then merge
+agile tail --follow             # the event log
+agile director say "What needs me today?"
+```
+
+Every command takes `--json`.
+
+## Where things live
+
+The home (`$AGILE_HOME`, default `~/.agile/`) holds:
+
+- `config.yaml`: the port (default 4600), session defaults, classifier and tracker settings.
+- `repos.yaml`: registered repositories and their delivery.
+- `streams/` and `threads/`: nodes and their chats.
+- `rules/`: knowledge items.
+- `log/agiled.log` and `log/events.jsonl`: the daemon log and every event.
+- `sessions/<id>/stderr.log`: each agent's stderr.
+
+The daemon writes these files only through a validating store. A corrupt file is refused with its path and line, never silently reset. Worktrees live in each repo under `.worktrees/`, on `stream/…` branches.
+
+A new session's vendor, model and effort come from, in order: what you pick when starting it, the project's settings, the repo's settings, the home default, then the built-in `claude` / `claude-opus-5-5` / `low`. A model only carries over to the same vendor. Settings → Agents edits the defaults.
+
+## Development
+
+```sh
+bun run typecheck
+bun run lint                 # biome
+bun test                     # offline unit tests; no vendor, no network
+bun run test:integration     # a real daemon and a real browser, still no vendor
+bun run test:walkthrough     # clicks through LIVE-CHECKLIST with fake agents (build first)
+```
+
+The browser tests need Chromium: `bunx playwright-core install chromium`, or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE`.
+
+The code is a Bun workspace:
+
+| Package | What it holds |
+|---|---|
+| `packages/shared` | every schema (zod), defined once |
+| `packages/acp-client` | the ACP session client and the vendor providers |
+| `packages/daemon` | `agiled`: the store, nodes, agents, hooks, knowledge, delivery, the Director, HTTP and WebSocket |
+| `packages/cli` | `agile` |
+| `packages/ui` | the cockpit (React and Vite), served by the daemon |
+
+## Documentation
+
+- [`PLAN.md`](PLAN.md): the plan, the board (every ticket and its status) and the decisions log.
+- [`design/cockpit-ui.md`](design/cockpit-ui.md): the cockpit's design system, words and patterns.
+- [`design/projects-design.md`](design/projects-design.md): projects, roles, delivery, events, knowledge, coordination and the Director.
+- [`design/cockpit-design.md`](design/cockpit-design.md): nodes, the inbox, agents, rules, the classifier and the state home.
+- [`LIVE-CHECKLIST.md`](LIVE-CHECKLIST.md): a guided end-to-end walkthrough against real vendor logins.
+- [`CLAUDE.md`](CLAUDE.md): the guide for coding agents working on this repo.

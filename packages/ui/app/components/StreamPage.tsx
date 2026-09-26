@@ -54,6 +54,7 @@ import {
   nodeTabs,
   oneLine,
   openQuestions,
+  proposedNext,
   questionIdOfRef,
   sendIntent,
   showGoalCard,
@@ -80,6 +81,7 @@ import { useShell } from '../lib/shell';
 import type { StatusInput } from '../lib/status';
 import { groupSteps, turnStartedAt } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
+import { titleFromGoal } from '../lib/tree';
 import { ChatScroll, ContextMeter, MessageList, StepsFold, Thinking, useSteps } from './Chat';
 import { type NodeCommands, useNodeCommands } from './CommandPalette';
 import { Composer, type ComposerHandle } from './Composer';
@@ -337,7 +339,7 @@ function GoalCard({
 
 export function StreamPage({ id }: { id: string }): JSX.Element {
   const { cockpit, refresh, offline } = useFeed();
-  const { openRules, select, openOn, openAsk } = useShell();
+  const { openRules, select, openOn, openAsk, openNewStream } = useShell();
   const toast = useToast();
   const copy = useCopy();
   const [page, setPage] = useState<StreamPagePayload | undefined>(undefined);
@@ -667,10 +669,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const branchOff = (line: number) =>
     act(async () => {
       const created = await createStream({
-        title: question.split('\n')[0]?.slice(0, 80) || question,
+        // T425: cut at a word like New node's; the cheap model names it better (D41).
+        title: titleFromGoal(question) || question.slice(0, 60),
         goal: question,
         parent: stream.id,
         seed_line: line,
+        auto_title: true,
       });
       setBranching(undefined);
       setTangentQuestion('');
@@ -1021,6 +1025,27 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
 
   const renderExtra = (entry: StreamPagePayload['thread'][number], i: number) => (
     <>
+      {open &&
+        (() => {
+          // T427: what a worker proposes next is one click from being a node (under this one,
+          // design §2's "break it down"; New node's Parent picker can put it elsewhere).
+          const next = proposedNext(entry);
+          return next ? (
+            <div className="cr-msg-extra">
+              <Button
+                size="sm"
+                icon="plus"
+                data-testid="proposal-create-node"
+                title="Open New node with its title and goal, under this node"
+                onClick={() =>
+                  openNewStream({ parent: stream.id, title: next.title, goal: next.goal })
+                }
+              >
+                Create node…
+              </Button>
+            </div>
+          ) : null;
+        })()}
       {entry.kind === 'proposal' &&
         open &&
         reposNamedIn(entry.body, repos, stream.repo).length > 0 && (
@@ -1510,7 +1535,16 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             label: TAB_LABEL[t],
             ...(t === 'rules' ? { count: page.rules.length } : {}),
             ...(t === 'docs' ? { count: page.docs.length } : {}),
-            ...(t === 'diff' && reviewCount > 0 ? { count: reviewCount } : {}),
+            // T426: the count on Changes is your review comments, not its files: it says so.
+            ...(t === 'diff' && reviewCount > 0
+              ? {
+                  count: reviewCount,
+                  countOf: {
+                    icon: 'message-square' as const,
+                    title: `${reviewCount} review ${reviewCount === 1 ? 'comment' : 'comments'} not sent yet`,
+                  },
+                }
+              : {}),
           }))}
           value={shownTab}
           onChange={setTab}

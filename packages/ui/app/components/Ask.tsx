@@ -30,7 +30,8 @@ export function Ask({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      if (askAbout === undefined && isShortcut(event, 'a')) {
+      // A focused Needs me card takes A for its first choice (T416) and prevents the default.
+      if (askAbout === undefined && !event.defaultPrevented && isShortcut(event, 'a')) {
         if (document.querySelector('.cr-modal')) return;
         event.preventDefault();
         openAsk();

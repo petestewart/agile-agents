@@ -340,7 +340,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   finding: 'Record a finding ({severity, file, line?, text}) on the stream.',
   propose_knowledge:
     'Propose a knowledge item for the operator to accept or reject ({text, kind?: standard|architecture|decision, scope?, paths?, examples?: [{action, violates}], enforcement?: tell|action|ship|review, critical?, sources?: [id]}). Scope defaults to this node’s subtree; the Director names it (global, repo:<name>, project:<id>).',
-  propose_next: 'Propose a follow-up stream ({title, goal}); a human creates it.',
+  propose_next:
+    'Propose a follow-up node ({title: a few words, goal: what it should do and what done looks like}); the human creates it in one click, under this node or elsewhere. Use it when work you have found belongs in its own node rather than in yours.',
   read_stream: 'Read the most recent entries of this session’s stream thread.',
   search_docs: 'Search the repo and stream docs visible to this stream.',
   test_run: 'Run a test command in this session’s worktree; failures only, never a green log.',

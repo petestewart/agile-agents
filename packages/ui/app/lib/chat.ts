@@ -214,6 +214,22 @@ export function workingAs(sessions: readonly Pick<SessionRef, 'vendor' | 'role' 
 // ---------------------------------------------------------------- chat rows
 
 /**
+ * T427: a worker's `propose_next` line ("next: <title> — <goal>", as
+ * `VerbService.proposeNext` writes it) as the node it proposes, so the
+ * chat can offer to create it. Anything else is `undefined`.
+ */
+export function proposedNext(
+  entry: Pick<ThreadEntry, 'by' | 'kind' | 'body'>,
+): { title: string; goal: string } | undefined {
+  if (entry.kind !== 'proposal' || !entry.by.startsWith('agent:')) return undefined;
+  const match = /^next: (.+?) — ([\s\S]+)$/.exec(entry.body.trim());
+  const title = match?.[1]?.trim();
+  const goal = match?.[2]?.trim();
+  if (!title || !goal) return undefined;
+  return { title, goal };
+}
+
+/**
  * How a line shows: `you` a right-aligned bubble, `agent` prose with a
  * name, `system` a compact muted row (the daemon's own bookkeeping, and
  * your own events such as creating the node), `rule_hit` a blocked-by-rule

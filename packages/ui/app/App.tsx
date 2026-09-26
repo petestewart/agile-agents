@@ -31,6 +31,7 @@ import { unarchiveStream } from './lib/api';
 import { useFeed } from './lib/feed-context';
 import { type ShellView, useShell } from './lib/shell';
 import { useNeedsMeNotifications } from './lib/use-notify';
+import { useReadOpenNode, useReplyNotifications } from './lib/use-unread';
 
 // T394: loaded on demand (`preload()` fetches one ahead: the warm-up, a deep link).
 const loadLenses = () => import('./components/Lenses');
@@ -173,6 +174,9 @@ export function App(): JSX.Element {
   }, [waiting, pageTitle]);
   // T388: a browser notification when something new needs you while you're away (opt-in, Settings).
   useNeedsMeNotifications();
+  // T429: the open node is read as it changes; a reply while you're away notifies.
+  useReadOpenNode();
+  useReplyNotifications();
   useWarmChunks();
   // T394: a caught error resets when you go somewhere else.
   const place = `${view}:${selected ?? ''}`;

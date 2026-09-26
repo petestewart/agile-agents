@@ -146,6 +146,28 @@ export function searchOutline(list: readonly OutlineRow[], query: string): Outli
   return list.filter((o) => o.row.title.toLowerCase().includes(q));
 }
 
+/**
+ * T426: the option typing `typed` lands on: the first whose text starts
+ * with it, else the first that contains it (ignoring case); a repeated
+ * single letter ("ll") cycles through the options starting with it.
+ */
+export function typeAheadMatch<T extends { text: string }>(
+  options: readonly T[],
+  typed: string,
+): T | undefined {
+  const q = typed.toLowerCase();
+  if (q.trim() === '') return undefined;
+  const same = q.length > 1 && [...q].every((c) => c === q[0]);
+  if (same) {
+    const starting = options.filter((o) => o.text.toLowerCase().startsWith(q[0] ?? ''));
+    if (starting.length > 0) return starting[(q.length - 1) % starting.length];
+  }
+  return (
+    options.find((o) => o.text.toLowerCase().startsWith(q)) ??
+    options.find((o) => o.text.toLowerCase().includes(q))
+  );
+}
+
 /** Repos for a picker: the project's own first, then the others, each by name. */
 export function splitRepos<T extends { name: string }>(
   repos: readonly T[],

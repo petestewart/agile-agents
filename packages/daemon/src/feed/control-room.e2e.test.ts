@@ -1333,7 +1333,8 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
           .selectOption('path_deny');
         await page.locator(`${form} [data-testid="rules-edit-pattern-args"]`).fill('secrets/**');
         await page.locator(`${form} [data-testid="rules-edit-critical"]`).check();
-        await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
+        // T426: Save as proposal keeps it for review (Add would apply it at once).
+        await page.locator(`${form} [data-testid="rules-edit-propose"]`).click();
         await page.locator(form).waitFor({ state: 'detached' });
         await waitUntil('the new rule to be stored', () =>
           cockpit.store.listKnowledge().some((r) => r.text === 'keep secrets out'),
@@ -3108,12 +3109,18 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
         expect(
           await file('src/import.ts').locator('[data-testid="diff-comment-input"]').count(),
         ).toBe(0);
-        await readmeInput.fill('Say which delimiter.');
-        await p.keyboard.press('Control+Enter');
-        await p
-          .locator('[data-testid="diff-comment"]', { hasText: 'Say which delimiter.' })
-          .waitFor();
+        // T426: Shift+Enter is a new line, Enter adds (as in the composer).
+        await readmeInput.fill('Say which');
+        await p.keyboard.press('Shift+Enter');
+        await p.keyboard.type('delimiter.');
+        expect(await readmeInput.inputValue()).toBe('Say which\ndelimiter.');
+        await p.keyboard.press('Enter');
+        await p.locator('[data-testid="diff-comment"]', { hasText: 'delimiter.' }).waitFor();
         await waitForText(p, '[data-testid="review-count"]', '2 comments on 2 files');
+        // The count on the tab says what it counts.
+        expect(await p.locator('[data-tab="diff"] .cr-tab-count').getAttribute('title')).toBe(
+          '2 review comments not sent yet',
+        );
 
         // Esc drops a comment being written; nothing is added.
         await splitLine.hover();
@@ -3138,7 +3145,9 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
           '',
           '1. `README.md:3`',
           '   `Imports CSV files.`',
-          '   Say which delimiter.',
+          // A comment's own lines keep the item's indent.
+          '   Say which',
+          '   delimiter.',
           '2. `src/import.ts:2`',
           '   `const rows = text.split(",");`',
           '   Quoted fields can hold commas.',
@@ -3159,8 +3168,9 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
         });
         await line.waitFor();
         expect(await line.locator('ol > li').count()).toBe(2);
-        expect(await line.locator('ol > li').first().textContent()).toBe(
-          'README.md:3Imports CSV files.Say which delimiter.',
+        // The comment's second line reads as a second line, under the quote.
+        expect(await line.locator('ol > li').first().innerText()).toMatch(
+          /README\.md:3\s+Imports CSV files\.\s+Say which\ndelimiter\./,
         );
         expect(await line.locator('code', { hasText: 'src/import.ts:2' }).count()).toBe(1);
         await p
@@ -3170,7 +3180,7 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
           "the review in the agent's prompt",
           () =>
             existsSync(promptLog) &&
-            readFileSync(promptLog, 'utf8').includes('Say which delimiter.'),
+            /Say which\\n {3}delimiter\./.test(readFileSync(promptLog, 'utf8')),
         );
 
         // The Changes tab starts clean; Discard asks before dropping a review.
@@ -4091,6 +4101,10 @@ describe('add a repo from Settings (Playwright e2e, T206, T367)', () => {
         expect(await option.locator('[data-testid="repo-icon"]').getAttribute('data-kind')).toBe(
           'local',
         );
+        // T426: a short list (no search box) still takes typing: "demo", Enter picks it.
+        await page.keyboard.type('demo');
+        await page.keyboard.press('Enter');
+        await waitForAttr(page, '[data-testid="new-stream-repo"]', 'data-value', 'demo-project');
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -4249,6 +4263,21 @@ describe('add a repo from Settings (Playwright e2e, T206, T367)', () => {
         await waitUntil('the project with its repo', () =>
           cockpit.projects.list().some((p) => p.name === 'Writing' && p.repos.includes('blog')),
         );
+
+        // T426: a taken name (ignoring case) says so under Name as you type; Create waits.
+        await page.locator('[data-testid="new-project-open"]').click();
+        await page.locator('[data-testid="new-project-name"]').fill('writing');
+        await waitForText(
+          page,
+          '[data-testid="new-project"] .cr-field-error',
+          'A project named “Writing” already exists.',
+        );
+        expect(await page.locator('[data-testid="new-project-create"]').isDisabled()).toBe(true);
+        await page.locator('[data-testid="new-project-name"]').fill('Writing 2');
+        await page.locator('[data-testid="new-project"] .cr-field-error').waitFor({
+          state: 'detached',
+        });
+        expect(await page.locator('[data-testid="new-project-create"]').isDisabled()).toBe(false);
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -5254,6 +5283,13 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         );
         const item = cockpit.store.listKnowledge().find((r) => r.name === 'money-in-cents');
         expect(item?.scope).toEqual({ kind: 'project', project: shop.id });
+        // T426: yours, so Add applies it at once.
+        await waitUntil(
+          'it to be accepted',
+          () =>
+            cockpit.store.listKnowledge().find((r) => r.name === 'money-in-cents')?.status ===
+            'accepted',
+        );
         // The list names the scope's project, not its id.
         await waitForText(
           page,
@@ -5568,6 +5604,129 @@ describe('Turn into work (Playwright e2e, T422, D42)', () => {
         expect(after.repo).toBeUndefined();
         expect(after.goal).toBe('Find the largest file the importer takes and why.');
         expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('what a worker proposes next (Playwright e2e, T427)', () => {
+  browserTest(
+    "a propose_next line's Create node… opens New node with its title and goal, under this node",
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'Ledger totals',
+          goal: 'fix the totals',
+          project: shop.id,
+          repo: 'demo',
+        });
+        const goal = 'Export the ledger as CSV; done when a test covers it.';
+        await cockpit.streams.appendThread(
+          'agent',
+          node.id,
+          { kind: 'proposal', body: `next: Add CSV export — ${goal}` },
+          ulid(),
+        );
+        // A proposal that isn't a propose_next (no title and goal) offers nothing to create.
+        await cockpit.streams.appendThread('daemon', node.id, {
+          kind: 'proposal',
+          body: 'next: this needs a change in web too; add it?',
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        await page.locator('[data-testid="node-role"]').waitFor();
+        await page.locator('[data-testid="proposal-add-repo"]').waitFor();
+        expect(await page.locator('[data-testid="proposal-create-node"]').count()).toBe(1);
+        await page.locator('[data-testid="proposal-create-node"]').click();
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="new-stream-title"]').inputValue()).toBe(
+          'Add CSV export',
+        );
+        expect(await page.locator('[data-testid="new-stream-goal"]').inputValue()).toBe(goal);
+        expect(
+          await page.locator('[data-testid="new-stream-parent"]').getAttribute('data-value'),
+        ).toBe(node.id);
+        await page.locator('[data-testid="new-stream-start"]').uncheck();
+        await page.locator('[data-testid="new-stream-create"]').click();
+        await waitUntil('the proposed node', () =>
+          cockpit.streams
+            .list()
+            .some((s) => s.parent === node.id && s.title === 'Add CSV export' && s.goal === goal),
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe("replies you haven't read (Playwright e2e, T429)", () => {
+  browserTest(
+    'a reply that lands while you are elsewhere is listed in Needs me with a sidebar dot; opening it reads it',
+    async () => {
+      const reply = 'It buffers because the parser needs the header row first.';
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'agent_text', text: reply }, { type: 'end_turn' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const convo = await cockpit.streams.create('human', {
+          title: 'Why buffer the file?',
+          goal: 'why does the importer read the whole file?',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="inbox"]').waitFor();
+        expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
+
+        // You asked, and went on with something else: the answer lands.
+        const asked = await fetch(`${cockpit.base}/api/streams/${convo.id}/say`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ body: 'why buffer?', start: true }),
+        });
+        expect(asked.status).toBe(201);
+        const listed = page.locator(`[data-testid="reply"][data-stream="${convo.id}"]`);
+        await listed.waitFor();
+        expect(await listed.textContent()).toContain('Replied');
+        await page.locator('[data-testid="replies-dot"]').waitFor();
+        // It is no Needs me card: nothing waits on a decision.
+        await page.locator('[data-testid="inbox-empty"]').waitFor();
+        expect(await page.locator('[data-testid="inbox-empty"]').textContent()).toContain(
+          'Nothing else waits on you',
+        );
+
+        // Opening it reads it.
+        await listed.locator('.cr-reply-open').click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${convo.id}"]`).waitFor();
+        await page
+          .locator('[data-testid="thread-entry"][data-by="agent"]', { hasText: reply })
+          .waitFor();
+        await page.locator('[data-view="inbox"]').click();
+        await page.locator('[data-testid="inbox"]').waitFor();
+        expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="replies-dot"]').count()).toBe(0);
+        // Read stays read across a reload (per browser).
+        await page.reload();
+        await page.locator('[data-testid="inbox"]').waitFor();
+        await page.locator('[data-testid="inbox-empty"]').waitFor();
+        expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -7269,8 +7428,21 @@ describe('command palette and keyboard shortcuts (Playwright e2e, T368)', () => 
         const help = '[data-testid="shortcuts"]';
         await page.locator(help).waitFor({ state: 'visible' });
         expect(await page.locator(help).textContent()).toContain('New node');
+        expect(await page.locator(help).textContent()).toContain('Ask about the open node');
         await page.keyboard.press('Escape');
         await page.locator(help).waitFor({ state: 'detached' });
+
+        // T425: the palette runs Ask (T419); here, with no node open, it aims at the Director.
+        await page.keyboard.press('Control+k');
+        await page.locator(input).fill('ask a q');
+        await waitForAttr(page, `${palette} [aria-selected="true"]`, 'data-key', 'action:ask');
+        await page.keyboard.press('Enter');
+        await page.locator('[data-testid="ask"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="ask-target"]').getAttribute('data-value')).toBe(
+          'director',
+        );
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="ask"]').waitFor({ state: 'detached' });
         await page.locator('[data-testid="stream-filter"]').focus();
         await page.keyboard.press('?');
         expect(await page.locator(help).count()).toBe(0);

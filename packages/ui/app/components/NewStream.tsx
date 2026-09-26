@@ -123,7 +123,7 @@ export function NewStream({
   // whose first render already holds the default parent. Resetting it in an
   // effect after mount left one render with the last opening's parent, which
   // a fast reader (or a quick submit) could see as "— none —".
-  const key = `${selected ?? ''}|${newStreamPreset?.parent ?? ''}|${newStreamPreset?.project ?? ''}`;
+  const key = `${selected ?? ''}|${newStreamPreset?.parent ?? ''}|${newStreamPreset?.project ?? ''}|${newStreamPreset?.title ?? ''}`;
   return <NewStreamForm key={key} rows={rows} projects={projects} preset={newStreamPreset} />;
 }
 
@@ -143,9 +143,9 @@ function NewStreamForm({
   const [defaults] = useState(() =>
     newNodeDefaults({ preset, selected, filter, rows, projects, lastUsed: loadLastProject() }),
   );
-  const [goal, setGoal] = useState('');
+  const [goal, setGoal] = useState(preset?.goal ?? '');
   // `undefined` follows the goal's first line; typing in the title takes it over.
-  const [title, setTitle] = useState<string | undefined>(undefined);
+  const [title, setTitle] = useState<string | undefined>(preset?.title);
   const [projectId, setProjectId] = useState(defaults.project);
   const [parent, setParent] = useState(defaults.parent);
   const [repo, setRepo] = useState('');
