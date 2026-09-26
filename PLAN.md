@@ -1888,12 +1888,12 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T348 The open node and filter live in the URL (D36: D2)
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** Reload or a shared link reopens the same node and project filter; back/forward move between nodes.
 - **Acceptance Criteria:** E2E: open a node, filter, reload → same view; back returns to the previous node.
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** —
+- **Notes:** Branch T348-url-state, merge 34beea0. `?node=`/`?view=` + `&project=` (extends T112); node/view changes push history, filter replaces; unknown URL ids fall back to the inbox with a clean URL. Review+QA (sonnet): APPROVE/PASS (no injection, no open redirect, no push loops).
 
 ### Ticket: T349 A "question" state on Children cards (D36: D3)
 - **Priority:** P2
