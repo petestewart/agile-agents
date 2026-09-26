@@ -11,7 +11,7 @@ import { basename, dirname, isAbsolute, join as joinPath, relative, resolve, sep
 
 // Quote-aware splitting/tokenizing
 
-export type SegmentDelimiter = 'start' | ';' | '&&' | '||' | '|' | '\n';
+export type SegmentDelimiter = 'start' | ';' | '&&' | '||' | '|' | '&' | '\n';
 
 export interface RawSegment {
   raw: string;
@@ -19,7 +19,7 @@ export interface RawSegment {
 }
 
 /**
- * Splits on `;`, `&&`, `||`, `|` and newlines, never inside quotes, so
+ * Splits on `;`, `&&`, `||`, `|`, `&` and newlines, never inside quotes, so
  * `sh -c "git push origin main"` stays one segment (its `-c` argument is
  * recursed into by `parseCommandIntoAtoms`).
  */
@@ -67,7 +67,15 @@ export function splitCommandSegments(command: string): RawSegment[] {
       continue;
     }
     if (c === '|') {
+      // `|&` pipes stderr too: still a pipe.
       push('|');
+      if (command[i + 1] === '&') i++;
+      continue;
+    }
+    // A lone `&` runs what came before in the background and starts a new
+    // command (`echo & cat /etc/passwd`). Not `>&`, `<&` or `&>`.
+    if (c === '&' && !/[<>]/.test(command[i - 1] ?? '') && command[i + 1] !== '>') {
+      push('&');
       continue;
     }
     current += c;
@@ -135,6 +143,15 @@ export function hasUnsafeShellConstruct(command: string): boolean {
   return false;
 }
 
+/**
+ * T345: the command names `CDPATH` anywhere (`CDPATH=/ cd etc`, `export
+ * CDPATH=`, `env CDPATH=...`): `cd <name>` may then land wherever it points,
+ * so no `cd` in it can be checked.
+ */
+export function mentionsCdpath(command: string): boolean {
+  return /\bCDPATH\b/.test(command);
+}
+
 // Wrapper/env-prefix stripping
 
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=.*$/;
@@ -171,6 +188,10 @@ export interface CommandAtom {
   prefixed?: true;
   /** T343: the stripped tokens themselves (`VAR=value`, wrappers), when `prefixed`. */
   prefix?: string[];
+  /** T345: the operator before this atom, for a top-level atom. */
+  delimiterBefore?: SegmentDelimiter;
+  /** T345: the atom came from inside an `sh -c "..."`, whose `cd` never moves the outer shell. */
+  nested?: true;
 }
 
 const SHELL_RUNNERS = new Set(['sh', 'bash', 'zsh']);
@@ -201,9 +222,10 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
             precededByPipe: seg.delimiterBefore === '|',
             prevTokens: seg.delimiterBefore === '|' ? prev?.tokens : undefined,
             ...(atom.prefixed ? { prefixed: true as const, prefix: atom.prefix ?? [] } : prefixed),
+            nested: true,
           });
         } else {
-          atoms.push(atom.prefixed ? atom : { ...atom, ...prefixed });
+          atoms.push({ ...(atom.prefixed ? atom : { ...atom, ...prefixed }), nested: true });
         }
       }
       continue;
@@ -214,6 +236,7 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
       precededByPipe: seg.delimiterBefore === '|',
       prevTokens: seg.delimiterBefore === '|' ? prev?.tokens : undefined,
       ...prefixed,
+      delimiterBefore: seg.delimiterBefore,
     });
   }
   return atoms;
