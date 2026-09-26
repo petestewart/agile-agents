@@ -17,6 +17,7 @@ import {
   type PlanOwner,
   type Stream,
   UlidSchema,
+  isConversationNode,
   liveChildrenOf,
   nodeRole,
   ulid,
@@ -223,6 +224,8 @@ export class PlanService {
       return false;
     }
     const all = this.options.streams.list();
+    // D42: a conversation under a coordinator is not one of its parts.
+    if (isConversationNode(child, all)) return false;
     if (nodeRole(parent, liveChildrenOf(parent.id, all), all) !== 'coordinating') {
       return false;
     }

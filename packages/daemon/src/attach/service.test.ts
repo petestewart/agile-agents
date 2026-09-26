@@ -432,7 +432,13 @@ describe('D20: a coordinating node has no worktree', () => {
       parent: root.id,
       repo: 'demo',
     });
-    const child = await streams.create('human', { title: 'c', goal: 'g', parent: node.id });
+    // A part (it has a repo): D42, a conversation child would leave it work.
+    const child = await streams.create('human', {
+      title: 'c',
+      goal: 'g',
+      parent: node.id,
+      repo: 'demo',
+    });
 
     const coordinating = await attachService.attach(node.id);
     expect(coordinating.session.worktree).toBeUndefined();
@@ -1662,9 +1668,15 @@ describe('T280: the coordinator role (P20)', () => {
       fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
       { deliveryDelayMs: 5 },
     );
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     const root = await streams.create('human', { title: 'Shop', goal: 'g' });
     expect(root.parent).toBeUndefined();
-    const child = await streams.create('human', { title: 'Cart', goal: 'g', parent: root.id });
+    const child = await streams.create('human', {
+      title: 'Cart',
+      goal: 'g',
+      parent: root.id,
+      repo: 'demo',
+    });
     const first = await attachService.attach(root.id);
     expect(first.session.role).toBe('coordinator');
     await waitFor(() => streams.get(root.id).agent.status === 'done');
@@ -2059,14 +2071,32 @@ describe('T361: a live agent follows its node’s role', () => {
   }, 30_000);
 
   test('a bare project root running a worker gets its coordinator when it gains a part', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     const root = await streams.create('human', { title: 'Shop', goal: 'g' });
     await attachService.attach(root.id);
     expect(roles(root.id)).toEqual([['worker', 'running']]);
-    await streams.create('human', { title: 'Cart', goal: 'g', parent: root.id });
+    // D42: a question asked under it is not a part: the root keeps its worker.
+    await streams.create('human', { title: 'Why?', goal: 'g', parent: root.id });
+    expect(roles(root.id)).toEqual([['worker', 'running']]);
+    await streams.create('human', { title: 'Cart', goal: 'g', parent: root.id, repo: 'demo' });
     expect(roles(root.id).map(([role]) => role)).toEqual(['worker', 'coordinator']);
     expect(threadBodies(root.id)).toContain(
       'the project root now has parts: restarted its agent as the coordinator',
     );
+  }, 30_000);
+
+  test('D42: a question asked under a working work node leaves its worker alone', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const work = await liveWorkNode(project.id);
+    expect(roles(work.id)).toEqual([['worker', 'running']]);
+    await attachService.createNode('human', {
+      title: 'What is it doing?',
+      goal: 'what is the parent working on right now?',
+      parent: work.id,
+      start: false,
+    });
+    expect(roles(work.id)).toEqual([['worker', 'running']]);
+    expect(attachService.handleFor(work.id, 'coordinator')).toBeUndefined();
   }, 30_000);
 
   test('a node the human stopped, or never started, is left alone', async () => {

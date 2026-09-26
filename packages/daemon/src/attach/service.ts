@@ -36,6 +36,7 @@ import {
   isAgentRole,
   liveChildrenOf,
   nodeRole,
+  partsOf,
   ulid,
   validateStreamCreateInput,
 } from '@agile-agents/shared';
@@ -128,9 +129,9 @@ function agentFor(
 ): { children: Stream[]; shape: NodeRole; role: 'worker' | 'coordinator' } {
   const children = liveChildrenOf(stream.id, all);
   const shape = nodeRole(stream, children, all);
+  // D42: a root coordinates its parts; conversations under it are not parts.
   const coordinates =
-    shape === 'coordinating' ||
-    (shape === 'project' && children.some((c) => c.helper_of !== stream.id));
+    shape === 'coordinating' || (shape === 'project' && partsOf(stream.id, all).length > 0);
   return { children, shape, role: coordinates ? 'coordinator' : 'worker' };
 }
 

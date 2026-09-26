@@ -97,7 +97,8 @@ export class RepoInPlaceService {
     const role = nodeRole(node, live, all);
     // D33: a conversation with tangents turns coordinating once it has a repo,
     // and a coordinating node has no worktree (§14.2): the repo becomes a part.
-    const inPlace = role === 'conversation' && !live.some((c) => c.helper_of !== node.id);
+    // D42: its conversations are not parts either, so any conversation takes the repo in place.
+    const inPlace = role === 'conversation';
     if (role === 'project') {
       throw new RepoInPlaceError('a project root lists repos in its settings; add the repo there');
     }
@@ -115,8 +116,8 @@ export class RepoInPlaceService {
     // T204's start rule for new parts: `start` isn't stored, so a node that
     // never had a worker is the `--no-start` one.
     const started = wasLive || node.sessions.some((s) => isAgentRole(s.role));
-    // The node ends up coordinating parts: a split work node, or a
-    // conversation with tangents whose repo goes to a new part (D33, T346).
+    // The node ends up coordinating parts: a split work node, or a coordinating
+    // node's new part. (D42: a conversation, tangents or not, takes it in place.)
     const split = !inPlace && !switching;
     // T336: a split hands the node's sessions to the moved part, which left
     // a node that was started but not live with no agent at all: no
@@ -141,12 +142,7 @@ export class RepoInPlaceService {
       await this.event(node.id, `repo added: ${repo}; now a work node on ${created.branch}`);
     } else if (role !== 'work') {
       parts = [await this.newPart(node, repo)];
-      await this.event(
-        node.id,
-        role === 'conversation'
-          ? `repo added: ${repo}; now coordinating ${parts[0]?.title} beside its tangents`
-          : `repo added: ${repo} (new part ${parts[0]?.id})`,
-      );
+      await this.event(node.id, `repo added: ${repo} (new part ${parts[0]?.id})`);
     } else {
       parts = await this.splitWorkNode(node, repo);
       if (switching) {

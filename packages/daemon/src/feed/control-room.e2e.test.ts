@@ -3306,7 +3306,13 @@ describe('parents and land conflicts (Playwright e2e, T176)', () => {
           goal: 'g',
           repo: 'demo',
         });
-        await cockpit.streams.create('human', { title: 'child', goal: 'g', parent: parent.id });
+        // A part (D42: it has a repo; a repo-less child would be a conversation).
+        await cockpit.streams.create('human', {
+          title: 'child',
+          goal: 'g',
+          parent: parent.id,
+          repo: 'demo',
+        });
 
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
