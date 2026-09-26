@@ -206,6 +206,8 @@ export function activityDelivery(
  */
 export function eventLabel(event: Pick<RoutedEvent, 'type' | 'payload'>): string {
   if (event.type === 'pr_merged' && event.payload.pr === undefined) return 'merged';
+  // T390: a line you typed, in your words rather than the event's type.
+  if (event.type === 'human_line') return 'you wrote';
   return event.type.replace(/_/g, ' ');
 }
 

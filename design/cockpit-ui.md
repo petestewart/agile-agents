@@ -1,6 +1,6 @@
 # Cockpit UI — design system and UX rules
 
-Status: 2026-09-26 (Phase 15, T360–T380). Follow-ups: `cockpit-ui-followups.md`. Applies to `packages/ui/app`. Where this
+Status: 2026-09-26 (Phase 15, T360–T390). Follow-ups: `cockpit-ui-followups.md`. Applies to `packages/ui/app`. Where this
 file and `cockpit-design.md` §9 disagree on *how the cockpit looks or reads*,
 this file wins; on *what the cockpit does*, the design docs and the Decisions
 log still decide.
@@ -81,6 +81,10 @@ Roles keep their design names but are explained where shown: **Conversation**
   viewer in localStorage; hidden below 1200px unless opened).
 - Pages other than a node use a centred content column (max 960px) with a
   `PageHeader`.
+- A project's root node opens on an **Overview** tab (T387): counts by status
+  (your move first, each a filter), its nodes grouped by status, its repos and
+  its recent activity; the root's chat is the next tab. Other nodes open on
+  their chat.
 
 ## 4. Tokens
 
@@ -213,6 +217,11 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
 - **Empty states** say what the place is for and give the one action that
   fills it.
 - **Destructive actions** confirm (`ConfirmDialog`) or offer Undo (toast).
+- **Editing in place**: a node's title (click it) and goal (Edit on the goal
+  card) change where they are read; Enter or leaving saves, Esc cancels.
+- **Notifications** (Settings → General, per browser, off by default): one
+  browser notification at a time for what is new in Needs me while the tab is
+  away; a click opens it. Never for what was there at load.
 
 ## 8. Tests and markup
 

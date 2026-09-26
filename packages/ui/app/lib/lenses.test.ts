@@ -155,7 +155,7 @@ describe('event families and reasons', () => {
 
 describe('eventTitle', () => {
   test('eventLabel capitalised, PR and CI in capitals', () => {
-    expect(eventTitle(event('E1', 'human_line', { body: 'x' }))).toBe('Human line');
+    expect(eventTitle(event('E1', 'human_line', { body: 'x' }))).toBe('You wrote');
     expect(eventTitle(event('E1', 'pr_merged', { pr: 3, repo: 'a', sha: 'b' }))).toBe('PR merged');
     expect(eventTitle(event('E1', 'pr_merged', { repo: 'a', sha: 'b' }))).toBe('Merged');
     expect(eventTitle(event('E1', 'ci_failed', { pr: 3, check: 'lint' }))).toBe('CI failed');

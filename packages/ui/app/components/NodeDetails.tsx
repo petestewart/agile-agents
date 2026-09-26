@@ -157,6 +157,25 @@ const CARD_TONE: Record<CockpitStatusCard['state'], 'blue' | 'amber' | 'red' | '
   idle: 'gray',
 };
 
+/** T390: a card's state in the status words the rail uses (design/cockpit-ui.md §6). */
+const CARD_WORD: Record<CockpitStatusCard['state'], string> = {
+  working: 'Working',
+  question: 'Needs you',
+  blocked: 'Blocked',
+  done: 'Done',
+  idle: 'Idle',
+};
+
+/** A merged or closed child says so, whatever its last card said. */
+function cardWord(
+  state: CockpitStatusCard['state'],
+  human: string | undefined,
+): { word: string; tone: 'blue' | 'amber' | 'red' | 'green' | 'gray' | 'purple' } {
+  if (human === 'landed') return { word: 'Merged', tone: 'purple' };
+  if (human === 'closed') return { word: 'Closed', tone: 'gray' };
+  return { word: CARD_WORD[state], tone: CARD_TONE[state] };
+}
+
 /** A child's title; a click opens its page. (The card itself carries `data-node`.) */
 function ChildTitle({ id, titleOf }: { id: string; titleOf: (id: string) => string }): JSX.Element {
   const { select } = useShell();
@@ -180,7 +199,9 @@ export function ChildCards({
   cards: Array<CockpitStatusCard | CockpitCardError>;
   titleOf: (id: string) => string;
 }): JSX.Element | null {
+  const rows = useOptionalFeed()?.cockpit?.streams;
   if (cards.length === 0) return null;
+  const humanOf = (id: string): string | undefined => rows?.find((r) => r.id === id)?.human_status;
   return (
     <DetailSection
       title="Children"
@@ -214,8 +235,10 @@ export function ChildCards({
               <div className="cr-child-top">
                 <CardDot state={card.state} />
                 <ChildTitle id={card.node} titleOf={titleOf} />
-                <Badge tone={CARD_TONE[card.state]}>
-                  <span data-testid="status-card-state">{card.state}</span>
+                <Badge tone={cardWord(card.state, humanOf(card.node)).tone}>
+                  <span data-testid="status-card-state">
+                    {cardWord(card.state, humanOf(card.node)).word}
+                  </span>
                 </Badge>
               </div>
               {card.doing !== '' && (

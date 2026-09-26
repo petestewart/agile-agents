@@ -522,7 +522,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     anyLive: live.length > 0,
     anyBusy: live.some((s) => s.status === 'starting' || s.status === 'running'),
     canStart: !waitingForPlan,
-    startIsNext: !hasRun || row?.stopped === true,
+    // T390: a project root's next step is a node, not its coordinator: Start stays plain there.
+    startIsNext: rootOf === undefined && (!hasRun || row?.stopped === true),
     mergeable,
     landReady: page.land?.ready === true,
   });
