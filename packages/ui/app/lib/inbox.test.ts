@@ -274,6 +274,49 @@ describe('card titles and text (T364)', () => {
     ).toEqual({ land: false, reason: 'needs your decision' });
   });
 
+  test("a routed call's rule, from the hook's reason or a diff rule's summary", () => {
+    const K = 'K-01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    expect(
+      gateView(
+        item({
+          kind: 'gate',
+          context: `classifier_review: edit src/a.ts — tests-with-src (${K}): Every change under src/ has a test`,
+        }),
+      ),
+    ).toEqual({
+      land: false,
+      action: 'edit src/a.ts',
+      reason: 'Every change under src/ has a test',
+      rule: 'tests-with-src',
+      ruleId: K,
+    });
+    expect(
+      gateView(item({ kind: 'gate', context: `classifier_review: bash: rm x — ${K}: No deletes` })),
+    ).toMatchObject({ action: 'bash: rm x', reason: 'No deletes', ruleId: K });
+    expect(
+      gateView(
+        item({
+          kind: 'gate',
+          context:
+            'classifier_review: edit x — tests-with-src: every change under src/ comes with a test (probability 0.55)',
+        }),
+      ),
+    ).toMatchObject({
+      rule: 'tests-with-src',
+      reason: 'every change under src/ comes with a test',
+      probability: '0.55',
+    });
+    // A reason that names no rule stays whole.
+    expect(
+      gateView(
+        item({ kind: 'gate', context: 'classifier_review: edit x — review checklist unsure: y' }),
+      ),
+    ).toEqual({ land: false, action: 'edit x', reason: 'review checklist unsure: y' });
+    expect(
+      gateView(item({ kind: 'gate', context: 'classifier_review: edit x — note: not a rule' })),
+    ).toEqual({ land: false, action: 'edit x', reason: 'note: not a rule' });
+  });
+
   test('a land gate: the branch and its target', () => {
     const gate = item({ kind: 'gate', context: 'land: land stream/01-parser into main' });
     expect(isLandGate(gate)).toBe(true);

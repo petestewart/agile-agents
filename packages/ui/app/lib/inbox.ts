@@ -275,14 +275,60 @@ export interface GateView {
   land: boolean;
   /** The call the classifier was unsure of ("edit src/app.ts", "bash: rm -rf dist"). */
   action?: string;
-  /** Why it was routed (the classifier's reason, or the gate's summary). */
+  /** Why it was routed: the rule's text when the reason names a rule, else the whole reason. */
   reason: string;
+  /** The rule the call may break, by name ("tests-with-src"); absent when it has none or none is named. */
+  rule?: string;
+  /** The rule's id (for a tooltip, never the primary text). */
+  ruleId?: string;
+  /** The classifier's probability that the call breaks the rule, as written ("0.55"). */
+  probability?: string;
   /** A land gate's branch and target, when its summary names them. */
   branch?: string;
   target?: string;
 }
 
-/** Takes a gate's `<gate>: <call> — <why>` apart (`gateText` in `inbox/service.ts`). */
+const KNOWLEDGE_ID = String.raw`K-[0-9A-HJKMNP-TV-Z]{26}`;
+const RULE_NAME = String.raw`[A-Za-z0-9][\w.-]*`;
+/** The hook's reason: `<name> (<id>): <text>` or `<id>: <text>` (`hook/decide.ts` `ruleLabel`). */
+const HOOK_REASON = new RegExp(
+  `^(?:(${RULE_NAME}) \\((${KNOWLEDGE_ID})\\)|(${KNOWLEDGE_ID})): ([\\s\\S]+?)(?: \\(probability ([0-9.]+)\\))?$`,
+);
+/** A diff rule's summary: `<name or id>: <text> (probability <p>)` (`delivery/diff-rules.ts`). */
+const DIFF_REASON = new RegExp(
+  `^(${RULE_NAME}|${KNOWLEDGE_ID}): ([\\s\\S]+?) \\(probability ([0-9.]+)\\)$`,
+);
+
+/** Names the rule in a routed call's reason, when the reason leads with one. */
+function ruleOfReason(
+  reason: string,
+): Pick<GateView, 'reason' | 'rule' | 'ruleId' | 'probability'> {
+  const hook = HOOK_REASON.exec(reason);
+  if (hook) {
+    return {
+      reason: hook[4] ?? reason,
+      ...(hook[1] !== undefined ? { rule: hook[1] } : {}),
+      ruleId: hook[2] ?? hook[3],
+      ...(hook[5] !== undefined ? { probability: hook[5] } : {}),
+    };
+  }
+  const diff = DIFF_REASON.exec(reason);
+  if (diff) {
+    const label = diff[1] ?? '';
+    const isId = new RegExp(`^${KNOWLEDGE_ID}$`).test(label);
+    return {
+      reason: diff[2] ?? reason,
+      ...(isId ? { ruleId: label } : { rule: label }),
+      ...(diff[3] !== undefined ? { probability: diff[3] } : {}),
+    };
+  }
+  return { reason };
+}
+
+/**
+ * Takes a gate's `<gate>: <call> — <why>` apart (`gateText` in
+ * `inbox/service.ts`), and the why's rule when it names one.
+ */
 export function gateView(item: InboxItem): GateView {
   const land = isLandGate(item);
   const text = fullText(item);
@@ -293,8 +339,8 @@ export function gateView(item: InboxItem): GateView {
     return m ? { land, reason: rest, branch: m[1], target: m[2] } : { land, reason: rest };
   }
   const dash = rest.indexOf(' — ');
-  if (dash < 0) return { land, reason: rest };
-  return { land, action: rest.slice(0, dash), reason: rest.slice(dash + 3) };
+  if (dash < 0) return { land, ...ruleOfReason(rest) };
+  return { land, action: rest.slice(0, dash), ...ruleOfReason(rest.slice(dash + 3)) };
 }
 
 export interface KnowledgeView {

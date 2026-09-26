@@ -54,7 +54,8 @@ function useMinuteTick(): void {
 function useCardKeys(list: React.RefObject<HTMLElement>, open: (id: string) => void): void {
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      if (event.defaultPrevented) return;
+      // Not behind an open dialog.
+      if (event.defaultPrevented || document.querySelector('.cr-modal')) return;
       const root = list.current;
       if (!root) return;
       const cards = [...root.querySelectorAll<HTMLElement>('.cr-card')];

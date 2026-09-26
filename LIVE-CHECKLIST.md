@@ -74,7 +74,7 @@ The cockpit is `http://127.0.0.1:4600/`.
 | Place | What it holds |
 |---|---|
 | Sidebar | **New node (n)**; the views below (**Needs me** with its count, **Director**, **Knowledge**, and under *Views* **Running**, **Repos**, **Dependencies**, **Events**); *Projects*: **+** (new project), the project switcher (**All projects**, Shop, Blog), a filter, and the tree with a status dot and a role icon per node and a ⚠ mark on overlapping nodes; **Settings** at the bottom. Below 900px wide it is a drawer behind the ☰ button |
-| **Needs me** | The inbox, grouped by node: questions (answer inline), gates (Approve/Deny), knowledge proposals (Accept/Retire), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (**Merge**) |
+| **Needs me** | The inbox, grouped by project, then node, oldest first, with a filter (**All** · **Questions** · **Decisions** · **Merges**): questions (a button per choice, or type and **Answer**), actions to allow (**Allow**/**Deny**, **Add a note**), knowledge proposals (**Accept**/**Retire**), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (**Merge**, **View changes**). `j`/`k` move between cards; Enter opens a card's node |
 | **Repos** | Per repo: its delivery mode, the live work nodes on it across projects (ancestors greyed), overlaps, its norms, recent repo events |
 | **Running** | Nodes with a live agent |
 | **Dependencies** | Every "waits on" link, across projects |
@@ -189,7 +189,9 @@ agile knowledge list
       `session default: claude/claude-opus-5-5 · low`.
 - [ ] `knowledge list` shows the three built-in items: `no_push_protected`
       and `path_deny` (accepted, `action:pattern!`) and `no_push` (retired).
-- [ ] Open the cockpit: `open http://127.0.0.1:4600/`. **Needs me** is empty.
+- [ ] Open the cockpit: `open http://127.0.0.1:4600/`. Nothing waits on you
+      yet, so **Needs me** shows three setup steps, each with its state and a
+      button: **Add repository** (opens Settings), **New project**, **New node**.
 
 ## 2. Projects and repos
 
@@ -385,8 +387,8 @@ From here on, every step is done in the cockpit unless it is marked
       and press **Send** (or Enter). Your line appears on the thread at once.
 - [ ] Within a few minutes the coordinator writes a **plan** (which part owns
       which paths) and a **contract** (the JSON shape both parts rely on).
-      **Needs me** gets a badge, and shows a `plan to approve` card under
-      Ledger export whose text names the owners and the contracts. The same
+      **Needs me** gets a badge, and shows a `Plan to approve` card under
+      Ledger export listing the parts (who owns which paths) and the contracts. The same
       card sits under **Needs you** on the Ledger export page.
 - [ ] On the Ledger export page, open the **Plan** tab. It reads
       `Plan v1 · draft` with an **Approve** button, one line per part
@@ -400,12 +402,15 @@ From here on, every step is done in the cockpit unless it is marked
 - [ ] While the parts work, the Ledger export page shows a **Children**
       section: one status card per part (its state, what it is doing, the
       files it touched). If a part wants to change the contract, the
-      coordinator (at advise) puts a `coordinator proposal` card in **Needs
+      coordinator (at advise) puts a `Coordinator proposal` card in **Needs
       me** with **Apply** and **Dismiss**, and the change shows as one row in
       the coordinator's **Activity** tab.
-- [ ] Questions from any agent appear in **Needs me** as `question` cards.
-      Type in `Answer in your own words…` and press **Answer**. The answer
-      goes to the asking session as you wrote it.
+- [ ] Questions from any agent appear in **Needs me** as `Question` cards.
+      When the agent offered choices, each is a button: one click answers
+      with that choice (it reads `Sending…`, then the card leaves). Otherwise
+      type in `Answer in your own words…` and press **Answer**. The answer
+      goes to the asking session as you wrote it. On the node's page the same
+      card shows the choices, and the composer below it takes a typed answer.
 
 ## 4. **[vendor]** Delivery: a pull request that looks after itself
 
@@ -434,7 +439,7 @@ If the coordinator already proposed this link, press **Apply** on its card in
 
 - [ ] Open the **agile-test-repo part** and wait until the line under its
       title reads `agent done` (its rail dot also turns amber, "waiting on
-      you"). **Needs me** has a `ready to merge` card for it with a **Merge**
+      you"). **Needs me** has a `Ready to merge` card for it with a **Merge**
       button (the same word as the Delivery panel). The **Diff** tab shows
       what it changed against main.
 - [ ] The first delivery is yours. In the **Delivery** panel the line reads
@@ -679,7 +684,8 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
 - [ ] Press **Propose rule**. A new card appears with its name (`tests-with-src`),
       `repo:ledger-lite`, `ship · classifier`, `standard`, `proposed`,
       `from human`, and **Accept**, **Retire**, **Edit**, **Test examples**.
-      **Needs me** also has a `standard proposed` card for it.
+      **Needs me** also has a `Standard proposed` card for it, saying where
+      it applies (`Applies to the ledger-lite repo`) with **Open in Knowledge**.
 - [ ] Press **Accept** (on the card, or in **Needs me**). The card reads
       `accepted`. **Repos** → ledger-lite now lists it under the repo's norms:
       `standard · tests-with-src (ship) fired 0, violated 0`.
@@ -741,7 +747,7 @@ cd ~
 - [ ] **Knowledge** → **New rule**: Scope `Project: Shop`, Text
       `Amounts in exported JSON are integer cents, never floats`,
       Enforcement `tell`, Kind `decision`, **Propose rule**. Then **Accept** it
-      (on its card, or on the `decision proposed` card in **Needs me**).
+      (on its card, or on the `Decision proposed` card in **Needs me**).
 - [ ] Back on Cents check: accepting the decision woke it (a Shop
       conversation whose turn ended is woken by an accepted item, D36). Its
       **Thread** tab has `woken by knowledge accepted` and a new session;
@@ -918,11 +924,16 @@ child should be a small task an agent can do in agile-test-repo (for example
 
 ### 9.1 What is going on
 
-- [ ] **Needs me** is everything waiting on you, grouped by node, each card
-      with its kind (`question`, `decision`, `plan to approve`,
-      `coordinator proposal`, `… proposed`, `ready to merge`) and how long it
-      has waited. A long card has **Show all**; **Open stream** opens its
-      node. The badge on **Needs me** counts them.
+- [ ] **Needs me** is everything waiting on you, grouped by project, then
+      node, oldest first. Each card says what it is (`Question`,
+      `Allow this action?`, `Approve this merge?`, `Plan to approve`,
+      `Coordinator proposal`, `… proposed`, `Ready to merge`, `Blocked`,
+      `Waiting for the plan`) and how long it has waited (hover for the
+      time). A long card has **Show more**; **Open** (or the node's name above
+      it) opens its node. The filter narrows it to **Questions**,
+      **Decisions** or **Merges**; `j`/`k` move between cards and Enter opens
+      one's node. The badge on **Needs me** counts them. With nothing
+      waiting it reads `You’re all caught up`.
 - [ ] The rail's dots say who must act: amber waiting on you, blue agent
       working, grey idle, green landed, red blocked (hover a row to read it).
       The filter box (`Filter nodes…`, or the `/` key) narrows the tree

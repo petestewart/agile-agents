@@ -291,9 +291,21 @@ export function Card({
       body = (
         <div className="context cr-card-gate" data-testid="inbox-context">
           <p className="cr-card-lead">
-            {g.land
-              ? 'This merge waits for your OK. Merge it now, or hold it.'
-              : 'The classifier wasn’t sure this action follows your rules. Allow it once, or deny it.'}
+            {g.land ? (
+              'This merge waits for your OK. Merge it now, or hold it.'
+            ) : g.rule !== undefined || g.ruleId !== undefined ? (
+              <>
+                The classifier wasn’t sure this action follows{' '}
+                {g.rule !== undefined ? (
+                  <strong title={g.ruleId}>{g.rule}</strong>
+                ) : (
+                  <span title={g.ruleId}>one of your rules</span>
+                )}
+                . Allow it once, or deny it.
+              </>
+            ) : (
+              'The classifier wasn’t sure this action is allowed. Allow it once, or deny it.'
+            )}
           </p>
           {action !== undefined && (
             <code className="cr-card-action" title={g.action}>
@@ -306,8 +318,17 @@ export function Card({
               <code>{g.target}</code>
             </p>
           ) : (
-            <div className="cr-card-why">
-              <span className="cr-card-why-label">Why</span>
+            <div
+              className="cr-card-why"
+              title={
+                g.probability !== undefined
+                  ? `The classifier put the chance this breaks the rule at ${g.probability}`
+                  : undefined
+              }
+            >
+              <span className="cr-card-why-label">
+                {g.rule !== undefined || g.ruleId !== undefined ? 'Rule' : 'Why'}
+              </span>
               <Markdown text={reason.text} />
             </div>
           )}
