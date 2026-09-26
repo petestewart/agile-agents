@@ -3,9 +3,11 @@
 import { describe, expect, test } from 'bun:test';
 import type { CockpitStreamRow } from './feed-types';
 import {
+  DIRECTOR_READ_KEY,
   SEEN_MAX,
   ancestorTitles,
   answersYou,
+  directorUnread,
   markAllSeen,
   markSeen,
   parseSeen,
@@ -96,5 +98,18 @@ describe('ancestorTitles', () => {
     expect(ancestorTitles(rows, 'leaf')).toEqual(['Shop', 'Checkout']);
     expect(ancestorTitles(rows, 'root')).toEqual([]);
     expect(ancestorTitles(rows, 'gone')).toEqual([]);
+  });
+});
+
+describe('the Director (T433)', () => {
+  const seen = parseSeen(null, '2026-09-26T09:00:00.000Z');
+  test('its reply is unread until its page is read up to it', () => {
+    expect(directorUnread(undefined, seen, false)).toBe(false);
+    expect(directorUnread('2026-09-26T08:00:00.000Z', seen, false)).toBe(false);
+    expect(directorUnread('2026-09-26T10:00:00.000Z', seen, false)).toBe(true);
+    expect(directorUnread('2026-09-26T10:00:00.000Z', seen, true)).toBe(false);
+    const read = markSeen(seen, DIRECTOR_READ_KEY, '2026-09-26T10:00:00.000Z');
+    expect(directorUnread('2026-09-26T10:00:00.000Z', read, false)).toBe(false);
+    expect(directorUnread('2026-09-26T11:00:00.000Z', read, false)).toBe(true);
   });
 });

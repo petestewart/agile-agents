@@ -2562,6 +2562,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/attach/service.test.ts -t T432 packages/ui/app/lib/chat.test.ts`; full `bun test`. Tests that ended a session by killing its process from outside now end it through the daemon's `stop()`, as the daemon does.
 - **Notes:** Branch T432-vendor-failures. `AgentExitInfo.exitCode`; `missingVendorCommand` in `runner/session.ts`.
 
+### Ticket: T433 Unread marks in the rail, and the Director's replies
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T429's follow-ups: the rail (T424 owned it then) didn't mark a node with an unread reply, and a Director reply (you asked it with `A`, then went back to work) marked nothing.
+- **Acceptance Criteria:** A rail row with an unread reply has a bold title and a blue dot (`data-unread`). The frame carries `director.replied_at` (`StateStore.directorReplyAt`: the Director's last line of its own, cached from appends, read from its thread once); a newer reply than your read mark puts a dot on the sidebar's Director, heads Needs me's Replies ("The Director · Replied · 2m", Mark read, and Mark all read), and notifies while you're away ("The Director replied"); the Director's page on screen reads it.
+- **Validation Steps:** `bun test packages/ui/app/lib/unread.test.ts packages/daemon/src/store/store.test.ts -t "T433|T395"`; control-room e2e `T429`, `T433`.
+- **Notes:** Branch T433-unread-marks.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

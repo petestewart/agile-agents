@@ -30,8 +30,8 @@ import {
 } from '../lib/inbox';
 import { isShortcut, useShell } from '../lib/shell';
 import { ago } from '../lib/status';
-import { ancestorTitles } from '../lib/unread';
-import { markAllRead, markRead, useUnreadReplies } from '../lib/use-unread';
+import { DIRECTOR_READ_KEY, ancestorTitles } from '../lib/unread';
+import { markAllRead, markRead, useDirectorUnread, useUnreadReplies } from '../lib/use-unread';
 import { Card } from './DecisionCard';
 import { Icon, type IconName } from './Icon';
 import { Button, EmptyState, IconButton, Kbd, PageHeader, Segmented, Spinner } from './ui';
@@ -120,8 +120,9 @@ export function Inbox({
   const { select } = useShell();
   const [filter, setFilter] = useState<NeedsMeFilter>('all');
   const list = useRef<HTMLDivElement>(null);
-  // T429: answers you haven't read, above what waits on you.
+  // T429: answers you haven't read, above what waits on you (T433: the Director's first).
   const replies = useUnreadReplies();
+  const directorReply = useDirectorUnread();
   useMinuteTick();
   useCardKeys(list, select);
 
@@ -168,14 +169,14 @@ export function Inbox({
         }
       />
 
-      <Replies rows={replies} />
+      <Replies rows={replies} director={directorReply} />
       {cockpit === undefined && items.length === 0 ? (
         <div className="cr-inbox-loading" data-testid="inbox-loading">
           <Spinner size={16} />
           Loading…
         </div>
       ) : items.length === 0 ? (
-        <Empty replies={replies.length} />
+        <Empty replies={replies.length + (directorReply !== undefined ? 1 : 0)} />
       ) : (
         <div className="cr-inbox-list" ref={list}>
           {sections.map((section) => (
@@ -253,27 +254,61 @@ export function Inbox({
  * coordinator that answered. Opening one (or its check) reads it; they are
  * never Needs me's cards, which wait on a decision.
  */
-function Replies({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.Element | null {
+function Replies({
+  rows,
+  director,
+}: {
+  rows: readonly CockpitStreamRow[];
+  /** T433: when the Director replied, if you haven't read it. */
+  director?: string | undefined;
+}): JSX.Element | null {
   const { cockpit } = useFeed();
-  const { select } = useShell();
-  if (rows.length === 0) return null;
+  const { select, setView } = useShell();
+  const count = rows.length + (director !== undefined ? 1 : 0);
+  if (count === 0) return null;
   const all = cockpit?.streams ?? [];
   return (
     <section className="cr-replies" data-testid="replies" aria-label="Replies">
       <h2 className="cr-inbox-section-hd">
         <Icon name="message-square" size={14} />
         <span className="cr-inbox-section-name">Replies</span>
-        <span className="cr-inbox-section-count">{rows.length}</span>
+        <span className="cr-inbox-section-count">{count}</span>
         <button
           type="button"
           className="cr-link cr-replies-all"
           data-testid="replies-mark-all"
-          onClick={() => markAllRead(rows)}
+          onClick={() => {
+            markAllRead(rows);
+            if (director !== undefined) markRead(DIRECTOR_READ_KEY, director);
+          }}
         >
           Mark all read
         </button>
       </h2>
       <ul className="cr-replies-list">
+        {director !== undefined && (
+          <li className="cr-reply" data-testid="reply" data-stream={DIRECTOR_READ_KEY}>
+            <button
+              type="button"
+              className="cr-reply-open"
+              title="Open the Director"
+              onClick={() => setView('director')}
+            >
+              <Icon name="sparkles" size={14} className="cr-reply-icon" />
+              <span className="cr-reply-text">
+                <span className="cr-reply-title">The Director</span>
+              </span>
+              <span className="cr-reply-when">Replied · {ago(director)}</span>
+            </button>
+            <IconButton
+              icon="check"
+              size="sm"
+              label="Mark read"
+              data-testid="reply-read"
+              onClick={() => markRead(DIRECTOR_READ_KEY, director)}
+            />
+          </li>
+        )}
         {rows.map((row) => {
           const parents = ancestorTitles(all, row.id);
           return (

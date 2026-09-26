@@ -65,6 +65,7 @@ import {
   overlapMark,
   subtreeIds,
 } from '../lib/tree';
+import { useUnreadReplies } from '../lib/use-unread';
 import { Icon, type IconName } from './Icon';
 import { PickList, type PickOption } from './Pickers';
 import {
@@ -165,6 +166,8 @@ interface TreeContext {
   overlaps: readonly CockpitOverlap[];
   allRows: readonly CockpitStreamRow[];
   openNode(id: string): void;
+  /** T433: nodes with a reply you haven't read (T429). */
+  unread: ReadonlySet<string>;
 }
 
 /** Where a row's menu opens: above it when there is no room below in the sidebar. */
@@ -338,6 +341,7 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
           aria-expanded={hasChildren ? open : undefined}
           data-role={row.role}
           data-status={status.key}
+          data-unread={ctx.unread.has(id) ? 'true' : undefined}
           title={`${row.title}\n${ROLE_LABEL[row.role]} · ${status.label} — ${status.hint}`}
           onFocus={() => ctx.setFocused(id)}
           onClick={() => actions.open(row)}
@@ -386,6 +390,16 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
             <span className="cr-visibility" data-testid="visibility-advisory">
               visibility advisory
             </span>
+          )}
+          {/* T433: a reply you haven't read (T429): the title is bold and a blue dot sits at the end. */}
+          {ctx.unread.has(id) && (
+            <span
+              className="cr-tree-unread"
+              data-testid="tree-unread"
+              role="img"
+              aria-label="a reply you haven't read"
+              title="Replied: not read yet"
+            />
           )}
           {hiddenNeedsYou && (
             <span
@@ -843,6 +857,8 @@ export function StreamTree({
     return () => window.removeEventListener('keydown', onKey);
   }, [railOpen, toggleRail]);
 
+  const replies = useUnreadReplies();
+  const unread = useMemo(() => new Set(replies.map((r) => r.id)), [replies]);
   const ctx: TreeContext = {
     fold,
     drag,
@@ -855,6 +871,7 @@ export function StreamTree({
     overlaps,
     allRows,
     openNode: select,
+    unread,
   };
   const empty = allRows.length === 0 && projects.length === 0;
 

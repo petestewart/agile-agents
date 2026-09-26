@@ -340,6 +340,22 @@ describe('Knowledge (T260): knowledge/K-<ulid>.yaml in the state home', () => {
   });
 });
 
+describe('directorReplyAt (T433)', () => {
+  test("the Director's last line of its own: from its appends, else read from the thread once", async () => {
+    const store = StateStore.open(stateRoot);
+    expect(store.directorReplyAt()).toBeUndefined();
+    const line = (by: 'human' | 'director', ts: string) =>
+      store.appendDirectorThread({ ts, by, kind: 'line', body: `${by} line` });
+    await line('human', '2026-09-26T10:00:00.000Z');
+    expect(store.directorReplyAt()).toBeUndefined();
+    await line('director', '2026-09-26T10:01:00.000Z');
+    await line('human', '2026-09-26T10:02:00.000Z');
+    expect(store.directorReplyAt()).toBe('2026-09-26T10:01:00.000Z');
+    // A fresh process finds it in the thread.
+    expect(StateStore.open(stateRoot).directorReplyAt()).toBe('2026-09-26T10:01:00.000Z');
+  });
+});
+
 describe('threadUpdatedAt (T395)', () => {
   test("a thread's last line time, from this process's append, else the file's mtime", async () => {
     const { StreamService } = await import('../streams');

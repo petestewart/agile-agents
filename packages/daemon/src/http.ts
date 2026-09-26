@@ -498,6 +498,7 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     (id) => feed.store.threadUpdatedAt(id),
     feed.mergeState ? (s) => feed.mergeState?.peekState(s) : undefined,
     feed.attach ? (session) => feed.attach?.contextFor(session) : undefined,
+    feed.director ? () => feed.store.directorReplyAt() : undefined,
   );
 }
 

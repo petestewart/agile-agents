@@ -5918,6 +5918,12 @@ describe("replies you haven't read (Playwright e2e, T429)", () => {
         await listed.waitFor();
         expect(await listed.textContent()).toContain('Replied');
         await page.locator('[data-testid="replies-dot"]').waitFor();
+        // T433: its row in the rail is marked too.
+        await page
+          .locator(
+            `[data-testid="stream-tree"] [data-stream="${convo.id}"][data-unread="true"] [data-testid="tree-unread"]`,
+          )
+          .waitFor();
         // It is no Needs me card: nothing waits on a decision.
         await page.locator('[data-testid="inbox-empty"]').waitFor();
         expect(await page.locator('[data-testid="inbox-empty"]').textContent()).toContain(
@@ -5934,11 +5940,49 @@ describe("replies you haven't read (Playwright e2e, T429)", () => {
         await page.locator('[data-testid="inbox"]').waitFor();
         expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
         expect(await page.locator('[data-testid="replies-dot"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="tree-unread"]').count()).toBe(0);
         // Read stays read across a reload (per browser).
         await page.reload();
         await page.locator('[data-testid="inbox"]').waitFor();
         await page.locator('[data-testid="inbox-empty"]').waitFor();
         expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe("the Director's replies (Playwright e2e, T433)", () => {
+  browserTest(
+    "a Director reply you haven't read marks the sidebar and Replies; its page reads it",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="inbox"]').waitFor();
+        expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
+        await cockpit.store.appendDirectorThread({
+          ts: new Date(Date.now() + 1000).toISOString(),
+          by: 'director',
+          kind: 'line',
+          body: 'Shop has two nodes waiting on you.',
+        });
+        const listed = page.locator('[data-testid="reply"][data-stream="director"]');
+        await listed.waitFor();
+        await page.locator('[data-view="director"] [data-testid="replies-dot"]').waitFor();
+        await listed.locator('.cr-reply-open').click();
+        await page.locator('[data-testid="director-page"]').waitFor();
+        await page.locator('[data-view="inbox"]').click();
+        await page.locator('[data-testid="inbox"]').waitFor();
+        expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
+        expect(
+          await page.locator('[data-view="director"] [data-testid="replies-dot"]').count(),
+        ).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
