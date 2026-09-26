@@ -41,7 +41,13 @@ import {
   ulid,
   validateClassifierConfig,
 } from '@agile-agents/shared';
-import { type Browser, type Page, type Worker, chromium } from 'playwright-core';
+import {
+  type Browser,
+  type Page,
+  type WebSocketRoute,
+  type Worker,
+  chromium,
+} from 'playwright-core';
 import { AttachService, VerbService } from '../attach';
 import { ClassifierKeyService, FakeClassifier } from '../classifier';
 import { AutonomyService } from '../coordination/autonomy';
@@ -492,6 +498,18 @@ async function waitUntil(what: string, check: () => boolean): Promise<void> {
   }
 }
 
+/**
+ * T416: the header's Merge. The first Merge in a browser asks "Merge <node>
+ * into <target>?" (finding 38); this answers Merge without ticking "Don't
+ * ask again", so every click in a test asks and is answered the same way.
+ */
+async function clickMerge(page: Page): Promise<void> {
+  await page.locator('[data-testid="stream-land"]').click();
+  await page.locator('[data-testid="merge-confirm"]').waitFor();
+  await page.locator('[data-testid="merge-confirm-confirm"]').click();
+  await page.locator('[data-testid="merge-confirm"]').waitFor({ state: 'detached' });
+}
+
 /** T365: New node's Parent is a searchable picker (`''` is the project's top level). */
 async function pickParent(page: Page, id: string): Promise<void> {
   await page.locator('[data-testid="new-stream-parent"]').click();
@@ -703,9 +721,9 @@ describe('cockpit shell (Playwright e2e)', () => {
 
         const card = `[data-id="${question.id}"]`;
         await page.locator(card).waitFor({ state: 'visible' });
-        // Grouped under the stream's full path (§3.2).
+        // Grouped under the stream's full path (§3.2); T416: one separator, "›", everywhere.
         expect(await page.locator(`.cr-group[data-stream="${leaf.id}"] h2`).textContent()).toBe(
-          'ledger-lite / import CSV / parser',
+          'ledger-lite › import CSV › parser',
         );
         expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
           'comma or semicolon',
@@ -1756,12 +1774,16 @@ describe('stream page (Playwright e2e, T161)', () => {
           text: LONG_QUESTION,
         });
         writeFileSync(asked, '');
-        // The stream page shows the question whole — the tail the inbox clips.
+        // The stream page shows the question whole — the tail the inbox clips. T416: once, in
+        // its chat line; the card at the end of the chat holds only what answers it.
         const card = `[data-testid="stream-needs"] [data-id="${questionId}"]`;
         await page.locator(card).waitFor({ state: 'visible' });
-        expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
-          'TAIL-MARKER-7',
-        );
+        expect(
+          await page
+            .locator('[data-testid="thread-entry"][data-open-question="true"]')
+            .textContent(),
+        ).toContain('TAIL-MARKER-7');
+        expect(await page.locator(`${card} [data-testid="inbox-context"]`).count()).toBe(0);
         // The composer's line was prompted into the worker (its queued turn ran).
         await page
           .locator('[data-testid="thread-entry"]', { hasText: 'noted: RFC 4180 quoting' })
@@ -1779,8 +1801,11 @@ describe('stream page (Playwright e2e, T161)', () => {
         // ---- answer, on the stream page. T364: its card has no input of its own;
         // T363: the composer answers the open question.
         expect(await page.locator(`${card} [data-testid="answer-input"]`).count()).toBe(0);
+        // T416: the chip says it answers "the question above"; the question is its tooltip.
         await page
-          .locator('[data-testid="composer-answering"]', { hasText: 'two conventions' })
+          .locator('[data-testid="composer-answering"][title*="two conventions"]', {
+            hasText: 'Answering the question above',
+          })
           .waitFor();
         await page.locator('[data-testid="composer-input"]').fill('semicolon');
         await page.locator('[data-testid="composer-send"]').click();
@@ -1844,7 +1869,7 @@ describe('stream page (Playwright e2e, T161)', () => {
         // ---- land: first refused (a dirty main), the reason on the page…
         await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'yes');
         writeFileSync(join(cockpit.repo, 'README.md'), '# edited by the operator\n');
-        await page.locator('[data-testid="stream-land"]').click();
+        await clickMerge(page);
         const result = page.locator('[data-testid="land-result"]');
         await result.waitFor({ state: 'visible' });
         expect(await result.getAttribute('data-status')).toBe('refused');
@@ -1853,7 +1878,7 @@ describe('stream page (Playwright e2e, T161)', () => {
 
         // …then landed once main is clean again.
         git(['checkout', '--', 'README.md'], cockpit.repo);
-        await page.locator('[data-testid="stream-land"]').click();
+        await clickMerge(page);
         await waitForAttr(page, '[data-testid="land-result"]', 'data-status', 'landed');
         expect(cockpit.streams.get(stream.id).human.status).toBe('landed');
         expect(existsSync(join(cockpit.repo, 'parser.ts'))).toBe(true);
@@ -1901,10 +1926,17 @@ describe('stream page (Playwright e2e, T161)', () => {
         await page.locator(`${card} [data-testid="card-expand"]`).click();
         expect(await context.textContent()).not.toContain('TAIL-MARKER-7');
 
-        // …and whole on the stream page the card opens.
+        // …and whole on the stream page the card opens: T416, once, in its chat line (the card
+        // there repeats none of it).
         await page.locator(`${card} [data-testid="open-stream"]`).click();
-        const full = `[data-testid="stream-needs"] [data-id="${question.id}"] [data-testid="inbox-context"]`;
-        await waitForText(page, full, LONG_QUESTION);
+        const full = `[data-testid="stream-needs"] [data-id="${question.id}"]`;
+        await page.locator(full).waitFor({ state: 'visible' });
+        await waitForText(
+          page,
+          '[data-testid="thread-entry"][data-open-question="true"] .cr-msg-body .cr-md',
+          LONG_QUESTION,
+        );
+        expect(await page.locator(`${full} [data-testid="inbox-context"]`).count()).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -1963,35 +1995,41 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
             .getAttribute('data-variant'),
         ).toBe('you');
 
-        // The composer answers the oldest question by default, and says so.
+        // The composer answers the oldest question by default, and says so. T416: the chat
+        // reads each question once, on its own line; the chip says which one it answers
+        // ("question 1 of 2", its whole text in the tooltip), and each card a line of its own.
         const chip = page.locator('[data-testid="composer-answering"]');
         await chip.waitFor();
-        expect(await chip.textContent()).toContain('comma or semicolon');
+        expect(await chip.getAttribute('data-question')).toBe(first.id);
+        expect(await chip.getAttribute('title')).toContain('comma or semicolon');
+        expect(await chip.textContent()).toContain('Answering question 1 of 2');
         expect(await page.locator('[data-testid="composer-hint"]').textContent()).toContain(
           'Answers the question',
         );
+        expect(
+          await page.locator(`${firstCard} [data-testid="inbox-context"]`).textContent(),
+        ).toContain('comma or semicolon');
 
         // A click on the other question's card makes it the one Send answers…
         const secondCard = `[data-testid="stream-needs"] [data-id="${second.id}"]`;
         await page.locator(`${secondCard} [data-testid="inbox-context"]`).click();
-        await waitUntilAsync('the chip to follow the click', async () =>
-          ((await chip.textContent()) ?? '').includes('quote every field'),
-        );
+        await waitForAttr(page, '[data-testid="composer-answering"]', 'data-question', second.id);
+        expect(await chip.textContent()).toContain('Answering question 2 of 2');
         // …and the chip's menu picks too: back to the first, then the second again.
-        await chip.locator('button', { hasText: 'quote every field' }).click();
+        await page.locator('[data-testid="composer-answering-pick"]').click();
         await page
           .locator('[data-testid="composer-answering-menu"] [role="menuitem"]', {
             hasText: 'comma or semicolon',
           })
           .click();
-        expect(await chip.textContent()).toContain('comma or semicolon');
-        await chip.locator('button', { hasText: 'comma or semicolon' }).click();
+        await waitForAttr(page, '[data-testid="composer-answering"]', 'data-question', first.id);
+        await page.locator('[data-testid="composer-answering-pick"]').click();
         await page
           .locator('[data-testid="composer-answering-menu"] [role="menuitem"]', {
             hasText: 'quote every field',
           })
           .click();
-        expect(await chip.textContent()).toContain('quote every field');
+        await waitForAttr(page, '[data-testid="composer-answering"]', 'data-question', second.id);
         await page.locator('[data-testid="composer-input"]').fill('only when needed');
         await page.locator('[data-testid="composer-input"]').press('Enter');
         await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
@@ -2008,8 +2046,11 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
           .waitFor();
 
         // "Write a message instead": Send writes a plain line, and the question stays open.
+        // One question is left: the chip answers "the question above".
         await chip.waitFor();
-        expect(await chip.textContent()).toContain('comma or semicolon');
+        await waitForAttr(page, '[data-testid="composer-answering"]', 'data-question', first.id);
+        expect(await chip.textContent()).toContain('Answering the question above');
+        expect(await chip.getAttribute('title')).toContain('comma or semicolon');
         await page.locator('[data-testid="composer-answer-cancel"]').click();
         await chip.waitFor({ state: 'detached' });
         await page.locator('[data-testid="composer-answer-resume"]').waitFor();
@@ -2781,7 +2822,7 @@ describe('delivery result tone and PR state (Playwright e2e, T338)', () => {
         expect(await page.locator('[data-testid="stream-land"]').count()).toBe(0);
 
         await page.locator(`[data-testid="stream-tree"] [data-stream="${fresh.id}"]`).click();
-        await page.locator('[data-testid="stream-land"]').click();
+        await clickMerge(page);
         await waitForAttr(page, '[data-testid="land-result"]', 'data-status', 'pr_open');
         const result = page.locator('[data-testid="land-result"]');
         expect(await result.getAttribute('class')).toContain('ok');
@@ -2867,12 +2908,12 @@ describe('Merge wording and hold tone (Playwright e2e, T347)', () => {
 
         // D9: a ship-check hold is news (neutral), a real refusal stays red.
         await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
-        await page.locator('[data-testid="stream-land"]').click();
+        await clickMerge(page);
         const result = page.locator('[data-testid="land-result"]');
         await result.filter({ hasText: 'held by ship check' }).waitFor();
         expect(await result.getAttribute('class')).toContain('info');
         expect(await result.getAttribute('class')).not.toContain('bad');
-        await page.locator('[data-testid="stream-land"]').click();
+        await clickMerge(page);
         await result.filter({ hasText: 'denied at the land gate' }).waitFor();
         expect(await result.getAttribute('class')).toContain('bad');
       } finally {
@@ -3296,7 +3337,7 @@ describe('parents and land conflicts (Playwright e2e, T176)', () => {
         await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
         await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
         await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'yes');
-        await page.locator('[data-testid="stream-land"]').click();
+        await clickMerge(page);
         await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'conflict');
         expect(await page.locator('[data-testid="land-conflict-file"]').allTextContents()).toEqual([
           'shared.txt',
@@ -3322,7 +3363,7 @@ describe('parents and land conflicts (Playwright e2e, T176)', () => {
         writeFileSync(join(worktree, 'shared.txt'), 'from main\nfrom the stream\n');
         git(['commit', '-q', '-am', 'merge main'], worktree);
         await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'yes');
-        await page.locator('[data-testid="stream-land"]').click();
+        await clickMerge(page);
         await waitForAttr(page, '[data-testid="land-result"]', 'data-status', 'landed');
         expect(cockpit.streams.get(stream.id).human.status).toBe('landed');
       } finally {
@@ -4418,7 +4459,7 @@ describe('add a repo from Settings (Playwright e2e, T206, T367)', () => {
 
 describe('Settings sections (Playwright e2e, T367)', () => {
   browserTest(
-    'General picks the theme and names the daemon; the section is in the URL; Permissions says who decides',
+    'General picks the theme, names the daemon and says what is always yours; the section is in the URL',
     async () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
@@ -4442,23 +4483,33 @@ describe('Settings sections (Playwright e2e, T367)', () => {
         await page.locator('[data-testid="settings-theme-system"]').click();
         expect(await theme()).toBe(null);
 
-        await page.locator('[data-testid="settings-nav-permissions"]').click();
-        await page.locator('[data-testid="settings"][data-section="permissions"]').waitFor();
+        // T416: who decides is one note in General ("Always yours"), from the policy.
+        const decisions = '[data-testid="settings-decisions"]';
+        expect(await page.locator(`${decisions} [data-gate]`).count()).toBe(3);
+        await waitForAttr(page, `${decisions} [data-gate="land"]`, 'data-owner', 'human');
+        const note =
+          (await page.locator('[data-testid="settings-decisions-note"]').textContent()) ?? '';
+        expect(note).toContain('Merging');
+        expect(note).toContain('accepting knowledge');
+        expect(note).toContain('answering questions');
+        expect(await page.locator('[data-testid="settings-nav-permissions"]').count()).toBe(0);
+
+        // The section is in the URL; back to General, it needs no parameter.
+        await page.locator('[data-testid="settings-nav-trackers"]').click();
+        await page.locator('[data-testid="settings"][data-section="trackers"]').waitFor();
         await waitUntilAsync('the URL to name the section', async () =>
-          (page?.url() ?? '').includes('section=permissions'),
+          (page?.url() ?? '').includes('section=trackers'),
         );
-        expect(await page.locator('[data-gate]').count()).toBe(3);
-        // Who decides arrives with the policy (`GET /api/policy`): "…" until then.
-        await waitUntilAsync('the Merge gate to say who decides', async () =>
-          ((await page?.locator('[data-gate="land"]').textContent()) ?? '').includes('You'),
-        );
-        // Back to General: its section needs no parameter.
         await page.locator('[data-testid="settings-nav-general"]').click();
         await waitUntilAsync(
           'the section parameter to go',
           async () => !(page?.url() ?? '').includes('section='),
         );
         expect(new URL(page.url()).searchParams.get('view')).toBe('settings');
+        // An old Permissions link opens General, where the note now is.
+        await page.goto(`${cockpit.base}/?view=settings&section=permissions`);
+        await page.locator('[data-testid="settings"][data-section="general"]').waitFor();
+        await page.locator(decisions).waitFor();
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -4672,13 +4723,15 @@ describe('browser notifications (Playwright e2e, T388)', () => {
         await pageWorker(page);
         const status = '[data-testid="settings-notify-status"]';
         const toggle = page.locator('[data-testid="settings-notify"]');
-        // Off by default; on asks the browser, which (granted here) allows it.
-        await waitForText(page, status, 'Off');
+        // Off by default; on asks the browser, which (granted here) allows it. T416: the
+        // switch says On or Off; a status pill only says what it can't (Blocked, Not available).
+        await page.locator('[data-testid="settings-notifications"]').waitFor();
         expect(await toggle.isChecked()).toBe(false);
+        expect(await page.locator(status).count()).toBe(0);
         expect(await page.locator('[data-testid="settings-notify-test"]').count()).toBe(0);
         await toggle.click();
-        await waitForText(page, status, 'On');
-        expect(await toggle.isChecked()).toBe(true);
+        await waitUntilAsync('the switch to turn on', () => toggle.isChecked());
+        expect(await page.locator(status).count()).toBe(0);
         // Send a test: one notification under its own tag, the way a real one goes.
         await page.locator('[data-testid="settings-notify-test"]').click();
         await page.locator('[data-testid="settings-notify-sent"]').waitFor();
@@ -4687,7 +4740,11 @@ describe('browser notifications (Playwright e2e, T388)', () => {
         ).toEqual(['agile-test via worker']);
         // Kept in this browser: a reload leaves it on.
         await page.reload();
-        await waitForText(page, status, 'On');
+        await waitUntilAsync('the switch to read on after a reload', () =>
+          page
+            ? page.locator('[data-testid="settings-notify"]').isChecked()
+            : Promise.resolve(false),
+        );
         await waitForText(page, '[data-testid="inbox-badge"]', '1');
         await pageWorker(page);
 
@@ -4787,9 +4844,11 @@ describe('browser notifications (Playwright e2e, T388)', () => {
         expect(await denied.locator(toggle).isChecked()).toBe(false);
         expect(await denied.locator('[data-testid="settings-notify-test"]').count()).toBe(0);
 
-        // The prompt closed without an answer: say so, stay off.
+        // The prompt closed without an answer: say so, stay off (the switch says Off; no pill).
         const dismissed = await open('dismiss');
-        await waitForText(dismissed, status, 'Off');
+        await dismissed.locator(toggle).waitFor();
+        expect(await dismissed.locator(toggle).isChecked()).toBe(false);
+        expect(await dismissed.locator(status).count()).toBe(0);
         expect(await dismissed.locator(note).count()).toBe(0);
         await dismissed.locator(toggle).click();
         await dismissed.locator(note).waitFor();
@@ -4831,7 +4890,8 @@ describe('resilience (Playwright e2e, T394)', () => {
         await page.goto(`${cockpit.base}/?view=settings`);
         const toggle = page.locator('[data-testid="settings-notify"]');
         await toggle.click();
-        await waitForText(page, '[data-testid="settings-notify-status"]', 'On');
+        // T416: the switch says it is on (no status pill beside it).
+        await waitUntilAsync('the switch to turn on', () => toggle.isChecked());
         await page.locator('[data-testid="settings-notify-test"]').click();
         await page.locator('[data-testid="settings-notify-sent"]').waitFor();
         expect(
@@ -5371,7 +5431,7 @@ describe('project tree and filter (Playwright e2e, T208, T365)', () => {
 
 describe('the open node and project filter live in the URL (Playwright e2e, T348)', () => {
   browserTest(
-    'open a node, filter, reload: the same view; back returns to the previous node; a stale id falls back to the inbox',
+    'open a node, filter, reload: the same view; back returns to the previous node; a stale id falls back to the inbox and says so',
     async () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
@@ -5431,9 +5491,13 @@ describe('the open node and project filter live in the URL (Playwright e2e, T348
         await page.goto(shared);
         await page.locator(pageOf(refunds.id)).waitFor({ state: 'visible' });
 
-        // A stale node and project quietly fall back to the inbox and "All".
+        // A stale node and project fall back to the inbox and "All" — T416: and a stale node
+        // says so, rather than landing on Needs me without a word.
         await page.goto(`${cockpit.base}/?node=01ARZ3NDEKTSV4RRFFQ69G5FAV&project=P-gone`);
         await page.locator('[data-testid="inbox-empty"]').waitFor({ state: 'visible' });
+        await page
+          .locator('[data-testid="toast"]', { hasText: 'That node no longer exists' })
+          .waitFor();
         await page.locator(`${tree} [data-stream="${guide.id}"]`).waitFor({ state: 'visible' });
         expect(await chip.count()).toBe(0);
         expect(new URL(page.url()).search).toBe('');
@@ -7801,6 +7865,485 @@ describe('the Director draft tree (Playwright e2e, T301)', () => {
           'web: show salePrice',
         ]);
         expect(cockpit.autonomy.get(id).status).toBe('applied');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T416: Needs me, errors in words, the palette and the page chrome --------------
+
+/**
+ * T416: cuts the page's `/ws` on demand (the daemon going away, as the page
+ * sees it): open sockets close, and every reconnect is refused until
+ * `restore`. Set up before the page loads.
+ */
+async function socketCutter(page: Page): Promise<{ cut(): Promise<void>; restore(): void }> {
+  const state = { cut: false, live: new Set<WebSocketRoute>() };
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    if (state.cut) {
+      void ws.close();
+      return;
+    }
+    ws.connectToServer();
+    state.live.add(ws);
+  });
+  return {
+    async cut() {
+      state.cut = true;
+      for (const ws of state.live) await ws.close();
+      state.live.clear();
+    },
+    restore() {
+      state.cut = false;
+    },
+  };
+}
+
+/** A finished work node on the fixture repo with one commit ahead of main: Merge shows. */
+async function finishedNode(
+  cockpit: StreamCockpit,
+  title: string,
+  slug: string,
+  parent?: string,
+): Promise<string> {
+  const stream = await cockpit.streams.create('human', {
+    title,
+    goal: 'g',
+    repo: 'demo',
+    ...(parent !== undefined ? { parent } : {}),
+  });
+  const worktree = join(cockpit.repo, '.worktrees', slug);
+  git(['worktree', 'add', '-q', '-b', slug, worktree, 'main'], cockpit.repo);
+  writeFileSync(join(worktree, `${slug}.txt`), `${slug}\n`);
+  git(['add', '-A'], worktree);
+  git(['commit', '-q', '-m', slug], worktree);
+  await cockpit.streams.update('daemon', stream.id, {
+    branch: slug,
+    worktree,
+    agent: { status: 'done' },
+  });
+  return stream.id;
+}
+
+describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
+  browserTest(
+    'the first Merge asks (and can stop asking); a refusal reads in words under Merge, with its fix as a button, never as a toast',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const id = await finishedNode(cockpit, 'Add CSV import', 's-csv');
+        page = await openPage();
+        let lands = 0;
+        await page.route(`**/api/streams/${id}/land`, (route) => {
+          lands++;
+          return route.fulfill({
+            status: 409,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: 'merge refused: main moved; rebase the branch first' }),
+          });
+        });
+        const said: Array<{ body: string; start?: boolean }> = [];
+        await page.route(`**/api/streams/${id}/say`, (route) => {
+          said.push(route.request().postDataJSON() as { body: string; start?: boolean });
+          return route.fulfill({ status: 201, contentType: 'application/json', body: '{}' });
+        });
+        await page.goto(`${cockpit.base}/?node=${id}`);
+        await page.locator('[data-testid="stream-land"]').waitFor({ state: 'visible' });
+
+        // The first Merge asks what it will do; Cancel merges nothing.
+        const ask = '[data-testid="merge-confirm"]';
+        await page.locator('[data-testid="stream-land"]').click();
+        await page.locator(ask).waitFor({ state: 'visible' });
+        expect(await page.locator(`${ask} h2`).textContent()).toContain(
+          'Merge “Add CSV import” into main',
+        );
+        await page.locator(`${ask} button`, { hasText: 'Cancel' }).click();
+        await page.locator(ask).waitFor({ state: 'detached' });
+        expect(lands).toBe(0);
+
+        // Merge, and don't ask again: the refusal reads under the header, in words.
+        await page.locator('[data-testid="stream-land"]').click();
+        await page.locator('[data-testid="merge-confirm-never"]').check();
+        await page.locator('[data-testid="merge-confirm-confirm"]').click();
+        const error = page.locator('[data-testid="merge-error"]');
+        await error.waitFor({ state: 'visible' });
+        expect(lands).toBe(1);
+        const words = (await error.textContent()) ?? '';
+        expect(words).toContain('Couldn’t merge.');
+        expect(words).toContain('Main moved; rebase the branch first.');
+        expect(words.toLowerCase()).not.toContain('merge refused');
+        // It sits under the header's Merge, above the tabs — and no toast says it again.
+        const merge = await page.locator('[data-testid="stream-land"]').boundingBox();
+        const box = await error.boundingBox();
+        const tabs = await page.locator('.cr-node-tabs').boundingBox();
+        expect(merge && box ? box.y >= merge.y + merge.height : false).toBe(true);
+        expect(box && tabs ? box.y + box.height <= tabs.y : false).toBe(true);
+        expect(
+          await page.locator('[data-testid="toast"]', { hasText: /refused|merge/i }).count(),
+        ).toBe(0);
+
+        // The fix it names is a button: a prepared message to the node's agent.
+        const fix = page.locator('[data-testid="merge-fix"]');
+        expect(await fix.textContent()).toBe('Ask the agent to rebase');
+        await fix.click();
+        await page.locator('[data-testid="merge-note"]').waitFor({ state: 'visible' });
+        expect(said).toHaveLength(1);
+        expect(said[0]?.start).toBe(true);
+        expect(said[0]?.body).toContain('Bring your branch up to date with main');
+        expect(await error.count()).toBe(0);
+
+        // Remembered in this browser: the next Merge is one click.
+        await page.locator('[data-testid="stream-land"]').click();
+        await waitUntil('the second merge call', () => lands === 2);
+        expect(await page.locator(ask).count()).toBe(0);
+        await error.waitFor({ state: 'visible' });
+
+        // A toast on a node's page sits above the composer, never over Send.
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page
+          .locator('[data-testid="node-menu"] [role="menuitem"]', { hasText: 'Copy node id' })
+          .click();
+        const toast = page.locator('[data-testid="toast"]').first();
+        await toast.waitFor({ state: 'visible' });
+        const toastBox = await toast.boundingBox();
+        const composer = await page.locator('.cr-chat-foot .cr-compose').boundingBox();
+        expect(toastBox && composer ? toastBox.y + toastBox.height <= composer.y : false).toBe(
+          true,
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    "Needs me: a refusal on the card with its fix; Ready to merge shows the agent's line; a blocked agent takes a reply; A/B pick a choice; Answer fills in",
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const csv = await finishedNode(cockpit, 'Add CSV import', 's-csv');
+        const quiet = await finishedNode(cockpit, 'Fix rounding', 's-round');
+        await cockpit.streams.update('daemon', csv, {
+          agent: { progress: 'Added importCsv() in src/import.ts with a test for quoted fields.' },
+        });
+        const stuck = (await cockpit.streams.create('human', { title: 'Price cache', goal: 'g' }))
+          .id;
+        await cockpit.streams.update('daemon', stuck, {
+          agent: { status: 'blocked', progress: 'Redis is not reachable from the worktree' },
+        });
+        const ledger = (await cockpit.streams.create('human', { title: 'Ledger', goal: 'g' })).id;
+        const asked = await cockpit.questions.raise({
+          stream: ledger,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session: ulid(),
+          text: 'Store amounts how?',
+          options: ['Integer cents', 'Floats'],
+        });
+
+        page = await openPage();
+        await page.route(`**/api/streams/${csv}/land`, (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              status: 'refused',
+              reason: 'merge refused: main moved; rebase the branch first',
+              line: 'merge refused: main moved; rebase the branch first',
+            }),
+          }),
+        );
+        const said: Array<{ id: string; body: string; start?: boolean }> = [];
+        await page.route('**/api/streams/*/say', (route) => {
+          const id = new URL(route.request().url()).pathname.split('/')[3] ?? '';
+          said.push({
+            id,
+            ...(route.request().postDataJSON() as { body: string; start?: boolean }),
+          });
+          return route.fulfill({ status: 201, contentType: 'application/json', body: '{}' });
+        });
+        await page.goto(`${cockpit.base}/`);
+
+        // Ready to merge: the agent's own line; with none, no stock sentence at all.
+        const card = `[data-testid="inbox"] [data-kind="done"][data-id="${csv}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
+          'Added importCsv()',
+        );
+        const other = `[data-testid="inbox"] [data-kind="done"][data-id="${quiet}"]`;
+        expect(await page.locator(`${other} [data-testid="inbox-context"]`).count()).toBe(0);
+        expect(await page.locator(other).textContent()).not.toContain('Look over the changes');
+
+        // Merge from the card asks too; a refusal says why on the card, with its fix.
+        await page.locator(`${card} [data-testid="land"]`).click();
+        await page.locator('[data-testid="merge-confirm"]').waitFor({ state: 'visible' });
+        await page.locator('[data-testid="merge-confirm-confirm"]').click();
+        const error = page.locator(`${card} [data-testid="card-error"]`);
+        await error.waitFor({ state: 'visible' });
+        expect(await error.textContent()).toContain(
+          'Couldn’t merge. Main moved; rebase the branch first.',
+        );
+        expect(((await error.textContent()) ?? '').toLowerCase()).not.toContain('merge refused');
+        await page.locator(`${card} [data-testid="card-fix"]`).click();
+        await page.locator(`${card} [data-testid="card-notice"]`).waitFor({ state: 'visible' });
+        expect(said.at(-1)?.id).toBe(csv);
+        expect(said.at(-1)?.body).toContain('Bring your branch up to date');
+
+        // A blocked agent is filed with the questions, and a reply unblocks it.
+        await page.locator('[data-testid="inbox-filter"] [data-value="questions"]').click();
+        const blocked = `[data-testid="inbox"] [data-kind="blocked"][data-id="${stuck}"]`;
+        await page.locator(blocked).waitFor({ state: 'visible' });
+        const reply = page.locator(`${blocked} [data-testid="blocked-send"]`);
+        expect(await reply.getAttribute('data-variant')).toBe('secondary');
+        expect(await reply.isDisabled()).toBe(true);
+        await page
+          .locator(`${blocked} [data-testid="blocked-reply"]`)
+          .fill('Start Redis with docker compose up redis');
+        expect(await reply.getAttribute('data-variant')).toBe('primary');
+        await reply.click();
+        await waitUntil('the reply to reach the node', () => said.some((s) => s.id === stuck));
+        const sent = said.find((s) => s.id === stuck);
+        expect(sent?.body).toBe('Start Redis with docker compose up redis');
+        expect(sent?.start).toBe(true);
+
+        // Answer is one variant everywhere: secondary while empty, primary once typed.
+        const question = `[data-testid="inbox"] [data-id="${asked.id}"]`;
+        const answer = page.locator(`${question} [data-testid="answer-send"]`);
+        expect(await answer.getAttribute('data-variant')).toBe('secondary');
+        await page.locator(`${question} [data-testid="answer-input"]`).fill('cents');
+        expect(await answer.getAttribute('data-variant')).toBe('primary');
+        await page.locator(`${question} [data-testid="answer-input"]`).fill('');
+
+        // The keycaps work: on a focused card, B picks the second choice.
+        expect(await page.locator(`${question} .cr-choice-key`).allTextContents()).toEqual([
+          'A',
+          'B',
+        ]);
+        await page.locator(question).focus();
+        await page.keyboard.press('b');
+        await waitUntil('the answer to be recorded', () =>
+          cockpit.questions.listOpen().every((q) => q.id !== asked.id),
+        );
+        expect(cockpit.questions.get(asked.id).answer).toBe('Floats');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'the daemon going away: a bar in the flow, write buttons off with why, a failed send kept with Retry',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const node = await cockpit.streams.create('human', { title: 'Ledger', goal: 'g' });
+        const asked = await cockpit.questions.raise({
+          stream: node.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session: ulid(),
+          text: 'Integer cents or floats?',
+          options: ['Integer cents', 'Floats'],
+        });
+        page = await openPage();
+        const socket = await socketCutter(page);
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-testid="inbox"] [data-id="${asked.id}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        const header = await page.locator('[data-testid="inbox"] .cr-page-hd').boundingBox();
+
+        await socket.cut();
+        const bar = page.locator('[data-testid="offline-banner"]');
+        await bar.waitFor({ state: 'visible' });
+        expect(await bar.textContent()).toContain('Reconnecting to the daemon');
+        // In the flow: it pushes the page down rather than covering its header or filter.
+        const barBox = await bar.boundingBox();
+        const moved = await page.locator('[data-testid="inbox"] .cr-page-hd').boundingBox();
+        expect(barBox && moved ? barBox.y + barBox.height <= moved.y : false).toBe(true);
+        expect(header && moved ? moved.y > header.y : false).toBe(true);
+        // The card's actions are off, and say why.
+        const choice = page.locator(`${card} [data-testid="answer-choice"]`).first();
+        expect(await choice.isDisabled()).toBe(true);
+        expect(await choice.getAttribute('title')).toBe('Reconnecting to the daemon…');
+
+        // On the node: Send is off with the same why; Enter says the message wasn't sent, and keeps it.
+        await page.locator(`${card} [data-testid="open-stream"]`).click();
+        await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
+        const input = page.locator('[data-testid="composer-input"]');
+        await input.fill('Integer cents, please.');
+        const send = page.locator('[data-testid="composer-send"]');
+        expect(await send.isDisabled()).toBe(true);
+        expect(await send.getAttribute('title')).toBe('Reconnecting to the daemon…');
+        await input.press('Enter');
+        const failed = page.locator('[data-testid="send-error"]');
+        await failed.waitFor({ state: 'visible' });
+        expect(await failed.textContent()).toContain(
+          'Couldn’t reach the daemon; your message wasn’t sent.',
+        );
+        expect(await input.inputValue()).toBe('Integer cents, please.');
+        expect(cockpit.delivered).toHaveLength(0);
+
+        // Back: the bar goes, Send is on again, and Retry sends the kept draft.
+        socket.restore();
+        await bar.waitFor({ state: 'detached', timeout: 15_000 });
+        expect(await send.isDisabled()).toBe(false);
+        await page.locator('[data-testid="send-retry"]').click();
+        await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
+        expect(cockpit.delivered[0]?.question.answer).toBe('Integer cents, please.');
+        await failed.waitFor({ state: 'detached' });
+
+        // A send that never reached the daemon while the socket is up reads the same way.
+        const second = await cockpit.questions.raise({
+          stream: node.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session: ulid(),
+          text: 'And the currency?',
+        });
+        await page.locator(`[data-testid="stream-needs"] [data-id="${second.id}"]`).waitFor();
+        await page.route('**/api/questions/*/answer', (route) =>
+          route.abort('internetdisconnected'),
+        );
+        await input.fill('EUR');
+        await input.press('Enter');
+        await failed.waitFor({ state: 'visible' });
+        expect(await failed.textContent()).toContain('your message wasn’t sent');
+        expect(await input.inputValue()).toBe('EUR');
+        await page.unroute('**/api/questions/*/answer');
+        await page.locator('[data-testid="send-retry"]').click();
+        await waitUntil('the retried answer', () => cockpit.delivered.length > 1);
+        expect(cockpit.delivered[1]?.question.answer).toBe('EUR');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    '⌘K on a node lists what its page offers (This node), what waits on you, and recent nodes with nothing typed',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        // Nodes under a root (a top-level node is a root: the palette lists it as a project).
+        const shop = await cockpit.streams.create('human', { title: 'Shop', goal: 'g' });
+        const id = await finishedNode(cockpit, 'Add CSV import', 's-csv', shop.id);
+        const other = await cockpit.streams.create('human', {
+          title: 'Ledger format',
+          goal: 'g',
+          parent: shop.id,
+        });
+        await cockpit.questions.raise({
+          stream: other.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          text: 'Should amounts be stored as integer cents?',
+        });
+        page = await openPage();
+        let lands = 0;
+        await page.route(`**/api/streams/${id}/land`, (route) => {
+          lands++;
+          return route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ status: 'landed', target: 'main', sha: 'abc', line: 'merged' }),
+          });
+        });
+        await page.goto(`${cockpit.base}/?node=${id}`);
+        await page.locator('[data-testid="stream-land"]').waitFor({ state: 'visible' });
+
+        const palette = '[data-testid="command-palette"]';
+        const input = `${palette} [data-testid="palette-input"]`;
+        const titles = async (): Promise<string[]> =>
+          page
+            ? page
+                .locator(`${palette} [data-testid="palette-item"] .cr-palette-title`)
+                .allTextContents()
+            : [];
+        await page.keyboard.press('Control+k');
+        await page.locator(input).waitFor({ state: 'visible' });
+        // This node: its header's and ⋯ menu's actions, first.
+        const groups = await page.locator(`${palette} .cr-palette-group-hd`).allTextContents();
+        expect(groups[0]).toContain('This node');
+        expect(groups[0]).toContain('Add CSV import');
+        const listed = await titles();
+        for (const want of ['Merge', 'Open Changes', 'Copy branch name', 'Close node…']) {
+          expect(listed).toContain(want);
+        }
+        // What waits on you, as what you'd do; recent nodes even on a first visit.
+        expect(listed).toContain('Answer: Should amounts be stored as integer cents?');
+        expect(groups.some((g) => g.startsWith('Recent'))).toBe(true);
+        expect(
+          await page
+            .locator(`${palette} [data-testid="palette-item"][data-key="node:${other.id}"]`)
+            .count(),
+        ).toBe(1);
+
+        // "merge" puts this node's Merge first, and Enter runs the page's own Merge (it asks).
+        await page.locator(input).fill('merge');
+        expect((await titles())[0]).toBe('Merge');
+        await page.keyboard.press('Enter');
+        await page.locator(palette).waitFor({ state: 'detached' });
+        await page.locator('[data-testid="merge-confirm"]').waitFor({ state: 'visible' });
+        await page.locator('[data-testid="merge-confirm-confirm"]').click();
+        await waitUntil('the merge from the palette', () => lands === 1);
+
+        // Open Changes runs the tab switch.
+        await page.keyboard.press('Control+k');
+        await page.locator(input).fill('open changes');
+        await page.keyboard.press('Enter');
+        await page
+          .locator('.cr-node-tabs button[data-tab="diff"][aria-current="page"]')
+          .waitFor({ state: 'visible' });
+
+        // A Needs me row opens its node on the chat, where the card is.
+        await page.keyboard.press('Control+k');
+        await page.locator(input).fill('integer cents');
+        await page.keyboard.press('Enter');
+        await page
+          .locator(`[data-testid="stream-page"][data-stream="${other.id}"]`)
+          .waitFor({ state: 'visible' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a stale link says the node is gone; a deleted one offers Restore',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const parent = await cockpit.streams.create('human', { title: 'Shop', goal: 'g' });
+        const child = await cockpit.streams.create('human', {
+          title: 'Old checkout',
+          goal: 'g',
+          parent: parent.id,
+        });
+        await cockpit.streams.archiveTree('human', child.id);
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${child.id}`);
+        const toast = page.locator('[data-testid="toast"]', {
+          hasText: '“Old checkout” was deleted',
+        });
+        await toast.waitFor({ state: 'visible' });
+        await toast.locator('[data-testid="toast-action"]', { hasText: 'Restore' }).click();
+        await page
+          .locator(`[data-testid="stream-page"][data-stream="${child.id}"]`)
+          .waitFor({ state: 'visible' });
+        expect(cockpit.streams.get(child.id).archived).not.toBe(true);
       } finally {
         await teardown([page]);
         await cockpit.stop();

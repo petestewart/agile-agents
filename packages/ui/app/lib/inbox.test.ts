@@ -1,13 +1,18 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxItem } from '@agile-agents/shared';
 import {
+  DONE_STOCK,
   NO_CHANGES_TEXT,
+  PATH_SEP,
   applyFilter,
   branchName,
   cardTitle,
+  choiceIndexOfKey,
+  choiceKey,
   choicesOf,
   cleanChoice,
   diffStatParts,
+  doneLine,
   filterCounts,
   filterOf,
   fold,
@@ -15,8 +20,13 @@ import {
   groupNeedsMe,
   isFirstRun,
   isLandGate,
+  itemCommand,
   knowledgeView,
+  mergeQuestion,
   noChangesText,
+  nodePath,
+  overlapText,
+  overlapTitles,
   parseChoices,
   planView,
   proposalOf,
@@ -571,5 +581,119 @@ describe('T410: a Merge card says how much it merges', () => {
     expect(diffStatParts({ files: 1, added: 1, removed: 0 }).label).toBe(
       '1 file changed, 1 line added, 0 lines removed',
     );
+  });
+});
+
+// ---------------------------------------------------------------- T416
+
+describe('T416: a Ready to merge card says the work, not the stock sentence', () => {
+  test("doneLine is the agent's own line, and nothing for the daemon's stock one", () => {
+    expect(doneLine(item({ kind: 'done', context: DONE_STOCK }))).toBeUndefined();
+    expect(doneLine(item({ kind: 'done', context: 'Added importCsv() with a test.' }))).toBe(
+      'Added importCsv() with a test.',
+    );
+    // The whole line when the daemon clipped it.
+    expect(
+      doneLine(item({ kind: 'done', context: 'Added import…', detail: 'Added importCsv() fully' })),
+    ).toBe('Added importCsv() fully');
+  });
+
+  test('overlapTitles names the other nodes of each pair, once', () => {
+    const titles: Record<string, string> = { a: 'Add CSV import', b: 'Fix rounding', c: 'Docs' };
+    const overlaps = [
+      { nodes: ['a', 'b'] as [string, string] },
+      { nodes: ['c', 'a'] as [string, string] },
+      { nodes: ['b', 'c'] as [string, string] },
+      { nodes: ['a', 'b'] as [string, string] },
+    ];
+    expect(overlapTitles('a', overlaps, (id) => titles[id])).toEqual(['Fix rounding', 'Docs']);
+    expect(overlapTitles('z', overlaps, (id) => titles[id])).toEqual([]);
+  });
+
+  test('overlapText reads as a sentence fragment', () => {
+    expect(overlapText([])).toBeUndefined();
+    expect(overlapText(['Fix rounding'])).toBe('Overlaps Fix rounding');
+    expect(overlapText(['A', 'B'])).toBe('Overlaps A and B');
+    expect(overlapText(['A', 'B', 'C'])).toBe('Overlaps A, B and C');
+    expect(overlapText(['A', 'B', 'C', 'D'])).toBe('Overlaps A, B and 2 more');
+  });
+});
+
+describe('T416: one path separator', () => {
+  test('nodePath joins with ›', () => {
+    expect(nodePath(['Shop', 'Show sale prices', 'api: add salePrice'])).toBe(
+      'Shop › Show sale prices › api: add salePrice',
+    );
+    expect(nodePath(['Shop', '', 'x'])).toBe('Shop › x');
+    expect(PATH_SEP).toBe(' › ');
+  });
+});
+
+describe('T416: the choice keys', () => {
+  test('choiceKey is the keycap: A for the first', () => {
+    expect([0, 1, 5].map(choiceKey)).toEqual(['A', 'B', 'F']);
+  });
+
+  test('A/a/1 pick the first, and a key past the last picks nothing', () => {
+    expect(choiceIndexOfKey('a', 2)).toBe(0);
+    expect(choiceIndexOfKey('B', 2)).toBe(1);
+    expect(choiceIndexOfKey('1', 2)).toBe(0);
+    expect(choiceIndexOfKey('2', 2)).toBe(1);
+    expect(choiceIndexOfKey('c', 2)).toBeUndefined();
+    expect(choiceIndexOfKey('3', 2)).toBeUndefined();
+    expect(choiceIndexOfKey('j', 6)).toBeUndefined();
+    expect(choiceIndexOfKey('Enter', 6)).toBeUndefined();
+  });
+});
+
+describe('T416: what the first Merge asks', () => {
+  test('names the node, the target and the size', () => {
+    const q = mergeQuestion({ node: 'Add CSV import', target: 'main', files: 2 });
+    expect(q.title).toBe('Merge “Add CSV import” into main (2 files)?');
+    expect(q.confirm).toBe('Merge');
+    expect(mergeQuestion({ node: 'x', target: 'main', files: 1 }).title).toContain('(1 file)');
+  });
+
+  test('without a target or size it still reads', () => {
+    expect(mergeQuestion({ node: 'x' }).title).toBe('Merge “x” into its target branch?');
+  });
+
+  test('a pull-request repo opens a pull request', () => {
+    const q = mergeQuestion({ node: 'x', target: 'main', pr: true });
+    expect(q.title).toBe('Open a pull request for “x” into main?');
+    expect(q.confirm).toBe('Open pull request');
+  });
+});
+
+describe("T416: ⌘K's Needs me rows", () => {
+  test('say what you would do', () => {
+    expect(
+      itemCommand(item({ kind: 'question', context: 'Should amounts be integer cents?' })),
+    ).toBe('Answer: Should amounts be integer cents?');
+    expect(itemCommand(item({ kind: 'done', id: NODE, stream_path: ['Shop', 'Add CSV'] }))).toBe(
+      'Merge: Add CSV',
+    );
+    expect(
+      itemCommand(item({ kind: 'done', id: NODE, stream_path: ['x'] }), {
+        nothing_to_merge: true,
+      }),
+    ).toBe('Close: x');
+    expect(itemCommand(item({ kind: 'blocked', id: NODE, stream_path: ['x'] }))).toBe(
+      'Unblock: x',
+    );
+    expect(
+      itemCommand(item({ kind: 'gate', context: 'land: land a into main', stream_path: ['x'] })),
+    ).toBe('Approve the merge: x');
+  });
+
+  test('a long question clips to one line', () => {
+    const text = `${'word '.repeat(40)}end?`;
+    const title = itemCommand(item({ kind: 'question', context: text.slice(0, 200) }));
+    expect(title.length).toBeLessThanOrEqual('Answer: '.length + 70);
+    expect(title.endsWith('…')).toBe(true);
+  });
+
+  test('a blocked agent is filed with the questions: a reply unblocks it', () => {
+    expect(filterOf(item({ kind: 'blocked', id: NODE }))).toBe('questions');
   });
 });

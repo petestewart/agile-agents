@@ -57,6 +57,7 @@ import {
   questionIdOfRef,
   sendIntent,
   showGoalCard,
+  tidyIds,
   vendorLabel,
   workingAs,
 } from '../lib/chat';
@@ -464,7 +465,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       const tone = outcomeTone(outcome);
       toast({
         title: tone === 'ok' ? 'Delivered' : tone === 'info' ? 'Held' : 'Not merged',
-        body: outcome.line,
+        // T413: a branch by its name, no ids.
+        body: tidyIds(outcome.line),
         tone: tone === 'bad' ? 'error' : tone === 'ok' ? 'success' : 'info',
       });
     },

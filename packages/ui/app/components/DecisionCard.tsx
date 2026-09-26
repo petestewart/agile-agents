@@ -44,6 +44,7 @@ import {
   startWaitingParts,
   stopSessions,
 } from '../lib/api';
+import { tidyIds } from '../lib/chat';
 import {
   type MergeFix,
   RECONNECTING,
@@ -358,7 +359,7 @@ export function Card({
     setNotice(undefined);
     try {
       const outcome = await landStream(item.id);
-      if (outcome.status === 'refused' && outcome.held) setNotice(outcome.line);
+      if (outcome.status === 'refused' && outcome.held) setNotice(tidyIds(outcome.line));
       else if (outcome.status === 'refused') {
         setError({ title: 'Couldn’t merge.', ...mergeRefusal(outcome.reason) });
       } else if (outcome.status === 'blocked') {

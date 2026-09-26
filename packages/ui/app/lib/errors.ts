@@ -5,6 +5,8 @@
  * and the node page (`StreamPage.tsx`) only render what this returns.
  */
 
+import { tidyIds } from './chat';
+
 /** What a write button's tooltip says while the daemon is away (`offline` in the feed). */
 export const RECONNECTING = 'Reconnecting to the daemon…';
 
@@ -99,7 +101,8 @@ export function conflictMessage(target: string, files: readonly string[]): strin
  * there is one, the fix"). `target` is the branch it merges into.
  */
 export function mergeRefusal(raw: string, target = 'main'): MergeRefusal {
-  const text = sentence(stripRefusal(raw));
+  // T413's rule: a node branch by its name, no ids, in primary text.
+  const text = sentence(tidyIds(stripRefusal(raw)));
   if (LIVE_AGENT.test(text)) {
     return { text, fix: { kind: 'stop', label: 'Stop the agent' } };
   }

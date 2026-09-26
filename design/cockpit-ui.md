@@ -31,10 +31,12 @@ is running?**
 6. **Calm by default.** Neutral surfaces; colour only for status and the one
    primary action. No uppercase-everything labels, no borders around every
    line, no orange buttons for ordinary actions.
-7. **Keyboard first.** `⌘K`/`Ctrl K` the command palette (nodes, projects,
-   views, actions; recent nodes first), `?` the shortcut list, `n` new node,
+7. **Keyboard first.** `⌘K`/`Ctrl K` the command palette (on a node's page
+   "This node" first — its header's and ⋯ menu's own actions — then recent
+   nodes, what waits on you, nodes, projects, views, actions; T416), `?` the shortcut list, `n` new node,
    `/` filter the tree, `g` then `i`/`d`/`k`/`r`/`e`/`s` jumps to Needs me,
-   Director, Knowledge, Running, Events, Settings; `j`/`k` in Needs me;
+   Director, Knowledge, Running, Events, Settings; `j`/`k` in Needs me, and
+   A/B (or 1/2) on a focused question card (T416);
    `Esc` closes any overlay, Enter sends, Shift+Enter is a newline. The `?`
    list (`Shortcuts.tsx`) names only keys that work.
 
@@ -133,11 +135,18 @@ Use these; don't re-invent a button or a menu in a screen.
   (`nodeStatus(row)`), which is the only place a node's status is decided for
   display. `StatusDot` keeps `class="cr-dot" data-dot=…` for the e2e suites.
 - `EmptyState icon title body actions`.
-- `PageHeader title icon subtitle actions` (`<header class="cr-page-hd">`).
+- `PageHeader title icon subtitle badge actions` (`<header class="cr-page-hd">`):
+  T416, one treatment for every view but a node's — icon and title on one
+  row, a one-line subtitle under it, actions on the title's row — at one
+  height (`--page-hd-h`) and top padding, in the one column (`--page-col`,
+  960px), so the title never moves between views. The Director's too (its
+  details toggle is the actions slot).
 - `Field label hint error` — form row wrapper.
 - `Spinner`, `Kbd`.
 - `useToast()` — transient success/info/error messages with an optional
-  action ("Undo"). Errors that block the user's next step stay inline.
+  action ("Undo"). Errors that block the user's next step stay inline. On a
+  page with a composer (a node, the Director) toasts sit just above it,
+  never over Send (T416).
 - `RepoIcon remote` / `repoKindLabel(remote)` — a repo's host glyph (local
   drive, GitHub, GitLab, a folder for a local clone, a globe otherwise) with
   an SSH mark; the label reads "Local only", "GitHub · SSH", "Local clone".
@@ -194,8 +203,9 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
 
 ## 7. Patterns
 
-- **Page header**: title (18px, 600), optional status pill and subtitle
-  (breadcrumb), right-aligned actions: one primary, then secondary, then `⋯`.
+- **Page header**: title (18px, 600), optional status pill and subtitle,
+  right-aligned actions: one primary, then secondary, then `⋯`. Every view
+  but a node's uses `PageHeader` (§5).
 - **Lists** are rows (40px, hover background, click opens), not stacks of
   bordered cards. Cards are for things that need a decision.
 - **Decision cards** (`Card` in `Inbox.tsx`): a title line (kind icon, what it
@@ -209,7 +219,13 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   A branch already merged outside the cockpit reads "Already merged" and its
   card offers Mark as merged; a finished node that waits on another reads
   "Waiting", and its card names what it waits on instead of offering Merge
-  (T412).
+  (T412). T416: a Ready to merge card shows the agent's last progress line
+  (one line in the list) and "Overlaps <node>" when its changes overlap —
+  never the daemon's stock sentence; a Blocked card takes a reply ("Reply to
+  unblock…", a message to its node); A/B (or 1/2) pick a focused question's
+  choice, as its keycaps say; Answer is secondary until text is typed, then
+  primary. While the daemon is away, every card action is off and says
+  "Reconnecting to the daemon…".
 - **Chat**: human lines right-aligned bubbles; agent lines as prose with the
   agent's name; daemon lines as one-line system rows (icon + muted text) that
   collapse when there are several in a row. A long message folds with "Show
@@ -220,15 +236,30 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   current step ends", "Answers the question"), and Send / Stop. A message to
   a node whose agent never ran or was stopped starts it (`say` with
   `start: true`) — except a part waiting for its coordinator's plan. With a
-  question open the composer answers it ("Answering: …"); the question's
-  card above it shows only its choices.
+  question open the composer answers it ("Answering the question above",
+  the whole question in its tooltip); the question reads once, in its own
+  chat line, and its card above the composer shows only its choices (T416;
+  with several open, one line of each to tell them apart). A send that
+  fails says so under the composer ("Couldn’t reach the daemon; your
+  message wasn’t sent."), keeps the draft and offers Retry.
 - **Forms** in dialogs; labels above inputs; the submit button is the primary
   action and says what it does ("Create project", not "OK").
 - **Errors**: inline under the control that caused them, in words a user can
   act on. A refused action names the reason and, if there is one, the fix.
+  T416: a refused merge reads "Couldn’t merge. <reason>." under the card's
+  or the header's Merge (the daemon's "merge refused:" prefix dropped, the
+  reason capitalised, `lib/errors.ts`), with the fix it names as a button
+  ("Ask the agent to rebase" sends the agent a prepared message; "Stop the
+  agent"). A load that fails shows only the error and Try again, never the
+  empty state beside it. The daemon away: a bar at the top of the main
+  column (in the flow, never over a page's controls), and write buttons off
+  with "Reconnecting to the daemon…".
 - **Empty states** say what the place is for and give the one action that
   fills it.
 - **Destructive actions** confirm (`ConfirmDialog`) or offer Undo (toast).
+  Merge asks the first time ("Merge “<node>” into main (2 files)?", with
+  "Don’t ask again" remembered per browser), then is one click: a merge
+  can't be undone from the cockpit (T416).
 - **Reviewing a diff** (T393): a line's gutter (or its number, or `C` on a
   focused line) opens a comment under it; comments collect in a review bar
   ("3 comments on 2 files") whose Add to message puts one formatted review

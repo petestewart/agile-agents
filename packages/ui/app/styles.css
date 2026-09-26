@@ -2821,7 +2821,7 @@ input[type="checkbox"].cr-switch:focus-visible {
   color: var(--red-text);
 }
 .cr-card-error-text {
-  flex: 1 1 240px;
+  flex: 0 1 auto;
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
@@ -2831,7 +2831,7 @@ input[type="checkbox"].cr-switch:focus-visible {
 }
 .cr-card-error .cr-btn {
   flex: none;
-  margin-top: -2px;
+  margin: -3px 0 0 4px;
 }
 /* The first Merge's question: "Don't ask again" sits left of the buttons. */
 .cr-merge-never {
@@ -7705,11 +7705,6 @@ div.cr-ov-ev:hover {
 }
 
 /* Permissions */
-.cr-set-decisions {
-  margin: 0;
-  line-height: 1.6;
-  color: var(--text);
-}
 
 /* Repositories: one list, a row per repo. */
 .cr-set-repos {
@@ -9388,6 +9383,8 @@ div.cr-lens-ev:hover {
 .cr-dir-hd {
   flex: none;
   padding: 0 32px;
+  /* The chat scrolls under it, so a line keeps them apart (as the node page's tabs do). */
+  border-bottom: 1px solid var(--border);
 }
 .cr-dir-hd > .cr-node-error {
   max-width: var(--page-col);
@@ -9397,10 +9394,15 @@ div.cr-lens-ev:hover {
   color: var(--accent-fg);
 }
 .cr-dir-state {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 7px;
   min-width: 0;
+}
+.cr-dir-state > [data-testid="director-session"] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* A failed read: only the error and Try again, where the chat would be. */
 .cr-dir-failed {
@@ -9750,8 +9752,13 @@ div.cr-lens-ev:hover {
     padding-left: 16px;
     padding-right: 16px;
   }
+  /* A phone reads the subtitle whole: the header grows to hold it. */
   .cr-page-hd {
-    --page-hd-h: 76px;
-    padding-top: 14px;
+    height: auto;
+    min-height: 76px;
+    padding: 14px 0 12px;
+  }
+  .cr-page-sub {
+    white-space: normal;
   }
 }

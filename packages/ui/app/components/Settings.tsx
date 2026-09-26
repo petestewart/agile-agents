@@ -1078,24 +1078,26 @@ function DecisionsCard(): JSX.Element {
       title="Always yours"
       icon="user"
       testid="settings-decisions"
-      description="No agent does these on its own; each one waits for you in Needs me."
-    >
-      <p className="cr-set-decisions" data-testid="settings-decisions-note">
-        {GATE_KINDS.map((gate, i) => {
-          const owner = policy?.gates[gate] ?? 'human';
-          const wait = timeoutOf(owner);
-          return (
-            <span key={gate}>
-              {i === 0 ? 'Always yours: ' : ', '}
-              <span data-gate={gate} data-owner={owner}>
-                {GATE_WORDS[gate]}
-                {wait !== undefined ? ` (for ${wait}, then a delegate decides)` : ''}
+      description={
+        <span data-testid="settings-decisions-note">
+          {GATE_KINDS.map((gate, i) => {
+            const owner = policy?.gates[gate] ?? 'human';
+            const wait = timeoutOf(owner);
+            const words = GATE_WORDS[gate];
+            return (
+              <span key={gate}>
+                {i > 0 ? ', ' : ''}
+                <span data-gate={gate} data-owner={owner}>
+                  {i === 0 ? `${words[0]?.toUpperCase()}${words.slice(1)}` : words}
+                  {wait !== undefined ? ` (for ${wait}, then a delegate decides)` : ''}
+                </span>
               </span>
-            </span>
-          );
-        })}
-        <span> and answering questions.</span>
-      </p>
-    </SetCard>
+            );
+          })}{' '}
+          and answering questions. No agent does these on its own: each one waits for you in Needs
+          me.
+        </span>
+      }
+    />
   );
 }

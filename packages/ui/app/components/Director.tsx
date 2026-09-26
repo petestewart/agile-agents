@@ -210,14 +210,25 @@ function DraftCard({
   );
 }
 
-function ActivitySection({ page }: { page: DirectorPayload | undefined }): JSX.Element {
+function ActivitySection({
+  page,
+  failed = false,
+}: {
+  page: DirectorPayload | undefined;
+  /** T416: the read failed; nothing here is known, so it says so rather than "nothing yet". */
+  failed?: boolean;
+}): JSX.Element {
   const { cockpit } = useFeed();
   const titleOf = (id: string): string =>
     cockpit?.streams.find((s) => s.id === id)?.title ?? 'a node';
   const rows = page?.activity ?? [];
   return (
     <DetailSection title="Activity" testid="director-activity-section">
-      {rows.length === 0 ? (
+      {failed ? (
+        <p className="cr-dsec-empty" data-testid="director-activity-empty">
+          Not loaded. Try again above.
+        </p>
+      ) : rows.length === 0 ? (
         <p className="cr-dsec-empty" data-testid="director-activity-empty">
           Nothing routed to the Director yet. Your messages and the events it watches show here.
         </p>
@@ -596,7 +607,7 @@ export function DirectorPage(): JSX.Element {
             />
           </div>
           <div className="cr-node-details-body">
-            <ActivitySection page={page} />
+            <ActivitySection page={page} failed={failed} />
             <AutonomyList />
           </div>
         </aside>
