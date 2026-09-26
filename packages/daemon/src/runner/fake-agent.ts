@@ -38,6 +38,8 @@ export type FakeAgentStep =
    * T341: blocks until `path` exists, then says its contents as one
    * `agent_message_chunk` (nothing when empty or timed out): a test plays
    * the agent turn by turn, deciding each reply while the turn is open.
+   * The file is read as soon as it exists, so the writer must create it
+   * whole (write aside, then rename): a plain write can be read empty.
    */
   | { type: 'text_from_file'; path: string; timeoutMs?: number }
   /** Dies mid-turn with `code` (default 1), the prompt unanswered: an agent that crashed. */

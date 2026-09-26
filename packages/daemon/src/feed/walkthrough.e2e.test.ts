@@ -41,6 +41,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -307,7 +308,12 @@ function openTurn(run: AgentRun): number | undefined {
 function reply(run: AgentRun, text: string): void {
   const turn = run.replied + 1;
   run.replied = turn;
-  writeFileSync(join(run.dir, `turn-${turn}.txt`), text);
+  // Written aside and renamed in: the fake agent polls for the file and reads
+  // it once it exists, and a plain write can be seen empty in between (the
+  // turn then ends with no reply on the thread; seen under load, T354).
+  const path = join(run.dir, `turn-${turn}.txt`);
+  writeFileSync(`${path}.tmp`, text);
+  renameSync(`${path}.tmp`, path);
 }
 
 function roleOf(run: AgentRun): string {
