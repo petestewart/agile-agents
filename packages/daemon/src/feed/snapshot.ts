@@ -11,6 +11,7 @@ import {
   type HilRequest,
   type InboxItem,
   type NodeRole,
+  type ProjectSessionDefaults,
   type Question,
   type RepoEntry,
   type RepoRemote,
@@ -192,6 +193,8 @@ export interface CockpitProjectRow {
   /** T338: the project's repos and tracker settings (the root node's project controls). */
   repos?: string[];
   tracker?: TrackerSettings;
+  /** T379: the project's own session defaults (P5), between a flag and the repo's. */
+  session?: ProjectSessionDefaults;
 }
 
 export function buildCockpitFrame(
@@ -237,6 +240,7 @@ export function buildCockpitFrame(
       autonomy: p.autonomy,
       repos: p.repos,
       ...(p.tracker !== undefined ? { tracker: p.tracker } : {}),
+      ...(p.session !== undefined ? { session: p.session } : {}),
     })),
     repos: Object.entries(repos).map(([name, entry]) => {
       const remote = remoteOf?.(entry);

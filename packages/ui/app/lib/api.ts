@@ -13,6 +13,7 @@ import type {
   Plan,
   Policy,
   Project,
+  ProjectSessionDefaults,
   RepoRemote,
   RoutedEvent,
   KnowledgeItem as Rule,
@@ -511,10 +512,13 @@ export function getHealth(): Promise<DaemonHealth> {
   return get('/health');
 }
 
-/** T372: rename a project or change its repos (registered names only). */
+/**
+ * T372: rename a project or change its repos (registered names only).
+ * T379: `session` replaces the project's session defaults; `null` clears them.
+ */
 export function updateProject(
   id: string,
-  patch: { name?: string; repos?: string[] },
+  patch: { name?: string; repos?: string[]; session?: ProjectSessionDefaults | null },
 ): Promise<Project> {
   return post(`/api/projects/${encodeURIComponent(id)}`, patch) as Promise<Project>;
 }

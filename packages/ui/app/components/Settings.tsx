@@ -21,6 +21,7 @@
 import type {
   ClassifierKeyStatus,
   Policy,
+  ProjectSessionDefaults,
   ResolvedSessionDefaults,
   SessionDefaultsFields,
   SessionDefaultsPatch,
@@ -42,7 +43,9 @@ import {
   saveHomeSessionDefaults,
   saveRepoSessionDefaults,
   saveTrackerSettings,
+  updateProject,
 } from '../lib/api';
+import { resolvedFor } from '../lib/defaults';
 import { useOptionalFeed } from '../lib/feed-context';
 import { useOptionalShell } from '../lib/shell';
 import { type ThemeChoice, readTheme, saveTheme } from '../lib/theme';
@@ -328,6 +331,29 @@ function toPatch(choice: SessionChoice): SessionDefaultsPatch {
   };
 }
 
+/** T379: a project's `session` block after a Settings patch; `null` when it names nothing. */
+function projectSessionAfter(patch: SessionDefaultsPatch): ProjectSessionDefaults | null {
+  const next: ProjectSessionDefaults = {
+    ...(patch.vendor ? { vendor: patch.vendor } : {}),
+    ...(patch.model ? { model: patch.model } : {}),
+    ...(patch.effort ? { effort: patch.effort } : {}),
+  };
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+/** T379: what a project's nodes start with — one answer, or "varies" when its repos differ. */
+function projectResolved(
+  status: SessionDefaultsStatus,
+  repos: readonly string[],
+  fields: ProjectSessionDefaults | undefined,
+): ResolvedSessionDefaults | string {
+  const each = (repos.length > 0 ? repos : [undefined]).map((repo) =>
+    resolvedText(resolvedFor(status, repo, fields)),
+  );
+  const first = each[0] ?? resolvedText(resolvedFor(status, undefined, fields));
+  return each.every((text) => text === first) ? first : 'Varies by repository';
+}
+
 function sameChoice(a: SessionChoice, b: SessionChoice): boolean {
   return a.vendor === b.vendor && a.model.trim() === b.model.trim() && a.effort === b.effort;
 }
@@ -354,7 +380,8 @@ function SessionDefaultsCard({
   status: SessionDefaultsStatus;
   fields: SessionDefaultsFields;
   inherit: ResolvedSessionDefaults;
-  resolved: ResolvedSessionDefaults;
+  /** What a new agent here starts with; a sentence when that depends on the node. */
+  resolved: ResolvedSessionDefaults | string;
   save: (patch: SessionDefaultsPatch) => Promise<void>;
 }): JSX.Element {
   const [value, setValue] = useState<SessionChoice>(() => toChoice(fields));
@@ -373,7 +400,9 @@ function SessionDefaultsCard({
       status={
         <span className="cr-set-resolved" title="What a new agent here starts with">
           <Icon name="bot" size={13} />
-          <span data-testid={`${testid}-resolved`}>{resolvedText(resolved)}</span>
+          <span data-testid={`${testid}-resolved`}>
+            {typeof resolved === 'string' ? resolved : resolvedText(resolved)}
+          </span>
         </span>
       }
       onSubmit={() => {
@@ -426,9 +455,13 @@ function SessionDefaultsCard({
 function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Element {
   const [status, setStatus] = useState<SessionDefaultsStatus | undefined>();
   const [error, setError] = useState<string | undefined>();
-  const remotes = new Map(
-    (useOptionalFeed()?.cockpit?.repos ?? []).map((r) => [r.name, r.remote] as const),
-  );
+  // T379: what a save returned, until the next frame carries it.
+  const [savedProjects, setSavedProjects] = useState<
+    Record<string, ProjectSessionDefaults | undefined>
+  >({});
+  const cockpit = useOptionalFeed()?.cockpit;
+  const remotes = new Map((cockpit?.repos ?? []).map((r) => [r.name, r.remote] as const));
+  const projects = cockpit?.projects ?? [];
 
   useEffect(() => {
     getSessionDefaults()
@@ -440,7 +473,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
   return (
     <SetSection
       title="Agents"
-      description="The agent, model and effort a node starts with. A node’s agent uses the repo’s default, else the global default. You can still pick another when you start one."
+      description="The agent, model and effort a node starts with: its project’s default, else its repository’s, else the global default. You can still pick another when you start one."
     >
       <FormError error={error} />
       {!status && !error ? (
@@ -486,6 +519,34 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
               save={async (patch) => setStatus(await saveRepoSessionDefaults(name, patch))}
             />
           ))}
+          {projects.length > 0 ? (
+            <div className="cr-set-subhd" data-testid="settings-session-projects-heading">
+              <h3>Per project</h3>
+              <p>Each overrides its repositories’ defaults and the global default.</p>
+            </div>
+          ) : null}
+          {projects.map((project) => {
+            const fields =
+              project.id in savedProjects ? savedProjects[project.id] : project.session;
+            return (
+              <SessionDefaultsCard
+                key={project.id}
+                title={project.name}
+                icon="layers"
+                testid={`settings-session-project-${project.id}`}
+                status={status}
+                fields={fields ?? {}}
+                inherit={status.resolved}
+                resolved={projectResolved(status, project.repos ?? [], fields)}
+                save={async (patch) => {
+                  const saved = await updateProject(project.id, {
+                    session: projectSessionAfter(patch),
+                  });
+                  setSavedProjects((prev) => ({ ...prev, [project.id]: saved.session }));
+                }}
+              />
+            );
+          })}
         </>
       ) : null}
     </SetSection>

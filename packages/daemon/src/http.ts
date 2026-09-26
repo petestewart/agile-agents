@@ -767,7 +767,7 @@ async function handlePlanRoute(
  *
  *   POST /api/proposals/:id/apply|dismiss  the human decides a coordinator's proposal card
  *   POST /api/streams/:id/autonomy         `{autonomy: level|null}`: the node's override
- *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null, name?, repos?}`: the project's levels, (T338) tracker settings and (T372) name and repos
+ *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null, name?, repos?}`: the project's levels, (T338) tracker settings, (T372) name and repos, and (T379) `session` defaults
  */
 async function handleAutonomyRoute(
   req: Request,
@@ -806,6 +806,8 @@ async function handleAutonomyRoute(
         ...(body.tracker !== undefined ? { tracker: body.tracker } : {}),
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.repos !== undefined ? { repos: body.repos } : {}),
+        // T379: the project's session defaults (P5); `null` clears them.
+        ...(body.session !== undefined ? { session: body.session } : {}),
       }),
     );
   } catch (err) {
