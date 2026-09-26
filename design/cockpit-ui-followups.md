@@ -6,6 +6,7 @@ deferred, or need a decision. Each names where it lives. Ticket them in
 
 ## P1 — wrong or confusing for the user
 
+None open. (The last ones were fixed in T379, T380, T382 and T383.)
 
 ## P2 — polish
 
