@@ -7151,8 +7151,21 @@ describe('command palette and keyboard shortcuts (Playwright e2e, T368)', () => 
         const help = '[data-testid="shortcuts"]';
         await page.locator(help).waitFor({ state: 'visible' });
         expect(await page.locator(help).textContent()).toContain('New node');
+        expect(await page.locator(help).textContent()).toContain('Ask about the open node');
         await page.keyboard.press('Escape');
         await page.locator(help).waitFor({ state: 'detached' });
+
+        // T425: the palette runs Ask (T419); here, with no node open, it aims at the Director.
+        await page.keyboard.press('Control+k');
+        await page.locator(input).fill('ask a q');
+        await waitForAttr(page, `${palette} [aria-selected="true"]`, 'data-key', 'action:ask');
+        await page.keyboard.press('Enter');
+        await page.locator('[data-testid="ask"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="ask-target"]').getAttribute('data-value')).toBe(
+          'director',
+        );
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="ask"]').waitFor({ state: 'detached' });
         await page.locator('[data-testid="stream-filter"]').focus();
         await page.keyboard.press('?');
         expect(await page.locator(help).count()).toBe(0);
