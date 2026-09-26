@@ -3419,6 +3419,15 @@ describe("the rail's row menus, Deleted and New project (Playwright e2e, T365)",
         await page
           .locator(`[data-testid="stream-page"][data-stream="${a.id}"]`)
           .waitFor({ state: 'visible' });
+
+        // The open node is never hidden in a folded subtree: opening it unfolds its parents.
+        await page
+          .locator(`[data-tree-node="${a.id}"] > .cr-tree-item > [data-testid="tree-caret"]`)
+          .click();
+        await row(b.id)?.waitFor({ state: 'detached' });
+        await page.goto(`${cockpit.base}/?node=${b.id}`);
+        await row(b.id)?.waitFor({ state: 'visible' });
+        expect(await row(b.id)?.getAttribute('aria-current')).toBe('true');
       } finally {
         await teardown([page]);
         await cockpit.stop();

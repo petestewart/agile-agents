@@ -173,6 +173,11 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
   const tabbable = ctx.tabStop === id;
   const [placement, setPlacement] = useState<'top' | 'bottom'>('bottom');
   const refusal = drag.over?.id === id ? drag.over.reason : undefined;
+  const itemRef = useRef<HTMLDivElement>(null);
+  // The open node stays in sight: a node just made, restored or opened from Needs me.
+  useEffect(() => {
+    if (selected === id) itemRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [selected, id]);
 
   const items: MenuItem[] = isProject
     ? [
@@ -263,6 +268,7 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
   return (
     <li data-tree-node={id}>
       <div
+        ref={itemRef}
         className="cr-tree-item"
         data-drop-refused={refusal !== undefined ? 'true' : undefined}
         onPointerEnter={(e) => setPlacement(menuPlacement(e.currentTarget))}
@@ -559,6 +565,23 @@ export function StreamTree({
   const tree = buildStreamTree(filterStreamRows(rows, filter));
   const [dialog, setDialog] = useState<TreeDialog | undefined>(undefined);
   const [focused, setFocused] = useState<string | undefined>(undefined);
+  // The open node is never hidden in a folded subtree: opening it (or its
+  // first frame) unfolds its ancestors. Folding one afterwards is left alone.
+  const rowsNow = useRef(allRows);
+  rowsNow.current = allRows;
+  const collapsedNow = useRef(collapsed);
+  collapsedNow.current = collapsed;
+  const selectedShown = selected !== undefined && allRows.some((r) => r.id === selected);
+  useEffect(() => {
+    if (!selectedShown || selected === undefined) return;
+    const byId = new Map(rowsNow.current.map((r) => [r.id, r]));
+    const seen = new Set<string>();
+    for (let at = byId.get(selected)?.parent; at !== undefined && !seen.has(at); ) {
+      seen.add(at);
+      if (collapsedNow.current.has(at)) setOpen(at, true);
+      at = byId.get(at)?.parent;
+    }
+  }, [selected, selectedShown, setOpen]);
   const projectName = useCallback(
     (id: string | undefined) => projects.find((p) => p.id === id)?.name,
     [projects],

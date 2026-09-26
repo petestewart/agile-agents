@@ -163,6 +163,15 @@ function NewStreamForm({
     };
   }, []);
 
+  // Opened before the first cockpit frame (a quick `n` on load): pick up the projects when they arrive.
+  useEffect(() => {
+    if (projectId !== undefined || parent !== '' || projects.length === 0) return;
+    setProjectId(
+      newNodeDefaults({ preset, selected, filter, rows, projects, lastUsed: loadLastProject() })
+        .project,
+    );
+  }, [projectId, parent, projects, preset, selected, filter, rows]);
+
   const close = (): void => setNewStreamOpen(false);
   const derived = titleFromGoal(goal);
   const finalTitle = (title ?? '').trim() || derived;
