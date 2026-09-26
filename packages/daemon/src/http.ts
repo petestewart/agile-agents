@@ -1432,7 +1432,13 @@ async function handleStreamRoute(
           },
           id,
           input.data.body,
-          input.data.start === true ? { start: true } : {},
+          input.data.start === true
+            ? {
+                start: true,
+                // T423: the composer's model chip names what the start runs.
+                ...(input.data.session !== undefined ? { session: input.data.session } : {}),
+              }
+            : {},
         );
         return jsonResponse(said, 201);
       }

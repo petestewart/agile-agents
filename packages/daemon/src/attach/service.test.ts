@@ -2209,6 +2209,33 @@ describe('T361: a message starts a node with no live agent', () => {
     expect(delivered().every((d) => d.session === said.prompted)).toBe(true);
   }, 30_000);
 
+  test('T423: a starting line runs the model it names; the defaults fill the rest', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Plan',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+    const said = await attachService.say(node.id, 'go', {
+      start: true,
+      session: { model: 'claude-sonnet-4-6', effort: 'high' },
+    });
+    expect(said.started).toBe(true);
+    expect(streams.get(node.id).sessions).toMatchObject([
+      { role: 'worker', vendor: 'claude', model: 'claude-sonnet-4-6', effort: 'high' },
+    ]);
+    // A live agent keeps its model: the flags only ever name a start.
+    const again = await attachService.say(node.id, 'and now', {
+      start: true,
+      session: { model: 'claude-haiku-4-5' },
+    });
+    expect(again.started).toBeUndefined();
+    expect(again.prompted).toBe(said.prompted);
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+  }, 30_000);
+
   test('a live agent is prompted as before; start changes nothing', async () => {
     attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
     const stream = await makeStream();

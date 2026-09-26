@@ -2310,7 +2310,8 @@ test.skipIf(!RUN)(
       await form.locator('[data-testid="project-tracker-map-in_progress"]').fill('In Progress');
       await form.locator('[data-testid="project-tracker-map-in_review"]').fill('In Review');
       await form.locator('[data-testid="project-tracker-map-done"]').fill('Done');
-      await form.getByRole('button', { name: 'Save tracker' }).click();
+      // T423: one Save for the root's Project group (its repositories and tracker).
+      await page.locator('[data-testid="project-save"]', { hasText: 'Save changes' }).click();
       let show = '';
       await until('the tracker is saved', async () => {
         show = await agileOk(['project', 'show', shopId]);

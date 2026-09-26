@@ -1172,6 +1172,23 @@ ul.cr-error {
   gap: 6px;
   margin-top: 10px;
 }
+/* T423: SessionFields — agent, model (with Other…'s id field), effort — by name. */
+.cr-sf {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.cr-sf-model {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.cr-sf-model select,
+.cr-sf-model input {
+  flex: 1 1 0;
+  min-width: 0;
+}
 .cr-chip {
   display: inline-flex;
   align-items: center;
@@ -2122,7 +2139,7 @@ input[type="checkbox"].cr-switch:focus-visible {
 .cr-newnode-session {
   margin-left: 40px;
 }
-.cr-newnode-session .cr-actions {
+.cr-newnode-session .cr-sf {
   margin-top: 8px;
 }
 .cr-newnode-session > .cr-link {
@@ -4129,10 +4146,161 @@ input[type="checkbox"].cr-switch:focus-visible {
 button.cr-model-chip {
   cursor: pointer;
 }
-button.cr-model-chip:hover {
+button.cr-model-chip:hover,
+button.cr-model-chip[aria-expanded="true"] {
   color: var(--text);
   background: var(--bg-hover);
   border-color: var(--border-strong);
+}
+.cr-model-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* T423: a pick for the next message, not yet sent: the chip says so in the accent. */
+.cr-model-chip[data-chosen="true"] {
+  color: var(--accent-fg);
+  background: var(--accent-weak);
+  border-color: transparent;
+}
+.cr-compose-chips > .cr-pop-wrap {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* T423: the one model picker — the chip's popover and the Start with… dialog. */
+.cr-pop.cr-mpick-pop {
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  padding: 0;
+}
+.cr-mpick-panel {
+  display: flex;
+  flex-direction: column;
+}
+.cr-mpick-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 4px;
+}
+.cr-mpick-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.cr-mpick-hd .cr-link {
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+.cr-mpick {
+  display: flex;
+  flex-direction: column;
+}
+.cr-mpick-list {
+  max-height: min(420px, calc(100vh - 360px));
+  overflow-y: auto;
+  padding: 2px 4px 4px;
+  overscroll-behavior: contain;
+}
+.cr-mpick-group + .cr-mpick-group {
+  margin-top: 2px;
+}
+.cr-mpick-group-hd {
+  padding: 8px 8px 3px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-faint);
+}
+.cr-mpick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.cr-mpick-row:hover,
+.cr-mpick-row:focus-visible {
+  background: var(--bg-hover);
+  box-shadow: none;
+}
+.cr-mpick-check {
+  flex: none;
+  color: var(--accent);
+  visibility: hidden;
+}
+.cr-mpick-row[aria-checked="true"] .cr-mpick-check,
+.cr-mpick-other-btn .cr-mpick-check {
+  visibility: visible;
+}
+.cr-mpick-other-btn,
+.cr-mpick-other-btn .cr-mpick-check {
+  color: var(--text-muted);
+}
+.cr-mpick-row[aria-checked="true"] {
+  font-weight: 500;
+}
+.cr-mpick-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cr-mpick-tag {
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+.cr-mpick-other {
+  display: flex;
+  gap: 6px;
+  padding: 4px 8px 6px;
+}
+.cr-mpick-other select {
+  flex: none;
+  width: 92px;
+}
+.cr-mpick-other input {
+  flex: 1;
+  min-width: 0;
+}
+.cr-mpick-effort {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+.cr-mpick-effort-label {
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.cr-mpick-effort .cr-seg button {
+  padding: 0 8px;
+}
+.cr-mpick-noeffort {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  text-align: right;
+}
+.cr-mpick-note {
+  margin: 0;
+  padding: 8px 12px 10px;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
 }
 .cr-model-dot {
   flex: none;
@@ -4327,6 +4495,28 @@ span.cr-answering-q {
 }
 .cr-dsec .cr-field-hint {
   font-size: var(--text-xs);
+}
+/* T423: the Autonomy group — a labelled row each for the coordinator and the Director. */
+.cr-autonomy-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cr-autonomy-row + .cr-autonomy-row {
+  margin-top: 14px;
+}
+.cr-autonomy-label {
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.cr-autonomy-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.cr-autonomy-control select {
+  width: 100%;
 }
 
 .cr-sess-list {
@@ -5339,12 +5529,13 @@ span.cr-answering-q {
 }
 
 /* -- the picker, confirmations, skeletons */
-.cr-picker-fields .cr-field:last-child {
-  margin-bottom: 8px;
+.cr-picker .cr-mpick {
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
-.cr-picker-fields select,
-.cr-picker-fields input {
-  width: 100%;
+.cr-picker .cr-mpick-list {
+  max-height: min(420px, 50vh);
 }
 .cr-picker-default {
   margin: 0;
@@ -7677,9 +7868,7 @@ div.cr-ov-ev:hover {
   grid-area: s;
   display: flex;
   justify-content: flex-end;
-}
-.cr-set-sf-save .cr-btn {
-  width: 100%;
+  font-size: var(--text-sm);
 }
 .cr-set-sf-labels > span {
   font-size: var(--text-sm);
@@ -7694,13 +7883,13 @@ div.cr-ov-ev:hover {
 .cr-set-sf-labels > span:nth-child(3) {
   grid-area: le;
 }
-.cr-set-sf select:first-of-type {
+.cr-set-sf .cr-sf-vendor {
   grid-area: v;
 }
-.cr-set-sf input {
+.cr-set-sf .cr-sf-model {
   grid-area: m;
 }
-.cr-set-sf select:last-of-type {
+.cr-set-sf .cr-sf-effort {
   grid-area: e;
 }
 
@@ -8335,10 +8524,7 @@ div.cr-ov-ev:hover {
     grid-template-areas: "lv le" "v e" "lm lm" "m m" "s s";
   }
   .cr-set-sf-save {
-    margin-top: 6px;
-  }
-  .cr-set-sf-save .cr-btn {
-    width: auto;
+    justify-content: flex-start;
   }
   .cr-set-section-hd {
     flex-wrap: wrap;

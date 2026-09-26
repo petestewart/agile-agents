@@ -384,6 +384,35 @@ describe('what Send does', () => {
       hint: 'Queued — Claude reads it after its current step.',
       placeholder: 'Message Claude…',
     });
+    // T423: another model picked for a live agent: Send restarts it with that model.
+    expect(
+      sendIntent({
+        ...base,
+        live: { name: 'Claude', working: false },
+        restartWith: 'Claude Sonnet 4.6 · high',
+      }),
+    ).toMatchObject({
+      action: 'restart',
+      hint: 'Restarts the agent with Claude Sonnet 4.6 · high, then sends this.',
+    });
+    expect(
+      sendIntent({
+        ...base,
+        live: { name: 'Claude', working: true },
+        restartWith: 'Gemini default model',
+      }).hint,
+    ).toBe(
+      'Stops Claude’s current step, restarts the agent with Gemini default model, then sends this.',
+    );
+    // An open question is answered, whatever the chip says.
+    expect(
+      sendIntent({
+        ...base,
+        answering: 'Q-1',
+        live: { name: 'Claude', working: false },
+        restartWith: 'Gemini default model',
+      }).action,
+    ).toBe('answer');
     expect(sendIntent({ ...base, live: { name: 'Claude', working: false } }).hint).toBe(
       'Sends it to Claude now.',
     );

@@ -24,7 +24,9 @@ is running?**
    *in the conversation*, right above the composer, and is answered there.
 4. **Defaults, not forms.** Creating a node starts its agent with the default
    model. Starting a stopped agent is one click. Pickers are optional
-   (a chevron next to the button), never a mandatory step.
+   (a chevron next to the button), never a mandatory step. T423: a model is
+   picked in one place, the composer's model chip (the header's Start with…
+   aside), and picking never starts or restarts anything by itself.
 5. **Progressive disclosure.** Rarely used controls (autonomy, tracker, waits
    on, + Repo, Review, Close, Delete) live in the details panel or the `⋯`
    menu, not as a row of equal buttons.
@@ -122,8 +124,8 @@ Use these; don't re-invent a button or a menu in a screen.
 - `Menu trigger items align` — dropdown; items `{label, icon, onSelect,
   danger, disabled, hint, testid}` or `'separator'`; arrow keys, Esc, click
   outside.
-- `Popover` — the positioning shell `Menu` uses, for custom content (model
-  picker).
+- `Popover` — the positioning shell `Menu` uses, for custom content (the
+  composer's model picker, `ModelChip`).
 - `Dialog open onClose title description footer size testid` — modal with
   focus trap, `role="dialog"`, `aria-modal`, Esc and backdrop close.
 - `ConfirmDialog` — title, body, confirm label, `danger`.
@@ -176,6 +178,21 @@ Screen-level building blocks built on these (reuse them rather than copy):
   (`ROUTE_REASON`) are shared with a node's Activity tab and the Director.
 - `lib/defaults.ts` `resolvedFor` — what a new session starts with, with the
   project step (P5) before the repo's, as attach resolves it.
+- `SessionPicker.tsx` (T423; pure half in `lib/defaults.ts`: `modelGroups`,
+  `modelSelectOptions`, `sameSession`, `modelChip`) — the one model picker.
+  `ModelChoice` lists the models by name (`modelLabel`) grouped by vendor
+  (a vendor with no list reads as its default model, under "Other agents";
+  aliases like `opus` only when something already uses them), "Other model…"
+  for an id typed by hand, and Effort as a `Segmented` where the vendor takes
+  one (`vendorTakesEffort`; otherwise it says so). `ModelChip` is the
+  composer's chip and its popover; `SessionPicker` the Start with… / reviewer /
+  Resolve dialog around the same list; `SessionFields` the three selects by
+  name for Settings (with what each inherits) and New node. The known models
+  are `KNOWN_MODEL_IDS` in `packages/shared` (served as `known_models`).
+- `lib/autonomy.ts` (T423) — the autonomy levels in words for the details
+  panel ("Advise — proposes, you apply", a sentence per level, "Inherits
+  Advise from the project", what Run asks); the Director's words are its own
+  panel's (`DIRECTOR_AUTONOMY`).
 
 ## 6. Node status (`lib/status.ts`)
 
@@ -205,7 +222,12 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
 
 - **Page header**: title (18px, 600), optional status pill and subtitle,
   right-aligned actions: one primary, then secondary, then `⋯`. Every view
-  but a node's uses `PageHeader` (§5).
+  but a node's uses `PageHeader` (§5). A node's Start agent is a split
+  button: one click starts the default; its chevron is **Start with…** (the
+  model list in a dialog, T423; ⌘K's "This node" has it too). The ⋯ menu has
+  no model choice of its own (Restart agent keeps the model). While the
+  daemon is away, Start, Stop and Merge are off and say "Reconnecting to the
+  daemon…".
 - **Lists** are rows (40px, hover background, click opens), not stacks of
   bordered cards. Cards are for things that need a decision.
 - **Decision cards** (`Card` in `Inbox.tsx`): a title line (kind icon, what it
@@ -235,7 +257,17 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   a hint of what sending will do ("Starts the agent", "Queued until the
   current step ends", "Answers the question"), and Send / Stop. A message to
   a node whose agent never ran or was stopped starts it (`say` with
-  `start: true`) — except a part waiting for its coordinator's plan. With a
+  `start: true`) — except a part waiting for its coordinator's plan.
+  T423: the chip names what the next message runs — the live agent's model
+  (a green dot), else the default here — and opens a popover (`ModelChip`,
+  never a dialog) with the one model list. A pick changes nothing until you
+  send, and the chip shows it in the accent: with no live agent the message
+  starts one with it (`say` with `start` and `session`); with a live agent on
+  another model it restarts the agent with it (Stop, then the same start) and
+  the message is its first prompt ("Restarts the agent with …, then sends
+  this."). A pick lasts one message: the chip then goes back to the default,
+  as its tooltip says. Where a line starts nothing (a bare project root, a
+  part waiting for its plan) the chip only names what runs. With a
   question open the composer answers it ("Answering the question above",
   the whole question in its tooltip); the question reads once, in its own
   chat line, and its card above the composer shows only its choices (T416;
@@ -244,6 +276,21 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   message wasn’t sent."), keeps the draft and offers Retry.
 - **Forms** in dialogs; labels above inputs; the submit button is the primary
   action and says what it does ("Create project", not "OK").
+- **Settings** controls save on change and say "Saved" in place (a model id
+  typed under Other… when you press Enter or leave the field; Esc puts it
+  back). T423: Agents names models ("Claude Opus 5.5") and what an unset
+  field inherits ("Inherits Claude Opus 5.5"; each card says from where),
+  never ids or `inherit (…)`, and has no Save buttons.
+- **Details panel** (T423): it shows the running model but never picks one
+  (the chip and Start with… do). On a coordinating node or a project root,
+  one **Autonomy** group: a labelled row per agent — Coordinator, and on a
+  root the project's Director — each level in words ("Advise — proposes, you
+  apply") with its sentence under it (the Director's are its own panel's
+  words), and "Inherits Advise from the project" on a node that follows its
+  project. A change saves at once, except one up to Run (the agent acts
+  without asking), which confirms first (`ConfirmDialog`). A root's
+  **Project** group (its repositories; its tracker: None, Jira or Linear)
+  has one Save, with Cancel, once something in it changed.
 - **Errors**: inline under the control that caused them, in words a user can
   act on. A refused action names the reason and, if there is one, the fix.
   T416: a refused merge reads "Couldn’t merge. <reason>." under the card's

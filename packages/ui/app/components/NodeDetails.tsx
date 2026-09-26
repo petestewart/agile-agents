@@ -2,11 +2,18 @@
  * T363: a node's details panel — everything on its page that is not the
  * conversation (design/cockpit-ui.md §3, principle 5). Sections, each shown
  * only where it applies: Delivery (a work node), Agent (its sessions),
- * Children, Waits on, Tracker, Coordinator autonomy, Project (on a project
- * root), Findings, About.
+ * Children, Waits on, Tracker, Autonomy (the coordinator's; on a project
+ * root the Director's too), Project (a root's repositories and tracker),
+ * Findings, About.
  */
 
-import type { Autonomy, SessionRef, Stream, StreamFinding } from '@agile-agents/shared';
+import type {
+  Autonomy,
+  SessionRef,
+  Stream,
+  StreamFinding,
+  TrackerSettings,
+} from '@agile-agents/shared';
 import { type PropsWithChildren, type ReactNode, useEffect, useRef, useState } from 'react';
 import {
   createNodeIssue,
@@ -18,6 +25,15 @@ import {
   updateProject,
   waitOnStream,
 } from '../lib/api';
+import {
+  AUTONOMY_LEVELS,
+  type AutonomyWho,
+  autonomyOption,
+  autonomyWords,
+  confirmsRun,
+  inheritsOption,
+  runConfirm,
+} from '../lib/autonomy';
 import { agentLabel, sessionIdText, sessionRoleWord, sessionStatusWord } from '../lib/chat';
 import { useOptionalFeed } from '../lib/feed-context';
 import type {
@@ -32,7 +48,7 @@ import { ROLE_HINT, ROLE_LABEL } from '../lib/status';
 import { childEntries, isLiveSession, sessionRows, worktreeName } from '../lib/streams';
 import { Icon } from './Icon';
 import { Linked } from './Markdown';
-import { Button, IconButton, RepoIcon, StatusPill, useCopy } from './ui';
+import { Button, ConfirmDialog, IconButton, RepoIcon, StatusPill, useCopy } from './ui';
 
 type Act = (fn: () => Promise<unknown>) => Promise<void> | void;
 
@@ -454,18 +470,68 @@ export function TrackerSection({
 
 // ---------------------------------------------------------------- Autonomy
 
-const AUTONOMY_LEVELS = ['advise', 'organise', 'run'] as const;
-
-const AUTONOMY_HINT: Record<Autonomy, string> = {
-  advise: 'Proposes changes; you apply them.',
-  organise: 'Reorganises the parts itself; asks before starting work.',
-  run: 'Starts and steers the parts on its own.',
-};
+/** One labelled picker in the Autonomy group, with the chosen level's sentence under it. */
+function AutonomyRow({
+  who,
+  label,
+  value,
+  level,
+  inherited,
+  busy,
+  testid,
+  selectTestid,
+  onChange,
+}: {
+  who: AutonomyWho;
+  label: string;
+  /** The select's value: a level, or `inherit` (a coordinating node following its project). */
+  value: Autonomy | 'inherit';
+  /** The level in force. */
+  level: Autonomy;
+  /** The project's level, for "Inherits Advise from the project"; absent where it can't inherit. */
+  inherited?: Autonomy;
+  busy: boolean;
+  testid: string;
+  selectTestid: string;
+  onChange: (next: Autonomy | 'inherit') => void;
+}): JSX.Element {
+  const id = `${testid}-select`;
+  return (
+    <div className="cr-autonomy-row" data-testid={testid}>
+      <label className="cr-autonomy-label" htmlFor={id}>
+        {label}
+      </label>
+      <div className="cr-autonomy-control">
+        <select
+          id={id}
+          data-testid={selectTestid}
+          value={value}
+          disabled={busy}
+          onChange={(e) => onChange(e.target.value as Autonomy | 'inherit')}
+        >
+          {inherited !== undefined && <option value="inherit">{inheritsOption(inherited)}</option>}
+          {AUTONOMY_LEVELS.map((l) => (
+            <option key={l} value={l}>
+              {autonomyOption(who, l)}
+            </option>
+          ))}
+        </select>
+        <span className="cr-field-hint" data-testid={`${testid}-hint`}>
+          {autonomyWords(who)[level].hint}
+        </span>
+      </div>
+    </div>
+  );
+}
 
 /**
  * T282 (§9 Autonomy): how far this node's coordinator acts on its own. On
  * a project root it sets the project's level; elsewhere it overrides it.
  * T347 (D36 D6): only where a coordinator runs, a coordinating node or a root.
+ * T423 (audit finding 15): one Autonomy group — Coordinator, and on a root
+ * the project's Director (§12) — each level in words with its sentence. A
+ * change saves at once, but a change up to Run (the agent acts without
+ * asking) is confirmed first.
  */
 export function AutonomySection({
   stream,
@@ -480,38 +546,83 @@ export function AutonomySection({
   busy: boolean;
   act: Act;
 }): JSX.Element | null {
+  const [asking, setAsking] = useState<{ who: AutonomyWho; apply: () => void } | undefined>(
+    undefined,
+  );
   if (project === undefined) return null;
   const isRoot = project.root === stream.id;
   if (!isRoot && role !== 'coordinating') return null;
   const inherited = project.autonomy?.coordinator ?? 'advise';
-  const value = isRoot ? inherited : (stream.autonomy ?? 'inherit');
-  const level = (value === 'inherit' ? inherited : value) as Autonomy;
+  const coordinatorValue: Autonomy | 'inherit' = isRoot
+    ? inherited
+    : (stream.autonomy ?? 'inherit');
+  const coordinatorLevel = coordinatorValue === 'inherit' ? inherited : coordinatorValue;
+  const directorLevel = project.autonomy?.director ?? 'advise';
+  /** Saves at once, unless it raises the level to Run: that asks first. */
+  const change = (who: AutonomyWho, before: Autonomy, after: Autonomy, save: () => void): void => {
+    if (confirmsRun(before, after)) setAsking({ who, apply: save });
+    else save();
+  };
+  const confirm = asking ? runConfirm(asking.who, project.name) : undefined;
   return (
-    <DetailSection title="Coordinator">
-      <label className="cr-dsec-field" data-testid="autonomy">
-        <span className="cr-field-label">Coordinator autonomy</span>
-        <select
-          data-testid="autonomy-select"
-          value={value}
-          disabled={busy}
-          onChange={(e) => {
-            const next = e.target.value;
-            void act(() =>
-              isRoot
-                ? setProjectAutonomy(project.id, { coordinator: next as Autonomy })
-                : setNodeAutonomy(stream.id, next === 'inherit' ? null : (next as Autonomy)),
+    <DetailSection title="Autonomy" testid="autonomy-group">
+      <AutonomyRow
+        who="coordinator"
+        label="Coordinator"
+        value={coordinatorValue}
+        level={coordinatorLevel}
+        {...(isRoot ? {} : { inherited })}
+        busy={busy}
+        testid="autonomy"
+        selectTestid="autonomy-select"
+        onChange={(next) => {
+          const after = next === 'inherit' ? inherited : next;
+          change(
+            'coordinator',
+            coordinatorLevel,
+            after,
+            () =>
+              void act(() =>
+                isRoot
+                  ? setProjectAutonomy(project.id, { coordinator: after })
+                  : setNodeAutonomy(stream.id, next === 'inherit' ? null : next),
+              ),
+          );
+        }}
+      />
+      {isRoot && (
+        <AutonomyRow
+          who="director"
+          label="Director"
+          value={directorLevel}
+          level={directorLevel}
+          busy={busy}
+          testid="director-autonomy"
+          selectTestid="director-autonomy-select"
+          onChange={(next) => {
+            if (next === 'inherit') return;
+            change(
+              'director',
+              directorLevel,
+              next,
+              () => void act(() => setProjectAutonomy(project.id, { director: next })),
             );
           }}
-        >
-          {!isRoot && <option value="inherit">inherit ({inherited})</option>}
-          {AUTONOMY_LEVELS.map((l) => (
-            <option key={l} value={l}>
-              {l}
-            </option>
-          ))}
-        </select>
-        <span className="cr-field-hint">{AUTONOMY_HINT[level]}</span>
-      </label>
+        />
+      )}
+      <ConfirmDialog
+        open={confirm !== undefined}
+        title={confirm?.title ?? ''}
+        confirmLabel={confirm?.confirm ?? 'Set to Run'}
+        testid="autonomy-run-confirm"
+        onCancel={() => setAsking(undefined)}
+        onConfirm={() => {
+          asking?.apply();
+          setAsking(undefined);
+        }}
+      >
+        <p className="cr-confirm-text">{confirm?.body}</p>
+      </ConfirmDialog>
     </DetailSection>
   );
 }
@@ -521,22 +632,20 @@ export function AutonomySection({
 /**
  * T377: the project's repositories, editable in place (T372's route): every
  * registered repo with its icon, ticked when the project uses it. New nodes
- * offer the project's repos first.
+ * offer the project's repos first. T423: part of the Project group's one Save.
  */
 function ProjectRepos({
-  project,
   current,
+  chosen,
+  setChosen,
   busy,
-  act,
 }: {
-  project: CockpitProjectRow;
   current: readonly string[];
+  chosen: readonly string[];
+  setChosen: (next: string[]) => void;
   busy: boolean;
-  act: Act;
 }): JSX.Element {
   const all = useOptionalFeed()?.cockpit?.repos ?? [];
-  const [chosen, setChosen] = useState<string[]>([...current]);
-  const dirty = chosen.length !== current.length || chosen.some((name) => !current.includes(name));
   const names = [...new Set([...all.map((r) => r.name), ...current])].sort((a, b) =>
     a.localeCompare(b),
   );
@@ -558,8 +667,8 @@ function ProjectRepos({
                   checked={on}
                   disabled={busy}
                   onChange={(e) =>
-                    setChosen((prev) =>
-                      e.target.checked ? [...prev, name] : prev.filter((x) => x !== name),
+                    setChosen(
+                      e.target.checked ? [...chosen, name] : chosen.filter((x) => x !== name),
                     )
                   }
                 />
@@ -568,22 +677,6 @@ function ProjectRepos({
               </label>
             );
           })}
-        </div>
-      )}
-      {dirty && (
-        <div className="cr-dsec-actions">
-          <Button
-            size="sm"
-            variant="primary"
-            data-testid="project-repos-save"
-            busy={busy}
-            onClick={() => void act(() => updateProject(project.id, { repos: chosen }))}
-          >
-            Save repositories
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setChosen([...current])}>
-            Cancel
-          </Button>
         </div>
       )}
     </div>
@@ -597,10 +690,38 @@ const STATUS_MAP_FIELDS: ReadonlyArray<{ key: StatusMapKey; label: string }> = [
   { key: 'done', label: 'Done' },
 ];
 
+interface TrackerDraft {
+  system: '' | 'jira' | 'linear';
+  push: boolean;
+  map: Record<StatusMapKey, string>;
+}
+
+function trackerDraft(tracker: TrackerSettings | undefined): TrackerDraft {
+  return {
+    system: tracker?.system ?? '',
+    push: tracker?.push_status ?? false,
+    map: {
+      in_progress: tracker?.status_map?.in_progress ?? '',
+      in_review: tracker?.status_map?.in_review ?? '',
+      done: tracker?.status_map?.done ?? '',
+    },
+  };
+}
+
+function sameTracker(a: TrackerDraft, b: TrackerDraft): boolean {
+  if (a.system !== b.system) return false;
+  if (a.system === '') return true;
+  return (
+    a.push === b.push && STATUS_MAP_FIELDS.every((f) => a.map[f.key].trim() === b.map[f.key].trim())
+  );
+}
+
 /**
- * T338: a project's own controls, on its root node's page: the Director's
- * autonomy level (§12) and the tracker block (§10: system, push status,
- * status map). Credentials stay in Settings → Trackers.
+ * T338: a project's own controls, on its root node's page: its
+ * repositories and the tracker block (§10: system, push status, status
+ * map). Credentials stay in Settings → Trackers. T423: one Save for the
+ * group (with Cancel), shown once something in it changed; the autonomy
+ * levels are the Autonomy group's.
  */
 export function ProjectSection({
   project,
@@ -611,111 +732,132 @@ export function ProjectSection({
   busy: boolean;
   act: Act;
 }): JSX.Element {
+  // A fresh form whenever the saved project changes (a save, or a change made elsewhere).
+  const key = `${(project.repos ?? []).join(',')}|${JSON.stringify(project.tracker ?? null)}`;
+  return <ProjectForm key={key} project={project} busy={busy} act={act} />;
+}
+
+function ProjectForm({
+  project,
+  busy,
+  act,
+}: {
+  project: CockpitProjectRow;
+  busy: boolean;
+  act: Act;
+}): JSX.Element {
   const tracker = project.tracker;
-  const [system, setSystem] = useState<'' | 'jira' | 'linear'>(tracker?.system ?? '');
-  const [push, setPush] = useState(tracker?.push_status ?? false);
-  const [map, setMap] = useState<Record<StatusMapKey, string>>({
-    in_progress: tracker?.status_map?.in_progress ?? '',
-    in_review: tracker?.status_map?.in_review ?? '',
-    done: tracker?.status_map?.done ?? '',
-  });
+  const current = project.repos;
+  const saved = trackerDraft(tracker);
+  const [repos, setRepos] = useState<string[]>([...(current ?? [])]);
+  const [draft, setDraft] = useState<TrackerDraft>(saved);
+  const reposDirty =
+    current !== undefined &&
+    (repos.length !== current.length || repos.some((name) => !current.includes(name)));
+  const trackerDirty = !sameTracker(draft, saved);
+  const dirty = reposDirty || trackerDirty;
   function save(): void {
-    if (system === '') {
-      void act(() => setProjectTracker(project.id, null));
-      return;
-    }
-    const statusMap = Object.fromEntries(
-      STATUS_MAP_FIELDS.map((f) => [f.key, map[f.key].trim()]).filter(([, v]) => v !== ''),
-    );
-    void act(() =>
-      setProjectTracker(project.id, {
-        system,
+    if (!dirty) return;
+    void act(async () => {
+      if (reposDirty) await updateProject(project.id, { repos });
+      if (!trackerDirty) return;
+      if (draft.system === '') {
+        await setProjectTracker(project.id, null);
+        return;
+      }
+      const statusMap = Object.fromEntries(
+        STATUS_MAP_FIELDS.map((f) => [f.key, draft.map[f.key].trim()]).filter(([, v]) => v !== ''),
+      );
+      await setProjectTracker(project.id, {
+        system: draft.system,
         ...(tracker?.base_url !== undefined ? { base_url: tracker.base_url } : {}),
-        push_status: push,
+        push_status: draft.push,
         ...(Object.keys(statusMap).length > 0 ? { status_map: statusMap } : {}),
-      }),
-    );
+      });
+    });
   }
   return (
     <DetailSection title="Project" testid="project-controls" className="cr-project-controls">
-      <label className="cr-dsec-field">
-        <span className="cr-field-label">Director autonomy</span>
-        <select
-          data-testid="director-autonomy-select"
-          value={project.autonomy?.director ?? 'advise'}
-          disabled={busy}
-          onChange={(e) =>
-            void act(() => setProjectAutonomy(project.id, { director: e.target.value as Autonomy }))
-          }
-        >
-          {AUTONOMY_LEVELS.map((l) => (
-            <option key={l} value={l}>
-              {l}
-            </option>
-          ))}
-        </select>
-      </label>
-      {project.repos !== undefined && (
-        <ProjectRepos
-          key={project.repos.join(',')}
-          project={project}
-          current={project.repos}
-          busy={busy}
-          act={act}
-        />
-      )}
       <form
         className="cr-dsec-form"
-        data-testid="project-tracker-form"
+        data-testid="project-form"
         onSubmit={(e) => {
           e.preventDefault();
           save();
         }}
       >
-        <label className="cr-dsec-field">
-          <span className="cr-field-label">Tracker</span>
-          <select
-            data-testid="project-tracker-system"
-            value={system}
-            disabled={busy}
-            onChange={(e) => setSystem(e.target.value as '' | 'jira' | 'linear')}
-          >
-            <option value="">none</option>
-            <option value="jira">Jira</option>
-            <option value="linear">Linear</option>
-          </select>
-        </label>
-        {system !== '' && (
-          <>
-            <label className="cr-dsec-check">
-              <input
-                type="checkbox"
-                data-testid="project-tracker-push"
-                checked={push}
-                disabled={busy}
-                onChange={(e) => setPush(e.target.checked)}
-              />
-              Push status to the tracker
-            </label>
-            {STATUS_MAP_FIELDS.map((f) => (
-              <label key={f.key} className="cr-dsec-field">
-                <span className="cr-field-label">{f.label}</span>
-                <input
-                  data-testid={`project-tracker-map-${f.key}`}
-                  value={map[f.key]}
-                  placeholder="tracker status"
-                  disabled={busy}
-                  onChange={(e) => setMap((m) => ({ ...m, [f.key]: e.target.value }))}
-                />
-              </label>
-            ))}
-          </>
+        {current !== undefined && (
+          <ProjectRepos current={current} chosen={repos} setChosen={setRepos} busy={busy} />
         )}
-        <div className="cr-dsec-actions">
-          <Button type="submit" size="sm" data-testid="project-tracker-save" disabled={busy}>
-            Save tracker
-          </Button>
+        <div className="cr-dsec-form" data-testid="project-tracker-form">
+          <label className="cr-dsec-field">
+            <span className="cr-field-label">Tracker</span>
+            <select
+              data-testid="project-tracker-system"
+              value={draft.system}
+              disabled={busy}
+              onChange={(e) =>
+                setDraft({ ...draft, system: e.target.value as TrackerDraft['system'] })
+              }
+            >
+              <option value="">None</option>
+              <option value="jira">Jira</option>
+              <option value="linear">Linear</option>
+            </select>
+          </label>
+          {draft.system !== '' && (
+            <>
+              <label className="cr-dsec-check">
+                <input
+                  type="checkbox"
+                  data-testid="project-tracker-push"
+                  checked={draft.push}
+                  disabled={busy}
+                  onChange={(e) => setDraft({ ...draft, push: e.target.checked })}
+                />
+                Push status to the tracker
+              </label>
+              {STATUS_MAP_FIELDS.map((f) => (
+                <label key={f.key} className="cr-dsec-field">
+                  <span className="cr-field-label">{f.label}</span>
+                  <input
+                    data-testid={`project-tracker-map-${f.key}`}
+                    value={draft.map[f.key]}
+                    placeholder="Its status in the tracker"
+                    disabled={busy}
+                    onChange={(e) =>
+                      setDraft({ ...draft, map: { ...draft.map, [f.key]: e.target.value } })
+                    }
+                  />
+                </label>
+              ))}
+            </>
+          )}
         </div>
+        {dirty && (
+          <div className="cr-dsec-actions" data-testid="project-save-bar">
+            <Button
+              type="submit"
+              size="sm"
+              variant="primary"
+              data-testid="project-save"
+              busy={busy}
+            >
+              Save changes
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              data-testid="project-cancel"
+              onClick={() => {
+                setRepos([...(current ?? [])]);
+                setDraft(saved);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        )}
       </form>
     </DetailSection>
   );
@@ -920,13 +1062,17 @@ export function AboutSection({
 
 // ---------------------------------------------------------------- the agent section
 
+/**
+ * The node's agent: what runs (or what a start runs), its sessions, and Ask
+ * an agent to review…. T423: the model is picked in one place, the
+ * composer's chip (and the header's Start with…); this only shows it.
+ */
 export function AgentSection({
   stream,
   live,
   startWith,
   busy,
   onReview,
-  onChooseModel,
   canReview,
 }: {
   stream: Stream;
@@ -936,7 +1082,6 @@ export function AgentSection({
   startWith?: string;
   busy: boolean;
   onReview?: () => void;
-  onChooseModel?: () => void;
   canReview: boolean;
 }): JSX.Element {
   return (
@@ -951,30 +1096,17 @@ export function AgentSection({
       <div data-testid="sessions" className="cr-sessions-box">
         <SessionList key={stream.id} sessions={stream.sessions} />
       </div>
-      {(onReview || onChooseModel) && (
+      {onReview && (
         <div className="cr-dsec-actions">
-          {onReview && (
-            <Button
-              size="sm"
-              variant="ghost"
-              icon="eye"
-              disabled={busy || !canReview}
-              onClick={onReview}
-            >
-              Ask an agent to review…
-            </Button>
-          )}
-          {onChooseModel && (
-            <Button
-              size="sm"
-              variant="ghost"
-              icon="sliders"
-              disabled={busy}
-              onClick={onChooseModel}
-            >
-              {live ? 'Restart with…' : 'Choose model…'}
-            </Button>
-          )}
+          <Button
+            size="sm"
+            variant="ghost"
+            icon="eye"
+            disabled={busy || !canReview}
+            onClick={onReview}
+          >
+            Ask an agent to review…
+          </Button>
         </div>
       )}
     </DetailSection>

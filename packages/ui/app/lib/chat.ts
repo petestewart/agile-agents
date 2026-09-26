@@ -499,7 +499,8 @@ export function answerTarget(
 
 // ---------------------------------------------------------------- what Send does
 
-export type SendAction = 'answer' | 'say' | 'start' | 'none';
+/** T423: `restart` stops the live agent and starts it again with the chip's pick, the line its first prompt. */
+export type SendAction = 'answer' | 'say' | 'start' | 'restart' | 'none';
 
 export interface SendIntentInput {
   /** Not merged or closed. */
@@ -519,6 +520,8 @@ export interface SendIntentInput {
   stopped?: boolean;
   /** What a start runs: "Claude Opus 5.5 · low". */
   startWith?: string;
+  /** T423: the model chip picked another model than the live agent's: Send restarts it with this. */
+  restartWith?: string;
 }
 
 export interface SendIntent {
@@ -545,6 +548,15 @@ export function sendIntent(input: SendIntentInput): SendIntent {
   }
   if (input.live) {
     const { name, working } = input.live;
+    if (input.restartWith !== undefined) {
+      return {
+        action: 'restart',
+        hint: working
+          ? `Stops ${name}’s current step, restarts the agent with ${input.restartWith}, then sends this.`
+          : `Restarts the agent with ${input.restartWith}, then sends this.`,
+        placeholder: `Message ${name}…`,
+      };
+    }
     return working
       ? {
           action: 'say',
