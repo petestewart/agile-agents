@@ -5,7 +5,15 @@ import {
   type RoutedEventType,
   type Stream,
 } from '@agile-agents/shared';
-import { WakeBudget, stoppedByHuman, wakeVerdict, wakesRole } from './wake';
+import {
+  KNOWLEDGE_WAKE_FANOUT,
+  WakeBudget,
+  WakeFanout,
+  fanoutTriggers,
+  stoppedByHuman,
+  wakeVerdict,
+  wakesRole,
+} from './wake';
 
 const WORK: RoutedEventType[] = [
   'human_line',
@@ -18,7 +26,8 @@ const WORK: RoutedEventType[] = [
   'contract_changed',
   'coordinator_note',
 ];
-const CONVERSATION: RoutedEventType[] = ['human_line', 'answer'];
+// D36 D10 (T351): an accepted knowledge item wakes a conversation too.
+const CONVERSATION: RoutedEventType[] = ['human_line', 'answer', 'knowledge_accepted'];
 
 describe('wakesRole (P11 table)', () => {
   const expected: Record<NodeRole, (t: RoutedEventType) => boolean> = {
@@ -111,5 +120,29 @@ describe('WakeBudget', () => {
     t = 3_600_000;
     expect(budget.take('A', 20)).toBe(true);
     expect(budget.take('A', 20)).toBe(false);
+  });
+});
+
+describe('T351: accepted knowledge wakes a conversation, capped per item', () => {
+  test('a finished conversation wakes on knowledge_accepted, a stopped one does not', () => {
+    expect(wakeVerdict(node(), 'conversation', [{ type: 'knowledge_accepted' }])).toBe('wake');
+    const detached = node({ agent: { status: 'idle' } } as Partial<Stream>);
+    expect(wakeVerdict(detached, 'conversation', [{ type: 'knowledge_accepted' }])).toBe('stopped');
+    // A work node still waits for its next turn (P11 unchanged there).
+    expect(wakeVerdict(node(), 'work', [{ type: 'knowledge_accepted' }])).toBe('no_trigger');
+  });
+  test('only a knowledge-only conversation wake counts against the fan-out', () => {
+    const k = { id: 'E-1', type: 'knowledge_accepted' as const };
+    const line = { id: 'E-2', type: 'human_line' as const };
+    expect(fanoutTriggers('conversation', [k])).toEqual([k]);
+    expect(fanoutTriggers('conversation', [k, line])).toEqual([]);
+    expect(fanoutTriggers('coordinating', [k])).toEqual([]);
+  });
+  test(`one item wakes at most ${KNOWLEDGE_WAKE_FANOUT} conversations`, () => {
+    const fanout = new WakeFanout();
+    for (let i = 0; i < KNOWLEDGE_WAKE_FANOUT; i++) expect(fanout.take([{ id: 'E-1' }])).toBe(true);
+    expect(fanout.take([{ id: 'E-1' }])).toBe(false);
+    // A node with a second, unspent item pending is woken for that one.
+    expect(fanout.take([{ id: 'E-1' }, { id: 'E-2' }])).toBe(true);
   });
 });

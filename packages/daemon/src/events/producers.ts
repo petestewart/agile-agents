@@ -323,6 +323,9 @@ export function summarize(
       if (event.by === 'daemon') return String(p.body);
       // T336: quoted, so the agent reads it as the note, not as an operator instruction.
       return `Your coordinator says: "${String(p.body)}"`;
+    case 'knowledge_accepted':
+      // §15's line (T351): the woken or live session is told the item itself.
+      return `New ${String(p.kind)} in scope: ${String(p.text)} (${String(p.enforcement)}).`;
     case 'contract_changed':
       return `Contract ${String(p.title)} is now v${String(p.version)}: ${String(p.diff)}. Adjust your side.`;
     case 'contract_proposal':

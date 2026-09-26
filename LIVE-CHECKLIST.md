@@ -733,12 +733,10 @@ cd ~
       `Amounts in exported JSON are integer cents, never floats`,
       Enforcement `tell`, Kind `decision`, **Propose rule**. Then **Accept** it
       (on its card, or on the `decision proposed` card in **Needs me**).
-- [ ] Back on Cents check: its **Activity** tab has a
-      `knowledge accepted · … · pending` row. A conversation with no live
-      session wakes only on a line from you or an answer, so the decision
-      waits for its next session.
-- [ ] On its **Thread** tab type `Anything new in scope?` and press **Send**.
-      The agent wakes with the decision: the Activity row now reads
+- [ ] Back on Cents check: accepting the decision woke it (a Shop
+      conversation whose turn ended is woken by an accepted item, D36). Its
+      **Thread** tab has `woken by knowledge accepted` and a new session;
+      its **Activity** row reads
       `knowledge accepted · … · delivered to the worker session`, and its
       reply reacts to it ("new decision in scope: …"). A Blog node never
       gets it.

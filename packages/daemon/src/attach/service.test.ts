@@ -32,9 +32,11 @@ import {
   type Stream,
 } from '@agile-agents/shared';
 import { DeliveryService } from '../delivery/service';
+import { makeEmitter } from '../events/producers';
 import { RoutedEventService } from '../events/service';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
+import { KnowledgeService } from '../knowledge/service';
 import { EMPTY_TREE_SHA } from '../permissions/git-env';
 import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
@@ -1423,6 +1425,100 @@ describe('T243: the wake policy (P11)', () => {
     const read = reader.readEvent({ session: woken, id: event });
     expect(read.id).toBe(event);
     expect(read.summary).toContain('use the ledger CSV format');
+  }, 30_000);
+});
+
+describe('T351: accepting a decision wakes the conversation (D36 D10)', () => {
+  const prompts = (log: string) =>
+    (existsSync(log) ? readFileSync(log, 'utf8') : '')
+      .split('\n')
+      .filter((l) => l.includes('"session/prompt"'));
+  const TEXT = 'Amounts in exported JSON are integer cents, never floats';
+
+  /** Attach + knowledge wired as `daemon.ts` wires them: one routed event service. */
+  async function setUp(script: FakeAgentScript) {
+    const events = new RoutedEventService(store);
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, script), {
+      deliveryDelayMs: 5,
+      events,
+    });
+    const knowledge = new KnowledgeService({
+      store,
+      streams,
+      statsFlushMs: 0,
+      emitRouted: makeEmitter(events, streams),
+    });
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Cents check',
+      goal: 'g',
+      project: project.id,
+    });
+    const accept = async () => {
+      const item = await knowledge.create('human', {
+        text: TEXT,
+        kind: 'decision',
+        enforcement: 'tell',
+        scope: { kind: 'project', project: project.id },
+      });
+      await knowledge.accept(item.id, 'human');
+    };
+    return { node, accept };
+  }
+
+  test('accept → the ended conversation is woken and the item delivered', async () => {
+    const log = join(scratch, 'k-wake.jsonl');
+    const { node, accept } = await setUp({ ...SPEAKS, logFile: log });
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    await waitFor(() => attachService.handleFor(node.id) === undefined);
+    await accept();
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
+    await waitFor(() => prompts(log).some((p) => p.includes('integer cents')));
+    expect(threadBodies(node.id)).toContain('woken by knowledge accepted');
+    const woken = streams.get(node.id).sessions.at(-1)?.id;
+    expect(store.readDeliveries(node.id).at(-1)?.session).toBe(woken);
+  }, 30_000);
+
+  test('a conversation the human stopped is not woken; the item stays pending', async () => {
+    const { node, accept } = await setUp(SPEAKS_THEN_HANGS);
+    await attachService.stop(node.id, 'worker', { detach: true });
+    expect(streams.get(node.id).agent.status).toBe('idle');
+    await accept();
+    await Bun.sleep(200);
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+  }, 30_000);
+
+  test('a live conversation gets the item once, in a digest, with no second session', async () => {
+    const log = join(scratch, 'k-live.jsonl');
+    const sentinel = join(scratch, 'k-live.flag');
+    const { node, accept } = await setUp({
+      logFile: log,
+      steps: [{ type: 'agent_text', text: 'noted' }, { type: 'end_turn' }],
+      turns: [
+        [
+          { type: 'agent_text', text: 'reading ledger-lite' },
+          { type: 'tool_call', toolCallId: 'read-k', title: 'read' },
+          { type: 'wait_for_file', path: sentinel },
+          { type: 'end_turn' },
+        ],
+      ],
+    });
+    await waitFor(() => threadBodies(node.id).some((b) => b.includes('reading ledger-lite')));
+    await accept();
+    await Bun.sleep(100);
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+    writeFileSync(sentinel, '');
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    await waitFor(() => attachService.handleFor(node.id) === undefined);
+    await Bun.sleep(100);
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    const withItem = prompts(log).filter((p) => p.includes('integer cents'));
+    expect(withItem).toHaveLength(1);
+    const statuses = store.readDeliveries(node.id).map((d) => d.status);
+    expect(statuses).toEqual(['pending', 'delivered']);
+    expect(threadBodies(node.id)).not.toContain('woken by knowledge accepted');
   }, 30_000);
 });
 

@@ -53,6 +53,8 @@ import {
   DAEMON_STOP_PREFIX,
   DEFAULT_WAKE_BUDGET_PER_HOUR,
   WakeBudget,
+  WakeFanout,
+  fanoutTriggers,
   wakeVerdict,
 } from '../events/wake';
 import { settingsFileName } from '../hook/settings';
@@ -272,6 +274,8 @@ export class AttachService {
 
   /** T243 (P11): wakes per node in the last hour, and wakes being started now. */
   private readonly wakeBudget: WakeBudget;
+  /** T351: conversations woken per accepted knowledge item (D36 D10). */
+  private readonly wakeFanout = new WakeFanout();
   private readonly waking = new Set<string>();
   /** Nodes already sent to the inbox for a spent budget (one thread line per episode). */
   private readonly overBudget = new Set<string>();
@@ -339,6 +343,9 @@ export class AttachService {
     const all = streams.list();
     const role = nodeRole(stream, liveChildrenOf(stream.id, all), all);
     if (wakeVerdict(stream, role, pending) !== 'wake') return;
+    // T351: an item past its fan-out waits for this conversation's next turn.
+    const fanout = fanoutTriggers(role, pending);
+    if (fanout.length > 0 && !this.wakeFanout.take(fanout)) return;
     const limit =
       readHomeConfigFile(this.options.home).events?.wake_budget_per_hour ??
       DEFAULT_WAKE_BUDGET_PER_HOUR;
