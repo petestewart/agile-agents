@@ -551,26 +551,32 @@ function SessionDefaultsCard({
   save: (patch: SessionDefaultsPatch) => Promise<void>;
 }): JSX.Element {
   const [value, setValue] = useState<SessionChoice>(() => toChoice(fields));
-  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(0);
   const [error, setError] = useState<string | undefined>();
   const { saved, markSaved, clear } = useSavedFlash();
-  // What the card last saved (or read): a change is saved against it, and a refusal goes back to it.
+  // What the card last saved (or read), what it last asked to save, and the saves in order:
+  // quick changes save one after another (the controls stay usable), and a refusal goes back.
   const stored = useRef<SessionChoice>(toChoice(fields));
+  const asked = useRef<SessionChoice>(toChoice(fields));
+  const queue = useRef<Promise<void>>(Promise.resolve());
   const commit = (next: SessionChoice): void => {
-    if (sameChoice(next, stored.current)) return;
-    const before = stored.current;
-    stored.current = next;
-    setBusy(true);
+    if (sameChoice(next, asked.current)) return;
+    asked.current = next;
+    setSaving((n) => n + 1);
     setError(undefined);
     clear();
-    save(toPatch(next))
-      .then(markSaved)
+    queue.current = queue.current
+      .then(() => save(toPatch(next)))
+      .then(() => {
+        stored.current = next;
+        markSaved();
+      })
       .catch((err: unknown) => {
-        stored.current = before;
-        setValue(before);
+        asked.current = stored.current;
+        setValue(stored.current);
         setError(errorText(err));
       })
-      .finally(() => setBusy(false));
+      .finally(() => setSaving((n) => n - 1));
   };
 
   return (
@@ -606,10 +612,9 @@ function SessionDefaultsCard({
           onCommit={commit}
           inherit={inherit}
           testid={`${testid}-field`}
-          disabled={busy}
         />
         <div className="cr-set-sf-save" data-testid={`${testid}-state`}>
-          {busy ? (
+          {saving > 0 ? (
             <span className="cr-set-muted">
               <Spinner size={12} /> Saving
             </span>

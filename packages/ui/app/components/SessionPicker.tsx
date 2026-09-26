@@ -103,7 +103,7 @@ export function ModelChoice({
       ...(ref.model !== undefined && ref.model !== '' ? { model: ref.model } : {}),
       effort: value.effort,
     });
-  const useOther = (): void => {
+  const applyOther = (): void => {
     const model = other?.model.trim() ?? '';
     if (!other || model === '') return;
     choose({ vendor: other.vendor, model });
@@ -201,7 +201,7 @@ export function ModelChoice({
                 if (e.key === 'Enter') {
                   e.preventDefault();
                   e.stopPropagation();
-                  useOther();
+                  applyOther();
                 }
               }}
             />
@@ -209,7 +209,7 @@ export function ModelChoice({
               size="sm"
               data-testid="model-other-use"
               disabled={other.model.trim() === ''}
-              onClick={useOther}
+              onClick={applyOther}
             >
               Use
             </Button>
@@ -500,7 +500,6 @@ export function SessionFields({
   onCommit,
   inherit,
   testid,
-  disabled = false,
 }: {
   status: SessionDefaultsStatus;
   value: SessionChoice;
@@ -509,7 +508,6 @@ export function SessionFields({
   /** Settings: what an empty field falls through to, named in its option ("Inherits Claude"). */
   inherit?: ResolvedSessionDefaults;
   testid: string;
-  disabled?: boolean;
 }): JSX.Element {
   const vendor = value.vendor || inherit?.vendor || status.builtin.vendor;
   const [typing, setTyping] = useState(false);
@@ -545,7 +543,6 @@ export function SessionFields({
         className="cr-sf-vendor"
         aria-label="Agent"
         data-testid={`${testid}-vendor`}
-        disabled={disabled}
         value={value.vendor}
         onChange={(e) => {
           const next = e.target.value;
@@ -568,7 +565,6 @@ export function SessionFields({
         <select
           aria-label="Model"
           data-testid={`${testid}-model`}
-          disabled={disabled}
           value={shown}
           title={
             value.model.trim() !== '' ? sessionIdText({ vendor, model: value.model }) : undefined
@@ -597,7 +593,6 @@ export function SessionFields({
             placeholder="model id"
             // biome-ignore lint/a11y/noAutofocus: the user just picked Other… to type one.
             autoFocus
-            disabled={disabled}
             value={value.model}
             onChange={(e) => change({ ...value, model: e.target.value }, false)}
             onBlur={() => {
@@ -622,7 +617,7 @@ export function SessionFields({
         className="cr-sf-effort"
         aria-label="Effort"
         data-testid={`${testid}-effort`}
-        disabled={disabled || noEffort !== undefined}
+        disabled={noEffort !== undefined}
         {...(noEffort !== undefined ? { title: noEffort } : {})}
         value={value.effort}
         onChange={(e) => change({ ...value, effort: e.target.value })}
