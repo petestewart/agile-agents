@@ -260,6 +260,10 @@ describe('the header', () => {
     expect(
       headerActions({ ...base, liveAgent: true, anyLive: true, mergeable: true, landReady: true }),
     ).toEqual({ agent: 'stop', merge: true, primary: 'merge' });
+    expect(headerActions({ ...base, startIsNext: false })).toEqual({
+      agent: 'start',
+      merge: false,
+    });
     expect(headerActions({ ...base, canStart: false })).toEqual({ merge: false });
     expect(headerActions({ ...base, open: false })).toEqual({ merge: false });
   });

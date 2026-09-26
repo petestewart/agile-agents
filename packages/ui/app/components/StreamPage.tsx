@@ -427,6 +427,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     liveAgent: liveAgent !== undefined,
     anyLive: live.length > 0,
     canStart: !waitingForPlan,
+    startIsNext: !hasRun || row?.stopped === true,
     mergeable,
     landReady: page.land?.ready === true,
   });

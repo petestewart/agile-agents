@@ -389,8 +389,14 @@ export interface HeaderActionsInput {
   liveAgent: boolean;
   /** Any session is live (a reviewer too): Stop has something to stop. */
   anyLive: boolean;
-  /** A node whose agent a start would run (not a bare project root). */
+  /** Start agent is offered (an open node, not a part waiting for its plan). */
   canStart: boolean;
+  /**
+   * Starting is the natural next step: its agent never ran, or you stopped
+   * it. After a finished turn it stays a plain button (the next step is to
+   * read, reply or merge).
+   */
+  startIsNext?: boolean;
   /** Merge has something to merge: commits ahead, a conflict to redo, or a result on show. */
   mergeable: boolean;
   /** The preflight says a merge would go through. */
@@ -410,13 +416,11 @@ export function headerActions(input: HeaderActionsInput): HeaderActions {
   const agent = input.anyLive ? 'stop' : input.canStart ? 'start' : undefined;
   const merge = input.mergeable;
   const primary =
-    merge && input.landReady && !input.liveAgent
+    merge && input.landReady
       ? 'merge'
-      : agent === 'start'
+      : agent === 'start' && input.startIsNext !== false
         ? 'agent'
-        : merge && input.landReady
-          ? 'merge'
-          : undefined;
+        : undefined;
   return { ...(agent ? { agent } : {}), merge, ...(primary ? { primary } : {}) };
 }
 
