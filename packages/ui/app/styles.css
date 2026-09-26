@@ -8691,26 +8691,6 @@ div.cr-ov-ev:hover {
 .cr-lens-path .title {
   font-weight: 500;
 }
-.cr-lens-status {
-  flex: none;
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-}
-.cr-lens-status[data-tone="amber"] {
-  color: var(--amber-text);
-}
-.cr-lens-status[data-tone="blue"] {
-  color: var(--blue-text);
-}
-.cr-lens-status[data-tone="red"] {
-  color: var(--red-text);
-}
-.cr-lens-status[data-tone="green"] {
-  color: var(--green-text);
-}
-.cr-lens-status[data-tone="purple"] {
-  color: var(--purple-text);
-}
 .cr-lens-empty {
   margin: 2px 0 4px;
   padding: 0 10px;

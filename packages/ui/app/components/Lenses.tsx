@@ -85,7 +85,6 @@ import {
   RepoIcon,
   Segmented,
   Spinner,
-  StatusDot,
   StatusPill,
   repoKindLabel,
   useToast,
@@ -159,10 +158,10 @@ function NodeLine({
         onClick={() => select(row.id)}
         title={`${row.title} — ${status.label}`}
       >
-        <StatusDot row={row} status={status} />
         <NodePath row={row} rows={rows} />
-        <span className="cr-lens-status" data-tone={status.tone}>
-          {status.label}
+        {/* T424c: status reads as a pill here too, as in Dependencies and Running. */}
+        <span className="cr-lens-dep-state">
+          <StatusPill row={row} status={status} testid="repo-node-status" />
         </span>
       </button>
     </li>

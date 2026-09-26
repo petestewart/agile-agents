@@ -2589,6 +2589,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** control-room e2e "attach → question…", the T423 picker tests.
 - **Notes:** Branch T423b-picked-model-race.
 
+### Ticket: T424c The Repos lens reads status as pills
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T424's leftover: the Repos lens's live-node rows showed status as plain coloured text beside a dot, while Dependencies and Running use `StatusPill`.
+- **Acceptance Criteria:** A repo card's node rows: the path, then the node's `StatusPill` at the right; the old `.cr-lens-status` style is gone.
+- **Validation Steps:** control-room e2e "two api nodes in different projects…" (the pill), the lens tests.
+- **Notes:** Branch T424c-repos-lens-pills.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
