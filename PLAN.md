@@ -2627,6 +2627,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Q3. Whether `bus/` survives as the thread's transport or is deleted; decided in T120 by whichever is less code.
 - Q4. Whether repo docs live in `.agile-docs/` (tracked) or under the home (untracked). Plan says tracked so a repo carries its own guidance; Pete to confirm at T134. Superseded by D24: docs move to the home (T207).
 - Q5–Q24. The proposed decisions P1–P20 in `design/projects-design.md` §19 are open until Pete confirms each one as a D-entry. Tickets assume them. P17 (tracker tokens in `config.yaml`, a second credential exception) must be approved before T320.
+- Q25. D36 D10 (T351) wakes every finished conversation in an accepted item's scope, so one project-wide decision starts up to five vendor turns (audit r6 #9). T437 stopped those turns from reading as unread replies. Narrowing the wake to the conversation the item came from (its `source.node`) or a subtree scoped to it would save the turns; the rest would get the item on their next turn, as before D10. Pete to decide; the walkthrough's "Cents check" step assumes the wide wake.
 
 ## 10. Discovered Issues Log
 
