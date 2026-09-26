@@ -1990,11 +1990,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T365 ∥ Rail, projects and the new-node flow
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** Rail status per node (not started, working, needs you, ready, merged, blocked, closed) with a legend in the tooltip; projects as collapsible groups; New project with repos as a vertical checklist (repo icons) that lands on All projects with the project open; New node (title/goal, project, parent, repo picker, start now with the default model, on by default); project overview on the root; Delete (archive) with confirm and Undo, and an Archived list to restore; a refused drag says why.
 - **Acceptance Criteria:** e2e for each flow.
 - **Validation Steps:** `bun run test:e2e`.
+- **Notes:** Branch T365-rail-projects, merge 860ee518. Rows with status dot (not started: dashed ring, faded title), role icon, hover `+` and ⋯ (Open, New child node, Rename F2, Move to…, Copy id, Delete…; project rows: New node, Show only this project, Project settings), right-click menu; arrow-key tree navigation. Delete confirms, archives the subtree, Undo toast; Deleted (n) with Restore. A refused drag says why. The project `<select>` is replaced by a chip ("Only Shop ▾ ×"); nothing switches the filter by itself (Pete). Legend (?) for dots and icons. New project: vertical repo checklist with icons; lands on All projects with the root open. New node: goal first, title from it, project only when not implied, searchable parent, repo picker (none = Conversation), Start the agent now (on) with the model shown and Change. `POST /api/streams/:id/update {title?, goal?}`. testid changes: `new-stream-start` (checked = start), pickers `new-stream-parent|repo(-option|-search)`, `project-filter*`, `tree-menu-*`, `archived-*`. Branch e2e 55/55 ×2, walkthrough clean; merged tip (T364+T365+T366) control-room 57/57, walkthrough no findings. Open: project overview page (node-page area); project session defaults not in `/api/settings/session`, so New node's model line can differ; Popover stays open on Tab out.
 
 ### Ticket: T366 ∥ Knowledge, explained
 - **Priority:** P1
@@ -2007,11 +2008,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T367 ∥ Settings and the repo picker
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** Settings in sections (General, Agents, Repositories, Classifier, Trackers, Permissions); Add repository: a path with folder autocomplete and a browser, or a GitHub/SSH URL to clone (T362); every repo listed with its icon (local, GitHub over https or ssh, other remote); theme (system/light/dark).
 - **Acceptance Criteria:** e2e: add by browsing; add by URL against a local bare repo.
 - **Validation Steps:** `bun run test:e2e`.
+- **Notes:** Branch T367-settings-repos, merge 5ebbb1a2. Settings with a section nav (General: theme, daemon facts from `/health`; Agents; Repositories; Classifier; Trackers; Permissions), the section in the URL. Repositories: rows with `RepoIcon`, host · protocol, owner/name link, short path, main branch; Delivery/Visibility as segmented controls (private: projects by name), protected branches; saves inline. `AddRepoDialog` (portal): Local folder with autocomplete + folder browser (git repos marked, "inside a repo" and "already added" hints) and Clone from URL (live preview, destination, progress, readable git errors with SSH hint); a pasted URL switches mode. Branch control-room 53/53, walkthrough clean; after merge, settings/repo e2e 20/20. Open: `store.addRepo` silently replaces an existing name (`POST /api/repos`, `agile repo add`); `Dialog` renders in place so a Dialog inside a form nests forms; a `file` remote shows a globe; `n`/`/` fire while a dialog is open with focus off an input; Pull request offered for a local-only repo (daemon refuses it).
 
 ### Ticket: T368 Lenses, Events and the Director
 - **Priority:** P2
@@ -2037,6 +2039,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Scope:** Found by T364/T366: daemon-written text the cockpit displays leaks ids and old vocabulary. Inbox items ("worker finished — merge or close the stream", "3 proposed rules from migration"), delivery preflight/refusal reasons ("stream <id> has a live session (<id>)"), land-gate text with raw `stream/<id>-slug` branches, the default classifier question (markdown backticks, ".?", "action" for a ship check that reads a diff), guidance items flagged "never fired", built-ins named after their pattern kind. Say nodes by title and "node", keep ids only where a machine reads them. Update the tests and LIVE-CHECKLIST lines that quote the old strings.
 - **Acceptance Criteria:** Unit tests for each reworded string; e2e and walkthrough still green.
 - **Validation Steps:** `bun test packages/shared packages/daemon` (non-e2e); `bun run build && bun run test:walkthrough`.
+
+### Ticket: T372 The cockpit can rename a project and change its repos
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by T365: `POST /api/projects/:id` forwarded only autonomy and tracker, so a project's repos couldn't change after creation from the cockpit although `ProjectService.update` validates `name` and `repos`. Forward them; `updateProject()` in the cockpit API.
+- **Acceptance Criteria:** http test: rename, repos, unknown repo 400, cross-origin 403.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts`.
+- **Notes:** Branch T372-project-route, merged after T367. The UI to edit a project's repos rides the node page's project settings (T363) or a follow-up.
 
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
