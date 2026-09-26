@@ -6,10 +6,6 @@ deferred, or need a decision. Each names where it lives. Ticket them in
 
 ## P1 — wrong or confusing for the user
 
-- **Events stop at 200.** `/api/events` is capped (`ACTIVITY_MAX`,
-  `events/service.ts`); Events' "Show more" ends there and a repo card's
-  recent events filter that global list, so a quiet repo's older events can
-  fall outside it. Page the route (`before=`) instead.
 
 ## P2 — polish
 
@@ -30,6 +26,13 @@ deferred, or need a decision. Each names where it lives. Ticket them in
   the resolution's question first.
 
 ## P3 — cleanup, hardening, decisions
+
+- `GET /api/repos/:name/events` still caps at 200 unpaged, and `getRepoEvents`
+  (`lib/api.ts`) has no caller since T383: remove both or point them at
+  `/api/events?repo=`.
+- Live views refresh on the audit log's tailer; an event emitted without an
+  audit line shows only on the next push. The events service's `onEmitted`
+  could push the frame itself. (`http.ts`, the tailer)
 
 - **DNS rebinding on reads.** GET routes (`/api/snapshot`, `/api/cockpit`,
   `/api/repos`, …) have no loopback `Host` check (T362 added one for the

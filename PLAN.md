@@ -2108,11 +2108,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T383 ∥ Events pages through the whole log
 - **Priority:** P1
-- **Status:** In progress
+- **Status:** Done
 - **Owner:** worker
 - **Scope:** From T368: `/api/events` is capped at 200 (`ACTIVITY_MAX`), so Events' "Show more" ends there and a repo card's recent events filter that global list (a quiet repo's older events fall outside it).
 - **Acceptance Criteria:** `GET /api/events` takes a cursor (`before=<event id>`) and a limit, newest first; Events' "Show more" fetches the next page until the log ends and says so; a repo card asks for its own repo's events.
 - **Validation Steps:** `bun test packages/daemon/src/events packages/daemon/src/http.test.ts packages/ui`; the Events and Repos e2e; the whole control-room e2e and the walkthrough.
+- **Notes:** Branch T383-events-paging. `GET /api/events?before=&limit=&repo=` answers `{events, more, total}` (400 in words for a bad limit or an unknown cursor); Events loads 100 a page and says "That's everything." at the end; search and type filter the loaded pages and offer "Search older events"; repo cards fetch `repo=<name>&limit=5`. New e2e "the event log pages (T383)"; control-room 69/0, walkthrough 0 findings.
 
 ### Ticket: T384 P2 polish: pull requests need GitHub, Stop while it waits, popovers, dead code
 - **Priority:** P2
