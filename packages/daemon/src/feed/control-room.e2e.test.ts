@@ -5672,6 +5672,70 @@ describe('what a worker proposes next (Playwright e2e, T427)', () => {
   );
 });
 
+describe("replies you haven't read (Playwright e2e, T429)", () => {
+  browserTest(
+    'a reply that lands while you are elsewhere is listed in Needs me with a sidebar dot; opening it reads it',
+    async () => {
+      const reply = 'It buffers because the parser needs the header row first.';
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'agent_text', text: reply }, { type: 'end_turn' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const convo = await cockpit.streams.create('human', {
+          title: 'Why buffer the file?',
+          goal: 'why does the importer read the whole file?',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="inbox"]').waitFor();
+        expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
+
+        // You asked, and went on with something else: the answer lands.
+        const asked = await fetch(`${cockpit.base}/api/streams/${convo.id}/say`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ body: 'why buffer?', start: true }),
+        });
+        expect(asked.status).toBe(201);
+        const listed = page.locator(`[data-testid="reply"][data-stream="${convo.id}"]`);
+        await listed.waitFor();
+        expect(await listed.textContent()).toContain('Replied');
+        await page.locator('[data-testid="replies-dot"]').waitFor();
+        // It is no Needs me card: nothing waits on a decision.
+        await page.locator('[data-testid="inbox-empty"]').waitFor();
+        expect(await page.locator('[data-testid="inbox-empty"]').textContent()).toContain(
+          'Nothing else waits on you',
+        );
+
+        // Opening it reads it.
+        await listed.locator('.cr-reply-open').click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${convo.id}"]`).waitFor();
+        await page
+          .locator('[data-testid="thread-entry"][data-by="agent"]', { hasText: reply })
+          .waitFor();
+        await page.locator('[data-view="inbox"]').click();
+        await page.locator('[data-testid="inbox"]').waitFor();
+        expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="replies-dot"]').count()).toBe(0);
+        // Read stays read across a reload (per browser).
+        await page.reload();
+        await page.locator('[data-testid="inbox"]').waitFor();
+        await page.locator('[data-testid="inbox-empty"]').waitFor();
+        expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('the sidebar keeps Needs me in sight (Playwright e2e, audit r5 #4)', () => {
   browserTest(
     'opening a node far down a long tree scrolls the tree, not Needs me and its count',

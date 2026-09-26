@@ -2507,6 +2507,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** Screenshots at 390px, light and dark; control-room e2e `T422`, `T365`.
 - **Notes:** Branch T428-picker-sub.
 
+### Ticket: T429 Replies you haven't read
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete: questions have to work in flow state. You ask (D42) and go back to your work; when the answer lands nothing said so. A conversation's, a root's or a coordinator's finished turn has no Needs me card (T336, T341), so the only sign was a dot changing colour in the rail.
+- **Acceptance Criteria:** A node that answered (open, agent done, not a work node) is unread until its page is open in a visible tab, read up to its row's `updated_at`; per browser (localStorage `agile.seen`, capped at 400 marks, other tabs follow); a first visit starts with everything read. Needs me lists unread replies first ("Replies": path › title, "Replied · 3m", ✓ Mark read, Mark all read; a click opens the chat); with nothing else waiting it reads "Nothing else waits on you". The sidebar's Needs me shows a dot ("2 replies to read"). A reply that lands while you're away raises one notification ("Replied: <title>", click opens it) when notifications are on.
+- **Validation Steps:** `bun test packages/ui/app/lib/unread.test.ts`; control-room e2e `T429` (95/0 whole file); the walkthrough; screenshots light, dark, phone.
+- **Notes:** Branch T429-unread-replies. Pure rules in `lib/unread.ts`, the store and hooks in `lib/use-unread.ts`. The rail's own unread mark waits for T424 (it owns `StreamTree.tsx`).
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

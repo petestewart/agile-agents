@@ -157,6 +157,14 @@ async function raise(
   }
 }
 
+/** T429: another notification the same way (a reply you haven't read); a click opens its node. */
+export async function raiseNotification(
+  content: NotificationContent,
+  onClick: () => void,
+): Promise<void> {
+  await raise(content, targetOf(content), onClick);
+}
+
 /** Settings' "Send a test", the same way a real one goes. False when the browser would not show it. */
 export async function sendTestNotification(): Promise<boolean> {
   if (notifyAccess() !== 'granted') return false;
