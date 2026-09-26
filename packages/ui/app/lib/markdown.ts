@@ -66,7 +66,10 @@ function renderInline(escaped: string, names: Names): string {
   // `` `code` `` — stashed behind a placeholder built from `SENTINEL`, which
   // `renderMarkdown` has already stripped from the source, so no input can
   // forge one. A span that is exactly a known id reads as its title.
-  let out = escaped.replace(/`([^`]+)`/g, (_m, body: string) => {
+  // T393: a span opened by N backticks closes at the next run of exactly N, so
+  // `` a `b` `` is code holding backticks; one space inside each fence is padding.
+  let out = escaped.replace(/(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)/g, (_m, _fence, span: string) => {
+    const body = /^ .*[^ ].* $/.test(span) ? span.slice(1, -1) : span;
     const only = tokenize(body, names);
     if (only.length === 1 && only[0]?.kind === 'ref') return link(linkHtml(only[0]));
     code.push(body);
@@ -102,7 +105,9 @@ function linkHtml(t: Exclude<Token, { kind: 'text' }>): string {
 /** `- item` / `* item` / `+ item`. */
 const BULLET = /^\s{0,3}[-*+]\s+(.*)$/;
 /** `1. item` / `1) item`. */
-const ORDERED = /^\s{0,3}\d+[.)]\s+(.*)$/;
+const ORDERED = /^\s{0,3}(\d+)[.)]\s+(.*)$/;
+/** T393: an indented line under a list item continues that item. */
+const CONTINUATION = /^\s{2,}\S/;
 const HEADING = /^(#{1,6})\s+(.*)$/;
 const FENCE = /^\s{0,3}```(.*)$/;
 
@@ -115,7 +120,7 @@ export function renderMarkdown(source: string, names: Names = NO_NAMES): string 
   const lines = source.replaceAll(SENTINEL, '').replace(/\r\n?/g, '\n').split('\n');
   const out: string[] = [];
   let paragraph: string[] = [];
-  let list: { ordered: boolean; items: string[] } | undefined;
+  let list: { ordered: boolean; start: number; items: string[] } | undefined;
 
   function flushParagraph(): void {
     if (paragraph.length === 0) return;
@@ -128,7 +133,9 @@ export function renderMarkdown(source: string, names: Names = NO_NAMES): string 
   function flushList(): void {
     if (!list) return;
     const tag = list.ordered ? 'ol' : 'ul';
-    out.push(`<${tag}>${list.items.map((i) => `<li>${i}</li>`).join('')}</${tag}>`);
+    // A list interrupted by a paragraph or a fence keeps counting (`start` is digits only).
+    const open = list.ordered && list.start !== 1 ? `<ol start="${list.start}">` : `<${tag}>`;
+    out.push(`${open}${list.items.map((i) => `<li>${i}</li>`).join('')}</${tag}>`);
     list = undefined;
   }
 
@@ -171,9 +178,16 @@ export function renderMarkdown(source: string, names: Names = NO_NAMES): string 
       flushParagraph();
       const wantOrdered = ordered !== null;
       if (list && list.ordered !== wantOrdered) flushList();
-      if (!list) list = { ordered: wantOrdered, items: [] };
-      const text = (ordered ? ordered[1] : (bullet as RegExpExecArray)[1]) as string;
+      if (!list) list = { ordered: wantOrdered, start: Number(ordered?.[1] ?? 1), items: [] };
+      const text = (ordered ? ordered[2] : (bullet as RegExpExecArray)[1]) as string;
       list.items.push(renderInline(escapeHtml(text), names));
+      continue;
+    }
+
+    // T393: `1. item` then an indented line: the line is the item's, not a new paragraph.
+    if (list && CONTINUATION.test(line)) {
+      const last = list.items.length - 1;
+      list.items[last] = `${list.items[last]}<br>${renderInline(escapeHtml(line.trim()), names)}`;
       continue;
     }
 

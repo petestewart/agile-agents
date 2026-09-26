@@ -37,6 +37,8 @@ export interface ComposerProps {
 
 export interface ComposerHandle {
   focus(): void;
+  /** T393: focus with the caret after the last character, scrolled to it (text just added). */
+  focusEnd(): void;
 }
 
 const MAX_LINES = 10;
@@ -62,7 +64,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   ref,
 ): JSX.Element {
   const area = useRef<HTMLTextAreaElement>(null);
-  useImperativeHandle(ref, () => ({ focus: () => area.current?.focus() }), []);
+  useImperativeHandle(
+    ref,
+    () => ({
+      focus: () => area.current?.focus(),
+      focusEnd: () => {
+        const el = area.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+        el.scrollTop = el.scrollHeight;
+      },
+    }),
+    [],
+  );
   const text = value.trim();
 
   // Grow with the text, one line to ten; past that it scrolls.
