@@ -42,6 +42,8 @@ export const NOTHING_TO_MERGE_TTL_MS = 30_000;
 interface Cached {
   sig: string;
   value: boolean;
+  /** T412: its branch is already in its target (merged outside the cockpit). */
+  merged?: true;
   stat?: DiffStat;
   at: number;
 }
@@ -105,7 +107,7 @@ export class NothingToMergeCache {
    * T410: `peek`, and the size of the node's change when it has one to
    * merge (`undefined` until measured). Never runs git itself.
    */
-  peekState(stream: Stream): { nothingToMerge: boolean; stat?: DiffStat } {
+  peekState(stream: Stream): { nothingToMerge: boolean; merged?: true; stat?: DiffStat } {
     if (!mayBeReady(stream)) {
       this.cache.delete(stream.id);
       return { nothingToMerge: false };
@@ -115,7 +117,11 @@ export class NothingToMergeCache {
     const known = hit !== undefined && hit.sig === sig;
     if (!known || this.now() - hit.at >= this.ttlMs) this.queue(stream.id, sig);
     if (!known) return { nothingToMerge: false };
-    return { nothingToMerge: hit.value, ...(hit.stat !== undefined ? { stat: hit.stat } : {}) };
+    return {
+      nothingToMerge: hit.value,
+      ...(hit.merged ? { merged: true as const } : {}),
+      ...(hit.stat !== undefined ? { stat: hit.stat } : {}),
+    };
   }
 
   private queue(id: string, sig: string): void {
@@ -124,17 +130,29 @@ export class NothingToMergeCache {
     this.schedule(() => {
       this.queued.delete(id);
       let value = false;
+      let merged = false;
       let stat: DiffStat | undefined;
       try {
         const pre = this.preflight(id);
         value = pre.ahead === 0 && pre.merged !== true && pre.conflicts === undefined;
+        merged = pre.merged === true;
         if (this.stat !== undefined && (pre.ahead ?? 0) > 0) stat = this.stat(id);
       } catch {
         // A node that can't be checked keeps its Merge: the click says why.
       }
       const before = this.cache.get(id);
-      this.cache.set(id, { sig, value, ...(stat !== undefined ? { stat } : {}), at: this.now() });
-      if ((before?.value ?? false) !== value || !sameStat(before?.stat, stat)) {
+      this.cache.set(id, {
+        sig,
+        value,
+        ...(merged ? { merged: true as const } : {}),
+        ...(stat !== undefined ? { stat } : {}),
+        at: this.now(),
+      });
+      if (
+        (before?.value ?? false) !== value ||
+        (before?.merged ?? false) !== merged ||
+        !sameStat(before?.stat, stat)
+      ) {
         try {
           this.onChange?.();
         } catch {

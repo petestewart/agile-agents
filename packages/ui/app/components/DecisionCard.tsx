@@ -33,16 +33,20 @@ import {
   decideProposal,
   decideRule,
   landStream,
+  markStreamLanded,
   noteGate,
   startWaitingParts,
 } from '../lib/api';
 import { useOptionalFeed } from '../lib/feed-context';
 import {
   type CardTone,
+  DONE_CARD_TITLE,
+  MERGED_OUTSIDE_TEXT,
   branchName,
   cardTitle,
   cardTone,
   diffStatParts,
+  doneCardOf,
   fold,
   fullText,
   gateView,
@@ -53,6 +57,7 @@ import {
   questionView,
   scopeWords,
   statusText,
+  waitingText,
 } from '../lib/inbox';
 import { useShell } from '../lib/shell';
 import { ago } from '../lib/status';
@@ -184,9 +189,16 @@ export function Card({
 
   const row =
     item.stream !== undefined ? cockpit?.streams.find((r) => r.id === item.stream) : undefined;
-  // T380: finished with no commits beyond its target: the move is Close, not Merge.
-  const noChanges = item.kind === 'done' && row?.nothing_to_merge === true;
-  const tone: CardTone = noChanges ? 'amber' : cardTone(item);
+  // T380/T412: a finished node's card follows the merge check: Close when there is nothing
+  // to merge, Mark as merged when its branch is already in, and no Merge while it waits.
+  const done = item.kind === 'done' ? doneCardOf(row) : undefined;
+  const noChanges = done === 'no_changes';
+  const tone: CardTone =
+    done === 'no_changes' || done === 'merged_outside'
+      ? 'amber'
+      : done === 'waiting'
+        ? 'gray'
+        : cardTone(item);
   const nodeTitle = item.stream !== undefined ? (row?.title ?? item.stream_path.at(-1)) : undefined;
   // T403: on the chat, where the card sits at the end (a project root opens on its Overview otherwise).
   const open = item.stream !== undefined ? () => select(item.stream, { tab: 'thread' }) : undefined;
@@ -606,6 +618,71 @@ export function Card({
     }
 
     case 'done': {
+      if (done === 'merged_outside') {
+        const main = shown(MERGED_OUTSIDE_TEXT);
+        foldable = main.foldable;
+        body = <Markdown className="context" text={main.text} testId="inbox-context" />;
+        actions = (
+          <div className="cr-actions">
+            <Button
+              variant="primary"
+              size="sm"
+              icon="git-merge"
+              data-testid="mark-merged"
+              busy={busy === 'mark'}
+              disabled={locked}
+              onClick={() => {
+                const id = item.stream;
+                if (id !== undefined) void act('mark', () => markStreamLanded(id));
+              }}
+            >
+              Mark as merged
+            </Button>
+            {open && !full && (
+              <Button size="sm" iconRight="arrow-right" data-testid="merged-open" onClick={open}>
+                Open node
+              </Button>
+            )}
+          </div>
+        );
+        break;
+      }
+      if (done === 'waiting') {
+        const waited = (row?.waits_on ?? []).map((id) => ({
+          id,
+          title: cockpit?.streams.find((r) => r.id === id)?.title ?? 'another node',
+        }));
+        const main = shown(waitingText(waited.map((w) => w.title)));
+        foldable = main.foldable;
+        body = <Markdown className="context" text={main.text} testId="inbox-context" />;
+        const first = waited[0];
+        actions = (
+          <div className="cr-actions">
+            {first !== undefined && (
+              <Button
+                size="sm"
+                iconRight="arrow-right"
+                data-testid="waited-open"
+                onClick={() => select(first.id, { tab: 'thread' })}
+              >
+                Open {first.title}
+              </Button>
+            )}
+            {open && !full && item.stream !== undefined && (
+              <Button
+                size="sm"
+                icon="file-diff"
+                data-testid="view-changes"
+                onClick={() => select(item.stream, { tab: 'diff' })}
+              >
+                View changes
+              </Button>
+            )}
+            {row?.diff_stat !== undefined && <DiffStatLine stat={row.diff_stat} />}
+          </div>
+        );
+        break;
+      }
       if (noChanges) {
         const main = shown(noChangesText(item));
         foldable = main.foldable;
@@ -705,10 +782,15 @@ export function Card({
     >
       <header className="cr-card-hd">
         <span className="cr-card-icon" data-tone={tone}>
-          <Icon name={noChanges ? 'check-circle' : iconOf(item)} size={14} />
+          <Icon
+            name={
+              done === 'no_changes' ? 'check-circle' : done === 'waiting' ? 'clock' : iconOf(item)
+            }
+            size={14}
+          />
         </span>
         <span className="kind" id={titleId}>
-          {noChanges ? 'Finished, no changes' : cardTitle(item)}
+          {done !== undefined ? DONE_CARD_TITLE[done] : cardTitle(item)}
         </span>
         <time className="cr-card-age" dateTime={item.ts} title={fullTime(item.ts)}>
           {ago(item.ts)}

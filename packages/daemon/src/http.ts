@@ -481,7 +481,7 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     (entry) => feed.remotes.peek(entry),
     feed.mergeState ? (s) => feed.mergeState?.peek(s) === true : undefined,
     (id) => feed.store.threadUpdatedAt(id),
-    feed.mergeState ? (s) => feed.mergeState?.peekState(s).stat : undefined,
+    feed.mergeState ? (s) => feed.mergeState?.peekState(s) : undefined,
     feed.attach ? (session) => feed.attach?.contextFor(session) : undefined,
   );
 }

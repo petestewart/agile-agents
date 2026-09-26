@@ -18,6 +18,7 @@ export type NodeStatusKey =
   | 'pr_open'
   | 'ready'
   | 'no_changes'
+  | 'merged_outside'
   | 'done'
   | 'waiting'
   | 'working'
@@ -41,7 +42,13 @@ export type StatusInput = Pick<CockpitStreamRow, 'agent_status' | 'human_status'
   Partial<
     Pick<
       CockpitStreamRow,
-      'role' | 'project' | 'pr_open' | 'live' | 'waiting_for_plan' | 'nothing_to_merge'
+      | 'role'
+      | 'project'
+      | 'pr_open'
+      | 'live'
+      | 'waiting_for_plan'
+      | 'nothing_to_merge'
+      | 'merged_outside'
     >
   > & {
     never_started?: true;
@@ -74,6 +81,11 @@ const STATUS: Record<NodeStatusKey, Omit<NodeStatus, 'key'>> = {
     tone: 'amber',
     hint: 'The agent finished without committing anything, so there is nothing to merge. Close the node, or reply to ask for more.',
   },
+  merged_outside: {
+    label: 'Already merged',
+    tone: 'amber',
+    hint: 'Its branch is already in its target (merged outside the cockpit). Mark it merged to finish it.',
+  },
   done: { label: 'Done', tone: 'green', hint: 'The agent finished; there is nothing to merge.' },
   waiting: { label: 'Waiting', tone: 'gray', hint: 'Waiting on a plan or another node.' },
   working: { label: 'Working', tone: 'blue', hint: 'The agent is working.' },
@@ -104,9 +116,17 @@ function nothingToMerge(row: StatusInput): boolean {
   );
 }
 
-/** T380: a finished branch with no commits beyond its target is still your move (close it), not a merge. */
-function readyOrEmpty(row: StatusInput): 'ready' | 'no_changes' {
-  return row.nothing_to_merge === true ? 'no_changes' : 'ready';
+/**
+ * A finished branch, by what the merge check found: T380, no commits beyond
+ * its target is still your move (close it); T412, already in its target is
+ * your move too (mark it merged); a branch that waits on another node's merge
+ * is waiting, not ready (its Merge would be refused).
+ */
+function readyOrEmpty(row: StatusInput): 'ready' | 'no_changes' | 'merged_outside' | 'waiting' {
+  if (row.merged_outside === true) return 'merged_outside';
+  if (row.nothing_to_merge === true) return 'no_changes';
+  if ((row.waits_on ?? []).length > 0) return 'waiting';
+  return 'ready';
 }
 
 export function statusKey(row: StatusInput): NodeStatusKey {
@@ -151,7 +171,13 @@ export function statusOf(key: NodeStatusKey): NodeStatus {
 
 /** Statuses that are the human's move: the rail and a folded subtree call them out. */
 export function isYourMove(key: NodeStatusKey): boolean {
-  return key === 'needs_you' || key === 'ready' || key === 'no_changes' || key === 'blocked';
+  return (
+    key === 'needs_you' ||
+    key === 'ready' ||
+    key === 'no_changes' ||
+    key === 'merged_outside' ||
+    key === 'blocked'
+  );
 }
 
 /** Role names in words, for badges and tooltips (design/cockpit-ui.md §2). */

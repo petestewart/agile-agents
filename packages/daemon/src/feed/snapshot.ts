@@ -143,8 +143,13 @@ export class RecentEvents {
   }
 }
 
-function diffStatRow(stat: CockpitStreamRow['diff_stat']): Pick<CockpitStreamRow, 'diff_stat'> {
-  return stat !== undefined ? { diff_stat: { ...stat } } : {};
+function mergeRow(
+  state: { stat?: CockpitStreamRow['diff_stat']; merged?: true } | undefined,
+): Pick<CockpitStreamRow, 'diff_stat' | 'merged_outside'> {
+  return {
+    ...(state?.merged ? { merged_outside: true as const } : {}),
+    ...(state?.stat !== undefined ? { diff_stat: { ...state.stat } } : {}),
+  };
 }
 
 /** One row of the stream tree (§9.2): title, nesting, and the status pair the dot is derived from client-side. */
@@ -175,6 +180,8 @@ export interface CockpitStreamRow {
   nothing_to_merge?: true;
   /** T410: a finished node's change, what Merge would bring: files, lines added and removed. */
   diff_stat?: { files: number; added: number; removed: number };
+  /** T412: its agent finished and its branch is already in its target (merged by hand): Mark as merged. */
+  merged_outside?: true;
   /** T395: its last change (ISO): the latest of its creation, its agent's last status and its thread's last line. */
   updated_at?: string;
   /** T361: a work node or conversation whose agent never ran (made with "Start later"). */
@@ -293,8 +300,14 @@ export function buildCockpitFrame(
   nothingToMerge?: (node: Stream) => boolean,
   /** T395: when a node's thread last changed (`StateStore.threadUpdatedAt`). */
   threadUpdatedAt?: (node: string) => string | undefined,
-  /** T410: a finished node's change size, from the same cache as `nothingToMerge`. */
-  diffStatOf?: (node: Stream) => CockpitStreamRow['diff_stat'],
+  /**
+   * T410/T412: what the merge check found beyond "nothing to merge", from the
+   * same cache (`NothingToMergeCache.peekState`): the change's size, and
+   * whether the branch is already in its target.
+   */
+  mergeStateOf?: (
+    node: Stream,
+  ) => { stat?: CockpitStreamRow['diff_stat']; merged?: true } | undefined,
   /** T411: a live session's context window, as its vendor last reported it (`AttachService.contextFor`). */
   contextOf?: (session: string) => CockpitLiveAgent['context'],
 ): CockpitFrame {
@@ -322,7 +335,7 @@ export function buildCockpitFrame(
       ...(waitingForPlan?.(s) === true ? { waiting_for_plan: true as const } : {}),
       ...(s.delivery_state?.status === 'pr_open' ? { pr_open: true as const } : {}),
       ...(nothingToMerge?.(s) === true ? { nothing_to_merge: true as const } : {}),
-      ...diffStatRow(diffStatOf?.(s)),
+      ...mergeRow(mergeStateOf?.(s)),
       updated_at: latest(s.created_at, s.agent.updated_at, threadUpdatedAt?.(s.id)),
       ...startState(s, all),
       ...liveAgent(s, contextOf),

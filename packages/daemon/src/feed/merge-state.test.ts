@@ -67,18 +67,19 @@ describe('NothingToMergeCache (T380)', () => {
   });
 
   test('commits ahead, a merge done by hand, a conflict or a failed check keep Merge', () => {
-    for (const answer of [
-      { ahead: 2 },
-      { ahead: 0, merged: true },
-      { conflicts: ['a.ts'] },
-      {},
-    ] satisfies MergePreflight[]) {
+    for (const answer of [{ ahead: 2 }, { conflicts: ['a.ts'] }, {}] satisfies MergePreflight[]) {
       const h = harness(() => answer);
       h.cache.peek(node());
       h.run();
       expect(h.cache.peek(node())).toBe(false);
       expect(h.changes).toBe(0);
     }
+    // T412: a merge done by hand isn't "nothing to merge" either: it says so, and the frame is pushed.
+    const merged = harness(() => ({ ahead: 0, merged: true }));
+    merged.cache.peek(node());
+    merged.run();
+    expect(merged.cache.peekState(node())).toEqual({ nothingToMerge: false, merged: true });
+    expect(merged.changes).toBe(1);
     const throws = harness(() => {
       throw new Error('git failed');
     });

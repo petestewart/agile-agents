@@ -51,6 +51,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D38** (2026-09-26, Pete): no global `Host` check on the daemon's read routes. The cockpit must stay reachable from a phone through a tunnel (D15). Writes keep their same-origin check (403 otherwise); the folder browser and clone keep their loopback-`Host` check (T362). A Host allowlist (loopback plus configured tunnel names) stays an option if DNS rebinding ever matters more than reach.
 - **D39** (2026-09-26, Pete, to confirm): a browser notification fires every time a node finishes (or asks, or is blocked), including a second finish after your reply; the same card only leaving a frame and coming back does not notify again. As built in T391.
 - **D40** (2026-09-26, to confirm): in the D17 order a model belongs to its vendor. A model named at a step counts only when that step runs the resolved vendor (its own vendor, else the vendor of the steps below it). A repo set to Gemini no longer inherits the home's Claude model: it gets Gemini's own default. Vendor and effort still resolve field by field. As built in T402.
+- **D41** (2026-09-26, Pete): a node created without a title gets one from a one-shot cheap LLM call (Haiku) through the user's own `claude` login, off the create path; the first-line title stands until it returns, and stays if the CLI is missing or the call fails. The daemon still holds no vendor credentials. As built in T414.
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -2369,6 +2370,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** The runner keeps each session's last reading in memory (no stored state, no writes); `AttachService.contextFor(session)` reads it; the frame's `live_agent.context` carries it. The composer shows a small ring and the share by the live model chip ("23%", the numbers on hover), amber from 75%, red from 90%; Running shows it by each live agent. A vendor that reports nothing shows nothing.
 - **Validation Steps:** `bun test packages/daemon/src/runner/context-usage.test.ts packages/ui/app/lib/chat.test.ts`; control-room e2e `T392` (a fake agent's `usage_update` reads "23%").
 - **Notes:** Branch T411-context-meter. Cost (`usage_update.cost`) is not shown: whether it is per turn or running is not measured yet.
+
+### Ticket: T412 One verdict on a finished branch
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Audit round 5, finding 1: a node read "Ready to merge" in the header, the tree and Needs me (with an enabled Merge) while its Delivery panel said "Already merged into main", and while it still waited on a node that hadn't started.
+- **Acceptance Criteria:** The T380 merge check also records a branch already in its target (`merged_outside` on the row). A finished work node reads "Already merged" (your move: its card offers Mark as merged) or, with open waits, "Waiting" (its card names what it waits on, links there, and has no Merge). `lib/status.ts` stays the one mapper (legend, Running, Overview follow). The daemon's preflight reports open waits for a direct merge, so the header and Delivery panel agree with `land`.
+- **Validation Steps:** `bun test packages/ui packages/daemon/src/feed/merge-state.test.ts packages/daemon/src/delivery/service.test.ts`; control-room e2e `T412`, and the merge/waits e2e.
+- **Notes:** Branch T412-one-merge-verdict.
 
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0

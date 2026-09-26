@@ -90,6 +90,39 @@ export function diffStatParts(stat: { files: number; added: number; removed: num
   };
 }
 
+/** T412: what a finished work node's card is, by what the merge check and its waits say. */
+export type DoneCard = 'ready' | 'no_changes' | 'merged_outside' | 'waiting';
+
+export function doneCardOf(
+  row: Pick<CockpitStreamRow, 'nothing_to_merge' | 'merged_outside' | 'waits_on'> | undefined,
+): DoneCard {
+  if (row?.merged_outside === true) return 'merged_outside';
+  if (row?.nothing_to_merge === true) return 'no_changes';
+  if ((row?.waits_on ?? []).length > 0) return 'waiting';
+  return 'ready';
+}
+
+/** T412: the card's title for each kind of finished node. */
+export const DONE_CARD_TITLE: Record<DoneCard, string> = {
+  ready: 'Ready to merge',
+  no_changes: 'Finished, no changes',
+  merged_outside: 'Already merged',
+  waiting: 'Finished, waiting to merge',
+};
+
+/** T412: the words for a branch already in its target. */
+export const MERGED_OUTSIDE_TEXT =
+  'Its branch is already merged (outside the cockpit). Mark the node merged to finish it.';
+
+/** T412: "It merges after Fix broken links merges." — the nodes it waits on, by title. */
+export function waitingText(titles: readonly string[]): string {
+  const names =
+    titles.length <= 1
+      ? (titles[0] ?? 'another node')
+      : `${titles.slice(0, -1).join(', ')} and ${titles.at(-1)}`;
+  return `It merges after ${names} ${titles.length > 1 ? 'merge' : 'merges'}. Nothing to do here until then.`;
+}
+
 /** The whole text behind a card: `detail` when the daemon clipped `context`. */
 export function fullText(item: Pick<InboxItem, 'context' | 'detail'>): string {
   return item.detail ?? item.context;
