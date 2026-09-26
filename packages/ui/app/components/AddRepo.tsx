@@ -236,19 +236,18 @@ function onPathKeyDown(picker: FolderPicker, event: KeyboardEvent<HTMLInputEleme
     picker.open(lit.path);
     return;
   }
-  if (
-    event.key === 'Tab' &&
-    !event.shiftKey &&
-    picker.query.prefix !== '' &&
-    picker.picked === undefined &&
-    entries.length > 0
-  ) {
-    const target = lit ?? entries[0];
-    if (!target) return;
+  if (event.key !== 'Tab' || event.shiftKey || picker.query.prefix === '' || picker.picked) return;
+  if (!picker.fresh) {
+    // The matches for what was just typed are still on their way: stay in the field.
     event.preventDefault();
     event.stopPropagation();
-    picker.open(target.path);
+    return;
   }
+  const target = lit ?? entries[0];
+  if (!target) return;
+  event.preventDefault();
+  event.stopPropagation();
+  picker.open(target.path);
 }
 
 function FolderBrowser({
@@ -373,6 +372,8 @@ function FolderBrowser({
                   data-name={entry.name}
                   data-git={entry.git ? 'true' : 'false'}
                   title={entry.git ? `${entry.name} — a git repository` : entry.name}
+                  // Clicks keep the focus where it is (the path field): typing and the arrows go on.
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => picker.pick(entry)}
                   onDoubleClick={() => picker.open(entry.path)}
                   onKeyDown={(e) => {
@@ -394,6 +395,7 @@ function FolderBrowser({
                   aria-label={`Open ${entry.name}`}
                   title={`Open ${entry.name}`}
                   data-testid="add-repo-dir-open"
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => picker.open(entry.path)}
                 >
                   <Icon name="chevron-right" size={14} />

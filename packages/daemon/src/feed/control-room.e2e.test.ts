@@ -2785,7 +2785,11 @@ describe('add a repo from Settings (Playwright e2e, T206, T367)', () => {
         await page.locator('[data-testid="settings-repo-add"]').click();
         const path = page.locator('[data-testid="settings-repo-add-path"]');
         await path.fill('~/Pro');
-        await page.locator(dir('Projects')).waitFor({ state: 'visible' });
+        // The matches for `Pro` are in (the list is not loading), then Tab completes.
+        const settled = `${browser}:not([data-loading])`;
+        await page
+          .locator(`${settled} [data-testid="add-repo-dir"][data-name="Projects"]`)
+          .waitFor();
         await path.press('Tab');
         await page
           .locator(`${browser}[data-path="${join(userHome, 'Projects')}"]`)
@@ -2955,6 +2959,55 @@ describe('add a repo from Settings (Playwright e2e, T206, T367)', () => {
         await page.locator('[data-testid="add-repo-clone-url"]').fill('ftp://example.com/x');
         await page.locator(preview).waitFor({ state: 'detached' });
         expect(await page.locator('[data-testid="add-repo-clone-submit"]').isDisabled()).toBe(true);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Settings sections (Playwright e2e, T367)', () => {
+  browserTest(
+    'General picks the theme and names the daemon; the section is in the URL; Permissions says who decides',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings`);
+        await page.locator('[data-testid="settings"][data-section="general"]').waitFor();
+        await waitForText(page, '[data-testid="settings-daemon-status"]', 'Connected');
+        const theme = async () =>
+          (await page?.evaluate('document.documentElement.getAttribute("data-theme")')) as
+            | string
+            | null;
+        await page.locator('[data-testid="settings-theme-dark"]').click();
+        expect(await theme()).toBe('dark');
+        // A per-browser choice: it survives a reload.
+        await page.reload();
+        await page
+          .locator('[data-testid="settings-theme-dark"][aria-checked="true"]')
+          .waitFor({ state: 'visible' });
+        expect(await theme()).toBe('dark');
+        await page.locator('[data-testid="settings-theme-system"]').click();
+        expect(await theme()).toBe(null);
+
+        await page.locator('[data-testid="settings-nav-permissions"]').click();
+        await page.locator('[data-testid="settings"][data-section="permissions"]').waitFor();
+        await waitUntilAsync('the URL to name the section', async () =>
+          (page?.url() ?? '').includes('section=permissions'),
+        );
+        expect(await page.locator('[data-gate]').count()).toBe(3);
+        expect(await page.locator('[data-gate="land"]').textContent()).toContain('You');
+        // Back to General: its section needs no parameter.
+        await page.locator('[data-testid="settings-nav-general"]').click();
+        await waitUntilAsync(
+          'the section parameter to go',
+          async () => !(page?.url() ?? '').includes('section='),
+        );
+        expect(new URL(page.url()).searchParams.get('view')).toBe('settings');
       } finally {
         await teardown([page]);
         await cockpit.stop();
