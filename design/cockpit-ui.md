@@ -249,6 +249,9 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   undisturbed; about the Director it is a line in the Director's thread. A
   conversation's chat opens with its question as your message, never a Goal
   card.
+- **Send to parent** (T421, D42): in a conversation under another node, a
+  reply's hover action (or ⋯) sends a conclusion up. It lands there as your
+  message, so that node's agent acts on it as on anything you type.
 - **Notifications** (Settings → General, per browser, off by default): one
   browser notification at a time for what is new in Needs me while the tab is
   away; a click opens it. Never for what was there at load. They go through

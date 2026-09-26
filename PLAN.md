@@ -2444,6 +2444,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/runner/brief.test.ts packages/daemon/src/attach/service.test.ts -t T420`; full `bun test`.
 - **Notes:** Branch T420-parent-context.
 
+### Ticket: T421 Send to parent (D42)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** What a side conversation concludes ("the plan should change", "stream the file") had no way to reach the node it was about, except retyping it there.
+- **Acceptance Criteria:** On a conversation under another node, each agent reply has "Send to <parent>" and the ⋯ menu "Send to <parent>…" (starting from the last reply). The box is editable; Send posts `POST /api/streams/:id/send-up`: your line on the parent ("From the conversation “…”:" then the words), through the same path as the parent's composer (its agent reads it, or starts on it), and a "Sent to …" row on the conversation. A root has nothing above it (400); same-origin only.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T421 packages/ui/app/lib/chat.test.ts`; control-room e2e `T421`.
+- **Notes:** Branch T421-send-up. A coordinator acts on it at its autonomy level, as on any line of yours.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

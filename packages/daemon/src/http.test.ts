@@ -779,6 +779,38 @@ describe('T160 cockpit routes', () => {
     }
   });
 
+  test('T421: POST /api/streams/:id/send-up puts the conclusion on the parent as your line', async () => {
+    const parent = await streams.create('human', { title: 'Add CSV import', goal: 'g' });
+    const side = await streams.create('human', {
+      title: 'Why buffer?',
+      goal: 'why buffer the file?',
+      parent: parent.id,
+    });
+    const post = (id: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/streams/${id}/send-up`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const sent = await post(side.id, { body: 'Stream it: files reach 2 GB.' });
+    expect(sent.status).toBe(201);
+    expect(await sent.json()).toEqual({ parent: parent.id });
+    const upThere = streams.readThread(parent.id).entries.at(-1);
+    expect(upThere?.by).toBe('human');
+    expect(upThere?.kind).toBe('line');
+    expect(upThere?.body).toBe(
+      'From the conversation “Why buffer?”:\n\nStream it: files reach 2 GB.',
+    );
+    const here = streams.readThread(side.id).entries.at(-1);
+    expect(here?.body).toBe('sent to Add CSV import: Stream it: files reach 2 GB.');
+    // A root has nothing above it; an empty body and another origin are refused.
+    expect((await post(parent.id, { body: 'x' })).status).toBe(400);
+    expect((await post(side.id, { body: '  ' })).status).toBe(400);
+    expect((await post(side.id, { body: 'x' }, { origin: 'http://evil.example' })).status).toBe(
+      403,
+    );
+  });
+
   test('T161: POST /api/streams/:id/say writes a human line; the actor is never read from the body; cross-origin is 403', async () => {
     const stream = await streams.create('human', { title: 's', goal: 'g' });
     const foreign = await fetch(url(`/api/streams/${stream.id}/say`), {
