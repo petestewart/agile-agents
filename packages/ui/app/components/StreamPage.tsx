@@ -63,8 +63,9 @@ import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
 import type { StatusInput } from '../lib/status';
+import { groupSteps } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
-import { ChatScroll, MessageList, Thinking } from './Chat';
+import { ChatScroll, MessageList, StepsFold, Thinking, useSteps } from './Chat';
 import { Composer, type ComposerHandle } from './Composer';
 import { DeliveryPanel, isMergeable, outcomeTone, useDelivery } from './Delivery';
 import { DiffView } from './DiffView';
@@ -324,6 +325,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [defaults, setDefaults] = useState<SessionDefaultsStatus | undefined>(undefined);
   const [detailsOpen, setDetailsOpen] = useDetailsOpen();
   const composer = useRef<ComposerHandle>(null);
+  // T392: the agent's steps, live.
+  const agentSteps = useSteps(id);
 
   // Every pushed frame and every action re-reads the page, so reads
   // overlap, and their responses can arrive in any order. Only the latest
@@ -960,6 +963,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     ) : undefined;
 
   const emptyChat = !conversation && !thinking && cards.length === 0;
+  // T392: each reply's steps fold before it; the running turn's show live.
+  const steps = groupSteps(agentSteps.steps, page.thread, {
+    live: thinking,
+    truncated: page.thread_total > page.thread.length,
+    partial: agentSteps.partial,
+  });
 
   const chat = (
     <div className="cr-chat" data-tab-body="thread">
@@ -992,8 +1001,14 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           renderExtra={renderExtra}
           onOpenRule={(rule) => openRules({ ...DEFAULT_RULES_FILTER, rule })}
           openQuestions={new Set(questions.map((q) => q.id))}
+          steps={steps.before}
         />
-        {thinking && <Thinking name={name} />}
+        {thinking && <Thinking name={name} steps={steps.current} />}
+        {!thinking && steps.current.length > 0 && (
+          <div className="cr-steps-tail">
+            <StepsFold steps={steps.current} />
+          </div>
+        )}
         {emptyChat && open && (
           <div className="cr-chat-empty" data-testid="chat-empty">
             <span className="cr-chat-empty-icon">

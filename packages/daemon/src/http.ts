@@ -61,6 +61,7 @@ import {
   type CockpitFrame,
   type EventTailerHandle,
   NothingToMergeCache,
+  StepIndex,
   buildCockpitFrame,
   buildSnapshot,
   buildStreamPage,
@@ -458,6 +459,8 @@ interface FeedContext {
   remotes: RepoRemoteCache;
   /** T380: which finished nodes have nothing to merge, never read on the frame's path. */
   mergeState?: NothingToMergeCache;
+  /** T392: every node's agent steps, folded from the event log as it grows. */
+  steps: StepIndex;
   userHome?: string;
 }
 
@@ -508,6 +511,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
           }),
         }
       : {}),
+    steps: new StepIndex(`${options.stateRoot}/log/events.jsonl`),
     userHome: options.userHome,
   };
 }
@@ -1194,6 +1198,7 @@ async function handleRuleRoute(
  *
  *   GET  /api/streams/:id         the page read (`feed/stream-page.ts`)
  *   GET  /api/streams/:id/diff    the diff tab
+ *   GET  /api/streams/:id/steps   T392: the agent's steps (its tool calls), newest first, `{steps, total}`
  *   POST /api/streams/:id/say     the composer: a human line, and a prompt to the attached worker;
  *                                 `{body, start?}`: `start` (T361) starts an agent on a node with none live
  *   POST /api/streams/:id/attach  the sessions strip's attach / review (`role: reviewer`)
@@ -1221,11 +1226,11 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|say|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
-  const isGet = action === undefined || action === 'diff';
+  const isGet = action === undefined || action === 'diff' || action === 'steps';
   if (isGet ? req.method !== 'GET' : req.method !== 'POST') return undefined;
   if (!feed?.streams) return errorResponse(503, 'streams not available');
   const parsedId = UlidSchema.safeParse(decodeURIComponent(match[1] ?? ''));
@@ -1250,6 +1255,13 @@ async function handleStreamRoute(
     if (action === 'diff') {
       if (!feed.landing) return errorResponse(503, 'landing not available');
       return jsonResponse(feed.landing.diff(id));
+    }
+    if (action === 'steps') {
+      // T392: its own read, not a field of the page: the page is re-read on
+      // every pushed frame, and a node's steps change on nearly every one. The
+      // chat reads them once and follows the live `tool_call` events after.
+      feed.streams.get(id);
+      return jsonResponse(feed.steps.stepsFor(id));
     }
 
     // Close, Mark landed, Check now, Delete and Restore take no body.

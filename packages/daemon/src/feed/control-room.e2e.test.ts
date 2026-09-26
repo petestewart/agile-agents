@@ -3076,6 +3076,144 @@ describe('a long agent message collapses (Playwright e2e, T330)', () => {
   );
 });
 
+// ---- T392: the agent's steps ---------------------------------------------------
+
+describe("the agent's steps in the chat (Playwright e2e, T392)", () => {
+  browserTest(
+    'while a turn runs its steps show live with their status; after it, a folded row before the reply opens to them',
+    async () => {
+      const release = join(tmpdir(), `agile-steps-e2e-${ulid()}`);
+      const worker: FakeAgentScript = {
+        steps: [
+          {
+            type: 'tool_call',
+            toolCallId: 'read-1',
+            kind: 'read',
+            title: 'Read src/parser.ts',
+            status: 'pending',
+          },
+          { type: 'delay', ms: 5 },
+          { type: 'tool_call_update', toolCallId: 'read-1', status: 'completed' },
+          {
+            type: 'tool_call',
+            toolCallId: 'run-1',
+            kind: 'execute',
+            title: '`bun test`',
+            status: 'in_progress',
+          },
+          { type: 'delay', ms: 5 },
+          { type: 'tool_call_update', toolCallId: 'run-1', status: 'failed' },
+          {
+            type: 'tool_call',
+            toolCallId: 'edit-1',
+            kind: 'edit',
+            title: 'Edit `src/parser.ts`',
+            status: 'in_progress',
+          },
+          // The turn hangs here, mid-step, until the test lets it go.
+          { type: 'wait_for_file', path: release, timeoutMs: 60_000 },
+          { type: 'tool_call_update', toolCallId: 'edit-1', status: 'completed' },
+          { type: 'delay', ms: 20 },
+          { type: 'agent_text', text: 'Fixed the delimiter; the tests pass.' },
+          { type: 'end_turn' },
+        ],
+      };
+      const cockpit = await startStreamCockpit([worker]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'csv parser',
+          goal: 'fix the delimiter',
+          repo: 'demo',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        await page.locator('[data-testid="attach"]').click();
+
+        // Live: the three steps under "Claude is working", each with its status.
+        const live = page.locator('[data-testid="thinking"] [data-testid="step"]');
+        const statusesOf = (steps: typeof live) =>
+          steps.evaluateAll((els) =>
+            els.map((el) => [el.getAttribute('data-kind'), el.getAttribute('data-status')]),
+          );
+        const expectLive = async () => {
+          await page
+            ?.locator('[data-testid="thinking"] [data-testid="step"][data-kind="edit"]')
+            .waitFor();
+          await waitUntilAsync('the live steps', async () => (await live.count()) === 3);
+          expect(await statusesOf(live)).toEqual([
+            ['read', 'done'],
+            ['execute', 'failed'],
+            ['edit', 'running'],
+          ]);
+        };
+        await expectLive();
+        expect(await page.locator('[data-testid="thinking"]').textContent()).toContain(
+          'Claude is working',
+        );
+        // A command and a path read as code; the failed one says so.
+        expect(await live.nth(1).locator('code').textContent()).toBe('bun test');
+        expect(await live.nth(1).locator('[aria-label="Failed"]').count()).toBe(1);
+        expect(await live.nth(2).locator('code').textContent()).toBe('src/parser.ts');
+        expect(await page.locator('[data-testid="steps-fold"]').count()).toBe(0);
+
+        // A reload mid-turn reads them from the daemon and keeps following.
+        await page.reload();
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        await expectLive();
+
+        // The turn ends: the reply, with its steps folded to one row before its words.
+        writeFileSync(release, '');
+        const reply = page.locator('[data-testid="thread-entry"][data-by="agent"]', {
+          hasText: 'Fixed the delimiter',
+        });
+        await reply.waitFor();
+        await page.locator('[data-testid="thinking"]').waitFor({ state: 'detached' });
+        const fold = reply.locator('[data-testid="steps-fold"]');
+        const toggle = fold.locator('[data-testid="steps-toggle"]');
+        await waitUntilAsync(
+          'the folded steps',
+          async () =>
+            (await toggle.count()) === 1 &&
+            (await toggle.textContent()) === 'Worked through 3 steps · 1 failed',
+        );
+        expect(
+          await fold.evaluate((el) => {
+            const words = el.parentElement?.querySelector('.cr-msg-body');
+            return (
+              words !== null &&
+              words !== undefined &&
+              // 4: DOCUMENT_POSITION_FOLLOWING, the words come after the fold.
+              (el.compareDocumentPosition(words) & 4) !== 0
+            );
+          }),
+        ).toBe(true);
+        expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+        expect(await fold.locator('[data-testid="step"]').count()).toBe(0);
+        await toggle.click();
+        expect(await toggle.getAttribute('aria-expanded')).toBe('true');
+        expect(await statusesOf(fold.locator('[data-testid="step"]'))).toEqual([
+          ['read', 'done'],
+          ['execute', 'failed'],
+          ['edit', 'done'],
+        ]);
+        await toggle.click();
+        expect(await fold.locator('[data-testid="step"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(release, { force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 // ---- T350: ended sessions collapse ------------------------------------------
 
 describe('ended sessions collapse (Playwright e2e, T350)', () => {
