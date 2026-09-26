@@ -3555,6 +3555,7 @@ button.cr-answering-q {
   }
   .cr-node-hd-row {
     flex-direction: column;
+    align-items: stretch;
     gap: 8px;
   }
   .cr-node-actions {

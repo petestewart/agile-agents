@@ -21,11 +21,19 @@ import {
   type PropsWithChildren,
   type ReactNode,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from 'react';
-import { type ChatAuthor, chatRows, clockTime, isNearBottom, systemLine } from '../lib/chat';
+import {
+  type ChatAuthor,
+  chatRows,
+  clockTime,
+  isNearBottom,
+  ruleHitText,
+  systemLine,
+} from '../lib/chat';
 import { ruleHitOf } from '../lib/streams';
 import { Icon, type IconName } from './Icon';
 import { Markdown } from './Markdown';
@@ -104,6 +112,20 @@ export function ChatScroll({
     if (pinned.current) toBottom();
     else setUnseen(true);
   }, [tick]);
+
+  // Content that grows without a new line (text reflowing as a panel opens,
+  // a card's buttons loading) keeps a pinned view at the bottom.
+  useEffect(() => {
+    const el = ref.current;
+    const col = el?.firstElementChild;
+    if (!el || !col || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (pinned.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(col);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <div className="cr-chat-scroll-wrap">
@@ -237,7 +259,7 @@ export function MessageList<E extends ChatEntry>({
                 <Icon name="shield-check" size={14} className="cr-sys-icon" />
                 <div className="cr-sys-text">
                   <span className="cr-sys-lead">blocked by rule</span>
-                  <Markdown text={entry.body.slice('rule_hit:'.length).trim()} />
+                  <Markdown text={ruleHitText(entry.body)} />
                 </div>
                 {onOpenRule && (
                   <button

@@ -230,6 +230,14 @@ function systemIcon(body: string): IconName {
   return 'info';
 }
 
+/** A rule hit's words without its prefix and the rule's id (the row links to the rule). */
+export function ruleHitText(body: string): string {
+  return body
+    .replace(/^rule_hit:\s*/, '')
+    .replace(/^K-[0-9A-HJKMNP-TV-Z]{26}\s*/, '')
+    .trim();
+}
+
 // ---------------------------------------------------------------- questions
 
 /** One line of a question for the composer's "Answering: …" chip. */

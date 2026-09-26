@@ -148,6 +148,13 @@ describe('chat rows', () => {
   });
 });
 
+test('a rule hit reads without its prefix or the rule id', async () => {
+  const { ruleHitText } = await import('./chat');
+  expect(ruleHitText(`rule_hit: ${RULE} denied \`rm -rf dist\` — rule: never wipe`)).toBe(
+    'denied `rm -rf dist` — rule: never wipe',
+  );
+});
+
 describe('questions', () => {
   const q = (id: string, ts: string, stream = 'N'): InboxItem =>
     ({

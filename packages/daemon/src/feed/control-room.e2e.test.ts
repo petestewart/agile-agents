@@ -815,6 +815,12 @@ describe('cockpit shell (Playwright e2e)', () => {
           'document.documentElement.scrollWidth - document.documentElement.clientWidth',
         )) as number;
         expect(pageOverflow).toBeLessThanOrEqual(0);
+        // T363: nothing inside the node's page is wider than it either (the main column clips).
+        expect(
+          await page
+            .locator('[data-testid="stream-page"]')
+            .evaluate((el) => el.scrollWidth - el.clientWidth),
+        ).toBeLessThanOrEqual(0);
 
         // T363: on a node's page the composer answers the open question.
         await page.locator('[data-testid="composer-answering"]').waitFor();
