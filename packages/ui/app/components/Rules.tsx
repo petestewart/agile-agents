@@ -661,16 +661,30 @@ export function Rules(): JSX.Element {
               key="create"
               mode="create"
               initial={panel.draft}
-              submit={async (draft) => {
+              submit={async (draft, { accept }) => {
                 const built = createOf(draft);
                 if ('error' in built) throw new Error(built.error);
                 const created = await createRule(built.input);
-                // Show it where it now lives: To review.
+                // Show it where it now lives: in force, or To review.
                 upsert(created);
                 setPanel({ mode: 'view', id: created.id });
+                if (accept) {
+                  try {
+                    await decideRule(created.id, 'accept');
+                  } catch (err) {
+                    // Created, not applied: it waits in To review with the reason.
+                    toast({
+                      tone: 'info',
+                      title: 'Saved as a proposal',
+                      body: plainError(err instanceof Error ? err.message : String(err)),
+                      duration: 6000,
+                    });
+                    return;
+                  }
+                }
                 toast({
                   tone: 'success',
-                  title: 'Proposed',
+                  title: accept ? 'Added' : 'Proposed',
                   body: titleOf(created),
                   duration: 3000,
                 });

@@ -70,7 +70,8 @@ function sections(mod: string): ReadonlyArray<{
       rows: [
         { label: 'Move between lines of a file', keys: ['↑', '↓'] },
         { label: 'Comment on the focused line', keys: ['C'] },
-        { label: 'Add the comment', keys: [['Ctrl', 'Enter']] },
+        { label: 'Add the comment', keys: ['Enter'] },
+        { label: 'New line in a comment', keys: [['Shift', 'Enter']] },
       ],
     },
     {

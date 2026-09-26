@@ -2480,6 +2480,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui`; control-room e2e `T368` (palette), `T332`, `T419`, `T416`.
 - **Notes:** Branch T425-leftovers.
 
+### Ticket: T426 Forms that check as you type (audit round 5)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Audit round 5 findings 25, 26, 27, 28: New project's duplicate-name error came after submit, under the repo list, and its "Add a repository…" row hid below the list's scroll edge; the repo picker ignored typing; the diff comment box took Ctrl+Enter where everything else takes Enter, and "Changes 1" read as one file; knowledge you wrote needed your own acceptance.
+- **Acceptance Criteria:** A taken project name (ignoring case, the daemon's rule) shows under Name as you type and Create waits; "Add a repository…" is pinned below the scroll; a picker without a search box takes type-ahead (`typeAheadMatch`: prefix, then substring; a repeated letter cycles) and Enter picks; in a diff comment Enter adds, Shift+Enter is a new line (Ctrl+Enter still adds), the hint says so, and the Changes count carries a comment glyph and "n review comments not sent yet"; Add knowledge's primary is **Add** (create, then accept; a refusal leaves it proposed with the reason), with **Save as proposal** secondary; a checked rule without its two examples can only be saved as a proposal.
+- **Validation Steps:** `bun test packages/ui/app/lib/tree.test.ts`; control-room e2e `T393`, `T367`, `T373`, the knowledge tests; the walkthrough (its 6.2 and 7 steps use Save as proposal, then Accept).
+- **Notes:** Branch T426-forms. LIVE-CHECKLIST names Save as proposal.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

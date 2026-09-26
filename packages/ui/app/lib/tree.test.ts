@@ -16,6 +16,7 @@ import {
   splitRepos,
   subtreeIds,
   titleFromGoal,
+  typeAheadMatch,
 } from './tree';
 
 function row(id: string, extra: Partial<CockpitStreamRow> = {}): CockpitStreamRow {
@@ -155,6 +156,28 @@ describe('outline, moveTargets and searchOutline', () => {
     expect(searchOutline(list, 'port').map((o) => o.row.id)).toEqual(['x', 'y']);
     expect(searchOutline(list, 'CSV').map((o) => o.row.id)).toEqual(['x']);
     expect(searchOutline(list, '  ')).toHaveLength(3);
+  });
+});
+
+describe('typeAheadMatch (T426)', () => {
+  const repos = [
+    { text: 'No repository' },
+    { text: 'ledger' },
+    { text: 'ledger-lite' },
+    { text: 'web' },
+  ];
+  test('the first that starts with what was typed, else the first that contains it', () => {
+    expect(typeAheadMatch(repos, 'l')?.text).toBe('ledger');
+    expect(typeAheadMatch(repos, 'LEDGER-')?.text).toBe('ledger-lite');
+    expect(typeAheadMatch(repos, 'lite')?.text).toBe('ledger-lite');
+    expect(typeAheadMatch(repos, 'zz')).toBeUndefined();
+    expect(typeAheadMatch(repos, ' ')).toBeUndefined();
+  });
+
+  test('one letter again and again cycles through the options starting with it', () => {
+    expect(typeAheadMatch(repos, 'll')?.text).toBe('ledger-lite');
+    expect(typeAheadMatch(repos, 'lll')?.text).toBe('ledger');
+    expect(typeAheadMatch(repos, 'ww')?.text).toBe('web');
   });
 });
 

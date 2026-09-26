@@ -16,6 +16,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { typeAheadMatch } from '../lib/tree';
 import { Icon } from './Icon';
 import { Popover } from './ui';
 
@@ -40,6 +41,9 @@ export interface PickOption {
   /** Extra attributes for tests: `data-node`, `data-repo`. */
   attrs?: Record<string, string>;
 }
+
+/** How long after a key the next one still extends the type-ahead. */
+const TYPE_AHEAD_MS = 700;
 
 export function PickList({
   options,
@@ -75,6 +79,8 @@ export function PickList({
   const [active, setActive] = useState<string>(value);
   const activeValue = pickable.some((o) => o.value === active) ? active : pickable[0]?.value;
   const listId = useId();
+  const typed_ = useRef('');
+  const typedAt = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -102,6 +108,24 @@ export function PickList({
       // Never the dialog's submit: Enter here picks.
       event.preventDefault();
       if (activeValue !== undefined) onPick(activeValue);
+    } else if (
+      !search &&
+      event.key.length === 1 &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey
+    ) {
+      // T426: a short list without a search box still takes typing: the
+      // letters typed in quick succession highlight the first match.
+      const now = Date.now();
+      const typed = (now - typedAt.current < TYPE_AHEAD_MS ? typed_.current : '') + event.key;
+      typed_.current = typed;
+      typedAt.current = now;
+      const hit = typeAheadMatch(pickable, typed);
+      if (hit) {
+        event.preventDefault();
+        setActive(hit.value);
+      }
     }
   };
 

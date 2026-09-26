@@ -4,9 +4,10 @@
  * item: *what* it says, *where* it applies, *how* it is enforced; a check's
  * fields show only when they apply (a pattern's kind and values for a
  * pattern check; the question, criteria and examples for a classifier
- * check). Cancel and Esc discard the draft; nothing is sent until Save /
- * Propose. Every write is `rule.update`'s patch or `POST /api/rules`,
- * stamped `human` by the daemon.
+ * check). Cancel and Esc discard the draft; nothing is sent until Save,
+ * Add or Save as proposal. Every write is `rule.update`'s patch or
+ * `POST /api/rules`, stamped `human` by the daemon. T426: what you write
+ * yourself is yours to accept, so Add creates and accepts it in one go.
  */
 
 import {
@@ -49,7 +50,8 @@ export function KnowledgeEditor({
   /** Edit: the item's title, for the panel's bar. */
   title?: string;
   initial: RuleDraft;
-  submit: (draft: RuleDraft) => Promise<void>;
+  /** T426: `accept` is Add (yours, so it applies at once) rather than Save as proposal. */
+  submit: (draft: RuleDraft, options: { accept: boolean }) => Promise<void>;
   onDone: () => void;
   onCancel: () => void;
 }): JSX.Element {
@@ -83,7 +85,7 @@ export function KnowledgeEditor({
     el?.scrollIntoView({ block: 'nearest' });
   };
 
-  async function save(): Promise<void> {
+  async function save(accept = creating && short === 0): Promise<void> {
     // The one required field says so where it is, not in the footer.
     if (draft.text.trim() === '') {
       setTextError('Write what agents should know.');
@@ -98,7 +100,7 @@ export function KnowledgeEditor({
     setBusy(true);
     setError(undefined);
     try {
-      await submit(draft);
+      await submit(draft, { accept });
       onDone();
     } catch (err) {
       setError(plainError(err instanceof Error ? err.message : String(err)));
@@ -137,7 +139,7 @@ export function KnowledgeEditor({
       </div>
       {creating && (
         <p className="cr-kn-form-lede">
-          It starts as a proposal: nothing applies until you accept it.
+          Add applies it now. Save as proposal keeps it in To review until you accept it.
         </p>
       )}
 
@@ -472,8 +474,31 @@ export function KnowledgeEditor({
           <Button data-testid="rules-edit-cancel" disabled={busy} onClick={onCancel}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" data-testid="rules-edit-save" busy={busy}>
-            {creating ? 'Propose' : 'Save'}
+          {creating && (
+            <Button
+              data-testid="rules-edit-propose"
+              disabled={busy}
+              title="Keep it in To review: nothing applies until you accept it"
+              onClick={() => void save(false)}
+            >
+              Save as proposal
+            </Button>
+          )}
+          <Button
+            type="submit"
+            variant="primary"
+            data-testid="rules-edit-save"
+            busy={busy}
+            disabled={creating && short > 0}
+            title={
+              creating
+                ? short > 0
+                  ? `Needs ${short} more ${short === 1 ? 'example' : 'examples'} before it can apply: save it as a proposal meanwhile`
+                  : 'Agents in scope follow it from now on'
+                : undefined
+            }
+          >
+            {creating ? 'Add' : 'Save'}
           </Button>
         </div>
       </div>

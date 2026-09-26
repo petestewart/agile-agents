@@ -721,7 +721,8 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
         `diff changes src/ledger.ts and adds no test`, **Violates** ticked.
         Second: `diff changes src/ledger.ts and test/ledger.test.ts`,
         **Violates** unticked.
-- [ ] Press **Propose**. A new row appears under **To review** with its name
+- [ ] Press **Save as proposal** (**Add** would apply it at once). A new
+      row appears under **To review** with its name
       (`tests-with-src`), `Standard · Repo ledger-lite`, the badge
       `Checked before merge`, and **Accept** / **Retire**. The side panel
       shows it: `Proposed`, Source `Added by you`, the default question
@@ -793,9 +794,9 @@ cd ~
       so its session ends too (`Agent finished its turn`).
 - [ ] **Knowledge** → **Add knowledge**: Kind **Decision**, What agents
       should know `Amounts in exported JSON are integer cents, never floats`,
-      Applies to `Project: Shop`, **Guidance**, **Propose**. Then **Accept**
-      it (on its row under **To review**, or on the `Decision proposed` card
-      in **Needs me**).
+      Applies to `Project: Shop`, **Guidance**, **Save as proposal**. Then
+      **Accept** it (on its row under **To review**, or on the `Decision
+      proposed` card in **Needs me**).
 - [ ] Back on Cents check: accepting the decision woke it (a Shop
       conversation whose turn ended is woken by an accepted item, D36). Its
       **Chat** tab has `Woke up for new knowledge` and a new session;
