@@ -81,7 +81,7 @@ The cockpit is `http://127.0.0.1:4600/`.
 | **Knowledge** | Every knowledge item: filters, Accept/Retire, Edit, Test examples |
 | **Director** | The Director's thread and composer, its **Drafts** (Create/Dismiss), its activity |
 | **Events** | Every routed event, newest first: what happened, to which node, and who it was routed to and why |
-| **Settings** | Who decides, the TypeSafe API key, Trackers (Jira, Linear), session defaults, repos (add, delivery, visibility) |
+| **Settings** | Sections on the left: **General** (theme: System, Light, Dark; the daemon), **Agents** (session defaults, global and per repo), **Repositories** (**Add repository**: a folder, or a URL to clone; per repo its icon, delivery, auto-merge, visibility), **Classifier** (the TypeSafe API key), **Trackers** (Jira, Linear), **Permissions** (who decides) |
 | A node's page | Title, role, "Needs you", sessions with **Start/Restart**, **Review**, **Stop**, **Close**, **Waits on…**, **+ Repo**; **Tracker issue…** (**Link**, **Create issue**; then **Unlink**, **Import children**), only when the node's project has a tracker; **Coordinator autonomy** on a coordinating node or a project root (and, on a project root, **Director autonomy** and the project's tracker); the **Delivery** panel (**Merge**, Resolve); children's status cards; tabs **Thread**, **Diff**, **Activity**, **Plan**, **Knowledge in scope**, **Docs** |
 
 ### The CLI
@@ -271,9 +271,21 @@ agile repo list
       `pr delivery needs GitHub auth — run gh auth login`.
 - [ ] `repo list` shows both, `protected=main,master`, ledger-lite
       `delivery=direct`, agile-test-repo `delivery=pr auto_merge=on`.
-- [ ] Cockpit → **Settings** → Repos shows the same, with a Delivery and a
-      Visibility picker per repo. **Private** visibility limits reading a
-      repo to the projects you list; leave both public.
+- [ ] Cockpit → **Settings** → **Repositories** shows the same: each repo
+      with its icon (a drive for a local-only repo, the GitHub mark for
+      agile-test-repo, with a small key when its remote is SSH), its path,
+      `GitHub · … · petestewart/agile-test-repo`, its main branch, and
+      **Direct** / **Pull request** (agile-test-repo on **Pull request** with
+      **Auto-merge once checks pass** on), **Public** / **Private** and the
+      protected branches. **Private** limits a repo to the projects you tick
+      (by name); leave both public.
+- [ ] (Optional, instead of `repo add`.) **Add repository** there opens a
+      dialog: type a path (it autocompletes; **Tab** completes, the arrows
+      choose, **Enter** opens a folder) or browse to the folder (git
+      repositories are marked `git`), check the name, **Add repository**.
+      Pasting a URL (`git@github.com:owner/repo.git`, `https://…`,
+      `owner/repo`) switches to **Clone from URL**, which clones it into the
+      folder it shows and adds it.
 
 ### 2.3 Two projects
 
@@ -654,14 +666,14 @@ bar) lists them all, with filters for Status, Kind, Enforcement and Scope.
 
 Ship and classifier action checks need the TypeSafe key. Use **one** of these:
 
-- **Settings (preferred):** **Settings** → "TypeSafe API key" → paste the key
-  into `paste a key` → **Save**. It takes effect at once, and the field is
-  never filled back in.
+- **Settings (preferred):** **Settings** → **Classifier** → "TypeSafe API
+  key" → paste the key into `Paste a key` → **Save key**. It takes effect at
+  once, and the field is never filled back in.
 - **Environment:** `TYPESAFE_API_KEY` exported in the shell that runs
   `agile daemon start`.
 
-- [ ] Under "TypeSafe API key" the status reads `key set (from config)` (or
-      `key set (from environment)`). `no key` means neither is set.
+- [ ] Next to "TypeSafe API key" the status reads `Key set` (or
+      `Key set · from the environment`). `No key` means neither is set.
 
 ### 6.2 Add, accept and test a ship check
 
@@ -825,15 +837,15 @@ project. The app never closes an issue or edits its text.
 
 In Jira, create an API token (Atlassian account → Security → API tokens).
 
-- [ ] **Settings** → **Trackers** → the **Jira** row. Fill in the base URL
-      (`https://your-site.atlassian.net`: **change it** to your Jira site),
-      the email (**change it** to your Atlassian email), paste the token into
-      `paste a token`, and press **Set**.
-- [ ] The row reads `token set`; the token field empties and is never filled
-      back in. **Clear** removes the token.
+- [ ] **Settings** → **Trackers** → the **Jira** card. Fill in the **Site
+      URL** (`https://your-site.atlassian.net`: **change it** to your Jira
+      site), the **Email** (**change it** to your Atlassian email), paste the
+      token into `Paste a token`, and press **Save**.
+- [ ] The card reads `Token set`; the token field empties and is never
+      filled back in. **Remove token** removes it (after asking).
 
-Using Linear instead: paste a personal API key in the **Linear** row and press
-**Set**, then use `linear` wherever 8.2 says `jira`.
+Using Linear instead: paste a personal API key in the **Linear** card and
+press **Save**, then use `linear` wherever 8.2 says `jira`.
 
 ### 8.2 The project's tracker settings
 

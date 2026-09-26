@@ -354,9 +354,16 @@ export function describeCloneError(message: string): CloneErrorText {
   }
   if (hint) hint = hint.charAt(0).toUpperCase() + hint.slice(1);
   const all = `${first}\n${detail}`;
-  if (!hint && /publickey|Host key verification|ssh: |Could not resolve hostname/i.test(all)) {
-    hint =
-      'Check that your SSH key works for this host (`ssh -T git@github.com` in a terminal), or use the https URL.';
+  if (!hint && /ssh: (command )?not found/i.test(all)) {
+    hint = 'ssh is not installed on this machine; use the https URL.';
+  } else if (
+    !hint &&
+    /publickey|Host key verification|ssh: |Could not resolve hostname/i.test(all)
+  ) {
+    const url = /clone of (\S+) (failed|was stopped)/.exec(line)?.[1];
+    const parsed = url !== undefined ? parseRepoSource(url) : undefined;
+    const host = parsed?.ok ? parsed.source.host : undefined;
+    hint = `Check that your SSH key works for this host (\`ssh -T git@${host ?? '<host>'}\` in a terminal), or use the https URL.`;
   }
   if (!hint && /already exists and is not empty|already registered/.test(line)) {
     hint = 'Pick another name or destination folder.';

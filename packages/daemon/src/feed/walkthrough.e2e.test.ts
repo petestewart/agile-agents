@@ -1632,25 +1632,26 @@ test.skipIf(!RUN)(
     });
 
     // ---------------------------------------------------------- 6.1
-    await step('6.1', 'Settings: the TypeSafe key', async () => {
+    await step('6.1', 'Settings → Classifier: the TypeSafe key', async () => {
       await openView('Settings');
+      await page.locator('[data-testid="settings-nav-classifier"]').click();
       await checkText(
-        'no key before',
+        'No key before',
         page.locator('[data-testid="settings-key-status"]'),
-        /no key/,
+        /^No key$/,
       );
       const input = page.locator('[data-testid="settings-key-input"]');
       check(
-        'the key field reads paste a key',
-        (await input.getAttribute('placeholder')) === 'paste a key',
+        'the key field reads Paste a key',
+        (await input.getAttribute('placeholder')) === 'Paste a key',
         (await input.getAttribute('placeholder')) ?? '',
       );
       await input.fill('ts_walkthrough_fake_key');
       await page.locator('[data-testid="settings-key-save"]').click();
       await checkText(
-        'the status reads key set (from config)',
+        'the status reads Key set',
         page.locator('[data-testid="settings-key-status"]'),
-        /key set \(from config\)/,
+        /^Key set$/,
       );
       check(
         'the field is never filled back in',
@@ -2133,26 +2134,27 @@ test.skipIf(!RUN)(
     // ---------------------------------------------------------- 8
     await step('8.1', 'Settings → Trackers → Jira', async () => {
       await openView('Settings');
+      await page.locator('[data-testid="settings-nav-trackers"]').click();
       const row = page.locator('[data-testid="settings-tracker-jira"]');
       await row.locator('[data-testid="settings-tracker-jira-base-url"]').fill(world.jira.baseUrl);
       await row.locator('[data-testid="settings-tracker-jira-email"]').fill(world.jira.email);
       const token = row.locator('[data-testid="settings-tracker-jira-token"]');
       check(
-        'the token field reads paste a token',
-        (await token.getAttribute('placeholder')) === 'paste a token',
+        'the token field reads Paste a token',
+        (await token.getAttribute('placeholder')) === 'Paste a token',
         (await token.getAttribute('placeholder')) ?? '',
       );
       await token.fill(world.jira.token);
-      await row.getByRole('button', { name: 'Set' }).click();
+      await row.getByRole('button', { name: 'Save', exact: true }).click();
       await checkText(
-        'the row reads token set',
+        'the card reads Token set',
         row.locator('[data-testid="settings-tracker-jira-status"]'),
-        'token set',
+        'Token set',
       );
       check('the token field empties', (await token.inputValue()) === '', await token.inputValue());
       check(
-        'Clear is offered',
-        (await row.getByRole('button', { name: 'Clear' }).isEnabled()) === true,
+        'Remove token is offered',
+        (await row.getByRole('button', { name: 'Remove token' }).isEnabled()) === true,
         await textOf(row),
       );
     });

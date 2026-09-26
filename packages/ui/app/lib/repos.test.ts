@@ -264,9 +264,16 @@ describe('display helpers', () => {
         'git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.',
     });
     expect(
-      describeCloneError('git clone of ssh://h/x failed:\nssh: connect to host h port 22: refused')
+      describeCloneError(
+        'git clone of ssh://git@git.example.com/x.git failed:\nssh: connect to host git.example.com port 22: refused',
+      ).hint,
+    ).toBe(
+      'Check that your SSH key works for this host (`ssh -T git@git.example.com` in a terminal), or use the https URL.',
+    );
+    expect(
+      describeCloneError('git clone of ssh://h/x failed:\nssh -o BatchMode=yes: 1: ssh: not found')
         .hint,
-    ).toContain('SSH key');
+    ).toBe('ssh is not installed on this machine; use the https URL.');
     expect(describeCloneError('/home/p/x already exists and is not empty')).toEqual({
       title: '/home/p/x already exists and is not empty',
       hint: 'Pick another name or destination folder.',

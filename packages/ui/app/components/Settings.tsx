@@ -29,7 +29,7 @@ import type {
   TrackerSettingsStatus,
 } from '@agile-agents/shared';
 import { GATE_KINDS } from '@agile-agents/shared';
-import { type ReactNode, useEffect, useId, useState } from 'react';
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import {
   type DaemonHealth,
   getClassifierKey,
@@ -127,12 +127,19 @@ function useSectionInUrl(): [SettingsSection, (next: SettingsSection) => void] {
 
 export function Settings(): JSX.Element {
   const [section, setSection] = useSectionInUrl();
+  const nav = useRef<HTMLElement>(null);
+  // On a phone the sections are a scrolling row: keep the open one in view.
+  useEffect(() => {
+    nav.current
+      ?.querySelector<HTMLElement>(`[data-section="${section}"]`)
+      ?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [section]);
   return (
     <div className="cr-settings" data-testid="settings" data-section={section}>
       <div className="cr-set-wrap">
         <PageHeader title="Settings" />
         <div className="cr-set-layout">
-          <nav className="cr-set-nav" aria-label="Settings sections">
+          <nav className="cr-set-nav" aria-label="Settings sections" ref={nav}>
             {SECTIONS.map((s) => (
               <button
                 key={s.id}
