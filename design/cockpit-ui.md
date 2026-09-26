@@ -209,7 +209,8 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   agent's name; daemon lines as one-line system rows (icon + muted text) that
   collapse when there are several in a row. A long message folds with "Show
   more". Hover actions on a message: Copy, Branch off (conversations).
-- **Composer**: rounded box, auto-growing textarea (1–10 lines), a model chip,
+- **Composer**: rounded box, auto-growing textarea (1–10 lines), a model chip
+  (with how full the live agent's context is, T411),
   a hint of what sending will do ("Starts the agent", "Queued until the
   current step ends", "Answers the question"), and Send / Stop. A message to
   a node whose agent never ran or was stopped starts it (`say` with

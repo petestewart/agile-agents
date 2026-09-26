@@ -36,6 +36,7 @@ import {
   type ChatAuthor,
   chatRows,
   clockTime,
+  contextMeter,
   isNearBottom,
   questionIdOfRef,
   ruleHitText,
@@ -523,6 +524,45 @@ function StepList({
 }
 
 /** A finished turn's steps, folded to one quiet row: "Worked through 12 steps · 1 failed". */
+/**
+ * T411: how full the agent's context window is, a small ring by its model
+ * chip; amber from 75%, red from 90% (time to restart it fresh). The numbers
+ * are its label and tooltip.
+ */
+export function ContextMeter({
+  context,
+}: {
+  context: { used: number; size: number };
+}): JSX.Element {
+  const { percent, level, title } = contextMeter(context);
+  const r = 5;
+  const around = 2 * Math.PI * r;
+  return (
+    <span
+      className="cr-context"
+      data-testid="context-meter"
+      data-level={level}
+      data-percent={percent}
+      title={title}
+      role="img"
+      aria-label={title}
+    >
+      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+        <circle className="cr-context-track" cx="7" cy="7" r={r} />
+        <circle
+          className="cr-context-fill"
+          cx="7"
+          cy="7"
+          r={r}
+          strokeDasharray={`${(around * percent) / 100} ${around}`}
+          transform="rotate(-90 7 7)"
+        />
+      </svg>
+      <span className="cr-context-text">{percent}%</span>
+    </span>
+  );
+}
+
 export function StepsFold({ steps }: { steps: readonly AgentStep[] }): JSX.Element {
   const [open, setOpen] = useState(false);
   const hold = useContext(ChatHold);

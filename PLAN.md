@@ -2361,6 +2361,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/delivery/service.test.ts packages/daemon/src/feed/merge-state.test.ts packages/ui/app/lib/inbox.test.ts`; control-room e2e `T347`.
 - **Notes:** Branch T410-merge-card-diff.
 
+### Ticket: T411 How full the agent's context is
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Vendors report their context window in `usage_update` (tokens used of its size; `design/spike-findings.md`'s raw reports), and the runner dropped it, so nothing said when a long session was near its limit.
+- **Acceptance Criteria:** The runner keeps each session's last reading in memory (no stored state, no writes); `AttachService.contextFor(session)` reads it; the frame's `live_agent.context` carries it. The composer shows a small ring and the share by the live model chip ("23%", the numbers on hover), amber from 75%, red from 90%; Running shows it by each live agent. A vendor that reports nothing shows nothing.
+- **Validation Steps:** `bun test packages/daemon/src/runner/context-usage.test.ts packages/ui/app/lib/chat.test.ts`; control-room e2e `T392` (a fake agent's `usage_update` reads "23%").
+- **Notes:** Branch T411-context-meter. Cost (`usage_update.cost`) is not shown: whether it is per turn or running is not measured yet.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

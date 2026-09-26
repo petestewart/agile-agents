@@ -67,7 +67,7 @@ import { useShell } from '../lib/shell';
 import type { StatusInput } from '../lib/status';
 import { groupSteps, turnStartedAt } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
-import { ChatScroll, MessageList, StepsFold, Thinking, useSteps } from './Chat';
+import { ChatScroll, ContextMeter, MessageList, StepsFold, Thinking, useSteps } from './Chat';
 import { Composer, type ComposerHandle } from './Composer';
 import { DeliveryPanel, isMergeable, outcomeTone, useDelivery } from './Delivery';
 import { TabBoundary, lazyNamed } from './ErrorBoundary';
@@ -945,6 +945,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     </button>
   ) : undefined;
 
+  // T411: the live agent's context window, when its vendor reports it (the row's agent is this one).
+  const context =
+    liveAgent !== undefined && row?.live_agent?.role === liveAgent.role
+      ? row.live_agent.context
+      : undefined;
   const modelChip =
     liveAgent !== undefined ? (
       <span
@@ -1095,7 +1100,16 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             placeholder={intent.placeholder}
             hint={intent.hint}
             above={answeringChip}
-            chip={modelChip}
+            chip={
+              context !== undefined ? (
+                <>
+                  {modelChip}
+                  <ContextMeter context={context} />
+                </>
+              ) : (
+                modelChip
+              )
+            }
             label={answeringItem ? 'Your answer' : 'Message the agent'}
             mode={intent.action === 'answer' ? 'answer' : undefined}
           />

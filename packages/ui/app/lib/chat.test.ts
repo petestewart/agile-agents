@@ -12,6 +12,7 @@ import {
   chatAuthor,
   chatRows,
   chatVariant,
+  contextMeter,
   dayLabel,
   deliveryBadge,
   detailsOpenFrom,
@@ -29,6 +30,7 @@ import {
   sessionIdText,
   sessionLabel,
   systemLine,
+  tokensText,
   vendorLabel,
   workingAs,
 } from './chat';
@@ -484,5 +486,26 @@ describe('questionIdOfRef (T376)', () => {
     );
     expect(questionIdOfRef('gates/HIL-01ARZ3NDEKTSV4RRFFQ69G5FAV.yaml')).toBeUndefined();
     expect(questionIdOfRef(undefined)).toBeUndefined();
+  });
+});
+
+describe('T411: how full the context is', () => {
+  test('token counts a glance reads', () => {
+    expect(tokensText(950)).toBe('950');
+    expect(tokensText(46_406)).toBe('46k');
+    expect(tokensText(200_000)).toBe('200k');
+    expect(tokensText(1_000_000)).toBe('1M');
+    expect(tokensText(1_250_000)).toBe('1.3M');
+  });
+
+  test('the share used, a level, and the numbers in words', () => {
+    expect(contextMeter({ used: 46_406, size: 200_000 })).toEqual({
+      percent: 23,
+      level: 'ok',
+      title: 'Context: 46k of 200k tokens used (23%)',
+    });
+    expect(contextMeter({ used: 150_000, size: 200_000 }).level).toBe('high');
+    expect(contextMeter({ used: 181_000, size: 200_000 }).level).toBe('full');
+    expect(contextMeter({ used: 250_000, size: 200_000 }).percent).toBe(100);
   });
 });
