@@ -2910,6 +2910,17 @@ input[type="checkbox"].cr-switch:focus-visible {
   flex: 1;
   min-width: 0;
 }
+/* T413: the details toggle and ⋯ keep close to the actions before them. */
+.cr-node-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding-top: 16px;
+}
+.cr-node-actions + .cr-node-tools {
+  margin-left: -10px;
+}
 .cr-crumbs {
   display: flex;
   flex-wrap: wrap;
@@ -2948,12 +2959,17 @@ input[type="checkbox"].cr-switch:focus-visible {
 }
 .cr-node-title-row {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 6px 10px;
+  gap: 10px;
   min-width: 0;
 }
+/* T413: a long title truncates (its tooltip has it whole); the status pill stays beside it. */
+.cr-node-title-row > .cr-status-pill {
+  flex: none;
+}
 .cr-node-title {
+  flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
   font-size: var(--text-xl);
@@ -2967,6 +2983,7 @@ input[type="checkbox"].cr-switch:focus-visible {
   margin-left: -4px;
 }
 .cr-node-title-btn {
+  display: block;
   max-width: 100%;
   padding: 0 4px;
   font: inherit;
@@ -2996,19 +3013,20 @@ input[type="checkbox"].cr-switch:focus-visible {
   box-shadow: var(--focus-ring);
   outline: none;
 }
+/* T413: the role is a word with its glyph, read like the line it sits on — nothing to press. */
 .cr-role-badge {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 22px;
-  padding: 0 8px;
+  flex: none;
+  gap: 4px;
   font-size: var(--text-sm);
-  font-weight: 500;
+  font-weight: 400;
   color: var(--text-muted);
-  border: 1px solid var(--border);
-  border-radius: 999px;
   white-space: nowrap;
   cursor: help;
+}
+.cr-role-badge .cr-icon {
+  color: var(--text-faint);
 }
 .cr-node-meta {
   margin-top: 5px;
@@ -3026,6 +3044,14 @@ input[type="checkbox"].cr-switch:focus-visible {
 .cr-meta-sep {
   flex: none;
   color: var(--text-faint);
+}
+.cr-node-meta-status {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
 }
 .cr-meta-item {
   display: inline-flex;
@@ -3991,6 +4017,10 @@ button.cr-model-chip:hover {
 button.cr-answering-q {
   cursor: pointer;
 }
+/* T413: one question as plain text: a block, so a long one ends in an ellipsis. */
+span.cr-answering-q {
+  display: block;
+}
 .cr-answering .cr-icon-btn {
   color: var(--amber-text);
 }
@@ -4195,26 +4225,30 @@ button.cr-answering-q {
   font-size: var(--text-sm);
 }
 
+/* T413: the children as rows (a list, not a stack of cards), each with its status pill. */
 .cr-children {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   list-style: none;
-  margin: 0;
+  margin: 0 -2px;
   padding: 0;
 }
 .cr-child {
-  padding: 9px 10px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.cr-child:last-child {
+  border-bottom: 0;
 }
 .cr-child-top {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   min-width: 0;
   font-size: var(--text-md);
+}
+.cr-child-top > .cr-status-pill {
+  flex: none;
 }
 .cr-child-title {
   flex: 1;
@@ -4236,9 +4270,10 @@ button.cr-answering-q {
   text-decoration: underline;
 }
 .cr-child-doing {
-  margin-top: 4px !important;
+  margin-top: 2px !important;
   font-size: var(--text-sm);
-  line-height: 1.5;
+  line-height: 1.45;
+  color: var(--text-muted);
 }
 .cr-child-files {
   margin-top: 3px !important;
@@ -4252,9 +4287,6 @@ button.cr-answering-q {
   font-size: var(--text-xs);
   color: var(--red-text);
   overflow-wrap: anywhere;
-}
-.cr-card-dot {
-  flex: none;
 }
 
 .cr-waits {
@@ -4359,9 +4391,57 @@ button.cr-answering-q {
   font-size: var(--text-xs);
   color: var(--text-muted);
 }
-.cr-about-path {
+/* T413: the worktree by its folder's name; the path copies (and is the tooltip). */
+.cr-about-worktree {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+}
+.cr-about-worktree-name {
+  min-width: 0;
+  overflow: hidden;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cr-about-worktree .cr-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-sm);
+}
+/* T413: the goal here when the chat shows no Goal card. */
+.cr-about-goal-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+}
+.cr-about-goal-edit {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: var(--text-sm);
+}
+.cr-about-goal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cr-about-goal-input {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+}
+.cr-delivery-branch {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 0 4px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
 }
 
 /* -- delivery */
@@ -4987,6 +5067,48 @@ button.cr-answering-q {
 .cr-empty-inline p {
   margin: 0;
 }
+/*
+ * T413: a node's Activity reads as the Events view (its `cr-lens-log-*`
+ * rows); the last column says why it came here and whether the agent saw it.
+ */
+.cr-activity-why {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+.cr-activity-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: help;
+}
+.cr-activity-seen {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+.cr-activity-seen[data-delivery="pending"] {
+  color: var(--amber-text);
+}
+.cr-activity-self {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+@media (max-width: 900px) {
+  .cr-activity-why {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+}
 .cr-kn {
   list-style: none;
   margin: 0;
@@ -5130,14 +5252,56 @@ button.cr-answering-q {
     align-items: stretch;
     gap: 8px;
   }
+  /*
+   * T413: a node's header in four short lines at most: the path; the title
+   * with its status, the details toggle and ⋯; the role and what it is
+   * doing; then the actions, when there are any.
+   */
+  .cr-node:not(.cr-dir) .cr-node-hd-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "crumbs crumbs"
+      "title tools"
+      "meta meta"
+      "actions actions";
+    align-items: center;
+    gap: 0 8px;
+  }
+  .cr-node:not(.cr-dir) .cr-node-hd-main {
+    display: contents;
+  }
+  .cr-node:not(.cr-dir) .cr-crumbs {
+    grid-area: crumbs;
+  }
+  .cr-node:not(.cr-dir) .cr-crumbs:empty {
+    display: none;
+  }
+  .cr-node:not(.cr-dir) .cr-node-title-row {
+    grid-area: title;
+  }
+  .cr-node:not(.cr-dir) .cr-node-meta {
+    grid-area: meta;
+    margin-top: 2px;
+  }
+  .cr-node-tools {
+    grid-area: tools;
+    padding-top: 0;
+    margin-right: -6px;
+  }
   .cr-node-actions {
     flex-wrap: wrap;
     padding-top: 0;
   }
+  .cr-node:not(.cr-dir) .cr-node-actions {
+    grid-area: actions;
+    margin-top: 8px;
+  }
+  .cr-node-actions + .cr-node-tools {
+    margin-left: 0;
+  }
   .cr-node-title {
     font-size: 16px;
-    white-space: normal;
-    overflow-wrap: anywhere;
   }
   .cr-node-tabs {
     padding: 0 8px;
@@ -5214,25 +5378,6 @@ button.cr-answering-q {
 }
 .cr-msg[data-open-question="true"] .cr-msg-tag .cr-icon {
   margin-left: 2px;
-}
-
-/* T374: a node branch: the id part shrinks first, the slug stays whole. */
-.cr-branch {
-  display: inline-flex;
-  min-width: 0;
-  max-width: 100%;
-}
-.cr-branch-id {
-  min-width: 3ch;
-  max-width: 9ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  opacity: 0.7;
-}
-.cr-branch-slug {
-  flex: none;
-  white-space: nowrap;
 }
 
 /* ==== Agent steps ==== */

@@ -2,23 +2,29 @@
  * T363: a node's other tabs — Plan (who owns what, the contracts, and a
  * draft's Approve), Activity (what woke this node and why, as a timeline),
  * Knowledge (exactly what is in scope) and Docs.
+ *
+ * T413: they read as the Events view and the Knowledge screen do, with
+ * those screens' own rows, so this file loads on demand (`StreamPage`),
+ * like them, rather than pulling them into the first screen.
  */
 
-import {
-  type KnowledgeItem as Rule,
-  type SessionRef,
-  formatKnowledgeScope,
-} from '@agile-agents/shared';
+import { DIRECTOR_NODE, type KnowledgeItem as Rule, type SessionRef } from '@agile-agents/shared';
 import { useEffect, useState } from 'react';
 import { approvePlan, getStreamActivity, getStreamPlan } from '../lib/api';
+import { clockTime } from '../lib/chat';
+import { useOptionalFeed } from '../lib/feed-context';
 import type { ActivityEntry, StreamDoc } from '../lib/feed-types';
-import { ROUTE_REASON, eventTitle } from '../lib/lenses';
-import { DEFAULT_RULES_FILTER } from '../lib/rules';
+import { ROUTE_REASON, eventDetail, eventTitle, groupByDay, sortNewestFirst } from '../lib/lenses';
+import { DEFAULT_RULES_FILTER, sectionOf } from '../lib/rules';
 import { useShell } from '../lib/shell';
+import { ago } from '../lib/status';
 import { activityDelivery, eventTime } from '../lib/streams';
 import { Icon } from './Icon';
-import { Linked, Markdown } from './Markdown';
-import { Badge, Button, EmptyState } from './ui';
+import { KnowledgeRow } from './KnowledgeList';
+import { EventGlyph } from './Lenses';
+import { Markdown } from './Markdown';
+import { NodeLink } from './NodeDetails';
+import { Button, EmptyState } from './ui';
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -31,31 +37,6 @@ function Loading(): JSX.Element {
       <div className="cr-skel" />
       <div className="cr-skel" style={{ width: '70%' }} />
     </div>
-  );
-}
-
-/** T338: a node by its title, as a link that opens its page (never the raw id). */
-export function NodeLink({
-  id,
-  titleOf,
-}: {
-  id: string;
-  titleOf: (id: string) => string;
-}): JSX.Element {
-  const { select } = useShell();
-  return (
-    <a
-      href={`#${id}`}
-      className="cr-ref"
-      data-node={id}
-      title={id}
-      onClick={(e) => {
-        e.preventDefault();
-        select(id);
-      }}
-    >
-      {titleOf(id)}
-    </a>
   );
 }
 
@@ -188,7 +169,20 @@ export function PlanView({
   );
 }
 
-/** T245: what woke this node and why — every routed event, its reason, and what carried it. */
+/** A node's title for a row, the Director by name; a node the cockpit no longer knows reads as deleted. */
+function useTitleOf(): (id: string) => string {
+  const rows = useOptionalFeed()?.cockpit?.streams;
+  return (id: string) =>
+    id === DIRECTOR_NODE ? 'Director' : (rows?.find((r) => r.id === id)?.title ?? 'a deleted node');
+}
+
+/**
+ * T245, redesigned in T413: what reached this node and why, read as the
+ * Events view reads (`cr-lens-log-*`, `EventGlyph`, `eventTitle`,
+ * `eventDetail`): when, what happened, which node it is about — then why it
+ * came here (a small chip, `ROUTE_REASON`) and whether the agent has seen it.
+ * Newest first, under day headings.
+ */
 export function ActivityView({
   id,
   tick,
@@ -200,6 +194,8 @@ export function ActivityView({
 }): JSX.Element {
   const [rows, setRows] = useState<ActivityEntry[] | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
+  const titleOf = useTitleOf();
+  const { select, setView } = useShell();
   // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` (the pushed frame) is the re-read trigger.
   useEffect(() => {
     let live = true;
@@ -214,84 +210,139 @@ export function ActivityView({
   if (!rows) return <Loading />;
   if (rows.length === 0)
     return (
-      <div className="cr-empty-inline">
-        <Icon name="activity" size={16} />
-        <p data-testid="activity-empty">No events routed here yet.</p>
+      <div data-testid="activity-empty">
+        <EmptyState icon="activity" title="Nothing has reached this node yet">
+          Events about it, the nodes under it and its repo show here: merges, questions, changes on
+          main, new knowledge.
+        </EmptyState>
       </div>
     );
+  const days = groupByDay(sortNewestFirst(rows.map((row) => ({ at: row.event.at, row }))));
+  const open = (node: string): void =>
+    node === DIRECTOR_NODE ? setView('director') : select(node);
   return (
-    <ol className="cr-timeline" data-testid="activity">
-      {rows.map((row) => (
-        <li
-          key={row.event.id}
-          className="cr-timeline-row"
-          data-testid="activity-row"
-          data-event={row.event.id}
-          data-delivery={row.status}
-        >
-          <span className="cr-timeline-dot" aria-hidden="true" />
-          <div className="cr-timeline-main">
-            <span className="cr-timeline-type" data-testid="activity-type">
-              {eventTitle(row.event)}
-            </span>
-            {row.event.repo ? <span className="cr-dim"> · {row.event.repo}</span> : null}
-            <span className="cr-dim"> · </span>
-            <span
-              className="cr-dim"
-              data-testid="activity-because"
-              title={ROUTE_REASON[row.because]?.hint}
-            >
-              {ROUTE_REASON[row.because]?.label ?? row.because.replace(/_/g, ' ')}
-            </span>
-            <span
-              className="cr-dim"
-              data-testid="activity-status"
-              title={[row.session, row.digest].filter(Boolean).join(' · ') || undefined}
-            >
-              {' '}
-              · {activityDelivery(row, sessions)}
-            </span>
-          </div>
-          <time className="cr-timeline-time" dateTime={row.event.at} title={row.event.at}>
-            {' '}
-            · {eventTime(row.event.at)}
-          </time>
-        </li>
+    <div className="cr-lens-log cr-activity" data-testid="activity">
+      {days.map((day) => (
+        <section key={day.day} className="cr-lens-day" aria-label={day.day}>
+          <h3 className="cr-lens-day-hd">{day.day}</h3>
+          <ul className="cr-lens-rows">
+            {day.events.map(({ row }) => {
+              const { event } = row;
+              const detail = eventDetail(event, titleOf);
+              const why = ROUTE_REASON[row.because];
+              return (
+                <li
+                  key={event.id}
+                  className="cr-lens-log-row cr-activity-row"
+                  data-testid="activity-row"
+                  data-event={event.id}
+                  data-delivery={row.status}
+                >
+                  <time
+                    className="cr-lens-log-time"
+                    dateTime={event.at}
+                    title={eventTime(event.at)}
+                  >
+                    {day.day === 'Today' ? ago(event.at) : clockTime(event.at)}
+                  </time>
+                  <div className="cr-lens-log-what">
+                    <EventGlyph type={event.type} />
+                    <div className="cr-lens-log-text">
+                      <span className="cr-lens-ev-label" data-testid="activity-type">
+                        {eventTitle(event)}
+                      </span>
+                      {detail !== undefined && (
+                        <span className="cr-lens-log-detail" title={detail}>
+                          {detail}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div
+                    className="cr-lens-log-node"
+                    data-empty={event.subject === undefined || undefined}
+                  >
+                    {event.subject === undefined ? (
+                      <span className="cr-faint">—</span>
+                    ) : event.subject === id ? (
+                      <span className="cr-activity-self">This node</span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="cr-lens-link"
+                        onClick={() => event.subject && open(event.subject)}
+                      >
+                        {titleOf(event.subject)}
+                      </button>
+                    )}
+                    {event.repo !== undefined && (
+                      <span className="cr-lens-log-repo">{event.repo}</span>
+                    )}
+                  </div>
+                  <div className="cr-lens-log-routing cr-activity-why">
+                    <span
+                      className="cr-activity-chip"
+                      data-testid="activity-because"
+                      title={why?.hint}
+                    >
+                      {why?.label ?? row.because.replace(/_/g, ' ')}
+                    </span>
+                    <span
+                      className="cr-activity-seen"
+                      data-testid="activity-status"
+                      data-delivery={row.status}
+                      title={[row.session, row.digest].filter(Boolean).join(' · ') || undefined}
+                    >
+                      {activityDelivery(row, sessions)}
+                    </span>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       ))}
-    </ol>
+    </div>
   );
 }
 
+/**
+ * The knowledge in scope here. T413: each item as the Knowledge screen's
+ * row (its scope and enforcement in words, a critical rule's lock and
+ * word); a click opens it there.
+ */
 export function KnowledgeView({ rules }: { rules: readonly Rule[] }): JSX.Element {
   const { openRules } = useShell();
+  const names = useOptionalFeed()?.cockpit;
+  if (rules.length === 0) {
+    return (
+      <div data-testid="rules">
+        <EmptyState icon="book-open" title="No knowledge applies here">
+          Accepted rules, standards, architecture and decisions in this node’s scope show here.
+        </EmptyState>
+      </div>
+    );
+  }
   return (
-    <ul className="cr-kn" data-testid="rules">
-      {rules.length === 0 && <li className="cr-dim">No accepted knowledge in scope.</li>}
+    <div className="cr-kn-rows cr-node-kn" data-testid="rules">
       {rules.map((rule) => (
-        <li key={rule.id} className="cr-kn-item" data-testid="rule" data-rule={rule.id}>
-          <div className="cr-kn-meta">
-            {rule.name !== undefined && <span className="cr-kn-name">{rule.name}</span>}
-            <span className="cr-dim">
-              {rule.name !== undefined ? ' · ' : ''}
-              <Linked text={formatKnowledgeScope(rule.scope)} /> · {rule.kind} · {rule.enforcement}
-            </span>
-            {rule.critical ? (
-              <Badge tone="red" icon="alert-triangle">
-                critical
-              </Badge>
-            ) : null}
-            <button
-              type="button"
-              className="cr-link cr-kn-open"
-              onClick={() => openRules({ ...DEFAULT_RULES_FILTER, rule: rule.id })}
-            >
-              Open
-            </button>
-          </div>
-          <Markdown text={rule.text} />
-        </li>
+        <KnowledgeRow
+          key={rule.id}
+          item={rule}
+          section={sectionOf(rule)}
+          row={undefined}
+          days={0}
+          names={names}
+          open={false}
+          onOpen={() => openRules({ ...DEFAULT_RULES_FILTER, rule: rule.id })}
+          onDecide={async () => {}}
+          checked={undefined}
+          onToggle={undefined}
+          mixed
+          testid="rule"
+        />
       ))}
-    </ul>
+    </div>
   );
 }
 

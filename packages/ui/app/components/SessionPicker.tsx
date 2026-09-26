@@ -6,7 +6,7 @@
  *    and effort (`EFFORT_LEVELS`). Settings uses them with an "inherit"
  *    option; the picker without.
  *  - `SessionPicker` — the optional choice behind a node's Start agent
- *    chevron, Review changes… and Resolve (T363: a dialog; one click on
+ *    chevron, Ask an agent to review… and Resolve (T363: a dialog; one click on
  *    Start agent never needs it). Prefilled with what the session would
  *    resolve to (the node's project, else its repo entry, else the home defaults, else the
  *    built-in), so Start with no edits attaches exactly the default.
@@ -185,10 +185,12 @@ const PICKER_COPY: Record<
     description: 'Pick what runs this node. The defaults come from Settings.',
     submit: 'Start agent',
   },
+  // T413: an agent that reviews; you review on the Changes tab.
   reviewer: {
-    title: 'Review the changes',
-    description: 'A read-only reviewer reads the diff and reports findings.',
-    submit: 'Start review',
+    title: 'Start a reviewer agent',
+    description:
+      'A read-only agent reads the branch’s changes and reports findings here. It changes nothing.',
+    submit: 'Start reviewer',
   },
   resolve: {
     title: 'Resolve the conflict',
@@ -248,7 +250,7 @@ export function SessionPicker({
       description={copy.description}
       size="sm"
       testid="session-picker-dialog"
-      label={role === 'worker' ? 'Start a worker' : 'Start a review'}
+      label={role === 'worker' ? 'Start a worker' : 'Start a reviewer agent'}
       onSubmit={() => {
         if (!value) return;
         const model = value.model.trim();

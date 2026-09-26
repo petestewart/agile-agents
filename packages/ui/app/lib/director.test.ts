@@ -41,7 +41,7 @@ describe('directorState', () => {
 
   test('an ended session sleeps until a message or an event', () => {
     expect(directorState(session('stopped'), false).text).toBe(
-      'Claude Opus 5.5 · Asleep — a message or an event wakes it',
+      'Claude Opus 5.5 · Idle — a message or an event wakes it',
     );
     expect(directorState(session('error'), false).text).toContain('error');
   });
