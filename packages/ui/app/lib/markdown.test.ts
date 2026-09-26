@@ -81,6 +81,29 @@ describe('renderMarkdown', () => {
   test('empty source renders nothing', () => {
     expect(renderMarkdown('')).toBe('');
   });
+
+  test('T393: an indented line under a list item stays in that item', () => {
+    expect(renderMarkdown('1. `a.ts:2`\n   `const a = 1;`\n   Why one?\n2. next')).toBe(
+      '<ol><li><code>a.ts:2</code><br><code>const a = 1;</code><br>Why one?</li><li>next</li></ol>',
+    );
+    // An unindented line still ends the list; a nested bullet is still a bullet.
+    expect(renderMarkdown('- a\nafter')).toBe('<ul><li>a</li></ul><p>after</p>');
+    expect(renderMarkdown('- a\n  - b')).toBe('<ul><li>a</li><li>b</li></ul>');
+  });
+
+  test('T393: an interrupted numbered list keeps counting', () => {
+    expect(renderMarkdown('1. one\n\n```\nx\n```\n2. two')).toBe(
+      '<ol><li>one</li></ol><pre><code>x</code></pre><ol start="2"><li>two</li></ol>',
+    );
+  });
+
+  test('T393: a code span fenced by two backticks can hold one', () => {
+    expect(renderMarkdown('`` row.split(`,`) `` and `x`')).toBe(
+      '<p><code>row.split(`,`)</code> and <code>x</code></p>',
+    );
+    expect(renderMarkdown('`a` `b`')).toBe('<p><code>a</code> <code>b</code></p>');
+    expect(renderMarkdown('a stray ` stays')).toBe('<p>a stray ` stays</p>');
+  });
 });
 
 describe('the inline-code placeholder', () => {

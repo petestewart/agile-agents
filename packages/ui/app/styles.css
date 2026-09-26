@@ -4501,6 +4501,9 @@ button.cr-answering-q {
   color: var(--text-faint);
 }
 .cr-diff {
+  /* A line-number column's width, and (T393) the gutter the + sits in. */
+  --ln-w: 44px;
+  --gut: 0px;
   overflow-x: auto;
   padding: 4px 0;
   font-family: var(--font-mono);
@@ -4508,9 +4511,14 @@ button.cr-answering-q {
   line-height: 1.6;
 }
 .cr-diff-row {
+  position: relative;
   display: grid;
-  grid-template-columns: 44px 44px minmax(0, 1fr);
+  grid-template-columns: var(--ln-w) var(--ln-w) minmax(0, 1fr);
   min-width: max-content;
+  padding-left: var(--gut);
+}
+.cr-diff[data-commentable] {
+  --gut: 22px;
 }
 .cr-diff-ln {
   padding: 0 8px;
@@ -4550,6 +4558,275 @@ button.cr-answering-q {
   margin: 0;
   font-size: var(--text-sm);
   color: var(--text-muted);
+}
+
+/* -- Changes: review comments (T393) */
+.cr-diff-hint {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: -2px 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-diff-hint .cr-icon {
+  flex: none;
+  color: var(--text-faint);
+}
+.cr-diff-hint-touch {
+  display: none;
+}
+.cr-diff-file-comments {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 1px 7px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-fg);
+  background: var(--accent-weak);
+  border-radius: 999px;
+}
+.cr-diff[data-commentable] .cr-diff-row[data-key] .cr-diff-ln {
+  cursor: pointer;
+}
+.cr-diff[data-commentable] .cr-diff-row[data-key]:hover .cr-diff-ln {
+  color: var(--text-muted);
+}
+.cr-diff-row[data-key]:focus {
+  outline: none;
+}
+.cr-diff-row[data-key]:focus-visible {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.cr-diff-row[data-selected] {
+  background: var(--accent-weak);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.cr-diff-row[data-selected] .cr-diff-ln {
+  color: var(--accent-fg);
+}
+.cr-diff-add {
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 18px;
+  padding: 0;
+  color: var(--accent-text);
+  background: var(--accent);
+  border: 0;
+  border-radius: 5px;
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-50%) scale(0.8);
+  transition: opacity 0.08s var(--ease), transform 0.08s var(--ease);
+}
+.cr-diff-add:hover {
+  background: var(--accent-hover);
+}
+.cr-diff-row[data-key]:hover .cr-diff-add,
+.cr-diff-row[data-key]:focus-visible .cr-diff-add {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+/* A comment thread under its line: it stays in view while the code scrolls sideways. */
+.cr-diff-thread {
+  position: sticky;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px 10px calc(var(--gut) + var(--ln-w) * 2);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: 1.5;
+  white-space: normal;
+  background: var(--bg-inset);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.cr-diff-thread:first-child {
+  border-top: 0;
+  margin-top: -4px;
+}
+.cr-diff-comment,
+.cr-diff-compose {
+  max-width: 720px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.cr-diff-comment {
+  padding: 6px 8px 10px 12px;
+  box-shadow: var(--shadow-sm);
+}
+.cr-diff-comment-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-diff-comment-who {
+  font-weight: 600;
+  color: var(--text);
+}
+.cr-diff-comment-tools {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.cr-diff-comment-quote {
+  display: block;
+  margin: 2px 0 6px;
+  padding: 3px 8px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: pre;
+  text-overflow: ellipsis;
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+}
+.cr-diff-comment-body {
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.cr-diff-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px 8px;
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+.cr-diff-compose:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+.cr-diff-compose-input {
+  width: 100%;
+  min-height: 60px;
+  padding: 4px 4px 2px;
+  font: inherit;
+  color: var(--text);
+  resize: vertical;
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+.cr-diff-compose-input::placeholder {
+  color: var(--text-faint);
+}
+.cr-diff-compose-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.cr-diff-compose-where {
+  margin-right: auto;
+  padding-left: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-diff-compose-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+.cr-diff-orphans-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 4px;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.cr-diff-orphan {
+  padding: 10px 12px 2px;
+}
+.cr-diff-orphan .cr-diff-thread {
+  position: static;
+  padding: 6px 0 10px;
+  background: none;
+  border: 0;
+}
+/* The review so far, pinned to the bottom of the Changes tab. */
+.cr-review-bar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 10px 10px 12px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+.cr-review-bar-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  color: var(--accent-fg);
+  background: var(--accent-weak);
+  border-radius: var(--radius);
+}
+.cr-review-bar-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.cr-review-bar-count {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.cr-review-bar-sub {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-review-bar-warn {
+  font-size: var(--text-sm);
+  color: var(--red-text);
+}
+.cr-review-bar-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+@media (hover: none) {
+  .cr-diff[data-commentable] {
+    --gut: 0px;
+  }
+  .cr-diff-add {
+    display: none;
+  }
+  .cr-diff-hint-pointer {
+    display: none;
+  }
+  .cr-diff-hint-touch {
+    display: inline;
+  }
 }
 
 /* -- Plan, Activity, Knowledge, Docs */
@@ -4833,8 +5110,26 @@ button.cr-answering-q {
   .cr-node-details {
     width: 100%;
   }
-  .cr-diff-row {
-    grid-template-columns: 34px 34px minmax(0, 1fr);
+  .cr-diff {
+    --ln-w: 34px;
+  }
+  .cr-diff-thread {
+    padding-left: 10px;
+  }
+  .cr-diff-compose-keys,
+  .cr-review-bar-sub {
+    display: none;
+  }
+  .cr-review-bar {
+    flex-wrap: wrap;
+    bottom: 8px;
+  }
+  .cr-review-bar-actions {
+    width: 100%;
+  }
+  .cr-review-bar-actions .cr-btn {
+    flex: 1;
+    justify-content: center;
   }
 }
 

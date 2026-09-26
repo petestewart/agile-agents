@@ -60,6 +60,7 @@ import {
 import { resolvedFor } from '../lib/defaults';
 import { useFeed } from '../lib/feed-context';
 import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
+import { appendToDraft, roomAfter, useReview } from '../lib/review';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
 import type { StatusInput } from '../lib/status';
@@ -324,6 +325,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [defaults, setDefaults] = useState<SessionDefaultsStatus | undefined>(undefined);
   const [detailsOpen, setDetailsOpen] = useDetailsOpen();
   const composer = useRef<ComposerHandle>(null);
+  // T393: review comments on the Changes tab (counted on its tab).
+  const reviewCount = useReview(id).comments.length;
 
   // Every pushed frame and every action re-reads the page, so reads
   // overlap, and their responses can arrive in any order. Only the latest
@@ -1143,6 +1146,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             label: TAB_LABEL[t],
             ...(t === 'rules' ? { count: page.rules.length } : {}),
             ...(t === 'docs' ? { count: page.docs.length } : {}),
+            ...(t === 'diff' && reviewCount > 0 ? { count: reviewCount } : {}),
           }))}
           value={shownTab}
           onChange={setTab}
@@ -1178,7 +1182,21 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               <div className="cr-node-pane-col">
                 {shownTab === 'diff' &&
                   (stream.branch ? (
-                    <DiffView id={stream.id} version={threadTick} />
+                    <DiffView
+                      id={stream.id}
+                      version={threadTick}
+                      {...(intent.action !== 'none'
+                        ? {
+                            // T393: the review joins the draft; the chat opens on it, unsent.
+                            onAddToMessage: (text: string) => {
+                              setDraft((before) => appendToDraft(before, text));
+                              setTab('thread');
+                              requestAnimationFrame(() => composer.current?.focusEnd());
+                            },
+                            room: roomAfter(draft),
+                          }
+                        : {})}
+                    />
                   ) : (
                     <div data-testid="diff-empty">
                       <EmptyState icon="file-diff" title="No changes yet">

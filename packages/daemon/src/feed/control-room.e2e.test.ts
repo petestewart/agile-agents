@@ -2835,6 +2835,166 @@ describe('Merge wording and hold tone (Playwright e2e, T347)', () => {
   );
 });
 
+describe('review the diff with the agent (Playwright e2e, T393)', () => {
+  browserTest(
+    'comments on two lines collect in the review bar; Add to message fills the composer and opens the chat; Send puts the review on the thread',
+    async () => {
+      const promptLog = join(tmpdir(), `agile-t393-prompts-${ulid()}.jsonl`);
+      const cockpit = await startStreamCockpit([
+        {
+          logFile: promptLog,
+          steps: [{ type: 'agent_text', text: 'REVIEW-READ on it' }, { type: 'end_turn' }],
+        },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const stream = await cockpit.streams.create('human', {
+          title: 'csv import',
+          goal: 'import a csv',
+          repo: 'demo',
+          project: shop.id,
+        });
+        // The agent's work, committed on the node's branch.
+        const worktree = join(cockpit.repo, '.worktrees', 's-review');
+        git(['worktree', 'add', '-q', '-b', 's-review', worktree, 'main'], cockpit.repo);
+        mkdirSync(join(worktree, 'src'));
+        writeFileSync(
+          join(worktree, 'src', 'import.ts'),
+          'export function importCsv(text: string) {\n  const rows = text.split(",");\n  return rows;\n}\n',
+        );
+        writeFileSync(join(worktree, 'README.md'), '# fixture\n\nImports CSV files.\n');
+        git(['add', '-A'], worktree);
+        git(['commit', '-q', '-m', 'import'], worktree);
+        await cockpit.streams.update('daemon', stream.id, {
+          branch: 's-review',
+          worktree,
+          agent: { status: 'done' },
+        });
+
+        const p = await openPage();
+        page = p;
+        await p.goto(`${cockpit.base}/?node=${stream.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        await p.locator('.cr-tabs [data-tab="diff"]').click();
+        const file = (path: string) => p.locator(`[data-testid="diff-file"][data-path="${path}"]`);
+        await file('src/import.ts').waitFor();
+        expect(await p.locator('[data-testid="diff-file"]').count()).toBe(2);
+        expect(
+          await p
+            .locator('[data-testid="diff"] [data-line="add"]', { hasText: 'text.split' })
+            .count(),
+        ).toBe(1);
+        expect(await p.locator('[data-testid="review-bar"]').count()).toBe(0);
+
+        // One comment from the gutter's +, added with the button.
+        const splitLine = file('src/import.ts').locator('[data-line="add"]', {
+          hasText: 'text.split',
+        });
+        await splitLine.hover();
+        await splitLine.locator('[data-testid="diff-comment-add"]').click();
+        await p
+          .locator('[data-testid="diff-comment-input"]')
+          .fill('Quoted fields can hold commas.');
+        await p.locator('[data-testid="diff-comment-submit"]').click();
+        await p.locator('[data-testid="diff-comment"]', { hasText: 'Quoted fields' }).waitFor();
+        await waitForText(p, '[data-testid="review-count"]', '1 comment on 1 file');
+
+        // One from the keyboard: the focused line, C, then Ctrl+Enter.
+        const readmeLine = file('README.md').locator('[data-line="add"]', {
+          hasText: 'Imports CSV',
+        });
+        await readmeLine.focus();
+        await p.keyboard.press('c');
+        await p.locator('[data-testid="diff-comment-input"]').fill('Say which delimiter.');
+        await p.keyboard.press('Control+Enter');
+        await p
+          .locator('[data-testid="diff-comment"]', { hasText: 'Say which delimiter.' })
+          .waitFor();
+        await waitForText(p, '[data-testid="review-count"]', '2 comments on 2 files');
+
+        // Esc drops a comment being written; nothing is added.
+        await splitLine.hover();
+        await splitLine.locator('[data-testid="diff-comment-add"]').click();
+        await p.locator('[data-testid="diff-comment-input"]').fill('never mind');
+        await p.keyboard.press('Escape');
+        await p.locator('[data-testid="diff-comment-input"]').waitFor({ state: 'detached' });
+        expect(await p.locator('[data-testid="diff-comment"]').count()).toBe(2);
+
+        // They outlive a tab switch, counted on the Changes tab.
+        await p.locator('.cr-tabs [data-tab="activity"]').click();
+        await waitForText(p, '.cr-tabs [data-tab="diff"] .cr-tab-count', '2');
+        await p.locator('.cr-tabs [data-tab="diff"]').click();
+        await p.locator('[data-testid="diff-comment"]', { hasText: 'Quoted fields' }).waitFor();
+        await waitForText(p, '[data-testid="review-count"]', '2 comments on 2 files');
+
+        // Add to message: one message in the composer, in diff order; the chat opens; nothing sent.
+        await p.locator('[data-testid="review-add"]').click();
+        await p.locator('.cr-tabs [data-tab="thread"][aria-current="page"]').waitFor();
+        const review = [
+          'Review of the changes:',
+          '',
+          '1. `README.md:3`',
+          '   `Imports CSV files.`',
+          '   Say which delimiter.',
+          '2. `src/import.ts:2`',
+          '   `const rows = text.split(",");`',
+          '   Quoted fields can hold commas.',
+        ].join('\n');
+        expect(await p.locator('[data-testid="composer-input"]').inputValue()).toBe(review);
+        await p.waitForFunction("document.activeElement?.dataset?.testid === 'composer-input'");
+        expect(
+          await p
+            .locator('[data-testid="thread-entry"]', { hasText: 'Review of the changes' })
+            .count(),
+        ).toBe(0);
+        expect(await p.locator('.cr-tabs [data-tab="diff"] .cr-tab-count').count()).toBe(0);
+
+        // Send: the thread line is the review, as one numbered list; the agent gets it.
+        await p.locator('[data-testid="composer-send"]').click();
+        const line = p.locator('[data-testid="thread-entry"][data-by="human"]', {
+          hasText: 'Review of the changes:',
+        });
+        await line.waitFor();
+        expect(await line.locator('ol > li').count()).toBe(2);
+        expect(await line.locator('ol > li').first().textContent()).toBe(
+          'README.md:3Imports CSV files.Say which delimiter.',
+        );
+        expect(await line.locator('code', { hasText: 'src/import.ts:2' }).count()).toBe(1);
+        await p
+          .locator('[data-testid="thread-entry"][data-by="agent"]', { hasText: 'REVIEW-READ' })
+          .waitFor();
+        await waitUntil(
+          "the review in the agent's prompt",
+          () =>
+            existsSync(promptLog) &&
+            readFileSync(promptLog, 'utf8').includes('Say which delimiter.'),
+        );
+
+        // The Changes tab starts clean; Discard asks before dropping a review.
+        await p.locator('.cr-tabs [data-tab="diff"]').click();
+        await p.locator('[data-testid="diff-hint"]').waitFor();
+        expect(await p.locator('[data-testid="diff-comment"]').count()).toBe(0);
+        await splitLine.hover();
+        await splitLine.locator('[data-testid="diff-comment-add"]').click();
+        await p.locator('[data-testid="diff-comment-input"]').fill('scratch that');
+        await p.locator('[data-testid="diff-comment-submit"]').click();
+        await p.locator('[data-testid="review-discard"]').click();
+        await p.locator('[data-testid="discard-review-confirm"]').click();
+        await p.locator('[data-testid="review-bar"]').waitFor({ state: 'detached' });
+        expect(await p.locator('[data-testid="diff-comment"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(promptLog, { force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('parents and land conflicts (Playwright e2e, T176)', () => {
   browserTest(
     'attach on a parent starts straight away; a conflicted land shows the files, not "Ready"; Resolve then re-land',
