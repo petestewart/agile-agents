@@ -6,7 +6,8 @@
  *   live work nodes (ancestors muted), overlaps as a warning that names
  *   both nodes and the files (T227), its recent events (T245) and its
  *   norms (T265: accepted standards and architecture).
- * - Running: nodes with a live agent, your move first, with Stop in a row menu.
+ * - Running: nodes with a live agent, your move first — each with the agent,
+ *   model and effort it runs (T382) — with Stop in a row menu.
  * - Dependencies: every open "waits on" link, grouped by the node that waits.
  * - Events (T338): every routed event as a timeline — what happened, to
  *   which node, and which nodes were told and why — with a type filter,
@@ -47,6 +48,7 @@ import {
   filterEvents,
   groupByDay,
   isSatisfied,
+  runningAgent,
   runningSummary,
   sortNewestFirst,
   sortRunning,
@@ -535,6 +537,7 @@ function RunningRow({
   const { refresh } = useFeed();
   const toast = useToast();
   const status = nodeStatus(row);
+  const agent = runningAgent(row);
   const stop = (): void => {
     stopSessions(row.id)
       .then(() => {
@@ -560,6 +563,14 @@ function RunningRow({
         <NodePath row={row} rows={rows} />
         <span className="cr-lens-run-role" title={ROLE_HINT[row.role]}>
           {ROLE_LABEL[row.role]}
+        </span>
+        <span className="cr-lens-run-agent" data-testid="running-agent" title={agent?.title}>
+          {agent ? (
+            <>
+              <Icon name="bot" size={13} />
+              <span>{agent.text}</span>
+            </>
+          ) : null}
         </span>
         <span className="cr-lens-run-repo">
           {row.repo !== undefined ? (
@@ -625,6 +636,7 @@ export function RunningLens({ rows }: { rows: readonly CockpitStreamRow[] }): JS
             <span>Status</span>
             <span>Node</span>
             <span>Role</span>
+            <span>Agent</span>
             <span>Repo</span>
           </div>
           <ul className="cr-lens-rows">

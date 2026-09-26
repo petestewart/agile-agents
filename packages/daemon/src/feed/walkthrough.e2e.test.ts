@@ -1915,9 +1915,9 @@ test.skipIf(!RUN)(
       const first = claimTitle('Cents check', 'worker', async () => {
         // While its first turn is open: a finished turn ends the session.
         await checkText(
-          'a session appears (claude/… · low · starting, then running)',
+          'a session appears (Claude … · low · starting, then running)',
           page.locator('[data-testid="session"]'),
-          /claude\/\S+ · low · (starting|running)/,
+          /Claude .+ · low · (starting|running)/,
           10_000,
         );
         return 'ledger-lite stores `amount` as a plain number on `Entry` (src/ledger.ts): no unit, so floats are possible.';

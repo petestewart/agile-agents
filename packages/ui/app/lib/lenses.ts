@@ -6,7 +6,7 @@
  */
 
 import type { RoutedEvent, RoutedEventType, RoutingEntry } from '@agile-agents/shared';
-import { dayLabel } from './chat';
+import { agentLabel, dayLabel, sessionIdText } from './chat';
 import type { CockpitRepoRow, CockpitStreamRow } from './feed-types';
 import { type NodeStatusKey, statusKey } from './status';
 import { dependencyEdges, eventLabel } from './streams';
@@ -67,6 +67,32 @@ export function runningSummary(rows: readonly CockpitStreamRow[]): string {
   ]
     .filter(Boolean)
     .join(' · ');
+}
+
+/** T382: what runs on a Running row, in words, with the raw ids for its tooltip. */
+export interface RunningAgent {
+  /** "Claude Opus 5.5 · low"; "Reviewer · …" when a reviewer is all that runs. */
+  text: string;
+  /** "Worker: claude/claude-opus-5-5 · low effort". */
+  title: string;
+}
+
+const SESSION_ROLE_WORD: Record<string, string> = {
+  worker: 'Worker',
+  coordinator: 'Coordinator',
+  reviewer: 'Reviewer',
+  lessons: 'Lessons pass',
+};
+
+/** T382: the row's live session in words (`agentLabel`); `undefined` from a daemon that does not say. */
+export function runningAgent(row: Pick<CockpitStreamRow, 'live_agent'>): RunningAgent | undefined {
+  const agent = row.live_agent;
+  if (agent === undefined) return undefined;
+  const role = SESSION_ROLE_WORD[agent.role] ?? agent.role;
+  const label = agentLabel(agent);
+  // The node's own agent goes without saying; anything else says what it is.
+  const own = agent.role === 'worker' || agent.role === 'coordinator';
+  return { text: own ? label : `${role} · ${label}`, title: `${role}: ${sessionIdText(agent)}` };
 }
 
 // ---------------------------------------------------------------- Dependencies

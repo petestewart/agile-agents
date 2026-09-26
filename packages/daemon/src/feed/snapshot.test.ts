@@ -185,3 +185,79 @@ describe('T361: the rail flags and the archived list', () => {
     expect(listed[0]?.title).toBe(`x${COCKPIT_ARCHIVED_MAX - 1}`);
   }, 30_000);
 });
+
+describe('T382: the live agent a row names', () => {
+  const session = (
+    role: SessionRef['role'],
+    status: SessionRef['status'],
+    extra: Partial<SessionRef> = {},
+  ): SessionRef => ({
+    id: ulid(),
+    vendor: 'claude',
+    model: 'claude-opus-5-5',
+    effort: 'low',
+    role,
+    status,
+    ...extra,
+  });
+  async function nodeWith(title: string, sessions: SessionRef[]): Promise<string> {
+    const { id } = await streams.create('human', { title, goal: 'g' });
+    await store.updateStream('daemon', id, (s) => ({ ...s, sessions }));
+    return id;
+  }
+  const liveAgentOf = (id: string) =>
+    buildCockpitFrame(streams).streams.find((r) => r.id === id)?.live_agent;
+
+  test("the node's own agent, with its vendor, model and effort", async () => {
+    const worker = await nodeWith('worker', [
+      session('worker', 'stopped', { model: 'claude-haiku-4-5' }),
+      session('worker', 'running', { model: 'claude-sonnet-4-6', effort: 'high' }),
+    ]);
+    expect(liveAgentOf(worker)).toEqual({
+      role: 'worker',
+      vendor: 'claude',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+    });
+    const coordinator = await nodeWith('coordinator', [session('coordinator', 'idle')]);
+    expect(liveAgentOf(coordinator)).toEqual({
+      role: 'coordinator',
+      vendor: 'claude',
+      model: 'claude-opus-5-5',
+      effort: 'low',
+    });
+  });
+
+  test('a reviewer only when it is all that runs; no effort when the session has none', async () => {
+    const both = await nodeWith('both', [
+      session('worker', 'idle', { vendor: 'gemini', model: 'default' }),
+      session('reviewer', 'running', { model: 'claude-haiku-4-5' }),
+    ]);
+    expect(liveAgentOf(both)).toEqual({
+      role: 'worker',
+      vendor: 'gemini',
+      model: 'default',
+      effort: 'low',
+    });
+    const reviewing = await nodeWith('reviewing', [
+      session('worker', 'stopped'),
+      session('reviewer', 'starting', { vendor: 'codex', model: 'gpt-9', effort: undefined }),
+    ]);
+    expect(liveAgentOf(reviewing)).toEqual({ role: 'reviewer', vendor: 'codex', model: 'gpt-9' });
+    const lessons = await nodeWith('lessons', [session('lessons', 'running')]);
+    expect(liveAgentOf(lessons)?.role).toBe('lessons');
+  });
+
+  test('absent when nothing is live', async () => {
+    const never = await nodeWith('never', []);
+    const ended = await nodeWith('ended', [
+      session('worker', 'stopped'),
+      session('reviewer', 'error'),
+    ]);
+    expect(liveAgentOf(never)).toBeUndefined();
+    expect(liveAgentOf(ended)).toBeUndefined();
+    const rows = buildCockpitFrame(streams).streams;
+    expect(rows.find((r) => r.id === ended)).not.toHaveProperty('live_agent');
+    expect(rows.find((r) => r.id === ended)?.live).toBeUndefined();
+  });
+});

@@ -2199,12 +2199,18 @@ describe('session defaults (Playwright e2e, T170)', () => {
           'overrides the global default',
         );
         await contains('[data-testid="settings-session-repo-demo"]', 'demo');
-        await contains('[data-testid="settings-session-repo-demo-resolved"]', 'claude');
-        await waitForText(page, home('-resolved'), 'claude · claude-opus-5-5 · low effort');
+        // T382: the default reads in words, as the composer says it; the ids are on hover.
+        await contains('[data-testid="settings-session-repo-demo-resolved"]', 'Claude');
+        await waitForText(page, home('-resolved'), 'Claude Opus 5.5 · low');
         await page.locator(home('-field-model')).fill('claude-sonnet-4-6');
         await page.locator(home('-field-effort')).selectOption('high');
         await page.locator(home('-save')).click();
-        await waitForText(page, home('-resolved'), 'claude · claude-sonnet-4-6 · high effort');
+        await waitForText(page, home('-resolved'), 'Claude Sonnet 4.6 · high');
+        expect(
+          await page
+            .locator('.cr-set-resolved', { has: page.locator(home('-resolved')) })
+            .getAttribute('title'),
+        ).toBe('What a new agent here starts with: claude/claude-sonnet-4-6 · high effort');
         await waitForText(page, home('-saved'), 'Saved');
         expect(readFileSync(join(cockpit.home, 'config.yaml'), 'utf8')).toContain(
           'default_model: claude-sonnet-4-6',
@@ -2231,11 +2237,17 @@ describe('session defaults (Playwright e2e, T170)', () => {
         );
         expect(await page.locator('[data-testid="picker-effort"]').inputValue()).toBe('high');
         await page.locator('[data-testid="picker-start"]').click();
+        // T382: the details panel's session row reads the model as the composer does.
         await page
           .locator('[data-testid="session"][data-role="worker"]', {
-            hasText: 'claude/claude-sonnet-4-6 · high',
+            hasText: 'Claude Sonnet 4.6 · high',
           })
           .waitFor();
+        expect(
+          await page
+            .locator('[data-testid="session"][data-role="worker"] [data-testid="session-model"]')
+            .getAttribute('title'),
+        ).toBe('claude/claude-sonnet-4-6 · high effort');
         expect(cockpit.streams.get(stream.id).sessions[0]).toMatchObject({
           model: 'claude-sonnet-4-6',
           effort: 'high',
@@ -2292,12 +2304,12 @@ describe('session defaults (Playwright e2e, T170)', () => {
           .locator('[data-testid="settings-session-projects-heading"]', { hasText: 'Per project' })
           .waitFor();
         await page.locator(card(''), { hasText: 'shop' }).waitFor();
-        await waitForText(page, card('-resolved'), 'claude · claude-opus-5-5 · low effort');
+        await waitForText(page, card('-resolved'), 'Claude Opus 5.5 · low');
         await page.locator(card('-field-model')).fill('claude-haiku-4-5');
         await page.locator(card('-field-effort')).selectOption('max');
         await page.locator(card('-save')).click();
         await waitForText(page, card('-saved'), 'Saved');
-        await waitForText(page, card('-resolved'), 'claude · claude-haiku-4-5 · max effort');
+        await waitForText(page, card('-resolved'), 'Claude Haiku 4.5 · max');
         expect(cockpit.store.getProject(shop.id).session).toEqual({
           model: 'claude-haiku-4-5',
           effort: 'max',
@@ -2326,7 +2338,7 @@ describe('session defaults (Playwright e2e, T170)', () => {
         await page.locator(card('-field-model')).fill('');
         await page.locator(card('-field-effort')).selectOption('');
         await page.locator(card('-save')).click();
-        await waitForText(page, card('-resolved'), 'claude · claude-opus-5-5 · low effort');
+        await waitForText(page, card('-resolved'), 'Claude Opus 5.5 · low');
         await waitUntil(
           'the project session cleared',
           () => cockpit.store.getProject(shop.id).session === undefined,
@@ -5261,7 +5273,8 @@ describe('repo view and lenses (Playwright e2e, T209)', () => {
             {
               id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
               vendor: 'claude',
-              model: 'm',
+              model: 'claude-sonnet-4-6',
+              effort: 'high',
               role: 'worker',
               status: 'running',
             },
@@ -5320,6 +5333,14 @@ describe('repo view and lenses (Playwright e2e, T209)', () => {
           .locator(`${running} [data-stream="${shopApi.id}"]`)
           .waitFor({ state: 'visible' });
         expect(await page.locator(`${running} [data-stream]`).count()).toBe(1);
+        // T382: the row says which agent, model and effort run there, in words; ids on hover.
+        const agent = page.locator(
+          `${running} [data-stream="${shopApi.id}"] [data-testid="running-agent"]`,
+        );
+        expect(await agent.textContent()).toBe('Claude Sonnet 4.6 · high');
+        expect(await agent.getAttribute('title')).toBe(
+          'Worker: claude/claude-sonnet-4-6 · high effort',
+        );
 
         await page.locator('[data-view="deps"]').click();
         await waitForText(

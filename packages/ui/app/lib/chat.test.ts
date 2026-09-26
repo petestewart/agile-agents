@@ -5,6 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxItem, SessionRef, ThreadEntry } from '@agile-agents/shared';
 import {
+  agentLabel,
   agentName,
   agentStateText,
   answerTarget,
@@ -25,6 +26,7 @@ import {
   parseDiff,
   questionIdOfRef,
   sendIntent,
+  sessionIdText,
   sessionLabel,
   systemLine,
   vendorLabel,
@@ -61,6 +63,33 @@ describe('names', () => {
     expect(sessionLabel({ vendor: 'claude', model: 'claude-opus-5-5', effort: 'low' })).toBe(
       'Claude Opus 5.5 · low',
     );
+  });
+
+  test('T382: agentLabel names the agent only when the model does not', () => {
+    expect(agentLabel({ vendor: 'claude', model: 'claude-opus-5-5', effort: 'low' })).toBe(
+      'Claude Opus 5.5 · low',
+    );
+    expect(agentLabel({ vendor: 'claude', model: 'default' })).toBe('Claude default model');
+    expect(agentLabel({ vendor: 'gemini', effort: 'high' })).toBe('Gemini default model · high');
+    expect(agentLabel({ vendor: 'gemini', model: 'gemini-2.5-pro', effort: 'low' })).toBe(
+      'gemini-2.5-pro · low',
+    );
+    expect(agentLabel({ vendor: 'codex', model: 'gpt-9', effort: 'max' })).toBe(
+      'Codex · gpt-9 · max',
+    );
+    // A vendor inside a longer word is not a mention of it.
+    expect(agentLabel({ vendor: 'pi', model: 'gpt-pilot' })).toBe('Pi · gpt-pilot');
+    expect(agentLabel({ vendor: 'claude', model: 'my-custom-model', effort: 'low' })).toBe(
+      'Claude · my-custom-model · low',
+    );
+  });
+
+  test('T382: sessionIdText is the raw ids, for a tooltip', () => {
+    expect(sessionIdText({ vendor: 'claude', model: 'claude-opus-5-5', effort: 'low' })).toBe(
+      'claude/claude-opus-5-5 · low effort',
+    );
+    expect(sessionIdText({ vendor: 'gemini' })).toBe('gemini/default');
+    expect(sessionIdText({ vendor: 'codex', model: 'gpt-9' })).toBe('codex/gpt-9');
   });
 
   test('a line is written by you, the agent (by its session), or the daemon', () => {

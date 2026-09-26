@@ -18,6 +18,7 @@ import {
   filterEvents,
   groupByDay,
   isSatisfied,
+  runningAgent,
   runningSummary,
   sortNewestFirst,
   sortRunning,
@@ -77,6 +78,32 @@ describe('Running', () => {
     expect(runningSummary(rows)).toBe('1 needs you · 1 working · 2 idle');
     expect(runningSummary([rows[1] as CockpitStreamRow])).toBe('1 working');
     expect(runningSummary([])).toBe('');
+  });
+
+  test("T382: each row names its agent, model and effort; a reviewer says it's one", () => {
+    const agent = (live_agent: CockpitStreamRow['live_agent']) =>
+      runningAgent(row('n', { live: true, live_agent }));
+    expect(
+      agent({ role: 'worker', vendor: 'claude', model: 'claude-opus-5-5', effort: 'low' }),
+    ).toEqual({
+      text: 'Claude Opus 5.5 · low',
+      title: 'Worker: claude/claude-opus-5-5 · low effort',
+    });
+    expect(
+      agent({ role: 'coordinator', vendor: 'gemini', model: 'default', effort: 'high' }),
+    ).toEqual({
+      text: 'Gemini default model · high',
+      title: 'Coordinator: gemini/default · high effort',
+    });
+    expect(agent({ role: 'reviewer', vendor: 'codex', model: 'gpt-9' })).toEqual({
+      text: 'Reviewer · Codex · gpt-9',
+      title: 'Reviewer: codex/gpt-9',
+    });
+    expect(agent({ role: 'lessons', vendor: 'claude', model: 'claude-haiku-4-5' })?.text).toBe(
+      'Lessons pass · Claude Haiku 4.5',
+    );
+    // An older daemon's row says nothing about its session.
+    expect(runningAgent(row('old', { live: true }))).toBeUndefined();
   });
 });
 

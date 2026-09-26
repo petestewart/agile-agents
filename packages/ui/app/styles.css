@@ -7382,7 +7382,7 @@ div.cr-lens-ev:hover {
 }
 .cr-lens-table-hd,
 .cr-lens-run .cr-lens-row {
-  grid-template-columns: 136px minmax(0, 1fr) 104px 150px;
+  grid-template-columns: 136px minmax(0, 1fr) 96px 208px 132px;
 }
 .cr-lens-table-hd {
   padding-right: 44px;
@@ -7407,7 +7407,8 @@ div.cr-lens-ev:hover {
   font-size: var(--text-sm);
   color: var(--text-muted);
 }
-.cr-lens-run-repo {
+.cr-lens-run-repo,
+.cr-lens-run-agent {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -7418,9 +7419,45 @@ div.cr-lens-ev:hover {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.cr-lens-run-repo > span:last-child {
+.cr-lens-run-repo > span:last-child,
+.cr-lens-run-agent > span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.cr-lens-run-agent > svg,
+.cr-lens-run-repo > svg {
+  flex: none;
+}
+/* T382: narrower than the five columns fit, the agent drops under the path. */
+@media (max-width: 1200px) and (min-width: 901px) {
+  .cr-lens-table-hd,
+  .cr-lens-run .cr-lens-row {
+    grid-template-columns: 136px minmax(0, 1fr) 96px 132px;
+  }
+  .cr-lens-table-hd > :nth-child(4) {
+    display: none;
+  }
+  .cr-lens-run .cr-lens-row {
+    grid-template-areas: "status path role repo" "status agent role repo";
+    row-gap: 1px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .cr-lens-run-status {
+    grid-area: status;
+  }
+  .cr-lens-run .cr-lens-path {
+    grid-area: path;
+  }
+  .cr-lens-run-role {
+    grid-area: role;
+  }
+  .cr-lens-run-agent {
+    grid-area: agent;
+  }
+  .cr-lens-run-repo {
+    grid-area: repo;
+  }
 }
 .cr-lens-run-menu {
   flex: none;
@@ -7693,7 +7730,7 @@ div.cr-lens-ev:hover {
   }
   .cr-lens-run .cr-lens-row {
     grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: "path status" "meta meta";
+    grid-template-areas: "path status" "agent repo";
     row-gap: 2px;
     padding-top: 9px;
     padding-bottom: 9px;
@@ -7703,12 +7740,18 @@ div.cr-lens-ev:hover {
   }
   .cr-lens-run-status {
     grid-area: status;
+    justify-content: flex-end;
   }
   .cr-lens-run-role {
     display: none;
   }
+  .cr-lens-run-agent {
+    grid-area: agent;
+  }
   .cr-lens-run-repo {
-    grid-area: meta;
+    grid-area: repo;
+    justify-content: flex-end;
+    max-width: 40vw;
   }
   .cr-lens-log-row {
     grid-template-columns: minmax(0, 1fr) auto;

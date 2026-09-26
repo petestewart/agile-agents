@@ -16,6 +16,8 @@ import {
   type RepoEntry,
   type RepoRemote,
   type ReposConfig,
+  type SessionRef,
+  type SessionRole,
   type StatusCard,
   type Stream,
   type TrackerSettings,
@@ -121,6 +123,17 @@ export interface CockpitStreamRow {
   never_started?: true;
   /** T361: its agent ran and the human stopped it; nothing is live and the node is still open. */
   stopped?: true;
+  /** T382: the live session Running names (`liveAgent`); absent when nothing is live. */
+  live_agent?: CockpitLiveAgent;
+}
+
+/** T382: what a live node runs: its session's role, vendor, model and effort. */
+export interface CockpitLiveAgent {
+  role: SessionRole;
+  vendor: string;
+  model: string;
+  /** Absent for a vendor with no effort mapping (the session records none). */
+  effort?: SessionRef['effort'];
 }
 
 /** Vendors whose tool calls pass the `agile hook` path check (Claude's hook, Pi's extension). */
@@ -237,6 +250,7 @@ export function buildCockpitFrame(
       ...(s.delivery_state?.status === 'pr_open' ? { pr_open: true as const } : {}),
       ...(nothingToMerge?.(s) === true ? { nothing_to_merge: true as const } : {}),
       ...startState(s, all),
+      ...liveAgent(s),
     })),
     projects: (projects?.list() ?? []).map((p) => ({
       id: p.id,
@@ -283,6 +297,37 @@ function startState(s: Stream, all: readonly Stream[]): { never_started?: true; 
     return role === 'work' || role === 'conversation' ? { never_started: true } : {};
   }
   return stoppedByHuman(s) ? { stopped: true } : {};
+}
+
+/** T382: whose session a row names — the node's own agent first; a reviewer, then the lessons pass, only when it is all that runs. */
+const LIVE_AGENT_RANK: Record<SessionRole, number> = {
+  worker: 0,
+  coordinator: 0,
+  reviewer: 1,
+  lessons: 2,
+};
+
+/**
+ * T382: the node's live session for the Running lens. Its own agent (a
+ * worker or coordinator) when one is live; else a live reviewer, else the
+ * lessons pass — so a node listed as running always says what runs. The
+ * newest session wins a tie.
+ */
+function liveAgent(s: Stream): { live_agent?: CockpitLiveAgent } {
+  let pick: SessionRef | undefined;
+  for (const x of s.sessions) {
+    if (!LIVE_SESSION.has(x.status)) continue;
+    if (pick === undefined || LIVE_AGENT_RANK[x.role] <= LIVE_AGENT_RANK[pick.role]) pick = x;
+  }
+  if (pick === undefined) return {};
+  return {
+    live_agent: {
+      role: pick.role,
+      vendor: pick.vendor,
+      model: pick.model,
+      ...(pick.effort !== undefined ? { effort: pick.effort } : {}),
+    },
+  };
 }
 
 /** T361: the deleted nodes Restore can bring back (a parent not deleted), newest delete first. */
