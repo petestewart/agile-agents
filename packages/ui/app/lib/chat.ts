@@ -13,6 +13,7 @@ import {
   vendorTakesEffort,
 } from '@agile-agents/shared';
 import type { IconName } from '../components/Icon';
+import { branchName } from './inbox';
 import { isLiveSession, ruleHitOf } from './streams';
 
 // ---------------------------------------------------------------- names
@@ -116,11 +117,56 @@ export function contextMeter(context: { used: number; size: number }): {
   return { percent, level, title };
 }
 
+/**
+ * T413: "Claude Opus 5.5 · low effort": `sessionLabel` for a sentence (a
+ * chat row), where a bare "low" would not say what it is. The effort only
+ * for a vendor that uses it, as `sessionLabel`.
+ */
+export function sessionLabelLong(session: {
+  vendor: string;
+  model?: string;
+  effort?: string;
+}): string {
+  const model = modelLabel(session.vendor, session.model);
+  return session.effort && vendorTakesEffort(session.vendor)
+    ? `${model} · ${session.effort} effort`
+    : model;
+}
+
+/** T413: a session's role in words; the node's own agent is just "Agent". */
+const SESSION_ROLE_WORD: Record<string, string> = {
+  worker: 'Agent',
+  coordinator: 'Coordinator',
+  reviewer: 'Reviewer',
+  lessons: 'Lessons pass',
+  director: 'Director',
+};
+
+export function sessionRoleWord(role: string): string {
+  return SESSION_ROLE_WORD[role] ?? cap(role);
+}
+
+/** T413: a session's state in words, for the details panel's session rows. */
+const SESSION_STATUS_WORD: Record<SessionRef['status'], string> = {
+  starting: 'Starting',
+  running: 'Working',
+  idle: 'Waiting for you',
+  stopped: 'Ended',
+  error: 'Failed',
+};
+
+export function sessionStatusWord(status: SessionRef['status']): string {
+  return SESSION_STATUS_WORD[status] ?? status;
+}
+
 /** Who wrote a thread line, for the chat's name row. */
 export interface ChatAuthor {
   /** "You", "Claude", "Coordinator", "agile". */
   name: string;
-  /** The session's role in words ("worker", "coordinator", "reviewer"), when an agent wrote it. */
+  /**
+   * A tag after the name when the writer is not the node's own agent
+   * ("reviewer"). T413: the node's own worker or coordinator goes untagged.
+   */
   role?: string;
   /** The vendor id, for the avatar's glyph. */
   vendor?: string;
@@ -134,7 +180,12 @@ export function chatAuthor(by: string, sessions: readonly SessionRef[]): ChatAut
   const id = by.startsWith('agent:') ? by.slice('agent:'.length) : by;
   const session = sessions.find((each) => each.id === id);
   if (session === undefined) return { name: 'Agent' };
-  return { name: vendorLabel(session.vendor), role: session.role, vendor: session.vendor };
+  const own = session.role === 'worker' || session.role === 'coordinator';
+  return {
+    name: vendorLabel(session.vendor),
+    ...(own ? {} : { role: session.role }),
+    vendor: session.vendor,
+  };
 }
 
 /** The node's own agent in a sentence: "Claude" for a live or last session, else "The agent". */
@@ -253,19 +304,71 @@ export interface SystemLine {
   tone: 'muted' | 'warn';
 }
 
-const ROLE_WORD: Record<string, string> = {
-  worker: 'Worker',
-  coordinator: 'Coordinator',
-  reviewer: 'Reviewer',
-  lessons: 'Lessons',
-  director: 'Director',
+/**
+ * T413: what woke an agent, in words: the routed event types a "woken by"
+ * line lists (as the daemon writes them, `_` read as spaces).
+ */
+const WAKE_WORD: Record<string, string> = {
+  'human line': 'your message',
+  answer: 'your answer',
+  'director request': 'a request from the Director',
+  'coordinator note': 'a note from its coordinator',
+  'sibling ask': 'a question from another part',
+  'sibling reply': 'a reply from another part',
+  'child question': 'a question from a part',
+  'tangent summary': 'a tangent’s summary',
+  'pr review': 'a PR review',
+  'ci failed': 'a failed check',
+  'pr behind': 'its PR falling behind main',
+  'pr merged': 'a merge',
+  'pr closed': 'a closed PR',
+  'main changed': 'a change on main',
+  'sync conflict': 'a sync conflict',
+  'ship findings': 'ship check findings',
+  'child delivered': 'a part merging',
+  'child status': 'news from a part',
+  overlap: 'overlapping changes',
+  'symbol changed': 'a changed symbol',
+  'contract changed': 'a changed contract',
+  'contract proposal': 'a contract proposal',
+  'dependency satisfied': 'a node it waited on',
+  'plan changed': 'a plan change',
+  'external changed': 'a tracker update',
+  'knowledge accepted': 'new knowledge',
 };
+
+/** "a, b and c". */
+export function listWords(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/** T413: "Woke up for new knowledge and overlapping changes". */
+export function wakeWords(types: string): string {
+  const words = types
+    .split(',')
+    .map((t) => t.trim())
+    .filter((t) => t !== '')
+    .map((t) => WAKE_WORD[t] ?? t);
+  return words.length === 0 ? 'Woke up' : `Woke up for ${listWords(words)}`;
+}
+
+/**
+ * T413: a daemon line's ids and node branches out of its primary text: a
+ * `stream/<id>-slug` branch reads as its slug, an `(<id>)` aside goes (the
+ * row's tooltip keeps the whole line).
+ */
+export function tidyIds(text: string): string {
+  return text
+    .replace(/\bstream\/[0-9a-z]{26}-[\w./-]*\w/gi, (branch) => branchName(branch))
+    .replace(/\s*\((?:[A-Z]-)?[0-9A-HJKMNP-TV-Z]{26}\)/g, '');
+}
 
 /**
  * A daemon line as a one-line system row. The text is the daemon's own,
- * verbatim, except three noisy lines: "stream created: …", "<role>
- * attached: vendor/model effort=… in /path" (the path is noise here) and
- * "session ended: its turn finished".
+ * except the lines it writes in its own terms (T413: an agent starting,
+ * finishing its turn, waking, a sync, a wait that is over), and with ids
+ * and full branch names left out (`tidyIds`).
  */
 export function systemLine(body: string): SystemLine {
   const created = /^stream created: (.+)$/s.exec(body);
@@ -275,17 +378,50 @@ export function systemLine(body: string): SystemLine {
     const [, role = '', vendor = '', model, effort] = attached;
     return {
       icon: 'play',
-      text: `${ROLE_WORD[role] ?? cap(role)} started · ${sessionLabel({ vendor, model, effort })}`,
+      text: `${sessionRoleWord(role)} started · ${sessionLabelLong({ vendor, model, effort })}`,
       tone: 'muted',
     };
   }
   if (/^session ended: its turn finished$/.test(body)) {
-    return { icon: 'check', text: 'Turn finished', tone: 'muted' };
+    return { icon: 'check', text: 'Agent finished its turn', tone: 'muted' };
+  }
+  const woken = /^woken by (.+)$/s.exec(body);
+  if (woken) return { icon: 'play', text: wakeWords(woken[1] ?? ''), tone: 'muted' };
+  const waited = /^waits on (.+) satisfied$/s.exec(body);
+  if (waited) {
+    // The daemon joins several titles with ", "; a title may hold one too, so the text stays whole.
+    const titles = waited[1] ?? '';
+    return {
+      icon: 'check-circle',
+      text: `${titles} merged, so this no longer waits on ${titles.includes(', ') ? 'them' : 'it'}`,
+      tone: 'muted',
+    };
+  }
+  const synced = /^synced (\S+) into (\S+)( and pushed)?$/.exec(body);
+  if (synced) {
+    return {
+      icon: 'refresh',
+      text: `Synced ${synced[1]} into this branch${synced[3] ? ' and pushed it' : ''}`,
+      tone: 'muted',
+    };
+  }
+  const detached = /^(\w+) detached by human$/.exec(body);
+  if (detached) {
+    const who = sessionRoleWord(detached[1] ?? '');
+    return { icon: 'square', text: `You stopped the ${who.toLowerCase()}`, tone: 'muted' };
+  }
+  const markedLanded = /^marked landed: (\S+) was already merged into (\S+)$/.exec(body);
+  if (markedLanded) {
+    return {
+      icon: 'git-merge',
+      text: `Marked as merged: ${branchName(markedLanded[1] ?? '')} was already in ${markedLanded[2]}`,
+      tone: 'muted',
+    };
   }
   // T385: you edited the goal on the page.
   const goal = /^goal changed: (.+)$/s.exec(body);
   if (goal) return { icon: 'pencil', text: `Goal changed: ${goal[1]}`, tone: 'muted' };
-  return { icon: systemIcon(body), text: body, tone: systemTone(body) };
+  return { icon: systemIcon(body), text: tidyIds(body), tone: systemTone(body) };
 }
 
 function systemTone(body: string): SystemLine['tone'] {
@@ -711,6 +847,57 @@ export function deliveryBadge(s: {
   if (s.held) return { label: 'Held', tone: 'amber' };
   if (s.ready) return { label: 'Can merge', tone: 'green' };
   return { label: 'Not ready', tone: 'gray' };
+}
+
+/** T413: how a node delivers, in words (the Delivery section's last line). */
+const DELIVERY_MODE_WORD: Record<'direct' | 'pr', string> = {
+  direct: 'Direct merge',
+  pr: 'Pull request',
+};
+
+const DELIVERY_STATUS_WORD: Record<string, string> = {
+  not_started: 'not started',
+  ship_checking: 'running the ship check',
+  held: 'held',
+  ready: 'ready',
+  pr_open: 'PR open',
+  merged: 'merged',
+  closed_unmerged: 'closed without merging',
+  conflict: 'conflict',
+};
+
+/** "Direct merge · held", "Pull request · PR open". */
+export function deliveryStateWords(state: { mode: 'direct' | 'pr'; status: string }): string {
+  return `${DELIVERY_MODE_WORD[state.mode] ?? state.mode} · ${
+    DELIVERY_STATUS_WORD[state.status] ?? state.status.replace(/_/g, ' ')
+  }`;
+}
+
+// ---------------------------------------------------------------- the goal
+
+function sameWords(a: string, b: string): boolean {
+  const norm = (s: string) =>
+    s
+      .trim()
+      .replace(/[\s.!?…]+$/u, '')
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/**
+ * T413: whether the chat opens with the Goal card. Not on a project's root
+ * (its goal is the project's name), and not when the goal only repeats the
+ * title; the details panel keeps the goal (and its Edit) either way.
+ */
+export function showGoalCard(input: {
+  goal: string;
+  title: string;
+  projectRoot: boolean;
+}): boolean {
+  if (input.projectRoot) return false;
+  if (input.goal.trim() === '') return false;
+  return !sameWords(input.goal, input.title);
 }
 
 // ---------------------------------------------------------------- sessions

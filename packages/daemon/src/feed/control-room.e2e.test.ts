@@ -2227,6 +2227,24 @@ describe('rename and re-goal a node in place (Playwright e2e, T385)', () => {
         expect(events.map((e) => [e.by, e.body])).toEqual([
           ['human', 'goal changed: Import CSV and TSV, with a header row.'],
         ]);
+
+        // T413: a goal that only repeats the title is no card; it reads, and changes, in Details.
+        await page.locator('[data-testid="goal-edit"]').click();
+        await page.locator('[data-testid="goal-input"]').fill('Import CSV files');
+        await page.locator('[data-testid="goal-save"]').click();
+        await page.locator('[data-testid="goal-card"]').waitFor({ state: 'detached' });
+        const about = '[data-testid="node-details"] [data-testid="about-goal"]';
+        await waitForText(page, `${about} [data-testid="about-goal-text"]`, 'Import CSV files');
+        await page.locator(`${about} [data-testid="goal-edit"]`).click();
+        await page.locator('[data-testid="goal-input"]').fill('Import CSV files, and TSV too.');
+        await page.locator('[data-testid="goal-save"]').click();
+        await waitUntil(
+          'the goal saved from Details',
+          () => cockpit.streams.get(node.id).goal === 'Import CSV files, and TSV too.',
+        );
+        // Saying more than the title again, it is the chat's card once more.
+        await page.locator('[data-testid="goal-card"]', { hasText: 'and TSV too' }).waitFor();
+        expect(await page.locator(about).count()).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -3000,54 +3018,53 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
         // T415: frames are held here and let go after the next line has focus, as a
         // slow runner does, so focus returning to the line just commented can't take
         // the keyboard back from it.
-        await p.evaluate(() => {
-          type Frame = (at: number) => void;
-          const w = globalThis as unknown as {
-            requestAnimationFrame: (cb: Frame) => number;
-            releaseFrames: () => void;
-          };
-          const raf = w.requestAnimationFrame.bind(globalThis);
-          const held: Frame[] = [];
-          w.requestAnimationFrame = (cb) => {
+        // (Strings, as elsewhere in this file: the daemon's tsconfig has no DOM types.)
+        await p.evaluate(`{
+          const raf = window.requestAnimationFrame.bind(window);
+          const held = [];
+          window.requestAnimationFrame = (cb) => {
             held.push(cb);
             return 0;
           };
-          w.releaseFrames = () => {
-            w.requestAnimationFrame = raf;
+          window.releaseFrames = () => {
+            window.requestAnimationFrame = raf;
             for (const cb of held.splice(0)) raf(cb);
           };
-        });
+        }`);
         // One comment from the gutter's +, added with the button.
         const splitLine = file('src/import.ts').locator('[data-line="add"]', {
           hasText: 'text.split',
         });
         await splitLine.hover();
         await splitLine.locator('[data-testid="diff-comment-add"]').click();
+        // T413: the box opens on that file, and says so.
+        await waitForText(
+          p,
+          '[data-testid="diff-file"][data-path="src/import.ts"] [data-testid="diff-comment-where"]',
+          'Comment on src/import.ts:2',
+        );
         await p
           .locator('[data-testid="diff-comment-input"]')
           .fill('Quoted fields can hold commas.');
         await p.locator('[data-testid="diff-comment-submit"]').click();
         await p.locator('[data-testid="diff-comment"]', { hasText: 'Quoted fields' }).waitFor();
         await waitForText(p, '[data-testid="review-count"]', '1 comment on 1 file');
-
         // One from the keyboard: the focused line, C, then Ctrl+Enter.
         const readmeLine = file('README.md').locator('[data-line="add"]', {
           hasText: 'Imports CSV',
         });
         await readmeLine.focus();
         await p.evaluate(
-          () =>
-            new Promise<void>((done) => {
-              const w = globalThis as unknown as {
-                releaseFrames: () => void;
-                requestAnimationFrame: (cb: () => void) => number;
-              };
-              w.releaseFrames();
-              w.requestAnimationFrame(() => done());
-            }),
+          'new Promise((done) => { window.releaseFrames(); requestAnimationFrame(() => done()); })',
         );
         await p.keyboard.press('c');
-        await p.locator('[data-testid="diff-comment-input"]').fill('Say which delimiter.');
+        // T413: the box opened under README's line before a word is typed.
+        const readmeInput = file('README.md').locator('[data-testid="diff-comment-input"]');
+        await readmeInput.waitFor();
+        expect(
+          await file('src/import.ts').locator('[data-testid="diff-comment-input"]').count(),
+        ).toBe(0);
+        await readmeInput.fill('Say which delimiter.');
         await p.keyboard.press('Control+Enter');
         await p
           .locator('[data-testid="diff-comment"]', { hasText: 'Say which delimiter.' })
@@ -3128,6 +3145,107 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
         await teardown([page]);
         await cockpit.stop();
         rmSync(promptLog, { force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('a comment being written stays on its file (Playwright e2e, T413)', () => {
+  browserTest(
+    'a new comment on another file leaves the text where it was written, as a comment, and names its file',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const stream = await cockpit.streams.create('human', {
+          title: 'csv import',
+          goal: 'import a csv',
+          repo: 'demo',
+          project: shop.id,
+        });
+        const worktree = join(cockpit.repo, '.worktrees', 's-draft');
+        git(['worktree', 'add', '-q', '-b', 's-draft', worktree, 'main'], cockpit.repo);
+        mkdirSync(join(worktree, 'src'));
+        writeFileSync(
+          join(worktree, 'src', 'import.ts'),
+          'export const a = 1;\nexport const b = 2;\n',
+        );
+        writeFileSync(join(worktree, 'src', 'ledger.ts'), 'export const cents = 100;\n');
+        git(['add', '-A'], worktree);
+        git(['commit', '-q', '-m', 'two files'], worktree);
+        await cockpit.streams.update('daemon', stream.id, {
+          branch: 's-draft',
+          worktree,
+          agent: { status: 'done' },
+        });
+
+        const p = await openPage();
+        page = p;
+        await p.goto(`${cockpit.base}/?node=${stream.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        await p.locator('.cr-tabs [data-tab="diff"]').click();
+        const file = (path: string) => p.locator(`[data-testid="diff-file"][data-path="${path}"]`);
+        const line = (path: string, text: string) =>
+          file(path).locator('[data-line="add"]', { hasText: text });
+        const plus = async (path: string, text: string) => {
+          await line(path, text).hover();
+          await line(path, text).locator('[data-testid="diff-comment-add"]').click();
+        };
+        await file('src/ledger.ts').waitFor();
+
+        // Type on import.ts:1, then + on ledger.ts:1: the text does not come along.
+        await plus('src/import.ts', 'const a');
+        await file('src/import.ts')
+          .locator('[data-testid="diff-comment-input"]')
+          .fill('IMPORT-NOTE');
+        await plus('src/ledger.ts', 'cents');
+        const ledgerInput = file('src/ledger.ts').locator('[data-testid="diff-comment-input"]');
+        await ledgerInput.waitFor();
+        expect(await ledgerInput.inputValue()).toBe('');
+        await waitForText(
+          p,
+          '[data-testid="diff-file"][data-path="src/ledger.ts"] [data-testid="diff-comment-where"]',
+          'Comment on src/ledger.ts:1',
+        );
+        // …it stayed on import.ts, added as a comment there.
+        await file('src/import.ts')
+          .locator('[data-testid="diff-comment"]', { hasText: 'IMPORT-NOTE' })
+          .waitFor();
+        expect(await file('src/ledger.ts').locator('[data-testid="diff-comment"]').count()).toBe(0);
+        await waitForText(p, '[data-testid="review-count"]', '1 comment on 1 file');
+
+        // Shift on the next line of the same file carries the text: one comment on a range.
+        await ledgerInput.fill('LEDGER-NOTE');
+        await plus('src/import.ts', 'const a');
+        await file('src/import.ts')
+          .locator('[data-testid="diff-comment-input"]')
+          .fill('RANGE-NOTE');
+        await line('src/import.ts', 'const b').hover();
+        await line('src/import.ts', 'const b')
+          .locator('[data-testid="diff-comment-add"]')
+          .click({ modifiers: ['Shift'] });
+        await waitForText(
+          p,
+          '[data-testid="diff-file"][data-path="src/import.ts"] [data-testid="diff-comment-where"]',
+          'Comment on src/import.ts:1–2',
+        );
+        expect(
+          await file('src/import.ts').locator('[data-testid="diff-comment-input"]').inputValue(),
+        ).toBe('RANGE-NOTE');
+        await file('src/import.ts')
+          .locator('[data-testid="diff-comment-input"]')
+          .press('Control+Enter');
+        await waitForText(p, '[data-testid="review-count"]', '3 comments on 2 files');
+        await file('src/ledger.ts')
+          .locator('[data-testid="diff-comment"]', { hasText: 'LEDGER-NOTE' })
+          .waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
       }
     },
     TEST_BUDGET_MS,
@@ -6099,7 +6217,8 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
         await page.locator('[data-testid="add-repo"]').click();
         await page.locator('[data-testid="add-repo-select"]').selectOption('demo');
         await page.locator('[data-testid="add-repo-submit"]').click();
-        await page.locator('[data-testid="stream-status"]', { hasText: 'stream/' }).waitFor();
+        // T413: the branch reads by its name; the whole one is the chip's `data-branch`.
+        await page.locator('[data-testid="node-branch"][data-branch^="stream/"]').waitFor();
         expect(cockpit.streams.get(node.id).repo).toBe('demo');
         await page
           .locator(`${root} [data-testid="thread"]`, { hasText: 'THREAD-MARKER-205' })
@@ -6345,18 +6464,25 @@ describe('overlap warnings (Playwright e2e, T227)', () => {
 
 describe('status cards on the parent page (Playwright e2e, T283)', () => {
   browserTest(
-    "a child's card shows its doing, state and files on its parent's page",
+    "a parent lists every child with its status in the rail's words, and the agent's last card under it",
     async () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
       try {
         await cockpit.store.putRepos({ api: { path: cockpit.home } });
         const shop = await cockpit.projects.create({ name: 'Shop' });
+        // T413: a coordinating node (a project's root lists its nodes on its Overview instead).
+        const sale = await cockpit.streams.create('human', {
+          title: 'Show sale prices',
+          goal: 'g',
+          project: shop.id,
+          parent: shop.root,
+        });
         const api = await cockpit.streams.create('human', {
           title: 'api: add salePrice',
           goal: 'g',
           project: shop.id,
-          parent: shop.root,
+          parent: sale.id,
           repo: 'api',
         });
         const cards = new CardService({ store: cockpit.store, streams: cockpit.streams });
@@ -6365,21 +6491,33 @@ describe('status cards on the parent page (Playwright e2e, T283)', () => {
           touched: { files: ['prices.ts'], base: 'abc', at: new Date().toISOString() },
         });
         await cards.refresh(after);
+        // T413: a child that never posted a card is listed too.
+        const quiet = await cockpit.streams.create('human', {
+          title: 'web: sale badge',
+          goal: 'g',
+          project: shop.id,
+          parent: sale.id,
+          repo: 'api',
+        });
 
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
-        await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${sale.id}"]`).click();
         const card = `[data-testid="child-cards"] [data-node="${api.id}"]`;
         await waitForAttr(page, card, 'data-state', 'working');
+        await waitForText(page, `${card} [data-testid="status-card-state"]`, 'Working');
         await waitForText(page, `${card} [data-testid="status-card-doing"]`, 'adding salePrice');
         await waitForText(page, `${card} [data-testid="status-card-files"]`, 'prices.ts');
+        const none = `[data-testid="child-cards"] [data-node="${quiet.id}"]`;
+        await waitForText(page, `${none} [data-testid="status-card-state"]`, 'Not started');
+        expect(await page.locator(`${none} [data-testid="status-card-doing"]`).count()).toBe(0);
 
-        // A corrupt card is an error line naming path:line; the others still render.
+        // A corrupt card says so in words (the path:line is its tooltip); the others still render.
         const web = await cockpit.streams.create('human', {
           title: 'web: show sale',
           goal: 'g',
           project: shop.id,
-          parent: shop.root,
+          parent: sale.id,
           repo: 'api',
         });
         writeFileSync(
@@ -6389,24 +6527,62 @@ describe('status cards on the parent page (Playwright e2e, T283)', () => {
         await cockpit.streams.update('human', web.id, { title: 'web: show sale!' });
         const bad = `[data-testid="child-cards"] [data-node="${web.id}"] [data-testid="status-card-error-text"]`;
         await page.locator(bad).waitFor();
-        expect(await page.locator(bad).textContent()).toContain(`cards/${web.id}.yaml:3:`);
+        expect(await page.locator(bad).getAttribute('title')).toContain(`cards/${web.id}.yaml:3:`);
         await waitForAttr(page, card, 'data-state', 'working');
+        await waitForText(page, '[data-testid="child-cards"] .cr-count', '3');
 
-        // T349: a child waiting on your answer reads "question" with the amber dot…
+        // T349: a child waiting on your answer reads Needs you, with the rail's amber dot…
         await cards.refresh(
           await cockpit.streams.update('daemon', api.id, { agent: { status: 'question' } }),
         );
         await cockpit.streams.update('human', web.id, { title: 'web: show sale?' });
         await waitForAttr(page, card, 'data-state', 'question');
         await waitForText(page, `${card} [data-testid="status-card-state"]`, 'Needs you');
-        await waitForAttr(page, `${card} [data-testid="status-card-dot"]`, 'data-dot', 'amber');
-        // …and a real block still reads "blocked", with no needs-you dot.
+        await waitForAttr(page, `${card} .cr-dot`, 'data-dot', 'amber');
+        // …and a real block reads Blocked, red.
         await cards.refresh(
           await cockpit.streams.update('daemon', api.id, { agent: { status: 'blocked' } }),
         );
         await cockpit.streams.update('human', web.id, { title: 'web: show sale.' });
         await waitForAttr(page, card, 'data-state', 'blocked');
-        expect(await page.locator(`${card} [data-testid="status-card-dot"]`).count()).toBe(0);
+        await waitForText(page, `${card} [data-testid="status-card-state"]`, 'Blocked');
+        await waitForAttr(page, `${card} .cr-dot`, 'data-dot', 'red');
+
+        // T413: a finished child reads as the rail reads it, not as the card's "done".
+        await cards.refresh(
+          await cockpit.streams.update('daemon', api.id, { agent: { status: 'done' } }),
+        );
+        await cockpit.streams.update('human', web.id, { title: 'web: show sale,' });
+        await waitForAttr(page, card, 'data-state', 'done');
+        const railDot = page
+          .locator(`[data-testid="stream-tree"] [data-stream="${api.id}"] .cr-dot[data-status]`)
+          .first();
+        const pill = page.locator(`${card} .cr-status-pill`);
+        await waitUntilAsync(
+          'the child and its rail row to read the same finished status',
+          async () => {
+            const [rail, own] = [
+              await railDot.getAttribute('data-status'),
+              await pill.getAttribute('data-status'),
+            ];
+            return rail !== null && rail !== 'working' && rail !== 'blocked' && rail === own;
+          },
+        );
+        expect(await page.locator(`${card} [data-testid="status-card-state"]`).textContent()).toBe(
+          await railDot.getAttribute('aria-label'),
+        );
+        expect(
+          await page.locator(`${card} [data-testid="status-card-state"]`).textContent(),
+        ).not.toBe('Done');
+
+        // The project's root has no Children list: its Overview has them.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+        await page
+          .locator(
+            `[data-testid="stream-page"][data-stream="${shop.root}"] [data-testid="node-details"]`,
+          )
+          .waitFor();
+        expect(await page.locator('[data-testid="child-cards"]').count()).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -6701,9 +6877,9 @@ describe('node activity (Playwright e2e, T245)', () => {
         expect(await page.locator(`${row} [data-testid="activity-type"]`).textContent()).toBe(
           'Main changed',
         );
-        expect(
-          await page.locator(`${row} [data-testid="activity-status"]`).textContent(),
-        ).toContain('pending');
+        expect(await page.locator(`${row} [data-testid="activity-status"]`).textContent()).toBe(
+          'Not seen by the agent yet',
+        );
 
         // The subject itself was not routed the event.
         await page.locator(`[data-testid="stream-tree"] [data-stream="${a.id}"]`).click();
@@ -7346,7 +7522,9 @@ describe('project overview (Playwright e2e, T387)', () => {
         expect(await page.locator(`${tabs}[data-tab="thread"]`).getAttribute('aria-current')).toBe(
           'page',
         );
-        await page.locator('[data-testid="goal-card"]').waitFor({ state: 'visible' });
+        // T413: a root's chat has no Goal card (its goal is the project's name).
+        await page.locator('[data-testid="composer-input"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="goal-card"]').count()).toBe(0);
         await page.locator(`[data-testid="stream-needs"] [data-id="${question.id}"]`).waitFor();
         expect(await page.locator(overview).count()).toBe(0);
         // The Overview tab goes back.
