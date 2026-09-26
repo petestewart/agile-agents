@@ -72,8 +72,8 @@ export function splitCommandSegments(command: string): RawSegment[] {
       if (command[i + 1] === '&') i++;
       continue;
     }
-    // T345: a lone `&` runs what came before in the background and starts a
-    // new command (`echo & cat /etc/passwd`). Not `>&`, `<&` or `&>`.
+    // A lone `&` runs what came before in the background and starts a new
+    // command (`echo & cat /etc/passwd`). Not `>&`, `<&` or `&>`.
     if (c === '&' && !/[<>]/.test(command[i - 1] ?? '') && command[i + 1] !== '>') {
       push('&');
       continue;

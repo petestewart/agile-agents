@@ -426,9 +426,15 @@ function engineerGitPathVerdict(
   return undefined;
 }
 
+/** T345: a `cd` target the shell may look up in CDPATH (or as a cdable_vars name). */
+function isBareCdName(target: string): boolean {
+  return !/^(\/|~|\.\.?(\/|$))/.test(target);
+}
+
 /**
  * T336, T345: `cd <dir>` resolved from `cwd`, or why it is refused: no
- * dir, `cd -`, a flag, extra words, or a path the shell must expand.
+ * dir, `cd -`, a flag, extra words, a path the shell must expand, or a bare
+ * name, which CDPATH or cdable_vars in the user's shell could send anywhere.
  */
 function cdTarget(tokens: string[], cwd: string, role: string): { dir: string } | PolicyVerdict {
   const [, target, ...rest] = tokens;
@@ -437,6 +443,9 @@ function cdTarget(tokens: string[], cwd: string, role: string): { dir: string } 
   }
   const resolved = cmd.resolveTargetPath(target);
   if (!resolved.safe) return deny(`${role} role cannot resolve the path "${target}"`);
+  if (isBareCdName(target)) {
+    return deny(`use \`cd ./${target}\` (a bare name can be redirected by CDPATH)`);
+  }
   return { dir: resolve(cwd, resolved.path) };
 }
 
