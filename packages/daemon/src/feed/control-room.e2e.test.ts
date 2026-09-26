@@ -757,6 +757,8 @@ describe('cockpit shell (Playwright e2e)', () => {
         // Back to Needs me: allow the routed call with a reason.
         await page.locator('[data-view="inbox"]').click();
         const gateCard = `[data-id="${gate.id}"]`;
+        // T364: the note is a small "Add a note" affordance that opens an input.
+        await page.locator(`${gateCard} [data-testid="gate-add-note"]`).click();
         await page.locator(`${gateCard} [data-testid="gate-note"]`).fill('pin it to 1.2.3');
         await page.locator(`${gateCard} [data-testid="gate-approve"]`).click();
         await page.locator(gateCard).waitFor({ state: 'detached' });
@@ -822,7 +824,9 @@ describe('cockpit shell (Playwright e2e)', () => {
             .evaluate((el) => el.scrollWidth - el.clientWidth),
         ).toBeLessThanOrEqual(0);
 
-        // T363: on a node's page the composer answers the open question.
+        // T364: the node page's question card has no input of its own;
+        // T363: the page's composer answers it.
+        expect(await page.locator(`${card} [data-testid="answer-input"]`).count()).toBe(0);
         await page.locator('[data-testid="composer-answering"]').waitFor();
         await page.locator('[data-testid="composer-input"]').fill('main');
         await page.locator('[data-testid="composer-send"]').click();
@@ -841,6 +845,152 @@ describe('cockpit shell (Playwright e2e)', () => {
 });
 
 // ---- T163: the rules screen (design/cockpit-design.md §5, §9) ----------
+
+describe('Needs me and the decision cards (Playwright e2e, T364)', () => {
+  browserTest(
+    "a question's choices answer with one click, in Needs me and on the node page; j/k and Enter; the filter",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const csv = await cockpit.streams.create('human', { title: 'csv dialect', goal: 'g' });
+        const pricing = await cockpit.streams.create('human', { title: 'pricing', goal: 'g' });
+        const session = ulid();
+        const asked = await cockpit.questions.raise({
+          stream: csv.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session,
+          text: 'Which delimiter should the parser treat as canonical?',
+          options: ['comma', 'semicolon', 'tab'],
+        });
+        // An older question: its choices are only in its text.
+        const written = await cockpit.questions.raise({
+          stream: pricing.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session,
+          text: 'Which competitor should I start with? (A) Linear (B) Height',
+        });
+        const gate = await cockpit.gates.request('classifier_review', {
+          policy: cockpit.store.getPolicy(),
+          stream: pricing.id,
+          summary: 'editing a dependency manifest is never automatic',
+          call: { tool: 'Edit', path: '/tmp/wt/package.json', fingerprint: '0123456789abcdef' },
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-testid="inbox"] [data-id="${asked.id}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        expect(await page.locator(`${card} .kind`).textContent()).toBe('Question');
+        const choices = page.locator(`${card} [data-testid="answer-choice"]`);
+        expect(await choices.count()).toBe(3);
+        expect(await choices.nth(1).textContent()).toContain('semicolon');
+        // Typing is still there in the list, for an answer that isn't a choice.
+        expect(await page.locator(`${card} [data-testid="answer-input"]`).count()).toBe(1);
+
+        // The written choices are buttons too, and the text no longer repeats them.
+        const other = `[data-testid="inbox"] [data-id="${written.id}"]`;
+        expect(await page.locator(`${other} [data-testid="answer-choice"]`).count()).toBe(2);
+        expect(
+          (await page.locator(`${other} [data-testid="inbox-context"]`).textContent())?.trim(),
+        ).toBe('Which competitor should I start with?');
+
+        // The filter: questions, decisions (the gate), all.
+        const filter = '[data-testid="inbox-filter"]';
+        await page.locator(`${filter} [data-value="decisions"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
+        expect(await page.locator(`[data-testid="inbox"] [data-id="${gate.id}"]`).count()).toBe(1);
+        await page.locator(`${filter} [data-value="all"]`).click();
+        await page.locator(card).waitFor({ state: 'visible' });
+
+        // One click answers with the choice's text, verbatim.
+        await choices.nth(1).click();
+        await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
+        expect(cockpit.delivered[0]?.question.id).toBe(asked.id);
+        expect(cockpit.delivered[0]?.question.answer).toBe('semicolon');
+        await page.locator(card).waitFor({ state: 'detached' });
+
+        // j focuses the first card; Enter opens its node.
+        await page.locator('[data-testid="inbox"] h1').click();
+        await page.keyboard.press('j');
+        const focused = async (id: string): Promise<boolean> =>
+          (await page?.evaluate<boolean>(
+            `document.activeElement?.getAttribute('data-id') === ${JSON.stringify(id)}`,
+          )) === true;
+        await waitUntilAsync('j to focus the first card', () => focused(written.id));
+        await page.keyboard.press('j');
+        await waitUntilAsync('j to move to the next card', () => focused(gate.id));
+        await page.keyboard.press('k');
+        await page.keyboard.press('Enter');
+        await page.locator(`[data-testid="stream-page"][data-stream="${pricing.id}"]`).waitFor();
+
+        // On the node page the card has its choices and no input of its own:
+        // the page's composer answers it.
+        const full = `[data-testid="stream-needs"] [data-id="${written.id}"]`;
+        await page.locator(full).waitFor({ state: 'visible' });
+        expect(await page.locator(`${full} [data-testid="answer-input"]`).count()).toBe(0);
+        expect(await page.locator(`${full} [data-testid="answer-send"]`).count()).toBe(0);
+        expect(await page.locator(`${full} [data-testid="answer-hint"]`).textContent()).toContain(
+          'or type your answer below',
+        );
+        await page.locator(`${full} [data-testid="answer-choice"]`, { hasText: 'Height' }).click();
+        await waitUntil('the second answer', () => cockpit.delivered.length > 1);
+        expect(cockpit.delivered[1]?.question.answer).toBe('Height');
+        await page.locator(full).waitFor({ state: 'detached' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a first run shows the three steps with their state, and each step opens its place',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const empty = '[data-testid="inbox-empty"][data-state="first-run"]';
+        await page.locator(empty).waitFor({ state: 'visible' });
+        const step = (id: string): string =>
+          `${empty} [data-testid="setup-step"][data-step="${id}"]`;
+        for (const id of ['repo', 'project', 'node']) {
+          expect(await page.locator(step(id)).getAttribute('data-done')).toBe('false');
+        }
+        // Add a repository opens Settings.
+        await page.locator('[data-testid="setup-repo"]').click();
+        await page.locator('[data-testid="settings"]').waitFor({ state: 'visible' });
+        await page.locator('[data-view="inbox"]').click();
+        // Create a project opens the New project dialog.
+        await page.locator('[data-testid="setup-project"]').click();
+        await page.locator('[data-testid="new-project"]').waitFor({ state: 'visible' });
+        // A project made (here through the service) ticks its step, live.
+        await cockpit.projects.create({ name: 'shop' });
+        await waitForAttr(page, step('project'), 'data-done', 'true');
+        expect(await page.locator(step('repo')).getAttribute('data-done')).toBe('false');
+        expect(await page.locator(step('node')).getAttribute('data-done')).toBe('false');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+/** T366: opens an item's side panel on the Knowledge screen (a click on its row); returns its selector. */
+async function openKnowledgeItem(page: Page, id: string): Promise<string> {
+  const detail = `[data-testid="rules-detail"][data-rule="${id}"]`;
+  await page.locator(`[data-testid="rules-row"][data-rule="${id}"]`).waitFor();
+  if ((await page.locator(detail).count()) === 0) {
+    await page.locator(`[data-testid="rules-row"][data-rule="${id}"] .cr-kn-row-main`).click();
+  }
+  await page.locator(detail).waitFor();
+  return detail;
+}
 
 describe('rules screen (Playwright e2e, T163)', () => {
   browserTest(
@@ -892,18 +1042,28 @@ describe('rules screen (Playwright e2e, T163)', () => {
             return saved.status === 'retired' && saved.decided_by === 'human';
           }),
         );
-        // Filtered to proposed, the list is now empty.
+        // To review, filtered to that source, is now empty.
         await page.locator('[data-testid="rules-empty"]').waitFor();
 
-        // Clear the source filter and show every status: the lesson is
-        // there, and the retired three are too. Accept the lesson here.
+        // T366: clear the source filter: To review shows the lesson. Accept
+        // it from its row.
         await page.locator('[data-testid="rules-filter-source"] button').click();
-        await page.locator('[data-testid="rules-filter-status"]').selectOption('all');
-        await waitForCount(page, '[data-testid="rules-row"][data-status="retired"]', 3);
         const row = `[data-testid="rules-row"][data-rule="${lesson.id}"]`;
         await page.locator(`${row} [data-testid="rules-accept"]`).click();
-        await waitForAttr(page, row, 'data-status', 'accepted', POLL_DEADLINE_MS);
+        await waitUntil(
+          'the lesson to be accepted',
+          () => cockpit.store.getKnowledge(lesson.id).status === 'accepted',
+        );
         expect(cockpit.store.getKnowledge(lesson.id).decided_by).toBe('human');
+        // Every status on All: the lesson reads accepted, and the retired
+        // three fold under Retired until asked for.
+        await page.locator('[data-testid="rules-tab-all"]').click();
+        await waitForAttr(page, row, 'data-status', 'accepted', POLL_DEADLINE_MS);
+        expect(await page.locator('[data-testid="rules-row"][data-status="retired"]').count()).toBe(
+          0,
+        );
+        await page.locator('[data-testid="rules-show-retired"]').click();
+        await waitForCount(page, '[data-testid="rules-row"][data-status="retired"]', 3);
 
         // The inbox is empty again, and the rule is in the stream's rules tab.
         await page.locator('[data-view="inbox"]').click();
@@ -957,26 +1117,31 @@ describe('rules screen (Playwright e2e, T163)', () => {
         await page.goto(`${cockpit.base}/?view=rules`);
         const row = `[data-testid="rules-row"][data-rule="${rule.id}"]`;
         await page.locator(row).waitFor();
+        // T366: the check, its examples and the actions live in the item's panel.
+        const detail = await openKnowledgeItem(page, rule.id);
         // A proposal is not evaluated: the button is there but disabled.
-        expect(await page.locator(`${row} [data-testid="rules-test"]`).isDisabled()).toBe(true);
+        expect(await page.locator(`${detail} [data-testid="rules-test"]`).isDisabled()).toBe(true);
 
-        await page.locator(`${row} [data-testid="rules-edit"]`).click();
+        await page.locator(`${detail} [data-testid="rules-edit"]`).click();
+        const editor = '[data-testid="rules-editor"]';
         await page
-          .locator(`${row} [data-testid="rules-edit-question"]`)
+          .locator(`${editor} [data-testid="rules-edit-question"]`)
           .fill('Does this action add a package to the project?');
         await page
-          .locator(`${row} [data-testid="rules-edit-criteria-true"]`)
+          .locator(`${editor} [data-testid="rules-edit-criteria-true"]`)
           .fill('a package manager adds a dependency');
         await page
-          .locator(`${row} [data-testid="rules-edit-criteria-false"]`)
+          .locator(`${editor} [data-testid="rules-edit-criteria-false"]`)
           .fill('no dependency changes');
-        await page.locator(`${row} [data-testid="rules-edit-add-example"]`).click();
+        await page.locator(`${editor} [data-testid="rules-edit-add-example"]`).click();
         await page
-          .locator(`${row} [data-testid="rules-edit-example"] input[aria-label="Example action"]`)
+          .locator(
+            `${editor} [data-testid="rules-edit-example"] input[aria-label="Example action"]`,
+          )
           .nth(2)
           .fill('npm install left-pad');
-        await page.locator(`${row} [data-testid="rules-edit-save"]`).click();
-        await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
+        await page.locator(`${editor} [data-testid="rules-edit-save"]`).click();
+        await page.locator(editor).waitFor({ state: 'detached' });
         const saved = cockpit.store.getKnowledge(rule.id);
         expect(classifierQuestion(saved)).toBe('Does this action add a package to the project?');
         expect(saved.check).toMatchObject({
@@ -988,16 +1153,17 @@ describe('rules screen (Playwright e2e, T163)', () => {
         expect(examplesOf(saved)).toHaveLength(3);
         await waitForText(
           page,
-          `${row} [data-testid="rules-question"]`,
-          'Q: Does this action add a package to the project?',
+          `${detail} [data-testid="rules-question"]`,
+          'Does this action add a package to the project?',
         );
 
-        await page.locator(`${row} [data-testid="rules-accept"]`).click();
+        await page.locator(`${detail} [data-testid="rules-accept"]`).click();
         await waitForAttr(page, row, 'data-status', 'accepted', POLL_DEADLINE_MS);
-        await page.locator(`${row} [data-testid="rules-test"]`).click();
-        await waitForCount(page, `${row} [data-testid="rules-eval"]`, 3);
+        await waitForText(page, `${detail} [data-testid="rules-status"]`, 'Accepted');
+        await page.locator(`${detail} [data-testid="rules-test"]`).click();
+        await waitForCount(page, `${detail} [data-testid="rules-eval"]`, 3);
         const bands = await page
-          .locator(`${row} [data-testid="rules-eval"]`)
+          .locator(`${detail} [data-testid="rules-eval"]`)
           .evaluateAll((els) =>
             els.map((el) => [el.getAttribute('data-band'), el.getAttribute('data-agree')]),
           );
@@ -1006,8 +1172,8 @@ describe('rules screen (Playwright e2e, T163)', () => {
           ['allow', 'yes'],
           ['route', 'no'],
         ]);
-        expect(await page.locator(`${row} [data-testid="rules-evals"]`).textContent()).toContain(
-          '2/3 agree',
+        expect(await page.locator(`${detail} [data-testid="rules-evals"]`).textContent()).toContain(
+          '2 of 3 examples agree',
         );
         // The classifier was asked the edited question, with the criteria.
         const asked = classifier.calls.at(-1)?.questions[0];
@@ -1043,62 +1209,71 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
         });
         page = await openPage();
         await page.goto(`${cockpit.base}/?view=rules`);
-        const row = `[data-testid="rules-row"][data-rule="${rule.id}"]`;
-        await waitForText(
+        // T366: the panel says the pattern in words (the raw spelling is gone).
+        const detail = await openKnowledgeItem(page, rule.id);
+        await waitForAttr(
           page,
-          `${row} [data-testid="rules-pattern"]`,
-          'command_deny: "rm -rf", "git reset --hard"',
+          `${detail} [data-testid="rules-pattern"]`,
+          'title',
+          'Blocks commands matching "rm -rf", "git reset --hard"',
         );
 
         // Edit, change everything, Cancel: nothing is sent, the editor closes.
+        const editor = '[data-testid="rules-editor"]';
         const before = JSON.stringify(cockpit.store.getKnowledge(rule.id));
-        await page.locator(`${row} [data-testid="rules-edit"]`).click();
-        await page.locator(`${row} [data-testid="rules-edit-text"]`).fill('changed text');
+        await page.locator(`${detail} [data-testid="rules-edit"]`).click();
+        await page.locator(`${editor} [data-testid="rules-edit-text"]`).fill('changed text');
         await page
-          .locator(`${row} [data-testid="rules-edit-pattern-kind"]`)
+          .locator(`${editor} [data-testid="rules-edit-pattern-kind"]`)
           .selectOption('no_push');
-        await page.locator(`${row} [data-testid="rules-edit-cancel"]`).click();
-        await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
+        await page.locator(`${editor} [data-testid="rules-edit-cancel"]`).click();
+        await page.locator(editor).waitFor({ state: 'detached' });
         // Reopened, the draft is the saved rule again, not the discarded one.
-        await page.locator(`${row} [data-testid="rules-edit"]`).click();
-        expect(await page.locator(`${row} [data-testid="rules-edit-text"]`).inputValue()).toBe(
+        await page.locator(`${detail} [data-testid="rules-edit"]`).click();
+        expect(await page.locator(`${editor} [data-testid="rules-edit-text"]`).inputValue()).toBe(
           'never wipe the tree',
         );
-        await page.locator(`${row} [data-testid="rules-edit-text"]`).fill('changed by esc');
-        await page.locator(`${row} [data-testid="rules-edit-text"]`).press('Escape');
-        await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
+        await page.locator(`${editor} [data-testid="rules-edit-text"]`).fill('changed by esc');
+        await page.locator(`${editor} [data-testid="rules-edit-text"]`).press('Escape');
+        await page.locator(editor).waitFor({ state: 'detached' });
+        // Esc left the editor, not the item: its panel is still open.
+        await page.locator(detail).waitFor();
         expect(JSON.stringify(cockpit.store.getKnowledge(rule.id))).toBe(before);
 
         // Editing the pattern's arguments does save.
-        await page.locator(`${row} [data-testid="rules-edit"]`).click();
+        await page.locator(`${detail} [data-testid="rules-edit"]`).click();
         await page
-          .locator(`${row} [data-testid="rules-edit-pattern-args"]`)
+          .locator(`${editor} [data-testid="rules-edit-pattern-args"]`)
           .fill('rm -rf\ngit clean -fdx');
-        await page.locator(`${row} [data-testid="rules-edit-save"]`).click();
-        await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
+        await page.locator(`${editor} [data-testid="rules-edit-save"]`).click();
+        await page.locator(editor).waitFor({ state: 'detached' });
         expect(patternOf(cockpit.store.getKnowledge(rule.id))).toEqual({
           kind: 'command_deny',
           args: { patterns: ['rm -rf', 'git clean -fdx'] },
         });
 
-        // New rule: a pattern on a ship item is refused in the form (§14.3: action only).
+        // Add knowledge: a pattern is an action check only (§14.3), so a
+        // ship item is never offered one; an action item is.
         await page.locator('[data-testid="rules-new"]').click();
         const form = '[data-testid="rules-new-form"]';
         await page.locator(`${form} [data-testid="rules-edit-text"]`).fill('keep secrets out');
-        await page.locator(`${form} [data-testid="rules-edit-enforcement"]`).selectOption('ship');
+        await page
+          .locator(`${form} [data-testid="rules-edit-enforcement"] [data-value="ship"]`)
+          .click();
+        expect(await page.locator(`${form} [data-testid="rules-edit-check-by"]`).count()).toBe(0);
+        expect(await page.locator(`${form} [data-testid="rules-edit-pattern-kind"]`).count()).toBe(
+          0,
+        );
+        await page
+          .locator(`${form} [data-testid="rules-edit-enforcement"] [data-value="action"]`)
+          .click();
+        await page
+          .locator(`${form} [data-testid="rules-edit-check-by"] [data-value="pattern"]`)
+          .click();
         await page
           .locator(`${form} [data-testid="rules-edit-pattern-kind"]`)
           .selectOption('path_deny');
         await page.locator(`${form} [data-testid="rules-edit-pattern-args"]`).fill('secrets/**');
-        await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
-        await waitUntilAsync('the form to refuse a pattern on a ship item', async () =>
-          page
-            ? ((await page.locator(`${form} [role="alert"]`).textContent()) ?? '').includes(
-                'a pattern check is an action check only',
-              )
-            : false,
-        );
-        await page.locator(`${form} [data-testid="rules-edit-enforcement"]`).selectOption('action');
         await page.locator(`${form} [data-testid="rules-edit-critical"]`).check();
         await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
         await page.locator(form).waitFor({ state: 'detached' });
@@ -1113,10 +1288,15 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
           kind: 'path_deny',
           args: { globs: ['secrets/**'] },
         });
-        await waitForText(
+        // The panel opens on the new item, where it now lives: To review.
+        await page
+          .locator(`[data-testid="rules-section-review"] [data-rule="${created?.id}"]`)
+          .waitFor();
+        await waitForAttr(
           page,
-          `[data-testid="rules-row"][data-rule="${created?.id}"] [data-testid="rules-pattern"]`,
-          'path_deny: "secrets/**"',
+          `[data-testid="rules-detail"][data-rule="${created?.id}"] [data-testid="rules-pattern"]`,
+          'title',
+          `Blocks writes outside the node's own worktree, and to paths matching "secrets/**"`,
         );
       } finally {
         await teardown([page]);
@@ -1154,10 +1334,11 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
           },
         });
         await cockpit.rules.accept(rule.id, 'human');
-        const testButton = `[data-testid="rules-row"][data-rule="${rule.id}"] [data-testid="rules-test"]`;
+        const testButton = `[data-testid="rules-detail"][data-rule="${rule.id}"] [data-testid="rules-test"]`;
 
         page = await openPage();
         await page.goto(`${cockpit.base}/?view=rules`);
+        await openKnowledgeItem(page, rule.id);
         await page.locator(testButton).waitFor();
         expect(await page.locator(testButton).isDisabled()).toBe(true);
 
@@ -1170,6 +1351,7 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
         expect(await page.content()).not.toContain(fakeKey);
 
         await page.locator('[data-view="rules"]').click();
+        await openKnowledgeItem(page, rule.id);
         await page.locator(testButton).waitFor();
         await waitUntilAsync('Test examples to be enabled', async () =>
           page ? !(await page.locator(testButton).isDisabled()) : false,
@@ -1180,6 +1362,7 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
         await page.locator('[data-testid="settings-key-remove"]').click();
         await waitForText(page, '[data-testid="settings-key-status"]', 'no key');
         await page.locator('[data-view="rules"]').click();
+        await openKnowledgeItem(page, rule.id);
         await page.locator(testButton).waitFor();
         await waitUntilAsync('Test examples to be disabled', async () =>
           page ? await page.locator(testButton).isDisabled() : false,
@@ -1544,7 +1727,9 @@ describe('stream page (Playwright e2e, T161)', () => {
         git(['add', 'parser.ts'], worktree);
         git(['commit', '-q', '-m', 'semicolon parser'], worktree);
 
-        // ---- answer, on the stream page: T363, the composer answers the open question.
+        // ---- answer, on the stream page. T364: its card has no input of its own;
+        // T363: the composer answers the open question.
+        expect(await page.locator(`${card} [data-testid="answer-input"]`).count()).toBe(0);
         await page
           .locator('[data-testid="composer-answering"]', { hasText: 'two conventions' })
           .waitFor();
@@ -2363,7 +2548,7 @@ describe('Merge wording and hold tone (Playwright e2e, T347)', () => {
         const card = `[data-kind="done"][data-id="${stream.id}"]`;
         await page.locator(`${card} [data-testid="land"]`).waitFor();
         expect(await page.locator(`${card} [data-testid="land"]`).textContent()).toBe('Merge');
-        expect(await page.locator(`${card} .kind`).textContent()).toContain('ready to merge');
+        expect(await page.locator(`${card} .kind`).textContent()).toContain('Ready to merge');
         expect(await page.locator(card).textContent()).not.toMatch(/\bland\b/i);
 
         // D9: a ship-check hold is news (neutral), a real refusal stays red.
@@ -2548,6 +2733,13 @@ describe('rule hits on the stream (Playwright e2e, T169)', () => {
         expect(
           await page.locator(`[data-testid="rules-row"][data-rule="${other.id}"]`).count(),
         ).toBe(0);
+        // T366: and its panel is open on it: what it blocks, in words.
+        await waitForAttr(
+          page,
+          `[data-testid="rules-detail"][data-rule="${rule.id}"] [data-testid="rules-pattern"]`,
+          'title',
+          'Blocks commands matching "rm -rf"',
+        );
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -2705,15 +2897,18 @@ describe('the Knowledge screen (Playwright e2e, T266)', () => {
         await page.goto(`${cockpit.base}/`);
         const card = `[data-testid="inbox"] [data-id="${decision.id}"]`;
         await page.locator(card).waitFor({ state: 'visible' });
-        expect(await page.locator(`${card} .kind`).textContent()).toContain('decision proposed');
+        expect(await page.locator(`${card} .kind`).textContent()).toContain('Decision proposed');
 
-        // The Knowledge screen filters by kind and enforcement.
+        // The Knowledge screen separates by kind (T366: tabs) and filters by enforcement.
         await page.locator('[data-view="rules"]').click();
         await page.locator('[data-testid="rules-screen"] h1', { hasText: 'Knowledge' }).waitFor();
         await waitForCount(page, '[data-testid="rules-row"]', 2);
-        await page.locator('[data-testid="rules-filter-kind"]').selectOption('decision');
-        await waitForCount(page, '[data-testid="rules-row"]', 1);
+        await page.locator('[data-testid="rules-tab-decision"]').click();
         const row = `[data-testid="rules-row"][data-rule="${decision.id}"]`;
+        await page.locator(`[data-testid="rules-section-review"] ${row}`).waitFor();
+        await waitUntilAsync('the Decisions tab to show the decision alone', async () =>
+          page ? (await page.locator('[data-testid="rules-row"]').count()) === 1 : false,
+        );
         expect(await page.locator(`${row} [data-testid="rules-paths"]`).textContent()).toBe(
           'src/money/**',
         );
@@ -3093,7 +3288,7 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         });
         expect(cross.status).toBe(403);
 
-        // Knowledge → New rule: a Name, and the scope picked by name (no ids typed).
+        // Knowledge → Add knowledge: a Name, and the scope picked by name (no ids typed).
         await page.locator('[data-view="rules"]').click();
         await page.locator('[data-testid="rules-new"]').click();
         const form = '[data-testid="rules-new-form"]';
@@ -3113,7 +3308,7 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         await waitForText(
           page,
           `[data-testid="rules-row"][data-rule="${item?.id}"] [data-testid="rules-scope"]`,
-          'project:shop',
+          'Project shop',
         );
 
         // The event log: every routed event, subjects by title.
@@ -3756,7 +3951,7 @@ describe('waiting for the plan (Playwright e2e, T344)', () => {
         await page.goto(`${cockpit.base}/`);
         const card = `[data-testid="inbox"] [data-kind="plan_waiting"][data-id="${node.id}"]`;
         await page.locator(card).waitFor({ state: 'visible' });
-        expect(await page.locator(`${card} .kind`).textContent()).toContain('waiting for the plan');
+        expect(await page.locator(`${card} .kind`).textContent()).toContain('Waiting for the plan');
         expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
           'demo part, web part wait for the plan',
         );

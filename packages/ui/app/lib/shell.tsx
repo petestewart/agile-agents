@@ -96,6 +96,9 @@ export interface ShellValue {
   /** T162: the "New stream" dialog — opened by the top bar's button or `n`. */
   newStreamOpen: boolean;
   setNewStreamOpen(open: boolean): void;
+  /** T360: the "New project" dialog — from the sidebar, or Needs me's first-run steps. */
+  newProjectOpen: boolean;
+  setNewProjectOpen(open: boolean): void;
   /** T208: the rail's project switcher; `undefined` is "All". New nodes file into it. */
   project: string | undefined;
   setProject(id: string | undefined): void;
@@ -111,6 +114,7 @@ export function ShellProvider({
   const [selected, setSelected] = useState<string | undefined>(initial.node);
   const [railOpen, setRailOpen] = useState(false);
   const [newStreamOpen, setNewStreamOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [project, setProject] = useState<string | undefined>(initial.project);
   const [rulesFilter, setRulesFilter] = useState<RulesFilter>(DEFAULT_RULES_FILTER);
   // T348: ids read from the URL (on load, or on back/forward) are checked
@@ -194,10 +198,12 @@ export function ShellProvider({
       },
       newStreamOpen,
       setNewStreamOpen,
+      newProjectOpen,
+      setNewProjectOpen,
       project,
       setProject,
     }),
-    [view, selected, railOpen, newStreamOpen, rulesFilter, project],
+    [view, selected, railOpen, newStreamOpen, newProjectOpen, rulesFilter, project],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;

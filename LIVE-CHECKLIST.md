@@ -75,11 +75,11 @@ The cockpit is `http://127.0.0.1:4600/`.
 | Place | What it holds |
 |---|---|
 | Sidebar | **New node (n)**; the views below (**Needs me** with its count, **Director**, **Knowledge**, and under *Views* **Running**, **Repos**, **Dependencies**, **Events**); *Projects*: **+** (new project), the project switcher (**All projects**, Shop, Blog), a filter, and the tree with a status dot and a role icon per node and a ⚠ mark on overlapping nodes; **Settings** at the bottom. Below 900px wide it is a drawer behind the ☰ button |
-| **Needs me** | The inbox, grouped by node: questions (answer inline), gates (Approve/Deny), knowledge proposals (Accept/Retire), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (**Merge**) |
+| **Needs me** | The inbox, grouped by project, then node, oldest first, with a filter (**All** · **Questions** · **Decisions** · **Merges**): questions (a button per choice, or type and **Answer**), actions to allow (**Allow**/**Deny**, **Add a note**), knowledge proposals (**Accept**/**Retire**), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (**Merge**, **View changes**). `j`/`k` move between cards; Enter opens a card's node |
 | **Repos** | Per repo: its delivery mode, the live work nodes on it across projects (ancestors greyed), overlaps, its norms, recent repo events |
 | **Running** | Nodes with a live agent |
 | **Dependencies** | Every "waits on" link, across projects |
-| **Knowledge** | Every knowledge item: filters, Accept/Retire, Edit, Test examples |
+| **Knowledge** | Every knowledge item, split into **To review**, **Rules**, **Standards**, **Architecture** and **Decisions** (retired items fold at the bottom); search and scope/enforcement filters; a click opens an item's side panel: Accept/Retire, Edit, Test examples |
 | **Director** | The Director's thread and composer, its **Drafts** (Create/Dismiss), its activity |
 | **Events** | Every routed event, newest first: what happened, to which node, and who it was routed to and why |
 | **Settings** | Who decides, the TypeSafe API key, Trackers (Jira, Linear), session defaults, repos (add, delivery, visibility) |
@@ -190,7 +190,9 @@ agile knowledge list
       `session default: claude/claude-opus-5-5 · low`.
 - [ ] `knowledge list` shows the three built-in items: `no_push_protected`
       and `path_deny` (accepted, `action:pattern!`) and `no_push` (retired).
-- [ ] Open the cockpit: `open http://127.0.0.1:4600/`. **Needs me** is empty.
+- [ ] Open the cockpit: `open http://127.0.0.1:4600/`. Nothing waits on you
+      yet, so **Needs me** shows three setup steps, each with its state and a
+      button: **Add repository** (opens Settings), **New project**, **New node**.
 
 ## 2. Projects and repos
 
@@ -387,8 +389,8 @@ From here on, every step is done in the cockpit unless it is marked
       and press **Send** (or Enter). Your line appears on the thread at once.
 - [ ] Within a few minutes the coordinator writes a **plan** (which part owns
       which paths) and a **contract** (the JSON shape both parts rely on).
-      **Needs me** gets a badge, and shows a `plan to approve` card under
-      Ledger export whose text names the owners and the contracts. The same
+      **Needs me** gets a badge, and shows a `Plan to approve` card under
+      Ledger export listing the parts (who owns which paths) and the contracts. The same
       card sits at the end of the Ledger export chat, right above the composer.
 - [ ] On the Ledger export page, open the **Plan** tab. It reads
       `Plan v1 · draft` with an **Approve** button, one line per part
@@ -402,12 +404,15 @@ From here on, every step is done in the cockpit unless it is marked
 - [ ] While the parts work, the Ledger export page shows a **Children**
       section: one status card per part (its state, what it is doing, the
       files it touched). If a part wants to change the contract, the
-      coordinator (at advise) puts a `coordinator proposal` card in **Needs
+      coordinator (at advise) puts a `Coordinator proposal` card in **Needs
       me** with **Apply** and **Dismiss**, and the change shows as one row in
       the coordinator's **Activity** tab.
-- [ ] Questions from any agent appear in **Needs me** as `question` cards.
-      Type in `Answer in your own words…` and press **Answer**. The answer
-      goes to the asking session as you wrote it.
+- [ ] Questions from any agent appear in **Needs me** as `Question` cards.
+      When the agent offered choices, each is a button: one click answers
+      with that choice (it reads `Sending…`, then the card leaves). Otherwise
+      type in `Answer in your own words…` and press **Answer**. The answer
+      goes to the asking session as you wrote it. On the node's page the same
+      card shows the choices, and the composer below it takes a typed answer.
 
 ## 4. **[vendor]** Delivery: a pull request that looks after itself
 
@@ -437,7 +442,7 @@ If the coordinator already proposed this link, press **Apply** on its card in
 - [ ] Open the **agile-test-repo part** and wait until the line under its
       title reads `Agent finished` (its status reads `Ready to merge` and its
       rail dot turns amber, "waiting on you"). **Needs me** has a
-      `ready to merge` card for it with a **Merge** button (the same word as
+      `Ready to merge` card for it with a **Merge** button (the same word as
       the page's). The **Changes** tab shows what it changed against main.
 - [ ] The first delivery is yours. In the details panel's **Delivery** section the line reads
       `Ready: stream/… is N commits ahead of main.` and
@@ -641,17 +646,22 @@ for some piece of work). Each item has a **scope**
 (`global`, `repo:<name>`, `project:<id>`, `subtree:<node>`, optionally
 narrowed to paths), and scopes stack. Each item also has an **enforcement**:
 
-| Enforcement | What happens |
+| Enforcement (as the screen says it) | What happens |
 |---|---|
-| tell | The item is in the agent's brief, and arrives as an event when accepted |
-| action | Checked before each command or edit (a pattern or the classifier); blocked with the item named |
-| ship | The classifier checks the whole diff before a merge or PR; a violation holds the delivery |
-| review | On the reviewer agent's checklist before shipping |
+| tell (**Guidance**) | The item is in the agent's brief, and arrives as an event when accepted |
+| action (**Checked on every action**) | Checked before each command or edit (a pattern or the classifier); blocked with the item named |
+| ship (**Checked before merge**) | The classifier checks the whole diff before a merge or PR; a violation holds the delivery |
+| review (**Reviewer checklist**) | On the reviewer agent's checklist before shipping |
 
-Every item starts `proposed`: you add one, an agent proposes one, or the
-lessons pass proposes one after a merge. Nothing applies until you accept it.
-Items live in the home, never in your repos. The **Knowledge** screen (top
-bar) lists them all, with filters for Status, Kind, Enforcement and Scope.
+A **rule** is an enforced item (action or ship), whatever its kind. Every
+item starts `proposed`: you add one, an agent proposes one, or the lessons
+pass proposes one after a merge. Nothing applies until you accept it. Items
+live in the home, never in your repos. The **Knowledge** screen (sidebar)
+says so under its title and splits them into tabs: **All**, **To review**
+(the proposals, with a count), **Rules**, **Standards**, **Architecture** and
+**Decisions**; retired items fold under **Retired** at the bottom of a list.
+Search, **Any scope** and **Any enforcement** narrow any tab. A click on a
+row opens the item's side panel.
 
 ### 6.1 The classifier key
 
@@ -668,31 +678,39 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
 
 ### 6.2 Add, accept and test a ship check
 
-- [ ] **Knowledge** → **New rule**. Fill in:
-      - Scope: `Repo: ledger-lite` (the picker lists repos, projects and
-        nodes by name)
-      - Name: `tests-with-src`
-      - Text: `Every change to a file under src/ comes with a test that exercises it`
-      - Enforcement: `ship`, Kind: `standard`
-      - Press **Add example** twice. First example:
-        `diff changes src/ledger.ts and adds no test`, **violates** ticked.
+- [ ] **Knowledge** → **Add knowledge**. The form opens in the side panel,
+      in three groups. Fill in:
+      - *What*: Kind **Standard**; What agents should know:
+        `Every change to a file under src/ comes with a test that exercises it`;
+        Name: `tests-with-src`
+      - *Where*: Applies to `Repo: ledger-lite` (the picker lists repos,
+        projects and nodes by name); leave Only these paths empty
+      - *How it's enforced*: **Checked before merge**. The classifier's
+        fields appear: leave Question and Yes/No means empty, press **Add
+        example** twice. First example:
+        `diff changes src/ledger.ts and adds no test`, **Violates** ticked.
         Second: `diff changes src/ledger.ts and test/ledger.test.ts`,
-        **violates** unticked.
-      - Leave Paths, Question, the Criteria and Pattern empty.
-- [ ] Press **Propose rule**. A new card appears with its name (`tests-with-src`),
-      `repo:ledger-lite`, `ship · classifier`, `standard`, `proposed`,
-      `from human`, and **Accept**, **Retire**, **Edit**, **Test examples**.
-      **Needs me** also has a `standard proposed` card for it.
-- [ ] Press **Accept** (on the card, or in **Needs me**). The card reads
-      `accepted`. **Repos** → ledger-lite now lists it under the repo's norms:
+        **Violates** unticked.
+- [ ] Press **Propose**. A new row appears under **To review** with its name
+      (`tests-with-src`), `Standard · Repo ledger-lite`, the badge
+      `Checked before merge`, and **Accept** / **Retire**. The side panel
+      shows it: `Proposed`, Source `Added by you`, the default question
+      `Does this action violate: Every change …?`, and **Accept**, **Retire**,
+      **Edit**, **Test examples**. **Needs me** also has a `Standard proposed`
+      card for it, saying where it applies (`Applies to the ledger-lite
+      repo`) with **Open in Knowledge**.
+- [ ] Press **Accept** (on the row, or in **Needs me**). The row moves under
+      **Rules**; its panel reads `Accepted`. **Repos** → ledger-lite now lists
+      it under the repo's norms:
       `standard · tests-with-src (ship) fired 0, violated 0`.
-- [ ] Press **Test examples** (it is greyed out without a key; hover it to
-      see why). After a few seconds it reads `2/2 agree · asked: Does this action violate: …?`
-      and one row per example:
-      `agree diff changes src/ledger.ts and adds no test — expected deny, got deny (p 0.9…)`
-      and `… — expected allow, got allow (p 0.3…)`. A band of `route` is the
-      middle band, not a failure. An `error: …` row with a 529 means TypeSafe
-      was busy: press it again.
+- [ ] Open it again and press **Test examples** (it is greyed out without a
+      key, with "Set one in Settings" under it). After a few seconds the
+      examples are replaced by the results: `2 of 2 examples agree`,
+      `Asked: Does this action violate: …?`, and one row per example:
+      `Agrees diff changes src/ledger.ts and adds no test — expected Block, got Block (p 0.9…)`
+      and `… — expected Allow, got Allow (p 0.3…)`. **Ask you** is the
+      middle band, not a failure. An `an error: …` row with a 529 means
+      TypeSafe was busy: press it again.
 
 ### 6.3 A delivery held by the ship check, then fixed
 
@@ -741,10 +759,11 @@ cd ~
       rail icon is the conversation icon ○.
 - [ ] Wait for its first answer on the **Chat** tab. Its turn has ended,
       so its session ends too (`Turn finished`).
-- [ ] **Knowledge** → **New rule**: Scope `Project: Shop`, Text
-      `Amounts in exported JSON are integer cents, never floats`,
-      Enforcement `tell`, Kind `decision`, **Propose rule**. Then **Accept** it
-      (on its card, or on the `decision proposed` card in **Needs me**).
+- [ ] **Knowledge** → **Add knowledge**: Kind **Decision**, What agents
+      should know `Amounts in exported JSON are integer cents, never floats`,
+      Applies to `Project: Shop`, **Guidance**, **Propose**. Then **Accept**
+      it (on its row under **To review**, or on the `Decision proposed` card
+      in **Needs me**).
 - [ ] Back on Cents check: accepting the decision woke it (a Shop
       conversation whose turn ended is woken by an accepted item, D36). Its
       **Chat** tab has `woken by knowledge accepted` and a new session;
@@ -922,11 +941,16 @@ child should be a small task an agent can do in agile-test-repo (for example
 
 ### 9.1 What is going on
 
-- [ ] **Needs me** is everything waiting on you, grouped by node, each card
-      with its kind (`question`, `decision`, `plan to approve`,
-      `coordinator proposal`, `… proposed`, `ready to merge`) and how long it
-      has waited. A long card has **Show all**; **Open stream** opens its
-      node. The badge on **Needs me** counts them.
+- [ ] **Needs me** is everything waiting on you, grouped by project, then
+      node, oldest first. Each card says what it is (`Question`,
+      `Allow this action?`, `Approve this merge?`, `Plan to approve`,
+      `Coordinator proposal`, `… proposed`, `Ready to merge`, `Blocked`,
+      `Waiting for the plan`) and how long it has waited (hover for the
+      time). A long card has **Show more**; **Open** (or the node's name above
+      it) opens its node. The filter narrows it to **Questions**,
+      **Decisions** or **Merges**; `j`/`k` move between cards and Enter opens
+      one's node. The badge on **Needs me** counts them. With nothing
+      waiting it reads `You’re all caught up`.
 - [ ] The rail's dots say who must act: amber waiting on you, blue agent
       working, grey idle, green landed, red blocked (hover a row to read it).
       The filter box (`Filter nodes…`, or the `/` key) narrows the tree

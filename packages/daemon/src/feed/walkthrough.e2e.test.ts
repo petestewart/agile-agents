@@ -786,7 +786,7 @@ test.skipIf(!RUN)(
         await checkText(
           'the plan card sits under Needs you',
           card.locator('.kind'),
-          'plan to approve',
+          'Plan to approve',
         );
         await checkText('the card names the owners', card, /ledger-lite part/);
         await checkText('the card names the contract', card, /Ledger entry JSON/);
@@ -813,7 +813,7 @@ test.skipIf(!RUN)(
         await checkText(
           'Needs me: plan to approve card',
           inboxCard.locator('.kind'),
-          'plan to approve',
+          'Plan to approve',
         );
         await checkText(
           'the card is grouped under Ledger export',
@@ -917,7 +917,7 @@ test.skipIf(!RUN)(
     await step('3.4e', 'a question card, answered inline', async () => {
       await openView('Needs me');
       const q = page.locator('[data-testid="inbox"] .cr-card[data-kind="question"]');
-      await checkText('a question card', q.locator('.kind'), 'question');
+      await checkText('a question card', q.locator('.kind'), 'Question');
       await checkText('the question text', q, /pretty JSON or one line/);
       const input = q.locator('[data-testid="answer-input"]');
       check(
@@ -981,7 +981,7 @@ test.skipIf(!RUN)(
     await step('3.4f', 'a coordinator proposal: Apply, and one Activity row', async () => {
       await openView('Needs me');
       const card = page.locator('[data-testid="inbox"] .cr-card[data-kind="proposal"]');
-      await checkText('a coordinator proposal card', card.locator('.kind'), 'coordinator proposal');
+      await checkText('a coordinator proposal card', card.locator('.kind'), 'Coordinator proposal');
       check(
         'the card has Apply',
         (await card.getByRole('button', { name: 'Apply' }).count()) === 1,
@@ -1091,7 +1091,7 @@ test.skipIf(!RUN)(
       const doneCard = page.locator('[data-testid="inbox"] .cr-group', {
         hasText: 'agile-test-repo part',
       });
-      await checkText('its Needs me card reads ready to merge', doneCard, /ready to merge/);
+      await checkText('its Needs me card reads Ready to merge', doneCard, /Ready to merge/);
       await checkText(
         'with a Merge button',
         doneCard.locator('[data-kind="done"] [data-testid="land"]'),
@@ -1677,7 +1677,7 @@ test.skipIf(!RUN)(
     });
 
     // ---------------------------------------------------------- 6.2
-    await step('6.2a', 'Knowledge: New rule, a ship check with two examples', async () => {
+    await step('6.2a', 'Knowledge: Add knowledge, a ship check with two examples', async () => {
       await openView('Knowledge');
       await page.locator('[data-testid="rules-new"]').click();
       const form = page.locator('[data-testid="rules-new-form"]');
@@ -1688,8 +1688,9 @@ test.skipIf(!RUN)(
       await form
         .locator('[data-testid="rules-edit-text"]')
         .fill('Every change to a file under src/ comes with a test that exercises it');
-      await form.locator('[data-testid="rules-edit-enforcement"]').selectOption('ship');
-      await form.locator('[data-testid="rules-edit-kind"]').selectOption('standard');
+      // T366: enforcement is a choice of four, each explained; kind a segmented control.
+      await form.locator('[data-testid="rules-edit-enforcement"] [data-value="ship"]').click();
+      await form.locator('[data-testid="rules-edit-kind"] [data-value="standard"]').click();
       await form.locator('[data-testid="rules-edit-add-example"]').click();
       await form.locator('[data-testid="rules-edit-add-example"]').click();
       const examples = form.locator('[data-testid="rules-edit-example"]');
@@ -1703,37 +1704,57 @@ test.skipIf(!RUN)(
         .locator('input[aria-label="Example action"]')
         .fill('diff changes src/ledger.ts and test/ledger.test.ts');
       await examples.nth(1).locator('input[type="checkbox"]').uncheck();
-      await form.getByRole('button', { name: 'Propose rule' }).click();
+      await form.getByRole('button', { name: 'Propose', exact: true }).click();
       const card = page.locator('[data-testid="rules-row"][data-status="proposed"]', {
         hasText: 'Every change to a file under src/',
       });
       await card.waitFor();
-      await checkText('the card shows its name', card.locator('.cr-rule-meta'), /tests-with-src/);
       await checkText(
-        'repo:ledger-lite',
+        'it waits under To review',
+        page.locator('[data-testid="rules-section-review"]'),
+        /tests-with-src/,
+      );
+      await checkText(
+        'the row shows its name',
+        card.locator('[data-testid="rules-title"]'),
+        /tests-with-src/,
+      );
+      await checkText(
+        'Repo ledger-lite',
         card.locator('[data-testid="rules-scope"]'),
-        'repo:ledger-lite',
+        'Repo ledger-lite',
       );
       await checkText(
-        'ship · classifier',
+        'Checked before merge',
         card.locator('[data-testid="rules-tier"]'),
-        'ship · classifier',
+        'Checked before merge',
       );
-      await checkText('standard', card.locator('[data-testid="rules-kind"]'), 'standard');
-      await checkText('proposed', card.locator('[data-testid="rules-status"]'), 'proposed');
-      await checkText('from human', card.locator('.cr-rule-meta'), 'from human');
+      await checkText('Standard', card.locator('[data-testid="rules-kind"]'), 'Standard');
+      // The panel opens on the new item: status, source, the check, the actions.
+      const detail = page.locator('[data-testid="rules-detail"]');
+      await checkText('Proposed', detail.locator('[data-testid="rules-status"]'), 'Proposed');
+      await checkText(
+        'Added by you',
+        detail.locator('[data-testid="rules-source"]'),
+        'Added by you',
+      );
+      await checkText(
+        'the classifier is asked the default question',
+        detail.locator('[data-testid="rules-question"]'),
+        /Does this action violate: Every change to a file under src\/.*\?/,
+      );
       for (const name of ['Accept', 'Retire', 'Edit', 'Test examples']) {
         check(
-          `the card has ${name}`,
-          (await card.getByRole('button', { name, exact: true }).count()) === 1,
-          await textOf(card.locator('.cr-actions')),
+          `the panel has ${name}`,
+          (await detail.getByRole('button', { name, exact: true }).count()) === 1,
+          await textOf(detail.locator('button')),
         );
       }
       await openView('Needs me');
       await checkText(
         'Needs me has a standard proposed card',
         page.locator('[data-testid="inbox"] .cr-card[data-kind="rule_accept"] .kind'),
-        'standard proposed',
+        'Standard proposed',
       );
     });
 
@@ -1742,11 +1763,18 @@ test.skipIf(!RUN)(
       const card = page.locator('[data-testid="rules-row"]', {
         hasText: 'Every change to a file under src/',
       });
-      await card.getByRole('button', { name: 'Accept' }).click();
+      await card.getByRole('button', { name: 'Accept', exact: true }).click();
       await checkText(
-        'the card reads accepted',
-        card.locator('[data-testid="rules-status"]'),
-        'accepted',
+        'accepted, it moves under Rules (checked automatically)',
+        page.locator('[data-testid="rules-section-rules"]'),
+        /tests-with-src/,
+      );
+      await card.locator('.cr-kn-row-main').click();
+      const detail = page.locator('[data-testid="rules-detail"]');
+      await checkText(
+        'the panel reads Accepted',
+        detail.locator('[data-testid="rules-status"]'),
+        'Accepted',
       );
       await openView('Repos');
       await checkText(
@@ -1757,22 +1785,24 @@ test.skipIf(!RUN)(
         /standard · tests-with-src \(ship\) fired 0, violated 0/,
       );
       await openView('Knowledge');
-      await card.getByRole('button', { name: 'Test examples' }).click();
-      const evals = card.locator('[data-testid="rules-evals"]');
+      await card.locator('.cr-kn-row-main').click();
+      await detail.getByRole('button', { name: 'Test examples' }).click();
+      const evals = detail.locator('[data-testid="rules-evals"]');
+      await checkText('2 of 2 examples agree', evals, /2 of 2 examples agree/);
       await checkText(
-        '2/2 agree · asked: Does this action violate: …?',
+        'Asked: Does this action violate: …?',
         evals,
-        /2\/2 agree · asked: Does this action violate: .*\?/,
+        /Asked: Does this action violate: .*\?/,
       );
       await checkText(
-        'expected deny, got deny (p 0.9…) for the no-test example',
+        'Agrees … expected Block, got Block (p 0.9…) for the no-test example',
         evals,
-        /agree diff changes src\/ledger\.ts and adds no test — expected deny, got deny \(p 0\.\d+\)/,
+        /Agrees diff changes src\/ledger\.ts and adds no test — expected Block, got Block \(p 0\.\d+\)/,
       );
       await checkText(
-        'expected allow, got allow for the with-test example',
+        'expected Allow, got Allow for the with-test example',
         evals,
-        /— expected allow, got allow \(p 0\.\d+\)/,
+        /— expected Allow, got Allow \(p 0\.\d+\)/,
       );
     });
 
@@ -1896,14 +1926,14 @@ test.skipIf(!RUN)(
       await form
         .locator('[data-testid="rules-edit-text"]')
         .fill('Amounts in exported JSON are integer cents, never floats');
-      await form.locator('[data-testid="rules-edit-enforcement"]').selectOption('tell');
-      await form.locator('[data-testid="rules-edit-kind"]').selectOption('decision');
-      await form.getByRole('button', { name: 'Propose rule' }).click();
+      await form.locator('[data-testid="rules-edit-enforcement"] [data-value="tell"]').click();
+      await form.locator('[data-testid="rules-edit-kind"] [data-value="decision"]').click();
+      await form.getByRole('button', { name: 'Propose', exact: true }).click();
       await openView('Needs me');
       const card = page.locator('[data-testid="inbox"] .cr-card[data-kind="rule_accept"]', {
         hasText: 'integer cents',
       });
-      await checkText('a decision proposed card', card.locator('.kind'), 'decision proposed');
+      await checkText('a Decision proposed card', card.locator('.kind'), 'Decision proposed');
       // Its first turn ended with nothing open, so its session ended (T137);
       // accepting the decision wakes it with the decision (D36 D10, T351).
       const reacted = claim(cents, 'worker', async (_session, prompt) => {

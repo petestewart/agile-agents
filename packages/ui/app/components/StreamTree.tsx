@@ -28,7 +28,6 @@ import {
   subtreeNeedsYou,
 } from '../lib/streams';
 import { Icon, type IconName } from './Icon';
-import { NewProject } from './NewProject';
 import { IconButton, StatusDot } from './ui';
 
 /** Project-row statuses that are not worth a dot: the layers icon says enough. */
@@ -221,9 +220,8 @@ export function StreamTree({
   rows: readonly CockpitStreamRow[];
   projects: readonly CockpitProjectRow[];
 }): JSX.Element {
-  const { railOpen, toggleRail, project, setProject } = useShell();
+  const { railOpen, toggleRail, project, setProject, setNewProjectOpen } = useShell();
   const [filter, setFilter] = useState('');
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const filterRef = useRef<HTMLInputElement>(null);
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const setOpen = useCallback((id: string, open: boolean) => {
@@ -313,7 +311,6 @@ export function StreamTree({
           ))}
         </select>
       </div>
-      {newProjectOpen && <NewProject onClose={() => setNewProjectOpen(false)} />}
       <input
         ref={filterRef}
         type="search"

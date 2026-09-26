@@ -1981,11 +1981,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T364 ∥ Needs me and the decision cards
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** One `Card` for every item kind with a clear title, the node path, its age and its actions; a question's choices as buttons; grouped by project then node; an empty state that says what to do next (first run: add a repo, make a project).
 - **Acceptance Criteria:** e2e per card kind still green; choice click answers.
 - **Validation Steps:** `bun test packages/ui`; `bun run test:e2e`.
+- **Notes:** Branch T364-needs-me, merge 6db025cc. `DecisionCard` (re-exported as `Card`): one anatomy for every kind, titles in words, choices as lettered buttons (the agent's `options`, else `choicesOf` parses older `(A) … (B) …` / lettered / numbered lists conservatively, 41 unit tests); `full` cards have no input (the node's composer answers). Gates explain themselves; notes behind "Add a note"; a Merge refusal shows on the card. Needs me grouped by project then node, a kind filter, j/k/Enter; first-run steps (repo, project, node) and "all caught up". Branch: control-room 51/51, walkthrough 0 findings; after merge UI 134/0, Needs-me e2e 13/13. Open: `groupInbox` now unused; daemon wording "worker finished — merge or close the stream" / "proposed rules from migration" reworded client-side; gate/knowledge items carry rule, call and scope only inside `context` (structured fields would be sturdier); an acted card stays disabled until the next frame.
 
 ### Ticket: T365 ∥ Rail, projects and the new-node flow
 - **Priority:** P1
@@ -1997,11 +1998,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T366 ∥ Knowledge, explained
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** The screen says what knowledge is (rules, standards, architecture, decisions) and separates it: Proposed (to review) first, then by kind; each item's enforcement in words (checked on every action, checked before merge, on the reviewer's checklist, guidance only); compact rows with a detail panel for text, check, examples, stats, Edit and Test.
 - **Acceptance Criteria:** e2e for filter, accept, edit, test still green.
 - **Validation Steps:** `bun run test:e2e`.
+- **Notes:** Branch T366-knowledge, merge on phase-14. Tabs All · To review · Rules (enforced: action + ship) · Standards · Architecture · Decisions; rows with scope and enforcement in words, quiet stats, flags as icons; a Linear-style detail panel (text, scope, enforcement explained, the check, examples and test results, activity); the editor grouped What / Where / How it's enforced with only the fields that apply. Refreshes on `knowledge_*` events too (it went stale on agent proposals). e2e 49/49, walkthrough 1/1 on the branch; knowledge e2e 9/9 after merge. Open: default classifier question keeps markdown backticks and says "action" for ship checks (`shared/src/knowledge.ts`); built-ins named after their pattern kind (`knowledge/builtins.ts`); `report.ts` flags guidance items "never fired".
 
 ### Ticket: T367 ∥ Settings and the repo picker
 - **Priority:** P1
@@ -2018,6 +2020,23 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Scope:** Repos, Running, Dependencies and Events as clean lists with status and links; the Director page uses the node chat's components.
 - **Acceptance Criteria:** walkthrough green.
 - **Validation Steps:** `bun run test:walkthrough`.
+
+### Ticket: T370 A daemon shutdown leaves mid-work nodes idle
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by the T361 worker: `AttachService.stopAll()` (the daemon's shutdown) stopped sessions with no reason, so a killed worker's exit read as a finished turn: `agent.status: done`, an inbox "worker finished" card and "Ready to merge" on the rail after every restart. Stop with a daemon reason instead.
+- **Acceptance Criteria:** Test: a node mid-work when the daemon stops is `idle`, its session `stopped: the daemon stopped`, not stopped by the human.
+- **Validation Steps:** `bun test packages/daemon/src/attach`; CLI daemon e2e.
+- **Notes:** Branch T370-daemon-shutdown. Non-e2e daemon+CLI 2080/0; `daemon.e2e`, `stream.e2e` green. Daemon +10.
+
+### Ticket: T371 ∥ Daemon text the cockpit shows: no ids, no "stream"
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Found by T364/T366: daemon-written text the cockpit displays leaks ids and old vocabulary. Inbox items ("worker finished — merge or close the stream", "3 proposed rules from migration"), delivery preflight/refusal reasons ("stream <id> has a live session (<id>)"), land-gate text with raw `stream/<id>-slug` branches, the default classifier question (markdown backticks, ".?", "action" for a ship check that reads a diff), guidance items flagged "never fired", built-ins named after their pattern kind. Say nodes by title and "node", keep ids only where a machine reads them. Update the tests and LIVE-CHECKLIST lines that quote the old strings.
+- **Acceptance Criteria:** Unit tests for each reworded string; e2e and walkthrough still green.
+- **Validation Steps:** `bun test packages/shared packages/daemon` (non-e2e); `bun run build && bun run test:walkthrough`.
 
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
