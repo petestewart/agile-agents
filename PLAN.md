@@ -2343,6 +2343,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** control-room e2e `T408` (new: New node → Add a repository… adds the repo and picks it; opened again, it starts fresh), `T367`, `T373`.
 - **Notes:** Branch T408-addrepo-lazy. Main script 359 KB → 337 KB (108 → 101 KB gzip).
 
+### Ticket: T409 The shell keeps a screen's own URL params
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From T394's report: the shell's URL sync rewrote the query to its own params (`node`, `view`, `project`) even when nothing moved, so a lazily loaded screen reading its own param (Settings' `section`) could lose it on load.
+- **Acceptance Criteria:** A rewrite that stays on the same view and node keeps every param the shell doesn't own; moving to another view drops them.
+- **Validation Steps:** `bun test packages/ui/app/lib/shell.test.ts`; control-room e2e `T348|T367|T394`.
+- **Notes:** Branch T409-shell-keeps-screen-params.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

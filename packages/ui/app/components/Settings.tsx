@@ -110,8 +110,9 @@ function sectionFromUrl(): SettingsSection {
  * The section in `?section=` (General is no param). The shell (T348) owns
  * the rest of the query and rewrites it when the view or project changes —
  * after this screen's effects run — so the write waits a tick and re-runs
- * when the project filter moves. Replaced, never pushed: a section is not
- * a page of its own in the history.
+ * when the project filter moves (since T409 the shell keeps it on a rewrite
+ * that stays on Settings; this still covers the first sync). Replaced, never
+ * pushed: a section is not a page of its own in the history.
  */
 function useSectionInUrl(): [SettingsSection, (next: SettingsSection) => void] {
   const [section, setSection] = useState<SettingsSection>(sectionFromUrl);
