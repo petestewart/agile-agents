@@ -4899,6 +4899,22 @@ button.cr-answering-q {
   width: 14em;
 }
 
+/* T377: the project's repositories in its details panel. */
+.cr-checklist-compact .cr-check-row {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+.cr-checklist-compact .cr-check-row input[type="checkbox"] {
+  width: 15px;
+  flex: none;
+}
+.cr-checklist-compact .cr-check-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* T376: a question whose card is open below reads once: its line folds to one. */
 .cr-msg[data-open-question="true"] .cr-msg-body .cr-md {
   display: -webkit-box;

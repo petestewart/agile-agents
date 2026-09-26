@@ -15,9 +15,11 @@ import {
   setNodeAutonomy,
   setProjectAutonomy,
   setProjectTracker,
+  updateProject,
   waitOnStream,
 } from '../lib/api';
 import { sessionLabel } from '../lib/chat';
+import { useOptionalFeed } from '../lib/feed-context';
 import type {
   CockpitCardError,
   CockpitProjectRow,
@@ -32,7 +34,7 @@ import { Icon } from './Icon';
 import { Linked } from './Markdown';
 import { NodeLink } from './NodeViews';
 import { sessionModelText } from './SessionPicker';
-import { Badge, Button, IconButton } from './ui';
+import { Badge, Button, IconButton, RepoIcon } from './ui';
 
 type Act = (fn: () => Promise<unknown>) => Promise<void> | void;
 
@@ -507,6 +509,78 @@ export function AutonomySection({
 
 // ---------------------------------------------------------------- Project
 
+/**
+ * T377: the project's repositories, editable in place (T372's route): every
+ * registered repo with its icon, ticked when the project uses it. New nodes
+ * offer the project's repos first.
+ */
+function ProjectRepos({
+  project,
+  current,
+  busy,
+  act,
+}: {
+  project: CockpitProjectRow;
+  current: readonly string[];
+  busy: boolean;
+  act: Act;
+}): JSX.Element {
+  const all = useOptionalFeed()?.cockpit?.repos ?? [];
+  const [chosen, setChosen] = useState<string[]>([...current]);
+  const dirty = chosen.length !== current.length || chosen.some((name) => !current.includes(name));
+  const names = [...new Set([...all.map((r) => r.name), ...current])].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  return (
+    <div className="cr-dsec-field" data-testid="project-repos">
+      <span className="cr-field-label">Repositories</span>
+      {names.length === 0 ? (
+        <p className="cr-dsec-note">No repositories registered yet (Settings → Repositories).</p>
+      ) : (
+        <div className="cr-checklist cr-checklist-compact">
+          {names.map((name) => {
+            const on = chosen.includes(name);
+            return (
+              <label key={name} className="cr-check-row" data-checked={on ? 'true' : undefined}>
+                <input
+                  type="checkbox"
+                  data-testid="project-repo"
+                  data-repo={name}
+                  checked={on}
+                  disabled={busy}
+                  onChange={(e) =>
+                    setChosen((prev) =>
+                      e.target.checked ? [...prev, name] : prev.filter((x) => x !== name),
+                    )
+                  }
+                />
+                <RepoIcon remote={all.find((r) => r.name === name)?.remote} size={14} />
+                <span className="cr-check-name">{name}</span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+      {dirty && (
+        <div className="cr-dsec-actions">
+          <Button
+            size="sm"
+            variant="primary"
+            data-testid="project-repos-save"
+            busy={busy}
+            onClick={() => void act(() => updateProject(project.id, { repos: chosen }))}
+          >
+            Save repositories
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setChosen([...current])}>
+            Cancel
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 type StatusMapKey = 'in_progress' | 'in_review' | 'done';
 const STATUS_MAP_FIELDS: ReadonlyArray<{ key: StatusMapKey; label: string }> = [
   { key: 'in_progress', label: 'In progress' },
@@ -573,9 +647,13 @@ export function ProjectSection({
         </select>
       </label>
       {project.repos !== undefined && (
-        <p className="cr-dsec-note" data-testid="project-repos">
-          Repos: {project.repos.length === 0 ? 'none' : project.repos.join(', ')}
-        </p>
+        <ProjectRepos
+          key={project.repos.join(',')}
+          project={project}
+          current={project.repos}
+          busy={busy}
+          act={act}
+        />
       )}
       <form
         className="cr-dsec-form"
