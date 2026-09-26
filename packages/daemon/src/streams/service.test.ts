@@ -519,3 +519,102 @@ describe('move (T333, D34)', () => {
     );
   });
 });
+
+describe('T361: the tree-change hook', () => {
+  test('a child create, a move, a close and an archive name the parents whose role may change', async () => {
+    const calls: string[][] = [];
+    streams = new StreamService(store, { onTreeChanged: (nodes) => void calls.push([...nodes]) });
+    const a = await newStream('a');
+    const b = await newStream('b');
+    expect(calls).toEqual([]);
+    const child = await newStream('child', { parent: a.id });
+    expect(calls).toEqual([[a.id]]);
+    await streams.move(child.id, b.id);
+    expect(calls.at(-1)).toEqual([a.id, b.id]);
+    await streams.close('human', child.id);
+    expect(calls.at(-1)).toEqual([b.id]);
+    const other = await newStream('other', { parent: a.id });
+    await streams.archive('human', other.id);
+    expect(calls.at(-1)).toEqual([a.id]);
+  });
+
+  test('a throwing hook is logged, never a failed write', async () => {
+    streams = new StreamService(store, {
+      onTreeChanged: () => {
+        throw new Error('boom');
+      },
+    });
+    const a = await newStream('a');
+    const child = await newStream('child', { parent: a.id });
+    expect(streams.get(child.id).parent).toBe(a.id);
+  });
+});
+
+describe('T361: Delete and Restore (archiveTree, unarchiveTree)', () => {
+  const thread = (id: string) => streams.readThread(id).entries.map((e) => e.body);
+
+  test('archives the subtree under one delete id and restores exactly what it archived', async () => {
+    const root = await newStream('root');
+    const a = await newStream('a', { parent: root.id });
+    const b = await newStream('b', { parent: a.id });
+    const c = await newStream('c', { parent: b.id });
+    const earlier = await newStream('earlier', { parent: a.id });
+    await streams.archiveTree('human', earlier.id);
+    const earlierId = streams.get(earlier.id).archive_id;
+
+    const stopped: string[][] = [];
+    const archived = await streams.archiveTree('human', a.id, async (ids) => {
+      stopped.push([...ids]);
+    });
+    // Every node of the subtree is offered to `stop` once, each parent before its children.
+    expect(stopped).toEqual([[a.id, b.id, earlier.id, c.id]]);
+    expect(archived.map((s) => s.id)).toEqual([a.id, b.id, c.id]);
+    const batch = streams.get(a.id).archive_id;
+    expect(batch).toBeDefined();
+    expect([b.id, c.id].map((id) => streams.get(id).archive_id)).toEqual([batch, batch]);
+    expect(streams.get(earlier.id).archive_id).toBe(earlierId);
+    expect(streams.list().map((s) => s.id)).toEqual([root.id]);
+    expect(thread(a.id).at(-1)).toBe('deleted with 2 nodes below it');
+    expect(thread(root.id).at(-1)).toBe(`deleted: a (${a.id}) with 2 nodes below it`);
+    // One stream_archived event per node, each carrying the flag.
+    const events = store.listEvents().filter((e) => e.kind === 'stream_archived');
+    expect(events.map((e) => e.stream)).toEqual([earlier.id, c.id, b.id, a.id]);
+    expect(events.every((e) => e.data?.archived === true)).toBe(true);
+
+    const restored = await streams.unarchiveTree('human', a.id);
+    expect(restored.map((s) => s.id)).toEqual([a.id, b.id, c.id]);
+    for (const id of [a.id, b.id, c.id]) {
+      expect(streams.get(id).archived).toBeUndefined();
+      expect(streams.get(id).archive_id).toBeUndefined();
+    }
+    // Deleted on its own before: it stays deleted.
+    expect(streams.get(earlier.id).archived).toBe(true);
+    expect(thread(root.id).at(-1)).toBe(`restored: a (${a.id}) with 2 nodes below it`);
+    expect(store.listEvents().at(-1)?.kind).toBe('thread_appended');
+  });
+
+  test('refuses a project root, an already deleted node, and a restore under a deleted parent', async () => {
+    const { ProjectService } = await import('../projects/service');
+    const shop = await new ProjectService(store, streams).create({ name: 'Shop' });
+    await expect(streams.archiveTree('human', shop.root)).rejects.toThrow(
+      "a project root can't be deleted; archive the project instead",
+    );
+    const a = await newStream('a', { project: shop.id });
+    const b = await newStream('b', { parent: a.id });
+    await streams.archiveTree('human', b.id);
+    await expect(streams.archiveTree('human', b.id)).rejects.toThrow(/already deleted/);
+    await streams.archiveTree('human', a.id);
+    await expect(streams.unarchiveTree('human', b.id)).rejects.toThrow(
+      /a is deleted too; restore it first/,
+    );
+    await expect(streams.unarchiveTree('human', shop.root)).rejects.toThrow(/not deleted/);
+    // `stop` never runs for a refused delete.
+    let stops = 0;
+    await expect(
+      streams.archiveTree('human', shop.root, async () => {
+        stops += 1;
+      }),
+    ).rejects.toThrow(/project root/);
+    expect(stops).toBe(0);
+  });
+});

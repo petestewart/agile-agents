@@ -987,7 +987,8 @@ async function handleRuleRoute(
  *
  *   GET  /api/streams/:id         the page read (`feed/stream-page.ts`)
  *   GET  /api/streams/:id/diff    the diff tab
- *   POST /api/streams/:id/say     the composer: a human line, and a prompt to the attached worker
+ *   POST /api/streams/:id/say     the composer: a human line, and a prompt to the attached worker;
+ *                                 `{body, start?}`: `start` (T361) starts an agent on a node with none live
  *   POST /api/streams/:id/attach  the sessions strip's attach / review (`role: reviewer`)
  *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
  *   POST /api/streams/:id/close   the page's Close
@@ -996,6 +997,10 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
  *   POST /api/streams/:id/wait         Link (T228, P8): `{on, remove?}` a `waits_on` edge
  *   POST /api/streams/:id/move         Move (T333, D34): `{parent}` a node or a project id
+ *   POST /api/streams/:id/archive      Delete (T361): stops the subtree's sessions, archives it
+ *                                      → `{node, archived: [ids], stopped: [session ids]}`
+ *   POST /api/streams/:id/unarchive    Restore (T361): the node and what its delete archived
+ *                                      → `{node, restored: [ids]}`; no agent is started
  *
  * `land` is matched before this. Every write is same-origin only
  * and stamps `human`; no principal is ever read from the body (§2.2).
@@ -1008,7 +1013,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -1039,7 +1044,7 @@ async function handleStreamRoute(
       return jsonResponse(feed.landing.diff(id));
     }
 
-    // Close, Mark landed and Check now take no body.
+    // Close, Mark landed, Check now, Delete and Restore take no body.
     if (action === 'close') return jsonResponse(await feed.streams.close('human', id));
     if (action === 'pr-check') {
       if (!feed.prCheck) return errorResponse(503, 'PR polling not available');
@@ -1048,6 +1053,28 @@ async function handleStreamRoute(
     if (action === 'mark-landed') {
       if (!feed.landing) return errorResponse(503, 'landing not available');
       return jsonResponse(await feed.landing.markLanded(id));
+    }
+    if (action === 'archive') {
+      // T361: Delete. The human pulls the plug on every agent in the subtree first.
+      const attach = feed.attach;
+      const stopped: string[] = [];
+      const archived = await feed.streams.archiveTree('human', id, async (ids) => {
+        if (attach === undefined) return;
+        const each = await Promise.all(ids.map((n) => attach.stop(n, undefined, { detach: true })));
+        stopped.push(...each.flat());
+      });
+      return jsonResponse({
+        node: archived[0] ?? feed.streams.get(id),
+        archived: archived.map((s) => s.id),
+        stopped,
+      });
+    }
+    if (action === 'unarchive') {
+      const restored = await feed.streams.unarchiveTree('human', id);
+      return jsonResponse({
+        node: restored[0] ?? feed.streams.get(id),
+        restored: restored.map((s) => s.id),
+      });
     }
     const body = await readJsonBody(req);
     if (action === 'add-repo') {
@@ -1079,11 +1106,12 @@ async function handleStreamRoute(
         const attach = feed.attach;
         const said = await sayAndAnswer(
           {
-            say: (streamId, text) => attach.say(streamId, text),
+            say: (streamId, text, opts) => attach.say(streamId, text, opts),
             ...(feed.questions ? { questions: feed.questions } : {}),
           },
           id,
           input.data.body,
+          input.data.start === true ? { start: true } : {},
         );
         return jsonResponse(said, 201);
       }

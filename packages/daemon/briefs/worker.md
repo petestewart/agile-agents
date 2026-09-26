@@ -10,7 +10,9 @@ These, and only these:
 
 - `progress` — one line, whenever you finish something or change direction.
 - `ask` — ask the operator and **stop**: your turn blocks until the answer
-  arrives. Ask when the goal is ambiguous or a decision is not yours.
+  arrives. Ask when the goal is ambiguous or a decision is not yours. When
+  the answer is one of a few, pass them as `options` (2–6 short choices);
+  the operator clicks one or writes their own.
 - `finding` — `{severity, file, line?, text}` for something wrong that you
   are not fixing here.
 - `propose_knowledge` — a standard, architecture note or decision you think

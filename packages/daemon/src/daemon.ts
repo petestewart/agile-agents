@@ -160,6 +160,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             moveCoordination?.planAwaitingApproval(node) === true,
           namedIn: (parent, child): string[] => moveCoordination?.namedIn(parent, child) ?? [],
         },
+        // T361: a live agent follows its node's role change (read lazily; built below).
+        onTreeChanged: async (nodes): Promise<void> => attachService?.followRoles(nodes),
       })
     : undefined;
   // T283: status cards; `read_card` and the cockpit read them.

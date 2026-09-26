@@ -72,6 +72,11 @@ describe('StreamSchema', () => {
     expect(() => validateStream({ ...stream(), id: 'TKT-0231' })).toThrow(/ULID/);
     expect(() => validateStream({ ...stream(), human: { status: 'in_review' } })).toThrow(/human/);
   });
+
+  test('T361: an archived node may carry the id of the delete that archived it', () => {
+    expect(stream({ archived: true, archive_id: SESSION }).archive_id).toBe(SESSION);
+    expect(() => stream({ archived: true, archive_id: 'D-1' })).toThrow(/archive_id/);
+  });
 });
 
 describe('StreamFindingSchema', () => {
@@ -318,6 +323,11 @@ describe('T161 cockpit write bodies', () => {
       StreamSayInputSchema.safeParse({ body: 'x'.repeat(THREAD_BODY_MAX_CHARS + 1) }).success,
     ).toBe(false);
     expect(StreamSayInputSchema.safeParse({ body: 'hi', by: 'daemon' }).success).toBe(false);
+  });
+
+  test('T361: say may ask to start the agent', () => {
+    expect(StreamSayInputSchema.parse({ body: 'go', start: true }).start).toBe(true);
+    expect(StreamSayInputSchema.safeParse({ body: 'go', start: 'yes' }).success).toBe(false);
   });
 
   test('attach takes the two attachable roles only', () => {

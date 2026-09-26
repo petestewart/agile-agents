@@ -22,6 +22,7 @@ import {
   DIRECTOR_NODE,
   type HilRequest,
   type KnowledgeItem,
+  type NodeRole,
   type Plan,
   type Question,
   type RoutedEvent,
@@ -106,6 +107,31 @@ export function liveSession(stream: Stream, role: SessionRole = 'worker'): Sessi
 /** The node's live agent session: its worker, or its coordinator (P20). */
 function liveAgent(stream: Stream): SessionRef | undefined {
   return liveSession(stream, 'worker') ?? liveSession(stream, 'coordinator');
+}
+
+/**
+ * P20 (T280): the agent a node runs as it stands now: a coordinator on a
+ * coordinating node, or on a project root once it has children (a bare
+ * root is still a single stream a worker runs on, the pre-projects shape);
+ * a worker otherwise.
+ */
+function agentFor(
+  stream: Stream,
+  all: readonly Stream[],
+): { children: Stream[]; shape: NodeRole; role: 'worker' | 'coordinator' } {
+  const children = liveChildrenOf(stream.id, all);
+  const shape = nodeRole(stream, children, all);
+  const coordinates =
+    shape === 'coordinating' ||
+    (shape === 'project' && children.some((c) => c.helper_of !== stream.id));
+  return { children, shape, role: coordinates ? 'coordinator' : 'worker' };
+}
+
+/** Not closed, landed or archived: a node an agent may still work on. */
+function isOpen(stream: Stream): boolean {
+  return (
+    stream.archived !== true && stream.human.status !== 'closed' && stream.human.status !== 'landed'
+  );
 }
 
 /** What is still open: a turn that ends on an open question is waiting, not finished. */
@@ -279,6 +305,8 @@ export class AttachService {
   private readonly waking = new Set<string>();
   /** Nodes already sent to the inbox for a spent budget (one thread line per episode). */
   private readonly overBudget = new Set<string>();
+  /** T361: nodes whose agent is being restarted in a new role. */
+  private readonly roleRestarts = new Set<string>();
 
   constructor(private readonly options: AttachServiceOptions) {
     this.events = options.events ?? new RoutedEventService(options.store);
@@ -463,6 +491,76 @@ export class AttachService {
     }
   }
 
+  /**
+   * T361: a tree change (a child created, moved, closed, deleted or
+   * restored) can change a node's derived role. A live agent whose role no
+   * longer fits (a worker on a node that now coordinates, or a coordinator
+   * on one that no longer does) is stopped for that reason (a daemon stop,
+   * so the node is not "stopped by the human") and started again in its
+   * new role with the same vendor, model and effort, as + Repo does. Only
+   * live agents: a node with none, or one the human stopped, is left alone.
+   * `nodes` and their ancestors are checked (a tangent's role reaches its
+   * conversation, D33).
+   */
+  async followRoles(nodes: readonly string[]): Promise<void> {
+    const byId = new Map(
+      this.options.streams.list({ include_archived: true }).map((s) => [s.id, s]),
+    );
+    const check = new Set<string>();
+    for (const start of nodes) {
+      for (let at: string | undefined = start; at !== undefined && !check.has(at); ) {
+        check.add(at);
+        at = byId.get(at)?.parent;
+      }
+    }
+    for (const id of check) await this.followRole(id);
+  }
+
+  private async followRole(id: string): Promise<void> {
+    const { streams } = this.options;
+    if (this.roleRestarts.has(id) || this.waking.has(id)) return;
+    const current = this.handleFor(id, 'worker') !== undefined ? 'worker' : 'coordinator';
+    const handle = this.handleFor(id, current);
+    if (handle === undefined || handle.stopped()) return;
+    let stream: Stream;
+    try {
+      stream = streams.get(id);
+    } catch {
+      return;
+    }
+    if (!isOpen(stream)) return;
+    const { shape, role } = agentFor(stream, streams.list());
+    if (role === current) return;
+    const was = stream.sessions.find((s) => s.id === handle.sessionId);
+    const why =
+      shape === 'project'
+        ? role === 'coordinator'
+          ? 'the project root now has parts'
+          : 'the project root has no parts left'
+        : `role changed to ${shape}`;
+    this.roleRestarts.add(id);
+    // Held so no wake starts an agent in the gap; pending events go to the new one.
+    const release = this.delivery.hold(id);
+    try {
+      await this.stop(id, current, { reason: why });
+      let body: string;
+      try {
+        await this.attach(id, {
+          ...(was?.vendor !== undefined ? { vendor: was.vendor } : {}),
+          ...(was?.model !== undefined ? { model: was.model } : {}),
+          ...(was?.effort !== undefined ? { effort: was.effort } : {}),
+        });
+        body = `${why}: restarted its agent as ${role === 'coordinator' ? 'the coordinator' : 'a worker'}`;
+      } catch (err) {
+        body = `${why}: could not restart its agent: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      await streams.appendThread('daemon', id, { kind: 'event', body: body.slice(0, 800) });
+    } finally {
+      release();
+      this.roleRestarts.delete(id);
+    }
+  }
+
   async attach(streamId: string, options: AttachOptions = {}): Promise<AttachResult> {
     const wake =
       options.wake !== undefined && options.wake.length > 0
@@ -489,12 +587,8 @@ export class AttachService {
     // coordinator: no worktree, the session dir, every write denied.
     // A project root counts once it has children: a bare root is still a
     // single stream a worker runs on (the pre-projects shape).
-    const all = streams.list();
-    const children = liveChildrenOf(stream.id, all);
-    const shape = nodeRole(stream, children, all);
-    const coordinates =
-      shape === 'coordinating' ||
-      (shape === 'project' && children.some((c) => c.helper_of !== stream.id));
+    const { children, role: agentRole } = agentFor(stream, streams.list());
+    const coordinates = agentRole === 'coordinator';
     const requested: SessionRole = options.role ?? 'worker';
     const role: SessionRole = requested === 'worker' && coordinates ? 'coordinator' : requested;
     // One live session per role: a reviewer may run beside a worker on the
@@ -889,12 +983,17 @@ export class AttachService {
    * `queued` list, which the stream page shows as waiting. With no live
    * worker the event stays pending for the next session.
    */
-  async say(streamId: string, body: string): Promise<{ entry: ThreadEntry; prompted?: string }> {
+  async say(
+    streamId: string,
+    body: string,
+    options: { start?: boolean } = {},
+  ): Promise<{ entry: ThreadEntry; prompted?: string; started?: true }> {
     // Held from before the first write: a turn ending before the emit keeps the session.
     const release = this.delivery.hold(streamId);
     let entry: ThreadEntry;
     let handle: AgentSessionHandle | undefined;
     let busy = false;
+    let started: AttachResult | undefined;
     try {
       entry = await this.options.streams.appendThread('human', streamId, { kind: 'line', body });
       handle = this.agentHandle(streamId);
@@ -911,9 +1010,12 @@ export class AttachService {
         },
         [this.options.streams.get(streamId)],
       );
+      // T361: still held, so no wake races it and no digest repeats the line.
+      if (handle === undefined && options.start === true) started = await this.startFor(streamId);
     } finally {
       release();
     }
+    if (started !== undefined) return { entry, prompted: started.session.id, started: true };
     if (handle === undefined) return { entry };
     const sessionId = handle.sessionId;
     if (busy) {
@@ -925,6 +1027,35 @@ export class AttachService {
       });
     }
     return { entry, prompted: sessionId };
+  }
+
+  /**
+   * T361: a line sent with `start` to a node with no live agent (never
+   * started, or stopped) starts one with the session defaults, as creating
+   * the node would have: a worker on a work node or a conversation, the
+   * coordinator on a coordinating node or a project root with parts. Its
+   * pending events, the line among them, are handed over in the brief.
+   * Not on a closed, landed or deleted node, nor a bare project root. A
+   * failed start is a thread line; the line stays pending.
+   */
+  private async startFor(id: string): Promise<AttachResult | undefined> {
+    const { streams } = this.options;
+    const stream = streams.get(id);
+    if (!isOpen(stream) || liveAgent(stream) !== undefined || this.waking.has(id)) return undefined;
+    const { shape, role } = agentFor(stream, streams.list());
+    if (shape === 'project' && role !== 'coordinator') return undefined;
+    try {
+      return await this.startWithPending(id);
+    } catch (err) {
+      await streams.appendThread('daemon', id, {
+        kind: 'event',
+        body: `could not start the agent: ${err instanceof Error ? err.message : String(err)}`.slice(
+          0,
+          800,
+        ),
+      });
+      return undefined;
+    }
   }
 
   /** Rewrites a session's `queued` list (thread `ts` of lines waiting on a turn). */

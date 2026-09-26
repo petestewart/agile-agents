@@ -11,6 +11,7 @@ import {
   DIRECTOR_NODE,
   type HilRequest,
   type InboxItem,
+  InboxItemOptionsSchema,
   type KnowledgeItem,
   type Question,
   type Stream,
@@ -179,7 +180,10 @@ export class InboxService {
 
   private questionItem(question: Question, byId: Map<string, Stream>): InboxItem | undefined {
     const stream = byId.get(question.stream);
-    if (!stream) return undefined;
+    // T361: a deleted (archived) node's items leave with it; Restore brings them back.
+    if (!stream || stream.archived === true) return undefined;
+    // T361: the choices ride along when they fit a card (an RPC question may offer any).
+    const options = InboxItemOptionsSchema.safeParse(question.options);
     return {
       kind: 'question',
       id: question.id,
@@ -189,6 +193,7 @@ export class InboxService {
       context: inboxContext(question.text),
       ...withDetail(question.text),
       ref: `questions/${question.id}.yaml`,
+      ...(options.success ? { options: options.data } : {}),
     };
   }
 
@@ -231,7 +236,7 @@ export class InboxService {
 
   private gateItem(gate: HilRequest, byId: Map<string, Stream>): InboxItem | undefined {
     const stream = byId.get(gate.stream);
-    if (!stream) return undefined;
+    if (!stream || stream.archived === true) return undefined;
     return {
       kind: 'gate',
       id: gate.id,

@@ -38,7 +38,7 @@ import {
   PlanWriteFieldsSchema,
 } from './plan';
 import { ProjectIdSchema, ProjectNameSchema } from './project';
-import { QuestionIdSchema } from './question';
+import { QuestionChoicesSchema, QuestionIdSchema } from './question';
 import { RoutedEventIdSchema } from './routed-event';
 import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
@@ -48,7 +48,10 @@ const Body = z.string().min(1).max(THREAD_BODY_MAX_CHARS);
 /** Every verb names the session it is called from. */
 const Session = UlidSchema;
 
-export const AskInputSchema = z.object({ session: Session, text: Body }).strict();
+/** T361: `options` are choices the operator can click; typing an answer is always allowed. */
+export const AskInputSchema = z
+  .object({ session: Session, text: Body, options: QuestionChoicesSchema.optional() })
+  .strict();
 export type AskInput = z.infer<typeof AskInputSchema>;
 
 export const ProgressInputSchema = z.object({ session: Session, text: Body }).strict();
@@ -332,7 +335,7 @@ export const AGENT_VERB_SCHEMAS = {
 
 /** One line of help per verb, published to the model by the MCP bridge. */
 export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
-  ask: 'Ask the operator a question and block until it is answered.',
+  ask: 'Ask the operator a question and block until it is answered ({text, options?: 2–6 short choices, each ≤200 chars}). With `options` the operator can click one; they may still type their own answer.',
   progress: 'Report one line of progress onto the stream thread.',
   finding: 'Record a finding ({severity, file, line?, text}) on the stream.',
   propose_knowledge:
