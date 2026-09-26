@@ -117,6 +117,15 @@ export function statusKey(row: StatusInput): NodeStatusKey {
 
 export function nodeStatus(row: StatusInput): NodeStatus {
   const key = statusKey(row);
+  // T374: a conversation goes on after a turn: its agent replied, it isn't "done".
+  if (key === 'done' && row.role === 'conversation') {
+    return {
+      key,
+      ...STATUS.done,
+      label: 'Replied',
+      hint: 'The agent answered. Reply to continue the conversation.',
+    };
+  }
   return { key, ...STATUS[key] };
 }
 

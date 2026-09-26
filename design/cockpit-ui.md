@@ -1,6 +1,6 @@
 # Cockpit UI — design system and UX rules
 
-Status: 2026-09-26 (Phase 15, T360). Applies to `packages/ui/app`. Where this
+Status: 2026-09-26 (Phase 15, T360–T374). Follow-ups: `cockpit-ui-followups.md`. Applies to `packages/ui/app`. Where this
 file and `cockpit-design.md` §9 disagree on *how the cockpit looks or reads*,
 this file wins; on *what the cockpit does*, the design docs and the Decisions
 log still decide.
@@ -130,6 +130,25 @@ Use these; don't re-invent a button or a menu in a screen.
 - `Spinner`, `Kbd`.
 - `useToast()` — transient success/info/error messages with an optional
   action ("Undo"). Errors that block the user's next step stay inline.
+- `RepoIcon remote` / `repoKindLabel(remote)` — a repo's host glyph (local
+  drive, GitHub, GitLab, a folder for a local clone, a globe otherwise) with
+  an SSH mark; the label reads "Local only", "GitHub · SSH", "Local clone".
+- `Dialog` renders in a portal on `document.body` and stops its submit from
+  bubbling, so a dialog may open from inside another dialog's form (New
+  project → Add repository). Single-key shortcuts (`isShortcut`) are off
+  while any dialog is open.
+
+Screen-level building blocks built on these (reuse them rather than copy):
+
+- `Chat.tsx` (`ChatScroll`, `MessageList`, `ThreadBody`, `Thinking`) and
+  `Composer.tsx` — the node chat, independent of a node (the Director uses
+  them too). Rules live in `lib/chat.ts`.
+- `DecisionCard.tsx` (exported as `Card` from `Inbox.tsx`) — every inbox item
+  kind, in the list and (with `full`) at the end of a node's chat. Choices
+  come from `choicesOf(item)` in `lib/inbox.ts`.
+- `AddRepo.tsx` (`AddRepoDialog`) — add a local folder (autocomplete and a
+  folder browser) or clone by URL.
+- `Pickers.tsx` — searchable picker fields (parent node, repository).
 
 ## 6. Node status (`lib/status.ts`)
 
@@ -143,7 +162,7 @@ One mapping from a cockpit row to what the UI shows, in precedence order:
 | blocked | agent blocked | Blocked | red |
 | pr_open | done, PR open | PR open | blue |
 | ready | done, a branch to merge | Ready to merge | amber |
-| done | done, nothing to merge (conversation, coordinating) | Done | green |
+| done | done, nothing to merge (coordinating); a conversation reads "Replied" | Done / Replied | green |
 | waiting | waiting for the plan, or waits on another node | Waiting | gray |
 | working | a turn in flight | Working | blue (animated) |
 | not_started | its agent never ran | Not started | gray, hollow |
@@ -168,7 +187,11 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   more". Hover actions on a message: Copy, Branch off (conversations).
 - **Composer**: rounded box, auto-growing textarea (1–10 lines), a model chip,
   a hint of what sending will do ("Starts the agent", "Queued until the
-  current step ends", "Answers the question"), and Send / Stop.
+  current step ends", "Answers the question"), and Send / Stop. A message to
+  a node whose agent never ran or was stopped starts it (`say` with
+  `start: true`) — except a part waiting for its coordinator's plan. With a
+  question open the composer answers it ("Answering: …"); the question's
+  card above it shows only its choices.
 - **Forms** in dialogs; labels above inputs; the submit button is the primary
   action and says what it does ("Create project", not "OK").
 - **Errors**: inline under the control that caused them, in words a user can

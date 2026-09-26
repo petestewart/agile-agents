@@ -1973,11 +1973,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T363 A node's page is a chat
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** Header (path, title, status in words, role, primary action, overflow menu with the rest); tabs only where they apply; the thread as a chat (your lines as bubbles, the agent's as prose, daemon lines as compact system rows that group); questions, gates and plans inline at the end of the chat, answered there (choices as buttons, the composer answers an open question); the composer (grows, Enter sends, Stop while running, the session model as a chip; a message to a stopped node starts it); a details panel (delivery and Merge, sessions, children, waits on, tracker, autonomy, project settings on a root). Start with defaults in one click; the picker is optional.
 - **Acceptance Criteria:** e2e for chat, inline answer, choice click, send-starts-agent; walkthrough green.
 - **Validation Steps:** `bun run build && bun run test:e2e && bun run test:walkthrough`.
+- **Notes:** Branch T363-node-chat, merge e14de3da. Header: path, title, status, role, repo/branch (copy), one filled action (Start agent with a model chevron / Stop / Merge), details toggle, ⋯ (Review changes…, Restart agent, Waits on…, Add repository…, Tracker issue…, Copy branch, Close node… (confirms), Delete node… (Undo)). Chat: your bubbles, the agent's prose with name, one-line system rows (three noisy ones reworded), hover Copy/Branch off/time, stick-to-bottom with a New messages pill, goal card, empty state. What needs you sits above the composer; the composer answers an open question (a chip picks which) and a message to a never-started or stopped node starts it (not a part waiting for its plan). Tabs Chat, Changes, Plan, Activity, Knowledge, Docs only where they apply. Details panel (Delivery, Agent, Children, Waits on, Tracker, Autonomy, project controls), remembered per viewer. Reusable `Chat.tsx`/`Composer.tsx`; rules in `lib/chat.ts`. Branch e2e 54/54 + feed/installable, walkthrough 1/1; merged tip (with T364–T367) control-room 64/64, feed, installable, walkthrough no findings. Open: a finished work node with no commits reads Ready to merge; `startWithPending` repeats the line in the brief; the question's thread line and its card both show.
 
 ### Ticket: T364 ∥ Needs me and the decision cards
 - **Priority:** P1
@@ -2048,6 +2049,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** http test: rename, repos, unknown repo 400, cross-origin 403.
 - **Validation Steps:** `bun test packages/daemon/src/http.test.ts`.
 - **Notes:** Branch T372-project-route, merged after T367. The UI to edit a project's repos rides the node page's project settings (T363) or a follow-up.
+
+### Ticket: T373 Integration polish: dialogs, shortcuts, Add repository everywhere
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the T365/T367 reports: `Dialog` rendered in place, so a dialog inside another dialog's form nested forms (a page reload); `n`/`/` fired while a dialog was open; a `file` remote read as a globe "Remote"; New project's "Add a repository…" left for Settings.
+- **Acceptance Criteria:** e2e: New project → Add a repository… → pick a folder → ticked; Esc closes only the top dialog; the inner submit doesn't create the project.
+- **Validation Steps:** `bun test packages/daemon/src/feed/control-room.e2e.test.ts -t "T373|New project"`.
+- **Notes:** Branch T373-integration-polish, merged after T363. `Dialog` portals to `document.body` and stops its submit from bubbling (React bubbles through portals); `isShortcut` is off while `[aria-modal]` exists; a `file` remote is "Local clone" with a folder icon; New project and New node embed `AddRepoDialog`. Related e2e 15/15 after merge.
 
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0

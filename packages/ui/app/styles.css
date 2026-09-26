@@ -4807,6 +4807,25 @@ button.cr-answering-q {
   width: 14em;
 }
 
+/* T374: a node branch: the id part shrinks first, the slug stays whole. */
+.cr-branch {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+}
+.cr-branch-id {
+  min-width: 3ch;
+  max-width: 9ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.7;
+}
+.cr-branch-slug {
+  flex: none;
+  white-space: nowrap;
+}
+
 /* ==== Knowledge ==== */
 /* T366: a list column that scrolls on its own, and a side panel (a peek). */
 .cr-main > .cr-kn {
