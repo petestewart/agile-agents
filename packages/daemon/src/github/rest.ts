@@ -20,6 +20,7 @@ import {
 } from './port';
 
 import { DEFAULT_GITHUB_API_URL } from '@agile-agents/shared';
+import { parseRemoteUrl } from '../store/remote-url';
 
 const GH_LOGIN_HINT = 'run `gh auth login`';
 
@@ -101,22 +102,8 @@ export function isLoopbackUrl(url: string): boolean {
  * Credentials in an https URL are dropped, never returned.
  */
 export function repoFromRemoteUrl(remoteUrl: string): RepoRef {
-  const url = remoteUrl.trim();
-  const scp = /^[^@/\s]+@[^:/\s]+:([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(url);
-  let path: string[] | undefined;
-  if (scp?.[1] && scp[2]) path = [scp[1], scp[2]];
-  else {
-    try {
-      const u = new URL(url);
-      if (['https:', 'http:', 'ssh:', 'git:'].includes(u.protocol))
-        path = u.pathname
-          .replace(/\.git\/?$/, '')
-          .split('/')
-          .filter(Boolean);
-    } catch {
-      // fall through
-    }
-  }
+  const parsed = parseRemoteUrl(remoteUrl);
+  const path = parsed !== undefined && parsed.protocol !== 'file' ? parsed.segments : undefined;
   const [owner, repo] = path ?? [];
   if (path?.length !== 2 || !owner || !repo)
     throw new Error('cannot infer GitHub owner/repo from the remote URL (expected …/owner/repo)');

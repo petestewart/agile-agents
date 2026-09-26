@@ -63,6 +63,7 @@ import {
   startEventTailer,
 } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
+import { isLoopbackUrl } from './github/rest';
 import type { InboxService } from './inbox';
 import {
   KnowledgeAlreadyDecidedError,
@@ -80,9 +81,14 @@ import {
   sayAndAnswer,
 } from './questions';
 import {
+  CloneError,
+  DirListError,
   NotFoundError,
+  RepoRemoteCache,
   type StateStore,
   buildStateRpcMethods,
+  cloneRepo,
+  listDirs,
   resolveMainBranch,
   setRepoSettings,
 } from './store';
@@ -186,6 +192,10 @@ export interface HttpServerOptions {
   trackerLinks?: TrackerLinks;
   /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
+  /** Test hook: the operator's home folder for the folder picker and clone destinations (default `os.homedir()`). */
+  userHome?: string;
+  /** Test hook: the repo remote cache (default: one reading `git remote get-url`, 60s TTL). */
+  repoRemotes?: RepoRemoteCache;
 }
 
 export interface HttpServerHandle {
@@ -245,6 +255,17 @@ function isSameOriginRequest(req: Request, port: number): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * T362: the request's `Host` names this machine (or is absent). The
+ * filesystem routes add this to the same-origin check: a page that
+ * DNS-rebinds its own name to 127.0.0.1 is same-origin to the browser, but
+ * its requests still carry that name as `Host`.
+ */
+function isLoopbackHost(req: Request): boolean {
+  const host = req.headers.get('host');
+  return host === null || isLoopbackUrl(`http://${host}`);
 }
 
 /** `/api/hil/<id>/<action>`, action approve|deny|note. */
@@ -421,6 +442,9 @@ interface FeedContext {
   contracts?: ContractService;
   autonomy?: AutonomyService;
   trackerLinks?: TrackerLinks;
+  /** T362: each repo's remote for the repo rows, never read on the frame's path. */
+  remotes: RepoRemoteCache;
+  userHome?: string;
 }
 
 /** The cockpit frame (§9), as `/api/cockpit` and the `/ws` push send it. */
@@ -433,6 +457,7 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     (id) => feed.store.getCard(id),
     feed.contracts,
     (s) => feed.plans?.waitingForPlan(s) === true,
+    (entry) => feed.remotes.peek(entry),
   );
 }
 
@@ -460,6 +485,8 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     contracts: options.contracts,
     autonomy: options.autonomy,
     trackerLinks: options.trackerLinks,
+    remotes: options.repoRemotes ?? new RepoRemoteCache(),
+    userHome: options.userHome,
   };
 }
 
@@ -829,15 +856,25 @@ async function handleLinkRoute(
 /**
  * T206: Settings → Repos, over the same `state.repo_add` RPC as `agile repo add`:
  *
- *   GET  /api/repos   every registered repo with its resolved `main_branch`
- *   POST /api/repos   `{name, path, protected_branches?}`; a bad path is the RPC's one-line 400
+ *   GET  /api/repos        every registered repo with its resolved `main_branch`, and (T362)
+ *                          its `remote` (`RepoRemote`, absent for a local-only repo)
+ *   POST /api/repos        `{name, path, protected_branches?}`; a bad path is the RPC's one-line 400
+ *   POST /api/repos/clone  T362: `{url, dest?, name?}` (`RepoCloneInputSchema`): `git clone`, then
+ *                          `state.repo_add`; `{repos, repo, path}`. A taken name or a non-empty
+ *                          destination is 409, a git failure 400 with its stderr's last lines
  *   POST /api/repos/:name  T222: delivery settings (`RepoSettingsPatchSchema`), same checks as `agile repo set`
+ *
+ * `/api/repos/clone` is a repo's settings only when a repo named `clone` is
+ * registered and the body has no `url` (a settings patch never has one).
+ * Clone is same-origin and loopback-`Host` only, and may run for minutes, so
+ * its request has no idle timeout.
  */
 async function handleRepoRoute(
   req: Request,
   url: URL,
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
+  noTimeout: () => void,
 ): Promise<Response | undefined> {
   const one = url.pathname.match(/^\/api\/repos\/([^/]+)$/);
   if (url.pathname !== '/api/repos' && !one) return undefined;
@@ -845,37 +882,57 @@ async function handleRepoRoute(
   if (one && req.method !== 'POST') return undefined;
   if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
   const list = () =>
-    Object.entries(feed.store.getRepos()).map(([name, entry]) => ({
-      name,
-      path: entry.path,
-      protected_branches: entry.protected_branches,
-      main_branch: resolveMainBranch(entry),
-      delivery: entry.delivery ?? 'direct',
-      auto_merge: entry.auto_merge ?? false,
-      visibility: entry.visibility ?? { mode: 'public' },
-      ...(entry.github ? { github: entry.github } : {}),
-    }));
+    Promise.all(
+      Object.entries(feed.store.getRepos()).map(async ([name, entry]) => {
+        const remote = await feed.remotes.get(entry);
+        return {
+          name,
+          path: entry.path,
+          protected_branches: entry.protected_branches,
+          main_branch: resolveMainBranch(entry),
+          delivery: entry.delivery ?? 'direct',
+          auto_merge: entry.auto_merge ?? false,
+          visibility: entry.visibility ?? { mode: 'public' },
+          ...(entry.github ? { github: entry.github } : {}),
+          ...(remote !== undefined ? { remote } : {}),
+        };
+      }),
+    );
+  const forget = (name: unknown) => {
+    const entry = typeof name === 'string' ? feed.store.getRepos()[name] : undefined;
+    if (entry !== undefined) feed.remotes.invalidate(entry.path);
+  };
   if (one?.[1] !== undefined) {
     if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
-    let patch: unknown;
+    const name = decodeURIComponent(one[1]);
+    let body: Record<string, unknown>;
     try {
-      patch = await readJsonBody(req);
+      body = await readJsonBody(req);
     } catch {
-      return errorResponse(400, 'invalid repo settings: body must be JSON');
+      return errorResponse(
+        400,
+        name === 'clone'
+          ? 'invalid clone request: body must be JSON {url, dest?, name?}'
+          : 'invalid repo settings: body must be JSON',
+      );
+    }
+    if (name === 'clone' && ('url' in body || !Object.hasOwn(feed.store.getRepos(), 'clone'))) {
+      return handleRepoClone(req, feed, body, list, noTimeout);
     }
     try {
-      await setRepoSettings(feed.store, decodeURIComponent(one[1]), patch, {
+      await setRepoSettings(feed.store, name, body, {
         by: 'human',
         ...(feed.githubAuth ? { githubAuth: feed.githubAuth } : {}),
       });
-      return jsonResponse({ repos: list() });
+      forget(name);
+      return jsonResponse({ repos: await list() });
     } catch (err) {
       return errorResponse(400, messageOf(err));
     }
   }
-  if (req.method === 'GET') return jsonResponse({ repos: list() });
+  if (req.method === 'GET') return jsonResponse({ repos: await list() });
   if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
-  let body: unknown;
+  let body: Record<string, unknown>;
   try {
     body = await readJsonBody(req);
   } catch {
@@ -883,8 +940,67 @@ async function handleRepoRoute(
   }
   try {
     await buildStateRpcMethods(feed.store)['state.repo_add']?.(body);
-    return jsonResponse({ repos: list() });
+    forget(body.name);
+    return jsonResponse({ repos: await list() });
   } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/** T362: `POST /api/repos/clone`, after the same-origin check. */
+async function handleRepoClone(
+  req: Request,
+  feed: FeedContext,
+  body: Record<string, unknown>,
+  list: () => Promise<unknown[]>,
+  noTimeout: () => void,
+): Promise<Response> {
+  if (!isLoopbackHost(req)) return errorResponse(403, 'cross-origin request rejected');
+  noTimeout();
+  try {
+    const cloned = await cloneRepo(feed.store, body, {
+      ...(feed.userHome !== undefined ? { home: feed.userHome } : {}),
+    });
+    feed.remotes.invalidate(cloned.path);
+    return jsonResponse({ repos: await list(), repo: cloned.name, path: cloned.path });
+  } catch (err) {
+    if (err instanceof CloneError) return errorResponse(err.status, err.message);
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T362: Settings' folder picker:
+ *
+ *   GET /api/fs/dirs?path=&hidden=1&prefix=  the child folders of `path` (absolute or `~/…`;
+ *       default the home folder), each flagged `git` when it is a git toplevel, with `parent`
+ *       and `home` to navigate by (`DirListing`); a missing folder is 404, any other refusal 400
+ *
+ * A read, but it shows the filesystem: same-origin only, and only on a
+ * loopback `Host` (a DNS-rebound page is same-origin to the browser and a
+ * GET carries no `Origin`).
+ */
+function handleFsRoute(
+  req: Request,
+  url: URL,
+  userHome: string | undefined,
+  sameOrigin: () => boolean,
+): Response | undefined {
+  if (url.pathname !== '/api/fs/dirs' || req.method !== 'GET') return undefined;
+  if (!sameOrigin() || !isLoopbackHost(req)) {
+    return errorResponse(403, 'cross-origin request rejected');
+  }
+  const prefix = url.searchParams.get('prefix');
+  try {
+    return jsonResponse(
+      listDirs(url.searchParams.get('path') ?? undefined, {
+        hidden: url.searchParams.get('hidden') === '1',
+        ...(prefix ? { prefix } : {}),
+        ...(userHome !== undefined ? { home: userHome } : {}),
+      }),
+    );
+  } catch (err) {
+    if (err instanceof DirListError) return errorResponse(err.status, err.message);
     return errorResponse(400, messageOf(err));
   }
 }
@@ -1271,8 +1387,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         const directorRoute = await handleDirectorRoute(req, url, feed, sameOrigin);
         if (directorRoute) return directorRoute;
 
-        const repoRoute = await handleRepoRoute(req, url, feed, sameOrigin);
+        const repoRoute = await handleRepoRoute(req, url, feed, sameOrigin, () =>
+          srv.timeout(req, 0),
+        );
         if (repoRoute) return repoRoute;
+
+        const fsRoute = handleFsRoute(req, url, options.userHome, sameOrigin);
+        if (fsRoute) return fsRoute;
 
         const ruleRoute = await handleRuleRoute(req, url, feed, sameOrigin, () =>
           srv.timeout(req, 0),
@@ -1406,6 +1527,28 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
     }),
   );
 
+  // T362: a repo's remote is read in the background; when one changes, re-push the frame once.
+  let remotePush: ReturnType<typeof setTimeout> | undefined;
+  if (feed?.streams) {
+    const streams = feed.streams;
+    feed.remotes.onChange = () => {
+      if (remotePush !== undefined) return;
+      remotePush = setTimeout(() => {
+        remotePush = undefined;
+        try {
+          server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, streams)));
+        } catch (err) {
+          console.error(messageOf(err));
+        }
+      }, 50);
+    };
+    try {
+      feed.remotes.warm(Object.values(feed.store.getRepos()));
+    } catch {
+      // A corrupt repos.yaml is refused, with its path, wherever it is read.
+    }
+  }
+
   if (feed) {
     tailer = startEventTailer({
       path: `${options.stateRoot}/log/events.jsonl`,
@@ -1435,6 +1578,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
     hostname,
     async stop() {
       tailer?.stop();
+      if (feed) feed.remotes.onChange = undefined;
+      clearTimeout(remotePush);
       server.stop(true);
     },
   };

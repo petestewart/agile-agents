@@ -16,6 +16,7 @@ import type {
   InboxItem,
   NodeRole,
   Question,
+  RepoRemote,
   RoutedEvent,
   RoutingEntry,
   KnowledgeItem as Rule,
@@ -133,6 +134,8 @@ export interface CockpitOverlap {
 export interface CockpitRepoRow {
   name: string;
   delivery: 'direct' | 'pr';
+  /** T362: where its remote lives (the repo icon); absent for a local-only repo. */
+  remote?: RepoRemote;
 }
 
 /** T208: mirror of `feed/snapshot.ts`'s `CockpitProjectRow`. */

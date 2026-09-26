@@ -13,6 +13,7 @@ import type {
   Plan,
   Policy,
   Project,
+  RepoRemote,
   RoutedEvent,
   KnowledgeItem as Rule,
   KnowledgeCreateInput as RuleCreateInput,
@@ -378,6 +379,8 @@ export interface RepoRow {
   auto_merge: boolean;
   visibility: { mode: 'public' } | { mode: 'private'; projects: string[] };
   github?: { owner: string; repo: string };
+  /** T362: where its remote lives (the repo icon); absent for a local-only repo. */
+  remote?: RepoRemote;
 }
 
 /** T222: one repo's delivery settings; `pr` is refused without a GitHub remote and auth. */
@@ -404,4 +407,57 @@ export async function addRepo(input: {
   protected_branches?: string[];
 }): Promise<RepoRow[]> {
   return ((await post('/api/repos', input)) as { repos: RepoRow[] }).repos;
+}
+
+/** T362: mirror of `store/browse-dirs.ts`'s `DirEntry`. */
+export interface DirEntry {
+  name: string;
+  path: string;
+  /** A git work tree's toplevel. */
+  git: boolean;
+}
+
+/** T362: mirror of `store/browse-dirs.ts`'s `DirListing` (`GET /api/fs/dirs`). */
+export interface DirListing {
+  path: string;
+  /** Absent at `/`. */
+  parent?: string;
+  home: string;
+  is_git: boolean;
+  entries: DirEntry[];
+  /** More than 500 folders matched; narrow with `prefix`. */
+  truncated?: true;
+}
+
+/**
+ * T362: the folder picker. `path` is absolute or `~/…` (default: home);
+ * `prefix` keeps names starting with it (case-insensitive), for autocomplete.
+ */
+export function listDirs(path?: string, hidden?: boolean, prefix?: string): Promise<DirListing> {
+  const query = new URLSearchParams();
+  if (path !== undefined) query.set('path', path);
+  if (hidden) query.set('hidden', '1');
+  if (prefix) query.set('prefix', prefix);
+  const qs = query.toString();
+  return get(`/api/fs/dirs${qs ? `?${qs}` : ''}`);
+}
+
+/** T362: `POST /api/repos/clone`'s reply: every repo, and the one just cloned. */
+export interface CloneRepoResult {
+  repos: RepoRow[];
+  repo: string;
+  path: string;
+}
+
+/**
+ * T362: clone by URL (https, `git@host:o/r`, ssh://, GitHub `owner/repo`, or
+ * a local path) with the user's own git credentials, then register it. A
+ * refusal rejects with the daemon's reason (git's last lines on a failure).
+ */
+export function cloneRepo(input: {
+  url: string;
+  dest?: string;
+  name?: string;
+}): Promise<CloneRepoResult> {
+  return post('/api/repos/clone', input) as Promise<CloneRepoResult>;
 }

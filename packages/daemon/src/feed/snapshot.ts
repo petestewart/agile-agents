@@ -12,6 +12,8 @@ import {
   type InboxItem,
   type NodeRole,
   type Question,
+  type RepoEntry,
+  type RepoRemote,
   type ReposConfig,
   type StatusCard,
   type Stream,
@@ -152,6 +154,8 @@ export type CockpitCard = StatusCard | { node: string; error: string };
 export interface CockpitRepoRow {
   name: string;
   delivery: 'direct' | 'pr';
+  /** T362: where its remote (`remote`, else `origin`) lives; absent for a local-only repo, or not read yet. */
+  remote?: RepoRemote;
 }
 
 const LIVE_SESSION = new Set(['starting', 'running', 'idle']);
@@ -179,6 +183,8 @@ export function buildCockpitFrame(
   cardOf?: (node: string) => StatusCard | undefined,
   contracts?: { list(): CockpitContractRow[] },
   waitingForPlan?: (node: Stream) => boolean,
+  /** T362: a repo's remote, from a cache: the frame never waits on git. */
+  remoteOf?: (entry: RepoEntry) => RepoRemote | undefined,
 ): CockpitFrame {
   const all = streams.list();
   const overlaps = findOverlaps(all);
@@ -210,10 +216,14 @@ export function buildCockpitFrame(
       repos: p.repos,
       ...(p.tracker !== undefined ? { tracker: p.tracker } : {}),
     })),
-    repos: Object.entries(repos).map(([name, entry]) => ({
-      name,
-      delivery: entry.delivery ?? 'direct',
-    })),
+    repos: Object.entries(repos).map(([name, entry]) => {
+      const remote = remoteOf?.(entry);
+      return {
+        name,
+        delivery: entry.delivery ?? 'direct',
+        ...(remote !== undefined ? { remote } : {}),
+      };
+    }),
     overlaps,
     cards: all.flatMap((s): CockpitCard[] => {
       if (s.parent === undefined || cardOf === undefined) return [];
