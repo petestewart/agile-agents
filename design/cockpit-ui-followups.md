@@ -48,8 +48,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   audit line shows only on the next push. The events service's `onEmitted`
   could push the frame itself. (`http.ts`, the tailer)
 
-- `resolveMainBranch` runs git synchronously per repo on every
-  `GET /api/repos`.
 - A line sent with `start` appears in the first prompt twice (the brief's
   "Thread so far" and "What woke you"); by design for every wake (T336), a
   few tokens, invisible to the user.

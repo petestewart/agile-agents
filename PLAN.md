@@ -2316,6 +2316,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui/app/lib/steps.test.ts`; control-room e2e `T392`.
 - **Notes:** Branch T405-turn-timer.
 
+### Ticket: T406 The repo list doesn't block on git
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: `GET /api/repos` ran up to three synchronous git calls per repo to name its main branch, blocking the daemon's event loop for every open page that lists repos.
+- **Acceptance Criteria:** The route resolves each repo's main branch asynchronously, in parallel with its remote, with the same answer as `resolveMainBranch`.
+- **Validation Steps:** `bun test packages/daemon/src/store/rpc-methods.test.ts packages/daemon/src/http.test.ts`.
+- **Notes:** Branch T406-main-branch-async.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
