@@ -139,3 +139,48 @@ export class TitleNamer {
     await this.options.streams.update('daemon', stream.id, { title });
   }
 }
+
+// ---------------------------------------------------------------- T422: a goal from a conversation
+
+/** How much of a conversation the goal draft reads (its newest lines). */
+const DRAFT_LINES = 30;
+const DRAFT_LINE_CHARS = 1200;
+export const DRAFT_GOAL_MAX_CHARS = 1500;
+
+/**
+ * T422 (D42): the prompt for a work goal drawn from a conversation: what it
+ * was asked and its newest lines, answered as the goal of the work it
+ * concluded (or of the research, when that is what it asks for).
+ */
+export function draftGoalPrompt(
+  question: string,
+  lines: readonly { who: 'you' | 'agent'; text: string }[],
+): string {
+  const talk = lines
+    .slice(-DRAFT_LINES)
+    .map(
+      (l) =>
+        `${l.who === 'you' ? 'Human' : 'Agent'}: ${l.text.replace(/\s+/g, ' ').slice(0, DRAFT_LINE_CHARS)}`,
+    )
+    .join('\n');
+  return [
+    'This conversation has reached a conclusion that should now become work.',
+    'Write the goal for that work: one to three sentences, imperative, saying what should',
+    'be done and what done looks like. Plain text, no preamble, no quotes, no lists.',
+    '',
+    `The question: ${question.trim().slice(0, DRAFT_LINE_CHARS)}`,
+    '',
+    talk,
+  ].join('\n');
+}
+
+/** The model's goal: trimmed, unwrapped, capped; nothing usable is `undefined`. */
+export function cleanGoal(raw: string | undefined): string | undefined {
+  const text = raw
+    ?.trim()
+    .replace(/^(\*\*)?goal(\*\*)?\s*:\s*/i, '')
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .trim();
+  if (text === undefined || text === '') return undefined;
+  return text.length > DRAFT_GOAL_MAX_CHARS ? `${text.slice(0, DRAFT_GOAL_MAX_CHARS - 1)}…` : text;
+}

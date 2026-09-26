@@ -252,6 +252,11 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
 - **Send to parent** (T421, D42): in a conversation under another node, a
   reply's hover action (or ⋯) sends a conclusion up. It lands there as your
   message, so that node's agent acts on it as on anything you type.
+- **Turn into work** (T422, D42): an open conversation's ⋯ menu. One box: the
+  goal (drafted from the talk by the cheap model, else its last reply, else its
+  question; the hint says which) and a repository, "No repository" first for
+  research. Start adds the repo in place and your line starts its agent on the
+  goal: same node, same thread.
 - **Notifications** (Settings → General, per browser, off by default): one
   browser notification at a time for what is new in Needs me while the tab is
   away; a click opens it. Never for what was there at load. They go through

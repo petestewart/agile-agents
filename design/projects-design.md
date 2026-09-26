@@ -92,7 +92,7 @@ A conversation can have children of its own, called **tangents** (D33). A tangen
 
 - **It never reshapes the tree.** A node's *parts* are its live children that are not its helpers and not conversations. Only parts make a node coordinating (or give a root its coordinator), are held for a plan (T336), or ask their coordinator first (T338). A question asked under a working work node leaves it work: its agent is not restarted as a coordinator.
 - **It tells its parent nothing by itself.** A conversation under a node that is not a conversation sends no `child_status`: its asks are the human's. What it concludes goes up only when the human sends it (Send to parent). Tangents of a conversation keep D33's summary.
-- **It grows in place.** "+ Repo" on a conversation, tangents or not, makes it a work node in place (same thread, a branch and worktree); its conversations stay conversations.
+- **It grows in place.** "+ Repo" on a conversation, tangents or not, makes it a work node in place (same thread, a branch and worktree); its conversations stay conversations. Turn into work (T422) does it in one step: a goal drafted from the talk, a repo (or none, for research), and a line of yours that starts its agent on the goal.
 
 ## 3. Views
 

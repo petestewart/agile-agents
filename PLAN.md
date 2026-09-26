@@ -2453,6 +2453,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T421 packages/ui/app/lib/chat.test.ts`; control-room e2e `T421`.
 - **Notes:** Branch T421-send-up. A coordinator acts on it at its autonomy level, as on any line of yours.
 
+### Ticket: T422 Turn into work (D42)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete: when a question concludes that something should be built, it should be built right there, in that node. "+ Repo" made a conversation work in place, but its goal was still the question and nothing told its agent to start.
+- **Acceptance Criteria:** On an open conversation, ⋯ "Turn into work…" opens one box: the goal, drafted from the conversation by the cheap model (D41's call) when there is one, else its last reply, else its question, always editable, the hint saying which; a repository picker whose first choice is "No repository" (research: the goal is what it finds out). Start the work: the goal is updated (a "Goal changed" line), the repository added in place (branch, worktree, the live agent restarted in it), and your line "Now work on the goal above…" starts its agent. `POST /api/streams/:id/draft-goal` returns `{goal, from: model|reply|question}`, same-origin only; a failed model call falls back.
+- **Validation Steps:** `bun test packages/daemon/src/streams/titles.test.ts packages/daemon/src/http.test.ts -t T422`; control-room e2e `T422`.
+- **Notes:** Branch T422-turn-into-work. `START_ON_GOAL` lives in shared, so the cockpit and the tests say the same line.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
