@@ -12,6 +12,8 @@
  * - `mark(node, ids, status, meta)`: moves pending deliveries to `delivered`,
  *   `superseded` or `expired` in one write. Only a pending delivery moves.
  * - `get(id)`: one event by id (`read_event`).
+ * - `page({before, limit, repo})` (T383): the event log a page at a time,
+ *   newest first, for the cockpit's Events and a repo card.
  * - `onEmitted(fn)`: called after each stored event (delivery, T242, wakes
  *   its recipients).
  * - `recover()`: run once at startup. A crash between the log append and
@@ -55,8 +57,44 @@ export interface ActivityEntry {
 /** Cap on Activity rows returned, newest first. */
 export const ACTIVITY_MAX = 200;
 
+/** T383: the most events one page of the log may ask for. */
+export const EVENT_PAGE_MAX = 500;
+
+/** T383: which part of the log a page reads. */
+export interface EventPageQuery {
+  /** Only events older than this one (earlier in the log); the newest when absent. */
+  before?: string;
+  /** How many at most (default `ACTIVITY_MAX`). */
+  limit?: number;
+  /** Only the events on this repo. */
+  repo?: string;
+}
+
+/** T383: one page of the log, newest first. */
+export interface EventPage {
+  events: RoutedEvent[];
+  /** Older events that pass the filter exist beyond this page. */
+  more: boolean;
+  /** Every event in the log that passes the filter, on any page. */
+  total: number;
+}
+
+/** T383: a page's `before` names no event in the log. */
+export class UnknownEventError extends Error {
+  constructor(readonly id: string) {
+    super(`no event ${id} in the log`);
+    this.name = 'UnknownEventError';
+  }
+}
+
+/** The log in append order, and each event's place in it. */
+interface LogIndex {
+  list: RoutedEvent[];
+  at: Map<string, number>;
+}
+
 export class RoutedEventService {
-  private byId: Map<string, RoutedEvent> | undefined;
+  private log: LogIndex | undefined;
   private readonly listeners: ((event: RoutedEvent) => void)[] = [];
 
   constructor(
@@ -64,11 +102,12 @@ export class RoutedEventService {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  private index(): Map<string, RoutedEvent> {
-    if (this.byId === undefined) {
-      this.byId = new Map(this.store.readRoutedEvents().map((e) => [e.id, e]));
+  private index(): LogIndex {
+    if (this.log === undefined) {
+      const list = this.store.readRoutedEvents();
+      this.log = { list, at: new Map(list.map((e, i) => [e.id, i])) };
     }
-    return this.byId;
+    return this.log;
   }
 
   async emit(input: EmitInput): Promise<RoutedEvent> {
@@ -79,7 +118,12 @@ export class RoutedEventService {
       status: 'pending',
     }));
     const stored = await this.store.appendRoutedEvent(event, deliveries);
-    this.index().set(stored.id, stored);
+    // A first read of the index after the append already holds it.
+    const log = this.index();
+    if (!log.at.has(stored.id)) {
+      log.at.set(stored.id, log.list.length);
+      log.list.push(stored);
+    }
     for (const listener of this.listeners) {
       try {
         listener(stored);
@@ -95,7 +139,9 @@ export class RoutedEventService {
   }
 
   get(id: RoutedEventId | string): RoutedEvent | undefined {
-    return this.index().get(id);
+    const log = this.index();
+    const i = log.at.get(id);
+    return i === undefined ? undefined : log.list[i];
   }
 
   /** The latest status of each event in the node's queue, in first-seen order. */
@@ -136,7 +182,45 @@ export class RoutedEventService {
 
   /** T338: the event log: every routed event (or those `keep` passes), newest first. */
   recent(limit = ACTIVITY_MAX, keep: (e: RoutedEvent) => boolean = () => true): RoutedEvent[] {
-    return [...this.index().values()].filter(keep).reverse().slice(0, limit);
+    return this.walk(this.index().list.length, limit, keep).events;
+  }
+
+  /**
+   * T383: one page of the log, newest first. `before` pages back: only the
+   * events older than that one (earlier in the append-only log, which is the
+   * order they happened in). Throws `UnknownEventError` when `before` names
+   * no event. `repo` keeps that repo's events, as `forRepo` does.
+   */
+  page(query: EventPageQuery = {}): EventPage {
+    const log = this.index();
+    let start = log.list.length;
+    if (query.before !== undefined) {
+      const at = log.at.get(query.before);
+      if (at === undefined) throw new UnknownEventError(query.before);
+      start = at;
+    }
+    const repo = query.repo;
+    const keep = repo === undefined ? () => true : (e: RoutedEvent) => e.repo === repo;
+    const { events, more } = this.walk(start, query.limit ?? ACTIVITY_MAX, keep);
+    const total = repo === undefined ? log.list.length : log.list.filter(keep).length;
+    return { events, more, total };
+  }
+
+  /** Up to `limit` events that `keep` passes, from just before `start` back; `more` if one was left. */
+  private walk(
+    start: number,
+    limit: number,
+    keep: (e: RoutedEvent) => boolean,
+  ): { events: RoutedEvent[]; more: boolean } {
+    const { list } = this.index();
+    const events: RoutedEvent[] = [];
+    for (let i = start - 1; i >= 0; i--) {
+      const event = list[i] as RoutedEvent;
+      if (!keep(event)) continue;
+      if (events.length >= limit) return { events, more: true };
+      events.push(event);
+    }
+    return { events, more: false };
   }
 
   pendingFor(node: string): PendingDelivery[] {
@@ -180,7 +264,7 @@ export class RoutedEventService {
   async recover(): Promise<number> {
     const missing: { event: string; node: string; status: 'pending' }[] = [];
     const seen = new Map<string, Set<string>>();
-    for (const event of this.index().values()) {
+    for (const event of this.index().list) {
       for (const { node } of event.routing) {
         let ids = seen.get(node);
         if (ids === undefined) {

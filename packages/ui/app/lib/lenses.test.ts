@@ -7,17 +7,25 @@ import type { RoutedEvent } from '@agile-agents/shared';
 import type { CockpitStreamRow } from './feed-types';
 import {
   EVENT_FAMILY,
+  type LogView,
   ROUTE_REASON,
+  appendOlder,
   clip,
   deliveryHint,
   deliveryWords,
   dependencyGroups,
   eventDetail,
   eventFamily,
+  eventMatcher,
   eventTitle,
   filterEvents,
+  firstPage,
   groupByDay,
   isSatisfied,
+  logCount,
+  logFooter,
+  mergeNewest,
+  noMatchWords,
   runningSummary,
   sortNewestFirst,
   sortRunning,
@@ -243,5 +251,108 @@ describe('the event log', () => {
     expect(days.map((d) => d.events.length)).toEqual([2, 1, 2]);
     expect(days.slice(0, 2).map((d) => d.day)).toEqual(['Today', 'Yesterday']);
     expect(days[2]?.day).not.toBe('Yesterday');
+  });
+});
+
+describe('the event log a page at a time (T383)', () => {
+  const ev = (id: string) => event(id, 'human_line', { body: id });
+  const ids = (log: { events: RoutedEvent[] }) => log.events.map((e) => e.id);
+
+  test('an older page goes under what is loaded while its cursor is still the oldest', () => {
+    const log = firstPage({ events: [ev('E5'), ev('E4')], more: true, total: 5 });
+    expect(log.pages).toBe(1);
+    const next = appendOlder(log, { events: [ev('E3'), ev('E2')], more: true, total: 5 }, 'E4');
+    expect(ids(next)).toEqual(['E5', 'E4', 'E3', 'E2']);
+    expect(next).toMatchObject({ more: true, pages: 2 });
+    const end = appendOlder(next, { events: [ev('E1')], more: false, total: 5 }, 'E2');
+    expect(ids(end)).toEqual(['E5', 'E4', 'E3', 'E2', 'E1']);
+    expect(end).toMatchObject({ more: false, pages: 3, total: 5 });
+    // A page read from a cursor that is no longer the oldest (the log started again) is dropped.
+    expect(appendOlder(next, { events: [ev('E1')], more: false, total: 5 }, 'E4')).toBe(next);
+    // An event already loaded is not shown twice.
+    expect(
+      ids(appendOlder(log, { events: [ev('E4'), ev('E3')], more: false, total: 5 }, 'E4')),
+    ).toEqual(['E5', 'E4', 'E3']);
+  });
+
+  test('live events go on top; more than a page of them starts the log again', () => {
+    const log = { ...firstPage({ events: [ev('E3'), ev('E2')], more: true, total: 3 }), pages: 2 };
+    // Nothing new: the same object, so nothing re-renders.
+    expect(mergeNewest(log, { events: [ev('E3'), ev('E2')], more: true, total: 3 })).toBe(log);
+    const merged = mergeNewest(log, {
+      events: [ev('E5'), ev('E4'), ev('E3')],
+      more: true,
+      total: 5,
+    });
+    expect(ids(merged)).toEqual(['E5', 'E4', 'E3', 'E2']);
+    expect(merged).toMatchObject({ more: true, pages: 2, total: 5 });
+    // None of the fresh page is loaded: a gap, so the fresh page is the log now.
+    const gap = mergeNewest(log, { events: [ev('E9'), ev('E8')], more: true, total: 9 });
+    expect(ids(gap)).toEqual(['E9', 'E8']);
+    expect(gap).toMatchObject({ more: true, pages: 1, total: 9 });
+    // The first events of an empty log.
+    const empty = firstPage<RoutedEvent>({ events: [], more: false, total: 0 });
+    expect(mergeNewest(empty, { events: [], more: false, total: 0 })).toBe(empty);
+    expect(ids(mergeNewest(empty, { events: [ev('E1')], more: false, total: 1 }))).toEqual(['E1']);
+  });
+
+  const view = (extra: Partial<LogView> = {}): LogView => ({
+    loaded: 100,
+    total: 1284,
+    more: true,
+    pages: 1,
+    matched: 100,
+    narrowed: false,
+    ...extra,
+  });
+
+  test('the count says how much of the log shows, and of how much', () => {
+    expect(logCount(view())).toBe('100 of 1,284 events');
+    expect(logCount(view({ loaded: 3, total: 3, more: false }))).toBe('3 events');
+    expect(logCount(view({ loaded: 1, total: 1, more: false }))).toBe('1 event');
+    expect(logCount(view({ narrowed: true, matched: 7 }))).toBe('7 of 100 loaded');
+    expect(logCount(view({ narrowed: true, matched: 7, loaded: 40, total: 40, more: false }))).toBe(
+      '7 of 40 events',
+    );
+  });
+
+  test('the footer: the next page, a search further back, or the end of the log', () => {
+    expect(logFooter(view(), 100)).toEqual({ kind: 'more', label: 'Show 100 more' });
+    expect(logFooter(view({ loaded: 1200 }), 100)).toEqual({ kind: 'more', label: 'Show 84 more' });
+    expect(logFooter(view({ narrowed: true, matched: 3 }), 100)).toEqual({
+      kind: 'more',
+      label: 'Search older events',
+      note: 'Searched the latest 100 of 1,284 events.',
+    });
+    // The end of the log is said once there was more than a page, or a search reached it.
+    const end = view({ loaded: 1284, more: false, pages: 13 });
+    expect(logFooter(end, 100)).toEqual({ kind: 'end', note: 'That’s everything.' });
+    expect(logFooter(view({ loaded: 12, total: 12, more: false }), 100)).toEqual({ kind: 'none' });
+    expect(logFooter({ ...end, narrowed: true }, 100)).toEqual({
+      kind: 'end',
+      note: 'Searched all 1,284 events. That’s everything.',
+    });
+    expect(logFooter(view({ loaded: 1, total: 1, more: false, narrowed: true }), 100)).toEqual({
+      kind: 'end',
+      note: 'Searched the only event. That’s everything.',
+    });
+  });
+
+  test('no matches: older pages may still hold one', () => {
+    expect(noMatchWords(view({ narrowed: true, matched: 0 }))).toEqual({
+      title: 'No matches in the latest 100 events',
+      body: 'Older events may match. Search further back, or clear the filters.',
+    });
+    expect(noMatchWords(view({ loaded: 40, total: 40, more: false, matched: 0 }))).toEqual({
+      title: 'No events match',
+      body: 'Nothing in the 40 events matches these filters.',
+    });
+  });
+
+  test('eventMatcher is the filter for one event', () => {
+    const matches = eventMatcher({ family: 'messages', query: 'hi' }, titleOf, eventLabel);
+    expect(matches(event('E1', 'human_line', { body: 'hi there' }))).toBe(true);
+    expect(matches(event('E2', 'human_line', { body: 'bye' }))).toBe(false);
+    expect(matches(event('E3', 'pr_merged', { repo: 'hi' }, { repo: 'hi' }))).toBe(false);
   });
 });

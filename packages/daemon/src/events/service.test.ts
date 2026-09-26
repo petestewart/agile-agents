@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { ROUTED_EVENT_STRING_MAX, ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
-import { RoutedEventService } from './service';
+import { RoutedEventService, UnknownEventError } from './service';
 
 let home: string;
 let root: string;
@@ -119,5 +119,76 @@ describe('activity (T245)', () => {
       routing: [{ node: a, because: 'same_repo' }],
     });
     expect(events.forRepo('api').map((e) => e.id)).toEqual([moved.id]);
+  });
+});
+
+describe('the log a page at a time (T383)', () => {
+  const onRepo = (repo: string, body: string) => ({
+    ...line(body),
+    repo,
+  });
+
+  test('pages newest first with a cursor, across the end of the log', async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 7; i++) ids.push((await events.emit(line(`n${i}`))).id);
+    const newest = [...ids].reverse();
+    const first = events.page({ limit: 3 });
+    expect(first.events.map((e) => e.id)).toEqual(newest.slice(0, 3));
+    expect(first).toMatchObject({ more: true, total: 7 });
+    const second = events.page({ limit: 3, before: first.events.at(-1)?.id });
+    expect(second.events.map((e) => e.id)).toEqual(newest.slice(3, 6));
+    expect(second.more).toBe(true);
+    // The last page holds what is left and says the log ends there.
+    const last = events.page({ limit: 3, before: second.events.at(-1)?.id });
+    expect(last.events.map((e) => e.id)).toEqual(newest.slice(6));
+    expect(last).toMatchObject({ more: false, total: 7 });
+    // Before the oldest event there is nothing.
+    expect(events.page({ before: ids[0] })).toEqual({ events: [], more: false, total: 7 });
+    // A page exactly as long as what is left has no more.
+    expect(events.page({ limit: 1, before: ids[1] })).toMatchObject({ more: false });
+    expect(events.page({ limit: 7 }).more).toBe(false);
+  });
+
+  test('the default page is the newest 200, and an empty log is one empty page', async () => {
+    expect(events.page()).toEqual({ events: [], more: false, total: 0 });
+    for (let i = 0; i < 201; i++) await events.emit(line(`n${i}`));
+    const page = restart().page();
+    expect(page.events).toHaveLength(200);
+    expect(page.events[0]?.payload).toEqual({ body: 'n200' });
+    expect(page).toMatchObject({ more: true, total: 201 });
+  });
+
+  test("repo keeps that repo's events; the cursor pages through them", async () => {
+    const api1 = await events.emit(onRepo('api', 'a1'));
+    await events.emit(onRepo('web', 'w1'));
+    const api2 = await events.emit(onRepo('api', 'a2'));
+    await events.emit(line('no repo'));
+    const api3 = await events.emit(onRepo('api', 'a3'));
+    const first = events.page({ repo: 'api', limit: 2 });
+    expect(first.events.map((e) => e.id)).toEqual([api3.id, api2.id]);
+    expect(first).toMatchObject({ more: true, total: 3 });
+    const rest = events.page({ repo: 'api', limit: 2, before: api2.id });
+    expect(rest.events.map((e) => e.id)).toEqual([api1.id]);
+    expect(rest.more).toBe(false);
+    expect(events.page({ repo: 'nope' })).toEqual({ events: [], more: false, total: 0 });
+  });
+
+  test('an unknown cursor is refused by name', async () => {
+    await events.emit(line());
+    expect(() => events.page({ before: 'E-nope' })).toThrow(UnknownEventError);
+    expect(() => events.page({ before: 'E-nope' })).toThrow(/no event E-nope in the log/);
+  });
+
+  test('an event emitted after a page was read tops the next one, once', async () => {
+    const old = await events.emit(line('old'));
+    // A fresh service whose first read of the log comes after the append.
+    const fresh = restart();
+    const next = await fresh.emit(line('new'));
+    expect(fresh.page().events.map((e) => e.id)).toEqual([next.id, old.id]);
+    expect(fresh.get(next.id)?.payload).toEqual({ body: 'new' });
+    const late = new RoutedEventService(StateStore.open(root));
+    const third = await late.emit(line('third'));
+    expect(late.page().events.map((e) => e.id)).toEqual([third.id, next.id, old.id]);
+    expect(late.recent().map((e) => e.id)).toEqual([third.id, next.id, old.id]);
   });
 });

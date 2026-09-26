@@ -17,6 +17,7 @@ import {
   type KnowledgeItem,
   type Policy,
   type RepoRemote,
+  type RoutedEvent,
   type SessionDefaultsStatus,
   classifierQuestion,
   examplesOf,
@@ -28,6 +29,7 @@ import { type AttachService, resolveSessionSettings } from './attach';
 import { Bus } from './bus';
 import { ClassifierKeyService, FakeClassifier } from './classifier';
 import { readHomeConfigFile } from './config';
+import { RoutedEventService } from './events';
 import type { CockpitFrame, StreamPagePayload } from './feed';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
@@ -1333,5 +1335,109 @@ describe('T362 folder picker, clone by URL, repo remotes', () => {
     const res = await post('/api/repos/clone', { auto_merge: true });
     expect(res.status).toBe(200);
     expect(store.getRepos().clone?.auto_merge).toBe(true);
+  });
+});
+
+// --- T383: the event log a page at a time ---
+
+describe('T383 GET /api/events pages', () => {
+  let home: string;
+  let cockpit: HttpServerHandle;
+  let events: RoutedEventService;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'agile-http-events-'));
+    const init = runInit(home);
+    const store = StateStore.open(init.stateRoot);
+    events = new RoutedEventService(store);
+    cockpit = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot: init.stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      events,
+    });
+  });
+
+  afterEach(async () => {
+    await cockpit.stop();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  type Page = { events: RoutedEvent[]; more: boolean; total: number };
+  const read = async (query = ''): Promise<{ status: number; body: Page & { error?: string } }> => {
+    const res = await fetch(`http://127.0.0.1:${cockpit.port}/api/events${query}`);
+    return { status: res.status, body: (await res.json()) as Page & { error?: string } };
+  };
+  const emit = (body: string, repo?: string) =>
+    events.emit({
+      type: 'human_line',
+      subject: STREAM,
+      payload: { body },
+      by: 'human',
+      routing: [{ node: STREAM, because: 'self' }],
+      ...(repo !== undefined ? { repo } : {}),
+    });
+
+  test('pages newest first with before and limit until more is false', async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) ids.push((await emit(`n${i}`)).id);
+    const newest = [...ids].reverse();
+    // No query: every event (up to 200), as before, with more and total.
+    const all = await read();
+    expect(all.status).toBe(200);
+    expect(all.body.events.map((e) => e.id)).toEqual(newest);
+    expect(all.body).toMatchObject({ more: false, total: 5 });
+
+    const seen: string[] = [];
+    let before: string | undefined;
+    let pages = 0;
+    for (;;) {
+      const { status, body } = await read(`?limit=2${before ? `&before=${before}` : ''}`);
+      expect(status).toBe(200);
+      expect(body.total).toBe(5);
+      seen.push(...body.events.map((e) => e.id));
+      pages += 1;
+      if (!body.more) break;
+      before = body.events.at(-1)?.id;
+    }
+    expect(pages).toBe(3);
+    expect(seen).toEqual(newest);
+    // Past the end of the log: an empty page, nothing more.
+    expect((await read(`?before=${ids[0]}`)).body).toEqual({ events: [], more: false, total: 5 });
+  });
+
+  test("repo= reads one repo's events", async () => {
+    const api = await emit('on api', 'api');
+    await emit('on web', 'web');
+    const { status, body } = await read('?repo=api&limit=5');
+    expect(status).toBe(200);
+    expect(body.events.map((e) => e.id)).toEqual([api.id]);
+    expect(body).toMatchObject({ more: false, total: 1 });
+    expect((await read('?repo=nope')).body).toEqual({ events: [], more: false, total: 0 });
+  });
+
+  test('a bad limit, an empty repo and an unknown cursor are 400s in words', async () => {
+    await emit('hi');
+    for (const limit of ['0', '-1', '2.5', 'ten', '501', '']) {
+      const { status, body } = await read(`?limit=${limit}`);
+      expect(status).toBe(400);
+      expect(body.error).toContain('limit must be a whole number from 1 to 500');
+    }
+    expect((await read('?limit=500')).status).toBe(200);
+    const unknown = await read('?before=E-nope');
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.error).toBe(
+      'no event "E-nope" in the log: before must be the id of an event a page listed',
+    );
+    expect((await read('?before=')).body.error).toContain('before must be the id of an event');
+    expect((await read('?repo=')).body.error).toContain('repo must be a repo name');
+  });
+
+  test('is 503 without the event service', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/events`);
+    expect(res.status).toBe(503);
   });
 });

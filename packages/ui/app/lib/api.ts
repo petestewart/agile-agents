@@ -64,9 +64,29 @@ export function setProjectTracker(id: string, tracker: TrackerSettings | null): 
   return post(`/api/projects/${encodeURIComponent(id)}`, { tracker });
 }
 
-/** T338: the event log, every routed event, newest first. */
-export async function getEvents(): Promise<RoutedEvent[]> {
-  return (await get<{ events: RoutedEvent[] }>('/api/events')).events;
+/** T383: one page of the event log, newest first. */
+export interface EventPage {
+  events: RoutedEvent[];
+  /** Older events (on `repo`, when asked) exist beyond this page. */
+  more: boolean;
+  /** Every event in the log (on `repo`, when asked), on any page. */
+  total: number;
+}
+
+/**
+ * T338, T383: a page of the event log, newest first: `before` an event id
+ * pages back (only older ones), `limit` 1–500 (default 200), `repo` one
+ * repo's events.
+ */
+export function getEvents(
+  query: { before?: string; limit?: number; repo?: string } = {},
+): Promise<EventPage> {
+  const params = new URLSearchParams();
+  if (query.before !== undefined) params.set('before', query.before);
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  if (query.repo !== undefined) params.set('repo', query.repo);
+  const search = params.toString();
+  return get<EventPage>(`/api/events${search ? `?${search}` : ''}`);
 }
 
 /** A question card: the typed text reaches the asking session verbatim (§3.3). */

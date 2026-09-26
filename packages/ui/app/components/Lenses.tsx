@@ -22,8 +22,9 @@ import {
   type RoutedEventType,
   formatKnowledgeScope,
 } from '@agile-agents/shared';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  type EventPage,
   type RepoRow,
   getEvents,
   getRepoKnowledge,
@@ -37,16 +38,24 @@ import type { CockpitOverlap, CockpitRepoRow, CockpitStreamRow } from '../lib/fe
 import {
   EVENT_FAMILIES,
   type EventFamily,
+  type LoadedLog,
+  type LogView,
   ROUTE_REASON,
+  appendOlder,
   deliveryHint,
   deliveryWords,
   dependencyGroups,
   eventDetail,
   eventFamily,
+  eventMatcher,
   eventTitle,
-  filterEvents,
+  firstPage,
   groupByDay,
   isSatisfied,
+  logCount,
+  logFooter,
+  mergeNewest,
+  noMatchWords,
   runningSummary,
   sortNewestFirst,
   sortRunning,
@@ -169,42 +178,68 @@ function useRepoDetails(repos: readonly CockpitRepoRow[]): ReadonlyMap<string, R
   return details;
 }
 
-/** Every routed event, re-read on each pushed frame; `undefined` until the first read. */
-function useEvents(): { events: RoutedEvent[] | undefined; error: string | undefined } {
+/** How often, at most, a page re-reads the events while frames keep arriving. */
+const PUSH_REREAD_MS = 400;
+
+/**
+ * T383: a count that goes up once after the feed pushes a frame (a batch of
+ * log events, which is when routed events arrive), at most every
+ * `PUSH_REREAD_MS` however busy the feed is. Starts at 0; an effect keyed on
+ * it re-reads on each push without re-reading per frame.
+ */
+function usePushTick(): number {
   const { cockpit } = useFeed();
-  const [events, setEvents] = useState<RoutedEvent[] | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `cockpit` (the pushed frame) is the re-read trigger.
+  const [tick, setTick] = useState(0);
+  const first = useRef(true);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `cockpit` (the pushed frame) is the trigger.
   useEffect(() => {
-    let live = true;
-    getEvents()
-      .then((e) => {
-        if (!live) return;
-        setEvents(sortNewestFirst(e));
-        setError(undefined);
-      })
-      .catch((err: unknown) => live && setError(message(err)));
-    return () => {
-      live = false;
-    };
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    if (timer.current !== undefined) return;
+    timer.current = setTimeout(() => {
+      timer.current = undefined;
+      setTick((n) => n + 1);
+    }, PUSH_REREAD_MS);
   }, [cockpit]);
-  return { events, error };
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return tick;
 }
 
 const REPO_EVENTS_SHOWN = 5;
 
+/**
+ * T383: the repo's own newest events, read on open and again after the
+ * feed pushes (so a quiet repo's events never fall off a global list);
+ * `undefined` until the first read.
+ */
+function useRepoEvents(repo: string): EventPage | undefined {
+  const tick = usePushTick();
+  const [page, setPage] = useState<EventPage | undefined>(undefined);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` (a pushed frame) is the re-read trigger.
+  useEffect(() => {
+    let live = true;
+    getEvents({ repo, limit: REPO_EVENTS_SHOWN })
+      .then((p) => live && setPage(p))
+      .catch(() => {
+        // The card keeps what it showed; the next push reads again.
+      });
+    return () => {
+      live = false;
+    };
+  }, [repo, tick]);
+  return page;
+}
+
 /** T245: the repo's recent events (main moved, merges, PRs), newest first. */
-function RepoEvents({
-  repo,
-  events,
-}: {
-  repo: string;
-  events: readonly RoutedEvent[];
-}): JSX.Element | null {
+function RepoEvents({ repo }: { repo: string }): JSX.Element | null {
   const { setView } = useShell();
   const titleOf = useTitleOf();
   const open = useOpenNode();
-  if (events.length === 0) return null;
+  const page = useRepoEvents(repo);
+  if (page === undefined || page.events.length === 0) return null;
   return (
     <div className="cr-lens-section">
       {/* T341: labelled, so the events never read as more work nodes. */}
@@ -220,12 +255,12 @@ function RepoEvents({
             setView('events');
           }}
         >
-          {events.length > REPO_EVENTS_SHOWN ? `All ${events.length} events` : 'In Events'}
+          {page.more ? `All ${page.total.toLocaleString('en-US')} events` : 'In Events'}
           <Icon name="arrow-right" size={12} />
         </button>
       </div>
       <ul className="cr-lens-evlist" data-testid="repo-events">
-        {events.slice(0, REPO_EVENTS_SHOWN).map((e) => {
+        {sortNewestFirst(page.events).map((e) => {
           const text = (
             <span className="cr-lens-ev-text" data-testid="repo-event-text">
               <span className="cr-lens-ev-label">{eventTitle(e)}</span>
@@ -392,14 +427,12 @@ function RepoCard({
   live,
   rows,
   overlaps,
-  events,
 }: {
   repo: CockpitRepoRow;
   detail: RepoRow | undefined;
   live: readonly CockpitStreamRow[];
   rows: readonly CockpitStreamRow[];
   overlaps: readonly CockpitOverlap[];
-  events: readonly RoutedEvent[];
 }): JSX.Element {
   const pr = repo.delivery === 'pr';
   const autoMerge = pr && detail?.auto_merge === true;
@@ -454,7 +487,7 @@ function RepoCard({
           <OverlapCallout key={o.nodes.join('-')} overlap={o} rows={rows} />
         ))}
       </div>
-      <RepoEvents repo={repo.name} events={events} />
+      <RepoEvents repo={repo.name} />
       <RepoNorms repo={repo.name} />
     </article>
   );
@@ -471,7 +504,6 @@ export function RepoView({
 }): JSX.Element {
   const { setView } = useShell();
   const details = useRepoDetails(repos);
-  const { events } = useEvents();
   const groups = groupByRepo(rows, repos);
   // Repos with work in flight first; the quiet ones after, each alphabetical.
   const ordered = [...groups].sort((a, b) => Number(b.rows.length > 0) - Number(a.rows.length > 0));
@@ -511,7 +543,6 @@ export function RepoView({
               live={group.rows}
               rows={rows}
               overlaps={overlaps.filter((o) => o.repo === group.repo)}
-              events={(events ?? []).filter((e) => e.repo === group.repo)}
             />
           ))}
         </div>
@@ -927,16 +958,102 @@ function EventRow({
   );
 }
 
-const EVENTS_PAGE = 50;
+/** Events read per page, and how many pages one "Search older events" reads looking for a match. */
+const EVENTS_PAGE = 100;
+const SEARCH_PAGES = 5;
+
+/**
+ * T383: the event log a page at a time: the newest page on open (and again
+ * when the repo filter changes, which the daemon applies), older pages on
+ * request, and live events on top after each push.
+ */
+function useEventLog(repo: string | undefined): {
+  log: LoadedLog<RoutedEvent> | undefined;
+  error: string | undefined;
+  loadingOlder: boolean;
+  olderError: string | undefined;
+  loadOlder: (until?: (event: RoutedEvent) => boolean) => void;
+} {
+  const tick = usePushTick();
+  const [log, setLog] = useState<LoadedLog<RoutedEvent> | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState<string | undefined>(undefined);
+  // Bumped when the repo changes: a read for the old repo is dropped.
+  const generation = useRef(0);
+  const latest = useRef(log);
+  latest.current = log;
+
+  useEffect(() => {
+    generation.current += 1;
+    const mine = generation.current;
+    setLog(undefined);
+    setError(undefined);
+    setOlderError(undefined);
+    setLoadingOlder(false);
+    getEvents({ limit: EVENTS_PAGE, ...(repo !== undefined ? { repo } : {}) })
+      .then((page) => generation.current === mine && setLog(firstPage(page)))
+      .catch((err: unknown) => generation.current === mine && setError(message(err)));
+  }, [repo]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` (a pushed frame) is the re-read trigger; `repo` is read as it was.
+  useEffect(() => {
+    if (tick === 0) return;
+    const mine = generation.current;
+    getEvents({ limit: EVENTS_PAGE, ...(repo !== undefined ? { repo } : {}) })
+      .then((head) => {
+        if (generation.current !== mine) return;
+        setLog((current) => (current === undefined ? firstPage(head) : mergeNewest(current, head)));
+        setError(undefined);
+      })
+      .catch(() => {
+        // What is shown stays; the next push reads again.
+      });
+  }, [tick]);
+
+  const loadOlder = useCallback(
+    (until?: (event: RoutedEvent) => boolean): void => {
+      const mine = generation.current;
+      let cursor = latest.current?.events.at(-1)?.id;
+      if (cursor === undefined || !latest.current?.more) return;
+      setLoadingOlder(true);
+      setOlderError(undefined);
+      void (async () => {
+        try {
+          // One page; a search reads on (up to SEARCH_PAGES) until one matches.
+          for (let read = 0; cursor !== undefined && read < (until ? SEARCH_PAGES : 1); read++) {
+            const from: string = cursor;
+            const page = await getEvents({
+              before: from,
+              limit: EVENTS_PAGE,
+              ...(repo !== undefined ? { repo } : {}),
+            });
+            if (generation.current !== mine) return;
+            setLog((current) => current && appendOlder(current, page, from));
+            if (!page.more || (until !== undefined && page.events.some(until))) break;
+            cursor = page.events.at(-1)?.id;
+          }
+        } catch (err) {
+          if (generation.current === mine) setOlderError(message(err));
+        } finally {
+          if (generation.current === mine) setLoadingOlder(false);
+        }
+      })();
+    },
+    [repo],
+  );
+
+  return { log, error, loadingOlder, olderError, loadOlder };
+}
 
 /**
  * T338, redesigned in T368: the event log — every routed event, newest
  * first: what happened, to which node, and who it was routed to and why.
- * Re-read on every pushed frame.
+ * T383: it pages through the whole log from the daemon; the type filter and
+ * the search narrow what is loaded, and say when older pages may hold more.
  */
 export function EventLog(): JSX.Element {
   const { cockpit } = useFeed();
-  const { events, error } = useEvents();
   const titleOf = useTitleOf();
   const [family, setFamily] = useState<EventFamily | 'all'>('all');
   const [query, setQuery] = useState('');
@@ -945,20 +1062,34 @@ export function EventLog(): JSX.Element {
     pendingEventRepo = undefined;
     return pending;
   });
-  const [shown, setShown] = useState(EVENTS_PAGE);
+  const { log, error, loadingOlder, olderError, loadOlder } = useEventLog(repo);
 
-  const all = events ?? [];
-  const filtered = filterEvents(all, { family, query, repo }, titleOf, eventTitle);
-  const days = groupByDay(filtered.slice(0, shown));
+  const all = log?.events ?? [];
+  const filter = { family, query };
+  const matches = eventMatcher(filter, titleOf, eventTitle);
+  const filtered = sortNewestFirst(all.filter(matches));
+  const days = groupByDay(filtered);
   const repoNames = [
     ...new Set([...(cockpit?.repos ?? []).map((r) => r.name), ...(repo ? [repo] : [])]),
   ].sort();
-  const narrowed = family !== 'all' || query.trim() !== '' || repo !== undefined;
+  const narrowed = family !== 'all' || query.trim() !== '';
+  const view: LogView = {
+    loaded: all.length,
+    total: log?.total ?? 0,
+    more: log?.more ?? false,
+    pages: log?.pages ?? 0,
+    matched: filtered.length,
+    narrowed,
+  };
+  const footer = logFooter(view, EVENTS_PAGE);
+  const older = (): void => loadOlder(narrowed ? matches : undefined);
   const clear = (): void => {
     setFamily('all');
     setQuery('');
     setRepo(undefined);
   };
+  // The whole log is empty: nothing to filter.
+  const emptyLog = log !== undefined && all.length === 0 && repo === undefined;
 
   return (
     <section className="cr-page cr-lens" data-testid="event-log">
@@ -967,7 +1098,7 @@ export function EventLog(): JSX.Element {
           Everything that happened, newest first, and which nodes were told.
         </p>
       </PageHeader>
-      <div className="cr-lens-toolbar" hidden={events !== undefined && all.length === 0}>
+      <div className="cr-lens-toolbar" hidden={emptyLog}>
         <label className="cr-lens-search">
           <Icon name="search" size={14} />
           <input
@@ -976,10 +1107,7 @@ export function EventLog(): JSX.Element {
             aria-label="Search events"
             placeholder="Search events"
             value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setShown(EVENTS_PAGE);
-            }}
+            onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Escape' && query !== '') {
                 e.stopPropagation();
@@ -993,10 +1121,7 @@ export function EventLog(): JSX.Element {
             label="Event type"
             testid="event-log-family"
             value={family}
-            onChange={(next) => {
-              setFamily(next);
-              setShown(EVENTS_PAGE);
-            }}
+            onChange={setFamily}
             items={EVENT_FAMILIES}
           />
         </div>
@@ -1007,10 +1132,7 @@ export function EventLog(): JSX.Element {
             aria-label="Repo"
             data-active={repo !== undefined ? 'true' : undefined}
             value={repo ?? ''}
-            onChange={(e) => {
-              setRepo(e.target.value || undefined);
-              setShown(EVENTS_PAGE);
-            }}
+            onChange={(e) => setRepo(e.target.value || undefined)}
           >
             <option value="">All repos</option>
             {repoNames.map((name) => (
@@ -1020,10 +1142,13 @@ export function EventLog(): JSX.Element {
             ))}
           </select>
         )}
-        {events !== undefined && (
-          <span className="cr-lens-count" data-testid="event-log-count">
-            {narrowed ? `${filtered.length} of ${all.length}` : all.length}{' '}
-            {all.length === 1 ? 'event' : 'events'}
+        {log !== undefined && (
+          <span
+            className="cr-lens-count"
+            data-testid="event-log-count"
+            title={view.more ? 'Older events load at the end of the list.' : undefined}
+          >
+            {logCount(view)}
           </span>
         )}
       </div>
@@ -1031,10 +1156,22 @@ export function EventLog(): JSX.Element {
         <p className="cr-error" role="alert">
           Could not read the events: {error}
         </p>
-      ) : events === undefined ? (
+      ) : log === undefined ? (
         <p className="cr-lens-loading">
           <Spinner /> Loading events…
         </p>
+      ) : all.length === 0 && repo !== undefined ? (
+        <EmptyState
+          icon="activity"
+          title={`No events on ${repo} yet`}
+          actions={
+            <Button size="sm" onClick={() => setRepo(undefined)}>
+              Show all repos
+            </Button>
+          }
+        >
+          A merge, a pull request, main moving or an overlap on this repo shows here.
+        </EmptyState>
       ) : all.length === 0 ? (
         <EmptyState icon="activity" title="No events yet">
           When something happens — a message, a merge, a review, an overlap — it shows here with the
@@ -1043,14 +1180,32 @@ export function EventLog(): JSX.Element {
       ) : filtered.length === 0 ? (
         <EmptyState
           icon="search"
-          title="No events match"
+          title={noMatchWords(view).title}
           actions={
-            <Button size="sm" onClick={clear}>
-              Clear filters
-            </Button>
+            <>
+              {view.more && (
+                <Button
+                  size="sm"
+                  icon="clock"
+                  busy={loadingOlder}
+                  data-testid="event-log-more"
+                  onClick={older}
+                >
+                  Search older events
+                </Button>
+              )}
+              <Button size="sm" variant={view.more ? 'ghost' : 'secondary'} onClick={clear}>
+                Clear filters
+              </Button>
+            </>
           }
         >
-          Nothing in the last {all.length} events matches these filters.
+          {noMatchWords(view).body}
+          {olderError !== undefined && (
+            <span className="cr-lens-older-error" role="alert">
+              Could not read older events: {olderError}
+            </span>
+          )}
         </EmptyState>
       ) : (
         <div className="cr-lens-log">
@@ -1075,18 +1230,30 @@ export function EventLog(): JSX.Element {
               </ul>
             </section>
           ))}
-          {filtered.length > shown && (
-            <div className="cr-lens-showmore">
+          {footer.kind === 'more' ? (
+            <div className="cr-lens-showmore" data-testid="event-log-footer">
+              {footer.note !== undefined && <p className="cr-lens-showmore-note">{footer.note}</p>}
               <Button
-                variant="ghost"
+                variant={footer.note !== undefined ? 'secondary' : 'ghost'}
                 size="sm"
+                {...(footer.note !== undefined ? { icon: 'clock' as const } : {})}
+                busy={loadingOlder}
                 data-testid="event-log-more"
-                onClick={() => setShown((n) => n + EVENTS_PAGE)}
+                onClick={older}
               >
-                Show {Math.min(EVENTS_PAGE, filtered.length - shown)} more
+                {footer.label}
               </Button>
+              {olderError !== undefined && (
+                <p className="cr-lens-older-error" role="alert">
+                  Could not read older events: {olderError}
+                </p>
+              )}
             </div>
-          )}
+          ) : footer.kind === 'end' ? (
+            <p className="cr-lens-log-end" data-testid="event-log-end">
+              {footer.note}
+            </p>
+          ) : null}
         </div>
       )}
     </section>
