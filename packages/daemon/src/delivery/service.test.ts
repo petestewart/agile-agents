@@ -697,6 +697,18 @@ describe('T161: the stream page reads (preflight and diff)', () => {
     expect(threadBodies(stream.id)).toEqual(before);
   });
 
+  test('T412: preflight says a node waits on another before its Merge would be held', async () => {
+    const other = await makeStream({ title: 'the docs' });
+    const work = branchWithWork('s-waits', 'w.txt', 'w\n');
+    const stream = await makeStream(work);
+    await streams.wait('human', stream.id, other.id);
+    expect(landing.preflight(stream.id)).toMatchObject({
+      ready: false,
+      ahead: 1,
+      reason: 'waits on the docs',
+    });
+  });
+
   test('T410: diffStat is the size of what Merge brings: committed work only', async () => {
     const work = branchWithWork('s-stat', 'a.txt', 'one\ntwo\n');
     const stream = await makeStream(work);

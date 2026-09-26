@@ -645,6 +645,14 @@ export class DeliveryService {
       }
       const dirty = dirtyCheckoutReason(target, worktreesOn(repoRoot, target));
       if (dirty !== undefined) return { ready: false, branch, target, ahead, reason: dirty };
+      // T412: a direct merge waits for what the node waits on (P8), as `land` does, so
+      // the header and the Delivery panel don't offer a Merge that would be held.
+      if ((stream.delivery_state?.mode ?? this.resolveMode(stream, repoEntry)) === 'direct') {
+        const open = openWaits(stream, this.options.streams.list({ include_archived: true }));
+        if (open.length > 0) {
+          return { ready: false, branch, target, ahead, reason: `waits on ${open.join(', ')}` };
+        }
+      }
       return {
         ready: true,
         branch,

@@ -2866,6 +2866,83 @@ describe('Merge wording and hold tone (Playwright e2e, T347)', () => {
   );
 });
 
+describe('one verdict on a finished branch (Playwright e2e, T412)', () => {
+  browserTest(
+    'a branch merged by hand reads "Already merged" with Mark as merged; one that waits on another node has no Merge',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        // In a project: a node outside one is a project root, which never merges.
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const finish = async (title: string, branch: string) => {
+          const stream = await cockpit.streams.create('human', {
+            title,
+            goal: 'g',
+            repo: 'demo',
+            project: shop.id,
+          });
+          const worktree = join(cockpit.repo, '.worktrees', branch);
+          git(['worktree', 'add', '-q', '-b', branch, worktree, 'main'], cockpit.repo);
+          writeFileSync(join(worktree, `${branch}.txt`), `${branch}\n`);
+          git(['add', '-A'], worktree);
+          git(['commit', '-q', '-m', branch], worktree);
+          await cockpit.streams.update('daemon', stream.id, {
+            branch,
+            worktree,
+            agent: { status: 'done' },
+          });
+          return stream;
+        };
+        // Merged into main by hand, outside the cockpit.
+        const byHand = await finish('merged by hand', 's-by-hand');
+        git(['merge', '-q', '--no-ff', '-m', 'by hand', 's-by-hand'], cockpit.repo);
+        // Finished, but waits on a node that hasn't started.
+        const later = await cockpit.streams.create('human', {
+          title: 'the docs',
+          goal: 'g',
+          project: shop.id,
+        });
+        const waiting = await finish('the api', 's-waiting');
+        await cockpit.streams.wait('human', waiting.id, later.id);
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const merged = `[data-kind="done"][data-id="${byHand.id}"]`;
+        await waitForText(page, `${merged} .kind`, 'Already merged');
+        expect(await page.locator(`${merged} [data-testid="land"]`).count()).toBe(0);
+        const waits = `[data-kind="done"][data-id="${waiting.id}"]`;
+        await waitForText(page, `${waits} .kind`, 'Finished, waiting to merge');
+        expect(
+          await page.locator(`${waits} [data-testid="inbox-context"]`).textContent(),
+        ).toContain('It merges after the docs merges.');
+        expect(await page.locator(`${waits} [data-testid="land"]`).count()).toBe(0);
+        // The tree reads the same verdicts.
+        const dot = (id: string) =>
+          page?.locator(`[data-testid="stream-tree"] [data-stream="${id}"][data-status]`).first();
+        expect(await dot(byHand.id)?.getAttribute('data-status')).toBe('merged_outside');
+        expect(await dot(waiting.id)?.getAttribute('data-status')).toBe('waiting');
+
+        // Mark as merged finishes it.
+        await page.locator(`${merged} [data-testid="mark-merged"]`).click();
+        await waitUntil(
+          'the node marked merged',
+          () => cockpit.streams.get(byHand.id).human.status === 'landed',
+        );
+        // Open <the node it waits on> goes there.
+        await page.locator(`${waits} [data-testid="waited-open"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${later.id}"]`).waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('review the diff with the agent (Playwright e2e, T393)', () => {
   browserTest(
     'comments on two lines collect in the review bar; Add to message fills the composer and opens the chat; Send puts the review on the thread',

@@ -78,3 +78,30 @@ describe('ago', () => {
     expect(ago('not a date', now)).toBe('');
   });
 });
+
+describe('T412: one verdict on a finished branch', () => {
+  const finished = { agent_status: 'done', human_status: 'waiting_on_you', role: 'work' } as const;
+
+  test('already in its target: your move, "Already merged"', () => {
+    const status = nodeStatus({ ...finished, merged_outside: true });
+    expect([status.key, status.label, status.tone]).toEqual([
+      'merged_outside',
+      'Already merged',
+      'amber',
+    ]);
+    expect(isYourMove(status.key)).toBe(true);
+    // Before the waits: a merged branch has nothing left to wait for.
+    expect(statusKey({ ...finished, merged_outside: true, waits_on: ['x'] })).toBe(
+      'merged_outside',
+    );
+  });
+
+  test('waits on another node: Waiting, not Ready to merge', () => {
+    expect(statusKey({ ...finished, waits_on: ['x'] })).toBe('waiting');
+    expect(
+      statusKey({ ...finished, agent_status: 'done', human_status: 'open', waits_on: ['x'] }),
+    ).toBe('waiting');
+    expect(isYourMove('waiting')).toBe(false);
+    expect(statusKey(finished)).toBe('ready');
+  });
+});

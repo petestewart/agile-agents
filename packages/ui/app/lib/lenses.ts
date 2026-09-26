@@ -38,6 +38,7 @@ const RUNNING_RANK: Partial<Record<NodeStatusKey, number>> = {
   blocked: 0,
   ready: 0,
   no_changes: 0,
+  merged_outside: 0,
   working: 1,
 };
 

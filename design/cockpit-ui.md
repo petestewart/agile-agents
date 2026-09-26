@@ -181,6 +181,7 @@ One mapping from a cockpit row to what the UI shows, in precedence order:
 | pr_open | done, PR open | PR open | blue |
 | ready | done, a branch to merge | Ready to merge | amber |
 | no_changes | done, a branch with no commits beyond its target (T380) | No changes | amber |
+| merged_outside | done, a branch already in its target, merged by hand (T412) | Already merged | amber |
 | done | done, nothing to merge (coordinating); a conversation reads "Replied" | Done / Replied | green |
 | waiting | waiting for the plan, or waits on another node | Waiting | gray |
 | working | a turn in flight | Working | blue (animated) |
@@ -205,6 +206,10 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   and at the end of its own chat.
   A Merge card says how much it merges ("2 files +2 −1", the row's
   `diff_stat`), and its View changes opens the Changes tab (T410).
+  A branch already merged outside the cockpit reads "Already merged" and its
+  card offers Mark as merged; a finished node that waits on another reads
+  "Waiting", and its card names what it waits on instead of offering Merge
+  (T412).
 - **Chat**: human lines right-aligned bubbles; agent lines as prose with the
   agent's name; daemon lines as one-line system rows (icon + muted text) that
   collapse when there are several in a row. A long message folds with "Show
