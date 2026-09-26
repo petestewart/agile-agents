@@ -31,9 +31,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   stays quiet and Send a test says the browser didn't show it.
   (`lib/use-notify.ts`, `public/sw.js`)
 
-- The Overview's and Running's row age is the node's creation time: the
-  cockpit row has no last-activity time. An `updated_at` on the row
-  (`feed/snapshot.ts`) would let them say "updated 3m ago".
 - A Needs me card for a question on a project root opens the root on its
   Overview (a banner there says "Open chat"): one click more than a node's.
 
@@ -63,5 +60,3 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 
 ## Not built (ideas for a next UX pass)
 
-- Keyboard: `j`/`k` in the tree beyond the rail's arrow keys; `g i`-style
-  view jumps.

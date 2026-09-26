@@ -23,6 +23,7 @@ import {
   RECENT_EVENTS,
   bucketOf,
   createdAt,
+  lastChange,
   openNodesOn,
   overviewCounts,
   overviewGroups,
@@ -256,6 +257,8 @@ function NodeRow({
   const agent = runningAgent(row);
   const born = createdAt(row.id);
   const bornAt = born !== undefined ? new Date(born).toISOString() : undefined;
+  // T395: the row says when it last changed; the tooltip adds when it was made.
+  const changedAt = lastChange(row);
   const path = pathUnder(row, rows, root);
   return (
     <li>
@@ -301,10 +304,16 @@ function NodeRow({
         </span>
         <time
           className="cr-ov-age"
-          dateTime={bornAt}
-          title={bornAt !== undefined ? `Created ${eventTime(bornAt)}` : undefined}
+          data-testid="overview-node-age"
+          dateTime={changedAt}
+          title={[
+            changedAt !== undefined ? `Updated ${eventTime(changedAt)}` : undefined,
+            bornAt !== undefined ? `created ${eventTime(bornAt)}` : undefined,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
         >
-          {bornAt !== undefined ? ago(bornAt) : ''}
+          {changedAt !== undefined ? ago(changedAt) : ''}
         </time>
       </button>
     </li>

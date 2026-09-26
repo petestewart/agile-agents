@@ -32,7 +32,7 @@ export function deliveryHint(
 
 // ---------------------------------------------------------------- Running
 
-/** Your move first, then working, then the rest; alphabetical within each. */
+/** Your move first, then working, then the rest; (T395) most recently changed first within each, then alphabetical. */
 const RUNNING_RANK: Partial<Record<NodeStatusKey, number>> = {
   needs_you: 0,
   blocked: 0,
@@ -45,6 +45,7 @@ export function sortRunning(rows: readonly CockpitStreamRow[]): CockpitStreamRow
   return [...rows].sort(
     (a, b) =>
       (RUNNING_RANK[statusKey(a)] ?? 2) - (RUNNING_RANK[statusKey(b)] ?? 2) ||
+      (b.updated_at ?? '').localeCompare(a.updated_at ?? '') ||
       a.title.localeCompare(b.title),
   );
 }

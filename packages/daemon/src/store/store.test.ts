@@ -339,3 +339,21 @@ describe('Knowledge (T260): knowledge/K-<ulid>.yaml in the state home', () => {
     expect(() => store.listLegacyRules()).toThrow(/corrupt rule file/);
   });
 });
+
+describe('threadUpdatedAt (T395)', () => {
+  test("a thread's last line time, from this process's append, else the file's mtime", async () => {
+    const { StreamService } = await import('../streams');
+    const store = StateStore.open(stateRoot);
+    const streams = new StreamService(store);
+    const node = await streams.create('human', { title: 'n', goal: 'g' });
+    const entry = await streams.appendThread('human', node.id, { kind: 'line', body: 'hi' });
+    expect(store.threadUpdatedAt(node.id)).toBe(entry.ts);
+
+    // A fresh process reads the file's mtime once; a node with no thread file has none.
+    const reopened = StateStore.open(stateRoot);
+    const at = reopened.threadUpdatedAt(node.id);
+    expect(at).toBeDefined();
+    expect(Number.isNaN(Date.parse(at ?? ''))).toBe(false);
+    expect(reopened.threadUpdatedAt('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBeUndefined();
+  });
+});

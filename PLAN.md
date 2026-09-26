@@ -2215,11 +2215,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T395 Rows say when they last changed; j/k in the tree
 - **Priority:** P2
-- **Status:** In progress
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** The Overview's and Running's age is the node's creation time (the row has no last-change time); the rail's keyboard walk is arrow keys only.
 - **Acceptance Criteria:** The cockpit row carries `updated_at` (the latest of the node's creation and its agent's last change); the Overview and Running say "updated 3m ago" and sort within a group by it; `j`/`k` move through the rail like ↓/↑ when it has focus.
 - **Validation Steps:** `bun test packages/ui packages/daemon/src/feed/snapshot.test.ts`; the overview and rail e2e.
+- **Notes:** Branch T395-updated-and-jk. `StateStore.threadUpdatedAt` keeps each thread's last line time from appends, else the file's mtime (read once); the row's `updated_at` is the latest of creation, the agent's last status and that. Running has an Updated column (hidden on a phone) and sorts most recent first within a rank; the Overview does the same within a group. The shortcut list names J/K for the tree.
 
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0

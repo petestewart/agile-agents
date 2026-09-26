@@ -182,7 +182,15 @@ describe('T160 cockpit routes', () => {
       human_status: 'waiting_on_you',
       // T361: its agent never ran.
       never_started: true,
+      // T395: its last change: here the question's status change and thread line.
+      updated_at: expect.any(String),
     });
+    expect((row?.updated_at ?? '') >= leaf.created_at).toBe(true);
+    expect(row?.updated_at).toBe(
+      [streams.get(leaf.id).agent.updated_at, streams.readThread(leaf.id).entries.at(-1)?.ts ?? '']
+        .sort()
+        .at(-1),
+    );
     expect(frame.inbox.map((i) => i.stream_path)).toEqual([['root', 'leaf']]);
   });
 

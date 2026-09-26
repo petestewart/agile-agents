@@ -10,6 +10,7 @@ import {
   bucketOf,
   createdAt,
   isProjectEvent,
+  lastChange,
   openNodesOn,
   overviewCounts,
   overviewGroups,
@@ -118,6 +119,23 @@ describe('groups', () => {
     const a = row('a', { parent: 'root', agent_status: 'working' });
     const b = row('b', { parent: 'root', agent_status: 'working' });
     expect(overviewGroups([b, a])[0]?.rows.map((r) => r.id)).toEqual(['b', 'a']);
+  });
+
+  test('T395: the same status, most recently changed first', () => {
+    const a = row('a', { parent: 'root', agent_status: 'working' });
+    const b = row('b', { parent: 'root', agent_status: 'working' });
+    const older = { ...b, updated_at: '2026-09-26T10:00:00.000Z' };
+    const newer = { ...a, updated_at: '2026-09-26T11:00:00.000Z' };
+    expect(overviewGroups([older, newer])[0]?.rows.map((r) => r.id)).toEqual(['a', 'b']);
+  });
+
+  test("T395: a row's last change, else when it was made", () => {
+    const id = ulid();
+    expect(lastChange({ id, updated_at: '2026-09-26T11:00:00.000Z' })).toBe(
+      '2026-09-26T11:00:00.000Z',
+    );
+    expect(lastChange({ id })).toBe(new Date(createdAt(id) ?? 0).toISOString());
+    expect(lastChange({ id: 'not-a-ulid' })).toBeUndefined();
   });
 
   test('a count keeps only its bucket; empty groups are left out', () => {

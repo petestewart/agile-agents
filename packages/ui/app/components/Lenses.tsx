@@ -63,6 +63,7 @@ import {
   sortRunning,
 } from '../lib/lenses';
 import { namesOf } from '../lib/names';
+import { lastChange } from '../lib/overview';
 import { KIND_LABEL, statsWords } from '../lib/rules';
 import { useShell } from '../lib/shell';
 import { ROLE_HINT, ROLE_LABEL, ago, nodeStatus } from '../lib/status';
@@ -569,6 +570,7 @@ function RunningRow({
   const toast = useToast();
   const status = nodeStatus(row);
   const agent = runningAgent(row);
+  const changedAt = lastChange(row);
   const stop = (): void => {
     stopSessions(row.id)
       .then(() => {
@@ -613,6 +615,15 @@ function RunningRow({
             <span className="cr-faint">No repo</span>
           )}
         </span>
+        {/* T395: when the node last changed (its agent's status or a new line). */}
+        <time
+          className="cr-lens-run-age"
+          data-testid="running-age"
+          dateTime={changedAt}
+          title={changedAt !== undefined ? `Updated ${eventTime(changedAt)}` : undefined}
+        >
+          {changedAt !== undefined ? ago(changedAt) : ''}
+        </time>
       </button>
       <span className="cr-lens-run-menu">
         <Menu
@@ -669,6 +680,7 @@ export function RunningLens({ rows }: { rows: readonly CockpitStreamRow[] }): JS
             <span>Role</span>
             <span>Agent</span>
             <span>Repo</span>
+            <span>Updated</span>
           </div>
           <ul className="cr-lens-rows">
             {running.map((row) => (

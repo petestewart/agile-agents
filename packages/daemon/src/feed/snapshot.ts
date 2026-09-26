@@ -128,6 +128,8 @@ export interface CockpitStreamRow {
   pr_open?: true;
   /** T380: its agent finished and its branch has no commits beyond its target: nothing to merge. */
   nothing_to_merge?: true;
+  /** T395: its last change (ISO): the latest of its creation, its agent's last status and its thread's last line. */
+  updated_at?: string;
   /** T361: a work node or conversation whose agent never ran (made with "Start later"). */
   never_started?: true;
   /** T361: its agent ran and the human stopped it; nothing is live and the node is still open. */
@@ -221,6 +223,13 @@ export interface CockpitProjectRow {
   session?: ProjectSessionDefaults;
 }
 
+/** The latest of some ISO times (they compare as strings); the first when the rest are missing. */
+function latest(first: string, ...rest: Array<string | undefined>): string {
+  let at = first;
+  for (const t of rest) if (t !== undefined && t > at) at = t;
+  return at;
+}
+
 export function buildCockpitFrame(
   streams: StreamService,
   inbox?: InboxService,
@@ -233,6 +242,8 @@ export function buildCockpitFrame(
   remoteOf?: (entry: RepoEntry) => RepoRemote | undefined,
   /** T380: a finished node with nothing to merge, from a cache (`NothingToMergeCache`). */
   nothingToMerge?: (node: Stream) => boolean,
+  /** T395: when a node's thread last changed (`StateStore.threadUpdatedAt`). */
+  threadUpdatedAt?: (node: string) => string | undefined,
 ): CockpitFrame {
   // One read of the home: the archived ones are only for Restore (T361).
   const everything = streams.list({ include_archived: true });
@@ -258,6 +269,7 @@ export function buildCockpitFrame(
       ...(waitingForPlan?.(s) === true ? { waiting_for_plan: true as const } : {}),
       ...(s.delivery_state?.status === 'pr_open' ? { pr_open: true as const } : {}),
       ...(nothingToMerge?.(s) === true ? { nothing_to_merge: true as const } : {}),
+      updated_at: latest(s.created_at, s.agent.updated_at, threadUpdatedAt?.(s.id)),
       ...startState(s, all),
       ...liveAgent(s),
     })),
