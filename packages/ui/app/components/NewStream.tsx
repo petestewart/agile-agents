@@ -184,6 +184,8 @@ function NewStreamForm({
   const close = (): void => setNewStreamOpen(false);
   const derived = titleFromGoal(goal);
   const finalTitle = (title ?? '').trim() || derived;
+  // T414 (D41): a title you didn't write is a placeholder the daemon replaces with a better one.
+  const ownTitle = (title ?? '').trim() !== '' && title !== derived;
   const projectRow = projects.find((p) => p.id === projectId);
   const projectLabel = projectRow?.name;
   const outline = useMemo(() => projectOutline(rows, projectId), [rows, projectId]);
@@ -211,6 +213,7 @@ function NewStreamForm({
         ...(repo ? { repo } : {}),
         // A picked model starts it below, through the sessions' own attach.
         ...(!start || custom ? { start: false } : {}),
+        ...(!ownTitle && goal.trim() !== '' ? { auto_title: true } : {}),
       });
       if (start && custom && choice) {
         const model = choice.model.trim();
@@ -398,12 +401,18 @@ function NewStreamForm({
             data-testid="new-stream-goal"
             data-autofocus
             rows={4}
-            placeholder="Describe the task or the question. Its first line becomes the title."
+            placeholder="Describe the task, or ask a question."
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
           />
         </Field>
-        <Field label="Title" htmlFor="cr-newnode-title">
+        <Field
+          label="Title"
+          htmlFor="cr-newnode-title"
+          {...(ownTitle
+            ? {}
+            : { hint: 'Left as is, a short title is written for you once it’s made.' })}
+        >
           <input
             id="cr-newnode-title"
             data-testid="new-stream-title"
