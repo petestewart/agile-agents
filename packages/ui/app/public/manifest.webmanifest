@@ -1,13 +1,13 @@
 {
   "name": "Agile Cockpit",
   "short_name": "agile",
-  "description": "The agile daemon's cockpit: inbox, streams and rules.",
+  "description": "A cockpit for your coding agents: what needs you, what is running, and the knowledge they follow.",
   "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "theme_color": "#b45309",
-  "background_color": "#f7f7f5",
+  "theme_color": "#5b5bd6",
+  "background_color": "#ffffff",
   "icons": [
     { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
