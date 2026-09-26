@@ -189,8 +189,8 @@ agile knowledge list
       `GitHub auth: available` (or `unavailable (run gh auth login)`),
       `trackers: jira not configured · linear not configured` and
       `session default: claude/claude-opus-5-5 · low`.
-- [ ] `knowledge list` shows the three built-in items: `no_push_protected`
-      and `path_deny` (accepted, `action:pattern!`) and `no_push` (retired).
+- [ ] `knowledge list` shows the three built-in items: `no-push-to-protected`
+      and `stay-in-worktree` (accepted, `action:pattern!`) and `no-push` (retired).
 - [ ] Open the cockpit: `open http://127.0.0.1:4600/`. Nothing waits on you
       yet, so **Needs me** shows three setup steps, each with its state and a
       button: **Add repository** (opens Settings), **New project**, **New node**.
@@ -712,7 +712,7 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
       (`tests-with-src`), `Standard · Repo ledger-lite`, the badge
       `Checked before merge`, and **Accept** / **Retire**. The side panel
       shows it: `Proposed`, Source `Added by you`, the default question
-      `Does this action violate: Every change …?`, and **Accept**, **Retire**,
+      `Does this change violate: Every change …?`, and **Accept**, **Retire**,
       **Edit**, **Test examples**. **Needs me** also has a `Standard proposed`
       card for it, saying where it applies (`Applies to the ledger-lite
       repo`) with **Open in Knowledge**.
@@ -723,7 +723,7 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
 - [ ] Open it again and press **Test examples** (it is greyed out without a
       key, with "Set one in Settings" under it). After a few seconds the
       examples are replaced by the results: `2 of 2 examples agree`,
-      `Asked: Does this action violate: …?`, and one row per example:
+      `Asked: Does this change violate: …?`, and one row per example:
       `Agrees diff changes src/ledger.ts and adds no test — expected Block, got Block (p 0.9…)`
       and `… — expected Allow, got Allow (p 0.3…)`. **Ask you** is the
       middle band, not a failure. An `an error: …` row with a 529 means

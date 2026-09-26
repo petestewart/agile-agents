@@ -1049,7 +1049,7 @@ describe('rules screen (Playwright e2e, T163)', () => {
         expect(await page.locator('[data-kind="rule_accept"]').count()).toBe(1);
         expect(
           await page.locator(`${batch} [data-testid="inbox-context"]`).textContent(),
-        ).toContain(`3 proposed rules from ${SEED_PROVENANCE}`);
+        ).toContain('3 proposed knowledge items imported from the old rules');
 
         // The card opens the rules screen, filtered to exactly those three.
         await page.locator(`${batch} [data-testid="rule-batch-open"]`).click();

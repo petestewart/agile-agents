@@ -223,13 +223,14 @@ export class InboxService {
           : 1,
     );
     const first = sorted[0] as KnowledgeItem;
-    const noun = sorted.length === 1 ? 'proposed rule' : 'proposed rules';
+    const noun = sorted.length === 1 ? 'proposed knowledge item' : 'proposed knowledge items';
+    const from = source === 'migration' ? 'imported from the old rules' : `from ${source}`;
     return {
       kind: 'rule_batch',
       id: source,
       stream_path: [],
       ts: first.created_at,
-      context: inboxContext(`${sorted.length} ${noun} from ${source}`),
+      context: inboxContext(`${sorted.length} ${noun} ${from}`),
       rules: sorted.map((rule) => rule.id),
     };
   }
@@ -320,14 +321,22 @@ export class InboxService {
       context: inboxContext(
         stream.agent.progress ??
           (stream.agent.status === 'done'
-            ? // Name both exits, so a stream you won't land has a way out.
-              'worker finished — merge or close the stream'
-            : 'blocked'),
+            ? // Name both exits, so a node you won't merge has a way out.
+              DONE_TEXT
+            : BLOCKED_TEXT),
       ),
       ...(stream.agent.progress !== undefined ? withDetail(stream.agent.progress) : {}),
     };
   }
 }
+
+/** A finished agent's card when it left no progress line (the cockpit's words, design/cockpit-ui.md §2). */
+export const DONE_TEXT =
+  'The agent finished. Look over the changes, then merge — or close the node if you won’t.';
+
+/** A stuck agent's card when it left no progress line. */
+export const BLOCKED_TEXT =
+  'The agent is stuck and needs a hand. Open the node to see where it stopped.';
 
 /** Live children other than helpers: what makes a node coordinating (`nodeRole`). */
 function hasParts(id: string, byId: Map<string, Stream>): boolean {

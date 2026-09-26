@@ -15,6 +15,7 @@ import {
   RULE_PATTERN_KINDS,
   RULE_TEXT_MAX_CHARS,
   type RulePatternKind,
+  classifierQuestion,
   parseKnowledgeScope,
 } from '@agile-agents/shared';
 import { useId, useMemo, useState } from 'react';
@@ -341,7 +342,10 @@ export function KnowledgeEditor({
                   id={`${ids}-question`}
                   data-testid="rules-edit-question"
                   value={draft.question}
-                  placeholder={`Does this action violate: ${draft.text.trim() || '…'}?`}
+                  placeholder={classifierQuestion({
+                    text: draft.text.trim() || '…',
+                    enforcement: draft.enforcement,
+                  })}
                   onChange={(e) => set({ question: e.target.value })}
                 />
               </Field>

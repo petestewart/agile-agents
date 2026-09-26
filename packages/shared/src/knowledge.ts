@@ -385,9 +385,24 @@ export function examplesOf(item: Pick<KnowledgeItem, 'check'>): RuleExample[] {
   return classifierCheckOf(item)?.examples ?? [];
 }
 
-/** Cockpit §5.1: "defaults to 'Does this action violate: <text>?'". */
-export function classifierQuestion(item: Pick<KnowledgeItem, 'text' | 'check'>): string {
-  return classifierCheckOf(item)?.question ?? `Does this action violate: ${item.text}?`;
+/**
+ * Cockpit §5.1: "defaults to 'Does this action violate: <text>?'". A ship
+ * check reads a diff, so it asks about "this change" (T268). The text goes
+ * in as plain words: no code ticks, one line, and its own closing
+ * punctuation dropped so the question ends in one "?".
+ */
+export function classifierQuestion(
+  item: Pick<KnowledgeItem, 'text' | 'check'> & Partial<Pick<KnowledgeItem, 'enforcement'>>,
+): string {
+  const explicit = classifierCheckOf(item)?.question;
+  if (explicit !== undefined) return explicit;
+  const subject = item.enforcement === 'ship' ? 'this change' : 'this action';
+  const text = item.text
+    .replace(/`+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[\s.?!:;,]+$/, '');
+  return `Does ${subject} violate: ${text}?`;
 }
 
 /**

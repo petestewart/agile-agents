@@ -2035,11 +2035,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T371 ∥ Daemon text the cockpit shows: no ids, no "stream"
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** Found by T364/T366: daemon-written text the cockpit displays leaks ids and old vocabulary. Inbox items ("worker finished — merge or close the stream", "3 proposed rules from migration"), delivery preflight/refusal reasons ("stream <id> has a live session (<id>)"), land-gate text with raw `stream/<id>-slug` branches, the default classifier question (markdown backticks, ".?", "action" for a ship check that reads a diff), guidance items flagged "never fired", built-ins named after their pattern kind. Say nodes by title and "node", keep ids only where a machine reads them. Update the tests and LIVE-CHECKLIST lines that quote the old strings.
 - **Acceptance Criteria:** Unit tests for each reworded string; e2e and walkthrough still green.
 - **Validation Steps:** `bun test packages/shared packages/daemon` (non-e2e); `bun run build && bun run test:walkthrough`.
+- **Notes:** Branch T371-daemon-text (rebased on a198ef78), merge on phase-14. Inbox cards, merge preflight/refusals, land-gate summaries (`land <slug> into main`), holds and ship-check lines, attach/move/tangent refusals and Director proposals name nodes and projects by title and say node/merge; `branchLabel` strips `stream/<ulid>-`. `classifierQuestion` strips code ticks and trailing punctuation and asks "this change" for ship checks (Test examples ask the same). `tell` items are never flagged "never fired" (`review` items do fire, so they still can be). Built-ins renamed `no-push-to-protected`, `no-push`, `stay-in-worktree` with plain reasons; existing homes updated only where a record still matches what an older daemon wrote. Kept on purpose: the `land:`/`classifier_review:` prefixes and scope ids the cockpit parses, thread lines the walkthrough quotes, agent-only messages. Non-e2e 2339/0, control-room 65/0, walkthrough 1/1. Daemon +94. Follow-up merged with it: the Knowledge editor's placeholder is the real default question. `lib/inbox.ts` STOCK_TEXT is now dead (the daemon sends that text).
 
 ### Ticket: T372 The cockpit can rename a project and change its repos
 - **Priority:** P2

@@ -110,7 +110,8 @@ describe('waits on + auto-merge (T228, P8, P19)', () => {
     let bNow = streams.get(b.id);
     expect(bNow.delivery_state?.pr?.auto_merge).toBe('off');
     expect(bNow.delivery_state?.held_by).toEqual([
-      { reason: 'waits_on', detail: `waits on ${a.id}` },
+      // T371: the node it waits on by title, not id.
+      { reason: 'waits_on', detail: 'waits on a' },
     ]);
 
     expect((await landing.land(a.id)).status).toBe('pr_open');
@@ -136,7 +137,7 @@ describe('waits on + auto-merge (T228, P8, P19)', () => {
     expect(bNow.waits_on?.[0]?.satisfied_at).toBeDefined();
     expect(bNow.delivery_state?.pr?.auto_merge).toBe('enabled');
     expect(bNow.delivery_state?.held_by).toBeUndefined();
-    expect(lines(b.id)).toContain(`waits on ${a.id} satisfied`);
+    expect(lines(b.id)).toContain('waits on a satisfied');
 
     gh.addReview(bPr, { state: 'APPROVED' });
     expect(gh.pulls.find((p) => p.number === bPr)?.merged).toBe(true);
@@ -173,6 +174,10 @@ describe('waits on + auto-merge (T228, P8, P19)', () => {
     await landing.land(a.id);
     await landing.land(b.id);
     expect(streams.get(a.id).delivery_state?.held_by?.[0]?.reason).toBe('merge_together');
+    // T371: the member by title.
+    expect(streams.get(a.id).delivery_state?.held_by?.[0]?.detail).toBe(
+      'merge-together MT-1: a is not approved',
+    );
     gh.addReview(1, { state: 'APPROVED' });
     const poll = new PrPoller({
       streams,
@@ -413,6 +418,9 @@ describe('direct merge-together (T228, P7)', () => {
     expect(out.status).toBe('refused');
     expect(mustGit(['rev-parse', 'main'])).toBe(before);
     expect(streams.get(a.id).delivery_state?.held_by?.[0]?.reason).toBe('merge_together');
+    expect(streams.get(a.id).delivery_state?.held_by?.[0]?.detail).toBe(
+      'merge-together held: b: delivery held by ship check r1: no secrets; nothing was merged',
+    );
   });
 
   test('a member with nothing to land refuses the group', async () => {
@@ -422,6 +430,9 @@ describe('direct merge-together (T228, P7)', () => {
     mustGit(['branch', 'stream/empty', 'main']);
     await streams.update('daemon', created.id, { branch: 'stream/empty', merge_together: 'MT-1' });
     await expect(service().land(a.id)).rejects.toThrow(LandRefusedError);
+    await expect(service().land(a.id)).rejects.toThrow(
+      'merge-together MT-1: empty is not ready: the branch stream/empty has no commits beyond main — nothing to merge; nothing was merged',
+    );
     expect(streams.get(a.id).human.status).toBe('open');
   });
 });

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type KnowledgeId, type Policy, patternOf } from '@agile-agents/shared';
+import { type KnowledgeId, type KnowledgeItem, type Policy, patternOf } from '@agile-agents/shared';
 import { GateService } from '../gates/service';
 import { wireClassifierRouteStats } from '../hook/route-band';
 import { runInit } from '../init';
@@ -57,9 +57,18 @@ test('the three §5.4 built-ins are created as global standard action items with
   expect(worktree?.critical).toBe(true);
 });
 
-test('each built-in carries its §5.4 name, and a nameless one is backfilled (T145)', async () => {
+test('each built-in carries a readable name, and a nameless one is backfilled (T145, T371)', async () => {
   const created = await ensureBuiltinKnowledge(store);
-  expect(created.map((rule) => rule.name)).toEqual(['no_push_protected', 'no_push', 'path_deny']);
+  expect(created.map((rule) => rule.name)).toEqual([
+    'no-push-to-protected',
+    'no-push',
+    'stay-in-worktree',
+  ]);
+  // Their reasons are plain words: no design-doc references, no file names.
+  for (const rule of created) {
+    expect(rule.source.finding ?? '').not.toMatch(/§|\bD\d+\b|design|_/);
+    expect(rule.text).not.toContain('.yaml');
+  }
 
   // A built-in written before `name` existed: the next daemon start names
   // it in place rather than creating a second one or leaving `-` forever.
@@ -71,8 +80,65 @@ test('each built-in carries its §5.4 name, and a nameless one is backfilled (T1
 
   const again = await ensureBuiltinKnowledge(store);
   expect(again.map((r) => r.id)).toEqual(created.map((r) => r.id));
-  expect(store.getKnowledge(target.id).name).toBe('no_push_protected');
+  expect(store.getKnowledge(target.id).name).toBe('no-push-to-protected');
   expect(store.listKnowledge()).toHaveLength(3);
+});
+
+test('an older home’s built-ins are reworded in place; what a human changed stays (T371)', async () => {
+  const created = await ensureBuiltinKnowledge(store);
+  const [protectedBranch, push, worktree] = created;
+  if (!protectedBranch || !push || !worktree) throw new Error('no built-ins');
+  // As an older daemon wrote them: named after the pattern kind, with a
+  // design reference for a reason and a file name in the text.
+  const old = (name: string, finding: string, text?: string) => (before: KnowledgeItem) => ({
+    ...before,
+    name,
+    ...(text !== undefined ? { text } : {}),
+    source: { ...before.source, finding },
+  });
+  await store.updateKnowledge(
+    'daemon',
+    protectedBranch.id,
+    old(
+      'no_push_protected',
+      'cockpit design §5.4, D8: this is the one action an agent can take that a human cannot cheaply undo',
+      'Never push to, or merge into, a protected branch. Protected branches come from the repo entry in repos.yaml and default to main and master.',
+    ),
+  );
+  await store.updateKnowledge(
+    'daemon',
+    worktree.id,
+    old('path_deny', 'cockpit design §5.4 no_worktree_escape'),
+  );
+  // A human renamed this one and wrote their own reason.
+  await store.updateKnowledge('human', push.id, old('never-push', 'we push by hand'));
+  await rules.accept(push.id, 'pete');
+
+  const again = await ensureBuiltinKnowledge(store);
+  expect(again.map((r) => r.id)).toEqual(created.map((r) => r.id));
+  expect(store.listKnowledge()).toHaveLength(3);
+  const now = (id: string) => store.getKnowledge(id);
+  expect(now(protectedBranch.id)).toMatchObject({
+    name: 'no-push-to-protected',
+    text: protectedBranch.text,
+    source: { by: BUILTIN_PROVENANCE, finding: protectedBranch.source.finding },
+    status: 'accepted',
+  });
+  expect(now(worktree.id)).toMatchObject({
+    name: 'stay-in-worktree',
+    source: { finding: worktree.source.finding },
+  });
+  expect(now(push.id)).toMatchObject({
+    name: 'never-push',
+    source: { finding: 'we push by hand' },
+    status: 'accepted',
+  });
+
+  // Nothing left to reword: a further start writes nothing.
+  const writes = () => store.listEvents().filter((e) => e.kind === 'knowledge_put').length;
+  const before = writes();
+  await ensureBuiltinKnowledge(store);
+  expect(writes()).toBe(before);
 });
 
 test('a second daemon start creates nothing (idempotent by kind + builtin provenance)', async () => {

@@ -681,7 +681,7 @@ test.skipIf(!RUN)(
         2_000,
       );
       const kn = await agileOk(['knowledge', 'list']);
-      check('knowledge list shows no_push_protected', kn.includes('no_push_protected'), kn);
+      check('knowledge list shows no-push-to-protected', kn.includes('no-push-to-protected'), kn);
     });
 
     // ---------------------------------------------------------- 2–3.3 (setup, CLI)
@@ -1773,7 +1773,7 @@ test.skipIf(!RUN)(
       await checkText(
         'the classifier is asked the default question',
         detail.locator('[data-testid="rules-question"]'),
-        /Does this action violate: Every change to a file under src\/.*\?/,
+        /Does this change violate: Every change to a file under src\/.*\?/,
       );
       for (const name of ['Accept', 'Retire', 'Edit', 'Test examples']) {
         check(
@@ -1822,9 +1822,9 @@ test.skipIf(!RUN)(
       const evals = detail.locator('[data-testid="rules-evals"]');
       await checkText('2 of 2 examples agree', evals, /2 of 2 examples agree/);
       await checkText(
-        'Asked: Does this action violate: …?',
+        'Asked: Does this change violate: …?',
         evals,
-        /Asked: Does this action violate: .*\?/,
+        /Asked: Does this change violate: .*\?/,
       );
       await checkText(
         'Agrees … expected Block, got Block (p 0.9…) for the no-test example',
