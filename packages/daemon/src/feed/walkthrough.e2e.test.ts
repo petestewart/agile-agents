@@ -494,8 +494,15 @@ async function newStream(title: string, goal: string, startLater: boolean): Prom
   await page.locator('[data-testid="stream-title"]', { hasText: title }).waitFor();
 }
 
+/** T363: the rarer node actions live in the page header's ⋯ menu. */
+async function nodeMenu(): Promise<void> {
+  await streamPage().locator('[data-testid="node-menu-trigger"]').click();
+  await page.locator('[data-testid="node-menu"]').waitFor();
+}
+
 async function addRepo(repo: string): Promise<void> {
-  await streamPage().getByRole('button', { name: '+ Repo' }).click();
+  await nodeMenu();
+  await page.locator('[data-testid="add-repo"]').click();
   await page.locator('[data-testid="add-repo-select"]').selectOption(repo);
   await page.locator('[data-testid="add-repo-submit"]').click();
   await page.locator('[data-testid="add-repo-form"]').waitFor({ state: 'detached' });
@@ -718,14 +725,21 @@ test.skipIf(!RUN)(
     });
 
     // ---------------------------------------------------------- 3.4
-    await step('3.4a', 'send the coordinator a line from the Thread tab', async () => {
+    await step('3.4a', 'send the coordinator a line from the Chat tab', async () => {
       await openNode('Ledger export');
       await check3_4Rail();
       const composer = page.locator('[data-testid="composer-input"]');
+      // T363: the placeholder speaks to the agent; the line under the box says what Send does.
       check(
-        'composer placeholder "Write on the stream…"',
-        ((await composer.getAttribute('placeholder')) ?? '').startsWith('Write on the stream'),
+        'composer placeholder "Message Claude…" or "Tell the agent what to do…"',
+        /^(Message |Tell the agent)/.test((await composer.getAttribute('placeholder')) ?? ''),
         (await composer.getAttribute('placeholder')) ?? '',
+      );
+      await checkText(
+        'the hint says what Send does',
+        page.locator('[data-testid="composer-hint"]'),
+        /^(Sends it to|Queued|Wakes the agent|Starts the agent)/,
+        5_000,
       );
       const plan = claim(C, 'coordinator', async (session) => {
         const parts = world.daemon.streamService?.list().filter((s) => s.parent === C) ?? [];
@@ -1015,12 +1029,14 @@ test.skipIf(!RUN)(
           page.locator('[data-testid="thread"]'),
           /read it by id/,
         );
+        // T363: Waits on… is in the ⋯ menu.
+        await nodeMenu();
         await checkText(
-          'the button reads Waits on…',
-          streamPage().locator('[data-testid="link-wait"]'),
+          'the menu item reads Waits on…',
+          page.locator('[data-testid="link-wait"]'),
           'Waits on…',
         );
-        await streamPage().locator('[data-testid="link-wait"]').click();
+        await page.locator('[data-testid="link-wait"]').click();
         await page
           .locator('[data-testid="link-wait-select"]')
           .selectOption({ label: 'agile-test-repo part' });
@@ -1083,13 +1099,13 @@ test.skipIf(!RUN)(
       );
       await openNode('agile-test-repo part');
       await checkText(
-        'the line under its title reads agent done',
+        'the line under its title reads Agent finished',
         page.locator('[data-testid="stream-status"]'),
-        /agent done/,
+        /Agent finished/,
       );
       const dot = await railRow('agile-test-repo part').locator('.cr-dot').getAttribute('data-dot');
       check('its rail dot is amber (waiting on you)', dot === 'amber', dot ?? '');
-      await tab('Diff').click();
+      await tab('Changes').click();
       await checkText(
         'the Diff tab shows the change against main',
         page.locator('[data-testid="diff"]'),
@@ -1136,7 +1152,7 @@ test.skipIf(!RUN)(
         prLines === 1,
         `${prLines} lines name the PR: ${await textOf(page.locator('[data-testid="land-panel"]'))}`,
       );
-      await tab('Thread').click();
+      await tab('Chat').click();
       await checkText(
         'the thread adds the PR line',
         page.locator('[data-testid="thread"]'),
@@ -1264,7 +1280,7 @@ test.skipIf(!RUN)(
         page.locator('[data-testid="waits-on"]'),
         /waits on agile-test-repo part · satisfied/,
       );
-      await tab('Thread').click();
+      await tab('Chat').click();
       await checkText(
         'its thread says waits on … satisfied',
         page.locator('[data-testid="thread"]'),
@@ -1467,7 +1483,7 @@ test.skipIf(!RUN)(
 
     await step('5.2c', 'Shop note: Diff and the overlap row on Activity', async () => {
       await openNode('Shop note');
-      await tab('Diff').click();
+      await tab('Changes').click();
       await checkText(
         'the Diff tab shows the one-line change and the worktree path',
         page.locator('[data-testid="diff"]'),
@@ -1483,7 +1499,8 @@ test.skipIf(!RUN)(
 
     // ---------------------------------------------------------- 5.3
     await step('5.3a', 'Shop note waits on Blog note; its Merge is held', async () => {
-      await streamPage().locator('[data-testid="link-wait"]').click();
+      await nodeMenu();
+      await page.locator('[data-testid="link-wait"]').click();
       await page.locator('[data-testid="link-wait-select"]').selectOption({ label: 'Blog note' });
       await page.getByRole('button', { name: 'Wait on' }).click();
       await checkText(
@@ -1502,7 +1519,7 @@ test.skipIf(!RUN)(
         page.locator('[data-testid="land-panel"]'),
         /waits on [0-9A-Z]{26}/,
       );
-      await tab('Thread').click();
+      await tab('Chat').click();
       await checkText(
         'so does the thread',
         page.locator('[data-testid="thread"]'),
@@ -1591,16 +1608,16 @@ test.skipIf(!RUN)(
         page.locator('[data-testid="activity"]'),
         /main changed · ledger-lite · same repo/,
       );
-      await tab('Thread').click();
+      await tab('Chat').click();
       await checkText(
         'its thread shows synced main into stream/…',
         page.locator('[data-testid="thread"]'),
         /synced main into stream\//,
       );
       await checkText(
-        'the line under its title reads agent done',
+        'the line under its title reads Agent finished',
         page.locator('[data-testid="stream-status"]'),
-        /agent done/,
+        /Agent finished/,
       );
       await page.locator('[data-testid="stream-land"]').click();
       await checkText('Merged.', page.locator('[data-testid="land-before"]'), 'Merged.');
@@ -1909,7 +1926,7 @@ test.skipIf(!RUN)(
         page.locator('[data-testid="activity"]'),
         /knowledge accepted · \S+ · delivered to the worker session/,
       );
-      await tab('Thread').click();
+      await tab('Chat').click();
       await checkText(
         'the agent reacts on the thread',
         page.locator('[data-testid="thread"]'),
@@ -1929,14 +1946,14 @@ test.skipIf(!RUN)(
         /ready to (merge|land)/i,
       );
       await openNode('Cents check');
-      await tab('Knowledge in scope').click();
+      await tab('Knowledge').click();
       await checkText(
-        'Knowledge in scope lists the new decision',
+        'the Knowledge tab lists the new decision',
         page.locator('[data-testid="rules"]'),
         /decision · tell/,
       );
       await checkNotText(
-        'Knowledge in scope shows the project by name, not P-…',
+        'the Knowledge tab shows the project by name, not P-…',
         page.locator('[data-testid="rules"]'),
         /project:P-/,
       );
@@ -2122,9 +2139,9 @@ test.skipIf(!RUN)(
       await refused;
       await openNode('Changelog in ledger-lite');
       await checkText(
-        'the node reads agent done',
+        'the node reads Agent finished',
         page.locator('[data-testid="stream-status"]'),
-        /agent done/,
+        /Agent finished/,
       );
       await page.locator('[data-testid="stream-land"]').click();
       await checkText('Merged.', page.locator('[data-testid="land-before"]'), 'Merged.');
@@ -2291,10 +2308,13 @@ test.skipIf(!RUN)(
         await turnGate.wait();
         return 'TRACKER.md added.';
       });
-      await streamPage().getByRole('button', { name: 'Start' }).click();
-      const picker = page.locator('[data-testid="session-picker"]');
-      await checkText('the picker defaults: vendor claude, effort low', picker, /claude.*low/);
-      await page.locator('[data-testid="picker-start"]').click();
+      // T363: Start agent is one click; the composer's chip names what it runs.
+      await checkText(
+        'the default it starts with: Claude … · low',
+        page.locator('[data-testid="composer-model"]'),
+        /^Claude .* · low$/,
+      );
+      await streamPage().getByRole('button', { name: 'Start agent', exact: true }).click();
       await checkText(
         'a worker session appears',
         page.locator('[data-testid="session"][data-role="worker"]'),
@@ -2307,9 +2327,9 @@ test.skipIf(!RUN)(
       turnGate.open();
       await worked;
       await checkText(
-        'the page reads agent done',
+        'the page reads Agent finished',
         page.locator('[data-testid="stream-status"]'),
-        /agent done/,
+        /Agent finished/,
       );
       await page.locator('[data-testid="stream-land"]').click();
       await checkText('a PR opens', page.locator('[data-testid="land-result"]'), /opened PR #\d+/);
