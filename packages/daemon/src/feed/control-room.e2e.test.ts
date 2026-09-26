@@ -6460,6 +6460,29 @@ describe("the rail's row menus, Deleted and New project (Playwright e2e, T365)",
         expect(await row.getAttribute('data-status')).toBe('not_started');
         expect(await row.locator('.cr-dot').getAttribute('aria-label')).toBe('Not started');
         expect(await row.getAttribute('title')).toContain('Not started');
+        // T424: the project's root never ran either: Not started, not Idle.
+        const rootRow = page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`);
+        expect(await rootRow.getAttribute('data-status')).toBe('not_started');
+        expect(await rootRow.getAttribute('title')).toContain('Not started');
+
+        // T424 (finding 23): a row shows a grip on hover (a project's root never moves: none).
+        const grip = row.locator('.cr-tree-grip');
+        expect(await rootRow.locator('.cr-tree-grip').count()).toBe(0);
+        expect(
+          await grip.evaluate((el) => el.ownerDocument.defaultView?.getComputedStyle(el).opacity),
+        ).toBe('0');
+        await row.hover();
+        await waitUntilAsync(
+          'the grip shows on hover',
+          async () =>
+            (await grip.evaluate(
+              (el) => el.ownerDocument.defaultView?.getComputedStyle(el).opacity,
+            )) === '1',
+        );
+        expect(
+          await grip.evaluate((el) => el.ownerDocument.defaultView?.getComputedStyle(el).cursor),
+        ).toBe('grab');
+        expect(await grip.locator('[data-icon="grip-vertical"]').count()).toBe(1);
 
         await page.locator('[data-testid="tree-legend-open"]').click();
         const legend = page.locator('[data-testid="tree-legend"]');
@@ -6468,6 +6491,15 @@ describe("the rail's row menus, Deleted and New project (Playwright e2e, T365)",
         for (const label of ['Needs you', 'Ready to merge', 'Working', 'Not started', 'Stopped']) {
           expect(text).toContain(label);
         }
+        // T424: the marks: the overlap button's two squares, and that rows drag.
+        expect(await legend.locator('[data-mark="overlap"] [data-icon="overlap"]').count()).toBe(1);
+        expect(await legend.locator('[data-mark="overlap"]').textContent()).toBe(
+          'Overlaps another node; click to open it',
+        );
+        expect(await legend.locator('[data-mark="drag"]').textContent()).toBe(
+          'Drag a row to move it (or ⋯ → Move to…)',
+        );
+        expect(await legend.locator('[data-icon="alert-triangle"]').count()).toBe(0);
         expect(
           await legend.locator('[data-status="not_started"] .cr-dot').getAttribute('data-status'),
         ).toBe('not_started');
@@ -6919,7 +6951,7 @@ describe('waiting for the plan (Playwright e2e, T344)', () => {
 
 describe('overlap warnings (Playwright e2e, T227)', () => {
   browserTest(
-    'two api nodes in different projects touching prices.ts warn in the repo view and the rail',
+    'two api nodes in different projects touching prices.ts warn in the repo view and the rail; T424: the mark names the other node and opens it',
     async () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
@@ -6939,6 +6971,13 @@ describe('overlap warnings (Playwright e2e, T227)', () => {
           project: blog.id,
           repo: 'api',
         });
+        // T424: a third node overlaps only a (on sale.ts), so a's mark leads to two nodes.
+        const c = await cockpit.streams.create('human', {
+          title: 'api: sale banner',
+          goal: 'g',
+          project: shop.id,
+          repo: 'api',
+        });
         const at = new Date().toISOString();
         await cockpit.streams.update('daemon', a.id, {
           touched: { files: ['prices.ts', 'sale.ts'], base: 'abc', at },
@@ -6946,25 +6985,79 @@ describe('overlap warnings (Playwright e2e, T227)', () => {
         await cockpit.streams.update('daemon', b.id, {
           touched: { files: ['posts.ts', 'prices.ts'], base: 'abc', at },
         });
+        await cockpit.streams.update('daemon', c.id, {
+          touched: { files: ['sale.ts'], base: 'abc', at },
+        });
 
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
-        await page
-          .locator(
-            `[data-testid="stream-tree"] [data-stream="${a.id}"] [data-testid="overlap-mark"]`,
-          )
-          .waitFor();
-        await page
-          .locator(
-            `[data-testid="stream-tree"] [data-stream="${a.parent}"] [data-testid="overlap-mark"]`,
-          )
-          .waitFor();
-        await page.locator('[data-view="repos"]').click();
-        await waitForText(
-          page,
-          '[data-testid="repo-view"] [data-repo="api"] [data-testid="repo-overlap"]',
-          'api: add salePrice and api: add /posts both changed prices.ts',
+        const item = (id: string): string =>
+          `[data-testid="stream-tree"] [data-tree-node="${id}"] > .cr-tree-item`;
+        const mark = (id: string): string => `${item(id)} [data-testid="overlap-mark"]`;
+        await page.locator(mark(a.id)).waitFor();
+        await page.locator(mark(b.id)).waitFor();
+
+        // A neutral two-squares glyph, not Needs me's alert triangle, and a button that names
+        // the other node and the file.
+        expect(await page.locator(`${mark(b.id)} [data-icon="overlap"]`).count()).toBe(1);
+        expect(await page.locator(`${item(b.id)} [data-icon="alert-triangle"]`).count()).toBe(0);
+        expect(await page.locator(mark(b.id)).evaluate((el) => el.tagName)).toBe('BUTTON');
+        expect(await page.locator(mark(b.id)).getAttribute('title')).toBe(
+          'Overlaps api: add salePrice on prices.ts\nClick to open api: add salePrice',
         );
+        // An open project shows none: the rows under it carry their own.
+        expect(await page.locator(mark(a.parent ?? '')).count()).toBe(0);
+        expect(await page.locator(mark(b.parent ?? '')).count()).toBe(0);
+
+        // One other node: the mark opens it.
+        await page.locator(mark(b.id)).click();
+        await page
+          .locator(`[data-testid="stream-page"][data-stream="${a.id}"]`)
+          .waitFor({ state: 'visible' });
+
+        // Several: a small menu of them, each with its file.
+        expect(await page.locator(mark(a.id)).getAttribute('title')).toBe(
+          'Overlaps api: add /posts on prices.ts\nOverlaps api: sale banner on sale.ts',
+        );
+        await page.locator(mark(a.id)).click();
+        const menu = `${item(a.id)} [data-testid="overlap-menu"]`;
+        await page.locator(menu).waitFor({ state: 'visible' });
+        expect(
+          await page
+            .locator(`${menu} [data-testid="overlap-open"]`)
+            .evaluateAll((els) => els.map((el) => el.textContent)),
+        ).toEqual(['api: add /postsprices.ts', 'api: sale bannersale.ts']);
+        await page
+          .locator(`${menu} [data-testid="overlap-open"]`, { hasText: 'sale banner' })
+          .click();
+        await page
+          .locator(`[data-testid="stream-page"][data-stream="${c.id}"]`)
+          .waitFor({ state: 'visible' });
+
+        // Folded, a project speaks for the node inside it, and its mark opens that node.
+        await page.locator(`${item(blog.root)} [data-testid="tree-caret"]`).click();
+        await page.locator(mark(blog.root)).waitFor();
+        expect(await page.locator(mark(blog.root)).getAttribute('title')).toBe(
+          'api: add /posts overlaps api: add salePrice on prices.ts\nClick to open api: add /posts',
+        );
+        await page.locator(mark(blog.root)).click();
+        await page
+          .locator(`[data-testid="stream-page"][data-stream="${b.id}"]`)
+          .waitFor({ state: 'visible' });
+        // Opening a node inside unfolds its parent: the mark goes back to the node's own row.
+        await page.locator(mark(blog.root)).waitFor({ state: 'detached' });
+
+        await page.locator('[data-view="repos"]').click();
+        const callouts = '[data-testid="repo-view"] [data-repo="api"] [data-testid="repo-overlap"]';
+        await waitUntilAsync('the repo view names both overlaps', async () => {
+          const texts = await page
+            ?.locator(callouts)
+            .evaluateAll((els) => els.map((el) => el.textContent));
+          return (
+            texts?.includes('api: add salePrice and api: add /posts both changed prices.ts') ===
+              true && texts.includes('api: add salePrice and api: sale banner both changed sale.ts')
+          );
+        });
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -7220,6 +7313,20 @@ describe('repo view and lenses (Playwright e2e, T209)', () => {
         expect(await agent.getAttribute('title')).toBe(
           'Worker: claude/claude-sonnet-4-6 · high effort',
         );
+        const runPath = `${running} [data-stream="${shopApi.id}"] [data-testid="node-path"]`;
+        expect(await page.locator(runPath).textContent()).toBe(
+          'Shop › Show sale prices › api: add salePrice',
+        );
+        // T424 (finding 37): the rail's "Show only this project" narrows Running, and the
+        // path then leaves out the project's name; elsewhere, nothing runs.
+        await page.goto(`${cockpit.base}/?view=running&project=${shop.id}`);
+        await waitForText(page, runPath, 'Show sale prices › api: add salePrice');
+        expect(await page.locator(`${running} .cr-page-sub`).textContent()).toBe('In Shop: 1 idle');
+        await page.goto(`${cockpit.base}/?view=running&project=${blog.id}`);
+        await waitForText(page, `${running} .cr-empty-title`, 'No agents running in Blog');
+        await page.locator(`${running} [data-testid="running-show-all"]`).click();
+        await page.locator(runPath).waitFor({ state: 'visible' });
+        expect(new URL(page.url()).searchParams.get('project')).toBeNull();
 
         await page.locator('[data-view="deps"]').click();
         await waitForText(
@@ -7227,6 +7334,17 @@ describe('repo view and lenses (Playwright e2e, T209)', () => {
           '[data-testid="deps-lens"] [data-testid="dep-edge-text"]',
           'api: add /posts waits on api: add salePrice',
         );
+        // T424 (finding 36): both ends' statuses are the same pill, not a pill and plain text.
+        const depCard = `[data-testid="deps-lens"] [data-node="${blogApi.id}"]`;
+        expect(
+          await page
+            .locator(`${depCard} [data-testid="dep-status"]`)
+            .evaluateAll((els) => els.map((el) => [el.className, el.getAttribute('data-status')])),
+        ).toEqual([
+          ['cr-status-pill', 'not_started'],
+          ['cr-status-pill', 'idle'],
+        ]);
+        expect(await page.locator(`${depCard} .cr-lens-status`).count()).toBe(0);
         // T368: the waited-on node's status reads beside it; the ⋯ menu removes the link.
         expect(
           await page.locator('[data-testid="deps-lens"] [data-testid="dep-edge"]').textContent(),
@@ -7937,24 +8055,45 @@ describe('project overview (Playwright e2e, T387)', () => {
           await page.locator(`${tabs}[data-tab="overview"]`).getAttribute('aria-current'),
         ).toBe('page');
 
-        // The counts, your move first.
-        const counts = `${overview} [data-testid="overview-count"]`;
-        await waitForCount(page, counts, 5);
+        // T424: the root's agent never ran: it reads Not started, as its Details say.
         expect(
           await page
-            .locator(counts)
-            .evaluateAll((els) =>
-              els.map((el) => [el.getAttribute('data-bucket'), el.textContent]),
-            ),
-        ).toEqual([
-          ['you', '1 needs you'],
-          ['ready', '1 ready to merge'],
-          ['working', '1 working'],
-          ['idle', '2 idle'],
-          ['done', '2 done'],
+            .locator('[data-testid="stream-page"] [data-testid="node-status"]')
+            .getAttribute('data-status'),
+        ).toBe('not_started');
+        expect(
+          await page
+            .locator('[data-testid="stream-page"] [data-testid="stream-status"]')
+            .textContent(),
+        ).toContain('Agent not started');
+        expect(
+          await page.locator(`${tree} [data-stream="${shop.root}"]`).getAttribute('data-status'),
+        ).toBe('not_started');
+
+        // The counts, your move first: T424, one status each, with that status's own dot and word
+        // (the coordinating "Show sale prices" never ran, so it is Not started, not Idle).
+        const counts = `${overview} [data-testid="overview-count"]`;
+        await waitForCount(page, counts, 6);
+        const chips = await page
+          .locator(counts)
+          .evaluateAll((els) =>
+            els.map((el) => [
+              el.getAttribute('data-status'),
+              el.getAttribute('data-group'),
+              el.textContent,
+              el.querySelector('.cr-dot')?.getAttribute('data-status'),
+            ]),
+          );
+        expect(chips).toEqual([
+          ['needs_you', 'you', '1 needs you', 'needs_you'],
+          ['ready', 'you', '1 ready to merge', 'ready'],
+          ['working', 'in_progress', '1 working', 'working'],
+          ['not_started', 'not_running', '2 not started', 'not_started'],
+          ['merged', 'finished', '1 merged', 'merged'],
+          ['closed', 'finished', '1 closed', 'closed'],
         ]);
 
-        // The nodes: your move, working, idle; merged and closed folded under Done.
+        // The nodes: your move, in progress, not running; merged and closed folded under Finished.
         const rows = `${overview} [data-testid="overview-node"]`;
         const shown = (): Promise<Array<string | null>> =>
           page
@@ -7963,7 +8102,8 @@ describe('project overview (Playwright e2e, T387)', () => {
           Promise.resolve([]);
         const showing = (what: string, ids: string[]): Promise<void> =>
           waitUntilAsync(what, async () => (await shown()).join() === ids.join());
-        expect(await shown()).toEqual([asks.id, ready.id, working.id, feature.id, fresh.id]);
+        expect((await shown()).slice(0, 3)).toEqual([asks.id, ready.id, working.id]);
+        expect(new Set((await shown()).slice(3))).toEqual(new Set([feature.id, fresh.id]));
         const row = (id: string): string => `${rows}[data-stream="${id}"]`;
         expect(await page.locator(`${row(ready.id)} .cr-status-pill`).textContent()).toBe(
           'Ready to merge',
@@ -7980,26 +8120,53 @@ describe('project overview (Playwright e2e, T387)', () => {
         expect(await page.locator(`${row(working.id)}`).textContent()).toContain('api');
         await page.locator(`${overview} [data-testid="overview-done-toggle"]`).click();
         await page.locator(row(closed.id)).waitFor({ state: 'visible' });
-        expect(await shown()).toEqual([
-          asks.id,
-          ready.id,
-          working.id,
-          feature.id,
-          fresh.id,
-          merged.id,
-          closed.id,
-        ]);
+        expect((await shown()).slice(5)).toEqual([merged.id, closed.id]);
 
-        // A count filters the list; again (or Show all) shows everything.
-        await page.locator(`${counts}[data-bucket="idle"]`).click();
-        expect(
-          await page.locator(`${counts}[data-bucket="idle"]`).getAttribute('aria-pressed'),
-        ).toBe('true');
-        await showing('only the idle nodes', [feature.id, fresh.id]);
-        expect(await page.locator(`${overview} [data-testid="overview-group"]`).count()).toBe(1);
-        await page.locator(`${counts}[data-bucket="idle"]`).click();
-        await waitForCount(page, rows, 7);
-        await page.locator(`${counts}[data-bucket="ready"]`).click();
+        // T424 (finding 16): the counts are the list's groups — each group holds exactly its
+        // counts' statuses, as many rows of each as the count says, and its heading adds them up.
+        const groups = await page
+          .locator(`${overview} [data-testid="overview-group"]`)
+          .evaluateAll((els) =>
+            els.map((el) => ({
+              group: el.getAttribute('data-group'),
+              n: el.querySelector('.cr-ov-group-n')?.textContent,
+              statuses: [...el.querySelectorAll('[data-testid="overview-node"]')].map((r) =>
+                r.getAttribute('data-status'),
+              ),
+            })),
+          );
+        expect(groups.map((g) => g.group)).toEqual([
+          'you',
+          'in_progress',
+          'not_running',
+          'finished',
+        ]);
+        for (const g of groups) {
+          const mine = chips.filter((c) => c[1] === g.group);
+          const tally = mine.map((c) => `${c[0]}:${Number.parseInt(String(c[2]), 10)}`);
+          expect(
+            [...new Set(g.statuses)].map((s) => `${s}:${g.statuses.filter((x) => x === s).length}`),
+          ).toEqual(tally);
+          expect(Number(g.n)).toBe(g.statuses.length);
+        }
+
+        // A count filters the list to exactly its rows; again (or Show all) shows everything.
+        for (const [status, , text] of chips) {
+          const chip = `${counts}[data-status="${status}"]`;
+          await page.locator(chip).click();
+          expect(await page.locator(chip).getAttribute('aria-pressed')).toBe('true');
+          const n = Number.parseInt(String(text), 10);
+          await waitUntilAsync(`only the ${status} nodes`, async () => {
+            const statuses = await page
+              ?.locator(rows)
+              .evaluateAll((els) => els.map((el) => el.getAttribute('data-status')));
+            return statuses?.length === n && statuses.every((s) => s === status);
+          });
+          expect(await page.locator(`${overview} [data-testid="overview-group"]`).count()).toBe(1);
+          await page.locator(chip).click();
+          await waitForCount(page, rows, 7);
+        }
+        await page.locator(`${counts}[data-status="ready"]`).click();
         await showing('only the node ready to merge', [ready.id]);
         await page.locator(`${overview} [data-testid="overview-filter-clear"]`).click();
         await waitForCount(page, rows, 7);

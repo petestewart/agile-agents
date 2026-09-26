@@ -22,6 +22,7 @@ import {
   firstPage,
   groupByDay,
   isSatisfied,
+  lensPath,
   logCount,
   logFooter,
   mergeNewest,
@@ -88,10 +89,38 @@ describe('Running', () => {
     expect(sortRunning([a, b]).map((r) => r.id)).toEqual(['idle-b', 'idle-a']);
   });
 
-  test('the summary counts each kind in words', () => {
+  test('the summary counts each status in words', () => {
     expect(runningSummary(rows)).toBe('1 needs you · 1 working · 2 idle');
     expect(runningSummary([rows[1] as CockpitStreamRow])).toBe('1 working');
     expect(runningSummary([])).toBe('');
+  });
+
+  test('T424: one count per status: Blocked and Ready to merge are not "need you"', () => {
+    const stuck = row('stuck', { agent_status: 'blocked', live: true });
+    const ready = row('ready', {
+      agent_status: 'done',
+      human_status: 'waiting_on_you',
+      live: true,
+    });
+    expect(runningSummary([...rows, stuck, ready])).toBe(
+      '1 needs you · 1 blocked · 1 ready to merge · 1 working · 2 idle',
+    );
+  });
+
+  test('T424: a row’s path, without the project’s root when the view shows one project', () => {
+    const tree = [
+      row('root', { title: 'Shop', role: 'project', project: 'P' }),
+      row('feature', { title: 'Show sale prices', parent: 'root', project: 'P' }),
+      row('api', { title: 'api: add salePrice', parent: 'feature', project: 'P' }),
+      row('loose', { title: 'No project', parent: 'feature2' }),
+      row('feature2', { title: 'A parent' }),
+    ];
+    const api = tree[2] as CockpitStreamRow;
+    expect(lensPath(api, tree, false)).toEqual(['Shop', 'Show sale prices']);
+    expect(lensPath(api, tree, true)).toEqual(['Show sale prices']);
+    expect(lensPath(tree[1] as CockpitStreamRow, tree, true)).toEqual([]);
+    // A parent that is not a project's root stays.
+    expect(lensPath(tree[3] as CockpitStreamRow, tree, true)).toEqual(['A parent']);
   });
 
   test("T382: each row names its agent, model and effort; a reviewer says it's one", () => {

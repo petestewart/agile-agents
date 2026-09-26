@@ -184,7 +184,7 @@ export interface CockpitStreamRow {
   merged_outside?: true;
   /** T395: its last change (ISO): the latest of its creation, its agent's last status and its thread's last line. */
   updated_at?: string;
-  /** T361: a work node or conversation whose agent never ran (made with "Start later"). */
+  /** T361: an open node whose agent never ran (made with "Start later"); T424: any role, the root too. */
   never_started?: true;
   /** T361: its agent ran and the human stopped it; nothing is live and the node is still open. */
   stopped?: true;
@@ -337,7 +337,7 @@ export function buildCockpitFrame(
       ...(nothingToMerge?.(s) === true ? { nothing_to_merge: true as const } : {}),
       ...mergeRow(mergeStateOf?.(s)),
       updated_at: latest(s.created_at, s.agent.updated_at, threadUpdatedAt?.(s.id)),
-      ...startState(s, all),
+      ...startState(s),
       ...liveAgent(s, contextOf),
     })),
     projects: (projects?.list() ?? []).map((p) => ({
@@ -373,17 +373,16 @@ export function buildCockpitFrame(
 }
 
 /**
- * T361: `never_started` for a work node or conversation that has never had
- * a worker (or coordinator); `stopped` for a node whose agent ran and the
- * human stopped (`stoppedByHuman`), with nothing live, still open.
+ * T361: `never_started` for an open node that has never had a worker or
+ * coordinator (T424: a project root or a coordinating node too, so the
+ * cockpit says "Not started" wherever its Details say "No sessions yet");
+ * `stopped` for a node whose agent ran and the human stopped
+ * (`stoppedByHuman`), with nothing live, still open.
  */
-function startState(s: Stream, all: readonly Stream[]): { never_started?: true; stopped?: true } {
+function startState(s: Stream): { never_started?: true; stopped?: true } {
   if (s.human.status === 'closed' || s.human.status === 'landed') return {};
   if (s.sessions.some((x) => LIVE_SESSION.has(x.status))) return {};
-  if (!s.sessions.some((x) => isAgentRole(x.role))) {
-    const role = nodeRole(s, liveChildrenOf(s.id, all), all);
-    return role === 'work' || role === 'conversation' ? { never_started: true } : {};
-  }
+  if (!s.sessions.some((x) => isAgentRole(x.role))) return { never_started: true };
   return stoppedByHuman(s) ? { stopped: true } : {};
 }
 

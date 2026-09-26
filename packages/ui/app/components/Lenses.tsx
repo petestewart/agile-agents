@@ -7,8 +7,12 @@
  *   both nodes and the files (T227), its recent events (T245) and its
  *   norms (T265: accepted standards and architecture).
  * - Running: nodes with a live agent, your move first — each with the agent,
- *   model and effort it runs (T382) — with Stop in a row menu.
- * - Dependencies: every open "waits on" link, grouped by the node that waits.
+ *   model and effort it runs (T382) — with Stop in a row menu. T424: it
+ *   follows the rail's "Show only this project" (the path then leaves out
+ *   the project), and its columns share one grid, so Status is as wide as
+ *   its widest pill and Node gets the room.
+ * - Dependencies: every open "waits on" link, grouped by the node that waits;
+ *   both ends' statuses as pills (T424).
  * - Events (T338): every routed event as a timeline — what happened, to
  *   which node, and which nodes were told and why — with a type filter,
  *   a search and "Show more".
@@ -53,6 +57,7 @@ import {
   firstPage,
   groupByDay,
   isSatisfied,
+  lensPath,
   logCount,
   logFooter,
   mergeNewest,
@@ -108,17 +113,23 @@ function useOpenNode(): (id: string) => void {
   );
 }
 
-/** "Shop › Show sale prices › " muted, then the title: what a node is, wherever it sits. */
+/**
+ * "Shop › Show sale prices › " muted, then the title: what a node is,
+ * wherever it sits. `oneProject`: the view shows one project, so its name
+ * is left out (T424).
+ */
 function NodePath({
   row,
   rows,
+  oneProject = false,
 }: {
   row: CockpitStreamRow;
   rows: readonly CockpitStreamRow[];
+  oneProject?: boolean;
 }): JSX.Element {
   return (
     <span className="cr-lens-path" data-testid="node-path">
-      {ancestorTitles(row, rows).map((title, i) => (
+      {lensPath(row, rows, oneProject).map((title, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: ancestors are positional
         <span key={i} className="anc">
           {title} ›{' '}
@@ -562,10 +573,12 @@ function RunningRow({
   row,
   rows,
   repo,
+  oneProject,
 }: {
   row: CockpitStreamRow;
   rows: readonly CockpitStreamRow[];
   repo: CockpitRepoRow | undefined;
+  oneProject: boolean;
 }): JSX.Element {
   const { select } = useShell();
   const { refresh } = useFeed();
@@ -595,7 +608,7 @@ function RunningRow({
         <span className="cr-lens-run-status">
           <StatusPill row={row} status={status} />
         </span>
-        <NodePath row={row} rows={rows} />
+        <NodePath row={row} rows={rows} oneProject={oneProject} />
         <span className="cr-lens-run-role" title={ROLE_HINT[row.role]}>
           {ROLE_LABEL[row.role]}
         </span>
@@ -653,25 +666,58 @@ function RunningRow({
 }
 
 export function RunningLens({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.Element {
-  const { setNewStreamOpen } = useShell();
+  const { setNewStreamOpen, project, setProject } = useShell();
   const { cockpit } = useFeed();
-  const running = sortRunning(runningRows(rows));
+  // T424: the rail's "Show only this project" narrows Running too.
+  const projectName =
+    project !== undefined ? cockpit?.projects.find((p) => p.id === project)?.name : undefined;
+  const oneProject = projectName !== undefined;
+  const everywhere = runningRows(rows);
+  const running = sortRunning(
+    oneProject ? everywhere.filter((r) => r.project === project) : everywhere,
+  );
+  const elsewhere = everywhere.length - running.length;
   const repos = new Map((cockpit?.repos ?? []).map((r) => [r.name, r]));
+  const showAll = (
+    <Button
+      size="sm"
+      variant="ghost"
+      icon="layers"
+      data-testid="running-show-all"
+      onClick={() => setProject(undefined)}
+    >
+      Show all projects
+    </Button>
+  );
+  const summary = running.length > 0 ? runningSummary(running) : 'Nodes with a live agent';
   return (
     <section className="cr-page cr-lens" data-testid="running-lens">
       <PageHeader
         title="Running"
         icon="zap"
-        subtitle={running.length > 0 ? runningSummary(running) : 'Nodes with a live agent'}
+        subtitle={
+          oneProject
+            ? [
+                running.length > 0 ? `In ${projectName}: ${summary}` : `Nothing in ${projectName}`,
+                elsewhere > 0 ? `${elsewhere} more in other projects` : '',
+              ]
+                .filter(Boolean)
+                .join(' · ')
+            : summary
+        }
+        actions={oneProject && elsewhere > 0 && running.length > 0 ? showAll : undefined}
       />
       {running.length === 0 ? (
         <EmptyState
           icon="zap"
-          title="No agents running"
+          title={oneProject ? `No agents running in ${projectName}` : 'No agents running'}
           actions={
-            <Button icon="plus" onClick={() => setNewStreamOpen(true)}>
-              New node
-            </Button>
+            <>
+              <Button icon="plus" onClick={() => setNewStreamOpen(true)}>
+                New node
+              </Button>
+              {oneProject && elsewhere > 0 ? showAll : null}
+            </>
           }
         >
           An agent runs while it works or waits for you. Create a node and its agent starts on its
@@ -694,6 +740,7 @@ export function RunningLens({ rows }: { rows: readonly CockpitStreamRow[] }): JS
                 row={row}
                 rows={rows}
                 repo={row.repo !== undefined ? repos.get(row.repo) : undefined}
+                oneProject={oneProject}
               />
             ))}
           </ul>
@@ -767,7 +814,7 @@ function DependencyEdgeRow({
               Done
             </Badge>
           ) : (
-            <StatusPill row={target} />
+            <StatusPill row={target} testid="dep-status" />
           )
         ) : null}
       </span>
@@ -830,10 +877,10 @@ export function DependenciesLens({ rows }: { rows: readonly CockpitStreamRow[] }
                   onClick={() => select(from.id)}
                   title={`${from.title} — ${status.label}`}
                 >
-                  <StatusDot row={from} status={status} />
                   <NodePath row={from} rows={rows} />
-                  <span className="cr-lens-status" data-tone={status.tone}>
-                    {status.label}
+                  {/* T424: the same pill as the node it waits on. */}
+                  <span className="cr-lens-dep-state">
+                    <StatusPill row={from} status={status} testid="dep-status" />
                   </span>
                 </button>
                 <ul className="cr-lens-dep-list">

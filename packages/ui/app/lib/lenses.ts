@@ -8,6 +8,7 @@
 import type { RoutedEvent, RoutedEventType, RoutingEntry } from '@agile-agents/shared';
 import { agentLabel, dayLabel, sessionIdText } from './chat';
 import type { CockpitRepoRow, CockpitStreamRow } from './feed-types';
+import { overviewCounts } from './overview';
 import { type NodeStatusKey, statusKey } from './status';
 import { dependencyEdges, eventLabel } from './streams';
 
@@ -51,24 +52,38 @@ export function sortRunning(rows: readonly CockpitStreamRow[]): CockpitStreamRow
   );
 }
 
-/** "1 needs you · 2 working · 1 idle" — the Running page's subtitle; empty parts left out. */
+/**
+ * "1 needs you · 1 blocked · 2 working" — the Running page's subtitle: one
+ * count per status, in the Overview's words and order (T424), so a count
+ * never mixes two statuses; empty parts left out.
+ */
 export function runningSummary(rows: readonly CockpitStreamRow[]): string {
-  let you = 0;
-  let working = 0;
-  let other = 0;
-  for (const row of rows) {
-    const rank = RUNNING_RANK[statusKey(row)] ?? 2;
-    if (rank === 0) you += 1;
-    else if (rank === 1) working += 1;
-    else other += 1;
-  }
-  return [
-    you > 0 ? `${you} need${you === 1 ? 's' : ''} you` : '',
-    working > 0 ? `${working} working` : '',
-    other > 0 ? `${other} idle` : '',
-  ]
-    .filter(Boolean)
+  return overviewCounts(rows)
+    .map((c) => c.text)
     .join(' · ');
+}
+
+/**
+ * T424 (finding 37): the titles above a lens row, outermost first — without
+ * its project's root when the view shows one project, where it would say
+ * the same on every row.
+ */
+export function lensPath(
+  row: CockpitStreamRow,
+  rows: readonly CockpitStreamRow[],
+  oneProject: boolean,
+): string[] {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const above: CockpitStreamRow[] = [];
+  const seen = new Set<string>([row.id]);
+  let at = row.parent !== undefined ? byId.get(row.parent) : undefined;
+  while (at && !seen.has(at.id)) {
+    seen.add(at.id);
+    above.unshift(at);
+    at = at.parent !== undefined ? byId.get(at.parent) : undefined;
+  }
+  if (oneProject && above[0]?.role === 'project') above.shift();
+  return above.map((r) => r.title);
 }
 
 /** T382: what runs on a Running row, in words, with the raw ids for its tooltip. */

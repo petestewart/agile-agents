@@ -515,6 +515,23 @@ const PATHS = {
     </>
   ),
   filter: <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />,
+  // T424: the rail's overlap mark (two squares that overlap) and a row's drag grip.
+  overlap: (
+    <>
+      <rect width="12" height="12" x="3" y="3" rx="2" />
+      <rect width="12" height="12" x="9" y="9" rx="2" />
+    </>
+  ),
+  'grip-vertical': (
+    <>
+      <circle cx="9" cy="5" r="1" />
+      <circle cx="9" cy="12" r="1" />
+      <circle cx="9" cy="19" r="1" />
+      <circle cx="15" cy="5" r="1" />
+      <circle cx="15" cy="12" r="1" />
+      <circle cx="15" cy="19" r="1" />
+    </>
+  ),
   // T388: Settings → General → Notifications.
   bell: (
     <>
@@ -527,7 +544,7 @@ const PATHS = {
 export type IconName = keyof typeof PATHS;
 
 /** Glyphs drawn filled rather than stroked (a solid play/stop reads better small). */
-const FILLED: ReadonlySet<IconName> = new Set<IconName>(['play', 'square']);
+const FILLED: ReadonlySet<IconName> = new Set<IconName>(['play', 'square', 'grip-vertical']);
 
 export function Icon({
   name,

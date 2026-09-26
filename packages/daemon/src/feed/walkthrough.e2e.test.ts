@@ -462,6 +462,11 @@ const railRow = (title: string) =>
   rail().locator('.cr-tree-row', {
     has: page.locator('.title', { hasText: new RegExp(`^${title}$`) }),
   });
+/** A row with its + ⋯ and (T424) its overlap mark, which sit beside the row's button. */
+const railItem = (title: string) =>
+  rail().locator('.cr-tree-item', {
+    has: page.locator('.cr-tree-row .title', { hasText: new RegExp(`^${title}$`) }),
+  });
 const streamPage = () => page.locator('[data-testid="stream-page"]');
 const tab = (name: string) =>
   page.locator('nav[aria-label="Node views"] button', { hasText: name });
@@ -1494,27 +1499,47 @@ test.skipIf(!RUN)(
       edit('Blog note', '## Blog\n\n-', '## Blog\n\n- Blog was here.', 'Blog note');
     });
 
-    await step('5.2b', 'the overlap shows on the rail, the roots and Repos', async () => {
+    await step('5.2b', 'the overlap shows on the rail, the folded roots and Repos', async () => {
       await pickProject('All projects');
+      // T424: a neutral two-squares button that names the other node and the file.
+      const mark = (title: string) => railItem(title).locator('[data-testid="overlap-mark"]');
       await until(
-        'Shop note carries the ⚠ mark',
-        async () =>
-          (await railRow('Shop note').locator('[data-testid="overlap-mark"]').count()) === 1,
+        'Shop note carries the overlap mark',
+        async () => (await mark('Shop note').count()) === 1,
       );
       check(
-        'Blog note carries the ⚠ mark',
-        (await railRow('Blog note').locator('[data-testid="overlap-mark"]').count()) === 1,
-        await textOf(railRow('Blog note')),
+        'Blog note carries the overlap mark',
+        (await mark('Blog note').count()) === 1,
+        await textOf(railItem('Blog note')),
       );
       check(
-        'the Shop root carries the ⚠ mark',
-        (await railRow('Shop').locator('[data-testid="overlap-mark"]').count()) === 1,
-        await textOf(railRow('Shop')),
+        'it names Blog note and the file',
+        (await mark('Shop note').getAttribute('title')) ===
+          'Overlaps Blog note on walkthrough-notes.md\nClick to open Blog note',
+        String(await mark('Shop note').getAttribute('title')),
       );
       check(
-        'the Blog root carries the ⚠ mark',
-        (await railRow('Blog').locator('[data-testid="overlap-mark"]').count()) === 1,
-        await textOf(railRow('Blog')),
+        'an open project row carries no mark (its rows do)',
+        (await mark('Shop').count()) === 0 && (await mark('Blog').count()) === 0,
+        await textOf(railItem('Shop')),
+      );
+      await railItem('Shop').locator('[data-testid="tree-caret"]').click();
+      await until(
+        'the folded Shop root carries the mark',
+        async () => (await mark('Shop').count()) === 1,
+      );
+      await mark('Shop').click();
+      await checkText(
+        "the Shop root's mark opens Shop note",
+        page.locator('[data-testid="stream-title"]'),
+        'Shop note',
+      );
+      await until('opening Shop note unfolds Shop', async () => (await mark('Shop').count()) === 0);
+      await mark('Shop note').click();
+      await checkText(
+        "Shop note's mark opens Blog note",
+        page.locator('[data-testid="stream-title"]'),
+        'Blog note',
       );
       await openView('Repos');
       const group = page.locator('[data-testid="repo-view"] .cr-group[data-repo="ledger-lite"]');
@@ -1648,7 +1673,7 @@ test.skipIf(!RUN)(
         git(world.ledger, ['status', '--short']),
       );
       await until(
-        'the ⚠ marks are gone from the rail',
+        'the overlap marks are gone from the rail',
         async () => (await rail().locator('[data-testid="overlap-mark"]').count()) === 0,
       );
       await openView('Repos');
@@ -2294,16 +2319,17 @@ test.skipIf(!RUN)(
         ).find((p) => p.name === 'Shop')?.id ?? '';
       await pickProject('Shop');
       await openNode('Shop');
-      // T387: the root opens on its Overview; Shop note, merged in 5.3b, is under Done.
+      // T387: the root opens on its Overview; Shop note, merged in 5.3b, is under Finished
+      // (T424: counted as "1 merged", its own status).
       await checkText(
         'the root opens on its Overview, with its counts',
         page.locator('[data-testid="overview-summary"]'),
-        /\d+ done/,
+        /\d+ merged/,
       );
       await page.locator('[data-testid="overview-done-toggle"]').click();
       await checkText(
-        'Shop note reads Merged under Done',
-        page.locator('[data-testid="overview-group"][data-group="done"]'),
+        'Shop note reads Merged under Finished',
+        page.locator('[data-testid="overview-group"][data-group="finished"]'),
         /Merged\s*Shop note/,
       );
       const form = page.locator('[data-testid="project-tracker-form"]');

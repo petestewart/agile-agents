@@ -10,6 +10,7 @@ import { basename, join } from 'node:path';
 import { type SessionRef, ulid } from '@agile-agents/shared';
 import { GateService } from '../gates';
 import { runInit } from '../init';
+import { ProjectService } from '../projects';
 import { QuestionService } from '../questions';
 import { StateStore } from '../store';
 import { buildEvent } from '../store/events';
@@ -151,10 +152,28 @@ describe('T361: the rail flags and the archived list', () => {
     expect(flags(work.id)).toEqual({ never_started: true, stopped: undefined });
     // A reviewer is not the node's agent.
     expect(flags(reviewed.id).never_started).toBe(true);
-    // A project root and a coordinating node have no "not started" of their own.
-    expect(flags(root.id)).toEqual({ never_started: undefined, stopped: undefined });
-    expect(flags(split.id)).toEqual({ never_started: undefined, stopped: undefined });
+    // T424: a coordinating node whose coordinator never ran is not started too.
+    expect(flags(root.id)).toEqual({ never_started: true, stopped: undefined });
+    expect(flags(split.id)).toEqual({ never_started: true, stopped: undefined });
     expect(flags(closed.id)).toEqual({ never_started: undefined, stopped: undefined });
+    // Once its coordinator has run, it is not "not started" any more.
+    await withSessions(split.id, [session('stopped', { role: 'coordinator' })]);
+    expect(flags(split.id).never_started).toBeUndefined();
+  });
+
+  test("T424: a project's root with no sessions reads not started, like any node", async () => {
+    const projects = new ProjectService(store, streams);
+    const shop = await projects.create({ name: 'Shop' });
+    await streams.create('human', { title: 'a part', goal: 'g', project: shop.id });
+    const rootRow = rows().get(shop.root);
+    expect(rootRow?.role).toBe('project');
+    expect(flags(shop.root)).toEqual({ never_started: true, stopped: undefined });
+    // Its agent ran (a live coordinator): nothing is "not started" about it.
+    await withSessions(shop.root, [session('running', { role: 'coordinator' })]);
+    expect(flags(shop.root)).toEqual({ never_started: undefined, stopped: undefined });
+    // Stopped by the human: it reads stopped, not not-started.
+    await withSessions(shop.root, [session('stopped', { role: 'coordinator' })]);
+    expect(flags(shop.root)).toEqual({ never_started: undefined, stopped: true });
   });
 
   test('stopped: the human stopped its agent, nothing is live, and it is still open', async () => {
