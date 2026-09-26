@@ -311,6 +311,16 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   focused line) opens a comment under it; comments collect in a review bar
   ("3 comments on 2 files") whose Add to message puts one formatted review
   in the node's composer and opens the chat. It never sends by itself.
+  In the comment box Enter adds and Shift+Enter is a new line, as in the
+  composer; the Changes tab's count is the unsent comments, with a comment
+  glyph (T426).
+- **Forms check as you type** (T426): New project says a taken name under
+  Name before Create; a short picker with no search box still takes typing
+  (the letters pick the first match, Enter chooses it); a list's
+  "Add a repository…" row is pinned below its scroll.
+- **Knowledge you write** is yours to accept, so Add knowledge's primary is
+  **Add** (it applies at once); **Save as proposal** keeps it in To review.
+  A checked rule still needs its two examples before Add (T426).
 - **Editing in place**: a node's title (click it) and goal (Edit on the goal
   card) change where they are read; Enter or leaving saves, Esc cancels. The
   Goal card shows only when it says more than the title and never on a root;
@@ -330,6 +340,11 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
 - **Send to parent** (T421, D42): in a conversation under another node, a
   reply's hover action (or ⋯) sends a conclusion up. It lands there as your
   message, so that node's agent acts on it as on anything you type.
+- **What a worker proposes next** (T427): an agent's `propose_next` line
+  ("Proposal") carries **Create node…**, which opens New node with its title
+  and goal filled in, under this node (design §2's "break it down"); the
+  Parent picker can put it elsewhere. Coordinators (Organise/Run) and the
+  Director create nodes themselves; a worker proposes.
 - **Turn into work** (T422, D42): an open conversation's ⋯ menu. One box: the
   goal (drafted from the talk by the cheap model, else its last reply, else its
   question; the hint says which) and a repository, "No repository" first for

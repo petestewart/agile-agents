@@ -21,7 +21,6 @@ import { getStreamDiff } from '../lib/api';
 import { type DiffFile, type DiffRow, diffTotals, parseDiff } from '../lib/chat';
 import type { StreamDiff } from '../lib/feed-types';
 import { branchName } from '../lib/inbox';
-import { modKeyLabel } from '../lib/palette';
 import {
   MESSAGE_MAX,
   type ReviewComment,
@@ -105,7 +104,6 @@ function CommentBox({
   actions: ReviewActions;
 }): JSX.Element {
   const label = `${draft.editing ? 'Edit comment on' : 'Comment on'} ${where}`;
-  const mod = modKeyLabel(typeof navigator === 'undefined' ? '' : navigator.platform);
   const empty = draft.text.trim() === '';
   const area = useRef<HTMLTextAreaElement>(null);
   // Opened (or moved to another line): the caret goes after the text.
@@ -150,7 +148,8 @@ function CommentBox({
             e.stopPropagation();
             actions.cancel();
             back();
-          } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+          } else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            // T426: Enter adds, Shift+Enter is a new line, as in the composer.
             e.preventDefault();
             if (empty) return;
             actions.submit();
@@ -163,8 +162,8 @@ function CommentBox({
           {label}
         </span>
         <span className="cr-diff-compose-keys" aria-hidden="true">
-          <Kbd>{mod}</Kbd>
-          <Kbd>Enter</Kbd> {draft.editing ? 'save' : 'add'} · <Kbd>Esc</Kbd> cancel
+          <Kbd>Enter</Kbd> {draft.editing ? 'save' : 'add'} · <Kbd>Shift</Kbd>
+          <Kbd>Enter</Kbd> new line · <Kbd>Esc</Kbd> cancel
         </span>
         <Button
           size="sm"

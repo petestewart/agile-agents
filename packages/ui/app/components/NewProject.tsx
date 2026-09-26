@@ -21,13 +21,17 @@ import { Button, Dialog, Field, RepoIcon, repoKindLabel, useToast } from './ui';
 
 export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
   const { setProject, select } = useShell();
-  const { refresh } = useFeed();
+  const { cockpit, refresh } = useFeed();
   const toast = useToast();
   const repos = [...useRepoList()].sort((a, b) => a.name.localeCompare(b.name));
   const [name, setName] = useState('');
   const [chosen, setChosen] = useState<string[]>([]);
   const [error, setError] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  // T426: a name another project has (the daemon's rule: ignoring case) says so under Name, as you type.
+  const taken = cockpit?.projects.find(
+    (p) => p.name.trim().toLowerCase() === name.trim().toLowerCase(),
+  );
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -39,7 +43,7 @@ export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
 
   const submit = async (): Promise<void> => {
     const n = name.trim();
-    if (!n || busy) return;
+    if (!n || busy || taken) return;
     setBusy(true);
     setError(undefined);
     try {
@@ -77,7 +81,7 @@ export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
             type="submit"
             variant="primary"
             busy={busy}
-            disabled={!name.trim()}
+            disabled={!name.trim() || taken !== undefined}
             data-testid="new-project-create"
           >
             Create project
@@ -85,7 +89,11 @@ export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
         </>
       }
     >
-      <Field label="Name" htmlFor="cr-new-project-name">
+      <Field
+        label="Name"
+        htmlFor="cr-new-project-name"
+        {...(taken ? { error: `A project named “${taken.name}” already exists.` } : {})}
+      >
         <input
           id="cr-new-project-name"
           data-testid="new-project-name"
@@ -93,6 +101,7 @@ export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
           placeholder="e.g. Shop"
           value={name}
           maxLength={80}
+          aria-invalid={taken ? true : undefined}
           onChange={(e) => setName(e.target.value)}
         />
       </Field>

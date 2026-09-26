@@ -2471,6 +2471,42 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/streams/titles.test.ts packages/daemon/src/http.test.ts -t T422`; control-room e2e `T422`.
 - **Notes:** Branch T422-turn-into-work. `START_ON_GOAL` lives in shared, so the cockpit and the tests say the same line.
 
+### Ticket: T425 Loose ends from T416 and T419
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Delivery read "Merge refused: merge refused: …"; `a` opened Ask on top of a focused card's choice; Ask had no palette entry or `?` line; a branched-off tangent's title was its first 80 characters.
+- **Acceptance Criteria:** Delivery says "Couldn’t merge." (or "Check failed.") and the reason in words (`mergeRefusal`); Ask's key yields to a handler that took it; ⌘K "Ask a question…" (A) opens Ask aimed at the open node, else the Director; the `?` sheet lists A; a tangent's title is `titleFromGoal` of its question, then named by the cheap model (D41).
+- **Validation Steps:** `bun test packages/ui`; control-room e2e `T368` (palette), `T332`, `T419`, `T416`.
+- **Notes:** Branch T425-leftovers.
+
+### Ticket: T426 Forms that check as you type (audit round 5)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Audit round 5 findings 25, 26, 27, 28: New project's duplicate-name error came after submit, under the repo list, and its "Add a repository…" row hid below the list's scroll edge; the repo picker ignored typing; the diff comment box took Ctrl+Enter where everything else takes Enter, and "Changes 1" read as one file; knowledge you wrote needed your own acceptance.
+- **Acceptance Criteria:** A taken project name (ignoring case, the daemon's rule) shows under Name as you type and Create waits; "Add a repository…" is pinned below the scroll; a picker without a search box takes type-ahead (`typeAheadMatch`: prefix, then substring; a repeated letter cycles) and Enter picks; in a diff comment Enter adds, Shift+Enter is a new line (Ctrl+Enter still adds), the hint says so, and the Changes count carries a comment glyph and "n review comments not sent yet"; Add knowledge's primary is **Add** (create, then accept; a refusal leaves it proposed with the reason), with **Save as proposal** secondary; a checked rule without its two examples can only be saved as a proposal.
+- **Validation Steps:** `bun test packages/ui/app/lib/tree.test.ts`; control-room e2e `T393`, `T367`, `T373`, the knowledge tests; the walkthrough (its 6.2 and 7 steps use Save as proposal, then Accept).
+- **Notes:** Branch T426-forms. LIVE-CHECKLIST names Save as proposal.
+
+### Ticket: T427 What a worker proposes next is one click from a node
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete: agents should be able to spawn their own children and work autonomously. Coordinators (at Organise/Run) and the Director already create nodes; a worker's `propose_next` only left a "Proposal" line with nothing to act on, so its follow-up work had to be retyped into New node.
+- **Acceptance Criteria:** A `propose_next` line ("next: <title> — <goal>", by an agent) shows **Create node…**, which opens New node with that title and goal (editable), under the proposing node; other proposal lines keep what they had (T205's Add <repo>). The verb's description tells the agent when to use it and what the human sees.
+- **Validation Steps:** `bun test packages/ui/app/lib/chat.test.ts packages/shared`; control-room e2e `T427`, `T205`.
+- **Notes:** Branch T427-proposed-next.
+
+### Ticket: T428 A picker's name outlasts its sub-label
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found in the T422 screenshot pass: on a phone, Turn into work's repo picker cut "No repository" to "No r…" to keep its long sub-label whole (a zero flex basis on the name).
+- **Acceptance Criteria:** A pick option's name takes its width first and the muted sub-label truncates before it; the research option's sub-label reads "Research, no branch".
+- **Validation Steps:** Screenshots at 390px, light and dark; control-room e2e `T422`, `T365`.
+- **Notes:** Branch T428-picker-sub.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

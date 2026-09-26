@@ -27,6 +27,7 @@ import {
   oneLine,
   openQuestions,
   parseDiff,
+  proposedNext,
   questionIdOfRef,
   sendIntent,
   sessionIdText,
@@ -658,5 +659,25 @@ describe('T421: a conclusion sent up reads in words', () => {
       text: 'Sent to Add CSV import: Stream it.',
       tone: 'muted',
     });
+  });
+});
+
+describe('proposedNext (T427)', () => {
+  const line = (body: string, by = 'agent:01J0000000000000000000000A', kind = 'proposal') =>
+    ({ by, kind, body }) as Parameters<typeof proposedNext>[0];
+  test("a worker's propose_next line is the node it proposes", () => {
+    expect(
+      proposedNext(line('next: Add CSV export — Export the ledger as CSV, with a test.')),
+    ).toEqual({
+      title: 'Add CSV export',
+      goal: 'Export the ledger as CSV, with a test.',
+    });
+  });
+  test('anything else proposes no node', () => {
+    expect(proposedNext(line('next: this needs a change in web too; add it?'))).toBeUndefined();
+    expect(proposedNext(line('next: A — B', 'human'))).toBeUndefined();
+    expect(
+      proposedNext(line('next: A — B', 'agent:01J0000000000000000000000A', 'line')),
+    ).toBeUndefined();
   });
 });

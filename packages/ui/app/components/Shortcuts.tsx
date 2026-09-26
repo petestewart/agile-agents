@@ -1,7 +1,7 @@
 /**
  * T368 (design/cockpit-ui.md §1.7): the keyboard help (`?` when not
  * typing) and the `g` then letter jumps to a view (`g i` Needs me). It
- * lists only keys that work: the palette (⌘K), `n` (NewStream), `/`
+ * lists only keys that work: the palette (⌘K), `n` (NewStream), `a` (Ask, T419), `/`
  * (StreamTree), Esc (every Dialog, Menu and panel), the composer's Enter,
  * `j`/`k` in Needs me (Inbox) and the tree (T395), A/B or 1/2 on a focused
  * question card (T416), the arrows in menus, Knowledge and the tree.
@@ -44,6 +44,7 @@ function sections(mod: string): ReadonlyArray<{
       rows: [
         { label: 'Search and run anything', keys: [[mod, 'K']] },
         { label: 'New node', keys: ['N'] },
+        { label: 'Ask about the open node (or the Director)', keys: ['A'] },
         { label: 'Filter the node tree', keys: ['/'] },
         { label: 'Keyboard shortcuts', keys: ['?'] },
         { label: 'Close a dialog, menu or panel', keys: ['Esc'] },
@@ -69,7 +70,8 @@ function sections(mod: string): ReadonlyArray<{
       rows: [
         { label: 'Move between lines of a file', keys: ['↑', '↓'] },
         { label: 'Comment on the focused line', keys: ['C'] },
-        { label: 'Add the comment', keys: [['Ctrl', 'Enter']] },
+        { label: 'Add the comment', keys: ['Enter'] },
+        { label: 'New line in a comment', keys: [['Shift', 'Enter']] },
       ],
     },
     {
