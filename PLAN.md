@@ -2398,6 +2398,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/streams/titles.test.ts packages/daemon/src/http.test.ts -t T414`; control-room e2e `T204` (New node sends `auto_title` for a derived title).
 - **Notes:** Branch T414-auto-titles. A Settings switch to turn it off is in the follow-ups.
 
+### Ticket: T417 Needs me stays in sight in the sidebar
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Audit round 5, finding 4: Needs me, Director and Knowledge shared the tree's scroll area, so opening a node low in a long tree scrolled Needs me and its count out of the sidebar.
+- **Acceptance Criteria:** Needs me, Director and Knowledge sit in a fixed block under New node; Views, the projects and the tree scroll below it, with a line under the block once they have scrolled.
+- **Validation Steps:** control-room e2e `audit r5 #4` (40 nodes, the last one open: its row and Needs me are both on screen; fails on the old sidebar).
+- **Notes:** Branch T417a-sidebar-pinned.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
