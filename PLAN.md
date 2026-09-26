@@ -2426,6 +2426,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test` (0 fail; new D42 tests in shared, attach, coordination, inbox, producers, repo-in-place), the walkthrough.
 - **Notes:** Branch T418-conversations-never-parts. Tests that built parts without a repo now give them one.
 
+### Ticket: T419 Ask from anywhere (D42)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete: asking a question at the level you choose (the Director, the project root, a coordinator, the developer on a ticket) should not mean New node's five fields, and the question should read as what you asked, not a goal.
+- **Acceptance Criteria:** `a` (or "Ask about this…" in a node's ⋯ menu) opens one box aimed at the open node, or the Director elsewhere; a picker re-aims it at any node or the Director; Enter asks (Shift+Enter a new line). About a node: a conversation under it, named for you (D41), its agent started with the question, opened on its chat. About the Director: a line in its thread. A conversation's chat opens with its question as your message; it never shows the Goal card (its question stays editable in Details).
+- **Validation Steps:** `bun test packages/ui/app/lib/ask.test.ts`; control-room e2e `T419` (two tests) and `T385`.
+- **Notes:** Branch T419-ask. The palette entry and the `?` sheet line come with T416's palette and shortcut work.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
