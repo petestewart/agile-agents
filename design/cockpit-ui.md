@@ -1,6 +1,6 @@
 # Cockpit UI — design system and UX rules
 
-Status: 2026-09-26 (Phase 15, T360–T374). Follow-ups: `cockpit-ui-followups.md`. Applies to `packages/ui/app`. Where this
+Status: 2026-09-26 (Phase 15, T360–T379). Follow-ups: `cockpit-ui-followups.md`. Applies to `packages/ui/app`. Where this
 file and `cockpit-design.md` §9 disagree on *how the cockpit looks or reads*,
 this file wins; on *what the cockpit does*, the design docs and the Decisions
 log still decide.
@@ -31,9 +31,12 @@ is running?**
 6. **Calm by default.** Neutral surfaces; colour only for status and the one
    primary action. No uppercase-everything labels, no borders around every
    line, no orange buttons for ordinary actions.
-7. **Keyboard first.** `n` new node, `/` filter the tree, `g i` Needs me,
-   `⌘K`/`Ctrl K` command palette (when built), `Esc` closes any overlay,
-   Enter sends, Shift+Enter is a newline.
+7. **Keyboard first.** `⌘K`/`Ctrl K` the command palette (nodes, projects,
+   views, actions; recent nodes first), `?` the shortcut list, `n` new node,
+   `/` filter the tree, `g` then `i`/`d`/`k`/`r`/`e`/`s` jumps to Needs me,
+   Director, Knowledge, Running, Events, Settings; `j`/`k` in Needs me;
+   `Esc` closes any overlay, Enter sends, Shift+Enter is a newline. The `?`
+   list (`Shortcuts.tsx`) names only keys that work.
 
 ## 2. Vocabulary (UI text)
 
@@ -149,6 +152,13 @@ Screen-level building blocks built on these (reuse them rather than copy):
 - `AddRepo.tsx` (`AddRepoDialog`) — add a local folder (autocomplete and a
   folder browser) or clone by URL.
 - `Pickers.tsx` — searchable picker fields (parent node, repository).
+- `CommandPalette.tsx` (matching in `lib/palette.ts`) and `Shortcuts.tsx` —
+  the ⌘K palette and the `?` list, on `Dialog`.
+- `Lenses.tsx` (Repos, Running, Dependencies, Events; logic in
+  `lib/lenses.ts`) — event titles (`eventTitle`) and routing words
+  (`ROUTE_REASON`) are shared with a node's Activity tab and the Director.
+- `lib/defaults.ts` `resolvedFor` — what a new session starts with, with the
+  project step (P5) before the repo's, as attach resolves it.
 
 ## 6. Node status (`lib/status.ts`)
 
