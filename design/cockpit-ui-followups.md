@@ -30,9 +30,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   worker's `showNotification` (`new Notification()` throws there); the hook
   stays quiet and Send a test says the browser didn't show it.
   (`lib/use-notify.ts`, `public/sw.js`)
-- An item seen once in a session never notifies again (a node that is ready,
-  gets a reply and finishes again notifies the first time only). Pete to say
-  whether a new `done` should.
 
 - The Overview's and Running's row age is the node's creation time: the
   cockpit row has no last-activity time. An `updated_at` on the row
@@ -49,11 +46,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   audit line shows only on the next push. The events service's `onEmitted`
   could push the frame itself. (`http.ts`, the tailer)
 
-- **DNS rebinding on reads.** GET routes (`/api/snapshot`, `/api/cockpit`,
-  `/api/repos`, …) have no loopback `Host` check (T362 added one for the
-  folder browser and clone only). A global check in `isSameOriginRequest`
-  closes it but would also refuse a tunnel (D15's phone use), which needs
-  auth anyway: Pete to decide.
 - `resolveMainBranch` runs git synchronously per repo on every
   `GET /api/repos`.
 - A clone that times out kills git but can leave its ssh child running (git

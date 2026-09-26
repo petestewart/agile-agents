@@ -45,10 +45,13 @@ const HEADLINE_IN_LIST = 56;
 /**
  * An item's identity across frames. The kind is part of it: a node's
  * `blocked` and `done` items share the node's id, and a node that was
- * blocked and is now finished is news.
+ * blocked and is now finished is news. T391: so is its time — a node's
+ * `done` item carries the node's id, and its `ts` is when the agent last
+ * finished, so a node that finishes again after your reply is news again,
+ * while a card that only leaves a frame and comes back is not.
  */
-export function itemKey(item: Pick<InboxItem, 'kind' | 'id'>): string {
-  return `${item.kind}:${item.id}`;
+export function itemKey(item: Pick<InboxItem, 'kind' | 'id' | 'ts'>): string {
+  return `${item.kind}:${item.id}:${item.ts}`;
 }
 
 export interface InboxDiff {

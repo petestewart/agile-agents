@@ -48,6 +48,8 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D35** (2026-09-26, Pete): a part's question about shared things (a sibling, a contract, owned paths, the plan) goes to its coordinator first (`child_question` event, coordinator-only `answer_child` verb). The coordinator answers or passes it up; a stopped coordinator sends it to the inbox; plan approval supersedes held (not passed-up) questions. As built in T338.
 - **D36** (2026-09-26, Pete): the T341 walkthrough decisions, as recommended. D1 "Waits on…" / "Tracker issue…" labels, tracker field only with a project tracker. D2 the open node and filter live in the URL. D3 a "question" state on Children cards. D4 coordinator wakes stay; ended sessions collapse in the list. D5 a direct merge's event is "merged". D6 the coordinator autonomy picker only on coordinating nodes and project roots. D7 "Merge" everywhere, not "Land". D8 deferred to real-agent QA (T342). D9 a ship-check hold is neutral, not error red. D10 accepting a decision wakes the conversation. D11 part titles aren't truncated by "waiting for the plan". D12 daemon lines meant for the agent are hidden from the human thread.
 - **D37** (2026-09-26, Pete): upgrade Bun past 1.3.11 if a release fixes the child-process pipe bugs (fd double-close, EBADF on epoll_ctl); verified on a branch with the full suite and CI before the pin moves. Otherwise stay on 1.3.11 with the existing workarounds.
+- **D38** (2026-09-26, Pete): no global `Host` check on the daemon's read routes. The cockpit must stay reachable from a phone through a tunnel (D15). Writes keep their same-origin check (403 otherwise); the folder browser and clone keep their loopback-`Host` check (T362). A Host allowlist (loopback plus configured tunnel names) stays an option if DNS rebinding ever matters more than reach.
+- **D39** (2026-09-26, Pete, to confirm): a browser notification fires every time a node finishes (or asks, or is blocked), including a second finish after your reply; the same card only leaving a frame and coming back does not notify again. As built in T391.
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -2177,6 +2179,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** `state.repo_add` and clone refuse a name that isn't letters, digits, `.`, `_`, `-` (starting with a letter or digit) in words, clone before git runs; `say {start}` leaves a waiting part to its plan (the line stays pending); the snapshot leaves archived nodes' asks out.
 - **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/feed/snapshot.test.ts`; `bun test packages/daemon/src/attach/service.test.ts -t T389`.
 - **Notes:** Branch T389-p3-hardening. `RepoNameSchema`/`REPO_NAME_RULE` in `packages/shared/src/repos.ts`.
+
+### Ticket: T391 A node that finishes again notifies again
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** D39: T388 keyed a notification on the item's kind and id, and a node's `done` item carries the node's id, so a node that finished, got a reply and finished again stayed silent the second time.
+- **Acceptance Criteria:** The key includes the item's time (a `done` item's is the agent's last finish); a new finish notifies, a card that only leaves and comes back does not.
+- **Validation Steps:** `bun test packages/ui/app/lib/notify.test.ts`; the T388 e2e.
+- **Notes:** Branch T391-notify-each-finish. Also records D38 (no global Host check on read routes).
 
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
