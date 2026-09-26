@@ -2231,6 +2231,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/attach/service.test.ts -t T396` (fails on the old code: two sessions); the attach, events and coordination suites.
 - **Notes:** Branch T396-one-agent-per-node.
 
+### Ticket: T397 A clone that times out stops its ssh too
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: a clone past its timeout killed git but could leave its ssh child running (git wasn't in its own process group).
+- **Acceptance Criteria:** git runs in its own process group; the timeout's SIGTERM and SIGKILL go to the group.
+- **Validation Steps:** `bun test packages/daemon/src/store/clone.test.ts` (the timeout test fails on the old code: the "ssh" ran on).
+- **Notes:** Branch T397-clone-group-kill.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

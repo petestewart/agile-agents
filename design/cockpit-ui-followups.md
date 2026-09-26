@@ -45,8 +45,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 
 - `resolveMainBranch` runs git synchronously per repo on every
   `GET /api/repos`.
-- A clone that times out kills git but can leave its ssh child running (git
-  isn't in its own process group). (`packages/daemon/src/store/clone.ts`)
 - A line sent with `start` appears in the first prompt twice (the brief's
   "Thread so far" and "What woke you"); by design for every wake (T336), a
   few tokens, invisible to the user.

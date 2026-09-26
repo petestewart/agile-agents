@@ -192,6 +192,22 @@ export function cloneEnv(base: NodeJS.ProcessEnv, cwd: string): Record<string, s
   return env;
 }
 
+/** Signals git's process group (T397), else git alone; a group already gone is fine. */
+function killGroup(
+  proc: { pid: number; kill(signal?: NodeJS.Signals): void },
+  signal: NodeJS.Signals,
+): void {
+  try {
+    process.kill(-proc.pid, signal);
+  } catch {
+    try {
+      proc.kill(signal);
+    } catch {
+      // already exited
+    }
+  }
+}
+
 async function runClone(
   source: CloneSource,
   dest: string,
@@ -214,6 +230,8 @@ async function runClone(
         stdin: 'ignore',
         stdout: 'ignore',
         stderr: Bun.file(stderrPath),
+        // T397: its own process group, so a timeout stops git and its ssh together.
+        detached: true,
       });
     } catch (err) {
       throw new CloneError(
@@ -221,10 +239,11 @@ async function runClone(
       );
     }
     // SIGTERM lets git remove its half-made clone; a git that ignores it is killed.
+    // The whole group: an ssh child left running would hold the connection open.
     term = setTimeout(() => {
       timedOut = true;
-      proc.kill('SIGTERM');
-      kill = setTimeout(() => proc.kill('SIGKILL'), CLONE_KILL_GRACE_MS);
+      killGroup(proc, 'SIGTERM');
+      kill = setTimeout(() => killGroup(proc, 'SIGKILL'), CLONE_KILL_GRACE_MS);
     }, timeoutMs);
     const code = await proc.exited;
     let stderr = '';

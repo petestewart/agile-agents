@@ -256,9 +256,11 @@ describe('cloneRepo (T362)', () => {
     expect(store.getRepos()).toEqual({});
   });
 
-  test('a clone that outlives the timeout is stopped and its folder removed', async () => {
+  test('a clone that outlives the timeout is stopped, its ssh with it, and its folder removed', async () => {
     // An "ssh" that never answers stands in for a stalled network (and outlives git).
-    const env = { ...process.env, GIT_SSH_COMMAND: 'sleep 3; true' };
+    // T397: its marker file shows whether it was left running after git stopped.
+    const marker = join(scratch, 'ssh-still-ran');
+    const env = { ...process.env, GIT_SSH_COMMAND: `sleep 2; touch ${marker}; true` };
     const started = Date.now();
     const err = await refusal(
       cloneRepo(
@@ -271,5 +273,7 @@ describe('cloneRepo (T362)', () => {
     expect(err.message).toContain('was stopped after');
     expect(existsSync(join(home, 'shop'))).toBe(false);
     expect(store.getRepos()).toEqual({});
-  });
+    await Bun.sleep(2500);
+    expect(existsSync(marker)).toBe(false);
+  }, 15_000);
 });
