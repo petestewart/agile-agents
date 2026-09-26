@@ -1997,11 +1997,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T366 ∥ Knowledge, explained
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** The screen says what knowledge is (rules, standards, architecture, decisions) and separates it: Proposed (to review) first, then by kind; each item's enforcement in words (checked on every action, checked before merge, on the reviewer's checklist, guidance only); compact rows with a detail panel for text, check, examples, stats, Edit and Test.
 - **Acceptance Criteria:** e2e for filter, accept, edit, test still green.
 - **Validation Steps:** `bun run test:e2e`.
+- **Notes:** Branch T366-knowledge, merge on phase-14. Tabs All · To review · Rules (enforced: action + ship) · Standards · Architecture · Decisions; rows with scope and enforcement in words, quiet stats, flags as icons; a Linear-style detail panel (text, scope, enforcement explained, the check, examples and test results, activity); the editor grouped What / Where / How it's enforced with only the fields that apply. Refreshes on `knowledge_*` events too (it went stale on agent proposals). e2e 49/49, walkthrough 1/1 on the branch; knowledge e2e 9/9 after merge. Open: default classifier question keeps markdown backticks and says "action" for ship checks (`shared/src/knowledge.ts`); built-ins named after their pattern kind (`knowledge/builtins.ts`); `report.ts` flags guidance items "never fired".
 
 ### Ticket: T367 ∥ Settings and the repo picker
 - **Priority:** P1
