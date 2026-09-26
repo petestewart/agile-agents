@@ -69,6 +69,17 @@ describe('diffInbox (T388): which items are new', () => {
     expect(diffInbox(first.seen, [a]).fresh).toEqual([a]);
   });
 
+  test('T391: a node that finishes again after a reply is news again', () => {
+    const done = item({ kind: 'done', id: NODE, ts: '2026-09-26T10:00:00.000Z' });
+    const first = diffInbox(undefined, []);
+    const finished = diffInbox(first.seen, [done]);
+    expect(finished.fresh).toEqual([done]);
+    // You replied: it works (the card leaves), then finishes again.
+    const working = diffInbox(finished.seen, []);
+    const again = { ...done, ts: '2026-09-26T10:20:00.000Z' };
+    expect(diffInbox(working.seen, [again]).fresh).toEqual([again]);
+  });
+
   test("a node's blocked and done items are different things", () => {
     const blocked = item({ kind: 'blocked', id: NODE });
     const done = item({ kind: 'done', id: NODE });
