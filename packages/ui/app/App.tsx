@@ -74,18 +74,25 @@ const WARM: ReadonlyArray<() => Promise<unknown>> = [
   () => import('./components/ProjectOverview'),
 ];
 
+/** How long after the first screen the warm-up waits, so it never competes with that screen's own reads. */
+const WARM_AFTER_MS = 1500;
+
 function useWarmChunks(): void {
   useEffect(() => {
     // A failed warm-up is said, in words, when that view is opened.
     const warm = (): void => {
       for (const load of WARM) load().catch(() => {});
     };
-    if (typeof window.requestIdleCallback === 'function') {
-      const id = window.requestIdleCallback(warm, { timeout: 5000 });
-      return () => window.cancelIdleCallback(id);
-    }
-    const timer = setTimeout(warm, 2000);
-    return () => clearTimeout(timer);
+    let idle: number | undefined;
+    const timer = setTimeout(() => {
+      if (typeof window.requestIdleCallback === 'function') {
+        idle = window.requestIdleCallback(warm, { timeout: 5000 });
+      } else warm();
+    }, WARM_AFTER_MS);
+    return () => {
+      clearTimeout(timer);
+      if (idle !== undefined) window.cancelIdleCallback(idle);
+    };
   }, []);
 }
 

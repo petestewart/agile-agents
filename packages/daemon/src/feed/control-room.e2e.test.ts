@@ -3827,7 +3827,10 @@ describe('Settings sections (Playwright e2e, T367)', () => {
           (page?.url() ?? '').includes('section=permissions'),
         );
         expect(await page.locator('[data-gate]').count()).toBe(3);
-        expect(await page.locator('[data-gate="land"]').textContent()).toContain('You');
+        // Who decides arrives with the policy (`GET /api/policy`): "…" until then.
+        await waitUntilAsync('the Merge gate to say who decides', async () =>
+          ((await page?.locator('[data-gate="land"]').textContent()) ?? '').includes('You'),
+        );
         // Back to General: its section needs no parameter.
         await page.locator('[data-testid="settings-nav-general"]').click();
         await waitUntilAsync(
