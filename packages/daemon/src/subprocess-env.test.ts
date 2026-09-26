@@ -56,7 +56,7 @@ describe('sandboxedSubprocessEnv', () => {
 
   test('never overrides GIT_CONFIG_GLOBAL — whatever the caller already has (set or unset) passes through unchanged', () => {
     const original = process.env.GIT_CONFIG_GLOBAL;
-    process.env.GIT_CONFIG_GLOBAL = undefined;
+    Reflect.deleteProperty(process.env, 'GIT_CONFIG_GLOBAL');
     try {
       const env = sandboxedSubprocessEnv(repoRoot, 'git');
       expect(env.GIT_CONFIG_GLOBAL).toBeUndefined();
@@ -73,7 +73,7 @@ describe('sandboxedSubprocessEnv', () => {
       expect(env.GIT_CONFIG_GLOBAL).toBe('/dev/null');
     } finally {
       if (original === undefined) {
-        process.env.GIT_CONFIG_GLOBAL = undefined;
+        Reflect.deleteProperty(process.env, 'GIT_CONFIG_GLOBAL');
       } else {
         process.env.GIT_CONFIG_GLOBAL = original;
       }
