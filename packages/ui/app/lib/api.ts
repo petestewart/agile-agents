@@ -496,3 +496,11 @@ export function updateStream(
 ): Promise<Stream> {
   return post(`/api/streams/${encodeURIComponent(id)}/update`, patch) as Promise<Stream>;
 }
+
+/** T372: rename a project or change its repos (registered names only). */
+export function updateProject(
+  id: string,
+  patch: { name?: string; repos?: string[] },
+): Promise<Project> {
+  return post(`/api/projects/${encodeURIComponent(id)}`, patch) as Promise<Project>;
+}

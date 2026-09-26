@@ -886,6 +886,16 @@ describe('T160 cockpit routes', () => {
     ).toBe(403);
     const listed = (await (await fetch(url('/api/projects'))).json()) as Array<{ id: string }>;
     expect(listed.map((p) => p.id)).toEqual([shop.id]);
+    // T372: rename a project and change its repos; an unknown repo is refused.
+    const renamed = await post(`/api/projects/${shop.id}`, { name: 'Shop', repos: [] });
+    expect(renamed.status).toBe(200);
+    expect(((await renamed.json()) as { name: string }).name).toBe('Shop');
+    expect((await post(`/api/projects/${shop.id}`, { name: 'shop' })).status).toBe(200);
+    expect((await post(`/api/projects/${shop.id}`, { repos: ['nope'] })).status).toBe(400);
+    expect(
+      (await post(`/api/projects/${shop.id}`, { name: 'x' }, { origin: 'http://evil.example' }))
+        .status,
+    ).toBe(403);
 
     const s = (body: Record<string, unknown>, headers?: Record<string, string>) =>
       post('/api/streams', body, headers);
