@@ -46,7 +46,9 @@ function assertGitToplevel(path: string): void {
  * set by the T202 migration or later): `main_branch`, else `target_branch`, else the remote's
  * default branch, else `main`/`master` if present, else `main`.
  */
-export function resolveMainBranch(entry: RepoEntry): string {
+export function resolveMainBranch(
+  entry: Pick<RepoEntry, 'path' | 'main_branch' | 'target_branch'>,
+): string {
   if (entry.main_branch) return entry.main_branch;
   if (entry.target_branch) return entry.target_branch;
   const remote = gitOut(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], entry.path);
@@ -54,6 +56,42 @@ export function resolveMainBranch(entry: RepoEntry): string {
   for (const b of ['main', 'master']) {
     if (gitOut(['rev-parse', '--verify', '--quiet', `refs/heads/${b}`], entry.path) !== undefined)
       return b;
+  }
+  return 'main';
+}
+
+/** T406: git's answer without blocking the event loop (a repo list asks for every repo at once). */
+async function gitOutAsync(args: string[], cwd: string): Promise<string | undefined> {
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn(['git', ...args], { cwd, stdin: 'ignore', stdout: 'pipe', stderr: 'ignore' });
+  } catch {
+    return undefined; // cwd gone: no answer, not a crash
+  }
+  const [out, code] = await Promise.all([
+    new Response(proc.stdout as ReadableStream).text(),
+    proc.exited,
+  ]);
+  return code === 0 ? out.trim() : undefined;
+}
+
+/** T406: `resolveMainBranch`, the same answer, for `GET /api/repos` (every repo in parallel). */
+export async function resolveMainBranchAsync(
+  entry: Pick<RepoEntry, 'path' | 'main_branch' | 'target_branch'>,
+): Promise<string> {
+  if (entry.main_branch) return entry.main_branch;
+  if (entry.target_branch) return entry.target_branch;
+  const remote = await gitOutAsync(
+    ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'],
+    entry.path,
+  );
+  if (remote) return remote.replace(/^origin\//, '');
+  for (const b of ['main', 'master']) {
+    const found = await gitOutAsync(
+      ['rev-parse', '--verify', '--quiet', `refs/heads/${b}`],
+      entry.path,
+    );
+    if (found !== undefined) return b;
   }
   return 'main';
 }

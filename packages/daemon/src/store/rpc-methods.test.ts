@@ -3,7 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInit } from '../init';
-import { buildStateRpcMethods, setRepoSettings } from './rpc-methods';
+import {
+  buildStateRpcMethods,
+  resolveMainBranch,
+  resolveMainBranchAsync,
+  setRepoSettings,
+} from './rpc-methods';
 import { StateStore } from './store';
 
 let scratch: string;
@@ -108,5 +113,44 @@ describe('state.repo_add names (T389)', () => {
     }
     await add({ name: 'ledger-lite.v2_x', path: repo });
     expect(Object.keys(store.getRepos())).toContain('ledger-lite.v2_x');
+  });
+});
+
+describe('T406: the main branch, without blocking', () => {
+  const git = (cwd: string, ...args: string[]) =>
+    Bun.spawnSync(['git', ...args], { cwd, stdout: 'ignore', stderr: 'ignore' });
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agile-main-branch-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('the same answer as the blocking read, case by case', async () => {
+    const repo = join(dir, 'repo');
+    mkdirSync(repo);
+    git(repo, 'init', '-q', '-b', 'master');
+    git(
+      repo,
+      '-c',
+      'user.email=t@e',
+      '-c',
+      'user.name=t',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'x',
+    );
+    const cases = [
+      { path: repo, main_branch: 'trunk' },
+      { path: repo, target_branch: 'develop' },
+      { path: repo },
+      { path: join(dir, 'gone') },
+    ];
+    for (const entry of cases) {
+      expect(await resolveMainBranchAsync(entry)).toBe(resolveMainBranch(entry));
+    }
+    expect(await resolveMainBranchAsync({ path: repo })).toBe('master');
+    expect(await resolveMainBranchAsync({ path: join(dir, 'gone') })).toBe('main');
   });
 });

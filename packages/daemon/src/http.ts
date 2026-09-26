@@ -95,7 +95,7 @@ import {
   buildStateRpcMethods,
   cloneRepo,
   listDirs,
-  resolveMainBranch,
+  resolveMainBranchAsync,
   setRepoSettings,
 } from './store';
 import type { RepoInPlaceService, StreamService } from './streams';
@@ -970,12 +970,15 @@ async function handleRepoRoute(
   const list = () =>
     Promise.all(
       Object.entries(feed.store.getRepos()).map(async ([name, entry]) => {
-        const remote = await feed.remotes.get(entry);
+        const [remote, mainBranch] = await Promise.all([
+          feed.remotes.get(entry),
+          resolveMainBranchAsync(entry),
+        ]);
         return {
           name,
           path: entry.path,
           protected_branches: entry.protected_branches,
-          main_branch: resolveMainBranch(entry),
+          main_branch: mainBranch,
           delivery: entry.delivery ?? 'direct',
           auto_merge: entry.auto_merge ?? false,
           visibility: entry.visibility ?? { mode: 'public' },
