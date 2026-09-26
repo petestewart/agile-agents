@@ -23,6 +23,7 @@ import {
   oneLine,
   openQuestions,
   parseDiff,
+  questionIdOfRef,
   sendIntent,
   sessionLabel,
   systemLine,
@@ -390,5 +391,18 @@ describe('parseDiff', () => {
 
   test('an empty patch has no files', () => {
     expect(parseDiff('')).toEqual([]);
+  });
+});
+
+describe('questionIdOfRef (T376)', () => {
+  test('reads the question id from a thread line ref', () => {
+    expect(questionIdOfRef('questions/Q-01ARZ3NDEKTSV4RRFFQ69G5FAV.yaml')).toBe(
+      'Q-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    );
+    expect(questionIdOfRef('Q-01ARZ3NDEKTSV4RRFFQ69G5FAV.yaml')).toBe(
+      'Q-01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    );
+    expect(questionIdOfRef('gates/HIL-01ARZ3NDEKTSV4RRFFQ69G5FAV.yaml')).toBeUndefined();
+    expect(questionIdOfRef(undefined)).toBeUndefined();
   });
 });

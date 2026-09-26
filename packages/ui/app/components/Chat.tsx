@@ -31,6 +31,7 @@ import {
   chatRows,
   clockTime,
   isNearBottom,
+  questionIdOfRef,
   ruleHitText,
   systemLine,
 } from '../lib/chat';
@@ -177,6 +178,11 @@ export interface MessageListProps<E extends ChatEntry> {
   renderExtra?: (entry: E, index: number) => ReactNode;
   /** A rule hit's "Open the rule". */
   onOpenRule?: (rule: string) => void;
+  /**
+   * T376: questions whose card is open below the chat. Their thread line folds
+   * to one line pointing down, so the question doesn't read twice.
+   */
+  openQuestions?: ReadonlySet<string>;
   testid?: string;
   label?: string;
 }
@@ -226,6 +232,7 @@ export function MessageList<E extends ChatEntry>({
   renderActions,
   renderExtra,
   onOpenRule,
+  openQuestions,
   testid = 'thread',
   label = 'Conversation',
 }: MessageListProps<E>): JSX.Element {
@@ -341,6 +348,8 @@ export function MessageList<E extends ChatEntry>({
           );
           return out;
         }
+        const asked = entry.kind === 'question' ? questionIdOfRef(entry.ref) : undefined;
+        const pending = asked !== undefined && openQuestions?.has(asked) === true;
         out.push(
           <li
             key={key}
@@ -350,6 +359,7 @@ export function MessageList<E extends ChatEntry>({
             data-kind={entry.kind}
             data-by={byAttr(entry.by)}
             data-cont={continued ? 'true' : undefined}
+            data-open-question={pending ? 'true' : undefined}
           >
             {!continued && (
               <div className="cr-msg-head">
@@ -363,6 +373,12 @@ export function MessageList<E extends ChatEntry>({
               {tag && (
                 <span className="cr-msg-tag" data-tone={tag.tone}>
                   {tag.label}
+                  {pending ? (
+                    <>
+                      {' · answer below'}
+                      <Icon name="arrow-down" size={11} />
+                    </>
+                  ) : null}
                 </span>
               )}
               <ThreadBody body={entry.body} />
