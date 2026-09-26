@@ -2030,6 +2030,14 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/attach`; CLI daemon e2e.
 - **Notes:** Branch T370-daemon-shutdown. Non-e2e daemon+CLI 2080/0; `daemon.e2e`, `stream.e2e` green. Daemon +10.
 
+### Ticket: T371 ∥ Daemon text the cockpit shows: no ids, no "stream"
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Found by T364/T366: daemon-written text the cockpit displays leaks ids and old vocabulary. Inbox items ("worker finished — merge or close the stream", "3 proposed rules from migration"), delivery preflight/refusal reasons ("stream <id> has a live session (<id>)"), land-gate text with raw `stream/<id>-slug` branches, the default classifier question (markdown backticks, ".?", "action" for a ship check that reads a diff), guidance items flagged "never fired", built-ins named after their pattern kind. Say nodes by title and "node", keep ids only where a machine reads them. Update the tests and LIVE-CHECKLIST lines that quote the old strings.
+- **Acceptance Criteria:** Unit tests for each reworded string; e2e and walkthrough still green.
+- **Validation Steps:** `bun test packages/shared packages/daemon` (non-e2e); `bun run build && bun run test:walkthrough`.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Todo
