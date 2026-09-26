@@ -2417,6 +2417,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui`; the whole control-room e2e (84/0) and the walkthrough, with the new draft-comment e2e.
 - **Notes:** Branch T413-node-page-words (worker), merged. The Activity, Plan, Knowledge and Docs tabs load on demand (main script 339 → 331 KB).
 
+### Ticket: T416 ∥ Needs me, errors and chrome (audit round 5)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Audit round 5 findings 6, 7, 12, 13, 18, 20, 21, 24, 29, 30, 31, 33, 34, 38: a refused merge as a raw toast; nothing said while the daemon was away; a question shown three times; blocked cards with no way to answer; page headers of five shapes; faint text and focus rings under contrast; a palette that knew nothing of the open node or Needs me; a stale link opening nothing; Ready cards repeating a stock sentence; the Director's load failure under an empty state; two path separators; Settings pills that never changed; phone overflow; a first merge with no confirm.
+- **Acceptance Criteria:** A refused merge reads "Couldn't merge." with the reason in words and its fix as a button (Ask the agent to rebase / to fix the conflicts / Stop the agent), on the card and under the header, no toast; the daemon away for 2 s disables writes with "Reconnecting to the daemon…", a failed send keeps the draft with Retry; a question reads once (its chat line), the card holds its choices, the composer bar says which it answers; a blocked card has "Reply to unblock…"; A/B and 1/2 pick a choice on a focused card; one `PageHeader` everywhere but node pages; `--text-faint` ≥ 4.2:1, a solid focus ring, dark accent 4.84:1 under white; ⌘K has "This node" (the page's own actions) and "Needs me" groups and a Recent list filled from recent changes; a missing node says so (Restore when deleted); Ready cards show the agent's progress and overlaps; the Director's failed read shows only the error and Try again; "›" as the path separator; Settings shows a notifications pill only when blocked or unavailable, Permissions folded into General; phone tabs fade at the edge, no keycaps on touch; the first Merge asks, with "Don't ask again" per browser.
+- **Validation Steps:** `bun test packages/ui` (errors, inbox, palette); the whole control-room e2e (93/0 after the merge) and the walkthrough; full `bun test` 3118/0.
+- **Notes:** Branch T416-needs-me-chrome (worker), merged. Left over: Delivery's "Merge refused:" label, the header's Start and Merge while offline, Ask's `a` and a focused card's A (handled with stopPropagation).
+
 ### Ticket: T418 A conversation never reshapes the tree (D42)
 - **Priority:** P1
 - **Status:** Done
