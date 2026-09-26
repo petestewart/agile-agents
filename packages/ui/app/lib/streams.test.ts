@@ -24,6 +24,7 @@ import {
   rowsInProject,
   ruleHitOf,
   runningRows,
+  sessionRows,
   streamDot,
   subtreeNeedsYou,
   threadAuthorLabel,
@@ -164,6 +165,20 @@ describe('stream page helpers (T161)', () => {
     expect(isThinking({ sessions: [session('a', 'lessons', 'running')] })).toBe(false);
     expect(isLiveSession({ status: 'idle' })).toBe(true);
     expect(isLiveSession({ status: 'stopped' })).toBe(false);
+  });
+
+  test('T350: two or more ended sessions fold into the earlier row; live ones always show', () => {
+    const ended = Array.from({ length: 8 }, (_, i) => session(`e${i}`, 'coordinator', 'stopped'));
+    const live = session('live', 'coordinator', 'running');
+    const rows = sessionRows([...ended.slice(0, 4), live, ...ended.slice(4)]);
+    expect(rows.shown.map((s) => s.id)).toEqual(['live']);
+    expect(rows.earlier.map((s) => s.id)).toEqual(ended.map((s) => s.id));
+    // Nothing live: every ended session is behind the one row.
+    expect(sessionRows(ended)).toEqual({ shown: [], earlier: ended });
+    // A lone ended session stays on show, beside any live one.
+    const one = session('err', 'worker', 'error');
+    expect(sessionRows([one, live])).toEqual({ shown: [one, live], earlier: [] });
+    expect(sessionRows([])).toEqual({ shown: [], earlier: [] });
   });
 
   test('thread authors read as you, daemon, or the session role and vendor', () => {

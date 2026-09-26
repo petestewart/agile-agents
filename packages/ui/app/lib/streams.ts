@@ -177,6 +177,20 @@ export function isLiveSession(session: Pick<SessionRef, 'status'>): boolean {
 }
 
 /**
+ * T350 (D36 D4): the sessions strip. Coordinators wake on every child event,
+ * so ended sessions pile up; two or more of them fold into one "N earlier
+ * sessions" row. Live sessions are always shown, and a lone ended session
+ * stays on show (its ended reason is often the thing to read). Order is kept.
+ */
+export function sessionRows<T extends Pick<SessionRef, 'status'>>(
+  sessions: readonly T[],
+): { shown: T[]; earlier: T[] } {
+  const ended = sessions.filter((s) => !isLiveSession(s));
+  if (ended.length < 2) return { shown: [...sessions], earlier: [] };
+  return { shown: sessions.filter(isLiveSession), earlier: ended };
+}
+
+/**
  * The thread's thinking indicator: a session is mid-turn — a worker or a
  * reviewer `starting`/`running`. An `idle` session is waiting on the human
  * (an open question or gate), so it is not thinking; the inbox card says

@@ -73,6 +73,7 @@ import {
   isLiveSession,
   isThinking,
   ruleHitOf,
+  sessionRows,
   streamDot,
   threadAuthorLabel,
 } from '../lib/streams';
@@ -990,6 +991,56 @@ function ChildCards({
   );
 }
 
+type SessionRow = StreamPagePayload['stream']['sessions'][number];
+
+function SessionItem({ session }: { session: SessionRow }): JSX.Element {
+  return (
+    <li
+      data-testid="session"
+      data-role={session.role}
+      data-status={session.status}
+      title={session.id}
+    >
+      <strong>{session.role}</strong> {session.vendor}/{sessionModelText(session)}
+      {session.effort ? ` · ${session.effort}` : ''} · {session.status}
+      {session.ended_reason && (
+        <span className="cr-dim" data-testid="session-ended-reason">
+          {' '}
+          — {session.ended_reason}
+        </span>
+      )}
+    </li>
+  );
+}
+
+/** T350 (D36 D4): live sessions as they are; ended ones behind one "N earlier sessions" row. */
+function SessionList({ sessions }: { sessions: readonly SessionRow[] }): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const { shown, earlier } = sessionRows(sessions);
+  return (
+    <ul>
+      {sessions.length === 0 && <li className="cr-dim">No sessions yet.</li>}
+      {earlier.length > 0 && (
+        <li>
+          <button
+            type="button"
+            className="cr-link"
+            data-testid="sessions-earlier"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((open) => !open)}
+          >
+            {earlier.length} earlier sessions
+          </button>
+        </li>
+      )}
+      {expanded && earlier.map((session) => <SessionItem key={session.id} session={session} />)}
+      {shown.map((session) => (
+        <SessionItem key={session.id} session={session} />
+      ))}
+    </ul>
+  );
+}
+
 export function StreamPage({ id }: { id: string }): JSX.Element {
   const { cockpit, refresh } = useFeed();
   const { openRules, select } = useShell();
@@ -1196,27 +1247,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       />
 
       <section className="cr-sessions" data-testid="sessions">
-        <ul>
-          {stream.sessions.length === 0 && <li className="cr-dim">No sessions yet.</li>}
-          {stream.sessions.map((session) => (
-            <li
-              key={session.id}
-              data-testid="session"
-              data-role={session.role}
-              data-status={session.status}
-              title={session.id}
-            >
-              <strong>{session.role}</strong> {session.vendor}/{sessionModelText(session)}
-              {session.effort ? ` · ${session.effort}` : ''} · {session.status}
-              {session.ended_reason && (
-                <span className="cr-dim" data-testid="session-ended-reason">
-                  {' '}
-                  — {session.ended_reason}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
+        <SessionList key={stream.id} sessions={stream.sessions} />
         <div className="cr-actions">
           <button
             type="button"

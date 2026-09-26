@@ -952,7 +952,9 @@ agile daemon status
 
 - Why a session ended: the node page's session list shows it after the
   session's status (`— <reason>`) when it was not a normal end; a normal
-  end is `session ended: its turn finished` on the thread.
+  end is `session ended: its turn finished` on the thread. Two or more
+  ended sessions fold into one `N earlier sessions` row: click it to show
+  them. Live sessions are always shown.
 - A node's worktree and branch: the line under its title (branch) and the
   **Diff** tab (worktree path). Worktrees are
   `<repo>/.worktrees/<node-id>-<slug>` on `stream/…` branches.

@@ -2252,6 +2252,70 @@ describe('a long agent message collapses (Playwright e2e, T330)', () => {
   );
 });
 
+// ---- T350: ended sessions collapse ------------------------------------------
+
+describe('ended sessions collapse (Playwright e2e, T350)', () => {
+  browserTest(
+    '8 ended coordinator sessions fold into one row that expands; the live one stays shown',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', { title: 'waking', goal: 'g' });
+        const coordinator = (status: 'stopped' | 'idle') => ({
+          id: ulid(),
+          vendor: 'claude',
+          model: 'm',
+          role: 'coordinator' as const,
+          status,
+        });
+        const ended = Array.from({ length: 8 }, () => coordinator('stopped'));
+        const live = coordinator('idle');
+        await cockpit.store.updateStream('daemon', stream.id, (before) => ({
+          ...before,
+          sessions: [...ended, live],
+        }));
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        const sessions = page.locator('[data-testid="sessions"]');
+        const earlier = sessions.locator('[data-testid="sessions-earlier"]');
+        await earlier.waitFor();
+        // Collapsed: the live session plus one row for the eight ended ones.
+        expect(await earlier.textContent()).toBe('8 earlier sessions');
+        expect(await earlier.getAttribute('aria-expanded')).toBe('false');
+        expect(await sessions.locator('li').count()).toBe(2);
+        const rows = sessions.locator('[data-testid="session"]');
+        expect(await rows.count()).toBe(1);
+        expect(await rows.first().getAttribute('title')).toBe(live.id);
+        expect(await rows.first().getAttribute('data-status')).toBe('idle');
+
+        // Expanded: all eight show, and the live one is still there.
+        await earlier.click();
+        expect(await earlier.getAttribute('aria-expanded')).toBe('true');
+        await sessions.locator('[data-testid="session"][data-status="stopped"]').nth(7).waitFor();
+        expect(
+          await sessions.locator('[data-testid="session"][data-status="stopped"]').count(),
+        ).toBe(8);
+        expect(await rows.count()).toBe(9);
+        expect(await sessions.locator(`[data-testid="session"][title="${live.id}"]`).count()).toBe(
+          1,
+        );
+
+        // Collapses again.
+        await earlier.click();
+        expect(await rows.count()).toBe(1);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 // ---- T266: the Knowledge screen -------------------------------------------
 
 describe('the Knowledge screen (Playwright e2e, T266)', () => {
