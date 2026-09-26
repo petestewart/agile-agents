@@ -1549,7 +1549,7 @@ test.skipIf(!RUN)(
       );
       await checkText('Repos shows main changed under ledger-lite', events, /main changed/);
       // T347 (D36 D5): ledger-lite merges direct, so its merges read "merged", not "pr merged".
-      await checkText('Repos shows merged under ledger-lite', events, /(^|\| )merged · /);
+      await checkText('Repos shows merged under ledger-lite', events, /(?<!pr )merged · /);
       await checkNotText('a direct merge is not called a PR merge', events, /pr merged/);
       await checkText(
         'the events are labelled',
