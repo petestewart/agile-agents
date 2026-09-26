@@ -113,7 +113,7 @@ cd ~/agile-agents
 which agile
 ```
 
-`bun --version` must be 1.3.11 or newer. `which agile` prints
+`bun --version` must be 1.4.2 or newer. `which agile` prints
 `~/.bun/bin/agile`. If it prints nothing, add
 `export PATH="$HOME/.bun/bin:$PATH"` to `~/.zshrc` and open a new terminal.
 (`bun link` makes `packages/cli/src/index.ts` executable, which git sees as a
