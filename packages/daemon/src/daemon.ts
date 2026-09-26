@@ -709,7 +709,12 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
    * unlink under the live one.
    */
   // T414 (D41): untitled nodes are named by a cheap model, off the create path.
-  const titleRun = options.titleRun === null ? undefined : (options.titleRun ?? claudeTitleRun());
+  const modelRun = options.titleRun === null ? undefined : (options.titleRun ?? claudeTitleRun());
+  // T434: Settings' quick drafts switch, read per call so turning it off holds at once.
+  const titleRun: TitleRun | undefined =
+    modelRun && store
+      ? async (prompt) => (quickDraftsOn(store) ? modelRun(prompt) : undefined)
+      : modelRun;
   const titleNamer =
     streamService && titleRun
       ? new TitleNamer({
@@ -741,6 +746,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(landingService ? { landing: landingService } : {}),
     ...(titleNamer ? { titleNamer } : {}),
     ...(titleRun ? { cheapModel: titleRun } : {}),
+    quickDraftsAvailable: modelRun !== undefined,
     ...(prPoller ? { prCheck: (id: string) => prPoller.pollNow(id) } : {}),
     ...(attachService ? { attach: attachService } : {}),
     ...(routedEvents ? { events: routedEvents } : {}),
@@ -864,4 +870,13 @@ export function installShutdownSignals(handle: DaemonHandle): void {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+}
+
+/** T434: the quick drafts switch (absent = on); an unreadable config leaves it on. */
+function quickDraftsOn(store: StateStore): boolean {
+  try {
+    return store.getHomeConfig().quick_drafts !== false;
+  } catch {
+    return true;
+  }
 }

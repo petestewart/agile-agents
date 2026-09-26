@@ -610,6 +610,24 @@ export class StateStore {
     });
   }
 
+  /** T434: the quick drafts switch in `<home>/config.yaml` (`true` removes the key: on is the default). */
+  async setQuickDrafts(on: boolean, options: { by?: string } = {}): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (on) Reflect.deleteProperty(raw, 'quick_drafts');
+      else raw.quick_drafts = false;
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { quick_drafts: on },
+      });
+      return { result: validated, event };
+    });
+  }
+
   /** `<home>/config.yaml` through the strict schema; a missing file is `{}`. */
   getHomeConfig(): HomeConfig {
     const path = this.abs('config.yaml');

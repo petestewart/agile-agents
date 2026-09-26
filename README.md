@@ -92,7 +92,7 @@ Every command takes `--json`.
 
 The home (`$AGILE_HOME`, default `~/.agile/`) holds:
 
-- `config.yaml`: the port (default 4600), session defaults, classifier and tracker settings.
+- `config.yaml`: the port (default 4600), session defaults, classifier and tracker settings, and `quick_drafts` (Settings → General → Quick drafts: set it to `false` to skip the Haiku calls for titles and goal drafts).
 - `repos.yaml`: registered repositories and their delivery.
 - `streams/` and `threads/`: nodes and their chats.
 - `rules/`: knowledge items.

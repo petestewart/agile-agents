@@ -114,3 +114,50 @@ function call(socketPath: string, request: Record<string, unknown>): Promise<Jso
     socket.on('error', reject);
   });
 }
+
+describe('T434: the quick drafts switch', () => {
+  test('off, an untitled node asks the cheap model nothing; on again, it does', async () => {
+    runInit(home);
+    const asked: string[] = [];
+    handle = await startDaemon({
+      port: 0,
+      socketPath: join(repo, '.agile-daemon.sock'),
+      titleRun: async (prompt) => {
+        asked.push(prompt);
+        return 'A better title';
+      },
+    });
+    const base = `http://127.0.0.1:${handle.http.port}`;
+    const post = async (path: string, body: unknown) =>
+      (await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then((res) => res.json())) as Record<string, unknown>;
+    expect(await (await fetch(`${base}/api/settings/quick-drafts`)).json()).toEqual({
+      on: true,
+      available: true,
+    });
+    const project = await post('/api/projects', { name: 'Shop' });
+    const untitled = (goal: string) =>
+      post('/api/streams', {
+        project: project.id,
+        title: goal,
+        goal,
+        auto_title: true,
+        start: false,
+      });
+
+    await post('/api/settings/quick-drafts', { on: false });
+    await untitled('first idea');
+    await Bun.sleep(100);
+    expect(asked).toEqual([]);
+
+    await post('/api/settings/quick-drafts', { on: true });
+    await untitled('second idea');
+    const deadline = Date.now() + 5000;
+    while (asked.length === 0 && Date.now() < deadline) await Bun.sleep(20);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('second idea');
+  });
+});
