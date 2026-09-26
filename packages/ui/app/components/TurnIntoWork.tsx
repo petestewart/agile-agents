@@ -32,6 +32,7 @@ import {
   updateStream,
 } from '../lib/api';
 import { type TurnWhere, coordinatesIt, keepsTitle } from '../lib/ask';
+import { writeFailure } from '../lib/errors';
 import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
 import { splitRepos, titleFromGoal } from '../lib/tree';
 import { Icon } from './Icon';
@@ -170,7 +171,7 @@ export function TurnIntoWorkDialog({
         ...(asksWhere ? { where } : {}),
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(writeFailure(err, 'Couldn’t reach the daemon; nothing was started.'));
     } finally {
       setBusy(false);
     }
