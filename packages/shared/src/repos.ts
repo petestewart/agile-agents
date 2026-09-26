@@ -139,3 +139,57 @@ export function validateReposConfig(input: unknown): ReposConfig {
   }
   return result.data;
 }
+
+/**
+ * T362: where a repo's remote lives, for the cockpit's repo icon (local,
+ * GitHub over https or ssh, another host). `url` never carries a password,
+ * and on http(s) no userinfo at all (a token can sit in the user part). A
+ * repo row has no `remote` when its repo has no such remote (local only).
+ */
+export const REPO_REMOTE_KINDS = ['github', 'gitlab', 'bitbucket', 'other'] as const;
+export type RepoRemoteKind = (typeof REPO_REMOTE_KINDS)[number];
+/** `https` also covers plain http and `git://`; `file` is a path on this machine. */
+export const REPO_REMOTE_PROTOCOLS = ['https', 'ssh', 'file'] as const;
+export type RepoRemoteProtocol = (typeof REPO_REMOTE_PROTOCOLS)[number];
+
+export interface RepoRemote {
+  kind: RepoRemoteKind;
+  protocol: RepoRemoteProtocol;
+  url: string;
+  /** The path before the repo name (`acme`, a GitLab `group/sub`); absent for a local path. */
+  owner?: string;
+  /** The repo name, `.git` dropped. */
+  name?: string;
+}
+
+/**
+ * T362: Settings' "clone by URL" (`POST /api/repos/clone`). `url` is an
+ * https/ssh/`git@host:o/r` URL, a local path, or GitHub's `owner/repo`;
+ * `dest` defaults to `<projects folder>/<the URL's repo name>`, and `name`
+ * (the registry name) to the URL's repo name.
+ */
+/**
+ * T389: a repo's registry name (the key in `repos.yaml`): letters, digits,
+ * `.`, `_` and `-`, starting with a letter or digit. A name like `__proto__`
+ * would be lost when the registry is parsed, and one with a `/` or a space
+ * makes a poor route segment.
+ */
+export const REPO_NAME_MAX_CHARS = 100;
+export const REPO_NAME_RULE =
+  'a repo name is letters, digits, ".", "_" and "-", starting with a letter or digit';
+export const RepoNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(REPO_NAME_MAX_CHARS)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, REPO_NAME_RULE);
+
+export const REPO_CLONE_URL_MAX_CHARS = 2048;
+export const RepoCloneInputSchema = z
+  .object({
+    url: z.string().trim().min(1).max(REPO_CLONE_URL_MAX_CHARS),
+    dest: z.string().trim().min(1).max(4096).optional(),
+    name: RepoNameSchema.optional(),
+  })
+  .strict();
+export type RepoCloneInput = z.infer<typeof RepoCloneInputSchema>;

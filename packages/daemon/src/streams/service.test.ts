@@ -89,6 +89,67 @@ describe('create', () => {
   });
 });
 
+describe('Branch off (T332, D33)', () => {
+  async function conversation() {
+    const root = await newStream('Shop');
+    const talk = await newStream('Why are prices slow?', { parent: root.id });
+    await streams.appendThread('human', talk.id, {
+      kind: 'line',
+      body: 'is it the cache?\nor the db?',
+    });
+    return { root, talk, line: streams.readThread(talk.id).total - 1 };
+  }
+
+  test("seeds the tangent's thread with the parent's line, quoted, and notes it on the parent", async () => {
+    const { talk, line } = await conversation();
+    const tangent = await newStream('Cache?', {
+      parent: talk.id,
+      goal: 'does the cache help?',
+      seed_line: line,
+    });
+    expect(tangent.goal).toBe('does the cache help?');
+    expect(tangent.repo).toBeUndefined();
+    expect('seed_line' in tangent).toBe(false);
+    const [created, seed] = streams.readThread(tangent.id).entries;
+    expect(created?.body).toBe('stream created: Cache?');
+    expect(seed?.kind).toBe('event');
+    expect(seed?.ref).toBe(talk.id);
+    expect(seed?.body).toBe(
+      'Branched off Why are prices slow?, from this line (you):\n\n> is it the cache?\n> or the db?',
+    );
+    const note = streams.readThread(talk.id).entries.at(-1);
+    expect(note?.body).toBe(`tangent branched off line ${line}: Cache?`);
+    expect(note?.ref).toBe(tangent.id);
+  });
+
+  test('a long line is capped to the thread body limit', async () => {
+    const { talk } = await conversation();
+    await streams.appendThread('human', talk.id, {
+      kind: 'line',
+      body: 'y'.repeat(THREAD_BODY_MAX_CHARS),
+    });
+    const line = streams.readThread(talk.id).total - 1;
+    const tangent = await newStream('Long', { parent: talk.id, seed_line: line });
+    const seed = streams.readThread(tangent.id).entries[1];
+    expect(seed?.body.length).toBeLessThanOrEqual(THREAD_BODY_MAX_CHARS);
+    expect(seed?.body).toContain('…');
+  });
+
+  test('refuses a missing line, a repo, a helper, and a parent that is not a conversation', async () => {
+    const { root, talk, line } = await conversation();
+    await expect(newStream('x', { parent: talk.id, seed_line: 999 })).rejects.toThrow(
+      /no such line/,
+    );
+    await expect(
+      newStream('x', { parent: talk.id, seed_line: line, repo: 'shop' }),
+    ).rejects.toThrow(/tangent has no repo/);
+    await expect(newStream('x', { seed_line: 0 })).rejects.toThrow(/needs a parent/);
+    await expect(newStream('x', { parent: root.id, seed_line: 0 })).rejects.toThrow(
+      'only a conversation branches off; Shop is project',
+    );
+  });
+});
+
 describe('list and tree', () => {
   test('returns parent/child structure', async () => {
     const root = await newStream('root');
@@ -352,5 +413,213 @@ describe('node fields (T201)', () => {
         /may not change human/,
       );
     }
+  });
+});
+
+describe('move (T333, D34)', () => {
+  async function setup() {
+    const { ProjectService } = await import('../projects/service');
+    const { ContractService } = await import('../coordination/contracts');
+    const { PlanService, planMoveCoordination } = await import('../coordination/plans');
+    // Built before the services it reads, as the daemon does (read lazily).
+    const late: { c?: ReturnType<typeof planMoveCoordination> } = {};
+    streams = new StreamService(store, {
+      coordination: {
+        planAwaitingApproval: (n) => late.c?.planAwaitingApproval(n) === true,
+        namedIn: (p, c) => late.c?.namedIn(p, c) ?? [],
+      },
+    });
+    const contracts = new ContractService({ store, streams });
+    const plans = new PlanService({ store, streams, contracts });
+    late.c = planMoveCoordination(plans, contracts);
+    const projects = new ProjectService(store, streams);
+    const shop = await projects.create({ name: 'Shop' });
+    const blog = await projects.create({ name: 'Blog' });
+    return { shop, blog, plans, contracts };
+  }
+  const thread = (id: string) => streams.readThread(id).entries.map((e) => e.body);
+  const roleOf = async (id: string) => {
+    const { liveChildrenOf, nodeRole } = await import('@agile-agents/shared');
+    const all = streams.list();
+    return nodeRole(streams.get(id), liveChildrenOf(id, all), all);
+  };
+
+  test('re-derives roles, writes a line on both parents and the node, keeps branch and worktree', async () => {
+    const { shop } = await setup();
+    await store.addRepo('api', { path: home });
+    const a = await newStream('Show sale prices', { project: shop.id });
+    const b = await newStream('Refunds', { project: shop.id });
+    const work = await newStream('api: add salePrice', { parent: a.id, repo: 'api' });
+    await streams.update('daemon', work.id, { branch: 'stream/x', worktree: '/tmp/wt-x' });
+    expect(await roleOf(a.id)).toBe('coordinating');
+    expect(await roleOf(b.id)).toBe('conversation');
+
+    const moved = await streams.move(work.id, b.id);
+    expect(moved.parent).toBe(b.id);
+    expect(moved.branch).toBe('stream/x');
+    expect(moved.worktree).toBe('/tmp/wt-x');
+    expect(moved.repo).toBe('api');
+    expect(await roleOf(a.id)).toBe('conversation');
+    expect(await roleOf(b.id)).toBe('coordinating');
+    expect(await roleOf(work.id)).toBe('work');
+    expect(thread(a.id).at(-1)).toBe(
+      `moved away: api: add salePrice (${work.id}) is now under Refunds`,
+    );
+    expect(thread(b.id).at(-1)).toBe(
+      `moved here: api: add salePrice (${work.id}) from Show sale prices`,
+    );
+    expect(thread(work.id).at(-1)).toBe('moved from Show sale prices to Refunds');
+
+    // A project id detaches it to the project's root; the same parent is a no-op.
+    expect((await streams.move(work.id, shop.id)).parent).toBe(shop.root);
+    const lines = thread(work.id).length;
+    await streams.move(work.id, shop.root);
+    expect(thread(work.id).length).toBe(lines);
+  });
+
+  test('refuses its own subtree, another project, a project root and an unknown target', async () => {
+    const { shop, blog } = await setup();
+    const a = await newStream('a', { project: shop.id });
+    const child = await newStream('child', { parent: a.id });
+    const grandchild = await newStream('grandchild', { parent: child.id });
+    const other = await newStream('post', { project: blog.id });
+    await expect(streams.move(a.id, grandchild.id)).rejects.toThrow(/inside a's subtree/);
+    await expect(streams.move(a.id, a.id)).rejects.toThrow(/subtree/);
+    // T371: projects by name, never by id.
+    await expect(streams.move(a.id, other.id)).rejects.toThrow(
+      'post is in Blog, a in Shop: a node moves only within its project',
+    );
+    await expect(streams.move(a.id, blog.id)).rejects.toThrow(/only within its project/);
+    await expect(streams.move(shop.root, a.id)).rejects.toThrow(
+      'Shop is a project root; it cannot move',
+    );
+    await expect(streams.move(a.id, ulid())).rejects.toThrow(/unknown parent/);
+    await expect(streams.move(a.id, `P-${ulid()}`)).rejects.toThrow(/unknown project/);
+    expect(streams.get(a.id).parent).toBe(shop.root);
+  });
+
+  test("refuses while the old or the new parent's plan awaits approval; names a stale plan and contract", async () => {
+    const { shop, plans, contracts } = await setup();
+    const a = await newStream('A', { project: shop.id });
+    const b = await newStream('B', { project: shop.id });
+    const x = await newStream('X', { parent: a.id });
+    const y = await newStream('Y', { parent: a.id });
+    const z = await newStream('Z', { parent: b.id });
+    const seam = await contracts.write(
+      a.id,
+      { title: 'seam', body: 'b', parties: [x.id, y.id] },
+      'human',
+    );
+    await plans.write(a.id, [{ child: x.id, owns: ['api/**'] }], [seam.id]);
+    await expect(streams.move(x.id, b.id)).rejects.toThrow(/A's plan is awaiting approval/);
+    await plans.approve(a.id);
+    await plans.write(b.id, [{ child: z.id, owns: ['web/**'] }]);
+    await expect(streams.move(x.id, b.id)).rejects.toThrow(/B's plan is awaiting approval/);
+    expect(streams.get(x.id).parent).toBe(a.id);
+    await plans.approve(b.id);
+
+    await streams.move(x.id, b.id);
+    expect(thread(a.id).at(-1)).toBe(
+      `moved away: X (${x.id}) is now under B; still named in this node's plan v1, contract ${seam.id}`,
+    );
+  });
+});
+
+describe('T361: the tree-change hook', () => {
+  test('a child create, a move, a close and an archive name the parents whose role may change', async () => {
+    const calls: string[][] = [];
+    streams = new StreamService(store, { onTreeChanged: (nodes) => void calls.push([...nodes]) });
+    const a = await newStream('a');
+    const b = await newStream('b');
+    expect(calls).toEqual([]);
+    const child = await newStream('child', { parent: a.id });
+    expect(calls).toEqual([[a.id]]);
+    await streams.move(child.id, b.id);
+    expect(calls.at(-1)).toEqual([a.id, b.id]);
+    await streams.close('human', child.id);
+    expect(calls.at(-1)).toEqual([b.id]);
+    const other = await newStream('other', { parent: a.id });
+    await streams.archive('human', other.id);
+    expect(calls.at(-1)).toEqual([a.id]);
+  });
+
+  test('a throwing hook is logged, never a failed write', async () => {
+    streams = new StreamService(store, {
+      onTreeChanged: () => {
+        throw new Error('boom');
+      },
+    });
+    const a = await newStream('a');
+    const child = await newStream('child', { parent: a.id });
+    expect(streams.get(child.id).parent).toBe(a.id);
+  });
+});
+
+describe('T361: Delete and Restore (archiveTree, unarchiveTree)', () => {
+  const thread = (id: string) => streams.readThread(id).entries.map((e) => e.body);
+
+  test('archives the subtree under one delete id and restores exactly what it archived', async () => {
+    const root = await newStream('root');
+    const a = await newStream('a', { parent: root.id });
+    const b = await newStream('b', { parent: a.id });
+    const c = await newStream('c', { parent: b.id });
+    const earlier = await newStream('earlier', { parent: a.id });
+    await streams.archiveTree('human', earlier.id);
+    const earlierId = streams.get(earlier.id).archive_id;
+
+    const stopped: string[][] = [];
+    const archived = await streams.archiveTree('human', a.id, async (ids) => {
+      stopped.push([...ids]);
+    });
+    // Every node of the subtree is offered to `stop` once, each parent before its children.
+    expect(stopped).toEqual([[a.id, b.id, earlier.id, c.id]]);
+    expect(archived.map((s) => s.id)).toEqual([a.id, b.id, c.id]);
+    const batch = streams.get(a.id).archive_id;
+    expect(batch).toBeDefined();
+    expect([b.id, c.id].map((id) => streams.get(id).archive_id)).toEqual([batch, batch]);
+    expect(streams.get(earlier.id).archive_id).toBe(earlierId);
+    expect(streams.list().map((s) => s.id)).toEqual([root.id]);
+    expect(thread(a.id).at(-1)).toBe('deleted with 2 nodes below it');
+    expect(thread(root.id).at(-1)).toBe(`deleted: a (${a.id}) with 2 nodes below it`);
+    // One stream_archived event per node, each carrying the flag.
+    const events = store.listEvents().filter((e) => e.kind === 'stream_archived');
+    expect(events.map((e) => e.stream)).toEqual([earlier.id, c.id, b.id, a.id]);
+    expect(events.every((e) => e.data?.archived === true)).toBe(true);
+
+    const restored = await streams.unarchiveTree('human', a.id);
+    expect(restored.map((s) => s.id)).toEqual([a.id, b.id, c.id]);
+    for (const id of [a.id, b.id, c.id]) {
+      expect(streams.get(id).archived).toBeUndefined();
+      expect(streams.get(id).archive_id).toBeUndefined();
+    }
+    // Deleted on its own before: it stays deleted.
+    expect(streams.get(earlier.id).archived).toBe(true);
+    expect(thread(root.id).at(-1)).toBe(`restored: a (${a.id}) with 2 nodes below it`);
+    expect(store.listEvents().at(-1)?.kind).toBe('thread_appended');
+  });
+
+  test('refuses a project root, an already deleted node, and a restore under a deleted parent', async () => {
+    const { ProjectService } = await import('../projects/service');
+    const shop = await new ProjectService(store, streams).create({ name: 'Shop' });
+    await expect(streams.archiveTree('human', shop.root)).rejects.toThrow(
+      "a project root can't be deleted; archive the project instead",
+    );
+    const a = await newStream('a', { project: shop.id });
+    const b = await newStream('b', { parent: a.id });
+    await streams.archiveTree('human', b.id);
+    await expect(streams.archiveTree('human', b.id)).rejects.toThrow(/already deleted/);
+    await streams.archiveTree('human', a.id);
+    await expect(streams.unarchiveTree('human', b.id)).rejects.toThrow(
+      /a is deleted too; restore it first/,
+    );
+    await expect(streams.unarchiveTree('human', shop.root)).rejects.toThrow(/not deleted/);
+    // `stop` never runs for a refused delete.
+    let stops = 0;
+    await expect(
+      streams.archiveTree('human', shop.root, async () => {
+        stops += 1;
+      }),
+    ).rejects.toThrow(/project root/);
+    expect(stops).toBe(0);
   });
 });

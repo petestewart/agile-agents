@@ -5,6 +5,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import type { spawnSession } from '@agile-agents/acp-client';
 import { trackerStatus } from '@agile-agents/shared';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
@@ -19,7 +20,7 @@ import {
 import { AutonomyService } from './coordination/autonomy';
 import { CardService } from './coordination/cards';
 import { ContractService } from './coordination/contracts';
-import { PlanService } from './coordination/plans';
+import { PlanService, planMoveCoordination } from './coordination/plans';
 import { SiblingService } from './coordination/siblings';
 import {
   ClassifierDiffRules,
@@ -53,7 +54,12 @@ import { type RpcServerHandle, startRpcServer } from './rpc';
 import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
-import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
+import {
+  type MoveCoordination,
+  RepoInPlaceService,
+  StreamService,
+  buildStreamRpcMethods,
+} from './streams';
 import { MainSync, OverlapTracker, SymbolWatcher } from './sync';
 import { trackerFromConfig } from './trackers/create';
 import { TrackerLinks } from './trackers/link';
@@ -112,6 +118,8 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
   overlapRecomputeMs?: number;
   /** Test seam: the clock threaded to `Bus` (heartbeat timestamps and coalescing). */
   now?: () => Date;
+  /** Test seam (T341): every agent and Director session's `spawnSession` (the fake agent offline). */
+  spawn?: typeof spawnSession;
 }
 
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
@@ -140,12 +148,20 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ? new StreamService(store, {
         // T244: record changes that are routed events (child_status, pr_merged, …).
         onUpdated: async (before, after): Promise<void> => {
-          if (emitRouted) await emitTransitions(emitRouted)(before, after);
+          if (emitRouted) await emitTransitions(emitRouted, streamService)(before, after);
           // T283: the node's status card follows its record.
           await cardService?.refresh(after);
           // T324: Node → tracker (off unless the project turns it on); never blocks the update.
           void trackerPush?.onUpdated(before, after);
         },
+        // T333: a move is refused while a plan awaits approval (read lazily; built below).
+        coordination: {
+          planAwaitingApproval: (node): boolean =>
+            moveCoordination?.planAwaitingApproval(node) === true,
+          namedIn: (parent, child): string[] => moveCoordination?.namedIn(parent, child) ?? [],
+        },
+        // T361: a live agent follows its node's role change (read lazily; built below).
+        onTreeChanged: async (nodes): Promise<void> => attachService?.followRoles(nodes),
       })
     : undefined;
   // T283: status cards; `read_card` and the cockpit read them.
@@ -205,6 +221,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           },
         })
       : undefined;
+  const moveCoordination: MoveCoordination | undefined =
+    planService && contractService ? planMoveCoordination(planService, contractService) : undefined;
   // T282: the autonomy gate for a coordinator's structural changes, and its proposals.
   const autonomyService =
     store && streamService
@@ -239,6 +257,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           onWorkerTurnEnd: (id) => {
             void mainSync?.turnEnded(id).catch((err) => console.error('main sync failed:', err));
           },
+          ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
         })
       : undefined;
   // T300 (P16): the Director, above every project; its delivery is the attach service's.
@@ -255,6 +274,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           inbox: { list: () => inboxService?.list() ?? [] },
           ...(rulesService ? { knowledge: rulesService } : {}),
           ...(autonomyService ? { autonomy: autonomyService } : {}),
+          ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
         })
       : undefined;
   directorService?.startSight();
@@ -498,6 +518,15 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     });
   }
 
+  // T349: cards written before the `question` state read `blocked` for a node waiting on you.
+  if (cardService) {
+    try {
+      await cardService.refreshQuestionCards();
+    } catch (err) {
+      console.error('agiled: could not refresh question cards:', err);
+    }
+  }
+
   // T284: the import index, changed exports on cards, and `symbol_changed`.
   const symbolWatcher =
     store && streamService
@@ -619,6 +648,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
                   ? {
                       create: (principal, input, opts) =>
                         attachService.createNode(principal, input, opts),
+                      stopSessions: (id: string) =>
+                        attachService.stop(id, undefined, { detach: true }),
                       ...(repoInPlace ? { repoInPlace } : {}),
                       reply: {
                         say: (id: string, body: string) => attachService.say(id, body),

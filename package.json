@@ -13,6 +13,7 @@
     "test:integration": "AGILE_LIVE= bun test packages/cli/src/daemon.e2e.test.ts && AGILE_LIVE= bun test packages/cli/src/repo.e2e.test.ts && AGILE_LIVE= bun test packages/cli/src/stream.e2e.test.ts && AGILE_LIVE= bun test packages/cli/src/inbox.e2e.test.ts && AGILE_LIVE= bun test packages/cli/src/knowledge.e2e.test.ts && AGILE_LIVE= bun test packages/daemon/src/feed/feed.e2e.test.ts && AGILE_LIVE= bun test packages/daemon/src/feed/control-room.e2e.test.ts && AGILE_LIVE= bun test packages/daemon/src/feed/installable.e2e.test.ts",
     "test:live": "AGILE_LIVE=1 bun test packages/daemon/src/sandbox/live.test.ts",
     "test:e2e": "bun test packages/daemon/src/feed/feed.e2e.test.ts && bun test packages/daemon/src/feed/control-room.e2e.test.ts && bun test packages/daemon/src/feed/installable.e2e.test.ts",
+    "test:walkthrough": "AGILE_WALKTHROUGH=1 bun test packages/daemon/src/feed/walkthrough.e2e.test.ts",
     "lint": "biome check ."
   },
   "devDependencies": {

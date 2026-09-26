@@ -13,6 +13,8 @@ import type {
   Plan,
   Policy,
   Project,
+  ProjectSessionDefaults,
+  RepoRemote,
   RoutedEvent,
   KnowledgeItem as Rule,
   KnowledgeCreateInput as RuleCreateInput,
@@ -31,6 +33,7 @@ import type {
   LandOutcome,
   RuleEvalReport,
   RulesPayload,
+  StepPage,
   StreamDiff,
   StreamPagePayload,
 } from './feed-types';
@@ -62,9 +65,29 @@ export function setProjectTracker(id: string, tracker: TrackerSettings | null): 
   return post(`/api/projects/${encodeURIComponent(id)}`, { tracker });
 }
 
-/** T338: the event log, every routed event, newest first. */
-export async function getEvents(): Promise<RoutedEvent[]> {
-  return (await get<{ events: RoutedEvent[] }>('/api/events')).events;
+/** T383: one page of the event log, newest first. */
+export interface EventPage {
+  events: RoutedEvent[];
+  /** Older events (on `repo`, when asked) exist beyond this page. */
+  more: boolean;
+  /** Every event in the log (on `repo`, when asked), on any page. */
+  total: number;
+}
+
+/**
+ * T338, T383: a page of the event log, newest first: `before` an event id
+ * pages back (only older ones), `limit` 1–500 (default 200), `repo` one
+ * repo's events.
+ */
+export function getEvents(
+  query: { before?: string; limit?: number; repo?: string } = {},
+): Promise<EventPage> {
+  const params = new URLSearchParams();
+  if (query.before !== undefined) params.set('before', query.before);
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  if (query.repo !== undefined) params.set('repo', query.repo);
+  const search = params.toString();
+  return get<EventPage>(`/api/events${search ? `?${search}` : ''}`);
 }
 
 /** A question card: the typed text reaches the asking session verbatim (§3.3). */
@@ -152,7 +175,7 @@ export function decideRule(id: string, decision: 'accept' | 'retire'): Promise<u
   return post(`/api/rules/${encodeURIComponent(id)}/${decision}`);
 }
 
-/** A `done` card's Land button, and the stream page's (§8.2). A refusal rejects with the daemon's reason. */
+/** A `done` card's Merge button, and the stream page's (§8.2). A refusal rejects with the daemon's reason. */
 export function landStream(id: string): Promise<LandOutcome> {
   return post(`/api/streams/${encodeURIComponent(id)}/land`) as Promise<LandOutcome>;
 }
@@ -188,6 +211,11 @@ export function getStreamPlan(id: string): Promise<{ plan: Plan | null; contract
 /** T281: a `plan_approve` card's Approve, and the Plan tab's. */
 export function approvePlan(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/plan/approve`);
+}
+
+/** T344: a `plan_waiting` card's "Start parts anyway": the waiting parts start without a plan. */
+export function startWaitingParts(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/plan/start-parts`);
 }
 
 /** T282: a coordinator's `proposal` card: Apply performs it as you, Dismiss drops it. */
@@ -230,6 +258,8 @@ export interface DirectorPayload {
     session?: { id: string; status: string; vendor: string; model: string };
   };
   thread: ThreadEntry[];
+  /** T399: every line the thread has (the page holds the newest 500). */
+  thread_total?: number;
   live: boolean;
   activity: ActivityEntry[];
   /** T301: the Director's held changes; Create/Apply goes through `decideProposal`. */
@@ -252,23 +282,25 @@ export async function getStreamActivity(id: string): Promise<ActivityEntry[]> {
   return out.activity;
 }
 
-/** T245: the repo view's events. */
-export async function getRepoEvents(repo: string): Promise<RoutedEvent[]> {
-  const out = await get<{ events: RoutedEvent[] }>(`/api/repos/${encodeURIComponent(repo)}/events`);
-  return out.events;
-}
-
 /** T265: the repo's accepted standards and architecture. */
 export async function getRepoKnowledge(repo: string): Promise<Rule[]> {
   const res = await get<{ knowledge: Rule[] }>(`/api/repos/${encodeURIComponent(repo)}/knowledge`);
   return res.knowledge;
 }
 
-/** T161: the composer — a human line on the thread, and a prompt to the attached worker if there is one. */
-export function sayOnStream(id: string, body: string): Promise<{ prompted?: string }> {
-  return post(`/api/streams/${encodeURIComponent(id)}/say`, { body }) as Promise<{
-    prompted?: string;
-  }>;
+/**
+ * T161: the composer — a human line on the thread, and a prompt to the attached worker if there is one.
+ * T361: `start` starts an agent on a node with none live; the line is its first prompt.
+ */
+export function sayOnStream(
+  id: string,
+  body: string,
+  opts: { start?: boolean } = {},
+): Promise<{ prompted?: string; started?: true }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/say`, {
+    body,
+    ...(opts.start === true ? { start: true } : {}),
+  }) as Promise<{ prompted?: string; started?: true }>;
 }
 
 /** T161: the sessions strip's Attach (a worker) and Review (a reviewer). */
@@ -350,6 +382,11 @@ export function waitOnStream(id: string, on: string, remove = false): Promise<un
   return post(`/api/streams/${encodeURIComponent(id)}/wait`, { on, ...(remove ? { remove } : {}) });
 }
 
+/** T333 (D34): the rail's drag — move `id` under `parent` (a node, or a project id for its root). */
+export function moveStream(id: string, parent: string): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/move`, { parent }) as Promise<Stream>;
+}
+
 export async function getPolicy(): Promise<Policy> {
   const res = await fetch('/api/policy');
   const payload = (await res.json()) as Policy & { error?: string };
@@ -368,6 +405,8 @@ export interface RepoRow {
   auto_merge: boolean;
   visibility: { mode: 'public' } | { mode: 'private'; projects: string[] };
   github?: { owner: string; repo: string };
+  /** T362: where its remote lives (the repo icon); absent for a local-only repo. */
+  remote?: RepoRemote;
 }
 
 /** T222: one repo's delivery settings; `pr` is refused without a GitHub remote and auth. */
@@ -394,4 +433,119 @@ export async function addRepo(input: {
   protected_branches?: string[];
 }): Promise<RepoRow[]> {
   return ((await post('/api/repos', input)) as { repos: RepoRow[] }).repos;
+}
+
+/** T361: Delete — stops the node's and its subtree's agents and archives them (worktrees and branches stay). */
+export function archiveStream(
+  id: string,
+): Promise<{ node: Stream; archived: string[]; stopped: string[] }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/archive`) as Promise<{
+    node: Stream;
+    archived: string[];
+    stopped: string[];
+  }>;
+}
+
+/** T361: Restore — brings back a deleted node and what its delete archived; starts no agent. */
+export function unarchiveStream(id: string): Promise<{ node: Stream; restored: string[] }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/unarchive`) as Promise<{
+    node: Stream;
+    restored: string[];
+  }>;
+}
+
+/** T362: mirror of `store/browse-dirs.ts`'s `DirEntry`. */
+export interface DirEntry {
+  name: string;
+  path: string;
+  /** A git work tree's toplevel. */
+  git: boolean;
+}
+
+/** T362: mirror of `store/browse-dirs.ts`'s `DirListing` (`GET /api/fs/dirs`). */
+export interface DirListing {
+  path: string;
+  /** Absent at `/`. */
+  parent?: string;
+  home: string;
+  is_git: boolean;
+  entries: DirEntry[];
+  /** More than 500 folders matched; narrow with `prefix`. */
+  truncated?: true;
+}
+
+/**
+ * T362: the folder picker. `path` is absolute or `~/…` (default: home);
+ * `prefix` keeps names starting with it (case-insensitive), for autocomplete.
+ */
+export function listDirs(path?: string, hidden?: boolean, prefix?: string): Promise<DirListing> {
+  const query = new URLSearchParams();
+  if (path !== undefined) query.set('path', path);
+  if (hidden) query.set('hidden', '1');
+  if (prefix) query.set('prefix', prefix);
+  const qs = query.toString();
+  return get(`/api/fs/dirs${qs ? `?${qs}` : ''}`);
+}
+
+/** T362: `POST /api/repos/clone`'s reply: every repo, and the one just cloned. */
+export interface CloneRepoResult {
+  repos: RepoRow[];
+  repo: string;
+  path: string;
+}
+
+/**
+ * T362: clone by URL (https, `git@host:o/r`, ssh://, GitHub `owner/repo`, or
+ * a local path) with the user's own git credentials, then register it. A
+ * refusal rejects with the daemon's reason (git's last lines on a failure).
+ */
+export function cloneRepo(input: {
+  url: string;
+  dest?: string;
+  name?: string;
+}): Promise<CloneRepoResult> {
+  return post('/api/repos/clone', input) as Promise<CloneRepoResult>;
+}
+
+/** T365: the rail's Rename (and a goal edit): the same patch as `stream.update`, stamped human. */
+export function updateStream(
+  id: string,
+  patch: { title?: string; goal?: string },
+): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/update`, patch) as Promise<Stream>;
+}
+
+/** T367: `GET /health` — Settings → General's daemon facts. */
+export interface DaemonHealth {
+  version: string;
+  /** The daemon's home folder. */
+  stateRoot: string;
+  pid: number;
+  /** Seconds. */
+  uptime: number;
+}
+
+export function getHealth(): Promise<DaemonHealth> {
+  return get('/health');
+}
+
+/**
+ * T372: rename a project or change its repos (registered names only).
+ * T379: `session` replaces the project's session defaults; `null` clears them.
+ */
+export function updateProject(
+  id: string,
+  patch: { name?: string; repos?: string[]; session?: ProjectSessionDefaults | null },
+): Promise<Project> {
+  return post(`/api/projects/${encodeURIComponent(id)}`, patch) as Promise<Project>;
+}
+
+/** T392: a node's agent steps (its tool calls), newest first; the chat follows live events after. */
+export function getStreamSteps(id: string): Promise<StepPage> {
+  return get(`/api/streams/${encodeURIComponent(id)}/steps`);
+}
+
+/** T399: the Director's agent steps, the same shape as a node's. */
+export function getDirectorSteps(): Promise<StepPage> {
+  return get('/api/director/steps');
 }

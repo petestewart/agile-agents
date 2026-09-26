@@ -172,7 +172,7 @@ export class VerbService {
    * question about a shared thing goes to its live coordinator first.
    */
   async ask(input: unknown): Promise<{ id: string }> {
-    const { session, text } = validateVerbInput('ask', input);
+    const { session, text, options } = validateVerbInput('ask', input);
     const caller = this.caller(session);
     const coordinator = this.coordinatorFirst(caller.stream, text);
     const question = await this.options.questions.raise({
@@ -180,6 +180,8 @@ export class VerbService {
       raised_by: session as AgentId,
       session,
       text,
+      // T361: choices the operator can click.
+      ...(options !== undefined ? { options } : {}),
       ...(coordinator !== undefined ? { coordinator } : {}),
     });
     if (coordinator !== undefined) {

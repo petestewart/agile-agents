@@ -8,6 +8,7 @@
  * store the feed routes 503 and `/ws` sends only the hello frame.
  */
 
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   ClassifierKeyInputSchema,
@@ -27,7 +28,9 @@ import {
   StreamAttachRequestSchema,
   StreamAutonomyRequestSchema,
   StreamCreateInputSchema,
+  StreamMoveRequestSchema,
   StreamSayInputSchema,
+  StreamUpdateRequestSchema,
   StreamWaitRequestSchema,
   UlidSchema,
   formatZodError,
@@ -53,15 +56,20 @@ import { type DeliveryService, LandRefusedError } from './delivery';
 import type { DirectorService } from './director/service';
 import type { DocsService } from './docs';
 import type { RoutedEventService } from './events';
+import { EVENT_PAGE_MAX, type EventPageQuery, UnknownEventError } from './events/service';
 import {
   type CockpitFrame,
   type EventTailerHandle,
+  NothingToMergeCache,
+  RecentEvents,
+  StepIndex,
   buildCockpitFrame,
   buildSnapshot,
   buildStreamPage,
   startEventTailer,
 } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
+import { isLoopbackUrl } from './github/rest';
 import type { InboxService } from './inbox';
 import {
   KnowledgeAlreadyDecidedError,
@@ -79,10 +87,15 @@ import {
   sayAndAnswer,
 } from './questions';
 import {
+  CloneError,
+  DirListError,
   NotFoundError,
+  RepoRemoteCache,
   type StateStore,
   buildStateRpcMethods,
-  resolveMainBranch,
+  cloneRepo,
+  listDirs,
+  resolveMainBranchAsync,
   setRepoSettings,
 } from './store';
 import type { RepoInPlaceService, StreamService } from './streams';
@@ -104,6 +117,9 @@ const INSTALLABLE_FILES: Record<string, string> = {
   '/icons/maskable-512.png': 'image/png',
   '/icons/apple-touch-icon.png': 'image/png',
 };
+
+/** T394: the cache policy for the cockpit's content-hashed build assets. */
+const IMMUTABLE = 'public, max-age=31536000, immutable';
 
 /**
  * The configured port is taken: one actionable line (the address, how to
@@ -185,6 +201,10 @@ export interface HttpServerOptions {
   trackerLinks?: TrackerLinks;
   /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
+  /** Test hook: the operator's home folder for the folder picker and clone destinations (default `os.homedir()`). */
+  userHome?: string;
+  /** Test hook: the repo remote cache (default: one reading `git remote get-url`, 60s TTL). */
+  repoRemotes?: RepoRemoteCache;
 }
 
 export interface HttpServerHandle {
@@ -207,6 +227,14 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function errorResponse(status: number, message: string): Response {
   return jsonResponse({ error: message }, status);
+}
+
+/** T385: a "goal changed" thread line carries the new goal on one line, clipped. */
+const GOAL_LINE_MAX = 400;
+
+function clip(text: string, max: number): string {
+  const one = text.replace(/\s+/g, ' ').trim();
+  return one.length > max ? `${one.slice(0, max - 1).trimEnd()}…` : one;
 }
 
 function messageOf(err: unknown): string {
@@ -244,6 +272,17 @@ function isSameOriginRequest(req: Request, port: number): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * T362: the request's `Host` names this machine (or is absent). The
+ * filesystem routes add this to the same-origin check: a page that
+ * DNS-rebinds its own name to 127.0.0.1 is same-origin to the browser, but
+ * its requests still carry that name as `Host`.
+ */
+function isLoopbackHost(req: Request): boolean {
+  const host = req.headers.get('host');
+  return host === null || isLoopbackUrl(`http://${host}`);
 }
 
 /** `/api/hil/<id>/<action>`, action approve|deny|note. */
@@ -420,6 +459,13 @@ interface FeedContext {
   contracts?: ContractService;
   autonomy?: AutonomyService;
   trackerLinks?: TrackerLinks;
+  /** T362: each repo's remote for the repo rows, never read on the frame's path. */
+  remotes: RepoRemoteCache;
+  /** T380: which finished nodes have nothing to merge, never read on the frame's path. */
+  mergeState?: NothingToMergeCache;
+  /** T392: every node's agent steps, folded from the event log as it grows. */
+  steps: StepIndex;
+  userHome?: string;
 }
 
 /** The cockpit frame (§9), as `/api/cockpit` and the `/ws` push send it. */
@@ -432,6 +478,10 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     (id) => feed.store.getCard(id),
     feed.contracts,
     (s) => feed.plans?.waitingForPlan(s) === true,
+    (entry) => feed.remotes.peek(entry),
+    feed.mergeState ? (s) => feed.mergeState?.peek(s) === true : undefined,
+    (id) => feed.store.threadUpdatedAt(id),
+    feed.mergeState ? (s) => feed.mergeState?.peekState(s).stat : undefined,
   );
 }
 
@@ -459,6 +509,17 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     contracts: options.contracts,
     autonomy: options.autonomy,
     trackerLinks: options.trackerLinks,
+    remotes: options.repoRemotes ?? new RepoRemoteCache(),
+    ...(options.landing
+      ? {
+          mergeState: new NothingToMergeCache({
+            preflight: (id) => options.landing?.preflight(id) ?? {},
+            stat: (id) => options.landing?.diffStat(id),
+          }),
+        }
+      : {}),
+    steps: new StepIndex(`${options.stateRoot}/log/events.jsonl`),
+    userHome: options.userHome,
   };
 }
 
@@ -617,11 +678,14 @@ async function handleSessionSettingsRoute(
   }
 }
 
+const DIRECTOR_PATHS = new Set(['/api/director', '/api/director/steps', '/api/director/say']);
+
 /**
  * T300 (projects-design §12, P16): the Director page.
  *
- *   GET  /api/director      `{record, thread, live, activity, proposals}`
- *   POST /api/director/say  `{body}`: a human line and `director_request`
+ *   GET  /api/director        `{record, thread, thread_total, live, activity, proposals}`
+ *   GET  /api/director/steps  T399: the Director's agent steps, newest first, `{steps, total}`
+ *   POST /api/director/say    `{body}`: a human line and `director_request`
  */
 async function handleDirectorRoute(
   req: Request,
@@ -629,8 +693,12 @@ async function handleDirectorRoute(
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
-  if (url.pathname !== '/api/director' && url.pathname !== '/api/director/say') return undefined;
+  if (!DIRECTOR_PATHS.has(url.pathname)) return undefined;
   if (!feed?.director) return errorResponse(503, 'director not available');
+  if (url.pathname === '/api/director/steps' && req.method === 'GET') {
+    // Its tool calls are indexed under its own node id, as a node's are (T392).
+    return jsonResponse(feed.steps.stepsFor(DIRECTOR_NODE));
+  }
   if (url.pathname === '/api/director' && req.method === 'GET') {
     return jsonResponse({
       ...feed.director.view(),
@@ -656,8 +724,10 @@ async function handleDirectorRoute(
  * T245 (projects-design §8): read-only event views.
  *
  *   GET /api/streams/:id/activity  every event routed to the node: reason, delivery status, session or digest
- *   GET /api/repos/:name/events    every event on the repo
- *   GET /api/events                T338: the event log, every routed event, newest first
+ *   GET /api/events                T338: the event log, every routed event, newest first.
+ *                                  T383: a page of it, `{events, more, total}`: `?before=<event id>`
+ *                                  (only older ones), `?limit=` (1–500, default 200), `?repo=<name>`
+ *   GET /api/repos/:name/events    the repo's events: T407, `/api/events?repo=<name>`, paged the same
  *   GET /api/repos/:name/knowledge T265: the repo's accepted standards and architecture
  */
 function handleActivityRoute(
@@ -668,9 +738,23 @@ function handleActivityRoute(
   if (req.method !== 'GET') return undefined;
   const node = url.pathname.match(/^\/api\/streams\/([^/]+)\/activity$/);
   const repo = url.pathname.match(/^\/api\/repos\/([^/]+)\/events$/);
-  if (url.pathname === '/api/events') {
+  if (url.pathname === '/api/events' || repo) {
     if (!feed?.events) return errorResponse(503, 'events not available');
-    return jsonResponse({ events: feed.events.recent() });
+    const query = eventPageQuery(url.searchParams);
+    if (typeof query === 'string') return errorResponse(400, query);
+    // T407: a repo's events are `/api/events?repo=<name>` under their own path, paged the same.
+    if (repo) query.repo = decodeURIComponent(repo[1] ?? '');
+    try {
+      return jsonResponse(feed.events.page(query));
+    } catch (err) {
+      if (err instanceof UnknownEventError) {
+        return errorResponse(
+          400,
+          `no event ${quoted(err.id)} in the log: before must be the id of an event a page listed`,
+        );
+      }
+      return errorResponse(500, messageOf(err));
+    }
   }
   const norms = url.pathname.match(/^\/api\/repos\/([^/]+)\/knowledge$/);
   if (norms) {
@@ -682,18 +766,44 @@ function handleActivityRoute(
         .filter((k) => k.kind !== 'decision'),
     });
   }
-  if (!node && !repo) return undefined;
+  if (!node) return undefined;
   if (!feed?.events) return errorResponse(503, 'events not available');
   try {
-    if (node) {
-      const id = UlidSchema.safeParse(decodeURIComponent(node[1] ?? ''));
-      if (!id.success) return errorResponse(400, `invalid stream id: ${node[1]}`);
-      return jsonResponse({ activity: feed.events.activityFor(id.data) });
-    }
-    return jsonResponse({ events: feed.events.forRepo(decodeURIComponent(repo?.[1] ?? '')) });
+    const id = UlidSchema.safeParse(decodeURIComponent(node[1] ?? ''));
+    if (!id.success) return errorResponse(400, `invalid stream id: ${node[1]}`);
+    return jsonResponse({ activity: feed.events.activityFor(id.data) });
   } catch (err) {
     return errorResponse(500, messageOf(err));
   }
+}
+
+/** A query value as it reads in an error: quoted, and cut short when long. */
+function quoted(value: string): string {
+  return JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value);
+}
+
+/** T383: `/api/events`'s query, or what is wrong with it in words. */
+function eventPageQuery(params: URLSearchParams): EventPageQuery | string {
+  const query: EventPageQuery = {};
+  const limit = params.get('limit');
+  if (limit !== null) {
+    const n = /^\d{1,6}$/.test(limit) ? Number(limit) : Number.NaN;
+    if (!(n >= 1 && n <= EVENT_PAGE_MAX)) {
+      return `limit must be a whole number from 1 to ${EVENT_PAGE_MAX}, not ${quoted(limit)}`;
+    }
+    query.limit = n;
+  }
+  const before = params.get('before');
+  if (before !== null) {
+    if (before.trim() === '') return 'before must be the id of an event, not empty';
+    query.before = before;
+  }
+  const repo = params.get('repo');
+  if (repo !== null) {
+    if (repo.trim() === '') return 'repo must be a repo name, not empty';
+    query.repo = repo;
+  }
+  return query;
 }
 
 /**
@@ -701,6 +811,7 @@ function handleActivityRoute(
  *
  *   GET  /api/streams/:id/plan          `{plan, contracts}`: the node's plan (or null) and its contracts
  *   POST /api/streams/:id/plan/approve  the human approves the draft plan (the inbox card's button)
+ *   POST /api/streams/:id/plan/start-parts  T344: "Start parts anyway": the parts waiting for the plan start without one
  */
 async function handlePlanRoute(
   req: Request,
@@ -708,16 +819,18 @@ async function handlePlanRoute(
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
-  const match = url.pathname.match(/^\/api\/streams\/([^/]+)\/plan(\/approve)?$/);
+  const match = url.pathname.match(/^\/api\/streams\/([^/]+)\/plan(?:\/(approve|start-parts))?$/);
   if (!match) return undefined;
-  const approve = match[2] !== undefined;
-  if (req.method !== (approve ? 'POST' : 'GET')) return undefined;
+  const write = match[2] !== undefined;
+  const approve = match[2] === 'approve';
+  if (req.method !== (write ? 'POST' : 'GET')) return undefined;
   if (!feed?.plans || !feed.contracts) return errorResponse(503, 'plans not available');
   const id = UlidSchema.safeParse(decodeURIComponent(match[1] ?? ''));
   if (!id.success) return errorResponse(400, `invalid stream id: ${match[1]}`);
-  if (approve && !sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  if (write && !sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
   try {
     if (approve) return jsonResponse(await feed.plans.approve(id.data, 'human'));
+    if (write) return jsonResponse({ started: await feed.plans.startWaitingParts(id.data) });
     return jsonResponse({
       plan: feed.plans.get(id.data) ?? null,
       contracts: feed.contracts.forNode(id.data),
@@ -734,7 +847,7 @@ async function handlePlanRoute(
  *
  *   POST /api/proposals/:id/apply|dismiss  the human decides a coordinator's proposal card
  *   POST /api/streams/:id/autonomy         `{autonomy: level|null}`: the node's override
- *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null}`: the project's levels and (T338) tracker settings
+ *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null, name?, repos?}`: the project's levels, (T338) tracker settings, (T372) name and repos, and (T379) `session` defaults
  */
 async function handleAutonomyRoute(
   req: Request,
@@ -766,10 +879,15 @@ async function handleAutonomyRoute(
     }
     if (!feed?.projects) return errorResponse(503, 'projects not available');
     const body = await readJsonBody(req);
+    // T372: the cockpit also renames a project and changes its repos.
     return jsonResponse(
       await feed.projects.update(decodeURIComponent(project?.[1] ?? ''), {
         autonomy: body.autonomy,
         ...(body.tracker !== undefined ? { tracker: body.tracker } : {}),
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.repos !== undefined ? { repos: body.repos } : {}),
+        // T379: the project's session defaults (P5); `null` clears them.
+        ...(body.session !== undefined ? { session: body.session } : {}),
       }),
     );
   } catch (err) {
@@ -825,15 +943,25 @@ async function handleLinkRoute(
 /**
  * T206: Settings → Repos, over the same `state.repo_add` RPC as `agile repo add`:
  *
- *   GET  /api/repos   every registered repo with its resolved `main_branch`
- *   POST /api/repos   `{name, path, protected_branches?}`; a bad path is the RPC's one-line 400
+ *   GET  /api/repos        every registered repo with its resolved `main_branch`, and (T362)
+ *                          its `remote` (`RepoRemote`, absent for a local-only repo)
+ *   POST /api/repos        `{name, path, protected_branches?}`; a bad path is the RPC's one-line 400
+ *   POST /api/repos/clone  T362: `{url, dest?, name?}` (`RepoCloneInputSchema`): `git clone`, then
+ *                          `state.repo_add`; `{repos, repo, path}`. A taken name or a non-empty
+ *                          destination is 409, a git failure 400 with its stderr's last lines
  *   POST /api/repos/:name  T222: delivery settings (`RepoSettingsPatchSchema`), same checks as `agile repo set`
+ *
+ * `/api/repos/clone` is a repo's settings only when a repo named `clone` is
+ * registered and the body has no `url` (a settings patch never has one).
+ * Clone is same-origin and loopback-`Host` only, and may run for minutes, so
+ * its request has no idle timeout.
  */
 async function handleRepoRoute(
   req: Request,
   url: URL,
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
+  noTimeout: () => void,
 ): Promise<Response | undefined> {
   const one = url.pathname.match(/^\/api\/repos\/([^/]+)$/);
   if (url.pathname !== '/api/repos' && !one) return undefined;
@@ -841,46 +969,149 @@ async function handleRepoRoute(
   if (one && req.method !== 'POST') return undefined;
   if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
   const list = () =>
-    Object.entries(feed.store.getRepos()).map(([name, entry]) => ({
-      name,
-      path: entry.path,
-      protected_branches: entry.protected_branches,
-      main_branch: resolveMainBranch(entry),
-      delivery: entry.delivery ?? 'direct',
-      auto_merge: entry.auto_merge ?? false,
-      visibility: entry.visibility ?? { mode: 'public' },
-      ...(entry.github ? { github: entry.github } : {}),
-    }));
+    Promise.all(
+      Object.entries(feed.store.getRepos()).map(async ([name, entry]) => {
+        const [remote, mainBranch] = await Promise.all([
+          feed.remotes.get(entry),
+          resolveMainBranchAsync(entry),
+        ]);
+        return {
+          name,
+          path: entry.path,
+          protected_branches: entry.protected_branches,
+          main_branch: mainBranch,
+          delivery: entry.delivery ?? 'direct',
+          auto_merge: entry.auto_merge ?? false,
+          visibility: entry.visibility ?? { mode: 'public' },
+          ...(entry.github ? { github: entry.github } : {}),
+          ...(remote !== undefined ? { remote } : {}),
+        };
+      }),
+    );
+  const forget = (name: unknown) => {
+    const entry = typeof name === 'string' ? feed.store.getRepos()[name] : undefined;
+    if (entry !== undefined) feed.remotes.invalidate(entry.path);
+  };
   if (one?.[1] !== undefined) {
     if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
-    let patch: unknown;
+    const name = decodeURIComponent(one[1]);
+    let body: Record<string, unknown>;
     try {
-      patch = await readJsonBody(req);
+      body = await readJsonBody(req);
     } catch {
-      return errorResponse(400, 'invalid repo settings: body must be JSON');
+      return errorResponse(
+        400,
+        name === 'clone'
+          ? 'invalid clone request: body must be JSON {url, dest?, name?}'
+          : 'invalid repo settings: body must be JSON',
+      );
+    }
+    if (name === 'clone' && ('url' in body || !Object.hasOwn(feed.store.getRepos(), 'clone'))) {
+      return handleRepoClone(req, feed, body, list, noTimeout);
     }
     try {
-      await setRepoSettings(feed.store, decodeURIComponent(one[1]), patch, {
+      await setRepoSettings(feed.store, name, body, {
         by: 'human',
         ...(feed.githubAuth ? { githubAuth: feed.githubAuth } : {}),
       });
-      return jsonResponse({ repos: list() });
+      forget(name);
+      return jsonResponse({ repos: await list() });
     } catch (err) {
       return errorResponse(400, messageOf(err));
     }
   }
-  if (req.method === 'GET') return jsonResponse({ repos: list() });
+  if (req.method === 'GET') return jsonResponse({ repos: await list() });
   if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
-  let body: unknown;
+  let body: Record<string, unknown>;
   try {
     body = await readJsonBody(req);
   } catch {
     return errorResponse(400, 'invalid repo: body must be JSON {name, path, protected_branches?}');
   }
+  // T378: from the cockpit, a name already registered for another folder is a
+  // clash, not a replace (the CLI keeps `agile repo add` re-registering).
+  const taken =
+    typeof body.name === 'string' && typeof body.path === 'string'
+      ? feed.store.getRepos()[body.name]
+      : undefined;
+  if (taken !== undefined && !samePath(taken.path, body.path as string)) {
+    return errorResponse(
+      409,
+      `a repository named ${String(body.name)} is already registered (${taken.path}); pick another name`,
+    );
+  }
   try {
     await buildStateRpcMethods(feed.store)['state.repo_add']?.(body);
-    return jsonResponse({ repos: list() });
+    forget(body.name);
+    return jsonResponse({ repos: await list() });
   } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/** T378: two spellings of one folder (symlinks, a trailing slash) are the same path. */
+function samePath(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
+  }
+}
+
+/** T362: `POST /api/repos/clone`, after the same-origin check. */
+async function handleRepoClone(
+  req: Request,
+  feed: FeedContext,
+  body: Record<string, unknown>,
+  list: () => Promise<unknown[]>,
+  noTimeout: () => void,
+): Promise<Response> {
+  if (!isLoopbackHost(req)) return errorResponse(403, 'cross-origin request rejected');
+  noTimeout();
+  try {
+    const cloned = await cloneRepo(feed.store, body, {
+      ...(feed.userHome !== undefined ? { home: feed.userHome } : {}),
+    });
+    feed.remotes.invalidate(cloned.path);
+    return jsonResponse({ repos: await list(), repo: cloned.name, path: cloned.path });
+  } catch (err) {
+    if (err instanceof CloneError) return errorResponse(err.status, err.message);
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T362: Settings' folder picker:
+ *
+ *   GET /api/fs/dirs?path=&hidden=1&prefix=  the child folders of `path` (absolute or `~/…`;
+ *       default the home folder), each flagged `git` when it is a git toplevel, with `parent`
+ *       and `home` to navigate by (`DirListing`); a missing folder is 404, any other refusal 400
+ *
+ * A read, but it shows the filesystem: same-origin only, and only on a
+ * loopback `Host` (a DNS-rebound page is same-origin to the browser and a
+ * GET carries no `Origin`).
+ */
+function handleFsRoute(
+  req: Request,
+  url: URL,
+  userHome: string | undefined,
+  sameOrigin: () => boolean,
+): Response | undefined {
+  if (url.pathname !== '/api/fs/dirs' || req.method !== 'GET') return undefined;
+  if (!sameOrigin() || !isLoopbackHost(req)) {
+    return errorResponse(403, 'cross-origin request rejected');
+  }
+  const prefix = url.searchParams.get('prefix');
+  try {
+    return jsonResponse(
+      listDirs(url.searchParams.get('path') ?? undefined, {
+        hidden: url.searchParams.get('hidden') === '1',
+        ...(prefix ? { prefix } : {}),
+        ...(userHome !== undefined ? { home: userHome } : {}),
+      }),
+    );
+  } catch (err) {
+    if (err instanceof DirListError) return errorResponse(err.status, err.message);
     return errorResponse(400, messageOf(err));
   }
 }
@@ -983,7 +1214,9 @@ async function handleRuleRoute(
  *
  *   GET  /api/streams/:id         the page read (`feed/stream-page.ts`)
  *   GET  /api/streams/:id/diff    the diff tab
- *   POST /api/streams/:id/say     the composer: a human line, and a prompt to the attached worker
+ *   GET  /api/streams/:id/steps   T392: the agent's steps (its tool calls), newest first, `{steps, total}`
+ *   POST /api/streams/:id/say     the composer: a human line, and a prompt to the attached worker;
+ *                                 `{body, start?}`: `start` (T361) starts an agent on a node with none live
  *   POST /api/streams/:id/attach  the sessions strip's attach / review (`role: reviewer`)
  *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
  *   POST /api/streams/:id/close   the page's Close
@@ -991,6 +1224,12 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/pr-check     Check now (T340): poll the node's open PR at once
  *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
  *   POST /api/streams/:id/wait         Link (T228, P8): `{on, remove?}` a `waits_on` edge
+ *   POST /api/streams/:id/move         Move (T333, D34): `{parent}` a node or a project id
+ *   POST /api/streams/:id/update       Rename (T365): `{title?, goal?}`, as `stream.update`
+ *   POST /api/streams/:id/archive      Delete (T361): stops the subtree's sessions, archives it
+ *                                      → `{node, archived: [ids], stopped: [session ids]}`
+ *   POST /api/streams/:id/unarchive    Restore (T361): the node and what its delete archived
+ *                                      → `{node, restored: [ids]}`; no agent is started
  *
  * `land` is matched before this. Every write is same-origin only
  * and stamps `human`; no principal is ever read from the body (§2.2).
@@ -1003,11 +1242,11 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|say|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
-  const isGet = action === undefined || action === 'diff';
+  const isGet = action === undefined || action === 'diff' || action === 'steps';
   if (isGet ? req.method !== 'GET' : req.method !== 'POST') return undefined;
   if (!feed?.streams) return errorResponse(503, 'streams not available');
   const parsedId = UlidSchema.safeParse(decodeURIComponent(match[1] ?? ''));
@@ -1033,8 +1272,15 @@ async function handleStreamRoute(
       if (!feed.landing) return errorResponse(503, 'landing not available');
       return jsonResponse(feed.landing.diff(id));
     }
+    if (action === 'steps') {
+      // T392: its own read, not a field of the page: the page is re-read on
+      // every pushed frame, and a node's steps change on nearly every one. The
+      // chat reads them once and follows the live `tool_call` events after.
+      feed.streams.get(id);
+      return jsonResponse(feed.steps.stepsFor(id));
+    }
 
-    // Close, Mark landed and Check now take no body.
+    // Close, Mark landed, Check now, Delete and Restore take no body.
     if (action === 'close') return jsonResponse(await feed.streams.close('human', id));
     if (action === 'pr-check') {
       if (!feed.prCheck) return errorResponse(503, 'PR polling not available');
@@ -1043,6 +1289,28 @@ async function handleStreamRoute(
     if (action === 'mark-landed') {
       if (!feed.landing) return errorResponse(503, 'landing not available');
       return jsonResponse(await feed.landing.markLanded(id));
+    }
+    if (action === 'archive') {
+      // T361: Delete. The human pulls the plug on every agent in the subtree first.
+      const attach = feed.attach;
+      const stopped: string[] = [];
+      const archived = await feed.streams.archiveTree('human', id, async (ids) => {
+        if (attach === undefined) return;
+        const each = await Promise.all(ids.map((n) => attach.stop(n, undefined, { detach: true })));
+        stopped.push(...each.flat());
+      });
+      return jsonResponse({
+        node: archived[0] ?? feed.streams.get(id),
+        archived: archived.map((s) => s.id),
+        stopped,
+      });
+    }
+    if (action === 'unarchive') {
+      const restored = await feed.streams.unarchiveTree('human', id);
+      return jsonResponse({
+        node: restored[0] ?? feed.streams.get(id),
+        restored: restored.map((s) => s.id),
+      });
     }
     const body = await readJsonBody(req);
     if (action === 'add-repo') {
@@ -1061,6 +1329,26 @@ async function handleStreamRoute(
       const { on, remove } = input.data;
       return jsonResponse(await feed.streams.wait('human', id, on, remove ? { remove } : {}));
     }
+    if (action === 'move') {
+      const input = StreamMoveRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('move', input.error));
+      return jsonResponse(await feed.streams.move(id, input.data.parent));
+    }
+    if (action === 'update') {
+      // T365: the same `StreamService.update` as the RPC's `stream.update`, title and goal only.
+      const input = StreamUpdateRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('update', input.error));
+      const before = feed.streams.get(id);
+      const updated = await feed.streams.update('human', id, input.data);
+      // T385: a new goal is news for the agent: its next turn reads it on the thread.
+      if (input.data.goal !== undefined && input.data.goal.trim() !== before.goal.trim()) {
+        await feed.streams.appendThread('human', id, {
+          kind: 'event',
+          body: `goal changed: ${clip(updated.goal, GOAL_LINE_MAX)}`,
+        });
+      }
+      return jsonResponse(updated);
+    }
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('say', input.error));
@@ -1069,11 +1357,12 @@ async function handleStreamRoute(
         const attach = feed.attach;
         const said = await sayAndAnswer(
           {
-            say: (streamId, text) => attach.say(streamId, text),
+            say: (streamId, text, opts) => attach.say(streamId, text, opts),
             ...(feed.questions ? { questions: feed.questions } : {}),
           },
           id,
           input.data.body,
+          input.data.start === true ? { start: true } : {},
         );
         return jsonResponse(said, 201);
       }
@@ -1138,6 +1427,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
   const feed = resolveFeedContext(options);
 
   let tailer: EventTailerHandle | undefined;
+  // T404: what a `/ws` connect's snapshot sends, without reading the log again.
+  let recent: RecentEvents | undefined;
 
   const server = rethrowPortInUse(options, hostname, () =>
     Bun.serve({
@@ -1194,8 +1485,12 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           if (!(await file.exists())) return new Response('not found', { status: 404 });
           // Vite rewrites index.html's manifest/icon links onto this prefix.
           const type = INSTALLABLE_FILES[`/${rel}`];
-          return type
-            ? new Response(file, { headers: { 'content-type': type } })
+          if (type) return new Response(file, { headers: { 'content-type': type } });
+          // T394: Vite's chunks are named by their content hash, so a name
+          // never changes what it serves: cached for good, a reload fetches
+          // only what a rebuild changed (the page itself is `no-cache`).
+          return rel.startsWith('assets/')
+            ? new Response(file, { headers: { 'cache-control': IMMUTABLE } })
             : new Response(file);
         }
 
@@ -1261,8 +1556,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         const directorRoute = await handleDirectorRoute(req, url, feed, sameOrigin);
         if (directorRoute) return directorRoute;
 
-        const repoRoute = await handleRepoRoute(req, url, feed, sameOrigin);
+        const repoRoute = await handleRepoRoute(req, url, feed, sameOrigin, () =>
+          srv.timeout(req, 0),
+        );
         if (repoRoute) return repoRoute;
+
+        const fsRoute = handleFsRoute(req, url, options.userHome, sameOrigin);
+        if (fsRoute) return fsRoute;
 
         const ruleRoute = await handleRuleRoute(req, url, feed, sameOrigin, () =>
           srv.timeout(req, 0),
@@ -1381,6 +1681,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                   feed.questions,
                   options.repoRoot,
                   tailer?.getOffset(),
+                  recent?.list(),
                 ),
               ),
             );
@@ -1396,11 +1697,48 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
     }),
   );
 
+  // T362: a repo's remote is read in the background; when one changes, re-push the frame once.
+  // T380: the same for a finished node's "nothing to merge".
+  let remotePush: ReturnType<typeof setTimeout> | undefined;
+  if (feed?.streams) {
+    const streams = feed.streams;
+    const repush = (): void => {
+      if (remotePush !== undefined) return;
+      remotePush = setTimeout(() => {
+        remotePush = undefined;
+        try {
+          server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, streams)));
+        } catch (err) {
+          console.error(messageOf(err));
+        }
+      }, 50);
+    };
+    feed.remotes.onChange = repush;
+    if (feed.mergeState) feed.mergeState.onChange = repush;
+    try {
+      feed.remotes.warm(Object.values(feed.store.getRepos()));
+    } catch {
+      // A corrupt repos.yaml is refused, with its path, wherever it is read.
+    }
+  }
+
   if (feed) {
+    const eventsPath = `${options.stateRoot}/log/events.jsonl`;
+    const start = existsSync(eventsPath) ? statSync(eventsPath).size : 0;
+    try {
+      const kept = new RecentEvents();
+      kept.load(feed.store, start);
+      recent = kept;
+    } catch (err) {
+      // A corrupt log: each connect reads it again, and is refused with its path, as before.
+      console.error(messageOf(err));
+    }
     tailer = startEventTailer({
-      path: `${options.stateRoot}/log/events.jsonl`,
+      path: eventsPath,
+      startOffset: start,
       pollIntervalMs: options.feedPollIntervalMs,
       onEvents: (newEvents) => {
+        recent?.add(newEvents, (err) => console.error(`event tailer: ${err.message}`));
         for (const event of newEvents) {
           server.publish(FEED_WS_TOPIC, JSON.stringify({ type: 'event', event }));
         }
@@ -1425,6 +1763,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
     hostname,
     async stop() {
       tailer?.stop();
+      if (feed) feed.remotes.onChange = undefined;
+      if (feed?.mergeState) feed.mergeState.onChange = undefined;
+      clearTimeout(remotePush);
       server.stop(true);
     },
   };

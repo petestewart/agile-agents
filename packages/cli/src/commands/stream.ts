@@ -133,7 +133,7 @@ export function flattenTree(nodes: StreamNode[]): Stream[] {
 
 /** T201: the derived role (P1), from every stream the daemon knows (archived included). */
 export function roleIn(stream: Stream, all: readonly Stream[]): NodeRole {
-  return nodeRole(stream, liveChildrenOf(stream.id, all));
+  return nodeRole(stream, liveChildrenOf(stream.id, all), all);
 }
 
 async function allStreams(socketPath: string): Promise<Stream[]> {
@@ -406,6 +406,21 @@ export async function runStreamWait(
   console.log(
     `agile node wait: ${id} waits on ${open.length > 0 ? open.map((w) => w.node).join(', ') : 'nothing'}`,
   );
+  return 0;
+}
+
+/** T333 (D34): `node move <id> --parent <id|P-id>`; a project id moves it to the project's root. */
+export async function runStreamMove(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'node-id');
+  const parent = optionalString(args.options, 'parent');
+  if (parent === undefined) throw new Error('agile node move: --parent <node-id|P-id> is required');
+  const node = await callRpc<Stream>(socketPath, 'node.move', { id, parent });
+  if (json) printJson(node);
+  else console.log(`agile node move: ${id} is now under ${node.parent ?? '-'}`);
   return 0;
 }
 

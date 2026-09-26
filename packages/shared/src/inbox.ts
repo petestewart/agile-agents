@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { UlidSchema, formatZodError } from './ids';
 import { KnowledgeIdSchema, KnowledgeKindSchema } from './knowledge';
+import { QUESTION_OPTIONS_MAX, QuestionOptionSchema } from './question';
 
 /**
  * §3.1's kinds. `question` and `gate` are the two that carry a decision;
@@ -35,6 +36,7 @@ export const INBOX_ITEM_KINDS = [
   'rule_accept',
   'rule_batch',
   'plan_approve',
+  'plan_waiting',
   'proposal',
   'blocked',
   'done',
@@ -52,6 +54,15 @@ export const INBOX_CONTEXT_MAX_CHARS = 200;
 
 /** T161: the ceiling on an item's `detail` (the full text behind a clipped `context`). */
 export const INBOX_DETAIL_MAX_CHARS = 4000;
+
+/**
+ * T361: a question item's choices, as buttons on its card. Bounded like an
+ * `ask`'s (at least one here: a question raised over RPC may offer one).
+ */
+export const InboxItemOptionsSchema = z
+  .array(QuestionOptionSchema)
+  .min(1)
+  .max(QUESTION_OPTIONS_MAX);
 
 export const InboxItemSchema = z
   .object({
@@ -84,6 +95,8 @@ export const InboxItemSchema = z
     rules: z.array(KnowledgeIdSchema).min(1).optional(),
     /** T266: a `rule_accept` item's knowledge kind, so the card reads "decision proposed". */
     knowledge_kind: KnowledgeKindSchema.optional(),
+    /** T361: a `question` item's choices (the question's `options`); typing is always allowed. */
+    options: InboxItemOptionsSchema.optional(),
   })
   .strict()
   .refine((item) => isRuleKind(item.kind) || item.stream !== undefined, {
@@ -101,6 +114,10 @@ export const InboxItemSchema = z
   .refine((item) => (item.kind === 'rule_batch') === (item.rules !== undefined), {
     message: 'a rule_batch item carries its rule ids, and only it does',
     path: ['rules'],
+  })
+  .refine((item) => item.options === undefined || item.kind === 'question', {
+    message: 'only a question item carries options',
+    path: ['options'],
   });
 export type InboxItem = z.infer<typeof InboxItemSchema>;
 
@@ -128,8 +145,12 @@ export function inboxContext(text: string): string {
   if (oneLine.length <= INBOX_CONTEXT_MAX_CHARS) return oneLine;
   const hard = oneLine.slice(0, INBOX_CONTEXT_MAX_CHARS - 1);
   const lastSpace = hard.lastIndexOf(' ');
-  const body = lastSpace > 0 ? hard.slice(0, lastSpace) : hard;
-  return `${body.trimEnd()}…`;
+  const body = (lastSpace > 0 ? hard.slice(0, lastSpace) : hard).trimEnd();
+  // T341: a cut inside a code span closes it, or the card shows a stray backtick.
+  if ((body.match(/`/g) ?? []).length % 2 === 1) {
+    return `${body.slice(0, INBOX_CONTEXT_MAX_CHARS - 2)}\`…`;
+  }
+  return `${body}…`;
 }
 
 /**

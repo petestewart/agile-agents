@@ -196,6 +196,15 @@ function worktreeDirName(name: WorktreeName): string {
 export const STREAM_BRANCH_PREFIX = 'stream/';
 
 /**
+ * A branch as a person reads it (T371): a daemon-cut `stream/<id>-<slug>`
+ * is its slug; any other branch (or one with no slug) is itself.
+ */
+export function branchLabel(branch: string): string {
+  const match = /^stream\/[0-9a-z]{26}-(.+)$/i.exec(branch);
+  return match?.[1] ?? branch;
+}
+
+/**
  * Creates the worktree on a freshly claimed branch off `baseRef`, with no
  * shell, repo hook or filter driver. Throws `WorktreeRefusedError` rather
  * than leave anything half-made; a failed checkout releases the branch.

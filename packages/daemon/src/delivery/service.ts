@@ -24,6 +24,7 @@ import {
 import { liveSession } from '../attach/service';
 import type { GateService } from '../gates/service';
 import { GitHubError, type GitHubPort, type GitHubPull } from '../github/port';
+import { branchLabel } from '../runner/worktrees';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { rollupLink } from '../trackers/rollup';
@@ -96,8 +97,11 @@ export const ALLOW_ALL_DIFF_RULES: DiffRules = {
 export type LandOutcome =
   /** A `land` gate was raised and is still pending; approving it lands the stream. */
   | { status: 'gated'; gate: HilRequest; line: string }
-  /** The gate was answered `deny`, or a diff-level rule refused the diff. */
-  | { status: 'refused'; reason: string; line: string }
+  /**
+   * The gate was answered `deny`, or a diff-level rule refused the diff.
+   * T347 (D36 D9): `held` marks a hold (ship check, waits-on), news rather than a failure.
+   */
+  | { status: 'refused'; reason: string; line: string; held?: true }
   /** Merge conflict: nothing merged, worktree kept, stream blocked. */
   | { status: 'blocked'; target: string; conflicts: string[]; line: string }
   | { status: 'landed'; target: string; sha: string; line: string }
@@ -119,6 +123,26 @@ export interface LandPreflight {
   merged?: true;
   /** T176: the last land conflicted and nothing has worked on the stream since; Resolve offers a worker. */
   conflicts?: string[];
+}
+
+/** T410: what a merge would bring, in numbers: `git diff --shortstat`. */
+export interface DiffStat {
+  files: number;
+  added: number;
+  removed: number;
+}
+
+/** T410: `3 files changed, 120 insertions(+), 14 deletions(-)` in numbers; `undefined` for no change. */
+export function parseShortstat(text: string): DiffStat | undefined {
+  const files = /(\d+) files? changed/.exec(text);
+  if (!files) return undefined;
+  const added = /(\d+) insertions?\(\+\)/.exec(text);
+  const removed = /(\d+) deletions?\(-\)/.exec(text);
+  return {
+    files: Number(files[1]),
+    added: added ? Number(added[1]) : 0,
+    removed: removed ? Number(removed[1]) : 0,
+  };
 }
 
 /** How much of a stream diff travels in one response. */
@@ -201,7 +225,7 @@ export class DeliveryService {
           held_by: [{ reason: 'waits_on', detail: line }],
         });
         await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
-        return { status: 'refused', reason: line, line };
+        return { status: 'refused', reason: line, line, held: true };
       }
     }
 
@@ -279,7 +303,7 @@ export class DeliveryService {
     if (state?.mode !== 'pr' || state.pr?.state !== 'open') {
       throw new LandRefusedError(
         stream.id,
-        `stream ${stream.id} has no open PR; the first delivery is the human's (agile deliver)`,
+        `${stream.title} has no open PR; the first delivery is the human's (agile deliver)`,
       );
     }
     const { repoEntry, branch } = this.requireLandable(stream, { allowLive: true });
@@ -330,11 +354,7 @@ export class DeliveryService {
     }
     const ahead = runGit(['rev-list', '--count', `${target}..${branch}`], repoRoot, repoRoot);
     if (ahead === '0') {
-      throw new NothingToLandError(
-        stream.id,
-        `${branch} has no commits beyond ${target} — nothing to land`,
-        target,
-      );
+      throw new NothingToLandError(stream.id, nothingToMerge(branch, target), target);
     }
     return target;
   }
@@ -353,7 +373,7 @@ export class DeliveryService {
     const refuse = (why: string): never => {
       throw new LandRefusedError(
         lead.id,
-        `merge-together ${String(lead.merge_together)}: ${member.id} ${why}; nothing was merged`,
+        `merge-together ${String(lead.merge_together)}: ${member.title} ${why}; nothing was merged`,
       );
     };
     let plan: Plan | undefined;
@@ -405,7 +425,7 @@ export class DeliveryService {
     });
     await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
     if (lead !== undefined) {
-      const groupLine = `merge-together held: ${stream.id} ${line}; nothing was merged`;
+      const groupLine = `merge-together held: ${stream.title}: ${line}; nothing was merged`;
       await this.setDeliveryState(lead.id, {
         mode,
         status: 'held',
@@ -415,7 +435,7 @@ export class DeliveryService {
     }
     // A route waits on its gate; a deny (or a gateless route) ends the call.
     if (verdict.gate !== undefined) return { status: 'gated', gate: verdict.gate, line };
-    return { status: 'refused', reason: verdict.reason, line };
+    return { status: 'refused', reason: verdict.reason, line, held: true };
   }
 
   /** A failed merge: nothing moved; the stream is blocked with the files named. */
@@ -427,10 +447,11 @@ export class DeliveryService {
   ): Promise<LandOutcome> {
     const { streams } = this.options;
     const { stream, branch, target } = plan;
+    const what = `merging ${branchLabel(branch)} into ${branchLabel(target)}`;
     const line =
       merged.conflicts.length > 0
-        ? `land ${branch} into ${target} conflicted in: ${merged.conflicts.join(', ')}`
-        : `land ${branch} into ${target} failed: ${merged.reason}`;
+        ? `${what} conflicted in: ${merged.conflicts.join(', ')}`
+        : `${what} failed: ${merged.reason}`;
     await streams.update('daemon', stream.id, {
       agent: { status: 'blocked' },
       delivery_state: {
@@ -451,7 +472,7 @@ export class DeliveryService {
     });
     await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
     if (lead !== undefined && lead.id !== stream.id) {
-      const groupLine = `merge-together held: ${stream.id}: ${line}; nothing was merged`;
+      const groupLine = `merge-together held: ${stream.title}: ${line}; nothing was merged`;
       await this.setDeliveryState(lead.id, {
         mode,
         status: 'held',
@@ -517,7 +538,7 @@ export class DeliveryService {
       byId.set(s.id, updated);
       await streams.appendThread('daemon', s.id, {
         kind: 'event',
-        body: `waits on ${done.map((w) => w.node).join(', ')} satisfied`,
+        body: `waits on ${done.map((w) => byId.get(w.node)?.title ?? w.node).join(', ')} satisfied`,
       });
     }
     for (const s of byId.values()) await this.maybeAutoMerge(s, byId);
@@ -589,7 +610,7 @@ export class DeliveryService {
           branch,
           target: conflict.target,
           conflicts: conflict.files,
-          reason: `the last land into ${conflict.target} conflicted in ${conflict.files.join(', ')}; Resolve, or fix the branch by hand, then land again`,
+          reason: `the last merge into ${conflict.target} conflicted in ${conflict.files.join(', ')}; Resolve, or fix the branch by hand, then merge again`,
         };
       }
       if (!branchExists(repoRoot, target)) {
@@ -611,7 +632,7 @@ export class DeliveryService {
             target,
             ahead: 0,
             merged: true,
-            reason: `${branch} is already merged into ${target}`,
+            reason: `the branch ${branchLabel(branch)} is already merged into ${target}`,
           };
         }
         return {
@@ -619,7 +640,7 @@ export class DeliveryService {
           branch,
           target,
           ahead: 0,
-          reason: `${branch} has no commits beyond ${target} — nothing to land`,
+          reason: nothingToMerge(branch, target),
         };
       }
       const dirty = dirtyCheckoutReason(target, worktreesOn(repoRoot, target));
@@ -647,7 +668,10 @@ export class DeliveryService {
     const repoRoot = repoEntry.path;
     const target = this.resolveTarget(stream, repoEntry, repoRoot);
     if (!mergedOutside(repoRoot, branch, target)) {
-      throw new LandRefusedError(stream.id, `${branch} is not merged into ${target}`);
+      throw new LandRefusedError(
+        stream.id,
+        `the branch ${branchLabel(branch)} is not merged into ${target}`,
+      );
     }
     await this.setDeliveryState(stream.id, {
       mode: stream.delivery_state?.mode ?? this.resolveMode(stream, repoEntry),
@@ -669,10 +693,25 @@ export class DeliveryService {
    * target (`git diff <merge-base>` in the worktree), or the branch alone
    * once the worktree is gone. Capped; `truncated` says so.
    */
+  /**
+   * T410: the size of what Merge would bring: the branch's committed changes
+   * since it left its target (uncommitted edits in the worktree don't merge).
+   * `undefined` when the node can't merge or nothing differs.
+   */
+  diffStat(streamId: string): DiffStat | undefined {
+    const stream = this.options.streams.get(streamId);
+    if (stream.repo === undefined || stream.branch === undefined) return undefined;
+    const repoEntry = this.registeredRepo(stream, stream.repo);
+    const repoRoot = repoEntry.path;
+    const target = this.resolveTarget(stream, repoEntry, repoRoot);
+    const out = git(['diff', '--shortstat', `${target}...${stream.branch}`], repoRoot, repoRoot);
+    return out.exitCode === 0 ? parseShortstat(out.stdout) : undefined;
+  }
+
   diff(streamId: string): StreamDiff {
     const stream = this.options.streams.get(streamId);
     if (stream.repo === undefined || stream.branch === undefined) {
-      throw new LandRefusedError(stream.id, 'this stream has no repo branch yet — nothing to diff');
+      throw new LandRefusedError(stream.id, `${stream.title} has no branch yet — nothing to diff`);
     }
     const repoEntry = this.registeredRepo(stream, stream.repo);
     const repoRoot = repoEntry.path;
@@ -710,7 +749,7 @@ export class DeliveryService {
     const stream = this.options.streams.get(streamId);
     const conflict = stream.land_conflict;
     if (conflict === undefined || stream.branch === undefined) {
-      throw new LandRefusedError(stream.id, `stream ${stream.id} has no land conflict to resolve`);
+      throw new LandRefusedError(stream.id, `${stream.title} has no merge conflict to resolve`);
     }
     return [
       '## Resolve the land conflict',
@@ -731,7 +770,7 @@ export class DeliveryService {
     if (factory === undefined || repoEntry.github === undefined) {
       throw new LandRefusedError(
         stream.id,
-        `stream ${stream.id} delivers by pull request but repo ${String(stream.repo)} has no GitHub repository configured`,
+        `${stream.title} delivers by pull request, but repo ${String(stream.repo)} has no GitHub repository configured`,
       );
     }
     // Protected-branch push rules are unchanged: never push onto one.
@@ -768,7 +807,7 @@ export class DeliveryService {
     ) {
       throw new LandRefusedError(
         stream.id,
-        `PR #${stream.delivery_state.pr?.number ?? '?'} for ${stream.id} is already merged; nothing to deliver`,
+        `PR #${stream.delivery_state.pr?.number ?? '?'} for ${stream.title} is already merged; nothing to deliver`,
       );
     }
     // T340: the record's open PR may have merged or closed on GitHub since the last poll.
@@ -780,7 +819,7 @@ export class DeliveryService {
         await Promise.resolve(this.options.refreshPr?.(stream.id)).catch(() => {});
         throw new LandRefusedError(
           stream.id,
-          `PR #${recorded.number} for ${stream.id} is already merged on GitHub; nothing to deliver`,
+          `PR #${recorded.number} for ${stream.title} is already merged on GitHub; nothing to deliver`,
         );
       }
       closedOnGitHub = !live.notModified && live.data.state === 'closed';
@@ -792,8 +831,8 @@ export class DeliveryService {
       throw new LandRefusedError(
         stream.id,
         closedOnGitHub
-          ? `PR #${recorded?.number} for ${stream.id} was closed on GitHub; a push never opens a PR (the human delivers again)`
-          : `stream ${stream.id} has no open PR; a push never opens one (the human delivers)`,
+          ? `PR #${recorded?.number} for ${stream.title} was closed on GitHub; a push never opens a PR (the human delivers again)`
+          : `${stream.title} has no open PR; a push never opens one (the human delivers)`,
       );
     }
     const pushed = gitNetwork(['push', remote, `refs/heads/${branch}:refs/heads/${branch}`], cwd);
@@ -867,21 +906,23 @@ export class DeliveryService {
     if (stream.repo === undefined || stream.branch === undefined) {
       throw new LandRefusedError(
         stream.id,
-        `stream ${stream.id} has no ${stream.repo === undefined ? 'repo' : 'branch'} — there is nothing to land`,
+        stream.repo === undefined
+          ? `${stream.title} has no repo — there is nothing to merge`
+          : `${stream.title} has no branch yet — there is nothing to merge`,
       );
     }
     const repoEntry = this.registeredRepo(stream, stream.repo);
     if (!(LANDABLE_HUMAN_STATUSES as readonly string[]).includes(stream.human.status)) {
       throw new LandRefusedError(
         stream.id,
-        `stream ${stream.id} is ${stream.human.status}; only ${LANDABLE_HUMAN_STATUSES.join(' or ')} streams land`,
+        `${stream.title} is ${stream.human.status === 'landed' ? 'already merged' : 'closed'}; only an open node can be merged`,
       );
     }
     const live = opts.allowLive ? undefined : liveSession(stream);
     if (live !== undefined) {
       throw new LandRefusedError(
         stream.id,
-        `stream ${stream.id} has a live session (${live.id}); detach it before landing`,
+        `${stream.title} still has a live agent; stop it or let it finish before merging`,
       );
     }
     return { repoEntry, branch: stream.branch };
@@ -927,7 +968,7 @@ export class DeliveryService {
   private registeredRepo(stream: Stream, repo: string): RepoEntry {
     const entry = this.options.store.getRepos()[repo];
     if (entry === undefined) {
-      throw new LandRefusedError(stream.id, `stream repo ${repo} is not registered in repos.yaml`);
+      throw new LandRefusedError(stream.id, `repo ${repo} is not registered in this home`);
     }
     return entry;
   }
@@ -960,7 +1001,7 @@ export class DeliveryService {
         why = "the parent's worktree has uncommitted changes";
     }
     if (why === undefined) return undefined;
-    const line = `helper delivery deferred: ${why}; land ${stream.branch} into ${target} again when it is done`;
+    const line = `helper delivery deferred: ${why}; merge ${branchLabel(stream.branch ?? '')} into ${branchLabel(target)} again when it is done`;
     await this.setDeliveryState(stream.id, {
       mode,
       status: 'held',
@@ -969,9 +1010,9 @@ export class DeliveryService {
     await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
     await streams.appendThread('daemon', host.id, {
       kind: 'event',
-      body: `helper ${stream.id} is ready to merge into ${target}; deferred: ${why}`,
+      body: `helper ${stream.title} is ready to merge into ${target}; deferred: ${why}`,
     });
-    return { status: 'refused', reason: line, line };
+    return { status: 'refused', reason: line, line, held: true };
   }
 
   /** T288: a helper's target is its parent's branch; anything else is refused, never main. */
@@ -979,7 +1020,7 @@ export class DeliveryService {
     if (stream.helper_of === undefined) return undefined;
     const host = this.options.streams.get(stream.helper_of);
     const refuse = (why: string): never => {
-      throw new LandRefusedError(stream.id, `helper of ${host.id}: ${why}`);
+      throw new LandRefusedError(stream.id, `helper of ${host.title}: ${why}`);
     };
     if (host.repo !== stream.repo)
       refuse(`the parent is on ${String(host.repo)}, not ${String(stream.repo)}`);
@@ -999,13 +1040,14 @@ export class DeliveryService {
     if (gates === undefined) {
       throw new LandRefusedError(
         stream.id,
-        `repo ${String(stream.repo)} asks for a land gate but no gate service is configured`,
+        `repo ${String(stream.repo)} asks for approval before each merge, but no gate service is configured`,
       );
     }
     const gate = await gates.request('land', {
       policy: this.options.store.getPolicy(),
       stream: stream.id,
-      summary: `land ${branch} into ${target}`,
+      // T371: the short branch; the card names the node by its title.
+      summary: `land ${branchLabel(branch)} into ${target}`,
     });
     if (gate.status === 'resolved' && gate.decision === 'approve') return undefined;
     if (gate.status === 'resolved') {
@@ -1087,7 +1129,7 @@ export class DeliveryService {
         if (collisions.length > 0) {
           throw new LandRefusedError(
             stream.id,
-            `landing ${plans.map((p) => p.branch).join(', ')} into ${target} would overwrite untracked ${collisions.join(', ')} in ${checkout.path}; move or commit them before landing`,
+            `merging ${plans.map((p) => p.stream.title).join(', ')} into ${target} would overwrite untracked ${collisions.join(', ')} in ${checkout.path}; move or commit them before merging`,
           );
         }
       }
@@ -1155,12 +1197,12 @@ export function waitDone(target: Stream | undefined): boolean {
   return target.repo === undefined && target.human.status === 'closed';
 }
 
-/** The ids `s` still waits on. */
+/** The nodes `s` still waits on, by title (the id when the node is gone). */
 function openWaits(s: Stream, all: readonly Stream[]): string[] {
   const byId = new Map(all.map((x) => [x.id, x]));
   return (s.waits_on ?? [])
     .filter((w) => w.satisfied_at === undefined && !waitDone(byId.get(w.node)))
-    .map((w) => w.node);
+    .map((w) => byId.get(w.node)?.title ?? w.node);
 }
 
 /** Why auto-merge must wait on `s` (P8 waits, P7 group readiness), or `undefined`. */
@@ -1189,7 +1231,10 @@ function autoMergeHold(
               ? `CI ${pr.checks}`
               : undefined;
     if (why !== undefined) {
-      return { reason: 'merge_together', detail: `merge-together ${key}: ${m.id} ${why}${note}` };
+      return {
+        reason: 'merge_together',
+        detail: `merge-together ${key}: ${m.title} ${why}${note}`,
+      };
     }
   }
   return undefined;
@@ -1340,5 +1385,10 @@ function dirtyCheckoutReason(target: string, checkouts: Checkout[]): string | un
   if (dirty === undefined) return undefined;
   const more = dirty.dirty.length > 5 ? ` and ${dirty.dirty.length - 5} more` : '';
   const paths = `${dirty.dirty.slice(0, 5).join(', ')}${more}`;
-  return `${target} is checked out with uncommitted changes at ${dirty.path} (${paths}); commit or stash them before landing`;
+  return `${target} is checked out with uncommitted changes at ${dirty.path} (${paths}); commit or stash them before merging`;
+}
+
+/** A branch with no commits beyond its target (T371: the short branch, "merge"). */
+function nothingToMerge(branch: string, target: string): string {
+  return `the branch ${branchLabel(branch)} has no commits beyond ${target} — nothing to merge`;
 }

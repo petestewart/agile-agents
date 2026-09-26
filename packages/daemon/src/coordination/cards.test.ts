@@ -1,7 +1,7 @@
 /** T283: status cards against a real temp git repo and state home; no vendor, no network. */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AgentId, type Stream, ulid } from '@agile-agents/shared';
@@ -197,7 +197,61 @@ describe('status cards (T283)', () => {
     } as unknown as Stream;
     expect(cardFiles(s)).toHaveLength(201);
     expect(cardFiles(s).at(-1)).toBe('+5 more');
-    expect(cardState(s)).toBe('blocked');
+    expect(cardState(s)).toBe('question');
+    expect(cardState({ ...s, agent: { status: 'blocked' } } as Stream)).toBe('blocked');
     expect(cardState({ ...s, human: { status: 'landed' } } as Stream)).toBe('done');
+  });
+
+  test('T349: a child with an open question reads "question"; a real block still "blocked"', async () => {
+    const shop = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const api = await child(shop.root, shop.id, 'api');
+    const web = await child(shop.root, shop.id, 'web');
+    await new QuestionService(store, streams).raise({
+      stream: api.id,
+      raised_by: 'daemon',
+      text: 'which price wins?',
+    });
+    await streams.update('agent', web.id, { agent: { status: 'blocked' } });
+    expect(store.getCard(api.id)?.state).toBe('question');
+    expect(store.getCard(web.id)?.state).toBe('blocked');
+    const frame = buildCockpitFrame(streams, undefined, undefined, {}, (id) => store.getCard(id));
+    const state = (id: string) => {
+      const c = frame.cards.find((x) => x.node === id);
+      return c && 'state' in c ? c.state : undefined;
+    };
+    expect(state(api.id)).toBe('question');
+    expect(state(web.id)).toBe('blocked');
+  });
+
+  test('T349: an older home\'s "blocked" card for a question child loads and is rewritten on start', async () => {
+    const shop = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const api = await child(shop.root, shop.id, 'api');
+    const web = await child(shop.root, shop.id, 'web');
+    await store.updateStream('daemon', api.id, (s) => ({
+      ...s,
+      agent: { ...s.agent, status: 'question' },
+    }));
+    await store.updateStream('daemon', web.id, (s) => ({
+      ...s,
+      agent: { ...s.agent, status: 'blocked' },
+    }));
+    // As a pre-T349 daemon wrote them: both `blocked`.
+    const at = '2026-01-01T00:00:00.000Z';
+    mkdirSync(join(stateRoot, 'cards'), { recursive: true });
+    for (const id of [api.id, web.id]) {
+      const path = join(stateRoot, 'cards', `${id}.yaml`);
+      writeFileSync(
+        path,
+        `node: ${id}\ndoing: ""\nstate: blocked\nfiles: []\nexports_changed: []\nrelies_on: []\nupdated_at: ${at}\n`,
+      );
+    }
+    expect(store.getCard(api.id)?.state).toBe('blocked');
+
+    expect(await cards.refreshQuestionCards()).toBe(1);
+    expect(store.getCard(api.id)?.state).toBe('question');
+    expect(store.getCard(web.id)?.state).toBe('blocked');
+    expect(store.getCard(web.id)?.updated_at).toBe(at);
+    // Idempotent: a second start writes nothing.
+    expect(await cards.refreshQuestionCards()).toBe(0);
   });
 });

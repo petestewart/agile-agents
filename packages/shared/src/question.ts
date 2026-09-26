@@ -61,6 +61,19 @@ export type QuestionResolvedAs = z.infer<typeof QuestionResolvedAsSchema>;
  */
 export const QuestionTextSchema = MessageBodySchema.min(1, 'must not be empty');
 
+/**
+ * T361: the choices an agent's `ask` may offer, shown as buttons (the
+ * operator can still type an answer). One line each, a handful at most.
+ */
+export const QUESTION_OPTIONS_MIN = 2;
+export const QUESTION_OPTIONS_MAX = 6;
+export const QUESTION_OPTION_MAX_CHARS = 200;
+export const QuestionOptionSchema = z.string().trim().min(1).max(QUESTION_OPTION_MAX_CHARS);
+export const QuestionChoicesSchema = z
+  .array(QuestionOptionSchema)
+  .min(QUESTION_OPTIONS_MIN)
+  .max(QUESTION_OPTIONS_MAX);
+
 export const QuestionSchema = z
   .object({
     id: QuestionIdSchema,

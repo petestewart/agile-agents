@@ -21,7 +21,9 @@ export interface Noul {
 }
 
 /** The Noul for one rule: its classifier question plus its criteria, if any. */
-export function noulFor(rule: Pick<KnowledgeItem, 'id' | 'text' | 'check'>): Noul {
+export function noulFor(
+  rule: Pick<KnowledgeItem, 'id' | 'text' | 'check'> & Partial<Pick<KnowledgeItem, 'enforcement'>>,
+): Noul {
   const criteria = classifierCheckOf(rule)?.criteria;
   return {
     id: rule.id,

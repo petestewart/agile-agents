@@ -66,6 +66,8 @@ export const ROUTES: Record<RoutedEventType, readonly Rule[]> = {
   external_changed: ['self'],
   // T300 (P16): the Director is not a node; its queue is `director`.
   director_request: ['director'],
+  // T332 (D33): a tangent reports to the conversation it branched off, no higher.
+  tangent_summary: ['parent'],
 };
 
 /** Types whose parties also bring their own ancestors (overlap: "both nodes, their ancestors"). */

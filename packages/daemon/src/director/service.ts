@@ -96,6 +96,8 @@ export interface DirectorServiceOptions {
 export interface DirectorView {
   record: DirectorRecord | undefined;
   thread: ThreadEntry[];
+  /** T399: every line the thread has; more than `thread` holds when it was cut to the limit. */
+  thread_total: number;
   live: boolean;
 }
 
@@ -244,9 +246,11 @@ export class DirectorService {
 
   view(limit = 500): DirectorView {
     const { store } = this.options;
+    const thread = store.readDirectorThread();
     return {
       record: store.getDirector(),
-      thread: store.readDirectorThread().slice(-limit),
+      thread: thread.slice(-limit),
+      thread_total: thread.length,
       live: this.liveHandle() !== undefined,
     };
   }

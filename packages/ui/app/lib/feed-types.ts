@@ -15,10 +15,13 @@ import type {
   HilRequest,
   InboxItem,
   NodeRole,
+  ProjectSessionDefaults,
   Question,
+  RepoRemote,
   RoutedEvent,
   RoutingEntry,
   KnowledgeItem as Rule,
+  SessionRef,
   Stream,
   ThreadEntry,
   TrackerSettings,
@@ -77,6 +80,28 @@ export interface CockpitStreamRow {
   visibility_advisory?: true;
   /** T336: a part not yet started because its coordinator's plan is not approved. */
   waiting_for_plan?: true;
+  /** T341: its PR is open, so it merges on GitHub. */
+  pr_open?: true;
+  /** T380: its agent finished with no commits beyond its target: nothing to merge. Absent from an older daemon. */
+  nothing_to_merge?: true;
+  /** T410: a finished node's change, what Merge would bring: files, lines added and removed. */
+  diff_stat?: { files: number; added: number; removed: number };
+  /** T395: its last change (ISO): creation, its agent's last status or its thread's last line. Absent from an older daemon. */
+  updated_at?: string;
+  /** T361: a work node or conversation whose agent never ran. Absent from an older daemon. */
+  never_started?: true;
+  /** T361: the human stopped its agent; nothing is live and it is still open. Absent from an older daemon. */
+  stopped?: true;
+  /** T382: the live session Running names (its own agent first). Absent when nothing is live, or from an older daemon. */
+  live_agent?: CockpitLiveAgent;
+}
+
+/** T382: mirror of `feed/snapshot.ts`'s `CockpitLiveAgent`. */
+export interface CockpitLiveAgent {
+  role: SessionRef['role'];
+  vendor: string;
+  model: string;
+  effort?: SessionRef['effort'];
 }
 
 /** T160: mirror of `feed/snapshot.ts`'s `CockpitFrame` — the inbox and the tree, pushed on connect and after every event batch. */
@@ -94,6 +119,16 @@ export interface CockpitFrame {
   cards?: Array<CockpitStatusCard | CockpitCardError>;
   /** T338: every contract's title and owning node, so text names contracts, not ids. Absent from an older daemon. */
   contracts?: CockpitContractRow[];
+  /** T361: deleted nodes that can be restored, most recently deleted first (≤200). Absent when none. */
+  archived?: CockpitArchivedRow[];
+}
+
+/** T361: mirror of `feed/snapshot.ts`'s `CockpitArchivedRow`. */
+export interface CockpitArchivedRow {
+  id: string;
+  title: string;
+  project?: string;
+  parent?: string;
 }
 
 /** T338: mirror of `feed/snapshot.ts`'s `CockpitContractRow`. */
@@ -113,7 +148,7 @@ export interface CockpitCardError {
 export interface CockpitStatusCard {
   node: string;
   doing: string;
-  state: 'working' | 'blocked' | 'done' | 'idle';
+  state: 'working' | 'question' | 'blocked' | 'done' | 'idle';
   files: string[];
   exports_changed: string[];
   relies_on: string[];
@@ -131,6 +166,8 @@ export interface CockpitOverlap {
 export interface CockpitRepoRow {
   name: string;
   delivery: 'direct' | 'pr';
+  /** T362: where its remote lives (the repo icon); absent for a local-only repo. */
+  remote?: RepoRemote;
 }
 
 /** T208: mirror of `feed/snapshot.ts`'s `CockpitProjectRow`. */
@@ -146,9 +183,11 @@ export interface CockpitProjectRow {
   /** T338: the project's repos and tracker settings. Absent from an older daemon. */
   repos?: string[];
   tracker?: TrackerSettings;
+  /** T379: the project's own session defaults (P5). Absent when it names none, or from an older daemon. */
+  session?: ProjectSessionDefaults;
 }
 
-/** T161: mirror of `delivery/service.ts`'s `LandPreflight` — the Land button's "before". */
+/** T161: mirror of `delivery/service.ts`'s `LandPreflight` — the Merge button's "before". */
 export interface LandPreflight {
   ready: boolean;
   reason?: string;
@@ -204,10 +243,11 @@ export interface StreamDiff {
   truncated: boolean;
 }
 
-/** T161: mirror of `delivery/service.ts`'s `LandOutcome` — the Land button's "after". */
+/** T161: mirror of `delivery/service.ts`'s `LandOutcome` — the Merge button's "after". */
 export type LandOutcome =
   | { status: 'gated'; gate: HilRequest; line: string }
-  | { status: 'refused'; reason: string; line: string }
+  /** T347: `held` is a ship-check or waits-on hold: news, not a failure. */
+  | { status: 'refused'; reason: string; line: string; held?: true }
   | { status: 'blocked'; target: string; conflicts: string[]; line: string }
   | { status: 'landed'; target: string; sha: string; line: string }
   /** PR mode: the branch was pushed and its PR opened (or updated). A success. */
@@ -258,4 +298,25 @@ export interface RuleEvalReport {
   disagreed: number;
   errors: number;
   agreement_rate?: number;
+}
+
+/** T392: mirror of `feed/steps.ts`'s `AgentStep` — one ACP tool call as its latest update left it. */
+export interface AgentStep {
+  /** The ACP `toolCallId`. */
+  id: string;
+  /** The session that made the call. */
+  session?: string;
+  /** When the call was first seen. */
+  ts: string;
+  /** read, edit, delete, move, search, execute, think, fetch, switch_mode, other. */
+  kind: string;
+  title: string;
+  /** pending, in_progress, completed or failed. */
+  status: string;
+}
+
+/** T392: `GET /api/streams/:id/steps` — the newest steps first, and how many the node has had. */
+export interface StepPage {
+  steps: AgentStep[];
+  total: number;
 }

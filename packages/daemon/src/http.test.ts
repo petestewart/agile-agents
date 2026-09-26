@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,6 +16,8 @@ import {
   type Event,
   type KnowledgeItem,
   type Policy,
+  type RepoRemote,
+  type RoutedEvent,
   type SessionDefaultsStatus,
   classifierQuestion,
   examplesOf,
@@ -19,7 +29,9 @@ import { type AttachService, resolveSessionSettings } from './attach';
 import { Bus } from './bus';
 import { ClassifierKeyService, FakeClassifier } from './classifier';
 import { readHomeConfigFile } from './config';
-import type { CockpitFrame, StreamPagePayload } from './feed';
+import { DirectorService } from './director';
+import { RoutedEventService } from './events';
+import type { CockpitFrame, StepPage, StreamPagePayload } from './feed';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService } from './inbox';
@@ -27,7 +39,8 @@ import { runInit } from './init';
 import { KnowledgeService } from './knowledge';
 import { ProjectService } from './projects';
 import { QuestionService } from './questions';
-import { StateStore } from './store';
+import { type DirListing, RepoRemoteCache, StateStore } from './store';
+import { buildEvent } from './store/events';
 import { StreamService } from './streams';
 
 // T121: gates are raised on a stream; the HIL routes only need an id, the
@@ -169,7 +182,17 @@ describe('T160 cockpit routes', () => {
       role: 'conversation',
       agent_status: 'question',
       human_status: 'waiting_on_you',
+      // T361: its agent never ran.
+      never_started: true,
+      // T395: its last change: here the question's status change and thread line.
+      updated_at: expect.any(String),
     });
+    expect((row?.updated_at ?? '') >= leaf.created_at).toBe(true);
+    expect(row?.updated_at).toBe(
+      [streams.get(leaf.id).agent.updated_at, streams.readThread(leaf.id).entries.at(-1)?.ts ?? '']
+        .sort()
+        .at(-1),
+    );
     expect(frame.inbox.map((i) => i.stream_path)).toEqual([['root', 'leaf']]);
   });
 
@@ -595,6 +618,120 @@ describe('T160 cockpit routes', () => {
     expect((await fetch(url('/api/streams/nope'))).status).toBe(400);
   });
 
+  test("T392: GET /api/streams/:id/steps is the node's tool calls, one per call, newest first", async () => {
+    const node = await streams.create('human', { title: 'n', goal: 'g' });
+    const other = await streams.create('human', { title: 'o', goal: 'g' });
+    const toolCall = (stream: string, data: Record<string, unknown>, session = 'S-1') =>
+      store.appendEvent(buildEvent('tool_call', { agent: session, data: { stream, ...data } }));
+    const read = async (id: string) => {
+      const res = await fetch(url(`/api/streams/${id}/steps`));
+      expect(res.status).toBe(200);
+      return (await res.json()) as StepPage;
+    };
+    expect(await read(node.id)).toEqual({ steps: [], total: 0 });
+
+    await toolCall(node.id, {
+      toolCallId: 't1',
+      kind: 'read',
+      title: 'Read a.ts',
+      status: 'pending',
+    });
+    await toolCall(node.id, { toolCallId: 't1', status: 'completed' });
+    await toolCall(node.id, {
+      toolCallId: 't2',
+      kind: 'execute',
+      title: '`bun test`',
+      status: 'in_progress',
+    });
+    await toolCall(other.id, {
+      toolCallId: 't3',
+      kind: 'edit',
+      title: 'Edit b.ts',
+      status: 'pending',
+    });
+    const first = await read(node.id);
+    expect(first.total).toBe(2);
+    expect(first.steps.map((s) => [s.id, s.kind, s.title, s.status, s.session])).toEqual([
+      ['t2', 'execute', '`bun test`', 'in_progress', 'S-1'],
+      ['t1', 'read', 'Read a.ts', 'completed', 'S-1'],
+    ]);
+    expect(typeof first.steps[0]?.ts).toBe('string');
+
+    // Appended after the first read: the next read has it (the index follows the log).
+    await toolCall(node.id, { toolCallId: 't2', status: 'failed' });
+    expect((await read(node.id)).steps[0]?.status).toBe('failed');
+    expect((await read(other.id)).steps.map((s) => s.id)).toEqual(['t3']);
+
+    expect((await fetch(url(`/api/streams/${ulid()}/steps`))).status).toBe(404);
+    expect((await fetch(url('/api/streams/nope/steps'))).status).toBe(400);
+    expect((await fetch(url(`/api/streams/${node.id}/steps`), { method: 'POST' })).status).toBe(
+      404,
+    );
+  });
+
+  test("T399: GET /api/director/steps is the Director's tool calls; the page says how long its thread is", async () => {
+    const withDirector = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      director: new DirectorService({
+        store,
+        streams,
+        events: new RoutedEventService(store),
+        home,
+      }),
+    });
+    try {
+      const at = (path: string) => `http://127.0.0.1:${withDirector.port}${path}`;
+      expect(await (await fetch(at('/api/director/steps'))).json()).toEqual({
+        steps: [],
+        total: 0,
+      });
+      await store.appendEvent(
+        buildEvent('tool_call', {
+          agent: 'S-D',
+          data: {
+            stream: 'director',
+            toolCallId: 'd1',
+            kind: 'read',
+            title: 'List',
+            status: 'completed',
+          },
+        }),
+      );
+      // A node's tool call is not the Director's.
+      const node = await streams.create('human', { title: 'n', goal: 'g' });
+      await store.appendEvent(
+        buildEvent('tool_call', { agent: 'S-N', data: { stream: node.id, toolCallId: 'n1' } }),
+      );
+      const page = (await (await fetch(at('/api/director/steps'))).json()) as StepPage;
+      expect(page.total).toBe(1);
+      expect(page.steps.map((s) => [s.id, s.kind, s.status])).toEqual([
+        ['d1', 'read', 'completed'],
+      ]);
+      await store.appendDirectorThread({
+        ts: new Date().toISOString(),
+        by: 'director',
+        kind: 'line',
+        body: 'hi',
+      });
+      const director = (await (await fetch(at('/api/director'))).json()) as {
+        thread: unknown[];
+        thread_total: number;
+      };
+      expect([director.thread.length, director.thread_total]).toEqual([1, 1]);
+      expect((await fetch(at('/api/director/steps'), { method: 'POST' })).status).toBe(404);
+      // Without a Director, the route says so.
+      expect((await fetch(url('/api/director/steps'))).status).toBe(503);
+    } finally {
+      await withDirector.stop();
+    }
+  });
+
   test('T161: POST /api/streams/:id/say writes a human line; the actor is never read from the body; cross-origin is 403', async () => {
     const stream = await streams.create('human', { title: 's', goal: 'g' });
     const foreign = await fetch(url(`/api/streams/${stream.id}/say`), {
@@ -625,6 +762,194 @@ describe('T160 cockpit routes', () => {
       body: JSON.stringify({ body: 'x'.repeat(801) }),
     });
     expect(long.status).toBe(400);
+  });
+
+  test('T333: POST /api/streams/:id/move moves as human; strict body; a refusal is 400; cross-origin 403', async () => {
+    const move = (id: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/streams/${id}/move`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const a = await streams.create('human', { title: 'a', goal: 'g' });
+    const b = await streams.create('human', { title: 'b', goal: 'g', parent: a.id });
+    const c = await streams.create('human', { title: 'c', goal: 'g', parent: a.id });
+    expect((await move(c.id, { parent: b.id }, { origin: 'http://evil.example' })).status).toBe(
+      403,
+    );
+    expect((await move(c.id, { parent: b.id, by: 'daemon' })).status).toBe(400);
+    expect((await move(a.id, { parent: c.id })).status).toBe(400);
+    const ok = await move(c.id, { parent: b.id });
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { parent: string }).parent).toBe(b.id);
+    expect(streams.readThread(b.id).entries.at(-1)).toMatchObject({
+      by: 'human',
+      body: `moved here: c (${c.id}) from a`,
+    });
+  });
+
+  test('T365: POST /api/streams/:id/update renames as human; strict body; cross-origin 403', async () => {
+    const update = (id: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/streams/${id}/update`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const node = await streams.create('human', { title: 'old name', goal: 'the goal' });
+    expect(
+      (await update(node.id, { title: 'new' }, { origin: 'http://evil.example' })).status,
+    ).toBe(403);
+    // Only title and goal: no agent fields, no parent, no principal, and not nothing.
+    expect((await update(node.id, { title: 'x', agent: { status: 'done' } })).status).toBe(400);
+    expect((await update(node.id, { parent: node.id })).status).toBe(400);
+    expect((await update(node.id, {})).status).toBe(400);
+    expect((await update(node.id, { title: '   ' })).status).toBe(400);
+    expect((await update('01ARZ3NDEKTSV4RRFFQ69G5FAV', { title: 'x' })).status).toBe(404);
+
+    const res = await update(node.id, { title: '  Checkout flow  ' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { title: string }).title).toBe('Checkout flow');
+    expect(streams.get(node.id)).toMatchObject({ title: 'Checkout flow', goal: 'the goal' });
+    expect(
+      store
+        .listEvents()
+        .filter((e) => e.kind === 'stream_updated')
+        .at(-1)?.data,
+    ).toMatchObject({ principal: 'human' });
+    await update(node.id, { goal: 'a sharper goal' });
+    expect(streams.get(node.id)).toMatchObject({ title: 'Checkout flow', goal: 'a sharper goal' });
+    const frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(frame.streams.find((s) => s.id === node.id)?.title).toBe('Checkout flow');
+  });
+
+  test('T361: POST /api/streams/:id/archive and /unarchive delete and restore a subtree as human', async () => {
+    const post = (path: string, headers: Record<string, string> = {}) =>
+      fetch(url(path), { method: 'POST', headers });
+    const shop = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const a = await streams.create('human', { title: 'a', goal: 'g', project: shop.id });
+    const b = await streams.create('human', { title: 'b', goal: 'g', parent: a.id });
+    expect(
+      (await post(`/api/streams/${a.id}/archive`, { origin: 'http://evil.example' })).status,
+    ).toBe(403);
+    const root = await post(`/api/streams/${shop.root}/archive`);
+    expect(root.status).toBe(400);
+    expect(((await root.json()) as { error: string }).error).toContain(
+      "a project root can't be deleted; archive the project instead",
+    );
+
+    const res = await post(`/api/streams/${a.id}/archive`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      node: { id: string };
+      archived: string[];
+      stopped: string[];
+    };
+    expect(body.node.id).toBe(a.id);
+    expect(body.archived).toEqual([a.id, b.id]);
+    expect(body.stopped).toEqual([]);
+    expect(
+      store
+        .listEvents()
+        .filter((e) => e.kind === 'stream_archived')
+        .at(-1)?.data,
+    ).toMatchObject({ principal: 'human', archived: true });
+    let frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(frame.streams.map((s) => s.id)).toEqual([shop.root]);
+    // Only what Restore can bring back: `b` comes back with `a`.
+    expect(frame.archived).toEqual([{ id: a.id, title: 'a', project: shop.id, parent: shop.root }]);
+    expect((await post(`/api/streams/${b.id}/unarchive`)).status).toBe(400);
+
+    const back = await post(`/api/streams/${a.id}/unarchive`);
+    expect(back.status).toBe(200);
+    expect(((await back.json()) as { restored: string[] }).restored).toEqual([a.id, b.id]);
+    frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(frame.streams.map((s) => s.id).sort()).toEqual([shop.root, a.id, b.id].sort());
+    expect(frame.archived).toBeUndefined();
+    expect((await post(`/api/streams/${a.id}/unarchive`)).status).toBe(400);
+  });
+
+  test('T361: Delete stops every live session in the subtree as a human detach', async () => {
+    const a = await streams.create('human', { title: 'a', goal: 'g' });
+    const b = await streams.create('human', { title: 'b', goal: 'g', parent: a.id });
+    const c = await streams.create('human', { title: 'c', goal: 'g', parent: b.id });
+    const calls: Array<[string, unknown, unknown]> = [];
+    // A stand-in for `AttachService.stop`: `c` has a live session.
+    const attach = {
+      stop: async (id: string, role: unknown, opts: unknown) => {
+        calls.push([id, role, opts]);
+        return id === c.id ? ['S1'] : [];
+      },
+    } as unknown as AttachService;
+    const server = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      attach,
+      feedPollIntervalMs: 20,
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/streams/${b.id}/archive`, {
+        method: 'POST',
+      });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { stopped: string[] }).stopped).toEqual(['S1']);
+      const expected: Array<[string, unknown, unknown]> = [
+        [b.id, undefined, { detach: true }],
+        [c.id, undefined, { detach: true }],
+      ];
+      expect(calls.sort()).toEqual(expected.sort());
+      expect(streams.get(c.id).archived).toBe(true);
+      expect(streams.get(a.id).archived).toBeUndefined();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test('T361: POST /api/streams/:id/say passes start through and replies started', async () => {
+    const stream = await streams.create('human', { title: 's', goal: 'g' });
+    const seen: unknown[] = [];
+    const attach = {
+      say: async (id: string, body: string, opts: { start?: boolean }) => {
+        seen.push(opts);
+        return {
+          entry: await streams.appendThread('human', id, { kind: 'line', body }),
+          ...(opts.start ? { prompted: 'S1', started: true } : {}),
+        };
+      },
+    } as unknown as AttachService;
+    const server = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      questions,
+      attach,
+      feedPollIntervalMs: 20,
+    });
+    try {
+      const say = (body: unknown) =>
+        fetch(`http://127.0.0.1:${server.port}/api/streams/${stream.id}/say`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      const started = await say({ body: 'go', start: true });
+      expect(started.status).toBe(201);
+      expect(await started.json()).toMatchObject({ prompted: 'S1', started: true });
+      const plain = await say({ body: 'and again' });
+      expect(((await plain.json()) as { started?: true }).started).toBeUndefined();
+      expect((await say({ body: 'x', start: 'yes' })).status).toBe(400);
+      expect(seen).toEqual([{ start: true }, {}]);
+    } finally {
+      await server.stop();
+    }
   });
 
   test('T169: a say prompted into the asking session answers its open question as human', async () => {
@@ -687,6 +1012,33 @@ describe('T160 cockpit routes', () => {
     ).toBe(403);
     const listed = (await (await fetch(url('/api/projects'))).json()) as Array<{ id: string }>;
     expect(listed.map((p) => p.id)).toEqual([shop.id]);
+    // T372: rename a project and change its repos; an unknown repo is refused.
+    const renamed = await post(`/api/projects/${shop.id}`, { name: 'Shop', repos: [] });
+    expect(renamed.status).toBe(200);
+    expect(((await renamed.json()) as { name: string }).name).toBe('Shop');
+    expect((await post(`/api/projects/${shop.id}`, { name: 'shop' })).status).toBe(200);
+    expect((await post(`/api/projects/${shop.id}`, { repos: ['nope'] })).status).toBe(400);
+    // T379: the project's session defaults; the frame carries them; `null` clears them.
+    const session = await post(`/api/projects/${shop.id}`, {
+      session: { model: 'claude-haiku-4-5', effort: 'high' },
+    });
+    expect(session.status).toBe(200);
+    expect(((await session.json()) as { session?: unknown }).session).toEqual({
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+    });
+    const withSession = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(withSession.projects[0]?.session).toEqual({ model: 'claude-haiku-4-5', effort: 'high' });
+    expect(
+      (await post(`/api/projects/${shop.id}`, { session: { effort: 'extreme' } })).status,
+    ).toBe(400);
+    expect((await post(`/api/projects/${shop.id}`, { session: null })).status).toBe(200);
+    const cleared = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(cleared.projects[0]?.session).toBeUndefined();
+    expect(
+      (await post(`/api/projects/${shop.id}`, { name: 'x' }, { origin: 'http://evil.example' }))
+        .status,
+    ).toBe(403);
 
     const s = (body: Record<string, unknown>, headers?: Record<string, string>) =>
       post('/api/streams', body, headers);
@@ -734,7 +1086,8 @@ describe('T160 cockpit routes', () => {
     ]);
     const roles = Object.fromEntries(frame.streams.map((r) => [r.id, [r.role, r.project]]));
     expect(roles[shop.root]).toEqual(['project', shop.id]);
-    expect(roles[parent.id]).toEqual(['coordinating', shop.id]);
+    // D33: a repo-less child (a tangent) leaves its parent a conversation.
+    expect(roles[parent.id]).toEqual(['conversation', shop.id]);
     expect(roles[created.id]).toEqual(['conversation', shop.id]);
   });
 
@@ -785,6 +1138,62 @@ describe('T160 cockpit routes', () => {
       expect(pushed?.streams.find((s) => s.id === stream.id)?.human_status).toBe('waiting_on_you');
     } finally {
       ws.close();
+    }
+  });
+
+  test('T404: a /ws connect sends the recent events without reading the log again', async () => {
+    const agentId = '01ARZ3NDEKTSV4RRFFQ69GE903';
+    const put = () =>
+      store.putAgent(agentId, {
+        vendor: 'claude',
+        model: 'claude-sonnet-4-5',
+        last_seen: new Date().toISOString(),
+      });
+    await put();
+    let reads = 0;
+    const listEvents = store.listEvents.bind(store);
+    store.listEvents = (endOffset?: number) => {
+      reads += 1;
+      return listEvents(endOffset);
+    };
+    const quick = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      feedPollIntervalMs: 20,
+    });
+    const snapshotOf = () =>
+      new Promise<Event[]>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${quick.port}/ws`);
+        ws.onmessage = (event) => {
+          const frame = JSON.parse(event.data as string) as { type: string; events?: Event[] };
+          if (frame.type !== 'snapshot') return;
+          ws.close();
+          resolve(frame.events ?? []);
+        };
+        ws.onerror = (event) => reject(event);
+      });
+    try {
+      // Read once, when the server started.
+      expect(reads).toBe(1);
+      const first = await snapshotOf();
+      expect(first.filter((e) => e.agent === agentId).map((e) => e.kind)).toEqual(['agent_put']);
+      // Written after the start: the tailer adds it, and the next connect has it.
+      await put();
+      const deadline = Date.now() + 5000;
+      let second = await snapshotOf();
+      while (second.filter((e) => e.agent === agentId).length < 2 && Date.now() < deadline) {
+        await Bun.sleep(20);
+        second = await snapshotOf();
+      }
+      expect(second.filter((e) => e.agent === agentId)).toHaveLength(2);
+      expect(reads).toBe(1);
+    } finally {
+      store.listEvents = listEvents;
+      await quick.stop();
     }
   });
 
@@ -843,5 +1252,391 @@ describe('T160 cockpit routes', () => {
       ws.close();
       await slow.stop();
     }
+  });
+});
+
+describe('T362 folder picker, clone by URL, repo remotes', () => {
+  let scratch: string;
+  let userHome: string;
+  let store: StateStore;
+  let stateRoot: string;
+  let picker: HttpServerHandle;
+
+  function git(args: string[], cwd: string): void {
+    const r = Bun.spawnSync(['git', ...args], { cwd, stdout: 'ignore', stderr: 'pipe' });
+    if (r.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr.toString()}`);
+  }
+
+  function repoAt(path: string): string {
+    mkdirSync(path, { recursive: true });
+    git(['init', '-q', '-b', 'main'], path);
+    return path;
+  }
+
+  beforeEach(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'agile-http-picker-'));
+    userHome = join(scratch, 'home');
+    mkdirSync(join(userHome, 'Projects'), { recursive: true });
+    stateRoot = runInit(join(scratch, 'agile-home')).stateRoot;
+    store = StateStore.open(stateRoot);
+    const streams = new StreamService(store);
+    picker = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      feedPollIntervalMs: 20,
+      userHome,
+    });
+  });
+
+  afterEach(async () => {
+    await picker.stop();
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  const url = (path: string) => `http://127.0.0.1:${picker.port}${path}`;
+  const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+    fetch(url(path), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+
+  test('GET /api/fs/dirs lists folders from home by default; same-origin and loopback Host only', async () => {
+    repoAt(join(userHome, 'Projects', 'shop'));
+    mkdirSync(join(userHome, 'Projects', 'notes'));
+    const res = await fetch(url('/api/fs/dirs?path=~/Projects'));
+    expect(res.status).toBe(200);
+    const listing = (await res.json()) as DirListing;
+    expect(listing).toEqual({
+      path: join(userHome, 'Projects'),
+      parent: userHome,
+      home: userHome,
+      is_git: false,
+      entries: [
+        { name: 'notes', path: join(userHome, 'Projects', 'notes'), git: false },
+        { name: 'shop', path: join(userHome, 'Projects', 'shop'), git: true },
+      ],
+    });
+    const byDefault = (await (await fetch(url('/api/fs/dirs'))).json()) as DirListing;
+    expect(byDefault.path).toBe(userHome);
+    const typed = (await (
+      await fetch(
+        url(`/api/fs/dirs?path=${encodeURIComponent(join(userHome, 'Projects'))}&prefix=SH`),
+      )
+    ).json()) as DirListing;
+    expect(typed.entries.map((e) => e.name)).toEqual(['shop']);
+
+    expect((await fetch(url('/api/fs/dirs?path=~/nope'))).status).toBe(404);
+    const relative = await fetch(url('/api/fs/dirs?path=Projects'));
+    expect(relative.status).toBe(400);
+    expect(((await relative.json()) as { error: string }).error).toContain('must be absolute');
+    const foreign = await fetch(url('/api/fs/dirs'), {
+      headers: { origin: 'http://evil.example' },
+    });
+    expect(foreign.status).toBe(403);
+    // A DNS-rebound page: same-origin to the browser, but its own name as Host.
+    const rebound = await fetch(url('/api/fs/dirs'), {
+      headers: { host: `evil.example:${picker.port}`, 'sec-fetch-site': 'same-origin' },
+    });
+    expect(rebound.status).toBe(403);
+    const localhost = await fetch(url('/api/fs/dirs'), {
+      headers: { host: `localhost:${picker.port}` },
+    });
+    expect(localhost.status).toBe(200);
+  });
+
+  test('T378: POST /api/repos refuses a name taken by another folder; the same folder re-registers keeping its settings', async () => {
+    const shop = repoAt(join(scratch, 'work', 'shop'));
+    const other = repoAt(join(scratch, 'work', 'other'));
+    expect((await post('/api/repos', { name: 'shop', path: shop })).status).toBe(200);
+    await store.putRepos({
+      ...store.getRepos(),
+      shop: {
+        ...(store.getRepos().shop as object),
+        visibility: { mode: 'private', projects: ['P-01ARZ3NDEKTSV4RRFFQ69G5FAV'] },
+      } as never,
+    });
+    const clash = await post('/api/repos', { name: 'shop', path: other });
+    expect(clash.status).toBe(409);
+    expect(((await clash.json()) as { error: string }).error).toContain('already registered');
+    expect(store.getRepos().shop?.path).toBe(realpathSync(shop));
+    // The same folder (another spelling) re-registers and keeps what was set on it.
+    const again = await post('/api/repos', {
+      name: 'shop',
+      path: `${shop}/`,
+      protected_branches: ['main', 'release'],
+    });
+    expect(again.status).toBe(200);
+    expect(store.getRepos().shop).toMatchObject({
+      protected_branches: ['main', 'release'],
+      visibility: { mode: 'private', projects: ['P-01ARZ3NDEKTSV4RRFFQ69G5FAV'] },
+    });
+  });
+
+  test('POST /api/repos/clone clones a local bare repo, registers it, and its row says where it came from', async () => {
+    const work = repoAt(join(scratch, 'work', 'shop'));
+    writeFileSync(join(work, 'README.md'), 'hi\n');
+    git(['add', '.'], work);
+    git(
+      [
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@t',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '-qm',
+        'init',
+      ],
+      work,
+    );
+    const bare = join(scratch, 'remotes', 'shop.git');
+    mkdirSync(join(scratch, 'remotes'));
+    git(['clone', '-q', '--bare', work, bare], scratch);
+
+    const foreign = await post(
+      '/api/repos/clone',
+      { url: bare },
+      { origin: 'http://evil.example' },
+    );
+    expect(foreign.status).toBe(403);
+
+    const res = await post('/api/repos/clone', { url: bare });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      repos: Array<{ name: string; path: string; remote?: RepoRemote }>;
+      repo: string;
+      path: string;
+    };
+    const dest = realpathSync(join(userHome, 'Projects', 'shop'));
+    expect(body.repo).toBe('shop');
+    expect(body.path).toBe(dest);
+    expect(body.repos).toEqual([
+      expect.objectContaining({
+        name: 'shop',
+        path: dest,
+        remote: { kind: 'other', protocol: 'file', url: bare, name: 'shop' },
+      }),
+    ]);
+    expect(store.listEvents().at(-1)).toMatchObject({ kind: 'repos_put', agent: 'human' });
+
+    const again = await post('/api/repos/clone', { url: bare });
+    expect(again.status).toBe(409);
+    const bad = await post('/api/repos/clone', { url: 'ext::sh -c x' });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toContain('not a git URL');
+  });
+
+  test('GET /api/repos and the cockpit frame carry each repo remote; a local-only repo has none', async () => {
+    const shop = repoAt(join(scratch, 'shop'));
+    git(
+      ['remote', 'add', 'origin', 'https://x-access-token:s3cr3t@github.com/acme/shop.git'],
+      shop,
+    );
+    const scratchpad = repoAt(join(scratch, 'scratchpad'));
+    expect((await post('/api/repos', { name: 'shop', path: shop })).status).toBe(200);
+    expect((await post('/api/repos', { name: 'scratchpad', path: scratchpad })).status).toBe(200);
+
+    const listed = (await (await fetch(url('/api/repos'))).json()) as {
+      repos: Array<{ name: string; remote?: RepoRemote }>;
+    };
+    const github: RepoRemote = {
+      kind: 'github',
+      protocol: 'https',
+      url: 'https://github.com/acme/shop.git',
+      owner: 'acme',
+      name: 'shop',
+    };
+    expect(listed.repos.find((r) => r.name === 'shop')?.remote).toEqual(github);
+    expect(listed.repos.find((r) => r.name === 'scratchpad')?.remote).toBeUndefined();
+
+    // The frame answers from the cache (warmed by the list above).
+    const frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(frame.repos).toEqual([
+      { name: 'shop', delivery: 'direct', remote: github },
+      { name: 'scratchpad', delivery: 'direct' },
+    ]);
+    expect(JSON.stringify(frame)).not.toContain('s3cr3t');
+  });
+
+  test('the frame never waits on git: a cold cache is read in the background and the frame re-pushed', async () => {
+    const shop = repoAt(join(scratch, 'shop'));
+    git(['remote', 'add', 'origin', 'git@gitlab.com:acme/shop.git'], shop);
+    await store.addRepo('shop', { path: shop });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const remotes = new RepoRemoteCache({
+      read: async () => {
+        await gate;
+        return 'git@gitlab.com:acme/shop.git';
+      },
+    });
+    const cold = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams: new StreamService(store),
+      feedPollIntervalMs: 20,
+      repoRemotes: remotes,
+    });
+    const frames: CockpitFrame[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${cold.port}/ws`);
+    ws.onmessage = (event) => {
+      const frame = JSON.parse(event.data as string) as { type: string };
+      if (frame.type === 'cockpit') frames.push(frame as CockpitFrame);
+    };
+    try {
+      const deadline = Date.now() + 5000;
+      while (frames.length === 0 && Date.now() < deadline) await Bun.sleep(10);
+      expect(frames[0]?.repos).toEqual([{ name: 'shop', delivery: 'direct' }]);
+      release();
+      while (frames.length < 2 && Date.now() < deadline) await Bun.sleep(10);
+      expect(frames.at(-1)?.repos[0]?.remote).toMatchObject({ kind: 'gitlab', protocol: 'ssh' });
+    } finally {
+      ws.close();
+      await cold.stop();
+    }
+  });
+
+  test('/api/repos/clone is the settings of a registered repo named clone when the body has no url', async () => {
+    const clone = repoAt(join(scratch, 'clone'));
+    expect((await post('/api/repos', { name: 'clone', path: clone })).status).toBe(200);
+    const res = await post('/api/repos/clone', { auto_merge: true });
+    expect(res.status).toBe(200);
+    expect(store.getRepos().clone?.auto_merge).toBe(true);
+  });
+});
+
+// --- T383: the event log a page at a time ---
+
+describe('T383 GET /api/events pages', () => {
+  let home: string;
+  let cockpit: HttpServerHandle;
+  let events: RoutedEventService;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'agile-http-events-'));
+    const init = runInit(home);
+    const store = StateStore.open(init.stateRoot);
+    events = new RoutedEventService(store);
+    cockpit = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot: init.stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      events,
+    });
+  });
+
+  afterEach(async () => {
+    await cockpit.stop();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  type Page = { events: RoutedEvent[]; more: boolean; total: number };
+  const read = async (query = ''): Promise<{ status: number; body: Page & { error?: string } }> => {
+    const res = await fetch(`http://127.0.0.1:${cockpit.port}/api/events${query}`);
+    return { status: res.status, body: (await res.json()) as Page & { error?: string } };
+  };
+  const emit = (body: string, repo?: string) =>
+    events.emit({
+      type: 'human_line',
+      subject: STREAM,
+      payload: { body },
+      by: 'human',
+      routing: [{ node: STREAM, because: 'self' }],
+      ...(repo !== undefined ? { repo } : {}),
+    });
+
+  test('pages newest first with before and limit until more is false', async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) ids.push((await emit(`n${i}`)).id);
+    const newest = [...ids].reverse();
+    // No query: every event (up to 200), as before, with more and total.
+    const all = await read();
+    expect(all.status).toBe(200);
+    expect(all.body.events.map((e) => e.id)).toEqual(newest);
+    expect(all.body).toMatchObject({ more: false, total: 5 });
+
+    const seen: string[] = [];
+    let before: string | undefined;
+    let pages = 0;
+    for (;;) {
+      const { status, body } = await read(`?limit=2${before ? `&before=${before}` : ''}`);
+      expect(status).toBe(200);
+      expect(body.total).toBe(5);
+      seen.push(...body.events.map((e) => e.id));
+      pages += 1;
+      if (!body.more) break;
+      before = body.events.at(-1)?.id;
+    }
+    expect(pages).toBe(3);
+    expect(seen).toEqual(newest);
+    // Past the end of the log: an empty page, nothing more.
+    expect((await read(`?before=${ids[0]}`)).body).toEqual({ events: [], more: false, total: 5 });
+  });
+
+  test("repo= reads one repo's events", async () => {
+    const api = await emit('on api', 'api');
+    await emit('on web', 'web');
+    const { status, body } = await read('?repo=api&limit=5');
+    expect(status).toBe(200);
+    expect(body.events.map((e) => e.id)).toEqual([api.id]);
+    expect(body).toMatchObject({ more: false, total: 1 });
+    expect((await read('?repo=nope')).body).toEqual({ events: [], more: false, total: 0 });
+  });
+
+  test("T407: /api/repos/:name/events is the repo's page, paged the same", async () => {
+    const first = await emit('one', 'api');
+    await emit('elsewhere', 'web');
+    const second = await emit('two', 'api');
+    const at = (query = '') =>
+      fetch(`http://127.0.0.1:${cockpit.port}/api/repos/api/events${query}`).then(async (res) => ({
+        status: res.status,
+        body: (await res.json()) as Page,
+      }));
+    const page = await at('?limit=1');
+    expect(page.status).toBe(200);
+    expect(page.body.events.map((e) => e.id)).toEqual([second.id]);
+    expect(page.body).toMatchObject({ more: true, total: 2 });
+    const next = await at(`?limit=1&before=${second.id}`);
+    expect(next.body.events.map((e) => e.id)).toEqual([first.id]);
+    expect(next.body.more).toBe(false);
+    expect((await at('?limit=0')).status).toBe(400);
+  });
+
+  test('a bad limit, an empty repo and an unknown cursor are 400s in words', async () => {
+    await emit('hi');
+    for (const limit of ['0', '-1', '2.5', 'ten', '501', '']) {
+      const { status, body } = await read(`?limit=${limit}`);
+      expect(status).toBe(400);
+      expect(body.error).toContain('limit must be a whole number from 1 to 500');
+    }
+    expect((await read('?limit=500')).status).toBe(200);
+    const unknown = await read('?before=E-nope');
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.error).toBe(
+      'no event "E-nope" in the log: before must be the id of an event a page listed',
+    );
+    expect((await read('?before=')).body.error).toContain('before must be the id of an event');
+    expect((await read('?repo=')).body.error).toContain('repo must be a repo name');
+  });
+
+  test('is 503 without the event service', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/events`);
+    expect(res.status).toBe(503);
   });
 });

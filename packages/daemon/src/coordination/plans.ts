@@ -24,7 +24,7 @@ import {
 } from '@agile-agents/shared';
 import type { EmitRouted } from '../events/producers';
 import { NotFoundError, type StateStore } from '../store/store';
-import type { StreamService } from '../streams/service';
+import type { MoveCoordination, StreamService } from '../streams/service';
 import { type ContractService, assertChildren } from './contracts';
 
 export interface PlanServiceOptions {
@@ -222,9 +222,8 @@ export class PlanService {
     } catch {
       return false;
     }
-    if (
-      nodeRole(parent, liveChildrenOf(parent.id, this.options.streams.list())) !== 'coordinating'
-    ) {
+    const all = this.options.streams.list();
+    if (nodeRole(parent, liveChildrenOf(parent.id, all), all) !== 'coordinating') {
       return false;
     }
     if (!parent.sessions.some((s) => s.role === 'coordinator')) return false;
@@ -239,6 +238,46 @@ export class PlanService {
     // waits. Sessions from before the line (the node's own, moved to its first part) don't count.
     const since = ulidTimePrefix(Date.parse(line.ts));
     return !child.sessions.some((s) => s.id.slice(0, ULID_TIME_CHARS) >= since);
+  }
+
+  /** T344: the node's live parts still waiting for its plan (`waitingForPlan`). */
+  waitingParts(node: string): Stream[] {
+    const owned = approvedOwners(this.get(node));
+    return liveChildrenOf(node, this.options.streams.list()).filter((c) =>
+      this.waitingForPlan(c, owned),
+    );
+  }
+
+  /**
+   * T344: the human's "Start parts anyway": every part still waiting for
+   * the node's plan starts now, without one. Returns the parts started.
+   */
+  async startWaitingParts(node: string): Promise<string[]> {
+    const start = this.options.start;
+    if (start === undefined) throw new Error('parts cannot be started here');
+    this.options.streams.get(node);
+    const parts = this.waitingParts(node);
+    if (parts.length === 0) return [];
+    await this.options.streams.appendThread('daemon', node, {
+      kind: 'event',
+      body: `started without a plan by human: ${parts.map((p) => p.title).join(', ')}`.slice(
+        0,
+        800,
+      ),
+    });
+    const started: string[] = [];
+    for (const part of parts) {
+      try {
+        await start(part.id);
+        started.push(part.id);
+      } catch (err) {
+        await this.options.streams.appendThread('daemon', part.id, {
+          kind: 'event',
+          body: `could not start the agent: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+    return started;
   }
 
   /** T336: every part the approved `saved` first gives paths to, and still waiting, starts now. */
@@ -345,4 +384,30 @@ export class PlanService {
       contracts,
     };
   }
+}
+
+/**
+ * T333 (D34): what a node move asks of plans and contracts. A draft plan
+ * refuses the move; a plan (draft or approved) or contract of the old
+ * parent that still names the moved node is reported on its thread, not
+ * rewritten: changing either is a decision about what gets built.
+ */
+export function planMoveCoordination(
+  plans: PlanService,
+  contracts: ContractService,
+): MoveCoordination {
+  return {
+    planAwaitingApproval: (node) => plans.get(node)?.status === 'draft',
+    namedIn: (parent, child) => {
+      const plan = plans.get(parent);
+      const owners = [...(plan?.owners ?? []), ...(plan?.approved?.owners ?? [])];
+      return [
+        ...(plan && owners.some((o) => o.child === child) ? [`plan v${plan.version}`] : []),
+        ...contracts
+          .forNode(parent)
+          .filter((c) => c.parties.includes(child))
+          .map((c) => `contract ${c.id}`),
+      ];
+    },
+  };
 }

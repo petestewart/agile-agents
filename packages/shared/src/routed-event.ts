@@ -136,6 +136,11 @@ export const ROUTED_EVENT_PAYLOADS = {
   plan_changed: z.object({ summary: NonEmpty, paths: Files }),
   external_changed: z.object({ key: NonEmpty, summary: NonEmpty }),
   director_request: z.object({ body: NonEmpty }),
+  /**
+   * T332 (D33): a finished tangent's summary to its parent conversation.
+   * `summary` is the tangent agent's own words, capped: data, not instructions.
+   */
+  tangent_summary: z.object({ child: UlidSchema, title: Str, summary: NonEmpty }),
   /** T262: the ship check held delivery; the findings go back to the worker. */
   ship_findings: z.object({
     source: z.enum(['classifier', 'reviewer']),

@@ -1,75 +1,138 @@
 /**
- * The rules screen (T163; cockpit design §5, §9): every rule with its
- * scope, tier, stage, status and §5.7's counters and pruning flag, filtered
- * by status, scope and — from the inbox's seed card — source.
+ * The Knowledge screen (T163, T266; T366 redesign; cockpit design §5, §9).
  *
- *  - Accept / Retire per rule, or on a selection (one call per rule; a
- *    refusal, e.g. a classifier rule with fewer than two examples, is
- *    reported against that rule and the rest still go through).
- *  - Edit: text, question, criteria (T156), enforcement, stage, examples —
- *    `rule.update`'s patch, stamped `human` by the daemon.
- *  - Test examples: `rule.test {id}` (T153/T155), per example the expected
- *    band, the Noul value and the band it fell in. No confidence (D14).
- *    Enabled only when the daemon holds a classifier key (T167).
- *  - T167: a pattern rule shows its check under the text; the editor edits
- *    its kind and arguments and has Cancel (and Esc), which discards; "New
- *    rule" creates any rule as a proposal (`POST /api/rules`).
+ * Knowledge is what agents know and must follow: **rules** (items a hook
+ * or the ship check enforces), **standards**, **architecture** notes and
+ * **decisions** (items agents are told). Agents propose; the human accepts.
+ * The screen says so under its title and separates the content:
+ *
+ *  - Tabs: All · To review · Rules · Standards · Architecture · Decisions.
+ *    "To review" (the proposals) comes first, with Accept / Retire per row
+ *    and on a selection; retired items fold at the bottom of a list.
+ *  - Search, scope and enforcement narrow any tab. The inbox's batch card
+ *    opens the screen on a source, a node's "blocked by rule" line on one
+ *    item; both show as a chip with Clear.
+ *  - Rows, not cards: what it says, where it applies, how it is enforced,
+ *    and a rule's counters (§5.7's pruning flag as a quiet warning).
+ *  - A click opens the side panel (`KnowledgeDetail`): the full text, the
+ *    check, examples and "Test examples", the source, the stats, Accept /
+ *    Retire / Edit. Edit and "Add knowledge" use the same form there
+ *    (`KnowledgeEditor`).
  *
  * Every write reaches the same `KnowledgeService` the CLI's `agile rules` does.
  */
 
 import {
   KNOWLEDGE_ENFORCEMENTS,
-  KNOWLEDGE_KINDS,
   type KnowledgeEnforcement,
-  type KnowledgeKind,
-  RULE_EXAMPLES_MAX,
-  RULE_PATTERN_KINDS,
-  type KnowledgeItem as Rule,
-  type RulePatternKind,
-  type KnowledgeStatus as RuleStatus,
-  classifierCheckOf,
-  examplesOf,
-  formatRulePattern,
-  formatKnowledgeScope as formatRuleScope,
-  patternOf,
+  type KnowledgeItem,
+  parseKnowledgeScope,
 } from '@agile-agents/shared';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { createRule, decideRule, getRules, testRule, updateRule } from '../lib/api';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createRule, decideRule, getRules, updateRule } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
-import type { RuleEvalReport, RuleReportRow, RulesPayload } from '../lib/feed-types';
+import type { RuleReportRow, RulesPayload } from '../lib/feed-types';
 import {
-  RULE_STATUS_FILTERS,
+  ENFORCEMENT_INFO,
+  KNOWLEDGE_TABS,
+  type KnowledgeSectionId,
+  type KnowledgeTab,
   type RuleDraft,
   type RulesSort,
+  SECTION_INFO,
+  TAB_LABEL,
+  acceptBlocker,
   createOf,
   draftOf,
   emptyDraft,
-  evalDeadlineMs,
   filterRules,
-  formatFiredAt,
+  isNarrowed,
   patchOf,
+  plainError,
   ruleScopes,
-  scopeChoices,
+  scopeWords,
+  sectionsFor,
   sortRules,
+  sourceFilterWords,
+  tabCounts,
+  tabOf,
+  titleOf,
 } from '../lib/rules';
 import { useShell } from '../lib/shell';
-import { Linked, Markdown } from './Markdown';
+import { Icon } from './Icon';
+import { KnowledgeDetail } from './KnowledgeDetail';
+import { KnowledgeEditor } from './KnowledgeEditor';
+import { KnowledgeSectionView, KnowledgeSkeleton, SECTION_ICON } from './KnowledgeList';
+import { Button, EmptyState, IconButton, Menu, PageHeader, Tabs, useToast } from './ui';
+
+type Panel =
+  | { mode: 'view'; id: string }
+  | { mode: 'edit'; id: string }
+  | { mode: 'create'; draft: RuleDraft };
 
 function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return plainError(err instanceof Error ? err.message : String(err));
 }
+
+/** "Add knowledge" starts from what the tab is about. */
+function draftForTab(tab: KnowledgeTab): RuleDraft {
+  const draft = emptyDraft();
+  if (tab === 'rules') return { ...draft, enforcement: 'action' };
+  if (tab === 'standard' || tab === 'architecture' || tab === 'decision') {
+    return { ...draft, kind: tab };
+  }
+  return draft;
+}
+
+const EMPTY_TEXT: Record<KnowledgeSectionId, { title: string; body: string }> = {
+  review: {
+    title: 'Nothing to review',
+    body: 'Agents propose knowledge as they work, and the lessons pass proposes more after a merge. Proposals wait here for you.',
+  },
+  rules: {
+    title: 'No rules yet',
+    body: 'A rule is checked automatically: a hook checks each action, or the classifier reads the diff before a merge. For example: "never git reset --hard".',
+  },
+  standard: {
+    title: 'No standards yet',
+    body: 'A standard is how you work, told to every agent in scope. For example: "use the repo\'s own scripts for lint and tests".',
+  },
+  architecture: {
+    title: 'No architecture notes yet',
+    body: 'Architecture notes say what exists and where, so agents do not rediscover it. For example: "the daemon is the only writer of the home".',
+  },
+  decision: {
+    title: 'No decisions yet',
+    body: 'A decision records a choice and its reason. For example: "money is stored as integer cents".',
+  },
+  retired: { title: 'Nothing retired', body: '' },
+};
+
+const ADD_LABEL: Record<KnowledgeSectionId, string> = {
+  review: 'Add knowledge',
+  rules: 'Add a rule',
+  standard: 'Add a standard',
+  architecture: 'Add an architecture note',
+  decision: 'Add a decision',
+  retired: 'Add knowledge',
+};
 
 export function Rules(): JSX.Element {
   const { rulesFilter: filter, setRulesFilter: setFilter } = useShell();
-  const { onEvent } = useFeed();
+  const { onEvent, cockpit } = useFeed();
+  const toast = useToast();
   const [data, setData] = useState<RulesPayload | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   const [sort, setSort] = useState<RulesSort>('report');
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [bulkErrors, setBulkErrors] = useState<string[]>([]);
-  const [creating, setCreating] = useState(false);
+  const [panel, setPanel] = useState<Panel | undefined>(
+    filter.rule !== undefined ? { mode: 'view', id: filter.rule } : undefined,
+  );
+  const [retiredOpen, setRetiredOpen] = useState(filter.status === 'retired');
+  const panelRef = useRef<HTMLElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
 
   const load = useCallback(() => {
     getRules()
@@ -81,762 +144,584 @@ export function Rules(): JSX.Element {
   }, []);
 
   useEffect(load, []);
-  // Any rule write — here, in the inbox, from the CLI or an agent's
+  // Any knowledge write — here, in the inbox, from the CLI or an agent's
   // `propose_knowledge` — re-reads the list (one read per batch of events).
   useEffect(
     () =>
       onEvent((event) => {
         // T167: a key saved or removed in Settings changes "Test examples".
-        if (event.kind.startsWith('rule') || event.kind === 'home_config_put') load();
+        if (
+          event.kind.startsWith('rule') ||
+          event.kind.startsWith('knowledge') ||
+          event.kind === 'home_config_put'
+        ) {
+          load();
+        }
       }),
     [onEvent, load],
   );
 
+  // A "blocked by rule" link opens the screen on that item, panel open.
+  useEffect(() => {
+    if (filter.rule !== undefined) {
+      setPanel({ mode: 'view', id: filter.rule });
+      setRetiredOpen(true);
+    }
+  }, [filter.rule]);
+
+  const all = data?.rules ?? [];
   const rows = useMemo(
     () => new Map<string, RuleReportRow>((data?.report.rows ?? []).map((row) => [row.id, row])),
     [data],
   );
-  const shown = useMemo(
-    () => sortRules(filterRules(data?.rules ?? [], filter), data?.report.rows ?? [], sort),
-    [data, filter, sort],
+  const tab = filter.rule !== undefined ? 'all' : tabOf(filter);
+  const narrowed = useMemo(
+    () => sortRules(filterRules(all, filter), data?.report.rows ?? [], sort),
+    [all, filter, data, sort],
   );
-  const scopes = useMemo(() => ruleScopes(data?.rules ?? []), [data]);
-  const picked = shown.filter((rule) => selected.has(rule.id));
+  const counts = useMemo(() => tabCounts(narrowed), [narrowed]);
+  const sections = useMemo(() => sectionsFor(narrowed, tab), [narrowed, tab]);
+  const scopes = useMemo(() => ruleScopes(all), [all]);
+  const proposals = sections.find((s) => s.id === 'review')?.items ?? [];
+  const picked = proposals.filter((item) => selected.has(item.id));
+  const shownCount = sections.reduce(
+    (n, s) =>
+      n + (s.id === 'retired' && !retiredOpen && filter.rule === undefined ? 0 : s.items.length),
+    0,
+  );
 
-  const toggle = (id: string): void =>
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const openItem =
+    panel && panel.mode !== 'create' ? all.find((i) => i.id === panel.id) : undefined;
+  // The panel's item went away (another writer): close it.
+  useEffect(() => {
+    if (data && panel && panel.mode !== 'create' && openItem === undefined) setPanel(undefined);
+  }, [data, panel, openItem]);
+
+  const closePanel = useCallback(() => {
+    setPanel(undefined);
+    const back = opener.current;
+    if (back && document.contains(back)) back.focus();
+  }, []);
+
+  // Esc closes the panel (the editor handles its own Esc first).
+  useEffect(() => {
+    if (panel === undefined || panel.mode !== 'view') return;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.cr-modal')) return;
+      closePanel();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [panel, closePanel]);
+
+  const panelKey = panel === undefined ? '' : panel.mode === 'create' ? 'create' : panel.id;
+  useEffect(() => {
+    if (panelKey !== '') panelRef.current?.focus({ preventScroll: true });
+  }, [panelKey]);
+
+  const open = (id: string): void => {
+    opener.current = document.activeElement as HTMLElement | null;
+    setPanel((current) =>
+      current?.mode === 'view' && current.id === id ? undefined : { mode: 'view', id },
+    );
+  };
+
+  const setTab = (next: KnowledgeTab): void => {
+    const { rule: _rule, ...rest } = filter;
+    setFilter({ ...rest, status: 'all', tab: next });
+    setSelected(new Set());
+  };
+
+  const clear = (key: 'source' | 'rule'): void => {
+    const next = { ...filter };
+    delete next[key];
+    setFilter(next);
+  };
+
+  /** Shows a write at once; the re-read that follows confirms it. */
+  const upsert = (item: KnowledgeItem): void =>
+    setData((current) =>
+      current === undefined
+        ? current
+        : {
+            ...current,
+            rules: current.rules.some((r) => r.id === item.id)
+              ? current.rules.map((r) => (r.id === item.id ? item : r))
+              : [...current.rules, item],
+          },
+    );
+
+  async function decide(item: KnowledgeItem, decision: 'accept' | 'retire'): Promise<void> {
+    try {
+      await decideRule(item.id, decision);
+      toast({
+        tone: 'success',
+        title: decision === 'accept' ? 'Accepted' : 'Retired',
+        body: titleOf(item),
+        duration: 3000,
+      });
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+      load();
+    } catch (err) {
+      toast({
+        tone: 'error',
+        title: `Could not ${decision} “${titleOf(item)}”`,
+        body: message(err),
+      });
+    }
+  }
 
   async function bulk(decision: 'accept' | 'retire'): Promise<void> {
     setBusy(true);
     const failed: string[] = [];
-    for (const rule of picked) {
+    let done = 0;
+    for (const item of picked) {
+      const blocker = decision === 'accept' ? acceptBlocker(item) : undefined;
+      if (blocker !== undefined) {
+        failed.push(`${titleOf(item)}: ${blocker}`);
+        continue;
+      }
       try {
-        await decideRule(rule.id, decision);
+        await decideRule(item.id, decision);
+        done += 1;
       } catch (err) {
-        failed.push(`${rule.name ?? rule.id}: ${message(err)}`);
+        failed.push(`${titleOf(item)}: ${message(err)}`);
       }
     }
     setBulkErrors(failed);
     setSelected(new Set());
     setBusy(false);
+    if (done > 0) {
+      toast({
+        tone: 'success',
+        title: `${decision === 'accept' ? 'Accepted' : 'Retired'} ${done} item${done === 1 ? '' : 's'}`,
+        duration: 3000,
+      });
+    }
     load();
   }
 
+  const selection = {
+    selected,
+    busy,
+    bulk: (decision: 'accept' | 'retire') => void bulk(decision),
+    toggle: (id: string) =>
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      }),
+    setAll: (on: boolean) => setSelected(on ? new Set(proposals.map((i) => i.id)) : new Set()),
+  };
+
+  const days = data?.report.days ?? 14;
+  const creating = panel?.mode === 'create';
+  const oneItem = filter.rule !== undefined ? all.find((i) => i.id === filter.rule) : undefined;
+  const narrowedByControls =
+    (filter.query ?? '').trim() !== '' ||
+    filter.scope !== 'all' ||
+    (filter.enforcement !== undefined && filter.enforcement !== 'all');
+
+  const visible = sections.filter((section) => {
+    if (section.items.length > 0) return true;
+    // A single category keeps its own (empty) section, to explain itself.
+    return tab !== 'all' && tab !== 'review' && section.id === tab && !isNarrowed(filter);
+  });
+
   return (
-    <section className="cr-rules-screen" data-testid="rules-screen">
-      <div className="cr-inbox-hd">
-        <h1>Knowledge</h1>
-        <span className="cr-count" data-testid="rules-count">
-          {shown.length}
-        </span>
-        <button
-          type="button"
-          className="cr-btn"
-          data-testid="rules-new"
-          aria-expanded={creating}
-          onClick={() => setCreating((open) => !open)}
-        >
-          New rule
-        </button>
-      </div>
-      {creating && (
-        <RuleEditor
-          mode="create"
-          initial={emptyDraft()}
-          submit={async (draft) => {
-            const built = createOf(draft);
-            if ('error' in built) throw new Error(built.error);
-            await createRule(built.input);
-          }}
-          onDone={() => {
-            setCreating(false);
-            load();
-          }}
-          onCancel={() => setCreating(false)}
-        />
-      )}
+    <section className="cr-kn" data-testid="rules-screen" data-panel={panel ? 'open' : undefined}>
+      <div className="cr-kn-main">
+        <div className="cr-kn-col">
+          <PageHeader
+            title="Knowledge"
+            icon="book-open"
+            actions={
+              <Button
+                icon="plus"
+                data-testid="rules-new"
+                aria-expanded={creating}
+                onClick={() => {
+                  opener.current = document.activeElement as HTMLElement | null;
+                  setPanel(creating ? undefined : { mode: 'create', draft: draftForTab(tab) });
+                }}
+              >
+                Add knowledge
+              </Button>
+            }
+          >
+            <p className="cr-kn-lede">
+              What your agents know and must follow. Agents propose; you accept.
+            </p>
+          </PageHeader>
 
-      <div className="cr-rules-filters">
-        <label>
-          Status{' '}
-          <select
-            data-testid="rules-filter-status"
-            value={filter.status}
-            onChange={(e) => setFilter({ ...filter, status: e.target.value as RuleStatus | 'all' })}
-          >
-            {RULE_STATUS_FILTERS.map((status) => (
-              <option key={status} value={status}>
-                {status}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Kind{' '}
-          <select
-            data-testid="rules-filter-kind"
-            value={filter.kind ?? 'all'}
-            onChange={(e) =>
-              setFilter({ ...filter, kind: e.target.value as KnowledgeKind | 'all' })
-            }
-          >
-            {['all', ...KNOWLEDGE_KINDS].map((kind) => (
-              <option key={kind} value={kind}>
-                {kind}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Enforcement{' '}
-          <select
-            data-testid="rules-filter-enforcement"
-            value={filter.enforcement ?? 'all'}
-            onChange={(e) =>
-              setFilter({ ...filter, enforcement: e.target.value as KnowledgeEnforcement | 'all' })
-            }
-          >
-            {['all', ...KNOWLEDGE_ENFORCEMENTS].map((enforcement) => (
-              <option key={enforcement} value={enforcement}>
-                {enforcement}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Scope{' '}
-          <select
-            data-testid="rules-filter-scope"
-            value={filter.scope}
-            onChange={(e) => setFilter({ ...filter, scope: e.target.value })}
-          >
-            <option value="all">all</option>
-            {scopes.map((scope) => (
-              <option key={scope} value={scope}>
-                {scope}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Sort{' '}
-          <select
-            data-testid="rules-sort"
-            value={sort}
-            onChange={(e) => setSort(e.target.value as RulesSort)}
-          >
-            <option value="report">flagged, then most fired</option>
-            <option value="routed">most routed</option>
-          </select>
-        </label>
-        {filter.source !== undefined && (
-          <span className="cr-chip" data-testid="rules-filter-source">
-            from {filter.source}
-            <button
-              type="button"
-              className="cr-link"
-              aria-label="Show every source"
-              onClick={() => {
-                const { source: _dropped, ...rest } = filter;
-                setFilter(rest);
-              }}
+          <div className="cr-kn-tabs" data-review={counts.review > 0 ? 'true' : undefined}>
+            <Tabs
+              label="Knowledge"
+              value={tab}
+              onChange={setTab}
+              items={KNOWLEDGE_TABS.map((id) => ({
+                id,
+                label: TAB_LABEL[id],
+                count: id === 'all' ? undefined : counts[id],
+                testid: `rules-tab-${id}`,
+                ...(id === 'all' ? {} : { icon: SECTION_ICON[id] }),
+              }))}
+            />
+          </div>
+          {tab !== 'all' && tab !== 'review' && (
+            <p className="cr-kn-tab-hint">{SECTION_INFO[tab].hint}</p>
+          )}
+
+          <div className="cr-kn-toolbar">
+            <label className="cr-kn-search">
+              <Icon name="search" size={14} />
+              <input
+                type="search"
+                data-testid="rules-search"
+                aria-label="Search knowledge"
+                placeholder="Search"
+                value={filter.query ?? ''}
+                onChange={(e) => setFilter({ ...filter, query: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && (filter.query ?? '') !== '') {
+                    e.stopPropagation();
+                    setFilter({ ...filter, query: '' });
+                  }
+                }}
+              />
+            </label>
+            <select
+              className="cr-kn-select"
+              data-testid="rules-filter-scope"
+              aria-label="Scope"
+              data-active={filter.scope !== 'all' ? 'true' : undefined}
+              value={filter.scope}
+              onChange={(e) => setFilter({ ...filter, scope: e.target.value })}
             >
-              ×
-            </button>
-          </span>
-        )}
-        {filter.rule !== undefined && (
-          <span className="cr-chip" data-testid="rules-filter-rule">
-            rule {filter.rule}
-            <button
-              type="button"
-              className="cr-link"
-              aria-label="Show every rule"
-              onClick={() => {
-                const { rule: _dropped, ...rest } = filter;
-                setFilter(rest);
-              }}
+              <option value="all">Any scope</option>
+              {scopes.map((scope) => (
+                <option key={scope} value={scope}>
+                  {scopeLabel(scope, cockpit)}
+                </option>
+              ))}
+            </select>
+            <select
+              className="cr-kn-select"
+              data-testid="rules-filter-enforcement"
+              aria-label="Enforcement"
+              data-active={
+                filter.enforcement !== undefined && filter.enforcement !== 'all'
+                  ? 'true'
+                  : undefined
+              }
+              value={filter.enforcement ?? 'all'}
+              onChange={(e) =>
+                setFilter({
+                  ...filter,
+                  enforcement: e.target.value as KnowledgeEnforcement | 'all',
+                })
+              }
             >
-              ×
-            </button>
-          </span>
-        )}
+              <option value="all">Any enforcement</option>
+              {KNOWLEDGE_ENFORCEMENTS.map((value) => (
+                <option key={value} value={value}>
+                  {ENFORCEMENT_INFO[value].label}
+                </option>
+              ))}
+            </select>
+            {narrowedByControls && (
+              <Button
+                size="sm"
+                variant="ghost"
+                data-testid="rules-clear-filters"
+                onClick={() => {
+                  const { query: _q, enforcement: _e, ...rest } = filter;
+                  setFilter({ ...rest, scope: 'all' });
+                }}
+              >
+                Clear
+              </Button>
+            )}
+            <span className="cr-kn-toolbar-end">
+              <span className="cr-kn-count" data-testid="rules-count">
+                {shownCount} {shownCount === 1 ? 'item' : 'items'}
+              </span>
+              <Menu
+                label="Sort"
+                testid="rules-sort"
+                trigger={(props) => <IconButton icon="sliders" label="Sort" size="sm" {...props} />}
+                items={[
+                  {
+                    label: 'Needs attention first',
+                    hint: sort === 'report' ? <Icon name="check" size={14} /> : undefined,
+                    title: 'Flagged rules first, then the most fired',
+                    onSelect: () => setSort('report'),
+                  },
+                  {
+                    label: 'Asks you most',
+                    hint: sort === 'routed' ? <Icon name="check" size={14} /> : undefined,
+                    title: 'The rules the classifier is least sure about first',
+                    onSelect: () => setSort('routed'),
+                  },
+                ]}
+              />
+            </span>
+          </div>
+
+          {(filter.source !== undefined || filter.rule !== undefined) && (
+            <div className="cr-kn-chips">
+              {filter.source !== undefined && (
+                <span className="cr-chip" data-testid="rules-filter-source">
+                  {sourceFilterWords(filter.source)}
+                  <button
+                    type="button"
+                    className="cr-link"
+                    aria-label="Clear: show every source"
+                    title="Clear"
+                    onClick={() => clear('source')}
+                  >
+                    <Icon name="x" size={12} />
+                  </button>
+                </span>
+              )}
+              {filter.rule !== undefined && (
+                <span className="cr-chip" data-testid="rules-filter-rule">
+                  Showing one item{oneItem ? `: ${titleOf(oneItem)}` : ''}
+                  <button
+                    type="button"
+                    className="cr-link"
+                    aria-label="Clear: show everything"
+                    title="Clear"
+                    onClick={() => clear('rule')}
+                  >
+                    <Icon name="x" size={12} />
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
+
+          {bulkErrors.length > 0 && (
+            <div className="cr-kn-banner" role="alert" data-testid="rules-bulk-errors">
+              <Icon name="alert-circle" size={15} />
+              <div>
+                <div className="cr-kn-banner-title">
+                  {bulkErrors.length === 1
+                    ? 'One item was not changed'
+                    : `${bulkErrors.length} items were not changed`}
+                </div>
+                <ul>
+                  {bulkErrors.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+              <IconButton icon="x" label="Dismiss" size="sm" onClick={() => setBulkErrors([])} />
+            </div>
+          )}
+
+          {error && data && (
+            <div className="cr-kn-banner" role="alert">
+              <Icon name="alert-circle" size={15} />
+              <div>
+                <div className="cr-kn-banner-title">Could not refresh the list</div>
+                <div>{error}</div>
+              </div>
+              <Button size="sm" onClick={load}>
+                Retry
+              </Button>
+            </div>
+          )}
+
+          {!data && !error && <KnowledgeSkeleton />}
+          {!data && error && (
+            <EmptyState
+              icon="alert-circle"
+              title="Could not load knowledge"
+              testid="rules-load-error"
+              actions={<Button onClick={load}>Try again</Button>}
+            >
+              {error}
+            </EmptyState>
+          )}
+
+          {data && all.length === 0 && (
+            <EmptyState
+              icon="book-open"
+              title="No knowledge yet"
+              testid="rules-empty"
+              actions={
+                <Button
+                  variant="primary"
+                  icon="plus"
+                  onClick={() => setPanel({ mode: 'create', draft: draftForTab(tab) })}
+                >
+                  Add knowledge
+                </Button>
+              }
+            >
+              Rules your agents are checked against, standards, architecture notes and decisions.
+              Agents propose items as they work; you accept them. You can add one too.
+            </EmptyState>
+          )}
+
+          {data && all.length > 0 && visible.length === 0 && (
+            <EmptyState
+              icon={tab === 'review' ? 'check-circle' : 'search'}
+              title={
+                tab === 'review'
+                  ? 'Nothing to review'
+                  : isNarrowed(filter)
+                    ? 'Nothing matches'
+                    : 'Nothing here'
+              }
+              testid="rules-empty"
+              actions={
+                isNarrowed(filter) ? (
+                  <Button
+                    data-testid="rules-empty-clear"
+                    onClick={() =>
+                      setFilter({ status: 'all', scope: 'all', ...(tab === 'all' ? {} : { tab }) })
+                    }
+                  >
+                    Clear filters
+                  </Button>
+                ) : undefined
+              }
+            >
+              {isNarrowed(filter)
+                ? tab === 'review'
+                  ? 'No proposal matches the filters.'
+                  : 'No item in this list matches the filters.'
+                : tab === 'review'
+                  ? EMPTY_TEXT.review.body
+                  : undefined}
+            </EmptyState>
+          )}
+
+          {data &&
+            visible.map((section) => (
+              <KnowledgeSectionView
+                key={section.id}
+                id={section.id}
+                items={section.items}
+                rows={rows}
+                days={days}
+                names={cockpit}
+                open={openItem?.id}
+                onOpen={open}
+                onDecide={decide}
+                showHint={tab === 'all' || tab === 'review' || section.id !== tab}
+                {...(section.id === 'review' ? { selection } : {})}
+                {...(section.id === 'retired' && filter.rule === undefined
+                  ? {
+                      collapsible: {
+                        expanded: retiredOpen,
+                        toggle: () => setRetiredOpen((v) => !v),
+                      },
+                    }
+                  : {})}
+              >
+                {section.items.length === 0 && section.id !== 'retired' && (
+                  <EmptyState
+                    icon={SECTION_ICON[section.id]}
+                    title={EMPTY_TEXT[section.id].title}
+                    testid="rules-empty"
+                    actions={
+                      <Button
+                        icon="plus"
+                        onClick={() => setPanel({ mode: 'create', draft: draftForTab(tab) })}
+                      >
+                        {ADD_LABEL[section.id]}
+                      </Button>
+                    }
+                  >
+                    {EMPTY_TEXT[section.id].body}
+                  </EmptyState>
+                )}
+              </KnowledgeSectionView>
+            ))}
+        </div>
       </div>
 
-      <div className="cr-actions cr-rules-bulk">
-        <label>
-          <input
-            type="checkbox"
-            data-testid="rules-select-all"
-            checked={shown.length > 0 && picked.length === shown.length}
-            onChange={(e) =>
-              setSelected(e.target.checked ? new Set(shown.map((rule) => rule.id)) : new Set())
-            }
-          />{' '}
-          {picked.length} selected
-        </label>
-        <button
-          type="button"
-          className="cr-btn signal"
-          data-testid="rules-bulk-accept"
-          disabled={busy || picked.length === 0}
-          onClick={() => bulk('accept')}
+      {panel && (
+        <aside
+          className="cr-kn-panel"
+          id="rules-detail"
+          ref={panelRef}
+          tabIndex={-1}
+          aria-label={panel.mode === 'create' ? 'Add knowledge' : 'Knowledge item'}
         >
-          Accept selected
-        </button>
-        <button
-          type="button"
-          className="cr-btn"
-          data-testid="rules-bulk-retire"
-          disabled={busy || picked.length === 0}
-          onClick={() => bulk('retire')}
-        >
-          Retire selected
-        </button>
-      </div>
-      {bulkErrors.length > 0 && (
-        <ul className="cr-error" role="alert" data-testid="rules-bulk-errors">
-          {bulkErrors.map((line) => (
-            <li key={line}>{line}</li>
-          ))}
-        </ul>
+          {panel.mode === 'create' ? (
+            <KnowledgeEditor
+              key="create"
+              mode="create"
+              initial={panel.draft}
+              submit={async (draft) => {
+                const built = createOf(draft);
+                if ('error' in built) throw new Error(built.error);
+                const created = await createRule(built.input);
+                // Show it where it now lives: To review.
+                upsert(created);
+                setPanel({ mode: 'view', id: created.id });
+                toast({
+                  tone: 'success',
+                  title: 'Proposed',
+                  body: titleOf(created),
+                  duration: 3000,
+                });
+              }}
+              onDone={load}
+              onCancel={closePanel}
+            />
+          ) : openItem === undefined ? null : panel.mode === 'edit' ? (
+            <KnowledgeEditor
+              key={`edit-${openItem.id}`}
+              mode="edit"
+              title={titleOf(openItem)}
+              initial={draftOf(openItem)}
+              submit={async (draft) => {
+                const built = patchOf(draft, openItem);
+                if ('error' in built) throw new Error(built.error);
+                upsert(await updateRule(openItem.id, built.patch));
+              }}
+              onDone={() => {
+                setPanel({ mode: 'view', id: openItem.id });
+                load();
+              }}
+              onCancel={() => setPanel({ mode: 'view', id: openItem.id })}
+            />
+          ) : (
+            <KnowledgeDetail
+              key={openItem.id}
+              item={openItem}
+              row={rows.get(openItem.id)}
+              days={days}
+              evals={data?.evals ?? { available: false }}
+              names={cockpit}
+              onEdit={() => setPanel({ mode: 'edit', id: openItem.id })}
+              onClose={closePanel}
+              onChanged={load}
+            />
+          )}
+        </aside>
       )}
-
-      {error && (
-        <p className="cr-error" role="alert">
-          {error}
-        </p>
-      )}
-      {data && shown.length === 0 && (
-        <p className="cr-calm" data-testid="rules-empty">
-          Nothing matches.
-        </p>
-      )}
-      {data && (
-        <p className="cr-dim">
-          Pruning flags use a {data.report.days}-day window (§5.7): never fired, never violated,
-          routes often.
-        </p>
-      )}
-      {shown.map((rule) => (
-        <RuleCard
-          key={rule.id}
-          rule={rule}
-          row={rows.get(rule.id)}
-          evals={data?.evals ?? { available: false }}
-          checked={selected.has(rule.id)}
-          onToggle={() => toggle(rule.id)}
-          onChanged={load}
-        />
-      ))}
     </section>
   );
 }
 
-function RuleCard({
-  rule,
-  row,
-  evals,
-  checked,
-  onToggle,
-  onChanged,
-}: {
-  rule: Rule;
-  row: RuleReportRow | undefined;
-  evals: RulesPayload['evals'];
-  checked: boolean;
-  onToggle: () => void;
-  onChanged: () => void;
-}): JSX.Element {
-  const [editing, setEditing] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [report, setReport] = useState<RuleEvalReport | undefined>(undefined);
-  const [testing, setTesting] = useState(false);
-
-  async function act(fn: () => Promise<unknown>): Promise<void> {
-    setBusy(true);
-    setError(undefined);
-    try {
-      await fn();
-      onChanged();
-    } catch (err) {
-      setError(message(err));
-    } finally {
-      setBusy(false);
-    }
+/** A scope filter option in words ("Repo ledger-lite"); the raw spelling if it will not parse. */
+function scopeLabel(scope: string, cockpit: Parameters<typeof scopeWords>[1]): string {
+  try {
+    return scopeWords(parseKnowledgeScope(scope), cockpit);
+  } catch {
+    return scope;
   }
-
-  async function runTest(): Promise<void> {
-    setTesting(true);
-    setError(undefined);
-    setReport(undefined);
-    try {
-      setReport(await testRule(rule.id, evalDeadlineMs(examplesOf(rule).length, evals.timeout_ms)));
-    } catch (err) {
-      setError(message(err));
-    } finally {
-      setTesting(false);
-    }
-  }
-
-  const classifier = classifierCheckOf(rule);
-  const pattern = patternOf(rule);
-  const testable = classifier !== undefined && rule.status === 'accepted';
-
-  return (
-    <article
-      className="cr-card cr-rule"
-      data-testid="rules-row"
-      data-rule={rule.id}
-      data-status={rule.status}
-    >
-      <div className="kind cr-rule-meta">
-        <input
-          type="checkbox"
-          data-testid="rules-select"
-          aria-label={`Select ${rule.name ?? rule.id}`}
-          checked={checked}
-          onChange={onToggle}
-        />
-        <span>{rule.name ?? rule.id}</span>
-        <span data-testid="rules-scope">
-          <Linked text={formatRuleScope(rule.scope)} />
-        </span>
-        {rule.paths !== undefined && rule.paths.length > 0 && (
-          <span data-testid="rules-paths">{rule.paths.join(', ')}</span>
-        )}
-        <span data-testid="rules-tier">
-          {rule.enforcement}
-          {rule.check !== undefined ? ` · ${rule.check.by}` : ''}
-          {rule.critical ? ' · critical' : ''}
-        </span>
-        <span data-testid="rules-kind">{rule.kind}</span>
-        <span data-testid="rules-status">{rule.status}</span>
-        <span>from {rule.source.by}</span>
-      </div>
-      <Markdown className="context" text={rule.text} />
-      {rule.source.finding !== undefined && (
-        <p className="cr-dim" data-testid="rules-finding">
-          {rule.source.finding}
-        </p>
-      )}
-      {pattern !== undefined && (
-        <p className="cr-dim" data-testid="rules-pattern">
-          <code>{formatRulePattern(pattern)}</code>
-        </p>
-      )}
-      {classifier?.question !== undefined && (
-        <p className="cr-dim" data-testid="rules-question">
-          Q: {classifier.question}
-        </p>
-      )}
-      {classifier?.criteria !== undefined && (
-        <p className="cr-dim" data-testid="rules-criteria">
-          yes = {classifier.criteria.true} · no = {classifier.criteria.false}
-        </p>
-      )}
-      <div className="cr-dim cr-rule-stats" data-testid="rules-stats">
-        fired {rule.stats.fired} · routed {rule.stats.routed} · violated {rule.stats.violated}
-        {rule.stats.last_fired_at !== undefined && (
-          <>
-            {' · '}
-            <span data-testid="rules-last-fired" title={rule.stats.last_fired_at}>
-              last fired {formatFiredAt(rule.stats.last_fired_at)}
-            </span>
-          </>
-        )}
-        {row && row.flag !== '-' && (
-          <span className="cr-rule-flag" data-testid="rules-flag" data-flag={row.flag}>
-            {row.flag_detail}
-          </span>
-        )}
-      </div>
-
-      <div className="cr-actions">
-        {rule.status === 'proposed' && (
-          <button
-            type="button"
-            className="cr-btn signal"
-            data-testid="rules-accept"
-            disabled={busy}
-            onClick={() => act(() => decideRule(rule.id, 'accept'))}
-          >
-            Accept
-          </button>
-        )}
-        {rule.status !== 'retired' && (
-          <button
-            type="button"
-            className="cr-btn"
-            data-testid="rules-retire"
-            disabled={busy}
-            onClick={() => act(() => decideRule(rule.id, 'retire'))}
-          >
-            Retire
-          </button>
-        )}
-        <button
-          type="button"
-          className="cr-btn"
-          data-testid="rules-edit"
-          aria-expanded={editing}
-          onClick={() => setEditing((open) => !open)}
-        >
-          {editing ? 'Close editor' : 'Edit'}
-        </button>
-        {classifier !== undefined && (
-          <button
-            type="button"
-            className="cr-btn"
-            data-testid="rules-test"
-            disabled={testing || !testable || !evals.available}
-            title={
-              !evals.available
-                ? 'No classifier key loaded: set one in Settings (or TYPESAFE_API_KEY)'
-                : !testable
-                  ? 'Only accepted classifier rules are evaluated'
-                  : `One classifier call per example (${classifier.examples.length})`
-            }
-            onClick={runTest}
-          >
-            {testing ? 'Testing…' : 'Test examples'}
-          </button>
-        )}
-      </div>
-
-      {editing && (
-        <RuleEditor
-          mode="edit"
-          initial={draftOf(rule)}
-          submit={async (draft) => {
-            const built = patchOf(draft);
-            if ('error' in built) throw new Error(built.error);
-            await updateRule(rule.id, built.patch);
-          }}
-          onDone={() => {
-            setEditing(false);
-            onChanged();
-          }}
-          onCancel={() => setEditing(false)}
-        />
-      )}
-      {report && <EvalResults report={report} />}
-      {error && (
-        <p className="cr-error" role="alert">
-          {error}
-        </p>
-      )}
-    </article>
-  );
-}
-
-/**
- * The rule form: the editor (`mode="edit"`) and "New rule" (`mode="create"`,
- * which adds scope and criticality). Cancel and Esc discard the draft and
- * close it; nothing is sent until Save / Create.
- */
-function RuleEditor({
-  mode,
-  initial,
-  submit,
-  onDone,
-  onCancel,
-}: {
-  mode: 'edit' | 'create';
-  initial: RuleDraft;
-  submit: (draft: RuleDraft) => Promise<void>;
-  onDone: () => void;
-  onCancel: () => void;
-}): JSX.Element {
-  const [draft, setDraft] = useState<RuleDraft>(initial);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const set = (patch: Partial<RuleDraft>): void => setDraft((prev) => ({ ...prev, ...patch }));
-  const creating = mode === 'create';
-  // T338: scopes are picked by name, never typed as ids.
-  const { cockpit } = useFeed();
-  const scopes = useMemo(() => {
-    const choices = scopeChoices(cockpit);
-    return choices.some((c) => c.value === draft.scope)
-      ? choices
-      : [...choices, { value: draft.scope, label: draft.scope }];
-  }, [cockpit, draft.scope]);
-
-  async function save(): Promise<void> {
-    setBusy(true);
-    setError(undefined);
-    try {
-      await submit(draft);
-      onDone();
-    } catch (err) {
-      setError(message(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form
-      className="cr-rule-editor"
-      data-testid={creating ? 'rules-new-form' : 'rules-editor'}
-      onSubmit={(e) => {
-        e.preventDefault();
-        void save();
-      }}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          e.stopPropagation();
-          onCancel();
-        }
-      }}
-    >
-      {creating && (
-        <div className="cr-rule-editor-row">
-          <label>
-            Scope{' '}
-            <select
-              data-testid="rules-edit-scope"
-              value={draft.scope}
-              onChange={(e) => set({ scope: e.target.value })}
-            >
-              {scopes.map((c) => (
-                <option key={c.value} value={c.value}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              data-testid="rules-edit-critical"
-              checked={draft.critical}
-              onChange={(e) => set({ critical: e.target.checked })}
-            />{' '}
-            critical
-          </label>
-        </div>
-      )}
-      <label>
-        Name
-        <input
-          data-testid="rules-edit-name"
-          value={draft.name}
-          maxLength={64}
-          placeholder="a short name, e.g. no-direct-db"
-          onChange={(e) => set({ name: e.target.value })}
-        />
-      </label>
-      <label>
-        Text
-        <textarea
-          data-testid="rules-edit-text"
-          value={draft.text}
-          onChange={(e) => set({ text: e.target.value })}
-        />
-      </label>
-      <label>
-        Paths (globs, one per line; empty means all paths)
-        <textarea
-          data-testid="rules-edit-paths"
-          value={draft.paths}
-          onChange={(e) => set({ paths: e.target.value })}
-        />
-      </label>
-      <label>
-        Question (one yes/no question; yes means the rule is broken)
-        <input
-          data-testid="rules-edit-question"
-          value={draft.question}
-          placeholder={`Does this action violate: ${draft.text}?`}
-          onChange={(e) => set({ question: e.target.value })}
-        />
-      </label>
-      <label>
-        Criteria — yes means
-        <input
-          data-testid="rules-edit-criteria-true"
-          value={draft.criteriaTrue}
-          onChange={(e) => set({ criteriaTrue: e.target.value })}
-        />
-      </label>
-      <label>
-        Criteria — no means
-        <input
-          data-testid="rules-edit-criteria-false"
-          value={draft.criteriaFalse}
-          onChange={(e) => set({ criteriaFalse: e.target.value })}
-        />
-      </label>
-      <div className="cr-rule-editor-row">
-        <label>
-          Enforcement{' '}
-          <select
-            data-testid="rules-edit-enforcement"
-            value={draft.enforcement}
-            onChange={(e) => set({ enforcement: e.target.value as KnowledgeEnforcement })}
-          >
-            {KNOWLEDGE_ENFORCEMENTS.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Kind{' '}
-          <select
-            data-testid="rules-edit-kind"
-            value={draft.kind}
-            onChange={(e) => set({ kind: e.target.value as KnowledgeKind })}
-          >
-            {KNOWLEDGE_KINDS.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      <div className="cr-rule-editor-row">
-        <label>
-          Pattern{' '}
-          <select
-            data-testid="rules-edit-pattern-kind"
-            value={draft.patternKind}
-            onChange={(e) => set({ patternKind: e.target.value as RulePatternKind | '' })}
-          >
-            <option value="">(none)</option>
-            {RULE_PATTERN_KINDS.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-        </label>
-        {(draft.patternKind === 'path_deny' || draft.patternKind === 'command_deny') && (
-          <label>
-            {draft.patternKind === 'path_deny' ? 'Globs' : 'Command patterns'}, one per line
-            <textarea
-              data-testid="rules-edit-pattern-args"
-              value={draft.patternArgs}
-              onChange={(e) => set({ patternArgs: e.target.value })}
-            />
-          </label>
-        )}
-      </div>
-      <fieldset>
-        <legend>Examples</legend>
-        {draft.examples.map((example, index) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: examples have no identity but their place
-          <div className="cr-rule-example" key={index} data-testid="rules-edit-example">
-            <input
-              aria-label="Example action"
-              value={example.action}
-              onChange={(e) =>
-                set({
-                  examples: draft.examples.map((x, i) =>
-                    i === index ? { ...x, action: e.target.value } : x,
-                  ),
-                })
-              }
-            />
-            <label>
-              <input
-                type="checkbox"
-                checked={example.violates}
-                onChange={(e) =>
-                  set({
-                    examples: draft.examples.map((x, i) =>
-                      i === index ? { ...x, violates: e.target.checked } : x,
-                    ),
-                  })
-                }
-              />{' '}
-              violates
-            </label>
-            <button
-              type="button"
-              className="cr-link"
-              onClick={() => set({ examples: draft.examples.filter((_, i) => i !== index) })}
-            >
-              Remove
-            </button>
-          </div>
-        ))}
-        <button
-          type="button"
-          className="cr-link"
-          data-testid="rules-edit-add-example"
-          disabled={draft.examples.length >= RULE_EXAMPLES_MAX}
-          title={`At most ${RULE_EXAMPLES_MAX} examples per rule`}
-          onClick={() => set({ examples: [...draft.examples, { action: '', violates: true }] })}
-        >
-          Add example
-        </button>
-      </fieldset>
-      <div className="cr-actions">
-        <button
-          type="submit"
-          className="cr-btn signal"
-          data-testid="rules-edit-save"
-          disabled={busy}
-        >
-          {creating ? 'Propose rule' : 'Save'}
-        </button>
-        <button
-          type="button"
-          className="cr-btn"
-          data-testid="rules-edit-cancel"
-          disabled={busy}
-          onClick={onCancel}
-        >
-          Cancel
-        </button>
-      </div>
-      {error && (
-        <p className="cr-error" role="alert">
-          {error}
-        </p>
-      )}
-    </form>
-  );
-}
-
-function EvalResults({ report }: { report: RuleEvalReport }): JSX.Element {
-  const rule = report.rules[0];
-  return (
-    <div className="cr-rule-evals" data-testid="rules-evals">
-      <div className="cr-dim">
-        {report.agreed}/{report.total} agree
-        {report.errors > 0 ? ` · ${report.errors} error${report.errors === 1 ? '' : 's'}` : ''}
-        {rule ? ` · asked: ${rule.question}` : ''}
-      </div>
-      <ul>
-        {(rule?.examples ?? []).map((example, index) => (
-          <li
-            // biome-ignore lint/suspicious/noArrayIndexKey: one row per example, in order
-            key={index}
-            data-testid="rules-eval"
-            data-agree={example.agree ? 'yes' : 'no'}
-            data-band={example.band ?? 'error'}
-          >
-            <span className="cr-rule-verdict">{example.agree ? 'agree' : 'disagree'}</span>{' '}
-            <code>{example.action.replace(/\s+/g, ' ').slice(0, 120)}</code> — expected{' '}
-            {example.expected_band}, got{' '}
-            {example.error !== undefined
-              ? `error: ${example.error}`
-              : `${example.band} (p ${example.probability?.toFixed(2)})`}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
 }

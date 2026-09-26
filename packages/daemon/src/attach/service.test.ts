@@ -32,9 +32,12 @@ import {
   type Stream,
 } from '@agile-agents/shared';
 import { DeliveryService } from '../delivery/service';
+import { makeEmitter } from '../events/producers';
 import { RoutedEventService } from '../events/service';
+import { stoppedByHuman } from '../events/wake';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
+import { KnowledgeService } from '../knowledge/service';
 import { EMPTY_TREE_SHA } from '../permissions/git-env';
 import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
@@ -45,7 +48,7 @@ import { RepoInPlaceService } from '../streams/repo-in-place';
 import { StreamService } from '../streams/service';
 import { buildAttachRpcMethods } from './rpc';
 import { sayPrompt } from './service';
-import { AttachService, StreamBusyError, endedReason } from './service';
+import { AttachService, DAEMON_SHUTDOWN_REASON, StreamBusyError, endedReason } from './service';
 import { VerbService } from './verbs';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
@@ -282,6 +285,28 @@ describe('the exit path', () => {
   }, 20_000);
 });
 
+describe('T370: the daemon stopping mid-work', () => {
+  test('leaves the node idle, not done, and wakeable', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes('looking at the parser now'));
+    expect(streams.get(stream.id).agent.status).toBe('working');
+
+    await attachService.stopAll();
+
+    const after = streams.get(stream.id);
+    expect(after.agent.status).toBe('idle');
+    const ended = after.sessions.find((s) => s.id === session.id);
+    expect(ended?.status).toBe('stopped');
+    expect(ended?.ended_reason).toBe(`stopped: ${DAEMON_SHUTDOWN_REASON}`);
+    expect(threadBodies(stream.id)).toContain(`worker stopped: ${DAEMON_SHUTDOWN_REASON}`);
+    expect(threadBodies(stream.id).some((b) => b.startsWith('session ended:'))).toBe(false);
+    // Not the human's stop: the node's next event wakes it.
+    expect(stoppedByHuman(after)).toBe(false);
+  }, 20_000);
+});
+
 describe('a detach that loses the race to a failed turn', () => {
   test('ends the session as stopped even when the exit path reports ok: false', async () => {
     attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
@@ -348,8 +373,33 @@ describe('one live worker per stream (§2.3)', () => {
     await waitFor(() => streams.get(stream.id).sessions.some((s) => s.status === 'running'));
 
     await expect(attachService.attach(stream.id)).rejects.toThrow(StreamBusyError);
+    // T371: the node by its title; the session id stays on the error, not in its words.
+    await expect(attachService.attach(stream.id)).rejects.toThrow(
+      `${stream.title} already has a live agent; stop it before starting another`,
+    );
     expect(streams.get(stream.id).sessions.length).toBe(1);
   });
+
+  test('T396: two starts at once (a wake and a click) give one agent', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    const [first, second] = await Promise.allSettled([
+      attachService.attach(stream.id),
+      attachService.attach(stream.id),
+    ]);
+    expect(first.status).toBe('fulfilled');
+    expect(second.status).toBe('rejected');
+    expect(second.status === 'rejected' && second.reason).toBeInstanceOf(StreamBusyError);
+    expect(streams.get(stream.id).sessions).toHaveLength(1);
+    // A line sent with start while a start is in flight starts nothing more.
+    const [started, said] = await Promise.all([
+      attachService.attach(stream.id).catch(() => undefined),
+      attachService.say(stream.id, 'hello', { start: true }),
+    ]);
+    expect(started).toBeUndefined();
+    expect(said.started).toBeUndefined();
+    expect(streams.get(stream.id).sessions).toHaveLength(1);
+  }, 30_000);
 
   test('a reviewer may run beside a live worker, but only one reviewer at a time', async () => {
     attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
@@ -627,6 +677,22 @@ describe('one ACP message is one thread entry (T137)', () => {
     await waitFor(() => threadBodies(stream.id).some((b) => b.includes('read the parser')));
     const lines = threadBodies(stream.id).filter((b) => b.includes('read the parser'));
     expect(lines).toEqual(['Plan:\n- read the parser']);
+  }, 20_000);
+});
+
+describe('a finished turn ends the session (T137, T341)', () => {
+  test('the thread says its turn finished, not the exit code of the stop', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [{ type: 'agent_text', text: 'all done' }, { type: 'end_turn' }],
+      }),
+    );
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('session ended:')));
+    const ended = threadBodies(stream.id).filter((b) => b.startsWith('session ended:'));
+    expect(ended).toEqual(['session ended: its turn finished']);
+    expect(streams.get(stream.id).agent.status).toBe('done');
   }, 20_000);
 });
 
@@ -1228,7 +1294,7 @@ describe('T243: the wake policy (P11)', () => {
     // `delivered` is written when the runner hands the digest to the turn,
     // just before it goes over ACP: the agent's log line follows it.
     await waitFor(() => prompts(log).some((p) => p.includes('one more thing')));
-    expect(threadBodies(node.id)).toContain('woken by human_line');
+    expect(threadBodies(node.id)).toContain('woken by human line');
   }, 30_000);
 
   test('a stopped (detached) node is never woken; its events stay pending', async () => {
@@ -1351,7 +1417,7 @@ describe('T243: the wake policy (P11)', () => {
     await attachService.say(node.id, 'Go ahead. Write the plan and a contract');
     await waitFor(() => streams.get(node.id).sessions.length === 2);
     await waitFor(() => prompts(log).some((p) => p.includes('Go ahead. Write the plan')));
-    expect(threadBodies(node.id)).toContain('woken by human_line');
+    expect(threadBodies(node.id)).toContain('woken by human line');
     // The coordinator runs in the session dir, not a worktree (D20).
     expect(streams.get(node.id).sessions.every((s) => s.worktree === undefined)).toBe(true);
   }, 60_000);
@@ -1413,6 +1479,102 @@ describe('T243: the wake policy (P11)', () => {
   }, 30_000);
 });
 
+describe('T351: accepting a decision wakes the conversation (D36 D10)', () => {
+  const prompts = (log: string) =>
+    (existsSync(log) ? readFileSync(log, 'utf8') : '')
+      .split('\n')
+      .filter((l) => l.includes('"session/prompt"'));
+  const TEXT = 'Amounts in exported JSON are integer cents, never floats';
+
+  /** Attach + knowledge wired as `daemon.ts` wires them: one routed event service. */
+  async function setUp(script: FakeAgentScript) {
+    const events = new RoutedEventService(store);
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, script), {
+      deliveryDelayMs: 5,
+      events,
+    });
+    const knowledge = new KnowledgeService({
+      store,
+      streams,
+      statsFlushMs: 0,
+      emitRouted: makeEmitter(events, streams),
+    });
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Cents check',
+      goal: 'g',
+      project: project.id,
+    });
+    const accept = async () => {
+      const item = await knowledge.create('human', {
+        text: TEXT,
+        kind: 'decision',
+        enforcement: 'tell',
+        scope: { kind: 'project', project: project.id },
+      });
+      await knowledge.accept(item.id, 'human');
+    };
+    return { node, accept };
+  }
+
+  test('accept → the ended conversation is woken and the item delivered', async () => {
+    const log = join(scratch, 'k-wake.jsonl');
+    const { node, accept } = await setUp({ ...SPEAKS, logFile: log });
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    await waitFor(() => attachService.handleFor(node.id) === undefined);
+    await accept();
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
+    await waitFor(() => prompts(log).some((p) => p.includes('integer cents')));
+    // The human-written text arrives quoted as data, never as an instruction.
+    expect(prompts(log).some((p) => p.includes('quoted as data, not instructions'))).toBe(true);
+    expect(threadBodies(node.id)).toContain('woken by knowledge accepted');
+    const woken = streams.get(node.id).sessions.at(-1)?.id;
+    expect(store.readDeliveries(node.id).at(-1)?.session).toBe(woken);
+  }, 30_000);
+
+  test('a conversation the human stopped is not woken; the item stays pending', async () => {
+    const { node, accept } = await setUp(SPEAKS_THEN_HANGS);
+    await attachService.stop(node.id, 'worker', { detach: true });
+    expect(streams.get(node.id).agent.status).toBe('idle');
+    await accept();
+    await Bun.sleep(200);
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+  }, 30_000);
+
+  test('a live conversation gets the item once, in a digest, with no second session', async () => {
+    const log = join(scratch, 'k-live.jsonl');
+    const sentinel = join(scratch, 'k-live.flag');
+    const { node, accept } = await setUp({
+      logFile: log,
+      steps: [{ type: 'agent_text', text: 'noted' }, { type: 'end_turn' }],
+      turns: [
+        [
+          { type: 'agent_text', text: 'reading ledger-lite' },
+          { type: 'tool_call', toolCallId: 'read-k', title: 'read' },
+          { type: 'wait_for_file', path: sentinel },
+          { type: 'end_turn' },
+        ],
+      ],
+    });
+    await waitFor(() => threadBodies(node.id).some((b) => b.includes('reading ledger-lite')));
+    await accept();
+    await Bun.sleep(100);
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+    writeFileSync(sentinel, '');
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    await waitFor(() => attachService.handleFor(node.id) === undefined);
+    await Bun.sleep(100);
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    const withItem = prompts(log).filter((p) => p.includes('integer cents'));
+    expect(withItem).toHaveLength(1);
+    const statuses = store.readDeliveries(node.id).map((d) => d.status);
+    expect(statuses).toEqual(['pending', 'delivered']);
+    expect(threadBodies(node.id)).not.toContain('woken by knowledge accepted');
+  }, 30_000);
+});
+
 describe('T280: the coordinator role (P20)', () => {
   test('a coordinating node runs a coordinator; child_status wakes it with a digest', async () => {
     const log = join(scratch, 'coordinator.jsonl');
@@ -1421,6 +1583,8 @@ describe('T280: the coordinator role (P20)', () => {
       { deliveryDelayMs: 5 },
     );
     const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    // D33: a child with a repo is what makes it coordinating.
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     const node = await attachService.createNode('human', {
       title: 'Checkout',
       goal: 'g',
@@ -1432,6 +1596,7 @@ describe('T280: the coordinator role (P20)', () => {
       goal: 'g',
       project: project.id,
       parent: node.id,
+      repo: 'demo',
       start: false,
     });
 
@@ -1465,7 +1630,30 @@ describe('T280: the coordinator role (P20)', () => {
         .split('\n')
         .some((l) => l.includes('"session/prompt"') && l.includes('stuck on auth')),
     );
-    expect(threadBodies(node.id)).toContain('woken by child_status');
+    expect(threadBodies(node.id)).toContain('woken by child status');
+  }, 30_000);
+
+  test('T332 (D33): a conversation with a tangent keeps its worker; no coordinator replaces it', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const talk = await attachService.createNode('human', {
+      title: 'Why slow?',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+    await streams.appendThread('human', talk.id, { kind: 'line', body: 'is it the cache?' });
+    await attachService.createNode('human', {
+      title: 'Cache?',
+      goal: 'does the cache help?',
+      parent: talk.id,
+      seed_line: streams.readThread(talk.id).total - 1,
+      start: false,
+    });
+    const first = await attachService.attach(talk.id);
+    expect(first.session.role).toBe('worker');
+    const brief = readFileSync(join(home, 'sessions', first.session.id, 'brief.md'), 'utf8');
+    expect(brief).not.toContain('# Coordinator brief');
+    await attachService.stopAll();
   }, 30_000);
 
   test('a parentless project root that has had a coordinator is woken by child_status', async () => {
@@ -1497,7 +1685,7 @@ describe('T280: the coordinator role (P20)', () => {
         .split('\n')
         .some((l) => l.includes('"session/prompt"') && l.includes('cart shipped')),
     );
-    expect(threadBodies(root.id)).toContain('woken by child_status');
+    expect(threadBodies(root.id)).toContain('woken by child status');
   }, 30_000);
 
   test("T336: a work node woken by its coordinator's note is handed the note, quoted, with its id", async () => {
@@ -1543,7 +1731,7 @@ describe('T280: the coordinator role (P20)', () => {
     const brief = prompts()[1] ?? '';
     expect(brief).toContain(`${note.id} (coordinator_note)`);
     expect(brief).toContain('Your coordinator says: \\"export CSV with a header row\\"');
-    expect(threadBodies(node.id)).toContain('woken by coordinator_note');
+    expect(threadBodies(node.id)).toContain('woken by coordinator note');
   }, 30_000);
 });
 
@@ -1783,4 +1971,280 @@ describe('a send to an agent already gone (CI job 108169280649)', () => {
     );
     expect(await attachService.stop(stream.id)).toEqual([]);
   }, 30_000);
+});
+
+describe('T361: a live agent follows its node’s role', () => {
+  /** Wired as `daemon.ts` wires it: every tree change asks the attach service. */
+  beforeEach(async () => {
+    streams = new StreamService(store, {
+      onTreeChanged: (nodes) => attachService.followRoles(nodes),
+    });
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+  });
+
+  async function liveWorkNode(projectId: string): Promise<Stream> {
+    const node = await attachService.createNode('human', {
+      title: 'Checkout',
+      goal: 'g',
+      project: projectId,
+      repo: 'demo',
+      start: false,
+    });
+    await attachService.attach(node.id, { model: 'claude-sonnet-4-6', effort: 'high' });
+    return streams.get(node.id);
+  }
+
+  const roles = (id: string) => streams.get(id).sessions.map((s) => [s.role, s.status]);
+
+  test('a move that makes a work node coordinating restarts it as the coordinator, and back', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await liveWorkNode(project.id);
+    const part = await attachService.createNode('human', {
+      title: 'Cart API',
+      goal: 'g',
+      project: project.id,
+      repo: 'demo',
+      start: false,
+    });
+
+    await streams.move(part.id, node.id);
+    let after = streams.get(node.id);
+    expect(roles(node.id)).toEqual([
+      ['worker', 'stopped'],
+      ['coordinator', 'running'],
+    ]);
+    // A daemon stop: the node is not "stopped by the human", so it is still woken.
+    expect(after.sessions[0]?.ended_reason).toBe('stopped: role changed to coordinating');
+    expect(stoppedByHuman(after)).toBe(false);
+    // The same model and effort, in the session dir (D20), not the worktree.
+    expect(after.sessions[1]).toMatchObject({ model: 'claude-sonnet-4-6', effort: 'high' });
+    expect(after.sessions[1]?.worktree).toBeUndefined();
+    expect(attachService.handleFor(node.id, 'coordinator')).toBeDefined();
+    expect(attachService.handleFor(node.id, 'worker')).toBeUndefined();
+    expect(threadBodies(node.id)).toContain(
+      'role changed to coordinating: restarted its agent as the coordinator',
+    );
+    // Nothing else starts: the part, and the project root (no agent live), stay as they were.
+    expect(streams.get(part.id).sessions).toEqual([]);
+    expect(streams.get(project.root).sessions).toEqual([]);
+
+    await streams.move(part.id, project.id);
+    after = streams.get(node.id);
+    expect(roles(node.id).map(([role]) => role)).toEqual(['worker', 'coordinator', 'worker']);
+    expect(after.sessions[1]?.ended_reason).toBe('stopped: role changed to work');
+    expect(after.sessions[2]?.worktree).toBe(after.worktree);
+    expect(threadBodies(node.id)).toContain(
+      'role changed to work: restarted its agent as a worker',
+    );
+  }, 30_000);
+
+  test('a child made under a live work node restarts it as the coordinator; closing it restarts the worker', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await liveWorkNode(project.id);
+    const part = await attachService.createNode('human', {
+      title: 'Cart API',
+      goal: 'g',
+      parent: node.id,
+      repo: 'demo',
+      start: false,
+    });
+    expect(roles(node.id)).toEqual([
+      ['worker', 'stopped'],
+      ['coordinator', 'running'],
+    ]);
+    await streams.close('human', part.id);
+    expect(roles(node.id).map(([role]) => role)).toEqual(['worker', 'coordinator', 'worker']);
+    expect(attachService.handleFor(node.id, 'worker')).toBeDefined();
+  }, 30_000);
+
+  test('a bare project root running a worker gets its coordinator when it gains a part', async () => {
+    const root = await streams.create('human', { title: 'Shop', goal: 'g' });
+    await attachService.attach(root.id);
+    expect(roles(root.id)).toEqual([['worker', 'running']]);
+    await streams.create('human', { title: 'Cart', goal: 'g', parent: root.id });
+    expect(roles(root.id).map(([role]) => role)).toEqual(['worker', 'coordinator']);
+    expect(threadBodies(root.id)).toContain(
+      'the project root now has parts: restarted its agent as the coordinator',
+    );
+  }, 30_000);
+
+  test('a node the human stopped, or never started, is left alone', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const stopped = await liveWorkNode(project.id);
+    await attachService.stop(stopped.id, 'worker', { detach: true });
+    const later = await attachService.createNode('human', {
+      title: 'Later',
+      goal: 'g',
+      project: project.id,
+      repo: 'demo',
+      start: false,
+    });
+    for (const parent of [stopped.id, later.id]) {
+      await attachService.createNode('human', {
+        title: 'part',
+        goal: 'g',
+        parent,
+        repo: 'demo',
+        start: false,
+      });
+    }
+    expect(roles(stopped.id)).toEqual([['worker', 'stopped']]);
+    expect(streams.get(later.id).sessions).toEqual([]);
+    expect(attachService.handleFor(stopped.id, 'coordinator')).toBeUndefined();
+  }, 30_000);
+});
+
+describe('T361: a message starts a node with no live agent', () => {
+  const prompts = (log: string) =>
+    (existsSync(log) ? readFileSync(log, 'utf8') : '')
+      .split('\n')
+      .filter((l) => l.includes('"session/prompt"'));
+
+  test('a never-started node starts, and the line is in its first prompt, once', async () => {
+    const log = join(scratch, 'start.jsonl');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS_THEN_HANGS, logFile: log }),
+      { deliveryDelayMs: 5 },
+    );
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Plan',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+
+    const said = await attachService.say(node.id, 'start with the parser', { start: true });
+
+    const sessions = streams.get(node.id).sessions;
+    expect(sessions.map((s) => s.role)).toEqual(['worker']);
+    expect(said.started).toBe(true);
+    expect(said.prompted).toBe(sessions[0]?.id);
+    expect(said.entry).toMatchObject({ by: 'human', kind: 'line', body: 'start with the parser' });
+    await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
+    await waitFor(() => prompts(log).length > 0);
+    await Bun.sleep(100);
+    // Handed over in the brief: no digest repeats it.
+    expect(prompts(log)).toHaveLength(1);
+    expect(prompts(log)[0]).toContain('The operator wrote on the stream: start with the parser');
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending', 'delivered']);
+    expect(store.readDeliveries(node.id).at(-1)?.session).toBe(said.prompted);
+  }, 30_000);
+
+  test('a node the human stopped stays stopped without start, and starts with it', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS), {
+      deliveryDelayMs: 5,
+    });
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Plan',
+      goal: 'g',
+      project: project.id,
+    });
+    await attachService.stop(node.id, 'worker', { detach: true });
+
+    const plain = await attachService.say(node.id, 'are you there?');
+    await Bun.sleep(100);
+    expect(plain.started).toBeUndefined();
+    expect(plain.prompted).toBeUndefined();
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+
+    const said = await attachService.say(node.id, 'carry on', { start: true });
+    expect(said.started).toBe(true);
+    expect(streams.get(node.id).sessions.at(-1)?.id).toBe(said.prompted);
+    // Both lines were pending; both went in with the brief.
+    const delivered = () => store.readDeliveries(node.id).filter((d) => d.status === 'delivered');
+    await waitFor(() => delivered().length === 2);
+    expect(delivered().every((d) => d.session === said.prompted)).toBe(true);
+  }, 30_000);
+
+  test('a live agent is prompted as before; start changes nothing', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    const said = await attachService.say(stream.id, 'hello', { start: true });
+    expect(said.prompted).toBe(session.id);
+    expect(said.started).toBeUndefined();
+    expect(streams.get(stream.id).sessions).toHaveLength(1);
+  }, 30_000);
+
+  test('a coordinating node gets its coordinator; a closed node and a bare project root start nothing', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Checkout',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+    const part = await attachService.createNode('human', {
+      title: 'Cart API',
+      goal: 'g',
+      parent: node.id,
+      repo: 'demo',
+      start: false,
+    });
+    const coordinated = await attachService.say(node.id, 'plan it', { start: true });
+    expect(coordinated.started).toBe(true);
+    expect(streams.get(node.id).sessions.map((s) => s.role)).toEqual(['coordinator']);
+    expect(streams.get(part.id).sessions).toEqual([]);
+
+    const closed = await attachService.createNode('human', {
+      title: 'Old',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+    await streams.close('human', closed.id);
+    const bare = await new ProjectService(store, streams).create({ name: 'Blog' });
+    for (const id of [closed.id, bare.root]) {
+      const said = await attachService.say(id, 'hello?', { start: true });
+      expect(said.started).toBeUndefined();
+      expect(said.prompted).toBeUndefined();
+      expect(streams.get(id).sessions).toEqual([]);
+    }
+  }, 30_000);
+
+  test('T389: a part waiting for its plan is not started by a line; the line waits for it', async () => {
+    let waiting = '';
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS), {
+      plans: {
+        get: () => undefined,
+        childView: () => undefined,
+        waitingForPlan: (s) => s.id === waiting,
+      },
+    });
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Cart API',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+    waiting = node.id;
+    const said = await attachService.say(node.id, 'use the new schema', { start: true });
+    expect(said.started).toBeUndefined();
+    expect(said.prompted).toBeUndefined();
+    expect(streams.get(node.id).sessions).toEqual([]);
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+  }, 30_000);
+
+  test('a failed start is a thread line; the line stays pending', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    await store.updateProject(project.id, (p) => ({ ...p, session: { vendor: 'nope' } }));
+    const node = await attachService.createNode('human', {
+      title: 'Broken',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+    const said = await attachService.say(node.id, 'go', { start: true });
+    expect(said.started).toBeUndefined();
+    expect(threadBodies(node.id).at(-1)).toStartWith(
+      'could not start the agent: unknown vendor: nope',
+    );
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+  });
 });

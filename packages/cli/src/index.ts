@@ -52,6 +52,7 @@ import {
   runStreamImportChildren,
   runStreamLink,
   runStreamList,
+  runStreamMove,
   runStreamNew,
   runStreamSay,
   runStreamSetAutonomy,
@@ -97,6 +98,7 @@ function usage(): string {
     '  node add-repo <id> <repo>  + Repo in place: conversation → work, work → coordinating with parts',
     '  node switch-repo <id> <repo>  move a work node with nothing committed to another repo',
     '  node wait <id> --on <id>… [--remove]  hold delivery until each --on node is merged',
+    '  node move <id> --parent <id|P-id>  move a node under another in its project (a P-id: its root)',
     '  node link <id> <KEY> [--system jira|linear] | --remove  link a tracker issue; its text becomes the goal',
     '  node import-children <id>        one linked child per issue in the linked epic (idempotent)',
     '  node set <id> --autonomy advise|organise|run|inherit  this node\u2019s coordinator autonomy',
@@ -325,6 +327,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'archive') return await runStreamArchive(socketPath, parseArgs(restArgv), json);
         if (sub === 'say') return await runStreamSay(socketPath, parseArgs(restArgv), json);
         if (sub === 'wait') return await runStreamWait(socketPath, parseArgs(restArgv), json);
+        if (sub === 'move') return await runStreamMove(socketPath, parseArgs(restArgv), json);
         if (sub === 'link') return await runStreamLink(socketPath, parseArgs(restArgv), json);
         if (sub === 'import-children') {
           return await runStreamImportChildren(socketPath, parseArgs(restArgv), json);

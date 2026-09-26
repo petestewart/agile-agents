@@ -6,6 +6,7 @@ export {
 } from './stream-page';
 export {
   DEFAULT_SNAPSHOT_EVENT_LIMIT,
+  RecentEvents,
   buildCockpitFrame,
   buildSnapshot,
   type CockpitFrame,
@@ -19,3 +20,16 @@ export {
   type EventTailerHandle,
   type EventTailerOptions,
 } from './tailer';
+export {
+  NOTHING_TO_MERGE_TTL_MS,
+  NothingToMergeCache,
+  type MergePreflight,
+  type NothingToMergeCacheOptions,
+} from './merge-state';
+export {
+  STEPS_KEPT,
+  STEPS_LIMIT,
+  StepIndex,
+  type AgentStep,
+  type StepPage,
+} from './steps';

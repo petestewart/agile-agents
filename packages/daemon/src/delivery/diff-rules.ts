@@ -29,7 +29,6 @@ import type {
   Stream,
 } from '@agile-agents/shared';
 import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
-import { classifierCheckOf } from '@agile-agents/shared';
 import type { Answer, Classifier, Noul } from '../classifier';
 import { bandFor, classifierEnabled, noulFor, scrub } from '../classifier';
 import type { GateRequestContext } from '../gates/service';
@@ -126,13 +125,11 @@ export function changedFilesOf(diff: string): string[] {
 /**
  * The ship-time question (T268). A ship item's examples read like "diff
  * changes src/a.ts and test/a.test.ts", so the default asks about the
- * change, not "this action" (the hook's phrasing); an explicit
- * `check.question` is sent as written.
+ * change, not "this action" (the hook's phrasing; `classifierQuestion`
+ * words both); an explicit `check.question` is sent as written.
  */
 export function shipNoulFor(rule: KnowledgeItem): Noul {
-  const noul = noulFor(rule);
-  if (classifierCheckOf(rule)?.question !== undefined) return noul;
-  return { ...noul, question: `Does this change violate: ${rule.text}?` };
+  return noulFor({ ...rule, enforcement: 'ship' });
 }
 
 /**
@@ -211,14 +208,14 @@ export async function answeredDiffGate(
     return {
       decision: 'route',
       gate: pending,
-      reason: `waiting on ${pending.id} — ${pending.summary ?? 'a ship check routed this land'}`,
+      reason: `waiting on your answer — ${pending.summary ?? 'a ship check routed this merge'}`,
     };
   }
   const denied = candidates.find((gate) => gate.decision === 'deny');
   if (denied !== undefined) {
     return {
       decision: 'deny',
-      reason: cap(`${denied.id} was denied: ${denied.note ?? 'no reason given'}`),
+      reason: cap(`denied at the ship check: ${denied.note ?? 'no reason given'}`),
     };
   }
   return undefined;
@@ -399,7 +396,7 @@ export class ClassifierDiffRules implements DiffRules {
       decision: 'route',
       rule: nameOf(rule),
       gate,
-      reason: cap(`${summary} — routed to your inbox as ${gate.id}; landing waits`),
+      reason: cap(`${summary} — waiting on your answer; the merge waits`),
     };
   }
 }

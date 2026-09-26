@@ -17,7 +17,13 @@ import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { DeliveryService, LandRefusedError, mainBranch, wireLandGateResolution } from './service';
+import {
+  DeliveryService,
+  LandRefusedError,
+  mainBranch,
+  parseShortstat,
+  wireLandGateResolution,
+} from './service';
 
 let home: string;
 let repo: string;
@@ -94,20 +100,29 @@ afterEach(async () => {
 
 describe('refusals (typed, before anything is touched)', () => {
   test('a stream with no repo cannot land', async () => {
-    const stream = await makeStream({}, undefined);
+    // Not `makeStream({}, undefined)`: an explicit `undefined` takes the default repo.
+    const stream = await streams.create('human', { title: 'CSV parser', goal: 'ship it' });
     expect(landing.land(stream.id)).rejects.toThrow(LandRefusedError);
+    // T371: the node by its title, in the cockpit's words.
+    expect(landing.land(stream.id)).rejects.toThrow(
+      'CSV parser has no repo — there is nothing to merge',
+    );
   });
 
   test('a stream with a repo but no branch (never attached) cannot land', async () => {
     const stream = await makeStream();
-    expect(landing.land(stream.id)).rejects.toThrow(/has no branch/);
+    expect(landing.land(stream.id)).rejects.toThrow(
+      'CSV parser has no branch yet — there is nothing to merge',
+    );
   });
 
   test('a stream the human already closed cannot land', async () => {
     const work = branchWithWork('s-closed', 'a.txt', 'a\n');
     const stream = await makeStream(work);
     await streams.close('human', stream.id);
-    expect(landing.land(stream.id)).rejects.toThrow(/closed/);
+    expect(landing.land(stream.id)).rejects.toThrow(
+      'CSV parser is closed; only an open node can be merged',
+    );
   });
 
   test('a stream with a live session cannot land', async () => {
@@ -125,21 +140,25 @@ describe('refusals (typed, before anything is touched)', () => {
         },
       ],
     }));
-    expect(landing.land(stream.id)).rejects.toThrow(/live session/);
+    expect(landing.land(stream.id)).rejects.toThrow(
+      'CSV parser still has a live agent; stop it or let it finish before merging',
+    );
   });
 
   test('a branch with no commits beyond the target has nothing to land', async () => {
     const worktree = join(repo, '.worktrees', 's-empty');
     git(['worktree', 'add', '-q', '-b', 's-empty', worktree, 'main']);
     const stream = await makeStream({ branch: 's-empty', worktree });
-    expect(landing.land(stream.id)).rejects.toThrow(/nothing to land/);
+    expect(landing.land(stream.id)).rejects.toThrow(
+      'the branch s-empty has no commits beyond main — nothing to merge',
+    );
   });
 
   test('T231: nothing to deliver is recorded as a visible delivery state, not none', async () => {
     const worktree = join(repo, '.worktrees', 's-empty2');
     git(['worktree', 'add', '-q', '-b', 's-empty2', worktree, 'main']);
     const stream = await makeStream({ branch: 's-empty2', worktree });
-    await expect(landing.land(stream.id)).rejects.toThrow(/nothing to land/);
+    await expect(landing.land(stream.id)).rejects.toThrow(/nothing to merge/);
     const state = streams.get(stream.id).delivery_state;
     expect(state?.status).toBe('not_started');
     expect(state?.held_by).toEqual([
@@ -317,7 +336,8 @@ describe('conflict (acceptance: blocked, conflict files on the thread, worktree 
     const blocked = streams.get(stream.id);
     expect(blocked.agent.status).toBe('blocked');
     expect(blocked.human.status).toBe('open');
-    expect(threadBodies(stream.id).some((b) => b.includes('conflicted in: shared.txt'))).toBe(true);
+    expect(outcome.line).toMatch(/^merging \S+ into main conflicted in: shared\.txt$/);
+    expect(threadBodies(stream.id)).toContain(outcome.line);
     // The worktree is kept — that is where the conflict gets resolved.
     expect(existsSync(work.worktree)).toBe(true);
   });
@@ -330,13 +350,17 @@ describe('T176: after a conflict — preflight, the Resolve prompt, and the re-l
     git(['add', 'shared.txt']);
     git(['commit', '-q', '-m', 'main writes shared.txt']);
     const stream = await makeStream(work);
-    expect(() => landing.resolvePrompt(stream.id)).toThrow(/no land conflict/);
+    expect(() => landing.resolvePrompt(stream.id)).toThrow(
+      'CSV parser has no merge conflict to resolve',
+    );
 
     expect((await landing.land(stream.id)).status).toBe('blocked');
     const pre = landing.preflight(stream.id);
     expect(pre.ready).toBe(false);
     expect(pre.conflicts).toEqual(['shared.txt']);
-    expect(pre.reason).toMatch(/conflicted in shared.txt/);
+    expect(pre.reason).toBe(
+      'the last merge into main conflicted in shared.txt; Resolve, or fix the branch by hand, then merge again',
+    );
 
     const prompt = landing.resolvePrompt(stream.id);
     expect(prompt).toContain('git merge main');
@@ -379,7 +403,8 @@ describe('the land gate (repos.yaml `land_gate: true`)', () => {
     landing = new DeliveryService({ store, streams, gates });
     wireLandGateResolution(gates, landing);
 
-    const work = branchWithWork('s-gated', 'gated.txt', 'gated\n');
+    // A daemon-cut branch: the gate's card shows its slug, not the id in it (T371).
+    const work = branchWithWork('stream/01k2abcdefghjkmnpqrstvwxyz-gated', 'gated.txt', 'gated\n');
     const stream = await makeStream(work);
     const mainBefore = git(['rev-parse', 'refs/heads/main']);
 
@@ -388,6 +413,7 @@ describe('the land gate (repos.yaml `land_gate: true`)', () => {
     if (gatedOutcome.status !== 'gated') throw new Error('unreachable');
     const gate: HilRequest = gatedOutcome.gate;
     expect(gate.gate).toBe('land');
+    expect(gate.summary).toBe('land gated into main');
     expect(gate.stream).toBe(stream.id);
     expect(gate.status).toBe('pending');
     expect(gatedOutcome.line).toBe(`gate raised: ${gate.id}`);
@@ -621,7 +647,9 @@ describe('the operator checkout', () => {
     writeFileSync(join(repo, 'feature.txt'), 'my own draft\n');
     const mainBefore = git(['rev-parse', 'refs/heads/main']);
 
-    expect(landing.land(stream.id)).rejects.toThrow(/would overwrite untracked feature.txt/);
+    expect(landing.land(stream.id)).rejects.toThrow(
+      /^merging CSV parser into main would overwrite untracked feature.txt in .*; move or commit them before merging$/,
+    );
     expect(readFileSync(join(repo, 'feature.txt'), 'utf8')).toBe('my own draft\n');
     expect(git(['rev-parse', 'refs/heads/main'])).toBe(mainBefore);
     expect(streams.get(stream.id).human.status).toBe('open');
@@ -633,7 +661,9 @@ describe('the operator checkout', () => {
     const stream = await makeStream(work);
     writeFileSync(join(repo, 'README.md'), '# edited by the operator\n');
 
-    expect(landing.land(stream.id)).rejects.toThrow(/uncommitted changes at .*\(README\.md\)/);
+    expect(landing.land(stream.id)).rejects.toThrow(
+      /^main is checked out with uncommitted changes at .*\(README\.md\); commit or stash them before merging$/,
+    );
     expect(git(['rev-list', '--count', '--merges', 'main'])).toBe('0');
 
     // T177: the refusal names the dirty paths, capped with "and N more".
@@ -667,6 +697,35 @@ describe('T161: the stream page reads (preflight and diff)', () => {
     expect(threadBodies(stream.id)).toEqual(before);
   });
 
+  test('T410: diffStat is the size of what Merge brings: committed work only', async () => {
+    const work = branchWithWork('s-stat', 'a.txt', 'one\ntwo\n');
+    const stream = await makeStream(work);
+    // Uncommitted edits don't merge, so they don't count.
+    writeFileSync(join(work.worktree, 'b.txt'), 'uncommitted\n');
+    expect(landing.diffStat(stream.id)).toEqual({ files: 1, added: 2, removed: 0 });
+    const unattached = await makeStream({ title: 'never attached' });
+    expect(landing.diffStat(unattached.id)).toBeUndefined();
+  });
+
+  test('T410: a shortstat line in numbers', () => {
+    expect(parseShortstat(' 3 files changed, 120 insertions(+), 14 deletions(-)\n')).toEqual({
+      files: 3,
+      added: 120,
+      removed: 14,
+    });
+    expect(parseShortstat(' 1 file changed, 1 insertion(+)')).toEqual({
+      files: 1,
+      added: 1,
+      removed: 0,
+    });
+    expect(parseShortstat(' 1 file changed, 2 deletions(-)')).toEqual({
+      files: 1,
+      added: 0,
+      removed: 2,
+    });
+    expect(parseShortstat('')).toBeUndefined();
+  });
+
   test('diff shows the worktree against the target, uncommitted edits included', async () => {
     const work = branchWithWork('s-diff', 'a.txt', 'a\n');
     const stream = await makeStream(work);
@@ -690,7 +749,7 @@ describe('T166: a branch merged outside `land`', () => {
     git(['merge', '-q', '--no-ff', '-m', 'merge by hand', 's-merged']);
     const pre = landing.preflight(stream.id);
     expect(pre).toMatchObject({ ready: false, merged: true, target: 'main', ahead: 0 });
-    expect(pre.reason).toBe('s-merged is already merged into main');
+    expect(pre.reason).toBe('the branch s-merged is already merged into main');
 
     const landed = await landing.markLanded(stream.id);
     expect(landed.human.status).toBe('landed');
@@ -721,7 +780,7 @@ describe('T166: a branch merged outside `land`', () => {
     git(['commit', '-q', '-m', 'other work']);
     const pre = landing.preflight(stream.id);
     expect(pre.merged).toBeUndefined();
-    expect(pre.reason).toMatch(/nothing to land/);
+    expect(pre.reason).toMatch(/nothing to merge/);
     await expect(landing.markLanded(stream.id)).rejects.toBeInstanceOf(LandRefusedError);
     expect(streams.get(stream.id).human.status).toBe('open');
   });

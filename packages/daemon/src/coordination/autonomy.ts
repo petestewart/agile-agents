@@ -118,13 +118,14 @@ export function describeChange(change: CoordinatorChange, titleOf: (id: string) 
       }`;
     case 'create_tree': {
       const t = change.tree;
-      const where = t.new_project !== undefined ? `new project ${t.new_project}` : t.project;
+      const where =
+        t.new_project !== undefined ? `new project ${t.new_project}` : titleOf(t.project ?? '');
       return `create "${t.title}" in ${where} (${t.parts.length} part${t.parts.length === 1 ? '' : 's'}: ${t.parts.map((p) => p.title).join(', ')})`;
     }
     case 'create_project':
       return `create project ${change.name}`;
     case 'create_node':
-      return `create node "${change.node.title}" under ${change.node.parent !== undefined ? titleOf(change.node.parent) : change.node.project}: ${change.node.goal}`;
+      return `create node "${change.node.title}" under ${titleOf(change.node.parent ?? change.node.project ?? '')}: ${change.node.goal}`;
     case 'start_node':
       return `start ${titleOf(change.node)}`;
     case 'restart_node':
@@ -232,7 +233,8 @@ export class AutonomyService {
     );
     await this.note(principal, node, {
       kind: 'proposal',
-      body: `${principal} (${level}) proposes: ${summary}`.slice(0, 800),
+      // T381: the thread reads in words; the level is the card's business.
+      body: `Proposed, waiting for your approval: ${summary}`.slice(0, 800),
       ref: proposalPath(proposal.id),
     });
     return { applied: false, level, proposal };
@@ -315,9 +317,12 @@ export class AutonomyService {
     });
   }
 
+  /** A node's title, or a project's name (T371); the id when neither reads. */
   private titleOf(id: string): string {
     try {
-      return this.options.streams.get(id).title;
+      return id.startsWith('P-')
+        ? this.options.store.getProject(id).name
+        : this.options.streams.get(id).title;
     } catch {
       return id;
     }

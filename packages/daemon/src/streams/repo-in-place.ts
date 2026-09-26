@@ -3,6 +3,8 @@
  * the tree is reshaped behind it:
  *
  *   - conversation + repo → work node: its branch and worktree are cut now;
+ *   - conversation with tangents (D33) + repo → coordinating: a coordinating
+ *     node has no worktree (§14.2), so the repo goes to a new "B part" child;
  *   - work (repo A) + repo B → coordinating: the branch, worktree and
  *     session history move to a new child "A part", and a "B part" child
  *     is created;
@@ -13,9 +15,10 @@
  * goal chain reach them as ancestors'. A session live on the node is
  * stopped before the reshape and restarted after it, so it runs in the
  * right place: in the new worktree (work) or the session dir as the
- * coordinator (coordinating, D20). A split node that was started gets its
- * coordinator even when nothing was live, unless the human stopped it
- * (T336). With a coordinator, the parts wait for its plan (§9.1: the plan
+ * coordinator (coordinating, D20). A split node (or a conversation with
+ * tangents given a repo, T346) that was started gets its coordinator even
+ * when nothing was live, unless the human stopped it (T336). With a
+ * coordinator, the parts wait for its plan, even a single part (§9.1: the plan
  * comes before work): `PlanService.approve` starts each part the approved
  * plan gives paths to. With none, they start their worker like any new
  * work node (T204, T213) unless the node was never started (made with
@@ -89,7 +92,12 @@ export class RepoInPlaceService {
     if (node.human.status === 'closed' || node.archived === true) {
       throw new RepoInPlaceError(`node ${nodeId} is closed or archived`);
     }
-    const role = nodeRole(node, liveChildrenOf(node.id, this.streams.list()));
+    const all = this.streams.list();
+    const live = liveChildrenOf(node.id, all);
+    const role = nodeRole(node, live, all);
+    // D33: a conversation with tangents turns coordinating once it has a repo,
+    // and a coordinating node has no worktree (§14.2): the repo becomes a part.
+    const inPlace = role === 'conversation' && !live.some((c) => c.helper_of !== node.id);
     if (role === 'project') {
       throw new RepoInPlaceError('a project root lists repos in its settings; add the repo there');
     }
@@ -107,20 +115,23 @@ export class RepoInPlaceService {
     // T204's start rule for new parts: `start` isn't stored, so a node that
     // never had a worker is the `--no-start` one.
     const started = wasLive || node.sessions.some((s) => isAgentRole(s.role));
+    // The node ends up coordinating parts: a split work node, or a
+    // conversation with tangents whose repo goes to a new part (D33, T346).
+    const split = !inPlace && !switching;
     // T336: a split hands the node's sessions to the moved part, which left
     // a node that was started but not live with no agent at all: no
     // coordinator to plan the parts. It gets one, unless the human stopped it.
-    const coordinates = role !== 'conversation' && !switching && started && !stoppedByHuman(node);
+    const coordinates = split && started && !stoppedByHuman(node);
     // Stop first, so the exit path writes onto the records before they move.
     await this.sessions.stop(
       node.id,
-      role === 'conversation' ? 'node reshaped into a work node' : 'node reshaped into parts',
+      inPlace ? 'node reshaped into a work node' : 'node reshaped into parts',
     );
     // Re-read: the exit path just marked the stopped sessions, and those records move.
     node = this.streams.get(node.id);
 
     let parts: Stream[] = [];
-    if (role === 'conversation') {
+    if (inPlace) {
       const created = await createWorktree(entry.path, { id: node.id, slug: slugify(node.title) });
       await this.streams.update('daemon', node.id, {
         repo,
@@ -128,9 +139,14 @@ export class RepoInPlaceService {
         worktree: created.path,
       });
       await this.event(node.id, `repo added: ${repo}; now a work node on ${created.branch}`);
-    } else if (role === 'coordinating') {
+    } else if (role !== 'work') {
       parts = [await this.newPart(node, repo)];
-      await this.event(node.id, `repo added: ${repo} (new part ${parts[0]?.id})`);
+      await this.event(
+        node.id,
+        role === 'conversation'
+          ? `repo added: ${repo}; now coordinating ${parts[0]?.title} beside its tangents`
+          : `repo added: ${repo} (new part ${parts[0]?.id})`,
+      );
     } else {
       parts = await this.splitWorkNode(node, repo);
       if (switching) {
@@ -146,8 +162,9 @@ export class RepoInPlaceService {
     }
 
     const open = parts.filter((p) => this.streams.get(p.id).human.status !== 'closed');
-    // T336: a coordinator plans the parts before they work; the approval starts them.
-    const waitForPlan = role !== 'conversation' && !switching && (wasLive || coordinates);
+    // T336: a coordinator plans the parts before they work; the approval starts
+    // them. One part waits too (T346): the plan gives it its paths (§9.1).
+    const waitForPlan = split && (wasLive || coordinates);
     if (waitForPlan && open.length > 0) {
       await this.event(
         node.id,
@@ -237,6 +254,8 @@ export class RepoInPlaceService {
       kind: 'event',
       body: `part of "${node.title}": its thread so far (${total} entries) is the context; read it by id`,
       ref: node.id,
+      // T347 (D36 D12): for the part's agent, not the operator's thread view.
+      agent_only: true,
     });
     return part;
   }

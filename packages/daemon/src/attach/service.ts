@@ -22,6 +22,7 @@ import {
   DIRECTOR_NODE,
   type HilRequest,
   type KnowledgeItem,
+  type NodeRole,
   type Plan,
   type Question,
   type RoutedEvent,
@@ -53,6 +54,8 @@ import {
   DAEMON_STOP_PREFIX,
   DEFAULT_WAKE_BUDGET_PER_HOUR,
   WakeBudget,
+  WakeFanout,
+  fanoutTriggers,
   wakeVerdict,
 } from '../events/wake';
 import { settingsFileName } from '../hook/settings';
@@ -75,9 +78,11 @@ export class StreamBusyError extends Error {
     public readonly stream: string,
     public readonly session: string,
     role: SessionRole = 'worker',
+    /** The node's title, which the message names (T371); the id when absent. */
+    title?: string,
   ) {
     super(
-      `stream ${stream} already has a live ${role} session (${session}); stop it before attaching`,
+      `${title ?? `node ${stream}`} already has a live ${role === 'reviewer' ? 'reviewer' : 'agent'}; stop it before starting another`,
     );
     this.name = 'StreamBusyError';
   }
@@ -86,7 +91,7 @@ export class StreamBusyError extends Error {
 /** The stream names a repo that is no longer registered in `repos.yaml`. */
 export class UnregisteredRepoError extends Error {
   constructor(public readonly repo: string) {
-    super(`stream repo ${repo} is not registered in repos.yaml`);
+    super(`repo ${repo} is not registered in this home`);
     this.name = 'UnregisteredRepoError';
   }
 }
@@ -102,8 +107,41 @@ export function liveSession(stream: Stream, role: SessionRole = 'worker'): Sessi
 }
 
 /** The node's live agent session: its worker, or its coordinator (P20). */
+/** T396: the start slot a role takes on a node: worker and coordinator share one (a node has one agent). */
+function startKey(streamId: string, role: SessionRole): string {
+  return `${streamId}:${isAgentRole(role) ? 'agent' : role}`;
+}
+
 function liveAgent(stream: Stream): SessionRef | undefined {
   return liveSession(stream, 'worker') ?? liveSession(stream, 'coordinator');
+}
+
+/**
+ * P20 (T280): the agent a node runs as it stands now: a coordinator on a
+ * coordinating node, or on a project root once it has children (a bare
+ * root is still a single stream a worker runs on, the pre-projects shape);
+ * a worker otherwise.
+ */
+function agentFor(
+  stream: Stream,
+  all: readonly Stream[],
+): { children: Stream[]; shape: NodeRole; role: 'worker' | 'coordinator' } {
+  const children = liveChildrenOf(stream.id, all);
+  const shape = nodeRole(stream, children, all);
+  const coordinates =
+    shape === 'coordinating' ||
+    (shape === 'project' && children.some((c) => c.helper_of !== stream.id));
+  return { children, shape, role: coordinates ? 'coordinator' : 'worker' };
+}
+
+/** T370: the ended reason of a session the daemon's shutdown stopped. */
+export const DAEMON_SHUTDOWN_REASON = 'the daemon stopped';
+
+/** Not closed, landed or archived: a node an agent may still work on. */
+function isOpen(stream: Stream): boolean {
+  return (
+    stream.archived !== true && stream.human.status !== 'closed' && stream.human.status !== 'landed'
+  );
 }
 
 /** What is still open: a turn that ends on an open question is waiting, not finished. */
@@ -166,8 +204,11 @@ export interface AttachServiceOptions {
   /** The open questions, for the turn-end rule. */
   questions?: OpenQuestionsSource;
   rules?: BriefRulesSource;
-  /** T281: plans and contracts for the coordinator's and each child's brief. */
-  plans?: Pick<PlanService, 'get' | 'childView'>;
+  /**
+   * T281: plans and contracts for the coordinator's and each child's brief.
+   * T389: `waitingForPlan` keeps `say {start}` off a part its plan hasn't started.
+   */
+  plans?: Pick<PlanService, 'get' | 'childView'> & Partial<Pick<PlanService, 'waitingForPlan'>>;
   contracts?: Pick<ContractService, 'forNode'>;
   /** The gates, for the same rule. */
   gates?: OpenGatesSource;
@@ -267,12 +308,25 @@ export class AttachService {
   private readonly detaching = new Set<string>();
   /** Sessions the daemon stopped on purpose, with the reason the thread gives. */
   private readonly stopReasons = new Map<string, string>();
+  /** T341: sessions stopped because their turn finished with nothing open (the normal end). */
+  private readonly turnFinished = new Set<string>();
 
   /** T243 (P11): wakes per node in the last hour, and wakes being started now. */
   private readonly wakeBudget: WakeBudget;
+  /** T351: conversations woken per accepted knowledge item (D36 D10). */
+  private readonly wakeFanout = new WakeFanout();
   private readonly waking = new Set<string>();
+  /**
+   * T396: starts in flight, per node and slot (`<id>:agent`, `<id>:reviewer`, …).
+   * "One agent per node" is checked before the async work of a start (the
+   * worktree, the spawn), so two starts at once — a wake and a click — would
+   * both pass it; a second start waits for the first, then sees it live.
+   */
+  private readonly starting = new Map<string, Promise<unknown>>();
   /** Nodes already sent to the inbox for a spent budget (one thread line per episode). */
   private readonly overBudget = new Set<string>();
+  /** T361: nodes whose agent is being restarted in a new role. */
+  private readonly roleRestarts = new Set<string>();
 
   constructor(private readonly options: AttachServiceOptions) {
     this.events = options.events ?? new RoutedEventService(options.store);
@@ -325,7 +379,7 @@ export class AttachService {
    * the node is `blocked` (an inbox item) and its events stay pending.
    */
   private async wake(node: string, pending: readonly RoutedEvent[]): Promise<void> {
-    if (this.waking.has(node)) return;
+    if (this.waking.has(node) || this.startingAgent(node)) return;
     const { streams } = this.options;
     let stream: Stream;
     try {
@@ -334,8 +388,12 @@ export class AttachService {
       return;
     }
     if (liveAgent(stream) !== undefined) return;
-    const role = nodeRole(stream, liveChildrenOf(stream.id, streams.list()));
+    const all = streams.list();
+    const role = nodeRole(stream, liveChildrenOf(stream.id, all), all);
     if (wakeVerdict(stream, role, pending) !== 'wake') return;
+    // T351: an item past its fan-out waits for this conversation's next turn.
+    const fanout = fanoutTriggers(role, pending);
+    if (fanout.length > 0 && !this.wakeFanout.take(fanout)) return;
     const limit =
       readHomeConfigFile(this.options.home).events?.wake_budget_per_hour ??
       DEFAULT_WAKE_BUDGET_PER_HOUR;
@@ -357,7 +415,11 @@ export class AttachService {
     try {
       await streams.appendThread('daemon', node, {
         kind: 'event',
-        body: `woken by ${[...new Set(pending.map((e) => e.type))].join(', ')}`.slice(0, 800),
+        // T341: event types read as words on the thread, as on the Activity tab.
+        body: `woken by ${[...new Set(pending.map((e) => e.type.replace(/_/g, ' ')))].join(', ')}`.slice(
+          0,
+          800,
+        ),
       });
       // T336: the first prompt carries the events, so the agent never has to ask for them.
       await this.attach(node, { wake: pending });
@@ -435,7 +497,8 @@ export class AttachService {
     const { streams } = this.options;
     const created = await streams.create(principal, input, options);
     if (start === false) return created;
-    const role = nodeRole(created, liveChildrenOf(created.id, streams.list()));
+    const all = streams.list();
+    const role = nodeRole(created, liveChildrenOf(created.id, all), all);
     if (role !== 'work' && role !== 'conversation') return created;
     try {
       return (await this.attach(created.id)).stream;
@@ -448,7 +511,96 @@ export class AttachService {
     }
   }
 
+  /**
+   * T361: a tree change (a child created, moved, closed, deleted or
+   * restored) can change a node's derived role. A live agent whose role no
+   * longer fits (a worker on a node that now coordinates, or a coordinator
+   * on one that no longer does) is stopped for that reason (a daemon stop,
+   * so the node is not "stopped by the human") and started again in its
+   * new role with the same vendor, model and effort, as + Repo does. Only
+   * live agents: a node with none, or one the human stopped, is left alone.
+   * `nodes` and their ancestors are checked (a tangent's role reaches its
+   * conversation, D33).
+   */
+  async followRoles(nodes: readonly string[]): Promise<void> {
+    const byId = new Map(
+      this.options.streams.list({ include_archived: true }).map((s) => [s.id, s]),
+    );
+    const check = new Set<string>();
+    for (const start of nodes) {
+      for (let at: string | undefined = start; at !== undefined && !check.has(at); ) {
+        check.add(at);
+        at = byId.get(at)?.parent;
+      }
+    }
+    for (const id of check) await this.followRole(id);
+  }
+
+  private async followRole(id: string): Promise<void> {
+    const { streams } = this.options;
+    if (this.roleRestarts.has(id) || this.waking.has(id)) return;
+    const current = this.handleFor(id, 'worker') !== undefined ? 'worker' : 'coordinator';
+    const handle = this.handleFor(id, current);
+    if (handle === undefined || handle.stopped()) return;
+    let stream: Stream;
+    try {
+      stream = streams.get(id);
+    } catch {
+      return;
+    }
+    if (!isOpen(stream)) return;
+    const { shape, role } = agentFor(stream, streams.list());
+    if (role === current) return;
+    const was = stream.sessions.find((s) => s.id === handle.sessionId);
+    const why =
+      shape === 'project'
+        ? role === 'coordinator'
+          ? 'the project root now has parts'
+          : 'the project root has no parts left'
+        : `role changed to ${shape}`;
+    this.roleRestarts.add(id);
+    // Held so no wake starts an agent in the gap; pending events go to the new one.
+    const release = this.delivery.hold(id);
+    try {
+      await this.stop(id, current, { reason: why });
+      let body: string;
+      try {
+        await this.attach(id, {
+          ...(was?.vendor !== undefined ? { vendor: was.vendor } : {}),
+          ...(was?.model !== undefined ? { model: was.model } : {}),
+          ...(was?.effort !== undefined ? { effort: was.effort } : {}),
+        });
+        body = `${why}: restarted its agent as ${role === 'coordinator' ? 'the coordinator' : 'a worker'}`;
+      } catch (err) {
+        body = `${why}: could not restart its agent: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      await streams.appendThread('daemon', id, { kind: 'event', body: body.slice(0, 800) });
+    } finally {
+      release();
+      this.roleRestarts.delete(id);
+    }
+  }
+
   async attach(streamId: string, options: AttachOptions = {}): Promise<AttachResult> {
+    const key = startKey(streamId, options.role ?? 'worker');
+    const before = this.starting.get(key);
+    const run = (before ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.attachNow(streamId, options));
+    this.starting.set(key, run);
+    try {
+      return await run;
+    } finally {
+      if (this.starting.get(key) === run) this.starting.delete(key);
+    }
+  }
+
+  /** T396: an agent start for the node is in flight (a wake or a line need not start another). */
+  private startingAgent(streamId: string): boolean {
+    return this.starting.has(startKey(streamId, 'worker'));
+  }
+
+  private async attachNow(streamId: string, options: AttachOptions): Promise<AttachResult> {
     const wake =
       options.wake !== undefined && options.wake.length > 0
         ? this.delivery.inBrief(streamId, options.wake)
@@ -474,18 +626,15 @@ export class AttachService {
     // coordinator: no worktree, the session dir, every write denied.
     // A project root counts once it has children: a bare root is still a
     // single stream a worker runs on (the pre-projects shape).
-    const children = liveChildrenOf(stream.id, streams.list());
-    const shape = nodeRole(stream, children);
-    const coordinates =
-      shape === 'coordinating' ||
-      (shape === 'project' && children.some((c) => c.helper_of !== stream.id));
+    const { children, role: agentRole } = agentFor(stream, streams.list());
+    const coordinates = agentRole === 'coordinator';
     const requested: SessionRole = options.role ?? 'worker';
     const role: SessionRole = requested === 'worker' && coordinates ? 'coordinator' : requested;
     // One live session per role: a reviewer may run beside a worker on the
     // same worktree, but never beside a second reviewer (§4.2). A node has
     // one agent, worker or coordinator.
     const busy = isAgentRole(role) ? liveAgent(stream) : liveSession(stream, role);
-    if (busy !== undefined) throw new StreamBusyError(stream.id, busy.id, role);
+    if (busy !== undefined) throw new StreamBusyError(stream.id, busy.id, role, stream.title);
 
     const repos = store.getRepos();
     const repoEntry = stream.repo === undefined ? undefined : repos[stream.repo];
@@ -521,7 +670,7 @@ export class AttachService {
         const host = stream.helper_of !== undefined ? streams.get(stream.helper_of) : undefined;
         if (host !== undefined && host.branch === undefined) {
           throw new Error(
-            `helper ${stream.id}: its parent ${host.id} has no branch yet; start the parent first`,
+            `${stream.title} is a helper, and its parent ${host.title} has no branch yet; start the parent's agent first`,
           );
         }
         const created = await createWorktree(
@@ -828,6 +977,7 @@ export class AttachService {
       }
       return;
     }
+    this.turnFinished.add(sessionId);
     handle.stop();
   }
 
@@ -872,12 +1022,17 @@ export class AttachService {
    * `queued` list, which the stream page shows as waiting. With no live
    * worker the event stays pending for the next session.
    */
-  async say(streamId: string, body: string): Promise<{ entry: ThreadEntry; prompted?: string }> {
+  async say(
+    streamId: string,
+    body: string,
+    options: { start?: boolean } = {},
+  ): Promise<{ entry: ThreadEntry; prompted?: string; started?: true }> {
     // Held from before the first write: a turn ending before the emit keeps the session.
     const release = this.delivery.hold(streamId);
     let entry: ThreadEntry;
     let handle: AgentSessionHandle | undefined;
     let busy = false;
+    let started: AttachResult | undefined;
     try {
       entry = await this.options.streams.appendThread('human', streamId, { kind: 'line', body });
       handle = this.agentHandle(streamId);
@@ -894,9 +1049,19 @@ export class AttachService {
         },
         [this.options.streams.get(streamId)],
       );
+      // T361: still held, so no wake races it and no digest repeats the line.
+      // T389: a part waiting for its coordinator's plan starts with the plan, not a line.
+      if (
+        handle === undefined &&
+        options.start === true &&
+        this.options.plans?.waitingForPlan?.(this.options.streams.get(streamId)) !== true
+      ) {
+        started = await this.startFor(streamId);
+      }
     } finally {
       release();
     }
+    if (started !== undefined) return { entry, prompted: started.session.id, started: true };
     if (handle === undefined) return { entry };
     const sessionId = handle.sessionId;
     if (busy) {
@@ -908,6 +1073,42 @@ export class AttachService {
       });
     }
     return { entry, prompted: sessionId };
+  }
+
+  /**
+   * T361: a line sent with `start` to a node with no live agent (never
+   * started, or stopped) starts one with the session defaults, as creating
+   * the node would have: a worker on a work node or a conversation, the
+   * coordinator on a coordinating node or a project root with parts. Its
+   * pending events, the line among them, are handed over in the brief.
+   * Not on a closed, landed or deleted node, nor a bare project root. A
+   * failed start is a thread line; the line stays pending.
+   */
+  private async startFor(id: string): Promise<AttachResult | undefined> {
+    const { streams } = this.options;
+    const stream = streams.get(id);
+    if (
+      !isOpen(stream) ||
+      liveAgent(stream) !== undefined ||
+      this.waking.has(id) ||
+      this.startingAgent(id)
+    ) {
+      return undefined;
+    }
+    const { shape, role } = agentFor(stream, streams.list());
+    if (shape === 'project' && role !== 'coordinator') return undefined;
+    try {
+      return await this.startWithPending(id);
+    } catch (err) {
+      await streams.appendThread('daemon', id, {
+        kind: 'event',
+        body: `could not start the agent: ${err instanceof Error ? err.message : String(err)}`.slice(
+          0,
+          800,
+        ),
+      });
+      return undefined;
+    }
   }
 
   /** Rewrites a session's `queued` list (thread `ts` of lines waiting on a turn). */
@@ -976,6 +1177,8 @@ export class AttachService {
     const detached = this.detaching.delete(sessionId);
     const stopReason = this.stopReasons.get(sessionId);
     this.stopReasons.delete(sessionId);
+    // T341: the daemon ended it after a finished turn; the kill's exit code says nothing.
+    const finishedTurn = this.turnFinished.delete(sessionId) && ok && vendorError === undefined;
     // `stop()` already holds the promise it awaits; dropping it cannot lose a write.
     this.exitHandled.delete(sessionId);
     try {
@@ -1031,7 +1234,7 @@ export class AttachService {
       });
       await this.options.streams.appendThread('daemon', streamId, {
         kind: 'event',
-        body: `session ended: ${reason}`.slice(0, 800),
+        body: `session ended: ${finishedTurn ? 'its turn finished' : reason}`.slice(0, 800),
         ref: sessionId,
       });
     } catch {
@@ -1114,11 +1317,18 @@ export class AttachService {
     return stopped;
   }
 
-  /** Stops every live session: the daemon's shutdown path. */
+  /**
+   * Stops every live session: the daemon's shutdown path. A daemon stop
+   * (T370): the kill ends no work, so the node goes back to `idle` (never
+   * `done`, which read as "ready to merge" after a restart) and is not
+   * "stopped by the human", so its next event wakes it again.
+   */
   async stopAll(): Promise<void> {
     await Promise.all(
       [...this.live.entries()].flatMap(([role, handles]) =>
-        [...handles.keys()].map((streamId) => this.stop(streamId, role)),
+        [...handles.keys()].map((streamId) =>
+          this.stop(streamId, role, { reason: DAEMON_SHUTDOWN_REASON }),
+        ),
       ),
     );
   }

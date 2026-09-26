@@ -13,7 +13,7 @@
  * reasoning about interleaving.
  */
 
-import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } from 'node:path';
 import {
   type AgentId,
@@ -169,6 +169,8 @@ export const HEARTBEAT_COALESCE_MS = 30 * 1000;
 
 export class StateStore {
   private readonly mutex = new Mutex();
+  /** T395: each thread's last line time, from appends here, else the file's mtime (read once). */
+  private readonly threadAt = new Map<string, string | undefined>();
 
   // An absolute symlink target may resolve through a symlinked ancestor of
   // the state root (macOS `tmpdir()` under `/var -> /private/var`), so
@@ -708,12 +710,12 @@ export class StateStore {
     return validateReposConfig(readYamlFile(path) ?? {});
   }
 
-  async putRepos(repos: unknown): Promise<ReposConfig> {
+  async putRepos(repos: unknown, options: { by?: string } = {}): Promise<ReposConfig> {
     return this.mutate(() => {
       const validated = validateReposConfig(repos);
       const relPath = 'repos.yaml';
       writeYamlFileAtomic(this.abs(relPath), validated);
-      const event = buildEvent('repos_put');
+      const event = buildEvent('repos_put', { agent: options.by });
       return { result: validated, event };
     });
   }
@@ -723,7 +725,7 @@ export class StateStore {
    * existing registry so `agile repo add` is additive; re-adding the same
    * name replaces that entry.
    */
-  async addRepo(name: string, entry: unknown): Promise<ReposConfig> {
+  async addRepo(name: string, entry: unknown, options: { by?: string } = {}): Promise<ReposConfig> {
     // §14.8 defaults written out, so a repo added after the migration looks migrated.
     const next = {
       ...this.getRepos(),
@@ -733,7 +735,7 @@ export class StateStore {
         ...(entry as object),
       }),
     };
-    return this.putRepos(next);
+    return this.putRepos(next, options);
   }
 
   // ------------------------------------------------------ Streams + threads
@@ -878,6 +880,7 @@ export class StateStore {
       const validated = validateThreadEntry(entry);
       const relPath = this.threadRelPath(streamId);
       appendJsonlLine(this.abs(relPath), validated);
+      this.threadAt.set(streamId, validated.ts);
       const event = buildEvent('thread_appended', {
         stream: streamId,
         data: { by: validated.by, entry_kind: validated.kind },
@@ -1101,6 +1104,23 @@ export class StateStore {
       writeYamlFileAtomic(this.abs(relPath), after);
       return { result: after, event: projectEvent('project_updated', after) };
     });
+  }
+
+  /**
+   * T395: when the node's thread last changed (ISO), for the cockpit rows'
+   * "updated 3m ago": the last append this process wrote, else the thread
+   * file's mtime, read once. `undefined` for a node with no thread yet.
+   */
+  threadUpdatedAt(streamId: string): string | undefined {
+    if (this.threadAt.has(streamId)) return this.threadAt.get(streamId);
+    let at: string | undefined;
+    try {
+      at = new Date(statSync(this.abs(this.threadRelPath(streamId))).mtimeMs).toISOString();
+    } catch {
+      at = undefined;
+    }
+    this.threadAt.set(streamId, at);
+    return at;
   }
 
   /**

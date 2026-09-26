@@ -156,6 +156,12 @@ export const ThreadEntrySchema = z
     body: z.string().min(1),
     /** Pointer to the detail: a file path, url, session id, rule id. */
     ref: z.string().min(1).optional(),
+    /**
+     * T347 (D36 D12): a daemon line written for the agent (its brief and
+     * `read_stream` still carry it); the cockpit's thread view hides it.
+     * Absent on every line written before it, which all show.
+     */
+    agent_only: z.literal(true).optional(),
   })
   .strict()
   .superRefine((entry, ctx) => {
@@ -369,6 +375,13 @@ export const StreamSchema = z
      */
     archived: z.literal(true).optional(),
     /**
+     * T361: the cockpit's Delete archives a node and its subtree; every node
+     * one delete archived carries that delete's id (a ulid, so it also orders
+     * the Archived list), and Restore brings back exactly those. Written
+     * with `archived` and cleared with it.
+     */
+    archive_id: UlidSchema.optional(),
+    /**
      * T150 (§6.4): the per-stream opt-out from the classifier tier — "a
      * stream working on something the operator does not want leaving the
      * machine turns the tier off; pattern rules and guidance still apply."
@@ -430,6 +443,12 @@ export const StreamCreateInputSchema = z
     helper_of: UlidSchema.optional(),
     /** T204: `false` (`--no-start`, "Start later") skips starting the node's agent. Not stored. */
     start: z.boolean().optional(),
+    /**
+     * T332 (D33): "Branch off" — the 0-based index of a line on the parent's
+     * thread. The new node is a tangent: a conversation whose thread opens
+     * with that line quoted. The parent must be a conversation. Not stored.
+     */
+    seed_line: z.number().int().nonnegative().optional(),
   })
   .strict();
 export type StreamCreateInput = z.infer<typeof StreamCreateInputSchema>;
@@ -583,17 +602,46 @@ export function assertNoWaitsOnCycle(
   for (const target of targets) walk(target, [target]);
 }
 
-/** Derived, never stored (P1). `liveChildren` are the node's children that are not closed or archived. */
+/**
+ * Derived, never stored (P1, amended by D33). `liveChildren` are the node's
+ * children that are not closed or archived; same-repo helpers never count.
+ *
+ * D33: a node with no repo whose other children are all conversations
+ * (tangents) stays a conversation; it becomes coordinating once a child has
+ * a repo, or is itself coordinating. Pass `all` (every stream) so a
+ * repo-less child's own children are looked at; without it a repo-less
+ * child counts as a conversation.
+ */
 export type NodeRole = 'project' | 'coordinating' | 'work' | 'conversation';
+
+type RoleChild = Pick<Stream, 'id' | 'helper_of' | 'repo'>;
 
 export function nodeRole(
   node: Pick<Stream, 'id' | 'parent' | 'repo'>,
-  liveChildren: ReadonlyArray<Pick<Stream, 'helper_of'>>,
+  liveChildren: ReadonlyArray<RoleChild>,
+  all?: readonly Stream[],
 ): NodeRole {
   if (node.parent === undefined) return 'project';
-  if (liveChildren.some((c) => c.helper_of !== node.id)) return 'coordinating';
-  if (node.repo !== undefined) return 'work';
-  return 'conversation';
+  const others = liveChildren.filter((c) => c.helper_of !== node.id);
+  if (node.repo === undefined && others.every((c) => isTangent(c, all, new Set([node.id])))) {
+    return 'conversation';
+  }
+  if (others.length > 0) return 'coordinating';
+  return node.repo !== undefined ? 'work' : 'conversation';
+}
+
+/** D33: a child that is itself a conversation (no repo, only conversation children). */
+function isTangent(
+  child: RoleChild,
+  all: readonly Stream[] | undefined,
+  seen: Set<string>,
+): boolean {
+  if (child.repo !== undefined) return false;
+  if (all === undefined || seen.has(child.id)) return true;
+  seen.add(child.id);
+  return liveChildrenOf(child.id, all)
+    .filter((c) => c.helper_of !== child.id)
+    .every((c) => isTangent(c, all, seen));
 }
 
 /** The children `nodeRole` counts: parent is `node`, not archived, not closed. */
@@ -612,6 +660,11 @@ export function liveChildrenOf(nodeId: string, all: readonly Stream[]): Stream[]
 export const StreamSayInputSchema = z
   .object({
     body: z.string().trim().min(1).max(THREAD_BODY_MAX_CHARS),
+    /**
+     * T361: a node with no live agent (never started, or stopped) starts
+     * one, with the session defaults, and the line is its first prompt.
+     */
+    start: z.boolean().optional(),
   })
   .strict();
 export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;
@@ -654,3 +707,24 @@ export const StreamWaitRequestSchema = z
   })
   .strict();
 export type StreamWaitRequest = z.infer<typeof StreamWaitRequestSchema>;
+
+/** T333 (D34): `POST /api/streams/:id/move` and `node.move`: a node, or a project id for its root. */
+export const StreamMoveRequestSchema = z
+  .object({ parent: z.union([UlidSchema, ProjectIdSchema]) })
+  .strict();
+export type StreamMoveRequest = z.infer<typeof StreamMoveRequestSchema>;
+
+/**
+ * T365: `POST /api/streams/:id/update` — the rail's Rename (and the goal):
+ * the title and goal half of `stream.update`'s human patch. At least one.
+ */
+export const StreamUpdateRequestSchema = z
+  .object({
+    title: z.string().trim().min(1).optional(),
+    goal: z.string().trim().min(1).optional(),
+  })
+  .strict()
+  .refine((input) => input.title !== undefined || input.goal !== undefined, {
+    message: 'send a title or a goal',
+  });
+export type StreamUpdateRequest = z.infer<typeof StreamUpdateRequestSchema>;

@@ -48,7 +48,8 @@ function makeRepo(prefix: string): string {
 }
 
 function roleOf(id: string): string {
-  return nodeRole(streams.get(id), liveChildrenOf(id, streams.list()));
+  const all = streams.list();
+  return nodeRole(streams.get(id), liveChildrenOf(id, all), all);
 }
 
 function bodies(id: string): string[] {
@@ -169,6 +170,17 @@ describe('T205 + Repo in place', () => {
       expect(bodies(part.id)).toContain(
         `waiting for the plan: this part starts when "Sale prices"'s plan is approved`,
       );
+      // T347 (D36 D12): the "read it by id" pointer is for the part's agent only.
+      const pointer = streams
+        .readThread(part.id, { limit: 50 })
+        .entries.find((e) => e.body.endsWith('read it by id'));
+      expect(pointer?.agent_only).toBe(true);
+      expect(
+        streams
+          .readThread(part.id, { limit: 50 })
+          .entries.filter((e) => e.body.startsWith('waiting for the plan'))
+          .every((e) => e.agent_only === undefined),
+      ).toBe(true);
     }
     expect(
       bodies(node.id).some((b) => b.includes('wait for the plan: write it with plan_write')),
@@ -302,6 +314,87 @@ describe('T205 + Repo in place', () => {
     await expect(reshape.addRepo(node.id, 'nope')).rejects.toThrow(/unknown repo/);
     expect(roleOf(node.id)).toBe('work');
   }, 30_000);
+
+  test('D33/T346: conversation with a tangent + api: the repo goes to a part that waits for the plan', async () => {
+    const plans = planService();
+    const node = await conversation();
+    const tangent = await streams.create('human', {
+      title: 'Why slow?',
+      goal: 'why are prices slow?',
+      parent: node.id,
+    });
+    await attach.attach(node.id);
+    expect(roleOf(node.id)).toBe('conversation');
+
+    const { node: after, parts } = await reshape.addRepo(node.id, 'api');
+
+    expect(parts.map((p) => p.title)).toEqual(['api part']);
+    expect(attach.handleFor(node.id, 'coordinator')).toBeDefined();
+    expect(roleOf(node.id)).toBe('coordinating');
+    expect(roleOf(tangent.id)).toBe('conversation');
+    expect(after.repo).toBeUndefined();
+    expect(after.worktree).toBeUndefined();
+    expect(after.branch).toBeUndefined();
+    const [part] = parts;
+    expect(roleOf(part?.id ?? '')).toBe('work');
+    expect(bodies(node.id)).toContain(
+      'repo added: api; now coordinating api part beside its tangents',
+    );
+    expect(bodies(node.id).some((b) => b.includes('now a work node'))).toBe(false);
+    // T346: one part waits for the plan like a split's parts (§9.1).
+    const partId = part?.id ?? '';
+    expect(attach.handleFor(partId)).toBeUndefined();
+    expect(plans.waitingForPlan(streams.get(partId))).toBe(true);
+    expect(bodies(partId)).toContain(
+      `waiting for the plan: this part starts when "Sale prices"'s plan is approved`,
+    );
+    expect(bodies(node.id)).toContain(
+      'api part waits for the plan: write it with plan_write (who owns which paths); each part starts once the plan is approved',
+    );
+    expect(attach.handleFor(tangent.id)).toBeUndefined();
+
+    // The approval starts it in its worktree.
+    await plans.write(node.id, [{ child: partId, owns: ['src/prices.ts'] }]);
+    expect(attach.handleFor(partId)).toBeUndefined();
+    await plans.approve(node.id);
+    expect(attach.handleFor(partId)).toBeDefined();
+    const live = streams.get(partId).sessions.find((s) => s.status === 'running');
+    expect(existsSync(streams.get(partId).worktree ?? '')).toBe(true);
+    expect(live?.worktree).toBe(streams.get(partId).worktree);
+    expect(plans.waitingForPlan(streams.get(partId))).toBe(false);
+  }, 60_000);
+
+  test('T346: a conversation with tangents whose session ended gets its coordinator; the part waits', async () => {
+    const plans = planService();
+    const node = await conversation();
+    await streams.create('human', { title: 'Why slow?', goal: 'why?', parent: node.id });
+    await attach.attach(node.id);
+    await attach.stop(node.id);
+    expect(streams.get(node.id).agent.status).toBe('done');
+
+    const { parts } = await reshape.addRepo(node.id, 'api');
+
+    expect(attach.handleFor(node.id, 'coordinator')).toBeDefined();
+    const [part] = parts as [Stream];
+    expect(attach.handleFor(part.id)).toBeUndefined();
+    expect(plans.waitingForPlan(streams.get(part.id))).toBe(true);
+  }, 60_000);
+
+  test('T346: a human-stopped conversation with tangents: no coordinator, the part starts as before', async () => {
+    const plans = planService();
+    const node = await conversation();
+    await streams.create('human', { title: 'Why slow?', goal: 'why?', parent: node.id });
+    await attach.attach(node.id);
+    await attach.stop(node.id, undefined, { detach: true });
+
+    const { parts } = await reshape.addRepo(node.id, 'api');
+
+    expect(attach.handleFor(node.id)).toBeUndefined();
+    const [part] = parts as [Stream];
+    expect(attach.handleFor(part.id)).toBeDefined();
+    expect(plans.waitingForPlan(streams.get(part.id))).toBe(false);
+    expect(bodies(part.id).some((b) => b.startsWith('waiting for the plan: '))).toBe(false);
+  }, 60_000);
 
   test('coordinating + another repo adds one more part', async () => {
     const node = await conversation();

@@ -8,7 +8,17 @@
  * selection) are siblings, and the inbox cards open a stream too.
  */
 
-import { type PropsWithChildren, createContext, useContext, useMemo, useState } from 'react';
+import {
+  type PropsWithChildren,
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import type { NodeTab } from './chat';
+import { useOptionalFeed } from './feed-context';
 import { DEFAULT_RULES_FILTER, type RulesFilter } from './rules';
 
 /** `stream` is the stream page (T161) — the stream is `selected`. `rules` is T163's rules screen. */
@@ -38,13 +48,71 @@ export function isShellView(value: string | null): value is ShellView {
   return value !== null && (SHELL_VIEWS as readonly string[]).includes(value);
 }
 
+/**
+ * T348 (D36 D2): the part of the shell a URL carries, so a reload or a
+ * shared link reopens the same view. `?node=<id>` is a node's page,
+ * `?view=<view>` any other view, `&project=<id>` the rail's project filter.
+ */
+export interface ShellLocation {
+  view: ShellView;
+  node: string | undefined;
+  project: string | undefined;
+}
+
+/** Reads a `location.search`; anything unknown or missing is the inbox, "All" projects. */
+export function parseShellUrl(search: string): ShellLocation {
+  const params = new URLSearchParams(search);
+  const node = params.get('node') || undefined;
+  const project = params.get('project') || undefined;
+  if (node !== undefined) return { view: 'stream', node, project };
+  // Knowledge is the `rules` view inside; its link says `knowledge` (`rules` still opens it).
+  const raw = params.get('view');
+  const view = raw === 'knowledge' ? 'rules' : raw;
+  return { view: isShellView(view) ? view : 'inbox', node: undefined, project };
+}
+
+/** The query params the shell owns; any other belongs to the screen showing (Settings' `section`). */
+const SHELL_PARAMS: ReadonlySet<string> = new Set(['node', 'view', 'project']);
+
+/**
+ * T409: `next` (the shell's own query) plus the screen's params from
+ * `current`, for a rewrite that stays on the same view and node (the project
+ * filter moved, or the first sync after load). Moving to another view drops
+ * them: they were that screen's.
+ */
+export function keepScreenParams(next: string, current: string): string {
+  const params = new URLSearchParams(next);
+  for (const [key, value] of new URLSearchParams(current)) {
+    if (!SHELL_PARAMS.has(key) && !params.has(key)) params.append(key, value);
+  }
+  const query = params.toString();
+  return query === '' ? '' : `?${query}`;
+}
+
+/** The `location.search` for a shell location: `''` for the plain inbox. */
+export function shellSearch({ view, node, project }: ShellLocation): string {
+  const params = new URLSearchParams();
+  if (view === 'stream' && node !== undefined) params.set('node', node);
+  else if (view !== 'inbox' && view !== 'stream')
+    params.set('view', view === 'rules' ? 'knowledge' : view);
+  if (project !== undefined) params.set('project', project);
+  const query = params.toString();
+  return query === '' ? '' : `?${query}`;
+}
+
 export interface ShellValue {
   view: ShellView;
   setView(view: ShellView): void;
   /** The stream whose page is open (T161), or `undefined`. */
   selected: string | undefined;
-  /** Opens a stream's page; `undefined` goes back to the whole inbox. */
-  select(id: string | undefined): void;
+  /**
+   * Opens a stream's page; `undefined` goes back to the whole inbox. T403:
+   * `tab` opens it on that tab instead of its first (a Needs me card opens a
+   * project root on its chat, where the card is, not its Overview).
+   */
+  select(id: string | undefined, options?: { tab?: NodeTab }): void;
+  /** T403: the tab the last `select` asked for, with its node; read when the page opens. */
+  openOn: { id: string; tab: NodeTab } | undefined;
   /** Phone width only: the stream tree is a drawer. Ignored on a wide screen, where the rail is always shown. */
   railOpen: boolean;
   toggleRail(): void;
@@ -56,33 +124,114 @@ export interface ShellValue {
   /** T162: the "New stream" dialog — opened by the top bar's button or `n`. */
   newStreamOpen: boolean;
   setNewStreamOpen(open: boolean): void;
-  /** T208: the rail's project switcher; `undefined` is "All". New nodes file into it. */
+  /** T365: where New node starts when a row's `+` opened it (a parent, or a project's top level). */
+  newStreamPreset: NewStreamPreset | undefined;
+  /** T365: opens New node, under `preset` when given (a row's `+`, a project's menu). */
+  openNewStream(preset?: NewStreamPreset): void;
+  /** T360: the "New project" dialog — from the sidebar, or Needs me's first-run steps. */
+  newProjectOpen: boolean;
+  setNewProjectOpen(open: boolean): void;
+  /**
+   * T208: the rail's project filter; `undefined` is "All". T365: only the
+   * human sets it (a project's "Show only this project", the chip's ×, a
+   * `&project=` link); nothing switches it on its own.
+   */
   project: string | undefined;
   setProject(id: string | undefined): void;
+}
+
+/** T365: New node's starting point from a row's `+` or a project's menu. */
+export interface NewStreamPreset {
+  parent?: string;
+  project?: string;
 }
 
 const ShellContext = createContext<ShellValue | undefined>(undefined);
 
 export function ShellProvider({
-  initialView = 'inbox',
+  initial = { view: 'inbox', node: undefined, project: undefined },
   children,
-}: PropsWithChildren<{ initialView?: ShellView }>): JSX.Element {
-  const [view, setView] = useState<ShellView>(initialView);
-  const [selected, setSelected] = useState<string | undefined>(undefined);
+}: PropsWithChildren<{ initial?: ShellLocation }>): JSX.Element {
+  const [view, setView] = useState<ShellView>(initial.view);
+  const [selected, setSelected] = useState<string | undefined>(initial.node);
+  const [openOn, setOpenOn] = useState<ShellValue['openOn']>(undefined);
   const [railOpen, setRailOpen] = useState(false);
   const [newStreamOpen, setNewStreamOpen] = useState(false);
-  const [project, setProject] = useState<string | undefined>(undefined);
+  const [newStreamPreset, setNewStreamPreset] = useState<NewStreamPreset | undefined>(undefined);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [project, setProject] = useState<string | undefined>(initial.project);
   const [rulesFilter, setRulesFilter] = useState<RulesFilter>(DEFAULT_RULES_FILTER);
+  // T348: ids read from the URL (on load, or on back/forward) are checked
+  // against the next cockpit frame; a stale one falls back quietly. Ids set
+  // by a click are never checked — a node just created may not be in the
+  // frame yet.
+  const [unchecked, setUnchecked] = useState(
+    initial.node !== undefined || initial.project !== undefined,
+  );
+  // The fallback replaces the bad URL rather than stacking a history entry on it.
+  const replaceNext = useRef(false);
+  const cockpit = useOptionalFeed()?.cockpit;
+
+  useEffect(() => {
+    if (!unchecked || !cockpit) return;
+    setUnchecked(false);
+    if (selected !== undefined && !cockpit.streams.some((row) => row.id === selected)) {
+      replaceNext.current = true;
+      setSelected(undefined);
+      setView((current) => (current === 'stream' ? 'inbox' : current));
+    }
+    if (project !== undefined && !cockpit.projects.some((p) => p.id === project)) {
+      replaceNext.current = true;
+      setProject(undefined);
+    }
+  }, [unchecked, cockpit, selected, project]);
+
+  // State → URL. Opening another node or view is a new history entry (so
+  // back returns to it); the project filter alone only rewrites the current one.
+  useEffect(() => {
+    const own = shellSearch({ view, node: selected, project });
+    const current = parseShellUrl(location.search);
+    const target = parseShellUrl(own);
+    const moved = current.view !== target.view || current.node !== target.node;
+    // T409: staying put keeps the screen's own params (a deep link's `section`).
+    const next = moved ? own : keepScreenParams(own, location.search);
+    if (next === location.search) return;
+    const url = `${location.pathname}${next}${location.hash}`;
+    if (moved && !replaceNext.current) history.pushState(null, '', url);
+    else history.replaceState(null, '', url);
+    replaceNext.current = false;
+  }, [view, selected, project]);
+
+  // URL → state, on back/forward.
+  useEffect(() => {
+    const onPop = (): void => {
+      const next = parseShellUrl(location.search);
+      setView(next.view);
+      setSelected(next.node);
+      setProject(next.project);
+      setUnchecked(next.node !== undefined || next.project !== undefined);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   const value = useMemo<ShellValue>(
     () => ({
       view,
-      setView,
+      // T360: a view from the sidebar closes the phone drawer; any view but a
+      // node's page leaves no node open (so New node doesn't default to it).
+      setView: (next: ShellView) => {
+        setView(next);
+        if (next !== 'stream') setSelected(undefined);
+        setRailOpen(false);
+      },
       selected,
+      openOn,
       // T161: picking a stream opens its page (§9.3); "All streams" is the
       // inbox. On a phone the drawer gets out of the way either way.
-      select: (id) => {
+      select: (id, options) => {
         setSelected(id);
+        setOpenOn(id !== undefined && options?.tab ? { id, tab: options.tab } : undefined);
         setView(id === undefined ? 'inbox' : 'stream');
         setRailOpen(false);
       },
@@ -93,13 +242,37 @@ export function ShellProvider({
       openRules: (filter = DEFAULT_RULES_FILTER) => {
         setRulesFilter(filter);
         setView('rules');
+        setSelected(undefined);
       },
       newStreamOpen,
-      setNewStreamOpen,
+      setNewStreamOpen: (open: boolean) => {
+        setNewStreamPreset(undefined);
+        setNewStreamOpen(open);
+        // The dialog, not the phone drawer behind it.
+        if (open) setRailOpen(false);
+      },
+      newStreamPreset,
+      openNewStream: (preset?: NewStreamPreset) => {
+        setNewStreamPreset(preset);
+        setNewStreamOpen(true);
+        setRailOpen(false);
+      },
+      newProjectOpen,
+      setNewProjectOpen,
       project,
       setProject,
     }),
-    [view, selected, railOpen, newStreamOpen, rulesFilter, project],
+    [
+      view,
+      selected,
+      openOn,
+      railOpen,
+      newStreamOpen,
+      newStreamPreset,
+      newProjectOpen,
+      rulesFilter,
+      project,
+    ],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;
@@ -123,6 +296,10 @@ export function useOptionalShell(): ShellValue | undefined {
  */
 export function isShortcut(event: KeyboardEvent, key: string): boolean {
   if (event.key !== key || event.metaKey || event.ctrlKey || event.altKey) return false;
+  // T373: an open dialog owns the keyboard, wherever its focus is.
+  if (typeof document !== 'undefined' && document.querySelector?.('[aria-modal="true"]')) {
+    return false;
+  }
   const target = event.target as HTMLElement | null;
   if (!target || typeof target.tagName !== 'string') return true;
   const tag = target.tagName.toLowerCase();

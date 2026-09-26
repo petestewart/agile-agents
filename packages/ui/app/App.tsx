@@ -7,62 +7,203 @@
  *
  * T161: a stream picked in the tree (or opened from an inbox card) shows
  * its stream page (§9.3) in the main column. T163: the rules screen.
+ * T360: the top bar is gone; the sidebar (views, projects, Settings) is the
+ * one navigation, a drawer below 900px (design/cockpit-ui.md §3).
+ *
+ * T394: the views not on the first screen (Knowledge, Settings, the lenses,
+ * the Director, New project) load on demand, and are warmed once the first
+ * screen is idle. The main view and each overlay sit in an error boundary:
+ * a throw shows a card in words while the sidebar stays usable, and
+ * navigating resets it.
  */
 
-import { DirectorPage } from './components/Director';
+import { Suspense, useEffect, useState } from 'react';
+import { CommandPalette } from './components/CommandPalette';
+import { ErrorBoundary, PageLoading, lazyNamed } from './components/ErrorBoundary';
+import { Icon } from './components/Icon';
 import { Inbox } from './components/Inbox';
-import { DependenciesLens, EventLog, RepoView, RunningLens } from './components/Lenses';
 import { NewStream } from './components/NewStream';
-import { Rules } from './components/Rules';
-import { Settings } from './components/Settings';
+import { Shortcuts } from './components/Shortcuts';
+import { MobileBar, Sidebar } from './components/Sidebar';
 import { StreamPage } from './components/StreamPage';
-import { StreamTree } from './components/StreamTree';
-import { TopBar } from './components/TopBar';
 import { useFeed } from './lib/feed-context';
-import { useShell } from './lib/shell';
+import { type ShellView, useShell } from './lib/shell';
+import { useNeedsMeNotifications } from './lib/use-notify';
+
+// T394: loaded on demand (`preload()` fetches one ahead: the warm-up, a deep link).
+const loadLenses = () => import('./components/Lenses');
+const Settings = lazyNamed(() => import('./components/Settings'), 'Settings');
+const Rules = lazyNamed(() => import('./components/Rules'), 'Rules');
+const RepoView = lazyNamed(loadLenses, 'RepoView');
+const RunningLens = lazyNamed(loadLenses, 'RunningLens');
+const DependenciesLens = lazyNamed(loadLenses, 'DependenciesLens');
+const EventLog = lazyNamed(loadLenses, 'EventLog');
+const DirectorPage = lazyNamed(() => import('./components/Director'), 'DirectorPage');
+const NewProject = lazyNamed(() => import('./components/NewProject'), 'NewProject');
+
+const LAZY_VIEWS: Partial<Record<ShellView, { preload(): Promise<unknown> }>> = {
+  settings: Settings,
+  rules: Rules,
+  repos: RepoView,
+  running: RunningLens,
+  deps: DependenciesLens,
+  events: EventLog,
+  director: DirectorPage,
+};
+
+/**
+ * T394: fetches a view's code when it loads on demand (nothing to do for
+ * Needs me or a node). `main.tsx` waits for it on a deep link, so the view
+ * is there in the first frame and reads its own part of the URL (Settings'
+ * `section`) before the shell rewrites the query.
+ */
+export function preloadView(view: ShellView): Promise<unknown> {
+  return LAZY_VIEWS[view]?.preload() ?? Promise.resolve();
+}
+
+/**
+ * Every chunk the first screen doesn't need, fetched once the page is idle
+ * so a later click opens at once (and an open page keeps working after a
+ * rebuild replaces the files). The node page's Changes and Overview tabs
+ * load on demand too (`StreamPage`); this only fetches their code.
+ */
+const WARM: ReadonlyArray<() => Promise<unknown>> = [
+  ...Object.values(LAZY_VIEWS).map((view) => () => view.preload()),
+  () => NewProject.preload(),
+  () => import('./components/DiffView'),
+  () => import('./components/AddRepo'),
+  () => import('./components/ProjectOverview'),
+];
+
+/** How long after the first screen the warm-up waits, so it never competes with that screen's own reads. */
+const WARM_AFTER_MS = 1500;
+
+function useWarmChunks(): void {
+  useEffect(() => {
+    // A failed warm-up is said, in words, when that view is opened.
+    const warm = (): void => {
+      for (const load of WARM) load().catch(() => {});
+    };
+    let idle: number | undefined;
+    const timer = setTimeout(() => {
+      if (typeof window.requestIdleCallback === 'function') {
+        idle = window.requestIdleCallback(warm, { timeout: 5000 });
+      } else warm();
+    }, WARM_AFTER_MS);
+    return () => {
+      clearTimeout(timer);
+      if (idle !== undefined) window.cancelIdleCallback(idle);
+    };
+  }, []);
+}
+
+/** T360: the browser tab says where you are and how much waits on you. */
+const VIEW_TITLE: Record<ShellView, string> = {
+  inbox: 'Needs me',
+  repos: 'Repos',
+  running: 'Running',
+  deps: 'Dependencies',
+  rules: 'Knowledge',
+  director: 'Director',
+  events: 'Events',
+  settings: 'Settings',
+  stream: 'Node',
+};
+
+/** True once the socket has been down for a moment (not the first connect, not a blip). */
+function useLostConnection(connected: boolean): boolean {
+  const [lost, setLost] = useState(false);
+  useEffect(() => {
+    if (connected) {
+      setLost(false);
+      return;
+    }
+    const timer = setTimeout(() => setLost(true), 2000);
+    return () => clearTimeout(timer);
+  }, [connected]);
+  return lost;
+}
 
 export function App(): JSX.Element {
   const { snapshot, connected, cockpit, refresh } = useFeed();
-  const { view, selected, railOpen } = useShell();
+  const { view, selected, railOpen, toggleRail, newProjectOpen, setNewProjectOpen } = useShell();
   const rows = cockpit?.streams ?? [];
   const items = cockpit?.inbox ?? [];
   const projects = cockpit?.projects ?? [];
   const repos = cockpit?.repos ?? [];
+  const lost = useLostConnection(connected);
+
+  const nodeTitle = selected !== undefined ? rows.find((r) => r.id === selected)?.title : undefined;
+  const pageTitle = view === 'stream' && nodeTitle !== undefined ? nodeTitle : VIEW_TITLE[view];
+  const waiting = items.length > 0 ? `(${items.length}) ` : '';
+  useEffect(() => {
+    document.title = `${waiting}${pageTitle} · agile`;
+  }, [waiting, pageTitle]);
+  // T388: a browser notification when something new needs you while you're away (opt-in, Settings).
+  useNeedsMeNotifications();
+  useWarmChunks();
+  // T394: a caught error resets when you go somewhere else.
+  const place = `${view}:${selected ?? ''}`;
 
   return (
     <div className="cr-root" data-rail={railOpen ? 'open' : 'closed'}>
-      <TopBar
+      <Sidebar
         snapshot={snapshot}
         inboxCount={items.length}
         connected={connected}
         rows={rows}
         projects={projects}
       />
-      <div className="cr-frame">
-        <StreamTree rows={rows} projects={projects} />
-        <main className="cr-main">
-          {view === 'settings' ? (
-            <Settings />
-          ) : view === 'repos' ? (
-            <RepoView rows={rows} repos={repos} overlaps={cockpit?.overlaps ?? []} />
-          ) : view === 'running' ? (
-            <RunningLens rows={rows} />
-          ) : view === 'deps' ? (
-            <DependenciesLens rows={rows} />
-          ) : view === 'rules' ? (
-            <Rules />
-          ) : view === 'director' ? (
-            <DirectorPage />
-          ) : view === 'events' ? (
-            <EventLog />
-          ) : view === 'stream' && selected !== undefined ? (
-            <StreamPage id={selected} />
-          ) : (
-            <Inbox items={items} onChanged={refresh} />
-          )}
-        </main>
-      </div>
-      <NewStream rows={rows} projects={projects} />
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: the drawer closes with its own toggle and Escape too. */}
+      <div className="cr-scrim" onClick={toggleRail} />
+      <main className="cr-main">
+        <MobileBar connected={connected} name={snapshot?.project?.name ?? 'agile'} />
+        {lost && (
+          <output className="cr-offline" data-testid="offline-banner">
+            <Icon name="alert-circle" size={14} />
+            Lost the daemon — reconnecting. Is <code>agiled</code> running?
+          </output>
+        )}
+        <ErrorBoundary area="page" resetKey={place}>
+          <Suspense fallback={<PageLoading />}>
+            {view === 'settings' ? (
+              <Settings />
+            ) : view === 'repos' ? (
+              <RepoView rows={rows} repos={repos} overlaps={cockpit?.overlaps ?? []} />
+            ) : view === 'running' ? (
+              <RunningLens rows={rows} />
+            ) : view === 'deps' ? (
+              <DependenciesLens rows={rows} />
+            ) : view === 'rules' ? (
+              <Rules />
+            ) : view === 'director' ? (
+              <DirectorPage />
+            ) : view === 'events' ? (
+              <EventLog />
+            ) : view === 'stream' && selected !== undefined ? (
+              <StreamPage id={selected} />
+            ) : (
+              <Inbox items={items} onChanged={refresh} />
+            )}
+          </Suspense>
+        </ErrorBoundary>
+      </main>
+      <ErrorBoundary area="overlay" resetKey={place}>
+        <NewStream rows={rows} projects={projects} />
+      </ErrorBoundary>
+      <ErrorBoundary area="overlay" resetKey={place}>
+        <CommandPalette rows={rows} projects={projects} />
+      </ErrorBoundary>
+      <ErrorBoundary area="overlay" resetKey={place}>
+        <Shortcuts />
+      </ErrorBoundary>
+      {newProjectOpen && (
+        <ErrorBoundary area="overlay" resetKey={place}>
+          <Suspense fallback={null}>
+            <NewProject onClose={() => setNewProjectOpen(false)} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
     </div>
   );
 }

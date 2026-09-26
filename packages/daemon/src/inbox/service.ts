@@ -11,6 +11,7 @@ import {
   DIRECTOR_NODE,
   type HilRequest,
   type InboxItem,
+  InboxItemOptionsSchema,
   type KnowledgeItem,
   type Question,
   type Stream,
@@ -18,6 +19,7 @@ import {
   formatKnowledgeScope,
   inboxContext,
   inboxDetail,
+  isAgentRole,
   liveChildrenOf,
 } from '@agile-agents/shared';
 import type { AutonomyService } from '../coordination/autonomy';
@@ -47,7 +49,7 @@ export interface InboxServiceDeps {
   /** A proposed rule is a `rule_accept` item (§3.1). */
   rules?: KnowledgeService;
   /** T281: a draft plan is a `plan_approve` item (§9.1: approval at every level). */
-  plans?: Pick<PlanService, 'listDraft'>;
+  plans?: Pick<PlanService, 'listDraft'> & Partial<Pick<PlanService, 'waitingParts'>>;
   contracts?: Pick<ContractService, 'find'>;
   /** T282: a coordinator's change held at Advise is a `proposal` item with Apply. */
   proposals?: Pick<AutonomyService, 'listOpen'>;
@@ -94,12 +96,14 @@ export class InboxService {
       if (stream === undefined || stream.archived === true) continue;
       const titleOf = (id: string) => byId.get(id)?.title ?? id;
       // A revision reads as its change against the last approved version.
-      const was = new Map(plan.approved?.owners.map((o) => [o.child, o.owns.join(', ')]) ?? []);
+      // T341: paths are code on the card; a glob's `**` would otherwise render as bold.
+      const paths = (owns: readonly string[]) => owns.map((p) => `\`${p}\``).join(', ');
+      const was = new Map(plan.approved?.owners.map((o) => [o.child, paths(o.owns)]) ?? []);
       const owners = plan.owners.map((o) => {
-        const now = o.owns.length === 0 ? 'nothing' : o.owns.join(', ');
+        const now = o.owns.length === 0 ? 'nothing' : paths(o.owns);
         const before = was.get(o.child);
         const change =
-          plan.approved === undefined || before === o.owns.join(', ')
+          plan.approved === undefined || before === paths(o.owns)
             ? ''
             : ` (was ${before === undefined ? 'not in the plan' : before || 'nothing'})`;
         return `${titleOf(o.child)} owns ${now}${change}`;
@@ -121,6 +125,12 @@ export class InboxService {
         ...withDetail(text),
         ref: `plans/${stream.id}.yaml`,
       });
+    }
+    // T344: parts waiting for a plan no running coordinator will write.
+    const drafted = new Set(this.deps.plans?.listDraft().map((p) => p.node));
+    for (const stream of byId.values()) {
+      const item = this.planWaitingItem(stream, byId, drafted);
+      if (item) items.push(item);
     }
     for (const proposal of this.deps.proposals?.listOpen() ?? []) {
       // T302: a Director proposal sits on the node its change is about.
@@ -170,7 +180,10 @@ export class InboxService {
 
   private questionItem(question: Question, byId: Map<string, Stream>): InboxItem | undefined {
     const stream = byId.get(question.stream);
-    if (!stream) return undefined;
+    // T361: a deleted (archived) node's items leave with it; Restore brings them back.
+    if (!stream || stream.archived === true) return undefined;
+    // T361: the choices ride along when they fit a card (an RPC question may offer any).
+    const options = InboxItemOptionsSchema.safeParse(question.options);
     return {
       kind: 'question',
       id: question.id,
@@ -180,6 +193,7 @@ export class InboxService {
       context: inboxContext(question.text),
       ...withDetail(question.text),
       ref: `questions/${question.id}.yaml`,
+      ...(options.success ? { options: options.data } : {}),
     };
   }
 
@@ -209,20 +223,21 @@ export class InboxService {
           : 1,
     );
     const first = sorted[0] as KnowledgeItem;
-    const noun = sorted.length === 1 ? 'proposed rule' : 'proposed rules';
+    const noun = sorted.length === 1 ? 'proposed knowledge item' : 'proposed knowledge items';
+    const from = source === 'migration' ? 'imported from the old rules' : `from ${source}`;
     return {
       kind: 'rule_batch',
       id: source,
       stream_path: [],
       ts: first.created_at,
-      context: inboxContext(`${sorted.length} ${noun} from ${source}`),
+      context: inboxContext(`${sorted.length} ${noun} ${from}`),
       rules: sorted.map((rule) => rule.id),
     };
   }
 
   private gateItem(gate: HilRequest, byId: Map<string, Stream>): InboxItem | undefined {
     const stream = byId.get(gate.stream);
-    if (!stream) return undefined;
+    if (!stream || stream.archived === true) return undefined;
     return {
       kind: 'gate',
       id: gate.id,
@@ -233,6 +248,42 @@ export class InboxService {
       context: inboxContext(gateText(gate)),
       ...withDetail(gateText(gate)),
       ref: `gates/${gate.id}.yaml`,
+    };
+  }
+
+  /**
+   * T344: a coordinating node whose parts wait for its plan (T336) while no
+   * coordinator runs to write one (it ended its turn without a plan, or the
+   * human stopped it) and no plan waits on approval (that card replaces
+   * this one). Wake coordinator or Start parts anyway; derived, like the rest.
+   */
+  private planWaitingItem(
+    stream: Stream,
+    byId: Map<string, Stream>,
+    drafted: ReadonlySet<string>,
+  ): InboxItem | undefined {
+    const plans = this.deps.plans;
+    if (plans?.waitingParts === undefined || stream.archived === true) return undefined;
+    if (stream.human.status === 'closed' || stream.human.status === 'landed') return undefined;
+    // Only a node that has had a coordinator has parts waiting on it (`waitingForPlan`).
+    if (!stream.sessions.some((s) => s.role === 'coordinator')) return undefined;
+    if (drafted.has(stream.id) || !hasParts(stream.id, byId)) return undefined;
+    const live = stream.sessions.some(
+      (s) => isAgentRole(s.role) && s.status !== 'stopped' && s.status !== 'error',
+    );
+    if (live) return undefined;
+    const parts = plans.waitingParts(stream.id);
+    if (parts.length === 0) return undefined;
+    const titles = parts.map((p) => p.title).join(', ');
+    const text = `${titles} ${parts.length === 1 ? 'waits' : 'wait'} for the plan, and no coordinator is running to write it. Wake the coordinator, or start the ${parts.length === 1 ? 'part' : 'parts'} without a plan.`;
+    return {
+      kind: 'plan_waiting',
+      id: stream.id,
+      stream: stream.id,
+      stream_path: this.path(stream, byId),
+      ts: stream.agent.updated_at,
+      context: inboxContext(text),
+      ...withDetail(text),
     };
   }
 
@@ -249,6 +300,18 @@ export class InboxService {
     if (stream.agent.status === 'done' && (hasParts(stream.id, byId) || isProjectRoot(stream))) {
       return undefined;
     }
+    // T341: nor is a node whose PR is open: it merges on GitHub, and the page has no Merge.
+    if (stream.agent.status === 'done' && stream.delivery_state?.status === 'pr_open') {
+      return undefined;
+    }
+    // T341: nor is a conversation's (a project node with no repo): it answered; it has no branch.
+    if (
+      stream.agent.status === 'done' &&
+      stream.project !== undefined &&
+      stream.repo === undefined
+    ) {
+      return undefined;
+    }
     return {
       kind: stream.agent.status,
       id: stream.id,
@@ -258,14 +321,22 @@ export class InboxService {
       context: inboxContext(
         stream.agent.progress ??
           (stream.agent.status === 'done'
-            ? // Name both exits, so a stream you won't land has a way out.
-              'worker finished — land or close the stream'
-            : 'blocked'),
+            ? // Name both exits, so a node you won't merge has a way out.
+              DONE_TEXT
+            : BLOCKED_TEXT),
       ),
       ...(stream.agent.progress !== undefined ? withDetail(stream.agent.progress) : {}),
     };
   }
 }
+
+/** A finished agent's card when it left no progress line (the cockpit's words, design/cockpit-ui.md §2). */
+export const DONE_TEXT =
+  'The agent finished. Look over the changes, then merge — or close the node if you won’t.';
+
+/** A stuck agent's card when it left no progress line. */
+export const BLOCKED_TEXT =
+  'The agent is stuck and needs a hand. Open the node to see where it stopped.';
 
 /** Live children other than helpers: what makes a node coordinating (`nodeRole`). */
 function hasParts(id: string, byId: Map<string, Stream>): boolean {

@@ -26,6 +26,19 @@ export const SESSION_VENDORS = ['claude', 'gemini', 'cursor', 'grok', 'pi', 'cod
 export const SessionVendorSchema = z.enum(SESSION_VENDORS);
 export type SessionVendor = z.infer<typeof SessionVendorSchema>;
 
+/**
+ * T401 (D12): the vendors whose adapter maps an effort level to something
+ * (`ACP_PROVIDERS[v].effort`; a daemon test keeps the two in step). For any
+ * other the level is recorded but never sent ("effort … ignored by …"), so
+ * the cockpit leaves it out of labels.
+ */
+export const EFFORT_VENDORS: readonly SessionVendor[] = ['claude'];
+
+/** T401: whether `vendor` does anything with an effort level. */
+export function vendorTakesEffort(vendor: string): boolean {
+  return (EFFORT_VENDORS as readonly string[]).includes(vendor);
+}
+
 /** D17's step 4. */
 export const BUILTIN_SESSION_DEFAULTS = {
   vendor: 'claude',
@@ -98,13 +111,26 @@ export function resolveSessionDefaults(
   input: ResolveSessionDefaultsInput = {},
 ): ResolvedSessionDefaults {
   const { flags = {}, project, repo, home } = input;
-  const vendor =
-    firstDefined(flags.vendor, project?.vendor, repo?.vendor, home?.default_vendor) ??
+  // Most specific first; the built-in last.
+  const steps: Array<{ vendor?: string; model?: string }> = [
+    flags,
+    project ?? {},
+    repo ?? {},
+    { vendor: home?.default_vendor, model: home?.default_model },
+    BUILTIN_SESSION_DEFAULTS,
+  ];
+  // The vendor a step runs: its own, else what the steps below it say.
+  const vendorAt = (from: number): string =>
+    firstDefined(...steps.slice(from).map((step) => step.vendor)) ??
     BUILTIN_SESSION_DEFAULTS.vendor;
-  const named = firstDefined(flags.model, project?.model, repo?.model, home?.default_model);
-  const model =
-    named ??
-    (vendor === BUILTIN_SESSION_DEFAULTS.vendor ? BUILTIN_SESSION_DEFAULTS.model : undefined);
+  const vendor = vendorAt(0);
+  // T402 (D40): a model counts only where that step runs the same vendor, so a
+  // Claude model named in the home never reaches a repo set to Gemini.
+  const model = firstDefined(
+    ...steps.map((step, index) =>
+      step.model !== undefined && vendorAt(index) === vendor ? step.model : undefined,
+    ),
+  );
   // The flag is a raw string; the records are schema-checked already.
   const effortRaw = firstDefined(flags.effort, project?.effort, repo?.effort, home?.default_effort);
   const effort =

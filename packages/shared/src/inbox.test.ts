@@ -31,6 +31,7 @@ describe('InboxItemSchema', () => {
       'rule_accept',
       'rule_batch',
       'plan_approve',
+      'plan_waiting',
       'proposal',
       'blocked',
       'done',
@@ -60,6 +61,18 @@ describe('InboxItemSchema', () => {
     expect(streamless.success).toBe(true);
   });
 
+  test('T361: only a question item carries options, one line each, six at most', () => {
+    expect(validateInboxItem(item({ options: ['yes', 'no'] })).options).toEqual(['yes', 'no']);
+    expect(InboxItemSchema.safeParse(item({ options: ['only one'] })).success).toBe(true);
+    expect(InboxItemSchema.safeParse(item({ options: [] })).success).toBe(false);
+    expect(
+      InboxItemSchema.safeParse(item({ options: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] })).success,
+    ).toBe(false);
+    expect(InboxItemSchema.safeParse(item({ options: ['x'.repeat(201)] })).success).toBe(false);
+    const gate = item({ kind: 'gate', id: `HIL-${ulid()}`, options: ['approve'] });
+    expect(() => validateInboxItem(gate)).toThrow(/only a question item carries options/);
+  });
+
   test('context is one line, capped at the §3.2 budget', () => {
     expect(InboxItemSchema.safeParse(item({ context: 'x'.repeat(201) })).success).toBe(false);
     expect(inboxContext('a\n  long   question\n')).toBe('a long question');
@@ -77,6 +90,19 @@ describe('InboxItemSchema', () => {
     // A single word longer than the budget still gets a hard cut: there is
     // no boundary to find.
     expect(inboxContext('y'.repeat(400))).toBe(`${'y'.repeat(INBOX_CONTEXT_MAX_CHARS - 1)}…`);
+  });
+
+  // T341: a cut inside a code span closes the span.
+  test('context cut inside a code span closes it', () => {
+    const cut = inboxContext(
+      `${'word '.repeat(35)}\`{ "date": "YYYY-MM-DD", "amount": 1, "memo": "x" }\` end`,
+    );
+    expect(cut.length).toBeLessThanOrEqual(INBOX_CONTEXT_MAX_CHARS);
+    expect(cut.endsWith('`…')).toBe(true);
+    expect((cut.match(/`/g) ?? []).length % 2).toBe(0);
+    expect(inboxContext(`\`${'y'.repeat(400)}`)).toBe(
+      `\`${'y'.repeat(INBOX_CONTEXT_MAX_CHARS - 3)}\`…`,
+    );
   });
 
   // T161: a clipped card must be readable in full.

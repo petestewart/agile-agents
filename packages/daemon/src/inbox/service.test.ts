@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type Stream, ulid } from '@agile-agents/shared';
+import { type Stream, ulid, validateInboxItem } from '@agile-agents/shared';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { ProjectService } from '../projects/service';
@@ -91,6 +91,52 @@ describe('InboxService.list', () => {
     expect(items.find((i) => i.id === short.id)?.detail).toBeUndefined();
   });
 
+  test("T361: a question's choices ride on its card when they fit one", async () => {
+    const q = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'comma or semicolon?',
+      options: ['comma', 'semicolon'],
+    });
+    // Over RPC a question may offer anything; a card shows at most six short ones.
+    const many = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'which letter?',
+      options: ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+    });
+    const items = inbox.list();
+    expect(items.find((i) => i.id === q.id)?.options).toEqual(['comma', 'semicolon']);
+    expect(items.find((i) => i.id === many.id)?.options).toBeUndefined();
+    expect(items.every((i) => validateInboxItem(i).id === i.id)).toBe(true);
+  });
+
+  test("T361: a deleted node's question, gate and done item leave the inbox, and come back on restore", async () => {
+    const q = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'comma or semicolon?',
+    });
+    const gate = await gates.request('land', {
+      policy: { gates: { land: 'human' }, breaker_signals: [] },
+      stream: child.id,
+      summary: 'merge parser into main',
+    });
+    const other = await streams.create('human', { title: 'writer', goal: 'g', parent: root.id });
+    await streams.update('daemon', other.id, { agent: { status: 'done' } });
+    const ids = () => inbox.list().map((i) => i.id);
+    expect(ids()).toEqual(expect.arrayContaining([q.id, gate.id, other.id]));
+
+    await streams.archiveTree('human', child.id);
+    await streams.archiveTree('human', other.id);
+    expect(ids()).not.toContain(q.id);
+    expect(ids()).not.toContain(gate.id);
+    expect(ids()).not.toContain(other.id);
+
+    await streams.unarchiveTree('human', child.id);
+    expect(ids()).toEqual(expect.arrayContaining([q.id, gate.id]));
+  });
+
   test('a pending gate shows; a resolved one does not', async () => {
     const gate = await gates.request('land', {
       policy: { gates: { land: 'human' }, breaker_signals: [] },
@@ -111,6 +157,22 @@ describe('InboxService.list', () => {
 
     await streams.update('human', child.id, { human: { status: 'landed' } });
     expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
+  });
+
+  test('T371: with no progress line, a done or blocked card says what to do, in the cockpit’s words', async () => {
+    await streams.update('daemon', child.id, { agent: { status: 'done' } });
+    const done = inbox.list().find((i) => i.stream === child.id);
+    expect(done?.context).toBe(
+      'The agent finished. Look over the changes, then merge — or close the node if you won’t.',
+    );
+    await streams.update('daemon', child.id, { agent: { status: 'blocked' } });
+    const blocked = inbox.list().find((i) => i.stream === child.id);
+    expect(blocked?.context).toBe(
+      'The agent is stuck and needs a hand. Open the node to see where it stopped.',
+    );
+    // The agent's own last line wins over the stock one.
+    await streams.update('agent', child.id, { agent: { progress: 'need the API key' } });
+    expect(inbox.list().find((i) => i.stream === child.id)?.context).toBe('need the API key');
   });
 
   test('T336: a coordinating node whose coordinator finished is not "ready to land"', async () => {
@@ -134,6 +196,47 @@ describe('InboxService.list', () => {
     const project = await new ProjectService(store, streams).create({ name: 'Shop' });
     await streams.update('daemon', project.root, { agent: { status: 'done' } });
     expect(inbox.list().some((i) => i.stream === project.root)).toBe(false);
+  });
+
+  test('T341: a conversation that answered is not "ready to land" (it has no branch)', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const talk = await streams.create('human', {
+      title: 'Cents check',
+      goal: 'how are amounts stored?',
+      project: project.id,
+    });
+    await streams.update('daemon', talk.id, { agent: { status: 'done' } });
+    expect(inbox.list().some((i) => i.stream === talk.id)).toBe(false);
+    // Blocked still needs you.
+    await streams.update('daemon', talk.id, { agent: { status: 'blocked' } });
+    expect(inbox.list().find((i) => i.stream === talk.id)?.kind).toBe('blocked');
+  });
+
+  test('T341: a finished node whose PR is open is not "ready to land" (it merges on GitHub)', async () => {
+    const at = new Date().toISOString();
+    await streams.update('daemon', child.id, {
+      agent: { status: 'done' },
+      delivery_state: {
+        mode: 'pr',
+        status: 'pr_open',
+        at,
+        pr: {
+          number: 1,
+          url: 'https://github.com/o/r/pull/1',
+          head: 'stream/x',
+          base: 'main',
+          state: 'open',
+          draft: false,
+          review: 'none',
+          checks: 'pending',
+          mergeable: 'clean',
+          auto_merge: 'enabled',
+          last_seen: {},
+          polled_at: at,
+        },
+      },
+    });
+    expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
   });
 
   test('an answered question leaves the inbox', async () => {

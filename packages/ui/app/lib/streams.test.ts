@@ -7,13 +7,16 @@ import { describe, expect, test } from 'bun:test';
 import type { InboxItem, SessionRef } from '@agile-agents/shared';
 import type { CockpitStreamRow } from './feed-types';
 import {
+  activityDelivery,
   ancestorTitles,
   buildStreamTree,
+  cardDot,
   dependencyEdges,
   diffLineKind,
+  eventLabel,
+  eventTime,
   filterStreamRows,
   groupByRepo,
-  groupInbox,
   isLiveSession,
   isThinking,
   parseCollapsed,
@@ -21,6 +24,7 @@ import {
   rowsInProject,
   ruleHitOf,
   runningRows,
+  sessionRows,
   streamDot,
   subtreeNeedsYou,
   threadAuthorLabel,
@@ -50,6 +54,19 @@ describe('streamDot', () => {
 
   test('a finished worker with the human half open is the operator’s move', () => {
     expect(streamDot(row('a', { agent_status: 'done' }))).toBe('amber');
+  });
+
+  test('T341: a finished coordinator, root or project conversation has nothing to land', () => {
+    expect(streamDot(row('a', { agent_status: 'done', role: 'coordinating' }))).toBe('grey');
+    expect(streamDot(row('a', { agent_status: 'done', role: 'project', project: 'P-1' }))).toBe(
+      'grey',
+    );
+    expect(
+      streamDot(row('a', { agent_status: 'done', role: 'conversation', project: 'P-1' })),
+    ).toBe('grey');
+    expect(streamDot(row('a', { agent_status: 'done', pr_open: true }))).toBe('grey');
+    // A question still is the operator's move.
+    expect(streamDot(row('a', { agent_status: 'question', role: 'coordinating' }))).toBe('amber');
   });
 });
 
@@ -111,28 +128,6 @@ describe('filterStreamRows (T162)', () => {
   });
 });
 
-describe('groupInbox', () => {
-  const item = (id: string, stream: string | undefined, path: string[]): InboxItem => ({
-    kind: stream ? 'question' : 'rule_accept',
-    id,
-    ...(stream ? { stream } : {}),
-    stream_path: path,
-    ts: '2026-09-22T00:00:00.000Z',
-    context: id,
-  });
-
-  test('groups by stream in oldest-first order and labels by path', () => {
-    const groups = groupInbox([
-      item('Q-1', 'b', ['ledger', 'parser']),
-      item('R-1', undefined, []),
-      item('Q-2', 'a', ['ledger']),
-      item('Q-3', 'b', ['ledger', 'parser']),
-    ]);
-    expect(groups.map((g) => g.label)).toEqual(['ledger / parser', 'No stream', 'ledger']);
-    expect(groups[0]?.items.map((i) => i.id)).toEqual(['Q-1', 'Q-3']);
-  });
-});
-
 describe('stream page helpers (T161)', () => {
   const session = (
     id: string,
@@ -148,6 +143,20 @@ describe('stream page helpers (T161)', () => {
     expect(isThinking({ sessions: [session('a', 'lessons', 'running')] })).toBe(false);
     expect(isLiveSession({ status: 'idle' })).toBe(true);
     expect(isLiveSession({ status: 'stopped' })).toBe(false);
+  });
+
+  test('T350: two or more ended sessions fold into the earlier row; live ones always show', () => {
+    const ended = Array.from({ length: 8 }, (_, i) => session(`e${i}`, 'coordinator', 'stopped'));
+    const live = session('live', 'coordinator', 'running');
+    const rows = sessionRows([...ended.slice(0, 4), live, ...ended.slice(4)]);
+    expect(rows.shown.map((s) => s.id)).toEqual(['live']);
+    expect(rows.earlier.map((s) => s.id)).toEqual(ended.map((s) => s.id));
+    // Nothing live: every ended session is behind the one row.
+    expect(sessionRows(ended)).toEqual({ shown: [], earlier: ended });
+    // A lone ended session stays on show, beside any live one.
+    const one = session('err', 'worker', 'error');
+    expect(sessionRows([one, live])).toEqual({ shown: [one, live], earlier: [] });
+    expect(sessionRows([])).toEqual({ shown: [], earlier: [] });
   });
 
   test('thread authors read as you, daemon, or the session role and vendor', () => {
@@ -246,5 +255,59 @@ describe('repo view and lenses (T209)', () => {
       ['B', 'A'],
       ['B', 'GONE'],
     ]);
+  });
+});
+
+describe('T341: an Activity row reads without raw ids', () => {
+  const sessions = [
+    { id: '01ARZ3NDEKTSV4RRFFQ69GE001', role: 'worker' as const },
+    { id: '01ARZ3NDEKTSV4RRFFQ69GE002', role: 'coordinator' as const },
+  ];
+  test('the session by its role, a digest as a word', () => {
+    expect(
+      activityDelivery(
+        { status: 'delivered', session: '01ARZ3NDEKTSV4RRFFQ69GE002', digest: 'D-1' },
+        sessions,
+      ),
+    ).toBe('delivered to the coordinator session in a digest');
+    expect(
+      activityDelivery({ status: 'delivered', session: '01ARZ3NDEKTSV4RRFFQ69GE001' }, sessions),
+    ).toBe('delivered to the worker session');
+    expect(activityDelivery({ status: 'pending' }, sessions)).toBe('pending');
+    expect(activityDelivery({ status: 'delivered', session: 'gone' }, sessions)).toBe(
+      'delivered to the agent session',
+    );
+    expect(activityDelivery({ status: 'delivered', session: 'x' }, [], 'Director')).toBe(
+      'delivered to the Director session',
+    );
+  });
+  test('the time to the minute, in local time', () => {
+    // Built from local fields, so it holds in any time zone.
+    expect(eventTime(new Date(2026, 8, 25, 15, 6, 6, 920).toISOString())).toBe('2026-09-25 15:06');
+    expect(eventTime(new Date(2026, 0, 3, 4, 5).toISOString())).toBe('2026-01-03 04:05');
+    expect(eventTime('not a time')).toBe('not a time');
+  });
+});
+
+describe('eventLabel (T347, D36 D5)', () => {
+  test('a direct merge reads "merged"; a PR merge "pr merged"; other types in words', () => {
+    expect(eventLabel({ type: 'pr_merged', payload: { repo: 'api', sha: 'abc' } })).toBe('merged');
+    expect(eventLabel({ type: 'pr_merged', payload: { pr: 2, repo: 'api', sha: 'abc' } })).toBe(
+      'pr merged',
+    );
+    expect(eventLabel({ type: 'child_status', payload: {} })).toBe('child status');
+  });
+});
+
+describe('cardDot (T349)', () => {
+  test("a child waiting on your answer wears the rail's needs-you amber", () => {
+    expect(cardDot('question')).toBe('amber');
+    expect(cardDot('question')).toBe(streamDot({ agent_status: 'question', human_status: 'open' }));
+  });
+
+  test('a real block and every other state keep the plain label', () => {
+    for (const state of ['blocked', 'working', 'done', 'idle'] as const) {
+      expect(cardDot(state)).toBeUndefined();
+    }
   });
 });

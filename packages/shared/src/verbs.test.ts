@@ -80,6 +80,23 @@ describe('agent verbs', () => {
     }
   });
 
+  test('T361: ask may offer 2–6 one-line choices', () => {
+    const ask = (options: unknown) =>
+      AGENT_VERB_SCHEMAS.ask.safeParse({ session, text: 'which?', options });
+    expect(
+      validateVerbInput('ask', { session, text: 'which?', options: [' a ', 'b'] }).options,
+    ).toEqual(['a', 'b']);
+    expect(ask(['a', 'b', 'c', 'd', 'e', 'f']).success).toBe(true);
+    expect(ask(['a']).success).toBe(false);
+    expect(ask(['a', 'b', 'c', 'd', 'e', 'f', 'g']).success).toBe(false);
+    expect(ask(['a', '  ']).success).toBe(false);
+    expect(ask(['a', 'x'.repeat(201)]).success).toBe(false);
+    expect(ask(['a', 'x'.repeat(200)]).success).toBe(true);
+    // The MCP bridge publishes the shape to the model, so `ask` stays a plain object.
+    expect(Object.keys(AGENT_VERB_SCHEMAS.ask.shape)).toEqual(['session', 'text', 'options']);
+    expect(AGENT_VERB_DESCRIPTIONS.ask).toContain('options');
+  });
+
   test('validate real inputs and refuse unknown keys', () => {
     expect(validateVerbInput('ask', { session, text: 'which target branch?' }).text).toBe(
       'which target branch?',

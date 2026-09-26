@@ -1,127 +1,120 @@
 /**
- * The stream page (design/cockpit-design.md §9.3, T161) — opened from the
- * stream tree or an inbox card's "Open stream".
+ * A node's page (T161, redesigned in T363 — design/cockpit-ui.md §1.3, §3,
+ * §7): a conversation with its agent.
  *
- *  - **Needs you** — this stream's open questions, gates and proposed
- *    rules as inbox cards with their *full* text (the inbox clips at 200
- *    chars, §3.2), answerable here exactly as in the inbox.
- *  - **Sessions strip** — vendor/model/role/status per session, with
- *    Start/Restart (a worker), Review (a reviewer) and Stop.
- *  - **Thread** — the spine: every line, markdown, live (re-read on every
- *    pushed cockpit frame), with a thinking indicator while a session is
- *    mid-turn; the composer under it writes a human line and, when a
- *    worker is attached, prompts it too.
- *  - **Diff / Rules / Docs** tabs — the worktree diff against the landing
- *    target, exactly `rulesInScope(stream)`, and the repo + stream docs.
- *  - **Delivery** (§14.7, direct path; was Land) — the `delivery_state`, the "before" (would `land` refuse right now, and which
- *    diff-stage rules it checks) and the "after" (the outcome line, or the
- *    refusal's reason, shown on the page).
+ *  - **Header** (`NodeHeader`): path, title, status in words, role, repo and
+ *    branch; one primary action by state (Start agent, Stop, Merge), the
+ *    details toggle and the ⋯ menu with everything else.
+ *  - **Overview** (T387, a project's root only, and its first tab): the
+ *    project at a glance (`ProjectOverview`).
+ *  - **Chat** (any other node's first tab): the goal, the thread as a conversation,
+ *    "<Agent> is working…", then whatever needs you on this node (questions,
+ *    gates, plans, proposals, proposed knowledge) as decision cards right
+ *    above the composer. With a question open the composer answers it.
+ *    Sending to a node whose agent isn't running starts it (T361).
+ *  - **Changes / Plan / Activity / Knowledge / Docs** — only where they apply.
+ *  - **Details** (`NodeDetails`, a panel on the right): Delivery, Agent,
+ *    Children, Waits on, Tracker, Coordinator, Project, Findings, About.
+ *
+ * The chat pieces (`Chat.tsx`, `Composer.tsx`) know nothing about streams,
+ * so the Director reuses them.
  */
 
-import {
-  type Autonomy,
-  type InboxItem,
-  formatKnowledgeScope,
-  isAgentRole,
-} from '@agile-agents/shared';
+import { type InboxItem, type SessionDefaultsStatus, isAgentRole } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   type RepoRow,
   addRepoToStream,
-  approvePlan,
+  answerQuestion,
+  archiveStream,
   attachSession,
-  checkStreamPr,
   closeStream,
-  createNodeIssue,
-  getStreamActivity,
-  getStreamDiff,
+  createStream,
+  getSessionDefaults,
   getStreamPage,
-  getStreamPlan,
-  importChildren,
-  landStream,
-  linkNode,
   listRepos,
-  markStreamLanded,
   resolveConflict,
   sayOnStream,
-  setNodeAutonomy,
-  setProjectAutonomy,
-  setProjectTracker,
   stopSessions,
+  unarchiveStream,
+  updateStream,
   waitOnStream,
 } from '../lib/api';
+import {
+  type NodeTab,
+  agentLabel,
+  agentName,
+  agentStateText,
+  answerTarget,
+  chatAuthor,
+  chatVariant,
+  detailsOpenFrom,
+  headerActions,
+  liveAgentOf,
+  nodeTabs,
+  oneLine,
+  openQuestions,
+  sendIntent,
+  vendorLabel,
+  workingAs,
+} from '../lib/chat';
+import { resolvedFor } from '../lib/defaults';
 import { useFeed } from '../lib/feed-context';
-import type {
-  ActivityEntry,
-  CockpitCardError,
-  CockpitProjectRow,
-  CockpitStatusCard,
-  LandOutcome,
-  StreamDiff,
-  StreamPagePayload,
-} from '../lib/feed-types';
+import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
+import { appendToDraft, roomAfter, useReview } from '../lib/review';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
-import {
-  DOT_LABEL,
-  diffLineKind,
-  isLiveSession,
-  isThinking,
-  ruleHitOf,
-  streamDot,
-  threadAuthorLabel,
-} from '../lib/streams';
+import type { StatusInput } from '../lib/status';
+import { groupSteps, turnStartedAt } from '../lib/steps';
+import { isLiveSession, isThinking } from '../lib/streams';
+import { ChatScroll, MessageList, StepsFold, Thinking, useSteps } from './Chat';
+import { Composer, type ComposerHandle } from './Composer';
+import { DeliveryPanel, isMergeable, outcomeTone, useDelivery } from './Delivery';
+import { TabBoundary, lazyNamed } from './ErrorBoundary';
+import { Icon } from './Icon';
 import { Card } from './Inbox';
-import { Linked, Markdown } from './Markdown';
-import { SessionPicker, sessionModelText } from './SessionPicker';
+import { Markdown } from './Markdown';
+import {
+  AboutSection,
+  AgentSection,
+  AutonomySection,
+  ChildCards,
+  DetailsPanel,
+  FindingsSection,
+  ProjectSection,
+  TrackerSection,
+  WaitsOnSection,
+} from './NodeDetails';
+import { type Crumb, NodeHeader } from './NodeHeader';
+import { ActivityView, DocsView, KnowledgeView, PlanView } from './NodeViews';
+import { SessionPicker } from './SessionPicker';
+import {
+  Button,
+  ConfirmDialog,
+  Dialog,
+  EmptyState,
+  Field,
+  IconButton,
+  Menu,
+  type MenuItem,
+  Tabs,
+  useCopy,
+  useToast,
+} from './ui';
 
-type Tab = 'thread' | 'diff' | 'activity' | 'plan' | 'rules' | 'docs';
-const TABS: ReadonlyArray<{ tab: Tab; label: string }> = [
-  { tab: 'thread', label: 'Thread' },
-  { tab: 'diff', label: 'Diff' },
-  { tab: 'activity', label: 'Activity' },
-  { tab: 'plan', label: 'Plan' },
-  { tab: 'rules', label: 'Knowledge in scope' },
-  { tab: 'docs', label: 'Docs' },
-];
+// T394: loaded on demand; a throw in any tab stays in that tab (`TabBoundary`).
+const DiffView = lazyNamed(() => import('./DiffView'), 'DiffView');
+const ProjectOverview = lazyNamed(() => import('./ProjectOverview'), 'ProjectOverview');
 
-/** Decision cards only: `blocked`/`done` are this page's own status and Land button. */
-function needsYou(items: readonly InboxItem[], stream: string): InboxItem[] {
+// The Director (and older imports) read these from here.
+export { THREAD_COLLAPSE_LINES, ThreadBody, isLongThreadBody } from './Chat';
+
+/** Decision cards only: `blocked`/`done` are this page's own status and Merge button. */
+function needsYou(items: readonly InboxItem[], stream: string, noChanges = false): InboxItem[] {
+  // The header has Merge; T380: with nothing to merge, the card's Close is the move.
   return items.filter(
-    (item) => item.stream === stream && item.kind !== 'blocked' && item.kind !== 'done',
-  );
-}
-
-/** T330: past ~12 lines a thread entry renders collapsed, with a Show more / Show less toggle. */
-export const THREAD_COLLAPSE_LINES = 12;
-
-/** Long enough to collapse: more than 12 source lines, or ~12 wrapped lines of prose. */
-export function isLongThreadBody(body: string): boolean {
-  return (
-    body.split('\n').length > THREAD_COLLAPSE_LINES || body.length > THREAD_COLLAPSE_LINES * 100
-  );
-}
-
-export function ThreadBody({ body }: { body: string }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  if (!isLongThreadBody(body)) return <Markdown text={body} />;
-  return (
-    <>
-      <Markdown
-        text={body}
-        className={expanded ? undefined : 'cr-collapsed'}
-        testId="thread-body"
-      />
-      <button
-        type="button"
-        className="cr-link"
-        data-testid="thread-expand"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((open) => !open)}
-      >
-        {expanded ? 'Show less' : 'Show more'}
-      </button>
-    </>
+    (item) =>
+      item.stream === stream && item.kind !== 'blocked' && (item.kind !== 'done' || noChanges),
   );
 }
 
@@ -139,817 +132,209 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** T338: a node by its title, as a link that opens its page (never the raw id). */
-function NodeLink({ id, titleOf }: { id: string; titleOf: (id: string) => string }): JSX.Element {
-  const { select } = useShell();
-  return (
-    <a
-      href={`#${id}`}
-      className="cr-ref"
-      data-node={id}
-      title={id}
-      onClick={(e) => {
-        e.preventDefault();
-        select(id);
-      }}
-    >
-      {titleOf(id)}
-    </a>
-  );
+const TAB_LABEL: Record<NodeTab, string> = {
+  overview: 'Overview',
+  thread: 'Chat',
+  diff: 'Changes',
+  plan: 'Plan',
+  activity: 'Activity',
+  rules: 'Knowledge',
+  docs: 'Docs',
+};
+
+const DETAILS_KEY = 'agile.node.details';
+
+/** The details panel's open state: remembered per viewer on a wide window, closed on a narrow one. */
+function useDetailsOpen(): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(() => {
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem(DETAILS_KEY);
+    } catch {
+      // Private mode or blocked storage: the default.
+    }
+    return detailsOpenFrom(stored, typeof window === 'undefined' ? 1440 : window.innerWidth);
+  });
+  const set = useCallback((next: boolean) => {
+    setOpen(next);
+    if (typeof window !== 'undefined' && window.innerWidth < 1200) return;
+    try {
+      localStorage.setItem(DETAILS_KEY, next ? 'open' : 'closed');
+    } catch {
+      // Not remembered; it still toggles.
+    }
+  }, []);
+  return [open, set];
 }
 
-/** T281 (§9.1): who owns what, the contracts between the children, and the draft's Approve. */
-function PlanView({
-  id,
-  tick,
-  onChanged,
-  titleOf,
-}: {
-  id: string;
-  tick: unknown;
-  onChanged: () => void;
-  titleOf: (id: string) => string;
-}): JSX.Element {
-  const [data, setData] = useState<Awaited<ReturnType<typeof getStreamPlan>> | undefined>();
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [busy, setBusy] = useState(false);
-  const [seq, setSeq] = useState(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` and `seq` are re-read triggers.
-  useEffect(() => {
-    let live = true;
-    getStreamPlan(id)
-      .then((r) => live && setData(r))
-      .catch((err: unknown) => live && setError(errorText(err)));
-    return () => {
-      live = false;
-    };
-  }, [id, tick, seq]);
-  if (error) return <p className="cr-dim">{error}</p>;
-  if (!data) return <p className="cr-dim">Loading…</p>;
-  const { plan, contracts } = data;
-  if (!plan && contracts.length === 0) {
-    return (
-      <p className="cr-dim" data-testid="plan-empty">
-        No plan yet — the coordinator writes one when it splits the work.
-      </p>
-    );
-  }
+type Picker = 'start' | 'restart' | 'reviewer' | 'resolve';
+type Modal = 'repo' | 'wait' | 'close' | 'delete';
+
+function PageSkeleton(): JSX.Element {
   return (
-    <section className="cr-docs cr-plan" data-testid="plan">
-      {plan && (
-        <p data-testid="plan-status" data-status={plan.status}>
-          Plan v{plan.version} · {plan.status}
-          {plan.approved_by ? ` by ${plan.approved_by}` : ''}{' '}
-          {plan.status === 'draft' && (
-            <button
-              type="button"
-              className="cr-btn signal"
-              data-testid="plan-tab-approve"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                approvePlan(id)
-                  .catch((err: unknown) => setError(errorText(err)))
-                  .finally(() => {
-                    setBusy(false);
-                    setSeq((n) => n + 1);
-                    onChanged();
-                  });
-              }}
-            >
-              Approve
-            </button>
-          )}
-        </p>
-      )}
-      {plan && (
-        <>
-          <h3>Owners</h3>
-          <ul data-testid="plan-owners">
-            {plan.owners.map((o) => (
-              <li key={o.child} data-testid="plan-owner" data-child={o.child}>
-                <NodeLink id={o.child} titleOf={titleOf} />
-                {': '}
-                {o.owns.length === 0 ? (
-                  'nothing'
-                ) : (
-                  <code data-testid="plan-owner-paths">{o.owns.join(', ')}</code>
-                )}
-                {plan.status === 'draft' && plan.approved
-                  ? (() => {
-                      const before = plan.approved.owners.find((a) => a.child === o.child);
-                      const same = before?.owns.join(', ') === o.owns.join(', ');
-                      return same ? null : (
-                        <span className="cr-dim" data-testid="plan-owner-was">
-                          {' '}
-                          (approved v{plan.approved.version}:{' '}
-                          {before ? before.owns.join(', ') || 'nothing' : 'not in the plan'})
-                        </span>
-                      );
-                    })()
-                  : null}
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-      <ul data-testid="contracts">
-        {contracts.map((c) => (
-          <li key={c.id} data-testid="contract" data-contract={c.id}>
-            <h3>
-              Contract: <span data-testid="contract-title">{c.title}</span>{' '}
-              <span className="cr-dim">v{c.version}</span>
-            </h3>
-            <p className="cr-dim" data-testid="contract-parties">
-              Parties:{' '}
-              {c.parties.length === 0
-                ? 'none'
-                : c.parties.map((p, i) => (
-                    <span key={p}>
-                      {i > 0 ? ', ' : ''}
-                      <NodeLink id={p} titleOf={titleOf} />
-                    </span>
-                  ))}
-            </p>
-            <Markdown text={c.body} />
-          </li>
-        ))}
-      </ul>
+    <section className="cr-node" data-testid="stream-page" aria-busy="true">
+      <div className="cr-node-main">
+        <div className="cr-node-hd">
+          <div className="cr-skel" style={{ width: 140, height: 10 }} />
+          <div className="cr-skel" style={{ width: 280, height: 20, marginTop: 10 }} />
+          <div className="cr-skel" style={{ width: 220, height: 10, marginTop: 10 }} />
+        </div>
+        <div className="cr-chat">
+          <div className="cr-chat-col cr-skel-chat">
+            <div className="cr-skel" style={{ width: '60%', height: 44 }} />
+            <div className="cr-skel" style={{ width: '45%', height: 32, alignSelf: 'flex-end' }} />
+            <div className="cr-skel" style={{ width: '75%', height: 64 }} />
+          </div>
+        </div>
+      </div>
     </section>
   );
 }
 
-/** T245: what woke this node and why — every routed event, its reason, and what carried it. */
-function ActivityView({ id, tick }: { id: string; tick: unknown }): JSX.Element {
-  const [rows, setRows] = useState<ActivityEntry[] | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` (the pushed frame) is the re-read trigger.
-  useEffect(() => {
-    let live = true;
-    getStreamActivity(id)
-      .then((r) => live && setRows(r))
-      .catch((err: unknown) => live && setError(errorText(err)));
-    return () => {
-      live = false;
-    };
-  }, [id, tick]);
-  if (error) return <p className="cr-dim">{error}</p>;
-  if (!rows) return <p className="cr-dim">Loading…</p>;
-  if (rows.length === 0)
-    return (
-      <p className="cr-dim" data-testid="activity-empty">
-        No events routed here yet.
-      </p>
-    );
-  return (
-    <ul className="cr-docs" data-testid="activity">
-      {rows.map((row) => (
-        <li key={row.event.id} data-testid="activity-row" data-event={row.event.id}>
-          <span data-testid="activity-type">{row.event.type.replace(/_/g, ' ')}</span>
-          {row.event.repo ? <span className="cr-dim"> · {row.event.repo}</span> : null}
-          <span className="cr-dim"> · </span>
-          <span className="cr-dim" data-testid="activity-because">
-            {row.because.replace(/_/g, ' ')}
-          </span>
-          <span className="cr-dim" data-testid="activity-status">
-            {' '}
-            · {row.status}
-            {row.session ? ` in session ${row.session}` : ''}
-            {row.digest ? ` in digest ${row.digest}` : ''}
-          </span>
-          <span className="cr-dim"> · {row.event.at}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function DiffView({ id }: { id: string }): JSX.Element {
-  const [diff, setDiff] = useState<StreamDiff | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    let live = true;
-    getStreamDiff(id)
-      .then((d) => live && setDiff(d))
-      .catch((err: unknown) => live && setError(errorText(err)));
-    return () => {
-      live = false;
-    };
-  }, [id]);
-  if (error)
-    return (
-      <p className="cr-dim" data-testid="diff-empty">
-        {error}
-      </p>
-    );
-  if (!diff) return <p className="cr-dim">Loading…</p>;
-  return (
-    <div data-testid="diff">
-      <p className="cr-dim">
-        {diff.branch} against {diff.target}
-        {diff.worktree ? ` · ${diff.worktree}` : ''} ·{' '}
-        {diff.stat.split('\n').pop()?.trim() || 'no changes'}
-      </p>
-      {diff.patch ? (
-        <pre className="cr-diff">
-          {diff.patch.split('\n').map((line, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: a patch's lines are positional and never reordered.
-            <span key={i} data-line={diffLineKind(line)}>
-              {line}
-              {'\n'}
-            </span>
-          ))}
-        </pre>
-      ) : (
-        <p className="cr-dim">No changes yet.</p>
-      )}
-      {diff.truncated && <p className="cr-dim">Truncated — the patch is over the page's cap.</p>}
-    </div>
-  );
-}
-
-/** T340: a PR url is GitHub data; it is a link only when it is http(s). */
-function isWebUrl(url: string): boolean {
-  try {
-    const { protocol } = new URL(url);
-    return protocol === 'http:' || protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-/** T338: how a delivery result reads: a pushed PR is a success, a gate is news, not an error. */
-const OUTCOME_TONE: Record<LandOutcome['status'], 'ok' | 'info' | 'bad'> = {
-  landed: 'ok',
-  pr_open: 'ok',
-  gated: 'info',
-  refused: 'bad',
-  blocked: 'bad',
-};
-
-function LandPanel({
-  page,
-  onChanged,
-  onResolve,
+/**
+ * The node's goal, at the head of its conversation (long goals fold).
+ * T385: Edit changes it in place; the agent reads the change on its thread.
+ */
+function GoalCard({
+  goal,
+  onSave,
 }: {
-  page: StreamPagePayload;
-  onChanged: () => void;
-  /** T176: opens the session picker for a Resolve worker. */
-  onResolve: () => void;
-}): JSX.Element | null {
+  goal: string;
+  onSave?: (goal: string) => Promise<void>;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
-  const [outcome, setOutcome] = useState<LandOutcome | undefined>(undefined);
-  const [refused, setRefused] = useState<string | undefined>(undefined);
-  const { stream, land } = page;
-  if (stream.repo === undefined) return null;
-  const finished = stream.human.status === 'landed' || stream.human.status === 'closed';
-  // T176: a failed land's own line replaces the preflight, never "Ready" beside it.
-  const failed =
-    refused !== undefined || (outcome !== undefined && OUTCOME_TONE[outcome.status] === 'bad');
-  const pr = stream.delivery_state?.pr;
-  const conflicts = land?.conflicts;
-  // T340 (§4.1, P19): with a PR open the merge happens on GitHub; the panel shows the PR, not Merge.
-  const openPr =
-    stream.delivery_state?.mode === 'pr' && stream.delivery_state.pr?.state === 'open'
-      ? stream.delivery_state.pr
-      : undefined;
-
-  async function doCheckPr(): Promise<void> {
-    setBusy(true);
-    setOutcome(undefined);
-    setRefused(undefined);
-    try {
-      await checkStreamPr(stream.id);
-    } catch (err) {
-      setRefused(errorText(err));
-    } finally {
-      setBusy(false);
-      onChanged();
+  const [error, setError] = useState<string | undefined>(undefined);
+  const long = goal.split('\n').length > 8 || goal.length > 700;
+  const editing = draft !== undefined;
+  const save = (): void => {
+    const next = (draft ?? '').trim();
+    if (!onSave || busy) return;
+    if (next === '' || next === goal.trim()) {
+      setDraft(undefined);
+      return;
     }
-  }
-
-  async function doMarkLanded(): Promise<void> {
     setBusy(true);
-    setRefused(undefined);
-    try {
-      await markStreamLanded(stream.id);
-    } catch (err) {
-      setRefused(errorText(err));
-    } finally {
-      setBusy(false);
-      onChanged();
-    }
-  }
-
-  async function doLand(): Promise<void> {
-    setBusy(true);
-    setOutcome(undefined);
-    setRefused(undefined);
-    try {
-      setOutcome(await landStream(stream.id));
-    } catch (err) {
-      setRefused(errorText(err));
-    } finally {
-      setBusy(false);
-      onChanged();
-    }
-  }
-
+    setError(undefined);
+    onSave(next)
+      .then(() => setDraft(undefined))
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBusy(false));
+  };
   return (
-    <section className="cr-land" data-testid="land-panel">
-      <div className="cr-land-hd">
-        <h2>Delivery</h2>
-        {!finished && land?.merged && (
+    <div
+      className="cr-goal-card"
+      data-testid="goal-card"
+      data-folded={long && !open && !editing ? 'true' : undefined}
+      data-editing={editing ? 'true' : undefined}
+    >
+      <div className="cr-goal-label">
+        <Icon name="scroll-text" size={13} />
+        Goal
+        {onSave && !editing && (
           <button
             type="button"
-            className="cr-btn signal"
-            data-testid="stream-mark-landed"
-            disabled={busy}
-            onClick={() => void doMarkLanded()}
+            className="cr-goal-edit"
+            data-testid="goal-edit"
+            title="Edit the goal"
+            onClick={() => setDraft(goal)}
           >
-            Mark landed
-          </button>
-        )}
-        {!finished && openPr && (
-          <button
-            type="button"
-            className="cr-btn"
-            data-testid="stream-pr-check"
-            disabled={busy}
-            onClick={() => void doCheckPr()}
-          >
-            {busy ? 'Checking…' : 'Check now'}
-          </button>
-        )}
-        {!finished && !land?.merged && !openPr && (
-          <button
-            type="button"
-            className="cr-btn signal"
-            data-testid="stream-land"
-            disabled={busy}
-            onClick={() => void doLand()}
-          >
-            {busy ? 'Merging…' : 'Merge'}
+            <Icon name="pencil" size={12} />
+            Edit
           </button>
         )}
       </div>
-      {stream.human.status === 'landed' ? (
-        <p data-testid="land-before" data-ready="landed">
-          Landed.
-        </p>
-      ) : conflicts && conflicts.length > 0 ? (
-        <div data-testid="land-conflict">
-          <p data-testid="land-before" data-ready="conflict">
-            Conflict: landing into {land?.target ?? 'the target'} conflicted in {conflicts.length}{' '}
-            file{conflicts.length === 1 ? '' : 's'}. Resolve attaches a worker to merge the target
-            in and fix them; then land again.
-          </p>
-          <ul>
-            {conflicts.map((file) => (
-              <li key={file} data-testid="land-conflict-file">
-                <code>{file}</code>
-              </li>
-            ))}
-          </ul>
-          <button
-            type="button"
-            className="cr-btn"
-            data-testid="stream-resolve"
-            disabled={
-              busy || page.stream.sessions.some((s) => s.role === 'worker' && isLiveSession(s))
-            }
-            onClick={onResolve}
-          >
-            Resolve
-          </button>
-        </div>
-      ) : failed ? null : openPr ? (
-        <p data-testid="land-before" data-ready="pr">
-          PR #{openPr.number} into {openPr.base}:{' '}
-          {openPr.review === 'none' ? 'no review' : openPr.review.replace('_', ' ')} · CI{' '}
-          {openPr.checks} · auto-merge {openPr.auto_merge}. It merges on GitHub.{' '}
-          {isWebUrl(openPr.url) ? (
-            <a data-testid="stream-pr-link" href={openPr.url} target="_blank" rel="noreferrer">
-              Open PR
-            </a>
-          ) : (
-            <span data-testid="stream-pr-link">{openPr.url}</span>
-          )}
-        </p>
-      ) : land?.merged ? (
-        <p data-testid="land-before" data-ready="merged">
-          Already merged into {land.target}.
-        </p>
-      ) : land ? (
-        <p data-testid="land-before" data-ready={land.ready ? 'yes' : 'no'}>
-          {land.ready
-            ? `Ready: ${land.branch} is ${land.ahead} commit${land.ahead === 1 ? '' : 's'} ahead of ${land.target}${
-                land.gated ? ' — this repo asks for a land gate' : ''
-              }.`
-            : `Not landable yet: ${land.reason}`}
-        </p>
-      ) : null}
-      {stream.delivery_state && (
-        <p
-          className="cr-dim"
-          data-testid="delivery-state"
-          data-status={stream.delivery_state.status}
+      {editing ? (
+        <form
+          className="cr-goal-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save();
+          }}
         >
-          Delivery: {stream.delivery_state.mode} · {stream.delivery_state.status.replace('_', ' ')}
-          {stream.delivery_state.held_by?.map((h) => (
-            <span key={`${h.reason}:${h.detail}`}>
-              {' — '}
-              <Linked text={h.detail} />
-            </span>
-          ))}
-        </p>
+          <textarea
+            className="cr-goal-input"
+            data-testid="goal-input"
+            aria-label="Goal"
+            value={draft}
+            rows={Math.min(12, Math.max(3, draft.split('\n').length + 1))}
+            // biome-ignore lint/a11y/noAutofocus: the user just asked to edit it.
+            autoFocus
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setDraft(undefined);
+                setError(undefined);
+              } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                save();
+              }
+            }}
+          />
+          {error && <p className="cr-field-error">{error}</p>}
+          <div className="cr-goal-actions">
+            <span className="cr-goal-hint">The agent reads the new goal on its next turn.</span>
+            <Button size="sm" variant="ghost" onClick={() => setDraft(undefined)}>
+              Cancel
+            </Button>
+            <Button size="sm" variant="primary" type="submit" busy={busy} data-testid="goal-save">
+              Save goal
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <Markdown className="cr-goal" text={goal} />
       )}
-      {pr && (
-        <p className="cr-dim" data-testid="delivery-pr" data-state={pr.state}>
-          {isWebUrl(pr.url) ? (
-            <a
-              href={pr.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              data-testid="delivery-pr-link"
-            >
-              PR #{pr.number}
-            </a>
-          ) : (
-            <span data-testid="delivery-pr-link">PR #{pr.number}</span>
-          )}{' '}
-          {pr.state}
-          {pr.draft ? ' (draft)' : ''} · review {pr.review.replace(/_/g, ' ')} · checks {pr.checks}{' '}
-          · auto-merge {pr.auto_merge}
-          {pr.mergeable !== 'clean' && pr.mergeable !== 'unknown' ? ` · ${pr.mergeable}` : ''}
-        </p>
-      )}
-      <p className="cr-dim" data-testid="land-diff-rules">
-        {page.diff_rules.length === 0
-          ? 'No diff-stage rules in scope.'
-          : `Ship check rules: ${page.diff_rules.join(', ')}`}
-      </p>
-      {outcome && !(conflicts && conflicts.length > 0) && (
-        <p
-          className={`cr-land-result ${OUTCOME_TONE[outcome.status]}`}
-          data-testid="land-result"
-          data-status={outcome.status}
-          aria-live="polite"
-        >
-          <Linked text={outcome.line} />
-        </p>
-      )}
-      {refused && (
-        <p
-          className="cr-land-result bad"
-          data-testid="land-result"
-          data-status="refused"
-          role="alert"
-        >
-          {openPr ? 'Check failed' : 'Land refused'}: {refused}
-        </p>
-      )}
-    </section>
-  );
-}
-
-/** T321 (§10): the node's Jira/Linear link; linking sets the goal from the issue. */
-function TrackerLinkField({
-  stream,
-  rollup,
-  busy,
-  act,
-}: {
-  stream: StreamPagePayload['stream'];
-  rollup: StreamPagePayload['rollup'];
-  busy: boolean;
-  act: (fn: () => Promise<unknown>) => Promise<void> | void;
-}): JSX.Element {
-  const [key, setKey] = useState('');
-  const link = stream.external_link;
-  if (link !== undefined) {
-    return (
-      <p className="cr-dim" data-testid="tracker-link">
-        Linked to{' '}
-        <a href={link.url} target="_blank" rel="noreferrer noopener">
-          {link.key}
-        </a>{' '}
-        ({link.system}){' '}
-        {rollup !== undefined && (
-          <span data-testid="tracker-rollup">
-            · {rollup.merged}/{rollup.total} merged{' '}
-          </span>
-        )}
+      {long && !editing && (
         <button
           type="button"
-          className="cr-btn"
-          data-testid="tracker-unlink"
-          disabled={busy}
-          onClick={() => void act(() => linkNode(stream.id, null))}
+          className="cr-fold"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
         >
-          Unlink
+          {open ? 'Show less' : 'Show all'}
+          <Icon name={open ? 'chevron-up' : 'chevron-down'} size={13} />
         </button>
-        {link.kind === 'epic' ? (
-          <>
-            {' '}
-            <button
-              type="button"
-              className="cr-btn"
-              data-testid="tracker-import-children"
-              disabled={busy}
-              onClick={() => void act(() => importChildren(stream.id))}
-            >
-              Import children
-            </button>
-          </>
-        ) : null}
-      </p>
-    );
-  }
-  return (
-    <form
-      className="cr-actions"
-      data-testid="tracker-link-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        const k = key.trim();
-        if (k) void act(() => linkNode(stream.id, k).then(() => setKey('')));
-      }}
-    >
-      <label className="cr-dim">
-        Link{' '}
-        <input
-          data-testid="tracker-link-input"
-          placeholder="SHOP-11"
-          value={key}
-          disabled={busy}
-          onChange={(e) => setKey(e.target.value)}
-        />
-      </label>
-      <button type="submit" className="cr-btn" disabled={busy || key.trim() === ''}>
-        Link
-      </button>
-      <button
-        type="button"
-        className="cr-btn"
-        data-testid="tracker-create-issue"
-        title="Create an issue from this node (type a project key like SHOP, or leave empty to use the linked parent's)"
-        disabled={busy || /-\d+$/.test(key.trim())}
-        onClick={() =>
-          void act(() => createNodeIssue(stream.id, key.trim() || undefined).then(() => setKey('')))
-        }
-      >
-        Create issue
-      </button>
-    </form>
-  );
-}
-
-const AUTONOMY_LEVELS = ['advise', 'organise', 'run'] as const;
-
-/**
- * T282 (§9 Autonomy): how far this node's coordinator acts on its own. On
- * a project root it sets the project's level; elsewhere it overrides it.
- */
-function AutonomyPicker({
-  stream,
-  project,
-  busy,
-  act,
-}: {
-  stream: StreamPagePayload['stream'];
-  project: CockpitProjectRow | undefined;
-  busy: boolean;
-  act: (fn: () => Promise<unknown>) => Promise<void> | void;
-}): JSX.Element | null {
-  if (project === undefined) return null;
-  const isRoot = project.root === stream.id;
-  const inherited = project.autonomy?.coordinator ?? 'advise';
-  const value = isRoot ? inherited : (stream.autonomy ?? 'inherit');
-  return (
-    <label className="cr-dim" data-testid="autonomy">
-      Coordinator autonomy{' '}
-      <select
-        data-testid="autonomy-select"
-        value={value}
-        disabled={busy}
-        onChange={(e) => {
-          const next = e.target.value;
-          void act(() =>
-            isRoot
-              ? setProjectAutonomy(project.id, { coordinator: next as Autonomy })
-              : setNodeAutonomy(stream.id, next === 'inherit' ? null : (next as Autonomy)),
-          );
-        }}
-      >
-        {!isRoot && <option value="inherit">inherit ({inherited})</option>}
-        {AUTONOMY_LEVELS.map((l) => (
-          <option key={l} value={l}>
-            {l}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-type StatusMapKey = 'in_progress' | 'in_review' | 'done';
-const STATUS_MAP_FIELDS: ReadonlyArray<{ key: StatusMapKey; label: string }> = [
-  { key: 'in_progress', label: 'In progress' },
-  { key: 'in_review', label: 'In review' },
-  { key: 'done', label: 'Done' },
-];
-
-/**
- * T338: a project's own controls, on its root node's page: the Director's
- * autonomy level (§12) and the tracker block (§10: system, push status,
- * status map). Credentials stay in Settings → Trackers.
- */
-function ProjectControls({
-  project,
-  busy,
-  act,
-}: {
-  project: CockpitProjectRow;
-  busy: boolean;
-  act: (fn: () => Promise<unknown>) => Promise<void> | void;
-}): JSX.Element {
-  const tracker = project.tracker;
-  const [system, setSystem] = useState<'' | 'jira' | 'linear'>(tracker?.system ?? '');
-  const [push, setPush] = useState(tracker?.push_status ?? false);
-  const [map, setMap] = useState<Record<StatusMapKey, string>>({
-    in_progress: tracker?.status_map?.in_progress ?? '',
-    in_review: tracker?.status_map?.in_review ?? '',
-    done: tracker?.status_map?.done ?? '',
-  });
-  function save(): void {
-    if (system === '') {
-      void act(() => setProjectTracker(project.id, null));
-      return;
-    }
-    const statusMap = Object.fromEntries(
-      STATUS_MAP_FIELDS.map((f) => [f.key, map[f.key].trim()]).filter(([, v]) => v !== ''),
-    );
-    void act(() =>
-      setProjectTracker(project.id, {
-        system,
-        ...(tracker?.base_url !== undefined ? { base_url: tracker.base_url } : {}),
-        push_status: push,
-        ...(Object.keys(statusMap).length > 0 ? { status_map: statusMap } : {}),
-      }),
-    );
-  }
-  return (
-    <div className="cr-project-controls" data-testid="project-controls">
-      <label className="cr-dim">
-        Director autonomy{' '}
-        <select
-          data-testid="director-autonomy-select"
-          value={project.autonomy?.director ?? 'advise'}
-          disabled={busy}
-          onChange={(e) =>
-            void act(() => setProjectAutonomy(project.id, { director: e.target.value as Autonomy }))
-          }
-        >
-          {AUTONOMY_LEVELS.map((l) => (
-            <option key={l} value={l}>
-              {l}
-            </option>
-          ))}
-        </select>
-      </label>
-      {project.repos !== undefined && (
-        <p className="cr-dim" data-testid="project-repos">
-          Repos: {project.repos.length === 0 ? 'none' : project.repos.join(', ')}
-        </p>
       )}
-      <form
-        className="cr-actions"
-        data-testid="project-tracker-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          save();
-        }}
-      >
-        <label className="cr-dim">
-          Tracker{' '}
-          <select
-            data-testid="project-tracker-system"
-            value={system}
-            disabled={busy}
-            onChange={(e) => setSystem(e.target.value as '' | 'jira' | 'linear')}
-          >
-            <option value="">none</option>
-            <option value="jira">Jira</option>
-            <option value="linear">Linear</option>
-          </select>
-        </label>
-        {system !== '' && (
-          <>
-            <label className="cr-dim">
-              <input
-                type="checkbox"
-                data-testid="project-tracker-push"
-                checked={push}
-                disabled={busy}
-                onChange={(e) => setPush(e.target.checked)}
-              />{' '}
-              push status
-            </label>
-            {STATUS_MAP_FIELDS.map((f) => (
-              <label key={f.key} className="cr-dim">
-                {f.label}{' '}
-                <input
-                  data-testid={`project-tracker-map-${f.key}`}
-                  value={map[f.key]}
-                  placeholder="tracker status"
-                  disabled={busy}
-                  onChange={(e) => setMap((m) => ({ ...m, [f.key]: e.target.value }))}
-                />
-              </label>
-            ))}
-          </>
-        )}
-        <button type="submit" className="cr-btn" data-testid="project-tracker-save" disabled={busy}>
-          Save tracker
-        </button>
-      </form>
     </div>
-  );
-}
-
-/** T283 (§14.5): the children's status cards, on the parent's page. */
-function ChildCards({
-  cards,
-  titleOf,
-}: {
-  cards: Array<CockpitStatusCard | CockpitCardError>;
-  titleOf: (id: string) => string;
-}): JSX.Element | null {
-  if (cards.length === 0) return null;
-  return (
-    <section className="cr-findings" data-testid="child-cards">
-      <h2>Children</h2>
-      <ul>
-        {cards.map((card) =>
-          'error' in card ? (
-            <li key={card.node} data-testid="status-card-error" data-node={card.node}>
-              <strong>{titleOf(card.node)}</strong>{' '}
-              <span className="sev" data-testid="status-card-error-text">
-                {card.error}
-              </span>
-            </li>
-          ) : (
-            <li
-              key={card.node}
-              data-testid="status-card"
-              data-node={card.node}
-              data-state={card.state}
-            >
-              <strong>{titleOf(card.node)}</strong> <span className="cr-dim">{card.state}</span>
-              {card.doing !== '' && (
-                <>
-                  {' — '}
-                  <span data-testid="status-card-doing">{card.doing}</span>
-                </>
-              )}
-              {card.files.length > 0 && (
-                <p className="cr-dim" data-testid="status-card-files">
-                  {card.files.join(', ')}
-                </p>
-              )}
-              {card.relies_on.length > 0 && (
-                <p className="cr-dim" data-testid="status-card-relies">
-                  relies on <Linked text={card.relies_on.join(', ')} />
-                </p>
-              )}
-            </li>
-          ),
-        )}
-      </ul>
-    </section>
   );
 }
 
 export function StreamPage({ id }: { id: string }): JSX.Element {
   const { cockpit, refresh } = useFeed();
-  const { openRules } = useShell();
+  const { openRules, select, openOn } = useShell();
+  const toast = useToast();
+  const copy = useCopy();
   const [page, setPage] = useState<StreamPagePayload | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
-  const [tab, setTab] = useState<Tab>('thread');
+  // `undefined` is the node's own first tab (T387: a project root's Overview, else the chat).
+  // T403: a Needs me card asks for the chat (`openOn`).
+  const [tab, setTab] = useState<NodeTab | undefined>(openOn?.id === id ? openOn.tab : undefined);
   const [draft, setDraft] = useState('');
+  const drafts = useRef(new Map<string, string>());
   const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
-  // T170: Attach/Review open the session picker first.
-  const [picker, setPicker] = useState<'worker' | 'reviewer' | 'resolve' | undefined>(undefined);
-  // T205: + Repo in place — the registered repos, and the open picker's choice.
+  const [picker, setPicker] = useState<Picker | undefined>(undefined);
+  const [modal, setModal] = useState<Modal | undefined>(undefined);
   const [repos, setRepos] = useState<RepoRow[]>([]);
-  const [addingRepo, setAddingRepo] = useState(false);
   const [repoChoice, setRepoChoice] = useState('');
-  const [linking, setLinking] = useState(false);
   const [linkChoice, setLinkChoice] = useState('');
-  // T176: the server refused a worker on a parent with open children; this is its reason.
-  const threadRef = useRef<HTMLOListElement | null>(null);
+  // T332 (D33): "Branch off" — the thread line (0-based, whole thread) and the tangent's question.
+  const [branching, setBranching] = useState<number | undefined>(undefined);
+  const [tangentQuestion, setTangentQuestion] = useState('');
+  // Which open question Send answers: an id, 'message' (a plain line), or undefined (the oldest).
+  const [answerChoice, setAnswerChoice] = useState<string | undefined>(undefined);
+  const [trackerOpen, setTrackerOpen] = useState(false);
+  const [defaults, setDefaults] = useState<SessionDefaultsStatus | undefined>(undefined);
+  const [detailsOpen, setDetailsOpen] = useDetailsOpen();
+  const composer = useRef<ComposerHandle>(null);
+  // T393: review comments on the Changes tab (counted on its tab).
+  const reviewCount = useReview(id).comments.length;
+  // T392: the agent's steps, live.
+  const agentSteps = useSteps(id);
 
   // Every pushed frame and every action re-reads the page, so reads
   // overlap, and their responses can arrive in any order. Only the latest
@@ -984,570 +369,1100 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       .catch(() => setRepos([]));
   }, []);
 
-  // A different stream opened: back to its thread.
+  // A different node opened: back to its first tab, its own draft, nothing half-open.
+  const lastId = useRef(id);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `id` is the trigger.
   useEffect(() => {
-    setTab('thread');
-    setDraft('');
+    drafts.current.set(lastId.current, draft);
+    lastId.current = id;
+    setDraft(drafts.current.get(id) ?? '');
+    setTab(openOn?.id === id ? openOn.tab : undefined);
     setActionError(undefined);
     setPicker(undefined);
-    setAddingRepo(false);
+    setModal(undefined);
     setRepoChoice('');
+    setLinkChoice('');
+    setBranching(undefined);
+    setTangentQuestion('');
+    setAnswerChoice(undefined);
+    setTrackerOpen(false);
+    getSessionDefaults()
+      .then(setDefaults)
+      .catch(() => setDefaults(undefined));
   }, [id]);
 
-  const threadLength = page?.thread.length ?? 0;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: scrolls when the thread grows.
-  useEffect(() => {
-    const el = threadRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [threadLength]);
+  const onDeliveryResult = useCallback(
+    (result: { outcome?: LandOutcome; refused?: string }) => {
+      // The Delivery section says it; with the panel shut, a toast does.
+      if (detailsOpen) return;
+      if (result.refused !== undefined) {
+        toast({ title: 'Merge refused', body: result.refused, tone: 'error' });
+      } else if (result.outcome) {
+        const tone = outcomeTone(result.outcome);
+        toast({
+          title: tone === 'ok' ? 'Delivered' : tone === 'info' ? 'Held' : 'Not merged',
+          body: result.outcome.line,
+          tone: tone === 'bad' ? 'error' : tone === 'ok' ? 'success' : 'info',
+        });
+      }
+    },
+    [detailsOpen, toast],
+  );
+  const onDeliveryChanged = useCallback(() => {
+    load();
+    refresh();
+  }, [load, refresh]);
+  const delivery = useDelivery(
+    id,
+    `${id}:${page?.stream.id === id ? page.stream.sessions.length : 0}`,
+    onDeliveryChanged,
+    onDeliveryResult,
+  );
 
-  async function act(fn: () => Promise<unknown>, after?: () => void): Promise<void> {
-    setBusy(true);
+  const questionIds = openQuestions(cockpit?.inbox ?? [], id)
+    .map((q) => q.id)
+    .join(',');
+  // A question arrives or goes: the composer goes back to answering the oldest.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `questionIds` is the trigger.
+  useEffect(() => {
+    setAnswerChoice(undefined);
+  }, [questionIds]);
+
+  const act = useCallback(
+    async (fn: () => Promise<unknown>, after?: () => void): Promise<void> => {
+      setBusy(true);
+      setActionError(undefined);
+      try {
+        await fn();
+        after?.();
+      } catch (err) {
+        setActionError(errorText(err));
+      } finally {
+        setBusy(false);
+        load();
+        refresh();
+      }
+    },
+    [load, refresh],
+  );
+
+  const titleOf = useCallback(
+    (nodeId: string) => cockpit?.streams.find((r) => r.id === nodeId)?.title ?? nodeId,
+    [cockpit],
+  );
+
+  const threadTick = page?.thread_total ?? 0;
+
+  if (loadError && !page) {
+    return (
+      <section className="cr-node" data-testid="stream-page">
+        <div className="cr-node-main cr-node-failed">
+          <EmptyState
+            icon="alert-circle"
+            title="Couldn’t open this node"
+            actions={
+              <>
+                <Button icon="refresh" onClick={load}>
+                  Try again
+                </Button>
+                <Button variant="ghost" onClick={() => select(undefined)}>
+                  Back to Needs me
+                </Button>
+              </>
+            }
+          >
+            <span className="cr-error" role="alert">
+              {loadError}
+            </span>
+          </EmptyState>
+        </div>
+      </section>
+    );
+  }
+  if (!page || page.stream.id !== id) return <PageSkeleton />;
+
+  // ---------------------------------------------------------------- derived state
+  const { stream } = page;
+  const rows = cockpit?.streams ?? [];
+  const row = rows.find((r) => r.id === stream.id);
+  const role = row?.role;
+  const project = cockpit?.projects.find((p) => p.id === stream.project);
+  const rootOf = cockpit?.projects.find((p) => p.root === stream.id);
+  const children = rows.filter((r) => r.parent === stream.id);
+  const open = stream.human.status !== 'landed' && stream.human.status !== 'closed';
+  const merged = stream.human.status === 'landed';
+  const live = stream.sessions.filter(isLiveSession);
+  const liveAgent = liveAgentOf(stream.sessions);
+  const liveReviewer = live.find((s) => s.role === 'reviewer');
+  const agentWorking =
+    liveAgent !== undefined && (liveAgent.status === 'starting' || liveAgent.status === 'running');
+  const thinking = isThinking(stream);
+  const hasRun = stream.sessions.some((s) => isAgentRole(s.role));
+  // T361: a line starts an agent anywhere but a bare project root (Start agent still runs one there).
+  const lineStarts = !(role === 'project' && children.length === 0);
+  const waitingForPlan = row?.waiting_for_plan === true;
+  // T174: human lines sent mid-turn, not yet delivered to the live worker.
+  const queuedLines = new Set(live.flatMap((s) => s.queued ?? []));
+  const cards = needsYou(cockpit?.inbox ?? [], stream.id, row?.nothing_to_merge === true);
+  const questions = openQuestions(cockpit?.inbox ?? [], stream.id);
+  const answering = answerTarget(questions, answerChoice);
+  const answeringItem = questions.find((q) => q.id === answering);
+  const name = agentName(stream.sessions);
+  const resolved = defaults ? resolvedFor(defaults, stream.repo, project?.session) : undefined;
+  const startWith = resolved ? agentLabel(resolved) : undefined;
+  const statusInput: StatusInput = row ?? {
+    agent_status: stream.agent.status,
+    human_status: stream.human.status,
+    ...(live.length > 0 ? { live: true as const } : {}),
+  };
+  const intent = sendIntent({
+    open,
+    merged,
+    ...(answering !== undefined ? { answering } : {}),
+    ...(liveAgent ? { live: { name: vendorLabel(liveAgent.vendor), working: agentWorking } } : {}),
+    waitingForPlan,
+    canStart: lineStarts,
+    hasRun,
+    ...(row?.stopped ? { stopped: true } : {}),
+    ...(startWith ? { startWith } : {}),
+  });
+  const mergeable = isMergeable(page, delivery);
+  const actions = headerActions({
+    open,
+    liveAgent: liveAgent !== undefined,
+    anyLive: live.length > 0,
+    anyBusy: live.some((s) => s.status === 'starting' || s.status === 'running'),
+    canStart: !waitingForPlan,
+    // T390: a project root's next step is a node, not its coordinator: Start stays plain there.
+    startIsNext: rootOf === undefined && (!hasRun || row?.stopped === true),
+    mergeable,
+    landReady: page.land?.ready === true,
+  });
+  // T387: a project's root, known from the page itself (no parent, a project) before the frame names it.
+  const projectRoot =
+    rootOf !== undefined || (stream.parent === undefined && stream.project !== undefined);
+  const tabs = nodeTabs({
+    role,
+    projectRoot,
+    hasRepo: stream.repo !== undefined,
+    hasChildren: children.length > 0,
+    hasPlanItem: cards.some((c) => c.kind === 'plan_approve'),
+    knowledge: page.rules.length,
+    docs: page.docs.length,
+  });
+  const shownTab: NodeTab = tab !== undefined && tabs.includes(tab) ? tab : (tabs[0] ?? 'thread');
+  const waits = stream.waits_on ?? [];
+  const linkOptions = rows.filter((r) => r.id !== stream.id && !waits.some((w) => w.node === r.id));
+  const chosenLink = linkChoice || linkOptions[0]?.id || '';
+  const repoOptions = repos.map((r) => r.name).filter((n) => n !== stream.repo);
+  const chosenRepo = repoChoice || repoOptions[0] || '';
+  // T332 (D33): only a conversation branches off; its tangents are conversations too.
+  const canBranch = open && role === 'conversation';
+  const threadBase = page.thread_total - page.thread.length;
+  const question = tangentQuestion.trim();
+  const conversation = page.thread.some((e) => {
+    const v = chatVariant(e);
+    return v === 'you' || v === 'agent';
+  });
+  const isRoot = rootOf !== undefined || role === 'project';
+  // "Waits on" holds a delivery: it applies where something merges.
+  const canWait = role === 'work' || role === 'coordinating' || waits.length > 0;
+
+  // The path: the node's ancestors, root first, each one opening its page.
+  const crumbs: Crumb[] = [];
+  {
+    const seen = new Set<string>([stream.id]);
+    let at = row?.parent !== undefined ? rows.find((r) => r.id === row.parent) : undefined;
+    while (at && !seen.has(at.id)) {
+      seen.add(at.id);
+      crumbs.unshift({ id: at.id, title: at.title });
+      const parent: string | undefined = at.parent;
+      at = parent !== undefined ? rows.find((r) => r.id === parent) : undefined;
+    }
+    if (crumbs.length === 0 && row === undefined) {
+      for (const title of page.path.slice(0, -1)) crumbs.push({ title });
+    }
+  }
+
+  // ---------------------------------------------------------------- actions
+  const branchOff = (line: number) =>
+    act(async () => {
+      const created = await createStream({
+        title: question.split('\n')[0]?.slice(0, 80) || question,
+        goal: question,
+        parent: stream.id,
+        seed_line: line,
+      });
+      setBranching(undefined);
+      setTangentQuestion('');
+      select(created.id);
+    });
+
+  function addRepo(repo: string, switching = false): void {
+    void act(
+      () => addRepoToStream(stream.id, repo, switching),
+      () => setModal(undefined),
+    );
+  }
+
+  const start = () => void act(() => attachSession(stream.id, 'worker'));
+  const stop = () => void act(() => stopSessions(stream.id));
+  const restart = (choice?: { vendor?: string; model?: string; effort?: string }) =>
+    act(async () => {
+      const previous = liveAgent;
+      await stopSessions(stream.id);
+      await attachSession(
+        stream.id,
+        'worker',
+        choice ??
+          (previous
+            ? {
+                vendor: previous.vendor,
+                ...(previous.model !== 'default' ? { model: previous.model } : {}),
+                ...(previous.effort ? { effort: previous.effort } : {}),
+              }
+            : {}),
+      );
+    });
+
+  async function send(): Promise<void> {
+    const text = draft.trim();
+    if (!text || intent.action === 'none') return;
+    setSending(true);
     setActionError(undefined);
     try {
-      await fn();
-      after?.();
+      if (intent.action === 'answer' && answering !== undefined) {
+        await answerQuestion(answering, text);
+      } else if (intent.action === 'start') {
+        const said = await sayOnStream(stream.id, text, { start: true });
+        if (said.started) toast({ title: `Started ${startWith ?? 'the agent'}`, tone: 'success' });
+      } else {
+        await sayOnStream(stream.id, text);
+      }
+      setDraft('');
+      drafts.current.delete(stream.id);
     } catch (err) {
       setActionError(errorText(err));
     } finally {
-      setBusy(false);
+      setSending(false);
       load();
       refresh();
     }
   }
 
-  if (loadError && !page) {
-    return (
-      <section className="cr-stream" data-testid="stream-page">
-        <p className="cr-error" role="alert">
-          {loadError}
-        </p>
-      </section>
-    );
-  }
-  if (!page || page.stream.id !== id) {
-    return (
-      <section className="cr-stream" data-testid="stream-page">
-        <p className="cr-dim">Loading…</p>
-      </section>
-    );
-  }
-
-  const { stream } = page;
-  const dot = streamDot({ agent_status: stream.agent.status, human_status: stream.human.status });
-  const live = stream.sessions.filter(isLiveSession);
-  const liveWorker = live.find((s) => isAgentRole(s.role));
-  const liveReviewer = live.find((s) => s.role === 'reviewer');
-  // T174: human lines sent mid-turn, not yet delivered to the live worker.
-  const queuedLines = new Set(live.flatMap((s) => s.queued ?? []));
-  const cards = needsYou(cockpit?.inbox ?? [], stream.id);
-  const findings = stream.agent.findings ?? [];
-  const text = draft.trim();
-  const open = stream.human.status !== 'landed' && stream.human.status !== 'closed';
-  const repoOptions = repos.map((r) => r.name).filter((name) => name !== stream.repo);
-  const chosenRepo = repoChoice || repoOptions[0] || '';
-  const waits = stream.waits_on ?? [];
-  // T336: a part is not started until its coordinator's plan is approved.
-  const waitingForPlan = cockpit?.streams.find((r) => r.id === stream.id)?.waiting_for_plan;
-  const titleOf = (id: string) => cockpit?.streams.find((r) => r.id === id)?.title ?? id;
-  const linkOptions = (cockpit?.streams ?? []).filter(
-    (r) => r.id !== stream.id && !waits.some((w) => w.node === r.id),
-  );
-  const chosenLink = linkChoice || linkOptions[0]?.id || '';
-  function addRepo(repo: string, switching = false): void {
-    void act(
-      () => addRepoToStream(stream.id, repo, switching),
-      () => setAddingRepo(false),
-    );
+  async function deleteNode(): Promise<void> {
+    const title = stream.title;
+    const nodeId = stream.id;
+    setBusy(true);
+    try {
+      await archiveStream(nodeId);
+      setModal(undefined);
+      refresh();
+      select(undefined);
+      toast({
+        title: `Deleted “${title}”`,
+        body: 'Its worktree and branch are kept.',
+        tone: 'info',
+        duration: 8000,
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            unarchiveStream(nodeId)
+              .then(() => {
+                refresh();
+                select(nodeId);
+              })
+              .catch((err: unknown) =>
+                toast({ title: 'Could not restore it', body: errorText(err), tone: 'error' }),
+              );
+          },
+        },
+      });
+    } catch (err) {
+      setModal(undefined);
+      setActionError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
-  return (
-    <section className="cr-stream" data-testid="stream-page" data-stream={stream.id}>
-      <header className="cr-stream-hd">
-        <p className="cr-dim cr-path" data-testid="stream-path">
-          {page.path.join(' / ')}
-        </p>
-        <h1>
-          <span className="cr-dot" data-dot={dot} aria-label={DOT_LABEL[dot]} />
-          <span data-testid="stream-title">{stream.title}</span>
-        </h1>
-        <p className="cr-dim" data-testid="stream-status">
-          agent {waitingForPlan ? 'waiting for the plan' : stream.agent.status} · you{' '}
-          {stream.human.status.replace(/_/g, ' ')}
-          {stream.branch ? ` · ${stream.branch}` : ''}
-        </p>
-        <Markdown className="cr-goal" text={stream.goal} />
-      </header>
+  const menu: MenuItem[] = [
+    {
+      label: 'Choose the model and start…',
+      icon: 'sliders',
+      testid: 'attach-choose',
+      hidden: !open || live.length > 0 || waitingForPlan,
+      onSelect: () => setPicker('start'),
+    },
+    {
+      label: 'Restart agent',
+      icon: 'refresh',
+      testid: 'restart',
+      title: 'Stop the agent and start a fresh session with the same model',
+      hidden: !open || liveAgent === undefined,
+      disabled: busy,
+      onSelect: () => void restart(),
+    },
+    {
+      label: 'Restart with another model…',
+      icon: 'sliders',
+      hidden: !open || liveAgent === undefined,
+      disabled: busy,
+      onSelect: () => setPicker('restart'),
+    },
+    {
+      label: 'Review changes…',
+      icon: 'eye',
+      testid: 'review',
+      title: 'A read-only reviewer reads the diff and reports findings',
+      hidden: stream.repo === undefined,
+      disabled: busy || liveReviewer !== undefined,
+      onSelect: () => setPicker('reviewer'),
+    },
+    {
+      label: 'Stop agent',
+      icon: 'square',
+      testid: 'menu-stop',
+      hidden: live.length === 0,
+      disabled: busy,
+      onSelect: stop,
+    },
+    'separator',
+    {
+      label: 'Waits on…',
+      icon: 'clock',
+      testid: 'link-wait',
+      title: "Hold this node's delivery until another node is merged",
+      hidden: !open || !canWait,
+      disabled: busy || linkOptions.length === 0,
+      onSelect: () => setModal('wait'),
+    },
+    {
+      label: 'Add repository…',
+      icon: 'folder-git',
+      testid: 'add-repo',
+      title: 'Work on a repo here: a conversation becomes a work node, a second repo splits it',
+      hidden: !open || stream.parent === undefined,
+      disabled: busy || repoOptions.length === 0,
+      onSelect: () => setModal('repo'),
+    },
+    {
+      label: 'Tracker issue…',
+      icon: 'ticket',
+      testid: 'tracker-menu',
+      hidden: project?.tracker === undefined || stream.external_link !== undefined,
+      onSelect: () => {
+        setDetailsOpen(true);
+        setTrackerOpen(true);
+      },
+    },
+    'separator',
+    {
+      label: 'Copy branch name',
+      icon: 'git-branch',
+      hidden: stream.branch === undefined,
+      onSelect: () => copy(stream.branch ?? '', 'Copied the branch name'),
+    },
+    {
+      label: 'Copy node id',
+      icon: 'copy',
+      onSelect: () => copy(stream.id, 'Copied the node id'),
+    },
+    'separator',
+    {
+      label: 'Close node…',
+      icon: 'x-circle',
+      testid: 'stream-close',
+      hidden: !open,
+      disabled: busy,
+      onSelect: () => setModal('close'),
+    },
+    {
+      label: 'Delete node…',
+      icon: 'trash',
+      testid: 'stream-delete',
+      danger: true,
+      hidden: isRoot,
+      disabled: busy,
+      onSelect: () => setModal('delete'),
+    },
+  ];
 
-      <section className="cr-needs" data-testid="stream-needs">
-        <h2>Needs you</h2>
-        {cards.length === 0 && (
-          <p className="cr-dim" data-testid="stream-needs-empty">
-            Nothing waiting on you.
-          </p>
-        )}
-        {cards.map((item) => (
-          <Card
-            key={item.id}
-            item={item}
-            full
-            onDone={() => {
-              load();
-              refresh();
-            }}
-          />
-        ))}
-      </section>
+  // ---------------------------------------------------------------- the chat
+  const renderActions = (entry: StreamPagePayload['thread'][number], i: number) =>
+    canBranch && entry.kind === 'line' && branching !== threadBase + i ? (
+      <button
+        type="button"
+        className="cr-msg-btn"
+        data-testid="branch-off"
+        title="Start a tangent from this line: a new conversation seeded with it"
+        disabled={busy}
+        onClick={() => {
+          setBranching(threadBase + i);
+          setTangentQuestion('');
+        }}
+      >
+        <Icon name="git-fork" size={13} />
+        Branch off
+      </button>
+    ) : null;
 
-      <ChildCards
-        cards={(cockpit?.cards ?? []).filter(
-          (c) => cockpit?.streams.find((r) => r.id === c.node)?.parent === stream.id,
-        )}
-        titleOf={titleOf}
-      />
-
-      <section className="cr-sessions" data-testid="sessions">
-        <ul>
-          {stream.sessions.length === 0 && <li className="cr-dim">No sessions yet.</li>}
-          {stream.sessions.map((session) => (
-            <li
-              key={session.id}
-              data-testid="session"
-              data-role={session.role}
-              data-status={session.status}
-              title={session.id}
-            >
-              <strong>{session.role}</strong> {session.vendor}/{sessionModelText(session)}
-              {session.effort ? ` · ${session.effort}` : ''} · {session.status}
-              {session.ended_reason && (
-                <span className="cr-dim" data-testid="session-ended-reason">
-                  {' '}
-                  — {session.ended_reason}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-        <div className="cr-actions">
-          <button
-            type="button"
-            className="cr-btn"
-            data-testid="attach"
-            disabled={busy || liveWorker !== undefined || stream.human.status === 'landed'}
-            onClick={() => setPicker('worker')}
-          >
-            {/* T204: a new node starts its own agent; this is for "Start later" or after one ended. */}
-            {stream.sessions.some((s) => isAgentRole(s.role)) ? 'Restart' : 'Start'}
-          </button>
-          <button
-            type="button"
-            className="cr-btn"
-            data-testid="review"
-            disabled={busy || liveReviewer !== undefined}
-            onClick={() => setPicker('reviewer')}
-          >
-            Review
-          </button>
-          <button
-            type="button"
-            className="cr-btn danger"
-            data-testid="stop"
-            disabled={busy || live.length === 0}
-            onClick={() => void act(() => stopSessions(stream.id))}
-          >
-            Stop
-          </button>
-          {stream.human.status !== 'landed' && stream.human.status !== 'closed' && (
-            <button
-              type="button"
-              className="cr-btn"
-              data-testid="stream-close"
-              disabled={busy}
-              onClick={() => void act(() => closeStream(stream.id))}
-            >
-              Close
-            </button>
-          )}
-          {open && (
-            <button
-              type="button"
-              className="cr-btn"
-              data-testid="link-wait"
-              title="Hold this node's delivery until another node is merged"
-              disabled={busy || linkOptions.length === 0}
-              onClick={() => setLinking((v) => !v)}
-            >
-              Link
-            </button>
-          )}
-          {open && stream.parent !== undefined && (
-            <button
-              type="button"
-              className="cr-btn"
-              data-testid="add-repo"
-              disabled={busy || repoOptions.length === 0}
-              onClick={() => setAddingRepo((v) => !v)}
-            >
-              + Repo
-            </button>
-          )}
-        </div>
-        {waits.length > 0 && (
-          <ul className="cr-dim" data-testid="waits-on">
-            {waits.map((w) => (
-              <li key={w.node}>
-                waits on {titleOf(w.node)}
-                {w.satisfied_at ? ' · satisfied' : ''}
-                {open && (
-                  <button
-                    type="button"
-                    className="cr-btn"
-                    data-testid="waits-on-remove"
-                    disabled={busy}
-                    onClick={() => void act(() => waitOnStream(stream.id, w.node, true))}
-                  >
-                    Unlink
-                  </button>
-                )}
-              </li>
+  const renderExtra = (entry: StreamPagePayload['thread'][number], i: number) => (
+    <>
+      {entry.kind === 'proposal' &&
+        open &&
+        reposNamedIn(entry.body, repos, stream.repo).length > 0 && (
+          <div className="cr-msg-extra">
+            {reposNamedIn(entry.body, repos, stream.repo).map((repoName) => (
+              <Button
+                key={repoName}
+                size="sm"
+                icon="plus"
+                data-testid="proposal-add-repo"
+                disabled={busy}
+                onClick={() => addRepo(repoName)}
+              >
+                Add {repoName}
+              </Button>
             ))}
-          </ul>
-        )}
-        <TrackerLinkField stream={stream} rollup={page.rollup} busy={busy} act={act} />
-        <AutonomyPicker
-          stream={stream}
-          project={cockpit?.projects.find((p) => p.id === stream.project)}
-          busy={busy}
-          act={act}
-        />
-        {(() => {
-          const project = cockpit?.projects.find((p) => p.root === stream.id);
-          return project ? (
-            <ProjectControls key={project.id} project={project} busy={busy} act={act} />
-          ) : null;
-        })()}
-        {linking && (
-          <div className="cr-actions" data-testid="link-wait-form">
-            <select
-              data-testid="link-wait-select"
-              value={chosenLink}
-              onChange={(e) => setLinkChoice(e.target.value)}
-            >
-              {linkOptions.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.title}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="cr-btn"
-              data-testid="link-wait-submit"
-              disabled={busy || chosenLink === ''}
-              onClick={() =>
-                void act(
-                  () => waitOnStream(stream.id, chosenLink),
-                  () => {
-                    setLinking(false);
-                    setLinkChoice('');
-                  },
-                )
-              }
-            >
-              Wait on
-            </button>
           </div>
         )}
-        {addingRepo && (
-          <div className="cr-actions" data-testid="add-repo-form">
-            <select
-              data-testid="add-repo-select"
-              value={chosenRepo}
-              onChange={(e) => setRepoChoice(e.target.value)}
+      {canBranch && branching === threadBase + i && (
+        <form
+          className="cr-branch-form"
+          data-testid="branch-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (question) void branchOff(threadBase + i);
+          }}
+        >
+          <div className="cr-branch-label">
+            <Icon name="git-fork" size={13} />
+            Branch off into a new conversation
+          </div>
+          <textarea
+            data-testid="branch-question"
+            aria-label="The tangent's question"
+            placeholder="What should the tangent look into?"
+            rows={2}
+            // biome-ignore lint/a11y/noAutofocus: the form opens on a click, for typing at once.
+            autoFocus
+            value={tangentQuestion}
+            onChange={(e) => setTangentQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setBranching(undefined);
+            }}
+          />
+          <div className="cr-branch-actions">
+            <Button size="sm" variant="ghost" onClick={() => setBranching(undefined)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              size="sm"
+              variant="primary"
+              data-testid="branch-start"
+              disabled={busy || !question}
             >
-              {repoOptions.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="cr-btn"
-              data-testid="add-repo-submit"
-              disabled={busy || chosenRepo === ''}
-              onClick={() => addRepo(chosenRepo)}
-            >
-              Add
+              Start tangent
+            </Button>
+          </div>
+        </form>
+      )}
+      {entry.by === 'human' && entry.kind === 'line' && queuedLines.has(entry.ts) && (
+        <div className="cr-queued" data-testid="thread-queued">
+          <Icon name="clock" size={12} />
+          Not sent yet — queued until {name}’s current step ends
+        </div>
+      )}
+    </>
+  );
+
+  const answeringChip = answeringItem ? (
+    <div className="cr-answering" data-testid="composer-answering">
+      <Icon name="corner-down-left" size={13} />
+      <span className="cr-answering-label">Answering</span>
+      {questions.length > 1 ? (
+        <Menu
+          label="Which question"
+          align="start"
+          placement="top"
+          testid="composer-answering-menu"
+          trigger={(props) => (
+            <button type="button" className="cr-answering-q" {...props}>
+              {oneLine(answeringItem.detail ?? answeringItem.context)}
+              <Icon name="chevron-down" size={12} />
             </button>
+          )}
+          items={[
+            ...questions.map((q) => ({
+              label: oneLine(q.detail ?? q.context, 70),
+              icon: q.id === answering ? ('check' as const) : undefined,
+              onSelect: () => {
+                setAnswerChoice(q.id);
+                composer.current?.focus();
+              },
+            })),
+            'separator' as const,
+            {
+              label: 'Write a message instead',
+              icon: 'message-square' as const,
+              onSelect: () => {
+                setAnswerChoice('message');
+                composer.current?.focus();
+              },
+            },
+          ]}
+        />
+      ) : (
+        <span className="cr-answering-q" title={answeringItem.detail ?? answeringItem.context}>
+          {oneLine(answeringItem.detail ?? answeringItem.context)}
+        </span>
+      )}
+      <IconButton
+        icon="x"
+        size="sm"
+        label="Write a message instead"
+        data-testid="composer-answer-cancel"
+        onClick={() => {
+          setAnswerChoice('message');
+          composer.current?.focus();
+        }}
+      />
+    </div>
+  ) : questions.length > 0 && open ? (
+    <button
+      type="button"
+      className="cr-answering-off"
+      data-testid="composer-answer-resume"
+      onClick={() => {
+        setAnswerChoice(undefined);
+        composer.current?.focus();
+      }}
+    >
+      <Icon name="corner-down-left" size={13} />
+      Answer the open question instead
+    </button>
+  ) : undefined;
+
+  const modelChip =
+    liveAgent !== undefined ? (
+      <span
+        className="cr-model-chip"
+        data-testid="composer-model"
+        data-live="true"
+        title={`Running: ${liveAgent.vendor}/${liveAgent.model}${liveAgent.effort ? ` · ${liveAgent.effort}` : ''}`}
+      >
+        <span className="cr-model-dot" aria-hidden="true" />
+        {agentLabel(liveAgent)}
+      </span>
+    ) : startWith && open && !waitingForPlan ? (
+      <button
+        type="button"
+        className="cr-model-chip"
+        data-testid="composer-model"
+        title="Choose the model and start the agent"
+        onClick={() => setPicker('start')}
+      >
+        <Icon name="sparkles" size={12} />
+        {startWith}
+        <Icon name="chevron-down" size={12} />
+      </button>
+    ) : undefined;
+
+  const emptyChat = !conversation && !thinking && cards.length === 0;
+  // T392: each reply's steps fold before it; the running turn's show live.
+  const steps = groupSteps(agentSteps.steps, page.thread, {
+    live: thinking,
+    truncated: page.thread_total > page.thread.length,
+    partial: agentSteps.partial,
+  });
+
+  const chat = (
+    <div className="cr-chat" data-tab-body="thread">
+      <ChatScroll
+        tick={`${threadTick}:${thinking}:${cards.length}`}
+        resetKey={stream.id}
+        label="Conversation"
+      >
+        <GoalCard
+          goal={stream.goal}
+          {...(open
+            ? {
+                onSave: async (goal: string) => {
+                  await updateStream(stream.id, { goal });
+                  load();
+                  refresh();
+                },
+              }
+            : {})}
+        />
+        {page.thread_total > page.thread.length && (
+          <p className="cr-chat-older">
+            Showing the newest {page.thread.length} of {page.thread_total} lines.
+          </p>
+        )}
+        <MessageList
+          entries={page.thread}
+          authorOf={(by) => chatAuthor(by, stream.sessions)}
+          renderActions={renderActions}
+          renderExtra={renderExtra}
+          onOpenRule={(rule) => openRules({ ...DEFAULT_RULES_FILTER, rule })}
+          openQuestions={new Set(questions.map((q) => q.id))}
+          steps={steps.before}
+        />
+        {thinking && (
+          <Thinking
+            {...workingAs(stream.sessions)}
+            steps={steps.current}
+            since={turnStartedAt(page.thread, steps.current)}
+          />
+        )}
+        {!thinking && steps.current.length > 0 && (
+          <div className="cr-steps-tail">
+            <StepsFold steps={steps.current} />
+          </div>
+        )}
+        {emptyChat && open && (
+          <div className="cr-chat-empty" data-testid="chat-empty">
+            <span className="cr-chat-empty-icon">
+              <Icon name="sparkles" size={20} />
+            </span>
+            <div className="cr-chat-empty-title">
+              {liveAgent
+                ? `${name} is ready`
+                : hasRun
+                  ? 'Tell the agent what to do next'
+                  : 'Tell the agent what to do'}
+            </div>
+            <p>
+              {liveAgent
+                ? 'Send it a message below.'
+                : intent.action === 'start'
+                  ? `Your message ${hasRun ? 'wakes' : 'starts'} it with ${startWith ?? 'the default model'}. The goal above is its brief.`
+                  : intent.hint}
+            </p>
+          </div>
+        )}
+        <section
+          className="cr-decisions"
+          data-testid="stream-needs"
+          aria-label="Needs you"
+          hidden={cards.length === 0}
+        >
+          {cards.length > 0 && (
+            <div className="cr-decisions-hd">
+              <span className="cr-decisions-dot" aria-hidden="true" />
+              {cards.length === 1 ? 'Waiting on you' : `${cards.length} things wait on you`}
+            </div>
+          )}
+          {cards.map((item) => (
+            // biome-ignore lint/a11y/useKeyWithClickEvents: a pointer shortcut only; the composer's "Answering" menu picks the question from the keyboard.
+            <div
+              key={item.id}
+              className="cr-decision"
+              data-answering={item.id === answering ? 'true' : undefined}
+              onClick={(e) => {
+                // A click on a question (not on one of its buttons) makes it the one Send answers.
+                if (item.kind !== 'question' || item.id === answering) return;
+                if ((e.target as Element).closest('button, a, input, textarea, select')) return;
+                setAnswerChoice(item.id);
+                composer.current?.focus();
+              }}
+            >
+              <Card
+                item={item}
+                full
+                onDone={() => {
+                  load();
+                  refresh();
+                }}
+              />
+            </div>
+          ))}
+        </section>
+      </ChatScroll>
+      <div className="cr-chat-foot">
+        <div className="cr-chat-col">
+          <Composer
+            ref={composer}
+            value={draft}
+            onChange={setDraft}
+            onSend={() => void send()}
+            {...(agentWorking && open ? { onStop: stop } : {})}
+            busy={sending}
+            disabled={intent.action === 'none'}
+            placeholder={intent.placeholder}
+            hint={intent.hint}
+            above={answeringChip}
+            chip={modelChip}
+            label={answeringItem ? 'Your answer' : 'Message the agent'}
+            mode={intent.action === 'answer' ? 'answer' : undefined}
+          />
+        </div>
+      </div>
+    </div>
+  );
+
+  // ---------------------------------------------------------------- the page
+  return (
+    <section
+      className="cr-node"
+      data-testid="stream-page"
+      data-stream={stream.id}
+      data-details={detailsOpen ? 'open' : 'closed'}
+    >
+      <div className="cr-node-main">
+        <NodeHeader
+          title={stream.title}
+          crumbs={crumbs}
+          onOpen={select}
+          status={statusInput}
+          role={role}
+          agentText={agentStateText({
+            agent_status: stream.agent.status,
+            human_status: stream.human.status,
+            waiting_for_plan: waitingForPlan,
+            live: live.length > 0,
+            never_started: row?.never_started === true,
+            stopped: row?.stopped === true,
+          })}
+          {...(stream.repo ? { repo: stream.repo } : {})}
+          {...(stream.branch ? { branch: stream.branch } : {})}
+          actions={actions}
+          startLabel={hasRun ? 'Restart agent' : 'Start agent'}
+          busy={busy}
+          merging={delivery.busy}
+          onStart={start}
+          onChooseStart={() => setPicker('start')}
+          onStop={stop}
+          onMerge={() => void delivery.land()}
+          {...(page.land && !page.land.ready && page.land.reason
+            ? { mergeTitle: page.land.reason }
+            : {})}
+          detailsOpen={detailsOpen}
+          onToggleDetails={() => setDetailsOpen(!detailsOpen)}
+          menu={menu}
+          {...(open && role !== 'project'
+            ? {
+                onRename: async (title: string) => {
+                  await updateStream(stream.id, { title });
+                  load();
+                  refresh();
+                },
+              }
+            : {})}
+        >
+          {actionError && (
+            <div className="cr-node-error" role="alert" data-testid="stream-error">
+              <Icon name="alert-circle" size={15} />
+              <span>{actionError}</span>
+              <IconButton
+                icon="x"
+                size="sm"
+                label="Dismiss"
+                onClick={() => setActionError(undefined)}
+              />
+            </div>
+          )}
+        </NodeHeader>
+        <Tabs
+          items={tabs.map((t) => ({
+            id: t,
+            label: TAB_LABEL[t],
+            ...(t === 'rules' ? { count: page.rules.length } : {}),
+            ...(t === 'docs' ? { count: page.docs.length } : {}),
+            ...(t === 'diff' && reviewCount > 0 ? { count: reviewCount } : {}),
+          }))}
+          value={shownTab}
+          onChange={setTab}
+          label="Stream views"
+          className="cr-node-tabs"
+        />
+        <TabBoundary tab={shownTab} node={stream.id}>
+          {shownTab === 'thread' ? (
+            chat
+          ) : shownTab === 'overview' && stream.project !== undefined ? (
+            <div className="cr-node-pane" data-tab-body="overview">
+              <div className="cr-node-pane-col">
+                <ProjectOverview
+                  key={stream.id}
+                  project={stream.project}
+                  root={stream.id}
+                  waiting={cards.length}
+                  onOpenChat={() => setTab('thread')}
+                  onEditRepos={() => {
+                    // The project's repositories are a checklist in the details panel.
+                    setDetailsOpen(true);
+                    requestAnimationFrame(() =>
+                      document
+                        .querySelector('[data-testid="project-repos"]')
+                        ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
+                    );
+                  }}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="cr-node-pane">
+              <div className="cr-node-pane-col">
+                {shownTab === 'diff' &&
+                  (stream.branch ? (
+                    <DiffView
+                      id={stream.id}
+                      version={threadTick}
+                      {...(intent.action !== 'none'
+                        ? {
+                            // T393: the review joins the draft; the chat opens on it, unsent.
+                            onAddToMessage: (text: string) => {
+                              setDraft((before) => appendToDraft(before, text));
+                              setTab('thread');
+                              requestAnimationFrame(() => composer.current?.focusEnd());
+                            },
+                            room: roomAfter(draft),
+                          }
+                        : {})}
+                    />
+                  ) : (
+                    <div data-testid="diff-empty">
+                      <EmptyState icon="file-diff" title="No changes yet">
+                        This node gets its branch when its agent starts.
+                      </EmptyState>
+                    </div>
+                  ))}
+                {shownTab === 'activity' && (
+                  <ActivityView id={stream.id} tick={cockpit} sessions={stream.sessions} />
+                )}
+                {shownTab === 'plan' && (
+                  <PlanView id={stream.id} tick={cockpit} onChanged={refresh} titleOf={titleOf} />
+                )}
+                {shownTab === 'rules' && <KnowledgeView rules={page.rules} />}
+                {shownTab === 'docs' && <DocsView docs={page.docs} />}
+              </div>
+            </div>
+          )}
+        </TabBoundary>
+      </div>
+
+      {detailsOpen && (
+        <DetailsPanel onClose={() => setDetailsOpen(false)}>
+          <DeliveryPanel page={page} delivery={delivery} onResolve={() => setPicker('resolve')} />
+          <AgentSection
+            stream={stream}
+            {...(liveAgent ? { live: liveAgent } : {})}
+            {...(startWith ? { startWith } : {})}
+            busy={busy}
+            canReview={liveReviewer === undefined}
+            {...(stream.repo !== undefined ? { onReview: () => setPicker('reviewer') } : {})}
+            {...(open && !waitingForPlan
+              ? { onChooseModel: () => setPicker(liveAgent ? 'restart' : 'start') }
+              : {})}
+          />
+          <ChildCards
+            cards={(cockpit?.cards ?? []).filter(
+              (c) => rows.find((r) => r.id === c.node)?.parent === stream.id,
+            )}
+            titleOf={titleOf}
+          />
+          {canWait && (
+            <WaitsOnSection
+              stream={stream}
+              open={open}
+              busy={busy}
+              act={act}
+              titleOf={titleOf}
+              canAdd={linkOptions.length > 0}
+              onAdd={() => setModal('wait')}
+            />
+          )}
+          <TrackerSection
+            key={`tracker:${stream.id}`}
+            stream={stream}
+            project={project}
+            rollup={page.rollup}
+            busy={busy}
+            act={act}
+            opened={trackerOpen}
+            setOpened={setTrackerOpen}
+          />
+          <AutonomySection stream={stream} role={role} project={project} busy={busy} act={act} />
+          {rootOf && <ProjectSection key={rootOf.id} project={rootOf} busy={busy} act={act} />}
+          <FindingsSection findings={stream.agent.findings ?? []} />
+          <AboutSection stream={stream} role={role} />
+        </DetailsPanel>
+      )}
+      {detailsOpen && (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: the panel closes with its own button too.
+        <div className="cr-node-scrim" onClick={() => setDetailsOpen(false)} />
+      )}
+
+      {picker && (
+        <SessionPicker
+          key={picker}
+          role={picker === 'reviewer' ? 'reviewer' : 'worker'}
+          purpose={picker === 'reviewer' ? 'reviewer' : picker === 'resolve' ? 'resolve' : 'worker'}
+          repo={stream.repo}
+          {...(project?.session ? { project: project.session } : {})}
+          busy={busy}
+          onCancel={() => setPicker(undefined)}
+          onStart={(choice) => {
+            if (picker === 'resolve') {
+              void act(
+                () => resolveConflict(stream.id, choice),
+                () => setPicker(undefined),
+              );
+              return;
+            }
+            if (picker === 'restart') {
+              void restart(choice).then(() => setPicker(undefined));
+              return;
+            }
+            void act(
+              () => attachSession(stream.id, picker === 'reviewer' ? 'reviewer' : 'worker', choice),
+              () => setPicker(undefined),
+            );
+          }}
+        />
+      )}
+
+      <Dialog
+        open={modal === 'wait'}
+        onClose={() => setModal(undefined)}
+        title="Wait on another node"
+        description="This node’s merge is held until the node you pick is merged."
+        size="sm"
+        testid="link-wait-form"
+        onSubmit={() => {
+          if (chosenLink === '') return;
+          void act(
+            () => waitOnStream(stream.id, chosenLink),
+            () => {
+              setModal(undefined);
+              setLinkChoice('');
+            },
+          );
+        }}
+        footer={
+          <>
+            <Button onClick={() => setModal(undefined)}>Cancel</Button>
+            <Button
+              type="submit"
+              variant="primary"
+              data-testid="link-wait-submit"
+              disabled={busy || chosenLink === ''}
+            >
+              Wait on
+            </Button>
+          </>
+        }
+      >
+        <Field label="Node" htmlFor="link-wait-select">
+          <select
+            id="link-wait-select"
+            data-testid="link-wait-select"
+            value={chosenLink}
+            onChange={(e) => setLinkChoice(e.target.value)}
+          >
+            {linkOptions.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.title}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </Dialog>
+
+      <Dialog
+        open={modal === 'repo'}
+        onClose={() => setModal(undefined)}
+        title="Add a repository"
+        description={
+          role === 'conversation'
+            ? 'This conversation becomes a work node on the repo, with its own branch. The thread stays.'
+            : 'A second repo splits this node: each repo gets a part, and this node coordinates them.'
+        }
+        size="sm"
+        testid="add-repo-form"
+        onSubmit={() => chosenRepo !== '' && addRepo(chosenRepo)}
+        footer={
+          <>
             {stream.branch !== undefined && (
-              <button
-                type="button"
-                className="cr-btn"
+              <Button
                 data-testid="switch-repo-submit"
                 title="Only when nothing is committed on this branch"
                 disabled={busy || chosenRepo === ''}
                 onClick={() => addRepo(chosenRepo, true)}
               >
-                Switch
-              </button>
+                Switch to it
+              </Button>
             )}
-          </div>
-        )}
-        {picker && (
-          <SessionPicker
-            key={picker}
-            role={picker === 'reviewer' ? 'reviewer' : 'worker'}
-            repo={stream.repo}
-            busy={busy}
-            onCancel={() => setPicker(undefined)}
-            onStart={(choice) => {
-              if (picker === 'resolve') {
-                void act(
-                  () => resolveConflict(stream.id, choice),
-                  () => setPicker(undefined),
-                );
-                return;
-              }
-              void act(
-                () => attachSession(stream.id, picker, choice),
-                () => setPicker(undefined),
-              );
-            }}
-          />
-        )}
-        {actionError && (
-          <p className="cr-error" role="alert" data-testid="stream-error">
-            {actionError}
-          </p>
-        )}
-      </section>
-
-      {findings.length > 0 && (
-        <section className="cr-findings" data-testid="findings">
-          <h2>Findings</h2>
-          <ul>
-            {findings.map((finding, i) => (
-              <li
-                // biome-ignore lint/suspicious/noArrayIndexKey: findings are append-only.
-                key={i}
-                data-testid="finding"
-                data-severity={finding.severity}
-              >
-                <span className="sev">{finding.severity}</span>{' '}
-                <code>
-                  {finding.file}
-                  {finding.line !== undefined ? `:${finding.line}` : ''}
-                </code>{' '}
-                — {finding.text}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <LandPanel
-        // A new session (Resolve, Attach) starts the panel over: the last land's result is stale.
-        key={`${stream.id}:${stream.sessions.length}`}
-        page={page}
-        onChanged={load}
-        onResolve={() => setPicker('resolve')}
-      />
-
-      <nav className="cr-tabs" aria-label="Stream views">
-        {TABS.map((each) => (
-          <button
-            key={each.tab}
-            type="button"
-            data-tab={each.tab}
-            aria-current={tab === each.tab ? 'page' : undefined}
-            className={tab === each.tab ? 'on' : undefined}
-            onClick={() => setTab(each.tab)}
-          >
-            {each.label}
-            {each.tab === 'rules' ? ` (${page.rules.length})` : ''}
-            {each.tab === 'docs' ? ` (${page.docs.length})` : ''}
-          </button>
-        ))}
-      </nav>
-
-      {tab === 'thread' && (
-        <section className="cr-thread-wrap">
-          {page.thread_total > page.thread.length && (
-            <p className="cr-dim">
-              Showing the newest {page.thread.length} of {page.thread_total} lines.
-            </p>
-          )}
-          <ol className="cr-thread" data-testid="thread" ref={threadRef}>
-            {page.thread.map((entry, i) => {
-              const hit = ruleHitOf(entry);
-              if (hit !== undefined) {
-                return (
-                  <li
-                    // biome-ignore lint/suspicious/noArrayIndexKey: the thread is append-only, so an index is stable.
-                    key={i}
-                    className="cr-rule-hit"
-                    data-testid="thread-rule-hit"
-                    data-kind={entry.kind}
-                    data-by="daemon"
-                    data-rule={hit}
-                  >
-                    <div className="who">blocked by rule</div>
-                    <Markdown text={entry.body.slice('rule_hit:'.length).trim()} />
-                    <button
-                      type="button"
-                      className="cr-link"
-                      data-testid="thread-rule-link"
-                      onClick={() => openRules({ ...DEFAULT_RULES_FILTER, rule: hit })}
-                    >
-                      Open rule {hit}
-                    </button>
-                  </li>
-                );
-              }
-              return (
-                <li
-                  // biome-ignore lint/suspicious/noArrayIndexKey: the thread is append-only, so an index is stable.
-                  key={i}
-                  data-testid="thread-entry"
-                  data-kind={entry.kind}
-                  data-by={entry.by === 'human' || entry.by === 'daemon' ? entry.by : 'agent'}
-                >
-                  <div className="who">
-                    {threadAuthorLabel(entry.by, stream.sessions)}
-                    {entry.kind !== 'line' ? ` · ${entry.kind}` : ''}
-                  </div>
-                  <ThreadBody body={entry.body} />
-                  {entry.kind === 'proposal' &&
-                    open &&
-                    reposNamedIn(entry.body, repos, stream.repo).map((name) => (
-                      <button
-                        key={name}
-                        type="button"
-                        className="cr-btn"
-                        data-testid="proposal-add-repo"
-                        disabled={busy}
-                        onClick={() => addRepo(name)}
-                      >
-                        Add {name}
-                      </button>
-                    ))}
-                  {entry.by === 'human' && entry.kind === 'line' && queuedLines.has(entry.ts) && (
-                    <div className="cr-dim cr-queued" data-testid="thread-queued">
-                      queued — the worker reads it after its current step
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-            {isThinking(stream) && (
-              <li className="cr-thinking" data-testid="thinking" aria-label="agent is thinking">
-                <span />
-                <span />
-                <span />
-              </li>
-            )}
-          </ol>
-          <form
-            className="cr-composer"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (text)
-                void act(
-                  () => sayOnStream(stream.id, text),
-                  () => setDraft(''),
-                );
-            }}
-          >
-            <textarea
-              data-testid="composer-input"
-              aria-label="Write on the stream"
-              rows={2}
-              maxLength={800}
-              value={draft}
-              disabled={busy}
-              placeholder={
-                liveWorker
-                  ? 'Write on the stream — the attached worker reads it too…'
-                  : 'Write on the stream…'
-              }
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                // Enter sends; Shift+Enter is a newline; never mid-IME composition.
-                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  if (busy) return;
-                  if (text)
-                    void act(
-                      () => sayOnStream(stream.id, text),
-                      () => setDraft(''),
-                    );
-                }
-              }}
-            />
-            <button
+            <Button
               type="submit"
-              className="cr-btn signal"
-              data-testid="composer-send"
-              disabled={busy || text.length === 0}
+              variant="primary"
+              data-testid="add-repo-submit"
+              disabled={busy || chosenRepo === ''}
             >
-              Send
-            </button>
-          </form>
-        </section>
-      )}
+              Add
+            </Button>
+          </>
+        }
+      >
+        <Field label="Repository" htmlFor="add-repo-select">
+          <select
+            id="add-repo-select"
+            data-testid="add-repo-select"
+            value={chosenRepo}
+            onChange={(e) => setRepoChoice(e.target.value)}
+          >
+            {repoOptions.map((repoName) => (
+              <option key={repoName} value={repoName}>
+                {repoName}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </Dialog>
 
-      {tab === 'diff' &&
-        (stream.branch ? (
-          <DiffView id={stream.id} />
-        ) : (
-          <p className="cr-dim" data-testid="diff-empty">
-            {stream.repo
-              ? 'No branch yet — attach a worker to cut one.'
-              : 'This stream has no repo.'}
-          </p>
-        ))}
+      <ConfirmDialog
+        open={modal === 'close'}
+        title={`Close “${stream.title}”?`}
+        confirmLabel="Close node"
+        busy={busy}
+        testid="close-node"
+        onCancel={() => setModal(undefined)}
+        onConfirm={() =>
+          void act(
+            () => closeStream(stream.id),
+            () => {
+              setModal(undefined);
+              toast({ title: 'Node closed', tone: 'success' });
+            },
+          )
+        }
+      >
+        <p className="cr-confirm-text">
+          Closing marks it done without merging. Its agent stops and it can’t be reopened. The
+          branch and worktree stay.
+        </p>
+      </ConfirmDialog>
 
-      {tab === 'activity' && <ActivityView id={stream.id} tick={cockpit} />}
-
-      {tab === 'plan' && (
-        <PlanView id={stream.id} tick={cockpit} onChanged={refresh} titleOf={titleOf} />
-      )}
-
-      {tab === 'rules' && (
-        <ul className="cr-rules" data-testid="rules">
-          {page.rules.length === 0 && <li className="cr-dim">No accepted knowledge in scope.</li>}
-          {page.rules.map((rule) => (
-            <li key={rule.id} data-testid="rule" data-rule={rule.id}>
-              <div className="cr-dim">
-                {rule.name ?? rule.id} · <Linked text={formatKnowledgeScope(rule.scope)} /> ·{' '}
-                {rule.kind} · {rule.enforcement}
-                {rule.critical ? ' · critical' : ''}
-              </div>
-              <Markdown text={rule.text} />
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {tab === 'docs' && (
-        <ul className="cr-docs" data-testid="docs">
-          {page.docs.length === 0 && (
-            <li className="cr-dim">No docs — repo docs and stream docs appear here.</li>
-          )}
-          {page.docs.map((doc) => (
-            <li key={doc.path} data-testid="doc">
-              <details>
-                <summary>
-                  {doc.name} <span className="cr-dim">· {doc.source}</span>
-                </summary>
-                <Markdown text={doc.body} />
-              </details>
-            </li>
-          ))}
-        </ul>
-      )}
+      <ConfirmDialog
+        open={modal === 'delete'}
+        title={`Delete “${stream.title}”?`}
+        confirmLabel="Delete node"
+        danger
+        busy={busy}
+        testid="delete-node"
+        onCancel={() => setModal(undefined)}
+        onConfirm={() => void deleteNode()}
+      >
+        <p className="cr-confirm-text">
+          {children.length > 0
+            ? `It and its ${children.length} sub-node${children.length === 1 ? '' : 's'} leave the tree, and their agents stop.`
+            : 'It leaves the tree, and its agent stops.'}{' '}
+          Worktrees and branches are kept, and you can undo this right after.
+        </p>
+      </ConfirmDialog>
     </section>
   );
 }

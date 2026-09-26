@@ -145,7 +145,7 @@ export class ShipChecks implements DiffRules {
         return {
           decision: 'route',
           gate,
-          reason: cap(`${summary} — routed to your inbox as ${gate.id}; landing waits`),
+          reason: cap(`${summary} — waiting on your answer; the merge waits`),
         };
       }
     }

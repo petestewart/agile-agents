@@ -5,8 +5,13 @@
  * covers them.
  */
 
-import type { InboxItem, NodeRole, SessionRef, Stream } from '@agile-agents/shared';
-import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from './feed-types';
+import type { NodeRole, RoutedEvent, SessionRef, Stream } from '@agile-agents/shared';
+import type {
+  CockpitProjectRow,
+  CockpitRepoRow,
+  CockpitStatusCard,
+  CockpitStreamRow,
+} from './feed-types';
 
 /** §9.2's five dots. */
 export type StreamDot = 'amber' | 'blue' | 'grey' | 'green' | 'red';
@@ -18,14 +23,19 @@ export type StreamDot = 'amber' | 'blue' | 'grey' | 'green' | 'red';
  * `done` with the human half still `open` is "waiting for me to review and
  * land" (§2.2), which is the operator's move, so it is amber too.
  */
-export function streamDot(row: Pick<CockpitStreamRow, 'agent_status' | 'human_status'>): StreamDot {
+export function streamDot(
+  row: Pick<CockpitStreamRow, 'agent_status' | 'human_status'> &
+    Partial<Pick<CockpitStreamRow, 'role' | 'project' | 'pr_open'>>,
+): StreamDot {
   if (row.human_status === 'waiting_on_you') return 'amber';
   if (row.human_status === 'landed') return 'green';
   if (row.human_status === 'closed') return 'grey';
   switch (row.agent_status) {
     case 'question':
-    case 'done':
       return 'amber';
+    case 'done':
+      // T341: as Needs me (T336): nothing to land here, so not the operator's move.
+      return nothingToLand(row) ? 'grey' : 'amber';
     case 'blocked':
       return 'red';
     case 'working':
@@ -35,6 +45,21 @@ export function streamDot(row: Pick<CockpitStreamRow, 'agent_status' | 'human_st
   }
 }
 
+/**
+ * A coordinating node, a project root, a project's conversation (no branch),
+ * or a node whose PR is open (it merges on GitHub): `done` is not your move.
+ */
+function nothingToLand(
+  row: Partial<Pick<CockpitStreamRow, 'role' | 'project' | 'pr_open'>>,
+): boolean {
+  return (
+    row.pr_open === true ||
+    row.role === 'coordinating' ||
+    row.role === 'project' ||
+    (row.role === 'conversation' && row.project !== undefined)
+  );
+}
+
 export const DOT_LABEL: Record<StreamDot, string> = {
   amber: 'waiting on you',
   blue: 'agent working',
@@ -42,6 +67,15 @@ export const DOT_LABEL: Record<StreamDot, string> = {
   green: 'landed',
   red: 'blocked',
 };
+
+/**
+ * T349 (D36 D3): a Children card's dot. A child waiting on your answer
+ * (`question`) wears the rail's needs-you amber; every other state, a real
+ * `blocked` included, keeps its plain label.
+ */
+export function cardDot(state: CockpitStatusCard['state']): StreamDot | undefined {
+  return state === 'question' ? 'amber' : undefined;
+}
 
 export interface StreamTreeNode {
   row: CockpitStreamRow;
@@ -104,42 +138,25 @@ export function filterStreamRows(
   return rows.filter((row) => keep.has(row.id));
 }
 
-export interface InboxGroup {
-  /** The stream id, or `''` for items that belong to no stream (a global `rule_accept`). */
-  key: string;
-  /** "ledger-lite / import CSV / parser" (§3.2), or "No stream". */
-  label: string;
-  items: InboxItem[];
-}
-
-/**
- * §9.1: grouped by stream. The inbox arrives oldest first (§3.3), and the
- * groups keep that order — a group sits where its oldest item would — so
- * the oldest ask is still the first thing on the page.
- */
-export function groupInbox(items: readonly InboxItem[]): InboxGroup[] {
-  const groups = new Map<string, InboxGroup>();
-  for (const item of items) {
-    const key = item.stream ?? '';
-    let group = groups.get(key);
-    if (!group) {
-      group = {
-        key,
-        label: item.stream_path.length > 0 ? item.stream_path.join(' / ') : 'No stream',
-        items: [],
-      };
-      groups.set(key, group);
-    }
-    group.items.push(item);
-  }
-  return [...groups.values()];
-}
-
 // ---- T161: the stream page (§9.3) ----------------------------------------
 
 /** A session that is still attached: it can be prompted, and Stop stops it. */
 export function isLiveSession(session: Pick<SessionRef, 'status'>): boolean {
   return session.status === 'starting' || session.status === 'running' || session.status === 'idle';
+}
+
+/**
+ * T350 (D36 D4): the sessions strip. Coordinators wake on every child event,
+ * so ended sessions pile up; two or more of them fold into one "N earlier
+ * sessions" row. Live sessions are always shown, and a lone ended session
+ * stays on show (its ended reason is often the thing to read). Order is kept.
+ */
+export function sessionRows<T extends Pick<SessionRef, 'status'>>(
+  sessions: readonly T[],
+): { shown: T[]; earlier: T[] } {
+  const ended = sessions.filter((s) => !isLiveSession(s));
+  if (ended.length < 2) return { shown: [...sessions], earlier: [] };
+  return { shown: sessions.filter(isLiveSession), earlier: ended };
 }
 
 /**
@@ -162,6 +179,44 @@ export function threadAuthorLabel(by: string, sessions: readonly SessionRef[]): 
   const id = by.startsWith('agent:') ? by.slice('agent:'.length) : by;
   const session = sessions.find((each) => each.id === id);
   return session ? `${session.role} · ${session.vendor}` : 'agent';
+}
+
+/**
+ * T341: how an Activity row's delivery reads — the session by its role, not
+ * its id (the id is the row's hover title), and "in a digest" rather than
+ * the digest's id.
+ */
+export function activityDelivery(
+  entry: { status: string; session?: string; digest?: string },
+  sessions: readonly Pick<SessionRef, 'id' | 'role'>[],
+  owner?: string,
+): string {
+  const role =
+    entry.session === undefined
+      ? undefined
+      : (owner ?? sessions.find((s) => s.id === entry.session)?.role ?? 'agent');
+  return `${entry.status}${role !== undefined ? ` to the ${role} session` : ''}${
+    entry.digest !== undefined ? ' in a digest' : ''
+  }`;
+}
+
+/**
+ * T347 (D36 D5): an event's type in words. A direct merge is also a
+ * `pr_merged` event (the routing type), but it had no PR: it reads "merged".
+ */
+export function eventLabel(event: Pick<RoutedEvent, 'type' | 'payload'>): string {
+  if (event.type === 'pr_merged' && event.payload.pr === undefined) return 'merged';
+  // T390: a line you typed, in your words rather than the event's type.
+  if (event.type === 'human_line') return 'you wrote';
+  return event.type.replace(/_/g, ' ');
+}
+
+/** T341: an event time as "YYYY-MM-DD HH:MM" in the viewer's local time; unparseable input as given. */
+export function eventTime(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())} ${two(at.getHours())}:${two(at.getMinutes())}`;
 }
 
 export type DiffLineKind = 'add' | 'del' | 'hunk' | 'meta' | 'ctx';
