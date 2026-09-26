@@ -215,6 +215,8 @@ export function ShellProvider({
       setNewStreamOpen: (open: boolean) => {
         setNewStreamPreset(undefined);
         setNewStreamOpen(open);
+        // The dialog, not the phone drawer behind it.
+        if (open) setRailOpen(false);
       },
       newStreamPreset,
       openNewStream: (preset?: NewStreamPreset) => {

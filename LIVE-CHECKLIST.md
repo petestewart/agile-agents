@@ -73,7 +73,7 @@ The cockpit is `http://127.0.0.1:4600/`.
 
 | Place | What it holds |
 |---|---|
-| Sidebar | **New node (n)**; the views below (**Needs me** with its count, **Director**, **Knowledge**, and under *Views* **Running**, **Repos**, **Dependencies**, **Events**); *Projects*: **+** (new project), the project switcher (**All projects**, Shop, Blog), a filter, and the tree with a status dot and a role icon per node and a ⚠ mark on overlapping nodes; **Settings** at the bottom. Below 900px wide it is a drawer behind the ☰ button |
+| Sidebar | **New node (n)**; the views below (**Needs me** with its count, **Director**, **Knowledge**, and under *Views* **Running**, **Repos**, **Dependencies**, **Events**); *Projects*: **?** (what the dots and icons mean), **+** (new project), a filter, and every project's tree with a status dot and a role icon per node and a ⚠ mark on overlapping nodes. On hover a row shows **+** (a new node under it) and **⋯** (Open, New child node, Rename, Move to, Copy node id, Delete; right-click opens it too); a project's **⋯** has **Show only this project**, undone with the chip's **×**. **Deleted (n)** below the tree restores deleted nodes; **Settings** at the bottom. Below 900px wide it is a drawer behind the ☰ button |
 | **Needs me** | The inbox, grouped by node: questions (answer inline), gates (Approve/Deny), knowledge proposals (Accept/Retire), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (**Merge**) |
 | **Repos** | Per repo: its delivery mode, the live work nodes on it across projects (ancestors greyed), overlaps, its norms, recent repo events |
 | **Running** | Nodes with a live agent |
@@ -295,8 +295,9 @@ agile node list
 - [ ] `project show` prints the name, root, repos,
       `autonomy    coordinator=advise director=advise` and `tracker     -`.
 - [ ] `node list` shows the two roots, Shop and Blog.
-- [ ] Cockpit: the rail's switcher offers **All projects**, Shop and Blog;
-      picking Shop hides Blog's nodes.
+- [ ] Cockpit: the rail shows both projects, Shop and Blog. Shop's **⋯** →
+      **Show only this project** hides Blog's nodes (a chip reads
+      `Only Shop`); the chip's **×** shows both again.
 
 ## 3. **[vendor]** A conversation becomes a coordinating node
 
@@ -488,7 +489,7 @@ their parents and the repo view show it, and you (or a coordinator) settle it
 with a "waits on" link. When one merges, main moves, and every other live
 node on the repo is **synced** (main merged in, never rebased).
 
-This step needs no agent. You create the nodes with **Start later** ticked,
+This step needs no agent. You create the nodes with **Start the agent now** switched off,
 and play their agents by committing in their worktrees by hand. The
 terminal blocks here are only those commits and a look at the repo. Each
 commit is chained with `&&`, so nothing is written if the `cd` fails. A node's worktree is
@@ -505,21 +506,22 @@ address bar, so a reload comes back to the same node under the same project.
 
 A Blog node adds `walkthrough-notes.md` to ledger-lite and merges directly.
 
-- [ ] In the rail's project switcher pick **Blog**, then click
+- [ ] In the rail, Blog's **⋯** → **Show only this project**, then click
       **Needs me** so no node is selected (a new node's parent defaults
       to the open node).
-- [ ] Press **New node** in the sidebar (or the `n` key). Title
-      `Walkthrough notes`, Goal
-      `Add walkthrough-notes.md with a Blog and a Shop section.`, Parent
-      `— none —`, Repo empty, tick **Start later**, press **Create**. The
-      node's page opens: `No sessions yet.`, and the rail shows it under Blog
-      with the conversation icon ○.
+- [ ] Press **New node** in the sidebar (or the `n` key). It reads `In Blog`.
+      **What should the agent do?**
+      `Add walkthrough-notes.md with a Blog and a Shop section.`, Title
+      `Walkthrough notes`, Parent `Top level of Blog`, Repository
+      `No repository`, switch **Start the agent now** off, press
+      **Create node**. The node's page opens: `No sessions yet.`, and the
+      rail shows it under Blog with the conversation icon ○.
 - [ ] Press **+ Repo**, pick `ledger-lite`, press **Add**. The thread adds
       `repo added: ledger-lite; now a work node on stream/…-walkthrough-notes`,
       the line under the title ends with that branch, the rail icon becomes
       the work icon ●, and no agent starts (it never had one). (Leave the
-      form's Repo field empty: a repo typed there is only used when an agent
-      starts, and no branch is cut until then.)
+      form's Repository at `No repository`: a repository picked there is only
+      used when an agent starts, and no branch is cut until then.)
 - [ ] Commit the file in its worktree:
 
 ```zsh
@@ -546,10 +548,11 @@ cd ~
 
 ### 5.2 Two projects touch the same file
 
-- [ ] Switch the rail to **Shop**, click **Needs me**, and create
-      `Shop note` as in 5.1: **New node**, Title `Shop note`, Goal
-      `Fill in the Shop section of walkthrough-notes.md.`, tick **Start later**,
-      **Create**, then **+ Repo** → `ledger-lite` → **Add**.
+- [ ] Switch the rail to **Shop** (the `Only Blog` chip's ▾ → Shop), click
+      **Needs me**, and create `Shop note` as in 5.1: **New node**, Title
+      `Shop note`, Goal `Fill in the Shop section of walkthrough-notes.md.`,
+      switch **Start the agent now** off, **Create node**, then **+ Repo** →
+      `ledger-lite` → **Add**.
 - [ ] Switch the rail to **Blog**, click **Needs me**, and create
       `Blog note` the same way (Goal
       `Fill in the Blog section of walkthrough-notes.md.`), with **+ Repo** →
@@ -567,7 +570,7 @@ cd ~
 Touched files are recomputed after every agent edit and commit, and every 60
 seconds. Wait a minute, then:
 
-- [ ] Switch the rail to **All projects**. Shop note and Blog note carry the
+- [ ] Show all projects (the chip's **×**). Shop note and Blog note carry the
       ⚠ overlap mark, and so do their project roots, Shop and Blog.
 - [ ] **Repos** (sidebar) shows, under `ledger-lite (direct)`, both live nodes
       with their project greyed (`Shop › Shop note`, `Blog › Blog note`) and
@@ -695,10 +698,10 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
 
 Again no agent: you play it.
 
-- [ ] Rail → **Blog** → **Needs me** → **New node**: Title
+- [ ] Rail → only **Blog** → **Needs me** → **New node**: Title
       `Ledger count`, Goal `Add a count function in src/ledger-count.ts.`,
-      tick **Start later**, **Create**. Then **+ Repo** → `ledger-lite` →
-      **Add**.
+      switch **Start the agent now** off, **Create node**. Then **+ Repo** →
+      `ledger-lite` → **Add**.
 - [ ] Commit the function with no test:
 
 ```zsh
@@ -730,10 +733,12 @@ cd ~
 
 ### 6.4 **[vendor]** A decision reaches a node as an event
 
-- [ ] Rail → **Shop** → **Needs me** → **New node**: Title
+- [ ] Rail → only **Shop** → **Needs me** → **New node**: Title
       `Cents check`, Goal
       `Read ledger-lite and tell me how it stores amounts. Then wait: I may send you a decision about this.`,
-      leave **Start later** unticked, **Create**. A session appears in its
+      leave **Start the agent now** on (it names the model it will use:
+      `claude-opus-5-5 · claude · low effort` unless Settings says
+      otherwise), **Create node**. A session appears in its
       session list (`claude/… · low · starting`, then `running`), and the
       rail icon is the conversation icon ○.
 - [ ] Wait for its first answer on the **Thread** tab. Its turn has ended,
@@ -863,9 +868,9 @@ You need one **epic** in Jira with at least one child issue, and its first
 child should be a small task an agent can do in agile-test-repo (for example
 "Add TRACKER.md with one line saying this repo is linked to Jira").
 
-- [ ] Rail → **Shop** → **Needs me** → **New node**: Title
-      `Tracker epic`, Goal `Placeholder until linked`, tick **Start later**,
-      **Create**.
+- [ ] Rail → only **Shop** → **Needs me** → **New node**: Title
+      `Tracker epic`, Goal `Placeholder until linked`, switch
+      **Start the agent now** off, **Create node**.
 - [ ] On its page press **Tracker issue…** (it shows because Shop has a
       tracker since 8.2), type the epic's key in the **Issue key** field
       (placeholder `SHOP-11`; **change it** to your epic's key, such as
@@ -903,9 +908,10 @@ child should be a small task an agent can do in agile-test-repo (for example
 ### 8.5 **[vendor]** Create an issue from a node
 
 - [ ] Open **Tracker epic** and press **New node** (the Parent defaults to
-      the open node, Tracker epic). Title `Tracker follow-up`, Goal
-      `Note in TRACKER.md how issues are linked.`, tick **Start later**,
-      **Create**.
+      the open node, Tracker epic; its **+** in the rail does the same).
+      Title `Tracker follow-up`, Goal
+      `Note in TRACKER.md how issues are linked.`, switch
+      **Start the agent now** off, **Create node**.
 - [ ] On Tracker follow-up's page press **Tracker issue…**, leave the
       **Issue key** field empty and press **Create issue**. A new issue is created in the epic's Jira project, as a
       child of the epic, from the node's title and goal. The node reads
@@ -924,9 +930,15 @@ child should be a small task an agent can do in agile-test-repo (for example
       has waited. A long card has **Show all**; **Open stream** opens its
       node. The badge on **Needs me** counts them.
 - [ ] The rail's dots say who must act: amber waiting on you, blue agent
-      working, grey idle, green landed, red blocked (hover a row to read it).
+      working, grey idle, green landed, red blocked (hover a row to read it;
+      the **?** next to *Projects* explains every dot and icon). A node whose
+      agent never ran has a dashed ring and a faded title.
       The filter box (`Filter nodes…`, or the `/` key) narrows the tree
       by title. **Running** lists the nodes with a live agent.
+- [ ] A node you no longer need: its **⋯** → **Delete…** → **Delete**. It
+      and the nodes under it leave the rail and their agents stop (branches
+      and worktrees stay). **Undo** in the toast, or **Deleted (n)** below the
+      tree → **Restore**, brings them back. A project's root has no Delete.
 - [ ] A node's **Activity** tab is what woke it and why: one row per routed
       event with its type, `[repo]`, why it was routed (self, ancestor,
       waits on, same repo, party, sibling), the delivery status

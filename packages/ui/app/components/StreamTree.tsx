@@ -1163,11 +1163,11 @@ export function DeletedNodes({
                 data-stream={a.id}
               >
                 <Icon name="trash" size={13} className="cr-rail-deleted-icon" />
-                <span className="cr-rail-deleted-title" title={a.title}>
+                <span
+                  className="cr-rail-deleted-title"
+                  title={where ? `${a.title} (in ${where})` : a.title}
+                >
                   {a.title}
-                  {where && project === undefined ? (
-                    <span className="cr-rail-deleted-where"> · {where}</span>
-                  ) : null}
                 </span>
                 <Button
                   size="sm"

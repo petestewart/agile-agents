@@ -1871,9 +1871,6 @@ ul.cr-error {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cr-rail-deleted-where {
-  color: var(--text-faint);
-}
 .cr-rail-deleted-row .cr-btn {
   height: 24px;
   padding: 0 8px;
@@ -2131,6 +2128,11 @@ input[type="checkbox"].cr-switch:focus-visible {
   font-size: var(--text-sm);
   color: var(--text-faint);
 }
+@media (hover: none), (max-width: 600px) {
+  .cr-newnode-keys {
+    visibility: hidden;
+  }
+}
 
 /* New project: the repositories as a checklist. */
 .cr-checkfield {
@@ -2211,7 +2213,7 @@ input[type="checkbox"].cr-switch:focus-visible {
   margin: 0 0 6px;
 }
 .cr-dialog-text {
-  margin: 0;
+  margin: 0 0 12px;
   line-height: 1.55;
   color: var(--text-muted);
 }

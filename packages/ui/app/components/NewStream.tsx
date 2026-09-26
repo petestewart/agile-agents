@@ -215,7 +215,8 @@ function NewStreamForm({
     }
   };
 
-  if (projects.length === 0 && parent === '') {
+  // Nothing to file into: no project, and no parent to take one from.
+  if (projectId === undefined && parent === '') {
     return (
       <Dialog open onClose={close} title="New node" testid="new-stream" size="sm">
         <EmptyState
