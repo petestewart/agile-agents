@@ -1868,14 +1868,23 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 - **Validation Steps:** `bun test packages/daemon/src/streams packages/daemon/src/coordination`.
 - **Notes:** Branch T346-first-part-waits, merge 0bd8875. repo-in-place `split = !inPlace && !switching` gates coordinator start and plan wait, so + Repo on a conversation with tangents gets a coordinator and a waiting part; a human-stopped node still starts its part at once. Review+QA (sonnet): APPROVE/PASS.
 
+### Ticket: T353 Walkthrough step 8.5 is load-sensitive
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** `test:walkthrough` step 8.5 ("the Parent defaults to the open node, Tracker epic") failed twice under machine load (other Chromium runs) and passes when idle; seen on phase-14 at c7c4164. Root-cause it (a race in the New stream form's default parent, or the walkthrough reading before the cockpit update lands) and fix the product or the wait, not a timeout bump.
+- **Acceptance Criteria:** 5 walkthrough runs under parallel load, 0 failures at 8.5.
+- **Validation Steps:** `bun run build && bun run test:walkthrough`.
+- **Notes:** —
+
 ### Ticket: T347 Cockpit wording and small UI (D36: D1, D5, D6, D7, D9, D11, D12)
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T347
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** D1 rename the two "Link" buttons to "Waits on…" and "Tracker issue…"; the tracker field only when the project has a tracker. D5 a direct merge event reads "merged". D6 the coordinator autonomy picker only on coordinating nodes and project roots. D7 "Merge" on the Needs me card too. D9 a ship-check hold styled neutral. D11 part titles in the rail not cut off by "waiting for the plan". D12 daemon lines addressed to the agent hidden from the human thread (still delivered to the agent).
 - **Acceptance Criteria:** UI tests per item; walkthrough still clean.
 - **Validation Steps:** `bun test packages/ui`; `bun run build && bun run test:walkthrough`.
-- **Notes:** —
+- **Notes:** Branch T347-cockpit-wording, merge 0dd30ce. D1 "Waits on…"/"Tracker issue…" (field only with a project tracker); D5 a direct merge reads "merged" (event type unchanged); D6 autonomy picker on roots and coordinating nodes; D7 "Merge"/"Merged." throughout the cockpit (CLI `land` verb unchanged); D9 holds (ship check, waits-on, helper waits-on-parent) carry `held` and render neutral; D11 rail badge on its own line; D12 optional `agent_only` on thread entries (daemon-only writer), hidden in the cockpit. Review+QA (sonnet): blockers (helper hold still red, leftover "Landed"/"land again") fixed.
 
 ### Ticket: T348 The open node and filter live in the URL (D36: D2)
 - **Priority:** P1
@@ -1897,12 +1906,12 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T350 Collapse ended sessions in the session list (D36: D4)
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** Coordinator wakes stay as they are. The sessions list shows live sessions plus one "N earlier sessions" row that expands.
 - **Acceptance Criteria:** E2E: 8 ended coordinator sessions collapse to one row; expand shows them.
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** —
+- **Notes:** Branch T350-collapse-ended-sessions, merge f04500d. Two or more ended sessions fold into one "N earlier sessions" row (a single ended one stays visible); live sessions always shown; fold resets per node. Review+QA (sonnet): APPROVE/PASS.
 
 ### Ticket: T351 Accepting a decision wakes the conversation (D36: D10)
 - **Priority:** P2
