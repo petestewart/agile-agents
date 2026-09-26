@@ -3900,6 +3900,42 @@ input[type="checkbox"].cr-switch:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* T411: how full the agent's context is, after the model chip */
+.cr-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+.cr-context svg {
+  flex: none;
+}
+.cr-context-track {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 2;
+}
+.cr-context-fill {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.cr-context[data-level="high"] {
+  color: var(--amber-text);
+}
+.cr-context[data-level="high"] .cr-context-fill {
+  stroke: var(--amber);
+}
+.cr-context[data-level="full"] {
+  color: var(--red-text);
+}
+.cr-context[data-level="full"] .cr-context-fill {
+  stroke: var(--red);
+}
 button.cr-model-chip {
   cursor: pointer;
 }
@@ -8443,7 +8479,7 @@ div.cr-lens-ev:hover {
   text-overflow: ellipsis;
 }
 .cr-lens-run-repo > span:last-child,
-.cr-lens-run-agent > span:last-child {
+.cr-lens-run-agent-text {
   overflow: hidden;
   text-overflow: ellipsis;
 }

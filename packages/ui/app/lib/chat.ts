@@ -92,6 +92,30 @@ export function sessionIdText(session: {
   return `${session.vendor}/${model} · ${session.effort} effort${ignored}`;
 }
 
+/** T411: a token count a glance reads: 950, 46k, 1.2M. */
+export function tokensText(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  const m = n / 1_000_000;
+  return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+}
+
+/**
+ * T411: how full an agent's context window is, for the meter by its model
+ * chip: the share used, a level (`high` from 75%, `full` from 90%, when a
+ * long session is worth restarting fresh), and the numbers in words.
+ */
+export function contextMeter(context: { used: number; size: number }): {
+  percent: number;
+  level: 'ok' | 'high' | 'full';
+  title: string;
+} {
+  const percent = Math.min(100, Math.max(0, Math.round((context.used / context.size) * 100)));
+  const level = percent >= 90 ? 'full' : percent >= 75 ? 'high' : 'ok';
+  const title = `Context: ${tokensText(context.used)} of ${tokensText(context.size)} tokens used (${percent}%)`;
+  return { percent, level, title };
+}
+
 /** Who wrote a thread line, for the chat's name row. */
 export interface ChatAuthor {
   /** "You", "Claude", "Coordinator", "agile". */

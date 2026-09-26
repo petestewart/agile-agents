@@ -102,6 +102,8 @@ export interface CockpitLiveAgent {
   vendor: string;
   model: string;
   effort?: SessionRef['effort'];
+  /** T411: its context window, tokens used of the window's size, once the vendor reports it. */
+  context?: { used: number; size: number };
 }
 
 /** T160: mirror of `feed/snapshot.ts`'s `CockpitFrame` — the inbox and the tree, pushed on connect and after every event batch. */

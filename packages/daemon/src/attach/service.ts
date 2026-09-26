@@ -65,7 +65,7 @@ import { nodeReadScope } from '../permissions/policy-tables';
 import type { BriefDoc } from '../runner/brief';
 import { buildBrief } from '../runner/brief';
 import type { CliInvocation } from '../runner/cli-bin';
-import { type AgentSessionHandle, startAgentSession } from '../runner/session';
+import { type AgentSessionHandle, type ContextUsage, startAgentSession } from '../runner/session';
 import { createWorktree, slugify } from '../runner/worktrees';
 import type { StateStore } from '../store';
 import { assertRepoHasCommits, buildEvent } from '../store';
@@ -1331,6 +1331,11 @@ export class AttachService {
         ),
       ),
     );
+  }
+
+  /** T411: a live session's context window, as its vendor last reported it. */
+  contextFor(sessionId: string): ContextUsage | undefined {
+    return this.liveHandleBySession(sessionId)?.contextUsage();
   }
 
   private liveHandleBySession(sessionId: string): AgentSessionHandle | undefined {

@@ -173,10 +173,31 @@ export interface AgentSessionHandle {
   prompt(text: string, opts?: { onDelivered?: () => void }): Promise<unknown>;
   /** Turns started or queued and not yet finished (0 = idle). */
   turnsInFlight(): number;
+  /**
+   * T411: how full the session's context window is, as its last
+   * `usage_update` said (tokens used of the window's size); `undefined`
+   * until the vendor reports one (not every vendor does).
+   */
+  contextUsage(): ContextUsage | undefined;
   /** Whether `stop()` has been called. */
   stopped(): boolean;
   /** `cancel()` + `close()`; the exit path still runs off the session's own `exit` event. */
   stop(): void;
+}
+
+/** T411: a session's context window: tokens used of its size. */
+export interface ContextUsage {
+  used: number;
+  size: number;
+}
+
+/** T411: a `usage_update`'s numbers, when they make sense. */
+export function contextUsageOf(update: Record<string, unknown> | null): ContextUsage | undefined {
+  const used = update?.used;
+  const size = update?.size;
+  if (typeof used !== 'number' || typeof size !== 'number') return undefined;
+  if (!Number.isFinite(used) || !Number.isFinite(size) || used < 0 || size <= 0) return undefined;
+  return { used: Math.round(used), size: Math.round(size) };
 }
 
 /** `session.prompt()` resolves `failed` for a turn that died mid-flight; turn that into a rejection. */
@@ -417,6 +438,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   // past that it is cut at the end and the overflow streams to the log.
   let buffer = '';
   let overflowed = false;
+  let context: ContextUsage | undefined;
   function flushOutput(): void {
     const text = overflowed ? buffer.trimStart() : buffer.trim();
     const wasOverflowed = overflowed;
@@ -563,6 +585,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       // Bookkeeping updates are not message boundaries (a `usage_update`
       // between two chunks once split one message in two). Only a real turn
       // item closes the streaming message.
+      if (kind === 'usage_update') context = contextUsageOf(update) ?? context;
       if (typeof kind === 'string' && NON_BOUNDARY_UPDATES.includes(kind)) return;
       flushOutput();
 
@@ -725,6 +748,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     },
     turnsInFlight() {
       return inFlight;
+    },
+    contextUsage() {
+      return context === undefined ? undefined : { ...context };
     },
     stopped() {
       return stopRequested || settled;

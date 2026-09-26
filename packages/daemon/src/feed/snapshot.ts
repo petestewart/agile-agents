@@ -192,6 +192,8 @@ export interface CockpitLiveAgent {
   model: string;
   /** Absent for a vendor with no effort mapping (the session records none). */
   effort?: SessionRef['effort'];
+  /** T411: its context window, tokens used of the window's size, once the vendor reports it. */
+  context?: { used: number; size: number };
 }
 
 /** Vendors whose tool calls pass the `agile hook` path check (Claude's hook, Pi's extension). */
@@ -293,6 +295,8 @@ export function buildCockpitFrame(
   threadUpdatedAt?: (node: string) => string | undefined,
   /** T410: a finished node's change size, from the same cache as `nothingToMerge`. */
   diffStatOf?: (node: Stream) => CockpitStreamRow['diff_stat'],
+  /** T411: a live session's context window, as its vendor last reported it (`AttachService.contextFor`). */
+  contextOf?: (session: string) => CockpitLiveAgent['context'],
 ): CockpitFrame {
   // One read of the home: the archived ones are only for Restore (T361).
   const everything = streams.list({ include_archived: true });
@@ -321,7 +325,7 @@ export function buildCockpitFrame(
       ...diffStatRow(diffStatOf?.(s)),
       updated_at: latest(s.created_at, s.agent.updated_at, threadUpdatedAt?.(s.id)),
       ...startState(s, all),
-      ...liveAgent(s),
+      ...liveAgent(s, contextOf),
     })),
     projects: (projects?.list() ?? []).map((p) => ({
       id: p.id,
@@ -384,7 +388,10 @@ const LIVE_AGENT_RANK: Record<SessionRole, number> = {
  * lessons pass — so a node listed as running always says what runs. The
  * newest session wins a tie.
  */
-function liveAgent(s: Stream): { live_agent?: CockpitLiveAgent } {
+function liveAgent(
+  s: Stream,
+  contextOf?: (session: string) => CockpitLiveAgent['context'],
+): { live_agent?: CockpitLiveAgent } {
   let pick: SessionRef | undefined;
   for (const x of s.sessions) {
     if (!LIVE_SESSION.has(x.status)) continue;
@@ -397,8 +404,13 @@ function liveAgent(s: Stream): { live_agent?: CockpitLiveAgent } {
       vendor: pick.vendor,
       model: pick.model,
       ...(pick.effort !== undefined ? { effort: pick.effort } : {}),
+      ...contextRow(contextOf?.(pick.id)),
     },
   };
+}
+
+function contextRow(context: CockpitLiveAgent['context']): Pick<CockpitLiveAgent, 'context'> {
+  return context !== undefined ? { context: { used: context.used, size: context.size } } : {};
 }
 
 /** T361: the deleted nodes Restore can bring back (a parent not deleted), newest delete first. */

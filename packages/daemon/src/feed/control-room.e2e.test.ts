@@ -3276,6 +3276,8 @@ describe("the agent's steps in the chat (Playwright e2e, T392)", () => {
       const release = join(tmpdir(), `agile-steps-e2e-${ulid()}`);
       const worker: FakeAgentScript = {
         steps: [
+          // T411: the vendor says how full its context is.
+          { type: 'usage_update', used: 46_000, size: 200_000 },
           {
             type: 'tool_call',
             toolCallId: 'read-1',
@@ -3347,6 +3349,11 @@ describe("the agent's steps in the chat (Playwright e2e, T392)", () => {
         expect(await page.locator('[data-testid="thinking"]').textContent()).toContain(
           'Claude is working',
         );
+        // T411: the composer says how full the agent's context is.
+        const meter = page.locator('.cr-compose-chips [data-testid="context-meter"]');
+        await meter.waitFor();
+        expect(await meter.getAttribute('data-percent')).toBe('23');
+        expect(await meter.getAttribute('title')).toBe('Context: 46k of 200k tokens used (23%)');
         // T405: and for how long, from the line that started the turn.
         expect(
           await page

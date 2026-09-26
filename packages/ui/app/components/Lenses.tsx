@@ -68,6 +68,7 @@ import { KIND_LABEL, statsWords } from '../lib/rules';
 import { useShell } from '../lib/shell';
 import { ROLE_HINT, ROLE_LABEL, ago, nodeStatus } from '../lib/status';
 import { ancestorTitles, eventTime, groupByRepo, runningRows } from '../lib/streams';
+import { ContextMeter } from './Chat';
 import { Icon, type IconName } from './Icon';
 import { EnforcementBadge } from './KnowledgeList';
 import {
@@ -601,7 +602,10 @@ function RunningRow({
           {agent ? (
             <>
               <Icon name="bot" size={13} />
-              <span>{agent.text}</span>
+              <span className="cr-lens-run-agent-text">{agent.text}</span>
+              {row.live_agent?.context !== undefined && (
+                <ContextMeter context={row.live_agent.context} />
+              )}
             </>
           ) : null}
         </span>
