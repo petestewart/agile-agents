@@ -7314,6 +7314,11 @@ describe('overlap warnings (Playwright e2e, T227)', () => {
               true && texts.includes('api: add salePrice and api: sale banner both changed sale.ts')
           );
         });
+        // T424c: each live node's status is a pill, as in Dependencies and Running.
+        await page
+          .locator('[data-testid="repo-view"] [data-repo="api"] [data-testid="repo-node-status"]')
+          .first()
+          .waitFor();
       } finally {
         await teardown([page]);
         await cockpit.stop();
