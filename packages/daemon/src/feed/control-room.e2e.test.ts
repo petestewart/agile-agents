@@ -5238,6 +5238,50 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
   );
 });
 
+describe('the sidebar keeps Needs me in sight (Playwright e2e, audit r5 #4)', () => {
+  browserTest(
+    'opening a node far down a long tree scrolls the tree, not Needs me and its count',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        let last = '';
+        for (let n = 1; n <= 40; n += 1) {
+          last = (
+            await cockpit.streams.create('human', {
+              title: `node ${String(n).padStart(2, '0')}`,
+              goal: 'g',
+              project: shop.id,
+            })
+          ).id;
+        }
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${last}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${last}"]`).waitFor();
+        const inView = (selector: string) =>
+          (page as Page).locator(selector).evaluate((el) => {
+            const box = el.getBoundingClientRect();
+            return (
+              box.top >= 0 &&
+              box.bottom <= (globalThis as unknown as { innerHeight: number }).innerHeight
+            );
+          });
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${last}"]`).waitFor();
+        expect(await inView(`[data-testid="stream-tree"] [data-stream="${last}"]`)).toBe(true);
+        expect(await inView('[data-testid="sidebar"] [data-view="inbox"]')).toBe(true);
+        expect(await inView('[data-testid="sidebar"] [data-view="director"]')).toBe(true);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('project tree and filter (Playwright e2e, T208, T365)', () => {
   browserTest(
     "two projects: each one's nodes show only under it; New project keeps All projects; Show only this project filters and the chip undoes it",
@@ -5943,6 +5987,13 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
         });
         page = await openPage();
         const traffic = recordTraffic(page);
+        // T414 (D41): a title New node derived asks the daemon to name it.
+        const creates: Array<Record<string, unknown>> = [];
+        page.on('request', (r) => {
+          if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/streams') {
+            creates.push(r.postDataJSON() as Record<string, unknown>);
+          }
+        });
         await page.goto(`${cockpit.base}/`);
         await page.locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`).click();
         await page.keyboard.press('n');
@@ -5970,6 +6021,7 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
 
         const created = cockpit.streams.list().find((x) => x.title === 'import CSV');
         expect(created?.goal).toBe('import CSV\nBank exports, with a header row.');
+        expect(creates.map((c) => [c.title, c.auto_title])).toEqual([['import CSV', true]]);
         expect(created?.repo).toBe('demo');
         await waitForRunningWorker(page, cockpit, created?.id ?? '', traffic);
         // T363: with its agent running the page offers Stop, and the ⋯ menu Restart agent.
