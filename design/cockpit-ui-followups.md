@@ -50,8 +50,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 - A line sent with `start` appears in the first prompt twice (the brief's
   "Thread so far" and "What woke you"); by design for every wake (T336), a
   few tokens, invisible to the user.
-- A wake and a manual attach can both pass the "no live agent" check and
-  start two agents (pre-existing race).
 - RPC `stream.archive` archives one node without stopping its sessions; the
   HTTP route archives the subtree and stops them. CLI `test-support.ts` isn't
   wired to `onTreeChanged`.

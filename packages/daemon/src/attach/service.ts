@@ -107,6 +107,11 @@ export function liveSession(stream: Stream, role: SessionRole = 'worker'): Sessi
 }
 
 /** The node's live agent session: its worker, or its coordinator (P20). */
+/** T396: the start slot a role takes on a node: worker and coordinator share one (a node has one agent). */
+function startKey(streamId: string, role: SessionRole): string {
+  return `${streamId}:${isAgentRole(role) ? 'agent' : role}`;
+}
+
 function liveAgent(stream: Stream): SessionRef | undefined {
   return liveSession(stream, 'worker') ?? liveSession(stream, 'coordinator');
 }
@@ -311,6 +316,13 @@ export class AttachService {
   /** T351: conversations woken per accepted knowledge item (D36 D10). */
   private readonly wakeFanout = new WakeFanout();
   private readonly waking = new Set<string>();
+  /**
+   * T396: starts in flight, per node and slot (`<id>:agent`, `<id>:reviewer`, …).
+   * "One agent per node" is checked before the async work of a start (the
+   * worktree, the spawn), so two starts at once — a wake and a click — would
+   * both pass it; a second start waits for the first, then sees it live.
+   */
+  private readonly starting = new Map<string, Promise<unknown>>();
   /** Nodes already sent to the inbox for a spent budget (one thread line per episode). */
   private readonly overBudget = new Set<string>();
   /** T361: nodes whose agent is being restarted in a new role. */
@@ -367,7 +379,7 @@ export class AttachService {
    * the node is `blocked` (an inbox item) and its events stay pending.
    */
   private async wake(node: string, pending: readonly RoutedEvent[]): Promise<void> {
-    if (this.waking.has(node)) return;
+    if (this.waking.has(node) || this.startingAgent(node)) return;
     const { streams } = this.options;
     let stream: Stream;
     try {
@@ -570,6 +582,25 @@ export class AttachService {
   }
 
   async attach(streamId: string, options: AttachOptions = {}): Promise<AttachResult> {
+    const key = startKey(streamId, options.role ?? 'worker');
+    const before = this.starting.get(key);
+    const run = (before ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.attachNow(streamId, options));
+    this.starting.set(key, run);
+    try {
+      return await run;
+    } finally {
+      if (this.starting.get(key) === run) this.starting.delete(key);
+    }
+  }
+
+  /** T396: an agent start for the node is in flight (a wake or a line need not start another). */
+  private startingAgent(streamId: string): boolean {
+    return this.starting.has(startKey(streamId, 'worker'));
+  }
+
+  private async attachNow(streamId: string, options: AttachOptions): Promise<AttachResult> {
     const wake =
       options.wake !== undefined && options.wake.length > 0
         ? this.delivery.inBrief(streamId, options.wake)
@@ -1056,7 +1087,14 @@ export class AttachService {
   private async startFor(id: string): Promise<AttachResult | undefined> {
     const { streams } = this.options;
     const stream = streams.get(id);
-    if (!isOpen(stream) || liveAgent(stream) !== undefined || this.waking.has(id)) return undefined;
+    if (
+      !isOpen(stream) ||
+      liveAgent(stream) !== undefined ||
+      this.waking.has(id) ||
+      this.startingAgent(id)
+    ) {
+      return undefined;
+    }
     const { shape, role } = agentFor(stream, streams.list());
     if (shape === 'project' && role !== 'coordinator') return undefined;
     try {

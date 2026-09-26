@@ -2222,6 +2222,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui packages/daemon/src/feed/snapshot.test.ts`; the overview and rail e2e.
 - **Notes:** Branch T395-updated-and-jk. `StateStore.threadUpdatedAt` keeps each thread's last line time from appends, else the file's mtime (read once); the row's `updated_at` is the latest of creation, the agent's last status and that. Running has an Updated column (hidden on a phone) and sorts most recent first within a rank; the Overview does the same within a group. The shortcut list names J/K for the tree.
 
+### Ticket: T396 Two starts at once give one agent
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups (pre-existing race): "one agent per node" was checked before the async work of a start (worktree, spawn), so a wake and a click, or a line with `start` and a click, could both pass it and start two agents on one node.
+- **Acceptance Criteria:** Starts are serialized per node and slot (worker and coordinator share one): a second start waits for the first, then is refused as busy; a wake or a line with `start` skips quietly while a start is in flight.
+- **Validation Steps:** `bun test packages/daemon/src/attach/service.test.ts -t T396` (fails on the old code: two sessions); the attach, events and coordination suites.
+- **Notes:** Branch T396-one-agent-per-node.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
