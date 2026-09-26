@@ -1940,6 +1940,90 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 - **Validation Steps:** CI; `bun test`; `bun run test:integration`.
 - **Notes:** Bun 1.4.2 (newest stable). Measured: fd double-close 19/20 rounds on 1.3.11 and 1.3.14, 0/20 on 1.4.0–1.4.2; the in-repo repro with pinnedStdio off fails 10/10 on 1.3.11, passes 10/10 on 1.4.2; a 10k-spawn stress loses exits/pipes on 1.3.11, none on 1.4.x. Pin moved on phase-7 and forward (CI, engines, CLAUDE.md, LIVE-CHECKLIST); workarounds kept. Also fixed a chromium.test.ts fd-count check that compared fd numbers only. Manager read the 6-file diff.
 
+### Phase 15 — Cockpit UX overhaul
+
+Pete (2026-09-26): the cockpit works but is rough; take it to a polished, professional app that a developer is productive in. His list: repo picker instead of free text (folder browse, GitHub/SSH URL, like T3 Code); repo icons (local / GitHub / SSH); New project repos as a vertical checklist and land on All projects; a chat like the Claude/Codex desktop apps; a new node starts with the default model, no picker; say what Knowledge holds (rules vs other items) and fix the rule cards; show not-started nodes in the rail; questions answered in the chat, not above it, with clickable choices; a role change takes effect without a restart; a way to delete a node. Design and vocabulary: `design/cockpit-ui.md`. Built on `claude/phase-14` (the session's designated branch); tickets `T###-<slug>` branch from it and merge back `--no-ff`. The UI keeps its `data-testid`s where the element survives, so the e2e suites move with the UI rather than being rewritten.
+
+### Ticket: T360 UI foundation: design system and sidebar shell
+- **Priority:** P0
+- **Status:** In Progress
+- **Owner:** manager
+- **Scope:** Tokens (light/dark), type scale, the primitives every screen uses (`components/ui.tsx`: Button, IconButton, Menu, Dialog with focus trap, Tabs, Badge, StatusDot, EmptyState, Toast; `components/Icon.tsx` inline SVG), and the shell: a left sidebar (Needs me, Director, views, the project tree, Settings) replaces the top bar; pages own their headers. "Node" everywhere in UI text (not "stream"). `design/cockpit-ui.md`.
+- **Acceptance Criteria:** Every view renders in the new shell in light and dark; e2e and walkthrough green with selectors moved from the top bar to the sidebar.
+- **Validation Steps:** `bun run build && bun run typecheck && bun run lint && bun test packages/ui && bun run test:e2e`.
+
+### Ticket: T361 ∥ Agents follow role changes; question choices; delete and restore; a message starts a stopped node
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** (1) A move or a new child that changes a node's derived role restarts its live agent in the new role (worker ↔ coordinator), as + Repo already does, with a thread line saying so. (2) An agent's `ask` may carry `options` (the Question schema has them); the inbox item carries them (InboxItem `options`, question kind only, `.strict()`), so the cockpit can offer them as buttons. (3) HTTP `POST /api/streams/:id/archive` (stops live sessions, archives the subtree, removes clean worktrees; branches kept) and `.../unarchive`; `GET /api/streams?archived=1` or a cockpit field listing archived nodes. (4) `POST /api/streams/:id/say` with `start: true`: on a node with no live agent that is open, the line starts its agent with the session defaults and is its first prompt. (5) Cockpit rows (`feed/snapshot.ts` `CockpitStreamRow`) carry `never_started: true` (a work node or conversation whose agent never ran) and `stopped: true` (`stoppedByHuman` with nothing live, and not closed/landed/archived), so the rail can show them.
+- **Acceptance Criteria:** Service tests for each; existing suites green.
+- **Validation Steps:** `bun test packages/shared packages/daemon`; `bun run typecheck`.
+
+### Ticket: T362 ∥ Browse folders, clone by URL, a repo's remote kind
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** `GET /api/fs/dirs?path=` (same-origin; child directories of an absolute path, each flagged when it is a git toplevel; home and parent for navigation); `POST /api/repos/clone {url, dest?, name?}` (https, ssh `git@host:o/r`, `owner/repo` shorthand for GitHub; clones with the user's own git credentials into `dest`, default a projects folder, then registers it); repo rows (`/api/repos`, cockpit `repos`) carry `remote: {kind: 'github' | 'gitlab' | 'other' | 'none', protocol?: 'https' | 'ssh', url?}`.
+- **Acceptance Criteria:** Unit tests with temp dirs and a local bare repo as the clone source; no network in tests.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts packages/daemon/src/store`; `bun run typecheck`.
+
+### Ticket: T363 A node's page is a chat
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Header (path, title, status in words, role, primary action, overflow menu with the rest); tabs only where they apply; the thread as a chat (your lines as bubbles, the agent's as prose, daemon lines as compact system rows that group); questions, gates and plans inline at the end of the chat, answered there (choices as buttons, the composer answers an open question); the composer (grows, Enter sends, Stop while running, the session model as a chip; a message to a stopped node starts it); a details panel (delivery and Merge, sessions, children, waits on, tracker, autonomy, project settings on a root). Start with defaults in one click; the picker is optional.
+- **Acceptance Criteria:** e2e for chat, inline answer, choice click, send-starts-agent; walkthrough green.
+- **Validation Steps:** `bun run build && bun run test:e2e && bun run test:walkthrough`.
+
+### Ticket: T364 ∥ Needs me and the decision cards
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** One `Card` for every item kind with a clear title, the node path, its age and its actions; a question's choices as buttons; grouped by project then node; an empty state that says what to do next (first run: add a repo, make a project).
+- **Acceptance Criteria:** e2e per card kind still green; choice click answers.
+- **Validation Steps:** `bun test packages/ui`; `bun run test:e2e`.
+
+### Ticket: T365 ∥ Rail, projects and the new-node flow
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Rail status per node (not started, working, needs you, ready, merged, blocked, closed) with a legend in the tooltip; projects as collapsible groups; New project with repos as a vertical checklist (repo icons) that lands on All projects with the project open; New node (title/goal, project, parent, repo picker, start now with the default model, on by default); project overview on the root; Delete (archive) with confirm and Undo, and an Archived list to restore; a refused drag says why.
+- **Acceptance Criteria:** e2e for each flow.
+- **Validation Steps:** `bun run test:e2e`.
+
+### Ticket: T366 ∥ Knowledge, explained
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** The screen says what knowledge is (rules, standards, architecture, decisions) and separates it: Proposed (to review) first, then by kind; each item's enforcement in words (checked on every action, checked before merge, on the reviewer's checklist, guidance only); compact rows with a detail panel for text, check, examples, stats, Edit and Test.
+- **Acceptance Criteria:** e2e for filter, accept, edit, test still green.
+- **Validation Steps:** `bun run test:e2e`.
+
+### Ticket: T367 ∥ Settings and the repo picker
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Settings in sections (General, Agents, Repositories, Classifier, Trackers, Permissions); Add repository: a path with folder autocomplete and a browser, or a GitHub/SSH URL to clone (T362); every repo listed with its icon (local, GitHub over https or ssh, other remote); theme (system/light/dark).
+- **Acceptance Criteria:** e2e: add by browsing; add by URL against a local bare repo.
+- **Validation Steps:** `bun run test:e2e`.
+
+### Ticket: T368 Lenses, Events and the Director
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** Repos, Running, Dependencies and Events as clean lists with status and links; the Director page uses the node chat's components.
+- **Acceptance Criteria:** walkthrough green.
+- **Validation Steps:** `bun run test:walkthrough`.
+
+### Ticket: T369 Phase 15 QA
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** Unassigned
+- **Scope:** The whole offline gate on the integrated branch; a screenshot pass over every view, light and dark, desktop and phone width; deferred findings in `design/cockpit-ui-followups.md`.
+- **Acceptance Criteria:** Gate green; follow-ups written.
+- **Validation Steps:** `bun install && bun run build && bun run typecheck && bun run lint && bun test && bun run test:integration && bun run test:e2e && bun run test:walkthrough`.
+
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
 Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `plan/`, `review/` rounds, `sync/` (shelved on a branch), `feed/stories.ts`, `runner/pipeline-glue.ts`, sprint parts of `merge/`, `bus/` unless the thread reuses it. CLI: `run`, `send`, `halt`, `approve`, `sync`. Shared: `Ticket`, `Sprint`, `Stanza`, `Message`, `Halt`, `Quota`, `Review`, `Qa`, `Oracle`, `Kb`, `Ledger`. Briefs: all but `worker.md`, `reviewer.md`, `lessons.md`. UI: `plan/`, `sprint/`, `review/`, `OraclePanel`. State: the `agile-state` orphan branch and per-repo `.agile/`.
@@ -1954,6 +2038,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-09-26 Pete: the cockpit is rough; asked for a full UX overhaul (his list is in Phase 15's intro) → Phase 15 (T360–T369), design in `design/cockpit-ui.md`, on `claude/phase-14`.
 - 2026-09-26 (T345 worker): a lone `&` was not a command separator in `splitCommandSegments`, so `echo hi & cat /etc/passwd` and `true & rm -rf ~` were auto-allowed for engineers since phase 7. Fixed on ci-fix-lone-ampersand (6ea669a), merged 7→14; reviewed (sonnet) APPROVE.
 - 2026-09-26 (T344 review): T336's `waitingForPlan` re-flagged a part that had started and gone idle, so plan approval could restart it and the rail/card said "waiting" again. Fixed on ci-fix-waiting-started (3e8724d, phase-11): waiting ends once a session starts after the split's waiting line (ULID time). Merged 11→14; reviewed and QA'd (sonnet).
 - 2026-09-25 (CI, phase 9): T131's rule "a reviewer's exit sets `agent.status` done when no worker is live" reversed. A reviewer that died at spawn marked a never-worked stream done. A review is not work, so a reviewer exit now only posts "review finished: N findings"; only a worker (from phase 11, a coordinator) exit moves `agent.status`. Branch ci-fix-review-status (81569dc) on phase-7, merged forward 7→14.
