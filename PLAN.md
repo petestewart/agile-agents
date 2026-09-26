@@ -2191,11 +2191,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T392 ∥ The chat shows what the agent is doing
 - **Priority:** P1
-- **Status:** In progress
+- **Status:** Done
 - **Owner:** worker
 - **Scope:** While an agent works, the chat shows only "Claude is working…": you can't tell whether it is reading, editing or running tests. The daemon already records each ACP tool call (`tool_call` events: kind, title, status) and the feed pushes them live.
 - **Acceptance Criteria:** During a turn the chat shows the agent's latest steps live (kind icon, title, status); after the turn a folded "N steps" row sits before the reply and expands to the list; titles are clipped, nothing raw; a daemon read gives a node's steps without scanning the whole log each time.
 - **Validation Steps:** `bun test packages/ui packages/daemon/src/http.test.ts`; a control-room e2e with a scripted fake agent; the whole control-room e2e and the walkthrough.
+- **Notes:** Branch T392-agent-steps. `feed/steps.ts` `StepIndex` folds `tool_call` events once and then tails `events.jsonl`; `GET /api/streams/:id/steps` → `{steps, total}` (300 newest). `lib/steps.ts` merges live events and groups steps into turns. The live block keeps `data-testid="thinking"`; a finished turn shows "Worked through N steps · 1 failed" inside its reply. Scrolling up is never moved by new steps. control-room 74/0 (run twice), walkthrough green.
 
 ### Ticket: T393 ∥ Review the diff with the agent
 - **Priority:** P1

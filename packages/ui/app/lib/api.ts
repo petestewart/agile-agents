@@ -33,6 +33,7 @@ import type {
   LandOutcome,
   RuleEvalReport,
   RulesPayload,
+  StepPage,
   StreamDiff,
   StreamPagePayload,
 } from './feed-types';
@@ -535,4 +536,9 @@ export function updateProject(
   patch: { name?: string; repos?: string[]; session?: ProjectSessionDefaults | null },
 ): Promise<Project> {
   return post(`/api/projects/${encodeURIComponent(id)}`, patch) as Promise<Project>;
+}
+
+/** T392: a node's agent steps (its tool calls), newest first; the chat follows live events after. */
+export function getStreamSteps(id: string): Promise<StepPage> {
+  return get(`/api/streams/${encodeURIComponent(id)}/steps`);
 }

@@ -297,3 +297,24 @@ export interface RuleEvalReport {
   errors: number;
   agreement_rate?: number;
 }
+
+/** T392: mirror of `feed/steps.ts`'s `AgentStep` — one ACP tool call as its latest update left it. */
+export interface AgentStep {
+  /** The ACP `toolCallId`. */
+  id: string;
+  /** The session that made the call. */
+  session?: string;
+  /** When the call was first seen. */
+  ts: string;
+  /** read, edit, delete, move, search, execute, think, fetch, switch_mode, other. */
+  kind: string;
+  title: string;
+  /** pending, in_progress, completed or failed. */
+  status: string;
+}
+
+/** T392: `GET /api/streams/:id/steps` — the newest steps first, and how many the node has had. */
+export interface StepPage {
+  steps: AgentStep[];
+  total: number;
+}

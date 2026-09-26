@@ -147,9 +147,11 @@ Use these; don't re-invent a button or a menu in a screen.
 
 Screen-level building blocks built on these (reuse them rather than copy):
 
-- `Chat.tsx` (`ChatScroll`, `MessageList`, `ThreadBody`, `Thinking`) and
-  `Composer.tsx` — the node chat, independent of a node (the Director uses
-  them too). Rules live in `lib/chat.ts`.
+- `Chat.tsx` (`ChatScroll`, `MessageList`, `ThreadBody`, `Thinking`,
+  `StepsFold`) and `Composer.tsx` — the node chat, independent of a node (the
+  Director uses them too). Rules live in `lib/chat.ts`; the agent's steps
+  (T392: live while it works, folded as "Worked through N steps" in each
+  reply) in `lib/steps.ts` and `useSteps`.
 - `DecisionCard.tsx` (exported as `Card` from `Inbox.tsx`) — every inbox item
   kind, in the list and (with `full`) at the end of a node's chat. Choices
   come from `choicesOf(item)` in `lib/inbox.ts`.

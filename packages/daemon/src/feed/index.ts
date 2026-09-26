@@ -25,3 +25,10 @@ export {
   type MergePreflight,
   type NothingToMergeCacheOptions,
 } from './merge-state';
+export {
+  STEPS_KEPT,
+  STEPS_LIMIT,
+  StepIndex,
+  type AgentStep,
+  type StepPage,
+} from './steps';

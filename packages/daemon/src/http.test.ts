@@ -30,7 +30,7 @@ import { Bus } from './bus';
 import { ClassifierKeyService, FakeClassifier } from './classifier';
 import { readHomeConfigFile } from './config';
 import { RoutedEventService } from './events';
-import type { CockpitFrame, StreamPagePayload } from './feed';
+import type { CockpitFrame, StepPage, StreamPagePayload } from './feed';
 import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService } from './inbox';
@@ -39,6 +39,7 @@ import { KnowledgeService } from './knowledge';
 import { ProjectService } from './projects';
 import { QuestionService } from './questions';
 import { type DirListing, RepoRemoteCache, StateStore } from './store';
+import { buildEvent } from './store/events';
 import { StreamService } from './streams';
 
 // T121: gates are raised on a stream; the HIL routes only need an id, the
@@ -614,6 +615,57 @@ describe('T160 cockpit routes', () => {
     expect(page.docs).toEqual([]);
     expect((await fetch(url(`/api/streams/${ulid()}`))).status).toBe(404);
     expect((await fetch(url('/api/streams/nope'))).status).toBe(400);
+  });
+
+  test("T392: GET /api/streams/:id/steps is the node's tool calls, one per call, newest first", async () => {
+    const node = await streams.create('human', { title: 'n', goal: 'g' });
+    const other = await streams.create('human', { title: 'o', goal: 'g' });
+    const toolCall = (stream: string, data: Record<string, unknown>, session = 'S-1') =>
+      store.appendEvent(buildEvent('tool_call', { agent: session, data: { stream, ...data } }));
+    const read = async (id: string) => {
+      const res = await fetch(url(`/api/streams/${id}/steps`));
+      expect(res.status).toBe(200);
+      return (await res.json()) as StepPage;
+    };
+    expect(await read(node.id)).toEqual({ steps: [], total: 0 });
+
+    await toolCall(node.id, {
+      toolCallId: 't1',
+      kind: 'read',
+      title: 'Read a.ts',
+      status: 'pending',
+    });
+    await toolCall(node.id, { toolCallId: 't1', status: 'completed' });
+    await toolCall(node.id, {
+      toolCallId: 't2',
+      kind: 'execute',
+      title: '`bun test`',
+      status: 'in_progress',
+    });
+    await toolCall(other.id, {
+      toolCallId: 't3',
+      kind: 'edit',
+      title: 'Edit b.ts',
+      status: 'pending',
+    });
+    const first = await read(node.id);
+    expect(first.total).toBe(2);
+    expect(first.steps.map((s) => [s.id, s.kind, s.title, s.status, s.session])).toEqual([
+      ['t2', 'execute', '`bun test`', 'in_progress', 'S-1'],
+      ['t1', 'read', 'Read a.ts', 'completed', 'S-1'],
+    ]);
+    expect(typeof first.steps[0]?.ts).toBe('string');
+
+    // Appended after the first read: the next read has it (the index follows the log).
+    await toolCall(node.id, { toolCallId: 't2', status: 'failed' });
+    expect((await read(node.id)).steps[0]?.status).toBe('failed');
+    expect((await read(other.id)).steps.map((s) => s.id)).toEqual(['t3']);
+
+    expect((await fetch(url(`/api/streams/${ulid()}/steps`))).status).toBe(404);
+    expect((await fetch(url('/api/streams/nope/steps'))).status).toBe(400);
+    expect((await fetch(url(`/api/streams/${node.id}/steps`), { method: 'POST' })).status).toBe(
+      404,
+    );
   });
 
   test('T161: POST /api/streams/:id/say writes a human line; the actor is never read from the body; cross-origin is 403', async () => {
