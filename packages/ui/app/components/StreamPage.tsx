@@ -54,6 +54,7 @@ import {
   nodeTabs,
   oneLine,
   openQuestions,
+  proposedNext,
   questionIdOfRef,
   sendIntent,
   showGoalCard,
@@ -338,7 +339,7 @@ function GoalCard({
 
 export function StreamPage({ id }: { id: string }): JSX.Element {
   const { cockpit, refresh, offline } = useFeed();
-  const { openRules, select, openOn, openAsk } = useShell();
+  const { openRules, select, openOn, openAsk, openNewStream } = useShell();
   const toast = useToast();
   const copy = useCopy();
   const [page, setPage] = useState<StreamPagePayload | undefined>(undefined);
@@ -1024,6 +1025,27 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
 
   const renderExtra = (entry: StreamPagePayload['thread'][number], i: number) => (
     <>
+      {open &&
+        (() => {
+          // T427: what a worker proposes next is one click from being a node (under this one,
+          // design §2's "break it down"; New node's Parent picker can put it elsewhere).
+          const next = proposedNext(entry);
+          return next ? (
+            <div className="cr-msg-extra">
+              <Button
+                size="sm"
+                icon="plus"
+                data-testid="proposal-create-node"
+                title="Open New node with its title and goal, under this node"
+                onClick={() =>
+                  openNewStream({ parent: stream.id, title: next.title, goal: next.goal })
+                }
+              >
+                Create node…
+              </Button>
+            </div>
+          ) : null;
+        })()}
       {entry.kind === 'proposal' &&
         open &&
         reposNamedIn(entry.body, repos, stream.repo).length > 0 && (
