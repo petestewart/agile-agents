@@ -31,9 +31,9 @@ import {
   type Question,
   type Stream,
 } from '@agile-agents/shared';
+import { DeliveryService } from '../delivery/service';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
-import { LandingService } from '../landing/service';
 import { EMPTY_TREE_SHA } from '../permissions/git-env';
 import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
@@ -378,7 +378,7 @@ describe('T176: Resolve — a worker handed the conflict, then the re-land', () 
   test('attach.resolve appends the merge instruction to the brief; the resolved branch lands', async () => {
     await store.putRepos({ demo: { path: repo, protected_branches: [] } });
     const base = git(['rev-parse', '--abbrev-ref', 'HEAD']);
-    const landing = new LandingService({ store, streams });
+    const landing = new DeliveryService({ store, streams });
     const methods = buildAttachRpcMethods(attachService, verbs, landing);
     const stream = await makeStream('demo');
     const first = await attachService.attach(stream.id);

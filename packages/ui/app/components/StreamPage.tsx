@@ -13,7 +13,7 @@
  *    worker is attached, prompts it too.
  *  - **Diff / Rules / Docs** tabs — the worktree diff against the landing
  *    target, exactly `rulesInScope(stream)`, and the repo + stream docs.
- *  - **Land** — the "before" (would `land` refuse right now, and which
+ *  - **Delivery** (§14.7, direct path; was Land) — the `delivery_state`, the "before" (would `land` refuse right now, and which
  *    diff-stage rules it checks) and the "after" (the outcome line, or the
  *    refusal's reason, shown on the page).
  */
@@ -24,6 +24,7 @@ import {
   type RepoRow,
   addRepoToStream,
   attachSession,
+  checkStreamPr,
   closeStream,
   getStreamDiff,
   getStreamPage,
@@ -33,6 +34,7 @@ import {
   resolveConflict,
   sayOnStream,
   stopSessions,
+  waitOnStream,
 } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
 import type { LandOutcome, StreamDiff, StreamPagePayload } from '../lib/feed-types';
@@ -157,6 +159,16 @@ function DiffView({ id }: { id: string }): JSX.Element {
   );
 }
 
+/** T340: a PR url is GitHub data; it is a link only when it is http(s). */
+function isWebUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function LandPanel({
   page,
   onChanged,
@@ -176,6 +188,25 @@ function LandPanel({
   // T176: a failed land's own line replaces the preflight, never "Ready" beside it.
   const failed = refused !== undefined || (outcome !== undefined && outcome.status !== 'landed');
   const conflicts = land?.conflicts;
+  // T340 (§4.1, P19): with a PR open the merge happens on GitHub; the panel shows the PR, not Merge.
+  const openPr =
+    stream.delivery_state?.mode === 'pr' && stream.delivery_state.pr?.state === 'open'
+      ? stream.delivery_state.pr
+      : undefined;
+
+  async function doCheckPr(): Promise<void> {
+    setBusy(true);
+    setOutcome(undefined);
+    setRefused(undefined);
+    try {
+      await checkStreamPr(stream.id);
+    } catch (err) {
+      setRefused(errorText(err));
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  }
 
   async function doMarkLanded(): Promise<void> {
     setBusy(true);
@@ -207,7 +238,7 @@ function LandPanel({
   return (
     <section className="cr-land" data-testid="land-panel">
       <div className="cr-land-hd">
-        <h2>Land</h2>
+        <h2>Delivery</h2>
         {!finished && land?.merged && (
           <button
             type="button"
@@ -219,7 +250,18 @@ function LandPanel({
             Mark landed
           </button>
         )}
-        {!finished && !land?.merged && (
+        {!finished && openPr && (
+          <button
+            type="button"
+            className="cr-btn"
+            data-testid="stream-pr-check"
+            disabled={busy}
+            onClick={() => void doCheckPr()}
+          >
+            {busy ? 'Checking…' : 'Check now'}
+          </button>
+        )}
+        {!finished && !land?.merged && !openPr && (
           <button
             type="button"
             className="cr-btn signal"
@@ -227,7 +269,7 @@ function LandPanel({
             disabled={busy}
             onClick={() => void doLand()}
           >
-            {busy ? 'Landing…' : 'Land'}
+            {busy ? 'Merging…' : 'Merge'}
           </button>
         )}
       </div>
@@ -261,7 +303,20 @@ function LandPanel({
             Resolve
           </button>
         </div>
-      ) : failed ? null : land?.merged ? (
+      ) : failed ? null : openPr ? (
+        <p data-testid="land-before" data-ready="pr">
+          PR #{openPr.number} into {openPr.base}:{' '}
+          {openPr.review === 'none' ? 'no review' : openPr.review.replace('_', ' ')} · CI{' '}
+          {openPr.checks} · auto-merge {openPr.auto_merge}. It merges on GitHub.{' '}
+          {isWebUrl(openPr.url) ? (
+            <a data-testid="stream-pr-link" href={openPr.url} target="_blank" rel="noreferrer">
+              Open PR
+            </a>
+          ) : (
+            <span data-testid="stream-pr-link">{openPr.url}</span>
+          )}
+        </p>
+      ) : land?.merged ? (
         <p data-testid="land-before" data-ready="merged">
           Already merged into {land.target}.
         </p>
@@ -274,10 +329,20 @@ function LandPanel({
             : `Not landable yet: ${land.reason}`}
         </p>
       ) : null}
+      {stream.delivery_state && (
+        <p
+          className="cr-dim"
+          data-testid="delivery-state"
+          data-status={stream.delivery_state.status}
+        >
+          Delivery: {stream.delivery_state.mode} · {stream.delivery_state.status.replace('_', ' ')}
+          {stream.delivery_state.held_by?.map((h) => ` — ${h.detail}`).join('')}
+        </p>
+      )}
       <p className="cr-dim" data-testid="land-diff-rules">
         {page.diff_rules.length === 0
           ? 'No diff-stage rules in scope.'
-          : `Diff rules checked at land: ${page.diff_rules.join(', ')}`}
+          : `Ship check rules: ${page.diff_rules.join(', ')}`}
       </p>
       {outcome && !(conflicts && conflicts.length > 0) && (
         <p
@@ -296,7 +361,7 @@ function LandPanel({
           data-status="refused"
           role="alert"
         >
-          Land refused: {refused}
+          {openPr ? 'Check failed' : 'Land refused'}: {refused}
         </p>
       )}
     </section>
@@ -318,6 +383,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [repos, setRepos] = useState<RepoRow[]>([]);
   const [addingRepo, setAddingRepo] = useState(false);
   const [repoChoice, setRepoChoice] = useState('');
+  const [linking, setLinking] = useState(false);
+  const [linkChoice, setLinkChoice] = useState('');
   // T176: the server refused a worker on a parent with open children; this is its reason.
   const threadRef = useRef<HTMLOListElement | null>(null);
 
@@ -417,6 +484,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const open = stream.human.status !== 'landed' && stream.human.status !== 'closed';
   const repoOptions = repos.map((r) => r.name).filter((name) => name !== stream.repo);
   const chosenRepo = repoChoice || repoOptions[0] || '';
+  const waits = stream.waits_on ?? [];
+  const titleOf = (id: string) => cockpit?.streams.find((r) => r.id === id)?.title ?? id;
+  const linkOptions = (cockpit?.streams ?? []).filter(
+    (r) => r.id !== stream.id && !waits.some((w) => w.node === r.id),
+  );
+  const chosenLink = linkChoice || linkOptions[0]?.id || '';
   function addRepo(repo: string, switching = false): void {
     void act(
       () => addRepoToStream(stream.id, repo, switching),
@@ -523,6 +596,18 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               Close
             </button>
           )}
+          {open && (
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="link-wait"
+              title="Hold this node's delivery until another node is merged"
+              disabled={busy || linkOptions.length === 0}
+              onClick={() => setLinking((v) => !v)}
+            >
+              Link
+            </button>
+          )}
           {open && stream.parent !== undefined && (
             <button
               type="button"
@@ -535,6 +620,59 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             </button>
           )}
         </div>
+        {waits.length > 0 && (
+          <ul className="cr-dim" data-testid="waits-on">
+            {waits.map((w) => (
+              <li key={w.node}>
+                waits on {titleOf(w.node)}
+                {w.satisfied_at ? ' · satisfied' : ''}
+                {open && (
+                  <button
+                    type="button"
+                    className="cr-btn"
+                    data-testid="waits-on-remove"
+                    disabled={busy}
+                    onClick={() => void act(() => waitOnStream(stream.id, w.node, true))}
+                  >
+                    Unlink
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {linking && (
+          <div className="cr-actions" data-testid="link-wait-form">
+            <select
+              data-testid="link-wait-select"
+              value={chosenLink}
+              onChange={(e) => setLinkChoice(e.target.value)}
+            >
+              {linkOptions.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.title}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="link-wait-submit"
+              disabled={busy || chosenLink === ''}
+              onClick={() =>
+                void act(
+                  () => waitOnStream(stream.id, chosenLink),
+                  () => {
+                    setLinking(false);
+                    setLinkChoice('');
+                  },
+                )
+              }
+            >
+              Wait on
+            </button>
+          </div>
+        )}
         {addingRepo && (
           <div className="cr-actions" data-testid="add-repo-form">
             <select

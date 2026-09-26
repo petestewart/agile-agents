@@ -111,6 +111,24 @@ test('T166: daemon status prints the state home first', () => {
   expect(running).toContain('agiled running: pid=42');
 });
 
+test('T221: daemon status says whether GitHub auth is available, never the token', () => {
+  const base = {
+    home: '/h/agile',
+    port: 4777,
+    socketPath: '/h/agile/agiled.sock',
+    pidPath: '/h/agile/agiled.pid',
+    logPath: '/h/agile/log/agiled.log',
+    running: true,
+    pid: 42,
+  };
+  expect(formatDaemonStatus({ ...base, githubAuth: 'available' })).toContain(
+    'GitHub auth: available',
+  );
+  expect(formatDaemonStatus({ ...base, githubAuth: 'unavailable' })).toContain(
+    'GitHub auth: unavailable (run `gh auth login`)',
+  );
+});
+
 test('T170: daemon status shows the resolved session default, never "default"', () => {
   const report = {
     home: '/h/agile',

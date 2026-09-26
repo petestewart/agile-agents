@@ -469,6 +469,19 @@ describe('agile node add-repo (T205)', () => {
   }, 30_000);
 });
 
+describe('agile node wait (T228)', () => {
+  test('adds and removes a waits_on edge; a cycle is refused', async () => {
+    const a = await newStream('Target');
+    const b = await newStream('Waiter');
+    const added = await cli(['node', 'wait', b.id, '--on', a.id]);
+    expect(added.code).toBe(0);
+    expect(added.out).toContain(`waits on ${a.id}`);
+    expect((await cli(['node', 'wait', a.id, '--on', b.id])).code).not.toBe(0);
+    const removed = await cli(['node', 'wait', b.id, '--on', a.id, '--remove']);
+    expect(removed.out).toContain('waits on nothing');
+  });
+});
+
 describe('a repo with no commits (T214)', () => {
   async function cliErr(argv: string[]): Promise<{ code: number; out: string; err: string }> {
     const errors: string[] = [];

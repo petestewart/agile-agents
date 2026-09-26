@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { AgentMessage } from '@agile-agents/shared';
+import type { AgentMessage, ReposConfig } from '@agile-agents/shared';
 import { decidePreToolUse } from './decide';
 import { DEFAULT_MAX_READ_BYTES, type HookDecisionContext } from './types';
 
@@ -137,6 +137,127 @@ describe('decidePreToolUse — role × tool policy (review round 3, reuses decid
     expect(read).toEqual({ decision: 'allow' });
     const glob = decidePreToolUse(ctx, { tool_name: 'Glob', tool_input: { pattern: '**/*.ts' } });
     expect(glob).toEqual({ decision: 'allow' });
+  });
+});
+
+// T229 (P13): the visibility deny rides the hook's path checks.
+describe('decidePreToolUse — repo visibility (T229)', () => {
+  const SHOP = 'P-01J9SHOPSHOPSHOPSHOPSHOPSH';
+  const BLOG = 'P-01J9BLOGBLOGBLOGBLOGBLOGBL';
+  const repos: ReposConfig = {
+    api: {
+      path: '/src/api',
+      protected_branches: [],
+      visibility: { mode: 'private' as const, projects: [SHOP] },
+    },
+    blog: { path: '/src/blog', protected_branches: [] },
+    shop: { path: '/src/shop', protected_branches: [] },
+  };
+  const read = { tool_name: 'Read', tool_input: { file_path: '/src/api/prices.ts' } };
+
+  test('a Blog node reading the private api listed only for Shop is denied with the reason', () => {
+    const d = decidePreToolUse(
+      baseCtx({
+        worktreePath: '/src/blog/.worktrees/n1',
+        visibility: {
+          repos,
+          ownRepo: 'blog',
+          project: BLOG,
+          worktreePath: '/src/blog/.worktrees/n1',
+        },
+      }),
+      read,
+    );
+    expect(d.decision).toBe('deny');
+    expect(d.reason).toContain('private');
+    expect(d.reason).toContain('api');
+    expect(d.reason).toContain(BLOG);
+  });
+
+  test('a Shop node reading the same file is allowed', () => {
+    const d = decidePreToolUse(
+      baseCtx({
+        worktreePath: '/src/shop/.worktrees/n2',
+        // T213: the service also hands over the roots Shop may read.
+        readRoots: ['/src/api', '/src/blog', '/src/shop'],
+        visibility: {
+          repos,
+          ownRepo: 'shop',
+          project: SHOP,
+          worktreePath: '/src/shop/.worktrees/n2',
+        },
+      }),
+      read,
+    );
+    expect(d.decision).toBe('allow');
+  });
+
+  test('a Shop node may not write into api: changes stay in its own repo', () => {
+    const d = decidePreToolUse(
+      baseCtx({
+        worktreePath: '/src/shop/.worktrees/n2',
+        visibility: {
+          repos,
+          ownRepo: 'shop',
+          project: SHOP,
+          worktreePath: '/src/shop/.worktrees/n2',
+        },
+      }),
+      {
+        tool_name: 'Edit',
+        tool_input: { file_path: '/src/blog/a.ts', old_string: 'a', new_string: 'b' },
+      },
+    );
+    expect(d.decision).toBe('deny');
+    expect(d.reason).toContain('own repo (shop)');
+  });
+
+  test('Bash `cat` of a private api file: Blog denied, Shop allowed', () => {
+    const cat = { tool_name: 'Bash', tool_input: { command: 'cat /src/api/prices.ts | head' } };
+    const blog = decidePreToolUse(
+      baseCtx({
+        worktreePath: '/src/blog/.worktrees/n1',
+        visibility: {
+          repos,
+          ownRepo: 'blog',
+          project: BLOG,
+          worktreePath: '/src/blog/.worktrees/n1',
+        },
+      }),
+      cat,
+    );
+    expect(blog.decision).toBe('deny');
+    expect(blog.reason).toContain('private');
+    const shop = decidePreToolUse(
+      baseCtx({
+        worktreePath: '/src/shop/.worktrees/n2',
+        visibility: {
+          repos,
+          ownRepo: 'shop',
+          project: SHOP,
+          worktreePath: '/src/shop/.worktrees/n2',
+        },
+      }),
+      cat,
+    );
+    // The role policy already confines Bash reads to the worktree; visibility itself passes.
+    expect(shop.reason ?? '').not.toMatch(/private|own repo/);
+  });
+
+  test('an unreadable repos.yaml fails closed outside the worktree', () => {
+    const ctx = baseCtx({
+      worktreePath: '/src/blog/.worktrees/n1',
+      visibility: {
+        repos: {},
+        reposError: '/home/repos.yaml:3: bad',
+        worktreePath: '/src/blog/.worktrees/n1',
+      },
+    });
+    const out = decidePreToolUse(ctx, read);
+    expect(out.decision).toBe('deny');
+    expect(out.reason).toContain('repos.yaml');
+    const inside = decidePreToolUse(ctx, { tool_name: 'Read', tool_input: { file_path: 'a.ts' } });
+    expect(inside.decision).toBe('allow');
   });
 });
 

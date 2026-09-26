@@ -261,6 +261,31 @@ export class StreamService {
     return closed;
   }
 
+  /**
+   * T228 (P8): adds (or, with `remove`, drops) a `waits_on` edge from `id`
+   * to `on`. The store refuses an unknown target or a cycle. `satisfied_at`
+   * is the daemon's (`DeliveryService.settle`).
+   */
+  async wait(
+    principal: 'human' | 'coordinator' | 'director',
+    id: string,
+    on: string,
+    options: { remove?: boolean } = {},
+  ): Promise<Stream> {
+    const edges = this.get(id).waits_on ?? [];
+    const rest = edges.filter((w) => w.node !== on);
+    if (options.remove !== true && rest.length !== edges.length) return this.get(id);
+    const next = options.remove
+      ? rest
+      : [...edges, { node: on, added_by: principal, added_at: new Date().toISOString() }];
+    const updated = await this.update(principal, id, { waits_on: next });
+    await this.appendThread(principal, id, {
+      kind: 'event',
+      body: options.remove ? `no longer waits on ${on}` : `waits on ${on}`,
+    });
+    return updated;
+  }
+
   /** Sets the `archived` flag (nothing moves on disk); `list` hides it. Human status is kept. */
   async archive(principal: StreamPrincipal, id: string): Promise<Stream> {
     return this.update(principal, id, { archived: true }, { kind: 'stream_archived' });

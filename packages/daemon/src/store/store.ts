@@ -594,6 +594,36 @@ export class StateStore {
     });
   }
 
+  /**
+   * T222: one repo's delivery settings (§14.8). `patch` is already checked
+   * by the caller (the pr refusal needs git and GitHub auth); `null` removes
+   * a field. Fields not in the patch are kept.
+   */
+  async setRepoSettings(
+    name: string,
+    patch: Record<string, unknown>,
+    options: { by?: string } = {},
+  ): Promise<RepoEntry> {
+    return this.mutate(() => {
+      const repos = this.getRepos();
+      const current = repos[name];
+      if (current === undefined) throw new NotFoundError('RepoEntry', name);
+      const raw: Record<string, unknown> = { ...current };
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === null) delete raw[key];
+        else if (value !== undefined) raw[key] = value;
+      }
+      const entry = validateRepoEntry(raw);
+      const validated = validateReposConfig({ ...repos, [name]: entry });
+      writeYamlFileAtomic(this.abs('repos.yaml'), validated);
+      const event = buildEvent('repos_put', {
+        agent: options.by,
+        data: { repo: name, settings: Object.keys(patch) },
+      });
+      return { result: entry, event };
+    });
+  }
+
   // ---------------------------------------------------------- Repo registry
 
   /** `repos.yaml` (D9): the repos this daemon serves. A missing file is `{}`, the fresh-home state. */

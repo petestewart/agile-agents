@@ -224,6 +224,11 @@ export function showFields(stream: Stream, role?: NodeRole): Array<[string, stri
       ['worktree', stream.worktree ?? '- (created on first attach)'],
     );
   }
+  if (stream.delivery_state !== undefined) {
+    const d = stream.delivery_state;
+    const held = d.held_by?.map((h) => `${h.reason}: ${h.detail}`).join('; ');
+    fields.push(['delivery', `${d.mode} ${d.status}${held ? ` (${held})` : ''}`]);
+  }
   fields.push(['created_at', stream.created_at]);
   return fields;
 }
@@ -367,5 +372,37 @@ export async function runStreamAddRepo(
   for (const part of parts) {
     console.log(`  part ${part.id}  ${part.title}  ${part.human.status}`);
   }
+  return 0;
+}
+
+/**
+ * T228 `agile node wait <id> --on <id>… [--remove]` (P8): delivery of
+ * `<id>` waits until each `--on` node is merged (or, with no repo, closed).
+ */
+export async function runStreamWait(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'node-id');
+  const on = optionalList(args, 'on');
+  if (on === undefined) throw new Error('agile node wait: --on <node-id> is required');
+  const remove = hasFlag(args.options, 'remove');
+  let node: Stream | undefined;
+  for (const target of on) {
+    node = await callRpc<Stream>(socketPath, 'node.wait', {
+      id,
+      on: target,
+      ...(remove ? { remove: true } : {}),
+    });
+  }
+  if (json) {
+    printJson(node);
+    return 0;
+  }
+  const open = (node?.waits_on ?? []).filter((w) => w.satisfied_at === undefined);
+  console.log(
+    `agile node wait: ${id} waits on ${open.length > 0 ? open.map((w) => w.node).join(', ') : 'nothing'}`,
+  );
   return 0;
 }

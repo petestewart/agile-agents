@@ -41,6 +41,7 @@ import {
   saveClassifierKey,
   saveHomeSessionDefaults,
   saveRepoSessionDefaults,
+  saveRepoSettings,
 } from '../lib/api';
 import { type SessionChoice, SessionFields } from './SessionPicker';
 
@@ -326,6 +327,98 @@ function SessionDefaults(): JSX.Element {
   );
 }
 
+/** T222 (§14.8): one repo, with its delivery mode, auto-merge and visibility. */
+function RepoRowView({
+  repo,
+  onSaved,
+}: {
+  repo: RepoRow;
+  onSaved: (repos: RepoRow[]) => void;
+}): JSX.Element {
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [projectsRaw, setProjectsRaw] = useState(
+    repo.visibility.mode === 'private' ? repo.visibility.projects.join(', ') : '',
+  );
+  const id = `settings-repo-${repo.name}`;
+  const save = (patch: Parameters<typeof saveRepoSettings>[1]) => {
+    setBusy(true);
+    setError(undefined);
+    saveRepoSettings(repo.name, patch)
+      .then(onSaved)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBusy(false));
+  };
+  const projects = projectsRaw
+    .split(',')
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  return (
+    <div className="cr-gate-row" data-testid={id} data-delivery={repo.delivery}>
+      <div>
+        <div>{repo.name}</div>
+        <div className="what">{repo.path}</div>
+        <div className="what">protected: {repo.protected_branches.join(', ') || '—'}</div>
+        {repo.github && (
+          <div className="what">
+            GitHub: {repo.github.owner}/{repo.github.repo}
+          </div>
+        )}
+        {error && (
+          <p className="cr-error" role="alert" data-testid={`${id}-error`}>
+            {error}
+          </p>
+        )}
+      </div>
+      <div className="cr-actions">
+        <code data-testid={`${id}-main`}>{repo.main_branch}</code>
+        <select
+          aria-label="Delivery"
+          data-testid={`${id}-delivery`}
+          value={repo.delivery}
+          disabled={busy}
+          onChange={(e) => save({ delivery: e.target.value as RepoRow['delivery'] })}
+        >
+          <option value="direct">direct</option>
+          <option value="pr">pr</option>
+        </select>
+        <label className="what">
+          <input
+            type="checkbox"
+            data-testid={`${id}-auto-merge`}
+            checked={repo.auto_merge}
+            disabled={busy || repo.delivery !== 'pr'}
+            onChange={(e) => save({ auto_merge: e.target.checked })}
+          />{' '}
+          auto-merge
+        </label>
+        <select
+          aria-label="Visibility"
+          data-testid={`${id}-visibility`}
+          value={repo.visibility.mode}
+          disabled={busy}
+          onChange={(e) =>
+            e.target.value === 'public'
+              ? save({ visibility: { mode: 'public' } })
+              : projects.length > 0
+                ? save({ visibility: { mode: 'private', projects } })
+                : setError('private needs at least one project id')
+          }
+        >
+          <option value="public">public</option>
+          <option value="private">private</option>
+        </select>
+        <input
+          data-testid={`${id}-projects`}
+          placeholder="P-… (private to)"
+          value={projectsRaw}
+          onChange={(e) => setProjectsRaw(e.target.value)}
+        />
+      </div>
+    </div>
+  );
+}
+
 function Repos(): JSX.Element {
   const [repos, setRepos] = useState<RepoRow[] | undefined>(undefined);
   const [name, setName] = useState('');
@@ -356,14 +449,7 @@ function Repos(): JSX.Element {
         </p>
       )}
       {repos?.map((repo) => (
-        <div className="cr-gate-row" key={repo.name} data-testid={`settings-repo-${repo.name}`}>
-          <div>
-            <div>{repo.name}</div>
-            <div className="what">{repo.path}</div>
-            <div className="what">protected: {repo.protected_branches.join(', ') || '—'}</div>
-          </div>
-          <code data-testid={`settings-repo-${repo.name}-main`}>{repo.main_branch}</code>
-        </div>
+        <RepoRowView key={repo.name} repo={repo} onSaved={setRepos} />
       ))}
       <form
         className="cr-gate-row"

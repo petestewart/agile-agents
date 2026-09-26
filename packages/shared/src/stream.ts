@@ -299,7 +299,14 @@ export const DeliveryStateSchema = z
       .array(
         z
           .object({
-            reason: z.enum(['ship_check', 'waits_on', 'merge_together', 'conflict']),
+            reason: z.enum([
+              'ship_check',
+              'waits_on',
+              'merge_together',
+              'conflict',
+              'push_failed',
+              'nothing_to_deliver',
+            ]),
             detail: z.string().min(1).max(THREAD_BODY_MAX_CHARS),
           })
           .strict(),
@@ -622,3 +629,13 @@ export const StreamAddRepoRequestSchema = z
   })
   .strict();
 export type StreamAddRepoRequest = z.infer<typeof StreamAddRepoRequestSchema>;
+
+/** T228: the stream page's Link (`POST /api/streams/:id/wait`, P8). */
+export const StreamWaitRequestSchema = z
+  .object({
+    on: UlidSchema,
+    /** Drop the edge instead of adding it. */
+    remove: z.boolean().optional(),
+  })
+  .strict();
+export type StreamWaitRequest = z.infer<typeof StreamWaitRequestSchema>;

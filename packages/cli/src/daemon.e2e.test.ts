@@ -18,10 +18,18 @@
  */
 
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { writeFreePortConfig } from './test-support';
+import { TEST_GITHUB_CONFIG, writeFreePortConfig } from './test-support';
 
 const CLI_ENTRY = join(import.meta.dir, 'index.ts');
 
@@ -178,7 +186,10 @@ test('the state home holds the daemon, not the cwd: no .agile/ is created there'
 test('T167: daemon status says a classifier key is loaded and where from, never the key', async () => {
   const fakeKey = 'fake-t167-key-never-printed-4242';
   const port = await writeFreePortConfig(home);
-  writeFileSync(join(home, 'config.yaml'), `port: ${port}\nclassifier:\n  api_key: ${fakeKey}\n`);
+  writeFileSync(
+    join(home, 'config.yaml'),
+    `port: ${port}\nclassifier:\n  api_key: ${fakeKey}\n${TEST_GITHUB_CONFIG}`,
+  );
   expect(runCli(['init'], { cwd: nonRepo }).code).toBe(0);
   expect(runCli(['daemon', 'start'], { cwd: nonRepo }).code).toBe(0);
   try {
@@ -225,7 +236,8 @@ test('T210: an AGILE_HOME that is a file is refused by every command, one line',
     expect(lines[0]).toContain(`AGILE_HOME=${file}`);
     expect(lines[0]).toContain('not a directory');
   }
-});
+  // Five CLI processes: the same budget as the other daemon e2e tests.
+}, 60_000);
 
 test('T210: start on a held port names the holder; stop with no pidfile hints at it', async () => {
   expect(runCli(['init'], { cwd: nonRepo }).code).toBe(0);
@@ -257,4 +269,21 @@ test('T210: start on a held port names the holder; stop with no pidfile hints at
   } finally {
     rmSync(other, { recursive: true, force: true });
   }
+}, 60_000);
+
+test('T221: a test daemon never runs gh, not even one first on PATH', async () => {
+  expect(runCli(['init'], { cwd: nonRepo }).code).toBe(0);
+  const stubDir = join(nonRepo, 'bin');
+  const marker = join(nonRepo, 'gh-ran');
+  mkdirSync(stubDir);
+  writeFileSync(join(stubDir, 'gh'), `#!/bin/sh\ntouch '${marker}'\necho stub-token\n`);
+  chmodSync(join(stubDir, 'gh'), 0o755);
+  const env = { PATH: `${stubDir}:${process.env.PATH ?? ''}` };
+  expect(runCli(['daemon', 'start'], { cwd: nonRepo, env }).code).toBe(0);
+  const status = runCli(['daemon', 'status'], { cwd: nonRepo, env });
+  expect(status.code).toBe(0);
+  expect(status.stdout).toContain('GitHub auth: unavailable');
+  expect(existsSync(marker)).toBe(false);
+  expect(runCli(['daemon', 'stop'], { cwd: nonRepo, env }).code).toBe(0);
+  // Four CLI processes, the daemon start and stop among them (~5 s idle): the same budget as the other daemon e2e tests.
 }, 60_000);

@@ -38,12 +38,12 @@ import {
 import { type Browser, type Page, chromium } from 'playwright-core';
 import { AttachService, VerbService } from '../attach';
 import { ClassifierKeyService, FakeClassifier } from '../classifier';
+import { DeliveryService } from '../delivery';
 import { DocsService } from '../docs';
 import { GateService } from '../gates';
 import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
 import { runInit } from '../init';
-import { LandingService } from '../landing';
 import { ProjectService } from '../projects';
 import { QuestionService } from '../questions';
 import { type RuleRpcEvalDeps, RulesService, SEED_PROVENANCE } from '../rules';
@@ -500,7 +500,11 @@ interface Cockpit {
  * the RPC socket and the vendor runner this suite never uses.
  */
 async function startCockpit(
-  extra: { ruleEvals?: RuleRpcEvalDeps; classifierKey?: boolean } = {},
+  extra: {
+    ruleEvals?: RuleRpcEvalDeps;
+    classifierKey?: boolean;
+    githubAuth?: () => Promise<boolean>;
+  } = {},
 ): Promise<Cockpit> {
   const home = mkdtempSync(join(tmpdir(), 'agile-cockpit-e2e-'));
   const init = runInit(home);
@@ -540,6 +544,8 @@ async function startCockpit(
           }),
         }
       : {}),
+    // T222: the pr refusal's auth seam; never a real `gh`.
+    ...(extra.githubAuth ? { githubAuth: extra.githubAuth } : {}),
     feedPollIntervalMs: 50,
   });
   return {
@@ -1136,6 +1142,8 @@ interface StreamCockpit {
   attach: AttachService;
   /** Every attach that threw, with its stack: what a 400 from the attach route was. */
   attachErrors: string[];
+  /** T340: the streams the Delivery panel's Check now asked about (a stand-in for `PrPoller.pollNow`). */
+  prChecks: string[];
   base: string;
   stop(): Promise<void>;
 }
@@ -1208,8 +1216,9 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
     }
   };
   const verbs = new VerbService({ store, streams, questions, docs, rules });
-  const landing = new LandingService({ store, streams, gates });
+  const landing = new DeliveryService({ store, streams, gates });
   const inbox = new InboxService({ streams, questions, gates, rules });
+  const prChecks: string[] = [];
   const http = startHttpServer({
     port: 0,
     version: 'test',
@@ -1222,6 +1231,10 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
     inbox,
     rules,
     landing,
+    prCheck: async (id) => {
+      prChecks.push(id);
+      return streams.get(id);
+    },
     attach,
     repoInPlace: new RepoInPlaceService(store, streams, {
       attach: (id) => attach.attach(id),
@@ -1241,6 +1254,7 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
     verbs,
     attach,
     attachErrors,
+    prChecks,
     base: `http://127.0.0.1:${http.port}`,
     async stop() {
       await attach.stopAll();
@@ -1639,7 +1653,7 @@ describe('stream page rough edges (Playwright e2e, T166)', () => {
         const other = await cockpit.streams.create('human', { title: 'to close', goal: 'g' });
 
         // Cross-origin writes are rejected before anything changes.
-        for (const action of ['close', 'mark-landed']) {
+        for (const action of ['close', 'mark-landed', 'pr-check']) {
           const res = await fetch(`${cockpit.base}/api/streams/${other.id}/${action}`, {
             method: 'POST',
             headers: { origin: 'https://evil.example' },
@@ -1672,6 +1686,124 @@ describe('stream page rough edges (Playwright e2e, T166)', () => {
         await page.locator('[data-testid="stream-close"]').click();
         await page.locator('[data-testid="stream-status"]', { hasText: 'you closed' }).waitFor();
         expect(cockpit.streams.get(other.id).human.status).toBe('closed');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('an open PR on the Delivery panel (Playwright e2e, T340)', () => {
+  browserTest(
+    'a PR open shows its status, Open PR and Check now, never Merge; a merge seen by the poll shows Landed',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const worktree = join(cockpit.repo, '.worktrees', 's-pr');
+        git(['worktree', 'add', '-q', '-b', 's-pr', worktree, 'main'], cockpit.repo);
+        writeFileSync(join(worktree, 'pr.txt'), 'pr\n');
+        git(['add', '-A'], worktree);
+        git(['commit', '-q', '-m', 'pr'], worktree);
+        const stream = await cockpit.streams.create('human', {
+          title: 'pr node',
+          goal: 'g',
+          repo: 'demo',
+        });
+        const url = 'https://github.example/acme/shop/pull/2';
+        const pr = {
+          number: 2,
+          url,
+          head: 's-pr',
+          base: 'main',
+          state: 'open' as const,
+          draft: false,
+          review: 'review_requested' as const,
+          checks: 'passing' as const,
+          mergeable: 'clean' as const,
+          auto_merge: 'enabled' as const,
+          last_seen: {},
+          polled_at: new Date().toISOString(),
+        };
+        const at = new Date().toISOString();
+        await cockpit.streams.update('daemon', stream.id, {
+          branch: 's-pr',
+          worktree,
+          delivery_state: { mode: 'pr', status: 'pr_open', pr, at },
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'pr');
+        expect(await page.locator('[data-testid="land-before"]').textContent()).toContain(
+          'PR #2 into main: review requested · CI passing · auto-merge enabled',
+        );
+        expect(await page.locator('[data-testid="stream-pr-link"]').getAttribute('href')).toBe(url);
+        expect(await page.locator('[data-testid="stream-land"]').count()).toBe(0);
+
+        await page.locator('[data-testid="stream-pr-check"]').click();
+        const deadline = Date.now() + 10_000;
+        while (cockpit.prChecks.length === 0 && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        expect(cockpit.prChecks).toEqual([stream.id]);
+
+        // The poll sees the merge (auto-merge on GitHub): the panel follows.
+        await cockpit.streams.update('daemon', stream.id, {
+          delivery_state: { mode: 'pr', status: 'merged', pr: { ...pr, state: 'merged' }, at },
+          human: { status: 'landed' },
+        });
+        await cockpit.streams.appendThread('daemon', stream.id, {
+          kind: 'event',
+          body: 'PR #2 merged',
+        });
+        await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'landed');
+        expect(await page.locator('[data-testid="stream-pr-check"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="stream-land"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('nothing to deliver (Playwright e2e, T231)', () => {
+  browserTest(
+    'a deliver with no commits beyond main shows "nothing to deliver" on the Delivery line',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const worktree = join(cockpit.repo, '.worktrees', 's-empty');
+        git(['worktree', 'add', '-q', '-b', 's-empty', worktree, 'main'], cockpit.repo);
+        const stream = await cockpit.streams.create('human', {
+          title: 'empty',
+          goal: 'g',
+          repo: 'demo',
+        });
+        await cockpit.streams.update('daemon', stream.id, { branch: 's-empty', worktree });
+        const res = await fetch(`${cockpit.base}/api/streams/${stream.id}/land`, {
+          method: 'POST',
+          headers: { origin: cockpit.base },
+        });
+        expect(res.ok).toBe(false);
+        expect(cockpit.streams.get(stream.id).delivery_state?.status).toBe('not_started');
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        await page
+          .locator('[data-testid="delivery-state"]', {
+            hasText: 'nothing to deliver: no commits beyond main',
+          })
+          .waitFor();
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -2103,6 +2235,62 @@ describe('add a repo from Settings (Playwright e2e, T206)', () => {
   );
 });
 
+// ---- T222: repo delivery settings --------------------------------------------
+
+describe('repo delivery settings (Playwright e2e, T222)', () => {
+  browserTest(
+    'change the delivery mode in Settings: pr is refused without GitHub auth, then set with it',
+    async () => {
+      let authed = false;
+      const cockpit = await startCockpit({ githubAuth: async () => authed });
+      const repo = mkdtempSync(join(tmpdir(), 'agile-delivery-e2e-'));
+      let page: Page | undefined;
+      try {
+        git(['init', '-q', '-b', 'main'], repo);
+        git(['remote', 'add', 'origin', 'git@github.com:acme/api.git'], repo);
+        await cockpit.store.addRepo('api', { path: repo });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-view="settings"]').click();
+        const row = '[data-testid="settings-repo-api"]';
+        await page.locator(`${row}[data-delivery="direct"]`).waitFor({ state: 'visible' });
+
+        await page.locator('[data-testid="settings-repo-api-delivery"]').selectOption('pr');
+        await waitForText(
+          page,
+          '[data-testid="settings-repo-api-error"]',
+          'state.repo_set: pr delivery needs GitHub auth — run `gh auth login` (see `agile daemon status`)',
+        );
+        expect(cockpit.store.getRepos().api?.delivery).toBe('direct');
+
+        authed = true;
+        await page.locator('[data-testid="settings-repo-api-delivery"]').selectOption('pr');
+        await page.locator(`${row}[data-delivery="pr"]`).waitFor({ state: 'visible' });
+        // Controlled by the saved row, so it flips only after the POST: click, then wait.
+        await page.locator('[data-testid="settings-repo-api-auto-merge"]').click();
+        await waitUntil(
+          'auto-merge to be saved',
+          () => cockpit.store.getRepos().api?.auto_merge === true,
+        );
+        expect(cockpit.store.getRepos().api).toMatchObject({
+          delivery: 'pr',
+          github: { owner: 'acme', repo: 'api' },
+        });
+
+        await page.locator('[data-testid="settings-repo-api-delivery"]').selectOption('direct');
+        await page.locator(`${row}[data-delivery="direct"]`).waitFor({ state: 'visible' });
+        expect(cockpit.store.getRepos().api?.delivery).toBe('direct');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 // ---- T208: the project tree and switcher -----------------------------------
 
 describe('project tree and switcher (Playwright e2e, T208)', () => {
@@ -2468,6 +2656,65 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
         await page
           .locator(`${root} [data-testid="thread"]`, { hasText: 'THREAD-MARKER-205' })
           .waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T227: overlap tracking ------------------------------------------------
+
+describe('overlap warnings (Playwright e2e, T227)', () => {
+  browserTest(
+    'two api nodes in different projects touching prices.ts warn in the repo view and the rail',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const blog = await cockpit.projects.create({ name: 'Blog' });
+        const a = await cockpit.streams.create('human', {
+          title: 'api: add salePrice',
+          goal: 'g',
+          project: shop.id,
+          repo: 'api',
+        });
+        const b = await cockpit.streams.create('human', {
+          title: 'api: add /posts',
+          goal: 'g',
+          project: blog.id,
+          repo: 'api',
+        });
+        const at = new Date().toISOString();
+        await cockpit.streams.update('daemon', a.id, {
+          touched: { files: ['prices.ts', 'sale.ts'], base: 'abc', at },
+        });
+        await cockpit.streams.update('daemon', b.id, {
+          touched: { files: ['posts.ts', 'prices.ts'], base: 'abc', at },
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page
+          .locator(
+            `[data-testid="stream-tree"] [data-stream="${a.id}"] [data-testid="overlap-mark"]`,
+          )
+          .waitFor();
+        await page
+          .locator(
+            `[data-testid="stream-tree"] [data-stream="${a.parent}"] [data-testid="overlap-mark"]`,
+          )
+          .waitFor();
+        await page.locator('[data-view="repos"]').click();
+        await waitForText(
+          page,
+          '[data-testid="repo-view"] [data-repo="api"] [data-testid="repo-overlap"]',
+          '⚠ api: add salePrice and api: add /posts both changed prices.ts',
+        );
       } finally {
         await teardown([page]);
         await cockpit.stop();

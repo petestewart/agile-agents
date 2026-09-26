@@ -903,7 +903,7 @@ git status --short
 
 ### Ticket: T220 Fake GitHub harness
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge 43f6026)
 - **Owner:** —
 - **Scope:** Add `daemon/src/github/fake-server.ts` (test support, like `runner/fake-agent.ts`), a `Bun.serve` server implementing the REST subset in projects-design §18:
   - repo, pulls (create, get, list, update);
@@ -915,11 +915,11 @@ git status --short
   It is backed by a bare git repo used as `origin` (a `file://` remote). There are test controls: add a review or comment, set a check result, merge (a real `git merge` into the bare repo, honouring auto-merge once approved and green), and close.
 - **Acceptance Criteria:** Self-tests: create a PR from a pushed branch, add a review, set a check failing then passing, merge; the bare repo's main moves; a conditional GET returns 304.
 - **Validation Steps:** `bun test packages/daemon/src/github`.
-- **Notes:** First ticket of Phase 8; everything else in the phase tests against it. No network.
+- **Notes:** First ticket of Phase 8; everything else in the phase tests against it. No network. Review (sonnet) PASS. +522 (test-support fake, compiled like fake-agent). Needs git ≥2.38 (`merge-tree --write-tree`); CI ubuntu-latest has 2.43.
 
 ### Ticket: T221 GitHub port and REST adapter
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge 629956a)
 - **Owner:** —
 - **Scope:** `github/port.ts` (the subset above) and `github/rest.ts`:
   - `fetch` against `github.api_url` (config, default `https://api.github.com`);
@@ -929,20 +929,20 @@ git status --short
   `agile daemon status` reports "GitHub auth: available/unavailable" without the token.
 - **Acceptance Criteria:** Adapter tests against the fake. A missing `gh` gives one clear error. A test asserts the token never appears in logs or audit events.
 - **Validation Steps:** `bun test packages/daemon/src/github`.
-- **Notes:** After T220.
+- **Notes:** After T220. Review (sonnet): 1 blocking (test daemons could spawn the real `gh`) fixed: `github.gh_command` config (test homes point it at a nonexistent path), a failing stub `gh` first on PATH in test-preload.ts, a marker test, and a 2 s timeout. Daemon ≈+536. Open: extend the token-leak test to events.jsonl/agiled.log once GitHub events exist (T225/T244); GHE GraphQL path not handled.
 
 ### Ticket: T222 ∥ Repo delivery settings
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge 7f2cd12)
 - **Owner:** —
 - **Scope:** Add `delivery`, `auto_merge`, `remote`, `github`, `main_branch` and `visibility` on `RepoEntry` (§14.8); project and node overrides are resolved in one function. Add `agile repo set <name> --delivery pr|direct --auto-merge on|off --visibility public|private --project …`, and the same fields in Settings → Repos. `pr` is refused when the remote isn't GitHub or GitHub auth is unavailable.
 - **Acceptance Criteria:** Resolution table tests (repo, then project, then node). e2e: change the delivery mode in Settings.
 - **Validation Steps:** `bun test packages/shared packages/daemon packages/cli`; `bun run test:e2e`.
-- **Notes:** After T200, and T221 for the refusal.
+- **Notes:** After T200, and T221 for the refusal. Review (sonnet) PASS. Daemon +159. `resolveDelivery(repo, project, node)` in shared (no callers until T223). `pr` refused unless the remote is on github.com and GitHub auth is available (GHE not supported).
 
 ### Ticket: T223 Delivery service (direct path) replaces landing
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge 91f0c2a)
 - **Owner:** —
 - **Scope:** Rename `landing/` to `delivery/` and give it `DeliveryState` on the node (§14.7):
   - the direct path is today's land with the ship check (today's diff rules) as a `held` reason;
@@ -953,11 +953,11 @@ git status --short
   Lessons run after `merged`.
 - **Acceptance Criteria:** The existing landing tests pass under the new names; `delivery_state` moves through ship_checking → ready → merged; a ship-check deny shows as held with the rule named.
 - **Validation Steps:** `bun test packages/daemon/src/delivery`; `bun run test:integration`; `bun run test:e2e`.
-- **Notes:** After T203 and T222.
+- **Notes:** After T203 and T222. Review (sonnet) PASS. Daemon +67. `landing/` → `delivery/`, `agile deliver` (alias `land`), RPC `delivery.deliver` (alias `land.stream`). PR mode refused until T224. Internal names (`LandOutcome`, `/api/streams/:id/land`, `land` gate kind) unchanged.
 
 ### Ticket: T224 PR delivery: push and open a PR
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge 5f8931d)
 - **Owner:** —
 - **Scope:** For `pr` repos, delivery means:
   1. run the ship checks;
@@ -967,11 +967,11 @@ git status --short
   Store `pr` on `delivery_state`. A second deliver updates the existing PR, never opens a new one. Protected-branch push rules are unchanged.
 - **Acceptance Criteria:** Against the fake: deliver opens PR #1 with the branch; a second deliver after a commit pushes and keeps #1; a ship-check hold never pushes.
 - **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/github`.
-- **Notes:** After T221 and T223.
+- **Notes:** After T221 and T223. Review (sonnet) PASS. Daemon +115 net. No force push; `owner:branch` PR lookup; push stderr scrubbed; token-leak test scans the whole home. A push failure is recorded as held `ship_check` (no better reason code) → T225 adds `push_failed`.
 
 ### Ticket: T225 PR poller: PR state is the node's status
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge 690423b)
 - **Owner:** —
 - **Scope:**
   - Poll the open PRs of live nodes (60 s; 15 s when flagged; backoff; ETag; rate-limit pause with a thread note) and map them to `PullRequestState`.
@@ -980,11 +980,11 @@ git status --short
   - In this phase, changes appear as thread lines and audit events only. Routed events come in T244.
 - **Acceptance Criteria:** Against the fake with a fake clock: each transition shows on the node. 304s don't rewrite the record. A 403 pauses polling.
 - **Validation Steps:** `bun test packages/daemon/src/github packages/daemon/src/delivery`.
-- **Notes:** After T224.
+- **Notes:** After T224. From T224 review: add a `push_failed` held reason (DeliveryStateSchema) and use it for push failures; refuse or handle re-delivery once the PR is merged/closed (today `createPull` would 422). From T226: call `mainSync.mainMoved(repo)` when a PR merges and when `ls-remote` sees main move on `pr` repos. Review (sonnet) PASS. Daemon +491. Six conditional GETs per PR per poll (304s are free). "Review requested" inferred (port has no requested_reviewers). Local main is fast-forwarded with `merge --ff-only` only when clean; a dirty checked-out main is skipped with a note. `push_failed` held reason added. Re-deliver after merge refused; after close opens a new PR.
 
 ### Ticket: T226 Sync after merge
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge 36416f7)
 - **Owner:** —
 - **Scope:** Add `daemon/sync`. After any merge into a repo's main (a direct merge, a PR merged, or main moving outside the app), merge main into every other live work node's branch on that repo (P15):
   - deferred while the session is mid-turn or the worktree is dirty;
@@ -992,20 +992,20 @@ git status --short
   - pushed branches are pushed again after a clean sync.
 - **Acceptance Criteria:** Unit: two nodes on one repo; merging one syncs the other; a conflicting pair is flagged with its files; a mid-turn node syncs at the end of the turn.
 - **Validation Steps:** `bun test packages/daemon/src/sync`; `bun run test:integration`.
-- **Notes:** After T223; the PR half needs T225.
+- **Notes:** After T223; the PR half needs T225. Direct half first; the PR half (main moving on `pr` repos) wires in after T225. Review (sonnet) PASS; follow-ups done (first sweep after start reconciles every repo; sync conflicts say "Merging main into …"). Daemon ≈+260. Deferred set is in memory (restart is covered by the reconcile). Sweep interval shares `overlapRecomputeMs`. PR half: T225 calls `mainSync.mainMoved`.
 
 ### Ticket: T227 ∥ Overlap tracking
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge ad277c6)
 - **Owner:** —
 - **Scope:** Keep `touched` updated for every live work node: the merge-base diff plus uncommitted changes, recomputed after edit hooks, after commits and every 60 s. Two live nodes on the same repo, in any project, sharing a file raise an overlap. It shows on both nodes, on their ancestors and in the repo view (T209 slot), and clears when either node merges or stops touching the file.
 - **Acceptance Criteria:** Unit: an overlap appears within one recompute and clears after a merge. e2e: the repo view shows the warning.
 - **Validation Steps:** `bun test packages/daemon/src/sync`; `bun run test:e2e`.
-- **Notes:** After T201. Can run alongside T224–T226.
+- **Notes:** After T201. Can run alongside T224–T226. Review (sonnet) PASS. Daemon +198. Overlaps derived per frame from `touched` (never stored). Recompute on every non-read-only PostToolUse (not debounced) + 60 s sweep. Routed `overlap` event and coordinator suggestion are later (T244/T287).
 
 ### Ticket: T228 Waits-on, merge-together and auto-merge
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge 2abed49)
 - **Owner:** —
 - **Scope:**
   - `waits_on` holds delivery until the target is merged, or closed for a non-work target (P8). `satisfied_at` is set by the daemon. Add `agile node wait <id> --on <id>` and a Link button.
@@ -1017,11 +1017,11 @@ git status --short
   - a merge-together pair of direct nodes merges together or not at all;
   - "unavailable" is shown when the fake refuses.
 - **Validation Steps:** `bun test packages/daemon/src/delivery`.
-- **Notes:** After T225 and T226.
+- **Notes:** After T225 and T226. Review (sonnet) PASS; plain direct delivery traced unregressed after `land()` restructure. Daemon +372. A direct node held on waits-on needs a second Merge click once satisfied; cross-repo merge-together is per-repo atomic only; `settle()` runs after each poller tick. Link button has no Playwright test.
 
 ### Ticket: T229 ∥ Repo visibility
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge f0fea9d)
 - **Owner:** —
 - **Scope:** A private repo is readable only by the projects it lists (P13):
   - it is left out of the session's readable directories;
@@ -1031,15 +1031,24 @@ git status --short
   The node shows "visibility advisory" for hookless vendors.
 - **Acceptance Criteria:** Hook tests: a Blog node reading a private api listed only for Shop is denied with the reason; a Shop node is allowed.
 - **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/permissions`.
-- **Notes:** After T222.
+- **Notes:** After T222. Review (sonnet): 2 blocking fixed (fail closed when repos.yaml is unreadable; Bash command paths checked). Daemon +166. Not done: no per-session readable-dirs list exists to exclude a private repo from (P13 bullet 1 needs an ACP session-config decision); hookless vendors get the advisory label only.
+
+### Ticket: T231 PR delivery pushes with the operator's git credentials
+- **Priority:** P0
+- **Status:** Done (merge 68e4cc4)
+- **Owner:** —
+- **Scope:** From Pete's Phase 8 live run (2026-09-24, macOS): `agile deliver` on a `pr` repo failed at the push with `fatal: could not read Username for 'https://github.com': Device not configured` and the node went `held`. Cause (confirmed by Pete's agent): `delivery/git.ts` runs every git command with `sandboxedSubprocessEnv`, which sets `HOME=<repo>/.agile-daemon-cache/git/home`, so the osxkeychain helper (and any `gh auth setup-git` helper or `~/.gitconfig` credential/`insteadOf` setting) is lost. (1) Network git operations — the delivery push, `sync/main-sync.ts` push/fetch, the poller's `ls-remote`/fetch/fast-forward — run with the operator's real credential setup (real HOME or an equivalent pass-through); plumbing and merge commands stay sandboxed. No token in the daemon. (2) Every daemon git call sets `GIT_TERMINAL_PROMPT=0`, and a credential failure reads as one clear line naming what to set up (`gh auth setup-git` or a credential helper). (3) A deliver with nothing to land records a visible state (the Delivery panel and `node show` say "nothing to deliver: no commits beyond <main>"), not a null `delivery_state`.
+- **Acceptance Criteria:** A regression test that fails on the old code: a credential helper configured only in the real HOME's gitconfig serves a push/fetch against a local HTTP or file remote that requires it (or an env-assertion test on push/fetch/ls-remote). A missing credential fails fast with the clear line. Nothing-to-land state tested in delivery and shown in the cockpit.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/sync packages/daemon/src/github`; `bun run test:integration`; `bun run test:e2e`.
+- **Notes:** Pete's nodes A and B on agile-test-repo are ready to deliver once this lands. Review (sonnet): 1 blocking fixed — network git gets an allow-listed env (real HOME, PATH, SSH/GIT/locale/proxy/gh vars; daemon secrets such as TYPESAFE_API_KEY and AGILE_* dropped; GIT_AUTHOR/COMMITTER dropped), tested by env-name dump. `GIT_TERMINAL_PROMPT=0` on every daemon git call; credential failures say to run `gh auth setup-git`. `nothing_to_deliver` held reason shown in node show and the Delivery panel. Daemon ≈+110. Open: main-sync pushes to a hard-coded `origin`; the operator's pre-push hooks now run on delivery pushes.
 
 ### Ticket: T230 Phase 8 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
+- **Owner:** Pete
 - **Scope:** Black-box QA against the fake GitHub and the fake agent: direct delivery, PR delivery, the poller transitions, sync, overlaps, holds, auto-merge, visibility, and the migration of the Phase 7 home. Daemon line count. Pete then runs one direct delivery on ledger-lite and one PR on agile-test-repo.
 - **Acceptance Criteria:** QA ACCEPT. Live: the ledger-lite node merges with one click. The agile-test-repo node opens a real PR whose state shows on the node. After Pete merges on GitHub, the node shows merged and the other live node on the repo is synced.
-- **Validation Steps:** Pete, on his Mac:
+- **Validation Steps:** Pete, on his Mac. agile-test-repo needs at least one commit on `main`, pushed to GitHub. Pick a ledger-lite goal that is not already done (the Phase 7 run may have landed earlier ones).
 
 ```zsh
 export AGILE_HOME=~/.agile-phase7
@@ -1050,7 +1059,7 @@ agile repo set ledger-lite --delivery direct
 SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
 A=$(agile node new --project $SHOP --title "Test repo note" --goal "Add one line to README.md saying the repo is used for agile-agents live checks; commit it" --repo agile-test-repo --json | jq -r .id)
 B=$(agile node new --project $SHOP --title "Test repo second note" --goal "Add a file NOTES.md with one line; commit it" --repo agile-test-repo --json | jq -r .id)
-L=$(agile node new --project $SHOP --title "Ledger help text" --goal "Make the CLI print a one-line usage when run with no arguments; add a test" --repo ledger-lite --json | jq -r .id)
+L=$(agile node new --project $SHOP --title "Ledger unknown flag" --goal "When the CLI gets an unknown flag, print unknown option: <flag> on stderr and exit 2; add a test" --repo ledger-lite --json | jq -r .id)
 agile node show $A --json | jq -r '.agent.status'
 ```
 
@@ -1073,7 +1082,7 @@ cd ~/Projects/ledger-lite
 git status --short
 ```
 
-- **Notes:** D10. Close the test PRs and branches on agile-test-repo afterwards if you don't want them kept.
+- **Notes:** D10. Close the test PRs and branches on agile-test-repo afterwards if you don't want them kept. QA (sonnet, black-box) ACCEPT on 666e893: bun test 1947/0, integration + e2e green; T230 script ran against the fake GitHub with scratch paths and `--no-start`. Minor findings: (1) no supported way to point a real daemon at a fake GitHub except `github.gh_command` = a stub echoing a token; (2) `--delivery pr` requires a github.com remote host (a `pushInsteadOf` rewrite works for testing); (3) usage omitted `rules --stage` values — fixed cbaba52; (4) the visibility deny is covered by unit tests only (a live session is needed to drive `agile hook`). Daemon 22,233 lines (19,360 at Phase 7).
 
 ### Phase 9 — Events
 
@@ -1596,7 +1605,9 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
-- Phase 7 complete on `claude/phase-7` (2026-09-24, tip 3ab7109): T200–T211 merged, T212 QA ACCEPT; awaiting Pete's look. Phase 8 proceeds on `claude/phase-8` cut from it (Pete: don't wait).
+- Phase 8 complete on `claude/phase-8` (2026-09-24): T220–T229 merged, T230 QA ACCEPT; awaiting Pete's look. Phase 9 proceeds on `claude/phase-9` cut from it.
+- Phase 7 complete on `claude/phase-7` (2026-09-24, tip 3ab7109): T200–T211 merged, T212 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/4). Phase 8 proceeds on `claude/phase-8` cut from it (Pete: don't wait).
+- (T229 merge) `.review-sonnet.md` had been committed by the T204 worker (on `claude/phase-7` too); untracked and `.gitignore` now lists the pipeline/review/QA scratch files.
 - mode: yolo (2026-09-24), projects stage. Phase branches stacked (D30), `claude/phase-7` first; tickets `T###-<slug>` off the phase branch, merged back `--no-ff`. DIRECT_MODE (no `gh`). Phase N+1 starts without waiting for Pete's review of phase N (Pete, 2026-09-24).
 - mode: yolo (2026-09-19). Integration branch for the reshape is `claude/reshape`; ticket branches `T###-<slug>` fork from it and merge back `--no-ff`. Pete lands each phase on `main` by PR. Mode: DIRECT_MODE (no `gh`).
 - Q1 assumption in force: a coding stream's target is the repo's default branch when the repo has no integration branch (T132).

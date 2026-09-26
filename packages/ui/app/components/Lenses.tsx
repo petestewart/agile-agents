@@ -4,10 +4,10 @@
  * projects, ancestors in grey, the repo's delivery mode in the heading.
  * Running: nodes with a live session. Dependencies: the `waits_on` graph
  * as a list. (Needs me is the inbox, already grouped by node.)
- * Norms (T227) and overlaps (T266) are placeholders here.
+ * Overlaps (T227) show per repo; norms are still a placeholder.
  */
 
-import type { CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
+import type { CockpitOverlap, CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
 import { useShell } from '../lib/shell';
 import {
   DOT_LABEL,
@@ -54,11 +54,14 @@ function NodeLine({
 export function RepoView({
   rows,
   repos,
+  overlaps = [],
 }: {
   rows: readonly CockpitStreamRow[];
   repos: readonly CockpitRepoRow[];
+  overlaps?: readonly CockpitOverlap[];
 }): JSX.Element {
   const groups = groupByRepo(rows, repos);
+  const titleOf = (id: string): string => rows.find((r) => r.id === id)?.title ?? id;
   return (
     <section className="cr-inbox" data-testid="repo-view">
       <div className="cr-inbox-hd">
@@ -82,8 +85,15 @@ export function RepoView({
               ))}
             </ul>
           )}
+          {overlaps
+            .filter((o) => o.repo === group.repo)
+            .map((o) => (
+              <p key={o.nodes.join('-')} className="cr-overlap" data-testid="repo-overlap">
+                ⚠ {titleOf(o.nodes[0])} and {titleOf(o.nodes[1])} both changed {o.files.join(', ')}
+              </p>
+            ))}
           <p className="cr-lens-empty" data-testid="repo-norms">
-            Norms and overlaps: not yet.
+            Norms: not yet.
           </p>
         </div>
       ))}

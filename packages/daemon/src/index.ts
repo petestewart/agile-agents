@@ -80,7 +80,7 @@ export * from './attach';
 
 export * from './runner';
 
-export * from './landing';
+export * from './delivery';
 
 export * from './sandbox';
 

@@ -50,10 +50,14 @@ export function readDenyReason(
 ): string | undefined {
   const path = resolve(ctx.worktreePath, raw);
   if (isPathInside(path, ctx.worktreePath)) return undefined;
-  if ((ctx.hiddenRoots ?? []).some((root) => isPathInside(path, root))) {
+  // The deepest root wins (as P13's visibility check): a readable repo nested
+  // inside a hidden one stays readable.
+  const readable = (ctx.readRoots ?? []).filter((root) => isPathInside(path, root));
+  const hidden = (ctx.hiddenRoots ?? []).filter((root) => isPathInside(path, root));
+  if (hidden.some((h) => !readable.some((r) => r !== h && isPathInside(r, h)))) {
     return `${raw} is in the agile home or a private repo this node's project cannot read`;
   }
-  if ((ctx.readRoots ?? []).some((root) => isPathInside(path, root))) return undefined;
+  if (readable.length > 0) return undefined;
   return `${raw} is outside the worktree and every repo this node can read`;
 }
 

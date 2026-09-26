@@ -1,5 +1,5 @@
 /**
- * `agile land <stream>` (T132) — the CLI half of the landing path (design/
+ * `agile deliver <node>` (T223, §14.7; `agile land` is its alias; T132) — the CLI half of the landing path (design/
  * cockpit-design.md §8.2). The Land button in the UI calls the same
  * `land.stream` RPC; this is the terminal's version of pressing it.
  *
@@ -14,9 +14,9 @@ import { requirePositional } from '../args';
 import { callRpc } from '../client';
 import { printJson } from '../format';
 
-/** Mirrors the daemon's `LandOutcome` (`landing/service.ts`). */
+/** Mirrors the daemon's `LandOutcome` (`delivery/service.ts`). */
 interface LandOutcome {
-  status: 'gated' | 'refused' | 'blocked' | 'landed';
+  status: 'gated' | 'refused' | 'blocked' | 'landed' | 'pr_open';
   line: string;
   conflicts?: string[];
 }
@@ -27,7 +27,7 @@ export async function runLand(
   json: boolean,
 ): Promise<number> {
   const stream = requirePositional(args, 0, 'stream-id');
-  const outcome = await callRpc<LandOutcome>(socketPath, 'land.stream', { stream });
+  const outcome = await callRpc<LandOutcome>(socketPath, 'delivery.deliver', { stream });
 
   if (json) {
     printJson(outcome);

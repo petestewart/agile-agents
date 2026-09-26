@@ -100,6 +100,16 @@ function Node({ node, fold }: { node: StreamTreeNode; fold: Fold }): JSX.Element
           {ROLE_ICON[node.row.role]}
         </span>
         <span className="title">{node.row.title}</span>
+        {node.row.overlap && (
+          <span className="cr-overlap" data-testid="overlap-mark" title="overlapping changes">
+            ⚠
+          </span>
+        )}
+        {node.row.visibility_advisory && (
+          <span className="cr-visibility" data-testid="visibility-advisory">
+            visibility advisory
+          </span>
+        )}
         {hiddenNeedsYou && (
           <span
             className="cr-dot cr-tree-hidden-dot"

@@ -7,9 +7,9 @@
 import { realpathSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { emptyRepoMessage } from '@agile-agents/daemon';
-import type { ReposConfig } from '@agile-agents/shared';
+import type { RepoEntry, ReposConfig } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
-import { optionalString, requirePositional } from '../args';
+import { optionalList, optionalString, requirePositional } from '../args';
 import { callRpc } from '../client';
 import { printJson } from '../format';
 
@@ -30,7 +30,9 @@ export async function runRepoList(socketPath: string, json: boolean): Promise<nu
     console.log(
       `${name}  ${entry.path}  protected=${entry.protected_branches.join(',')}${
         entry.target_branch ? `  target=${entry.target_branch}` : ''
-      }${entry.vendor ? `  vendor=${entry.vendor}` : ''}`,
+      }${entry.vendor ? `  vendor=${entry.vendor}` : ''}  delivery=${entry.delivery ?? 'direct'}${
+        entry.auto_merge ? '  auto_merge=on' : ''
+      }${entry.visibility?.mode === 'private' ? `  private=${entry.visibility.projects.join(',')}` : ''}`,
     );
   }
   return 0;
@@ -81,5 +83,65 @@ export async function runRepoAdd(
   const entry = repos[name];
   const empty = entry === undefined ? undefined : emptyRepoMessage(name, entry);
   if (empty !== undefined) console.error(`agile repo add: warning: ${empty}`);
+  return 0;
+}
+
+/**
+ * T222 (§14.8): `agile repo set <name> [--delivery direct|pr] [--auto-merge on|off]
+ * [--remote r] [--main-branch b] [--visibility public|private] [--project P-…]…`.
+ * `--project` (repeatable or comma-separated) names the projects that may
+ * see a private repo. The daemon refuses `pr` without a GitHub remote and auth.
+ */
+export async function runRepoSet(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const name = requirePositional(args, 0, 'repo-name');
+  const o = args.options;
+  const patch: Record<string, unknown> = {};
+  const delivery = optionalString(o, 'delivery');
+  if (delivery !== undefined) {
+    if (delivery !== 'direct' && delivery !== 'pr')
+      throw new Error('agile repo set: --delivery must be direct or pr');
+    patch.delivery = delivery;
+  }
+  const autoMerge = optionalString(o, 'auto-merge');
+  if (autoMerge !== undefined) {
+    if (autoMerge !== 'on' && autoMerge !== 'off')
+      throw new Error('agile repo set: --auto-merge must be on or off');
+    patch.auto_merge = autoMerge === 'on';
+  }
+  const remote = optionalString(o, 'remote');
+  if (remote !== undefined) patch.remote = remote;
+  const mainBranch = optionalString(o, 'main-branch');
+  if (mainBranch !== undefined) patch.main_branch = mainBranch;
+  const visibility = optionalString(o, 'visibility');
+  const projects = optionalList(args, 'project');
+  if (visibility === 'public') {
+    if (projects !== undefined)
+      throw new Error('agile repo set: --project applies to --visibility private only');
+    patch.visibility = { mode: 'public' };
+  } else if (visibility === 'private') {
+    if (projects === undefined)
+      throw new Error('agile repo set: --visibility private needs --project <P-id>');
+    patch.visibility = { mode: 'private', projects };
+  } else if (visibility !== undefined) {
+    throw new Error('agile repo set: --visibility must be public or private');
+  } else if (projects !== undefined) {
+    throw new Error('agile repo set: --project needs --visibility private');
+  }
+  if (Object.keys(patch).length === 0) throw new Error('agile repo set: nothing to set');
+
+  const entry = await callRpc<RepoEntry>(socketPath, 'state.repo_set', { name, ...patch });
+  if (json) printJson(entry);
+  else
+    console.log(
+      `agile repo set: ${name} delivery=${entry.delivery ?? 'direct'} auto_merge=${
+        entry.auto_merge ? 'on' : 'off'
+      } visibility=${entry.visibility?.mode ?? 'public'}${
+        entry.github ? ` github=${entry.github.owner}/${entry.github.repo}` : ''
+      }`,
+    );
   return 0;
 }

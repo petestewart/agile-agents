@@ -214,12 +214,22 @@ export function markStreamLanded(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/mark-landed`);
 }
 
+/** T340: the Delivery panel's Check now: poll the node's open PR at once. */
+export function checkStreamPr(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/pr-check`);
+}
+
 /** T205: + Repo in place (projects-design §7); `switch` moves a work node with nothing committed. */
 export function addRepoToStream(id: string, repo: string, switching = false): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/add-repo`, {
     repo,
     ...(switching ? { switch: true } : {}),
   });
+}
+
+/** T228: the stream page's Link — delivery waits until `on` is merged (P8); `remove` drops it. */
+export function waitOnStream(id: string, on: string, remove = false): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/wait`, { on, ...(remove ? { remove } : {}) });
 }
 
 export async function getPolicy(): Promise<Policy> {
@@ -235,6 +245,24 @@ export interface RepoRow {
   path: string;
   protected_branches: string[];
   main_branch: string;
+  /** T222 (§14.8). */
+  delivery: 'direct' | 'pr';
+  auto_merge: boolean;
+  visibility: { mode: 'public' } | { mode: 'private'; projects: string[] };
+  github?: { owner: string; repo: string };
+}
+
+/** T222: one repo's delivery settings; `pr` is refused without a GitHub remote and auth. */
+export async function saveRepoSettings(
+  name: string,
+  patch: {
+    delivery?: 'direct' | 'pr';
+    auto_merge?: boolean;
+    visibility?: RepoRow['visibility'];
+  },
+): Promise<RepoRow[]> {
+  return ((await post(`/api/repos/${encodeURIComponent(name)}`, patch)) as { repos: RepoRow[] })
+    .repos;
 }
 
 export async function listRepos(): Promise<RepoRow[]> {

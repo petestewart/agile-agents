@@ -31,7 +31,7 @@ import { runCliInit } from './commands/init';
 import { runLand } from './commands/land';
 import { runProjectList, runProjectNew, runProjectSet, runProjectShow } from './commands/project';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
-import { runRepoAdd, runRepoList } from './commands/repo';
+import { runRepoAdd, runRepoList, runRepoSet } from './commands/repo';
 import { runReview } from './commands/review';
 import {
   runRulesAccept,
@@ -53,6 +53,7 @@ import {
   runStreamNew,
   runStreamSay,
   runStreamShow,
+  runStreamWait,
 } from './commands/stream';
 import { runTail } from './commands/tail';
 
@@ -72,6 +73,7 @@ function usage(): string {
     '  init                       create the state home ($AGILE_HOME, default ~/.agile/) if missing',
     '  repo add <path> [--name <n>] [--protected a,b] [--target-branch <b>] [--vendor <v>]',
     '  repo list                  list registered repos',
+    '  repo set <name> [--delivery direct|pr] [--auto-merge on|off] [--remote r] [--main-branch b] [--visibility public|private] [--project P-id]…',
     '  project new --name <n> [--repo a] [--repo b|a,b]   a project and its root stream',
     '  project list [--all]       projects (--all includes archived)',
     '  project show <id>',
@@ -87,16 +89,17 @@ function usage(): string {
     '  node say <id> <text>       append one human line to the node thread',
     '  node add-repo <id> <repo>  + Repo in place: conversation → work, work → coordinating with parts',
     '  node switch-repo <id> <repo>  move a work node with nothing committed to another repo',
+    '  node wait <id> --on <id>… [--remove]  hold delivery until each --on node is merged',
     '  stream …                   alias of `node`',
     '  rules list [--status proposed|accepted|retired] [--scope global|repo:<n>|stream:<id>]',
     '  rules show <id>            one rule: tier, scope, pattern, provenance, stats, examples',
-    '  rules add --text "…" [--scope …] [--enforcement pattern|classifier|guidance] [--critical]',
+    '  rules add --text "…" [--scope …] [--enforcement pattern|classifier|guidance] [--stage action|diff|both] [--critical]',
     '                             [--question "…"] [--criteria-true "…" --criteria-false "…"]',
     '                             [--pattern no_push|no_push_protected|path_deny|command_deny [--pattern-arg …]…]',
     '                             [--example "<action>::<true|false>"]…   (proposes it; at most 20 examples)',
     '                             --enforcement pattern needs --pattern (path_deny args: globs; command_deny: tokens)',
     '  rules edit <id> [--text …] [--question …] [--criteria-true … --criteria-false …]',
-    '                             [--enforcement …] [--stage …] [--pattern <kind> [--pattern-arg …]…]',
+    '                             [--enforcement …] [--stage action|diff|both] [--pattern <kind> [--pattern-arg …]…]',
     '                             [--example "a::true" …]   (--example replaces the list)',
     '  rules accept <id> [--by <who>]   accept a proposed rule (human-only, D4)',
     '  rules retire <id> [--by <who>]   retire a rule (a status change; nothing is deleted)',
@@ -107,7 +110,8 @@ function usage(): string {
     '  resolve <stream> [--vendor v] [--model m] [--effort ...]   a worker that fixes the last land conflict',
     '  review <stream> [--vendor v] [--model m] [--effort ...]   read-only reviewer session',
     '  detach <stream>            stop the live session on a stream',
-    '  land <stream>              merge the stream branch into its target, close the stream, remove the worktree',
+    '  deliver <stream>           ship-check, then merge the branch into main; close the stream, remove the worktree',
+    '  land <stream>              alias of deliver',
     '  daemon start               start agiled detached (pidfile + log in the state home)',
     '  daemon stop                stop the running agiled',
     '  daemon status              is agiled running? pid, port, socket, home, classifier key loaded?',
@@ -241,6 +245,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
       case 'repo':
         if (sub === 'list') return await runRepoList(socketPath, json);
         if (sub === 'add') return await runRepoAdd(socketPath, parseArgs(restArgv), json, cwd);
+        if (sub === 'set') return await runRepoSet(socketPath, parseArgs(restArgv), json);
         console.error(usage());
         return 1;
 
@@ -265,6 +270,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'close') return await runStreamClose(socketPath, parseArgs(restArgv), json);
         if (sub === 'archive') return await runStreamArchive(socketPath, parseArgs(restArgv), json);
         if (sub === 'say') return await runStreamSay(socketPath, parseArgs(restArgv), json);
+        if (sub === 'wait') return await runStreamWait(socketPath, parseArgs(restArgv), json);
         if (sub === 'add-repo' || sub === 'switch-repo') {
           return await runStreamAddRepo(
             socketPath,
@@ -303,6 +309,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         return await runDetach(socketPath, parseArgs(rest.slice(1)), json);
 
       // T132: landing — the human's merge (cockpit design §8.2).
+      case 'deliver':
       case 'land':
         return await runLand(socketPath, parseArgs(rest.slice(1)), json);
       // T131: a reviewer is a second, read-only session (cockpit design §4.2).

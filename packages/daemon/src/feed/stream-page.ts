@@ -6,8 +6,8 @@
  */
 
 import type { Rule, Stream, ThreadEntry } from '@agile-agents/shared';
+import type { DeliveryService, LandPreflight } from '../delivery/service';
 import type { Doc, DocsService } from '../docs/service';
-import type { LandPreflight, LandingService } from '../landing/service';
 import type { RulesService } from '../rules/service';
 import type { StreamService } from '../streams/service';
 
@@ -36,7 +36,7 @@ export interface StreamPageSources {
   streams: StreamService;
   rules?: RulesService;
   docs?: DocsService;
-  landing?: LandingService;
+  landing?: DeliveryService;
 }
 
 export function buildStreamPage(sources: StreamPageSources, id: string): StreamPagePayload {

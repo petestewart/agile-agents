@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { formatZodError } from './ids';
-import { ProjectIdSchema } from './project';
+import { type DeliveryOverride, ProjectIdSchema } from './project';
 
 /** D8: pushing to (or merging into) these is prohibited by default. */
 export const DEFAULT_PROTECTED_BRANCHES = ['main', 'master'] as const;
@@ -55,6 +55,15 @@ export const RepoEntrySchema = z
      * `direct` / public.
      */
     delivery: z.enum(['direct', 'pr']).optional(),
+    /** T222 (§14.8): pr mode only; absent is off. */
+    auto_merge: z.boolean().optional(),
+    /** T222: the git remote pr mode pushes to; absent is `origin`. */
+    remote: z.string().min(1).optional(),
+    /** T222: inferred from the remote URL when pr mode is set, stored once confirmed. */
+    github: z
+      .object({ owner: z.string().min(1), repo: z.string().min(1) })
+      .strict()
+      .optional(),
     /** The branch this repo's work delivers to; the migration carries `target_branch` over. */
     main_branch: z.string().min(1).optional(),
     visibility: z
@@ -67,6 +76,44 @@ export const RepoEntrySchema = z
   .strict();
 
 export type RepoEntry = z.infer<typeof RepoEntrySchema>;
+
+export type DeliveryMode = 'direct' | 'pr';
+export interface ResolvedDelivery {
+  mode: DeliveryMode;
+  /** Always false in direct mode (§14.8: auto-merge is pr only). */
+  auto_merge: boolean;
+}
+
+/**
+ * T222 (§14.8, §14.2): the one place delivery is resolved. Each field is
+ * taken from the node's override, else the project's, else the repo entry,
+ * else `direct` / off.
+ */
+export function resolveDelivery(
+  repo: Pick<RepoEntry, 'delivery' | 'auto_merge'> | undefined,
+  project?: { delivery?: DeliveryOverride } | undefined,
+  node?: { delivery?: DeliveryOverride } | undefined,
+): ResolvedDelivery {
+  const mode = node?.delivery?.mode ?? project?.delivery?.mode ?? repo?.delivery ?? 'direct';
+  const autoMerge =
+    node?.delivery?.auto_merge ?? project?.delivery?.auto_merge ?? repo?.auto_merge ?? false;
+  return { mode, auto_merge: mode === 'pr' && autoMerge };
+}
+
+/**
+ * T222: `agile repo set` / Settings → Repos. Absent = unchanged, `null` =
+ * removed. `github` is not settable: the daemon infers it from the remote.
+ */
+export const RepoSettingsPatchSchema = z
+  .object({
+    delivery: z.enum(['direct', 'pr']).optional(),
+    auto_merge: z.boolean().nullable().optional(),
+    remote: z.string().min(1).nullable().optional(),
+    main_branch: z.string().min(1).nullable().optional(),
+    visibility: RepoEntrySchema.shape.visibility.unwrap().optional(),
+  })
+  .strict();
+export type RepoSettingsPatch = z.infer<typeof RepoSettingsPatchSchema>;
 
 /** `~/.agile/repos.yaml` — one entry per registered repo, keyed by short name. */
 export const ReposConfigSchema = z.record(z.string().min(1), RepoEntrySchema);

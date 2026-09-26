@@ -25,6 +25,7 @@ import {
   MESSAGE_BODY_MAX_CHARS,
   type Policy,
   type RepoEntry,
+  type ReposConfig,
   type Rule,
   type RuleId,
   type SessionRole,
@@ -133,6 +134,11 @@ export interface HookServiceOptions {
    */
   classifier?: HookClassifier;
   limits?: HookLimits;
+  /**
+   * T227: told after every post-tool-use call of a tool that may change
+   * files or commit (overlap tracking recomputes `touched`). Fire-and-forget.
+   */
+  onFilesMayHaveChanged?: (stream: string) => void;
   /** T213: the agile home, denied to every read outside the session's own dir. */
   agileHome?: string;
   /** Injectable for tests; defaults to `node:fs.statSync`. */
@@ -178,6 +184,9 @@ function safeRealpath(path: string): string {
     return resolve(path);
   }
 }
+
+/** Tools that never change files or commit: no `touched` recompute after them (T227). */
+const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch']);
 
 const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered stream worktree';
 
@@ -309,6 +318,31 @@ export class HookService {
       protectedBranches: protectedBranchesFor(this.store, stream),
       upstreamBranch: branches.upstream,
       headBranch: branches.head,
+      ...this.visibilityFor(stream, worktreePath),
+    };
+  }
+
+  /** P13's inputs: the node's repo and project, and the registry. An unreadable repos.yaml fails closed (`reposError`). */
+  private visibilityFor(
+    stream: string,
+    worktreePath: string,
+  ): Pick<HookDecisionContext, 'visibility'> {
+    const record = this.streamRecord(stream);
+    let repos: ReposConfig = {};
+    let reposError: string | undefined;
+    try {
+      repos = this.store.getRepos();
+    } catch (err) {
+      reposError = err instanceof Error ? err.message : String(err);
+    }
+    return {
+      visibility: {
+        repos,
+        ...(reposError !== undefined ? { reposError } : {}),
+        worktreePath,
+        ...(record?.repo !== undefined ? { ownRepo: record.repo } : {}),
+        ...(record?.project !== undefined ? { project: record.project } : {}),
+      },
     };
   }
 
@@ -765,6 +799,9 @@ export class HookService {
         }
       : { decision: 'allow' };
     await this.logDecision(ctx, 'post_tool_use', decision);
+    if (!READ_ONLY_TOOLS.has(payload.tool_name ?? '')) {
+      this.options.onFilesMayHaveChanged?.(ctx.stream);
+    }
 
     return oversized
       ? {

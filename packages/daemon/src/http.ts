@@ -21,10 +21,12 @@ import {
   RulePatchSchema,
   RuleTestInputSchema,
   SessionDefaultsPatchSchema,
+  type Stream,
   StreamAddRepoRequestSchema,
   StreamAttachRequestSchema,
   StreamCreateInputSchema,
   StreamSayInputSchema,
+  StreamWaitRequestSchema,
   UlidSchema,
   formatZodError,
   validatePolicy,
@@ -38,6 +40,7 @@ import {
   UnregisteredRepoError,
 } from './attach';
 import type { ClassifierKeyService } from './classifier';
+import { type DeliveryService, LandRefusedError } from './delivery';
 import type { DocsService } from './docs';
 import {
   type EventTailerHandle,
@@ -48,7 +51,6 @@ import {
 } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import type { InboxService } from './inbox';
-import { LandRefusedError, type LandingService } from './landing';
 import type { ProjectService } from './projects';
 import {
   QuestionAlreadyAnsweredError,
@@ -64,7 +66,13 @@ import {
   buildRuleReport,
   testRules,
 } from './rules';
-import { NotFoundError, type StateStore, buildStateRpcMethods, resolveMainBranch } from './store';
+import {
+  NotFoundError,
+  type StateStore,
+  buildStateRpcMethods,
+  resolveMainBranch,
+  setRepoSettings,
+} from './store';
 import type { RepoInPlaceService, StreamService } from './streams';
 
 /** The installable-app files served at site root, with their content types. */
@@ -133,13 +141,17 @@ export interface HttpServerOptions {
   /** The classifier key behind Settings, and whether evals can run (without it, whenever `ruleEvals` is given). */
   classifierKey?: ClassifierKeyService;
   /** `POST /api/streams/:id/land`. */
-  landing?: LandingService;
+  landing?: DeliveryService;
+  /** T340: `POST /api/streams/:id/pr-check`, the Delivery panel's Check now (`PrPoller.pollNow`). */
+  prCheck?: (id: string) => Promise<Stream>;
   /** The stream page's sessions strip and composer. */
   attach?: AttachService;
   /** T205: the stream page's + Repo (projects-design §7). */
   repoInPlace?: RepoInPlaceService;
   /** The stream page's docs tab. */
   docs?: DocsService;
+  /** T222: the pr refusal's GitHub auth check; absent reads as unavailable. */
+  githubAuth?: () => Promise<boolean>;
   /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
 }
@@ -364,10 +376,13 @@ interface FeedContext {
   rules?: RulesService;
   ruleEvals?: RuleRpcEvalDeps;
   classifierKey?: ClassifierKeyService;
-  landing?: LandingService;
+  landing?: DeliveryService;
+  prCheck?: (id: string) => Promise<Stream>;
   attach?: AttachService;
   repoInPlace?: RepoInPlaceService;
   docs?: DocsService;
+  /** T222: the pr refusal's GitHub auth check; absent reads as unavailable. */
+  githubAuth?: () => Promise<boolean>;
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
@@ -383,9 +398,11 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     ruleEvals: options.ruleEvals,
     classifierKey: options.classifierKey,
     landing: options.landing,
+    prCheck: options.prCheck,
     attach: options.attach,
     repoInPlace: options.repoInPlace,
     docs: options.docs,
+    githubAuth: options.githubAuth,
   };
 }
 
@@ -501,6 +518,7 @@ async function handleSessionSettingsRoute(
  *
  *   GET  /api/repos   every registered repo with its resolved `main_branch`
  *   POST /api/repos   `{name, path, protected_branches?}`; a bad path is the RPC's one-line 400
+ *   POST /api/repos/:name  T222: delivery settings (`RepoSettingsPatchSchema`), same checks as `agile repo set`
  */
 async function handleRepoRoute(
   req: Request,
@@ -508,8 +526,10 @@ async function handleRepoRoute(
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
-  if (url.pathname !== '/api/repos') return undefined;
+  const one = url.pathname.match(/^\/api\/repos\/([^/]+)$/);
+  if (url.pathname !== '/api/repos' && !one) return undefined;
   if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (one && req.method !== 'POST') return undefined;
   if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
   const list = () =>
     Object.entries(feed.store.getRepos()).map(([name, entry]) => ({
@@ -517,7 +537,29 @@ async function handleRepoRoute(
       path: entry.path,
       protected_branches: entry.protected_branches,
       main_branch: resolveMainBranch(entry),
+      delivery: entry.delivery ?? 'direct',
+      auto_merge: entry.auto_merge ?? false,
+      visibility: entry.visibility ?? { mode: 'public' },
+      ...(entry.github ? { github: entry.github } : {}),
     }));
+  if (one?.[1] !== undefined) {
+    if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+    let patch: unknown;
+    try {
+      patch = await readJsonBody(req);
+    } catch {
+      return errorResponse(400, 'invalid repo settings: body must be JSON');
+    }
+    try {
+      await setRepoSettings(feed.store, decodeURIComponent(one[1]), patch, {
+        by: 'human',
+        ...(feed.githubAuth ? { githubAuth: feed.githubAuth } : {}),
+      });
+      return jsonResponse({ repos: list() });
+    } catch (err) {
+      return errorResponse(400, messageOf(err));
+    }
+  }
   if (req.method === 'GET') return jsonResponse({ repos: list() });
   if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
   let body: unknown;
@@ -637,7 +679,9 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
  *   POST /api/streams/:id/close   the page's Close
  *   POST /api/streams/:id/mark-landed  merged outside `land`
+ *   POST /api/streams/:id/pr-check     Check now (T340): poll the node's open PR at once
  *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
+ *   POST /api/streams/:id/wait         Link (T228, P8): `{on, remove?}` a `waits_on` edge
  *
  * `land` is matched before this. Every write is same-origin only
  * and stamps `human`; no principal is ever read from the body (§2.2).
@@ -650,7 +694,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|add-repo))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -681,8 +725,12 @@ async function handleStreamRoute(
       return jsonResponse(feed.landing.diff(id));
     }
 
-    // Close and Mark landed take no body.
+    // Close, Mark landed and Check now take no body.
     if (action === 'close') return jsonResponse(await feed.streams.close('human', id));
+    if (action === 'pr-check') {
+      if (!feed.prCheck) return errorResponse(503, 'PR polling not available');
+      return jsonResponse(await feed.prCheck(id));
+    }
     if (action === 'mark-landed') {
       if (!feed.landing) return errorResponse(503, 'landing not available');
       return jsonResponse(await feed.landing.markLanded(id));
@@ -697,6 +745,12 @@ async function handleStreamRoute(
         ? await feed.repoInPlace.switchRepo(id, repo)
         : await feed.repoInPlace.addRepo(id, repo);
       return jsonResponse(result, 201);
+    }
+    if (action === 'wait') {
+      const input = StreamWaitRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('wait', input.error));
+      const { on, remove } = input.data;
+      return jsonResponse(await feed.streams.wait('human', id, on, remove ? { remove } : {}));
     }
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);

@@ -5,6 +5,8 @@
  * family that takes a `session`, which `VerbService` resolves itself.
  */
 
+import type { DeliveryService } from '../delivery/service';
+import { LandRefusedError } from '../delivery/service';
 import {
   RpcParamError,
   optionalString,
@@ -12,8 +14,6 @@ import {
   requireObject as requireParams,
   requireStreamId,
 } from '../gates/rpc';
-import type { LandingService } from '../landing/service';
-import { LandRefusedError } from '../landing/service';
 import type { RpcMethodHandler } from '../rpc';
 import { WorktreeRefusedError } from '../runner/worktrees';
 import { EmptyRepoError } from '../store/rpc-methods';
@@ -59,7 +59,7 @@ function flagsOf(p: Record<string, unknown>): { vendor?: string; model?: string;
 export function buildAttachRpcMethods(
   attach: AttachService,
   verbs: VerbService,
-  landing?: LandingService,
+  landing?: DeliveryService,
 ): Record<string, RpcMethodHandler> {
   const methods: Record<string, RpcMethodHandler> = {
     /** `agile attach <stream>` / `agile review <stream>` [--vendor] [--model] [--effort] [--role worker|reviewer]. */

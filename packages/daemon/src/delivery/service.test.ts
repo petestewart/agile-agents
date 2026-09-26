@@ -1,5 +1,5 @@
 /**
- * `LandingService` against real git repositories in a temp dir — no fakes,
+ * `DeliveryService` against real git repositories in a temp dir — no fakes,
  * no mocked git (the `worktrees.test.ts` precedent). Everything §8.2 and
  * the T132 acceptance criteria name: the refusals, target resolution
  * (including a child landing into its repo-bearing parent's branch), the
@@ -17,13 +17,13 @@ import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { LandRefusedError, LandingService, mainBranch, wireLandGateResolution } from './service';
+import { DeliveryService, LandRefusedError, mainBranch, wireLandGateResolution } from './service';
 
 let home: string;
 let repo: string;
 let store: StateStore;
 let streams: StreamService;
-let landing: LandingService;
+let landing: DeliveryService;
 let stateRoot: string;
 
 function git(args: string[], cwd = repo): string {
@@ -83,7 +83,7 @@ beforeEach(async () => {
   store = StateStore.open(stateRoot);
   streams = new StreamService(store);
   await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
-  landing = new LandingService({ store, streams });
+  landing = new DeliveryService({ store, streams });
 });
 
 afterEach(async () => {
@@ -133,6 +133,18 @@ describe('refusals (typed, before anything is touched)', () => {
     git(['worktree', 'add', '-q', '-b', 's-empty', worktree, 'main']);
     const stream = await makeStream({ branch: 's-empty', worktree });
     expect(landing.land(stream.id)).rejects.toThrow(/nothing to land/);
+  });
+
+  test('T231: nothing to deliver is recorded as a visible delivery state, not none', async () => {
+    const worktree = join(repo, '.worktrees', 's-empty2');
+    git(['worktree', 'add', '-q', '-b', 's-empty2', worktree, 'main']);
+    const stream = await makeStream({ branch: 's-empty2', worktree });
+    await expect(landing.land(stream.id)).rejects.toThrow(/nothing to land/);
+    const state = streams.get(stream.id).delivery_state;
+    expect(state?.status).toBe('not_started');
+    expect(state?.held_by).toEqual([
+      { reason: 'nothing_to_deliver', detail: 'nothing to deliver: no commits beyond main' },
+    ]);
   });
 
   test('a target branch that does not exist is named in the refusal', async () => {
@@ -303,7 +315,7 @@ describe('the land gate (repos.yaml `land_gate: true`)', () => {
   test('raises the gate instead of merging, and approving it performs the merge', async () => {
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'], land_gate: true } });
     const gates = new GateService(store);
-    landing = new LandingService({ store, streams, gates });
+    landing = new DeliveryService({ store, streams, gates });
     wireLandGateResolution(gates, landing);
 
     const work = branchWithWork('s-gated', 'gated.txt', 'gated\n');
@@ -331,7 +343,7 @@ describe('the land gate (repos.yaml `land_gate: true`)', () => {
   test('a denied gate leaves the stream open and merges nothing', async () => {
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'], land_gate: true } });
     const gates = new GateService(store);
-    landing = new LandingService({ store, streams, gates });
+    landing = new DeliveryService({ store, streams, gates });
     wireLandGateResolution(gates, landing);
 
     const work = branchWithWork('s-denied', 'denied.txt', 'denied\n');
@@ -347,7 +359,7 @@ describe('the land gate (repos.yaml `land_gate: true`)', () => {
 
   test('no gate is raised when the repo does not ask for one (§8.2 default)', async () => {
     const gates = new GateService(store);
-    landing = new LandingService({ store, streams, gates });
+    landing = new DeliveryService({ store, streams, gates });
     const work = branchWithWork('s-nogate', 'x.txt', 'x\n');
     const stream = await makeStream(work);
 
@@ -356,12 +368,62 @@ describe('the land gate (repos.yaml `land_gate: true`)', () => {
   });
 });
 
+describe('delivery_state (T223, §14.7)', () => {
+  test('a direct delivery moves ship_checking → ready → merged', async () => {
+    const work = branchWithWork('s-state', 'state.txt', 'state\n');
+    const stream = await makeStream(work);
+    const seen: string[] = [];
+    const update = streams.update.bind(streams);
+    streams.update = async (by, id, patch) => {
+      const next = await update(by, id, patch);
+      if (patch.delivery_state) seen.push(patch.delivery_state.status);
+      return next;
+    };
+    const outcome = await landing.land(stream.id);
+    expect(outcome.status).toBe('landed');
+    expect(seen).toEqual(['ship_checking', 'ready', 'merged']);
+    const state = streams.get(stream.id).delivery_state;
+    expect(state?.mode).toBe('direct');
+    expect(state?.merged_sha).toBe(git(['rev-parse', 'refs/heads/main']));
+  });
+
+  test('a ship-check deny is held, with the rule named', async () => {
+    const work = branchWithWork('s-held', 'todo.txt', 'TODO\n');
+    const stream = await makeStream(work);
+    landing = new DeliveryService({
+      store,
+      streams,
+      diffRules: { check: () => ({ decision: 'deny', reason: 'no TODOs', rule: 'RULE-9' }) },
+    });
+    expect((await landing.land(stream.id)).status).toBe('refused');
+    const state = streams.get(stream.id).delivery_state;
+    expect(state?.status).toBe('held');
+    expect(state?.held_by?.[0]?.reason).toBe('ship_check');
+    expect(state?.held_by?.[0]?.detail).toContain('RULE-9');
+  });
+
+  test('a conflict records status conflict', async () => {
+    const work = branchWithWork('s-cf', 'README.md', 'mine\n');
+    writeFileSync(join(repo, 'README.md'), 'theirs\n');
+    git(['commit', '-qam', 'theirs']);
+    const stream = await makeStream(work);
+    expect((await landing.land(stream.id)).status).toBe('blocked');
+    expect(streams.get(stream.id).delivery_state?.status).toBe('conflict');
+  });
+
+  test('a pr-mode repo is refused until PR delivery exists', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'], delivery: 'pr' } });
+    const stream = await makeStream(branchWithWork('s-pr', 'p.txt', 'p\n'));
+    expect(landing.land(stream.id)).rejects.toThrow(/pull request/);
+  });
+});
+
 describe('diff-level rules (T152, §8.2)', () => {
   test('a denying rule blocks the merge and names itself on the thread', async () => {
     const work = branchWithWork('s-rules', 'todo.txt', 'TODO: finish\n');
     const stream = await makeStream(work);
     const seen: string[] = [];
-    landing = new LandingService({
+    landing = new DeliveryService({
       store,
       streams,
       diffRules: {
@@ -393,7 +455,7 @@ describe('diff-level rules (T152, §8.2)', () => {
       summary: 'adds a dependency',
       call: { tool: 'land', fingerprint: '0123456789abcdef', origin: 'diff_rules' },
     });
-    landing = new LandingService({
+    landing = new DeliveryService({
       store,
       streams,
       gates,
@@ -424,7 +486,7 @@ describe('diff-level rules (T152, §8.2)', () => {
       call: { tool: 'land', fingerprint: 'fedcba9876543210', origin: 'diff_rules' },
     });
     let answered = false;
-    landing = new LandingService({
+    landing = new DeliveryService({
       store,
       streams,
       gates,
@@ -451,7 +513,7 @@ describe('diff-level rules (T152, §8.2)', () => {
     const gates = new GateService(store);
     const work = branchWithWork('s-hook-gate', 'edit.txt', 'an ordinary edit\n');
     const stream = await makeStream(work);
-    landing = new LandingService({ store, streams, gates });
+    landing = new DeliveryService({ store, streams, gates });
     wireLandGateResolution(gates, landing);
 
     // What the route band raises for a blocked tool call (§8.1): a real

@@ -67,6 +67,10 @@ export interface CockpitStreamRow {
   live?: true;
   /** T209: the nodes this one still waits on. */
   waits_on?: string[];
+  /** T227: this node, or a descendant, overlaps another live node. */
+  overlap?: true;
+  /** T229: a hookless vendor is live and a private repo is hidden from this node. */
+  visibility_advisory?: true;
 }
 
 /** T160: mirror of `feed/snapshot.ts`'s `CockpitFrame` — the inbox and the tree, pushed on connect and after every event batch. */
@@ -78,6 +82,15 @@ export interface CockpitFrame {
   projects: CockpitProjectRow[];
   /** T209: the registered repos and their delivery mode. */
   repos: CockpitRepoRow[];
+  /** T227: live work nodes on one repo sharing changed files. Absent from an older daemon. */
+  overlaps?: CockpitOverlap[];
+}
+
+/** T227: mirror of `sync/overlap.ts`'s `Overlap`. */
+export interface CockpitOverlap {
+  repo: string;
+  nodes: [string, string];
+  files: string[];
 }
 
 /** T209: mirror of `feed/snapshot.ts`'s `CockpitRepoRow`. */
@@ -93,7 +106,7 @@ export interface CockpitProjectRow {
   root: string;
 }
 
-/** T161: mirror of `landing/service.ts`'s `LandPreflight` — the Land button's "before". */
+/** T161: mirror of `delivery/service.ts`'s `LandPreflight` — the Land button's "before". */
 export interface LandPreflight {
   ready: boolean;
   reason?: string;
@@ -127,7 +140,7 @@ export interface StreamPagePayload {
   land?: LandPreflight;
 }
 
-/** T161: mirror of `landing/service.ts`'s `StreamDiff` (`GET /api/streams/:id/diff`). */
+/** T161: mirror of `delivery/service.ts`'s `StreamDiff` (`GET /api/streams/:id/diff`). */
 export interface StreamDiff {
   stream: string;
   branch: string;
@@ -138,7 +151,7 @@ export interface StreamDiff {
   truncated: boolean;
 }
 
-/** T161: mirror of `landing/service.ts`'s `LandOutcome` — the Land button's "after". */
+/** T161: mirror of `delivery/service.ts`'s `LandOutcome` — the Land button's "after". */
 export type LandOutcome =
   | { status: 'gated'; gate: HilRequest; line: string }
   | { status: 'refused'; reason: string; line: string }

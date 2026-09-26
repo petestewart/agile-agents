@@ -10,9 +10,17 @@ import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
 import { Bus, buildBusRpcMethods } from './bus';
 import { type Classifier, ClassifierKeyService, JevClassifier } from './classifier';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
+import {
+  ClassifierDiffRules,
+  DeliveryService,
+  buildDeliveryRpcMethods,
+  wireLandGateResolution,
+} from './delivery';
 import { DocsService, buildDocsRpcMethods } from './docs';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
+import { PrPoller } from './github/poller';
+import { createGitHubRest, ghTokenSource, githubAuthAvailable } from './github/rest';
 import {
   HookService,
   buildHookRpcMethods,
@@ -21,12 +29,6 @@ import {
 } from './hook';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService, buildInboxRpcMethods } from './inbox';
-import {
-  ClassifierDiffRules,
-  LandingService,
-  buildLandingRpcMethods,
-  wireLandGateResolution,
-} from './landing';
 import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
 import { ProjectService, buildProjectRpcMethods } from './projects';
@@ -37,6 +39,7 @@ import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
 import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
+import { MainSync, OverlapTracker } from './sync';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -76,6 +79,8 @@ export interface DaemonHandle {
 export interface StartDaemonOptions extends DiscoverConfigOptions {
   /** Test seam: the classifier (`bun test` has no network). Real usage gets a `JevClassifier`. */
   classifier?: Classifier;
+  /** Test seam: whether GitHub auth is available (default: `gh auth token` succeeds). */
+  githubAuth?: () => Promise<boolean>;
   /** Test/offline seam: `GateService`'s delegate. Real usage leaves it unset. */
   gateDelegate?: DelegateFn;
   /**
@@ -83,6 +88,8 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
    * that drives `gateService.tick()` itself (two drivers double-decide).
    */
   gateTickMs?: number;
+  /** T227: the `touched` sweep interval; 0 disables it (tests). */
+  overlapRecomputeMs?: number;
   /** Test seam: the clock threaded to `Bus` (heartbeat timestamps and coalescing). */
   now?: () => Date;
 }
@@ -90,6 +97,9 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
   const config = discoverConfig(options);
   const startedAt = Date.now();
+  // T221 (§18): whether `gh` can supply a token, never the token. T222's pr refusal asks it too.
+  const githubAuth =
+    options.githubAuth ?? (() => githubAuthAvailable(ghTokenSource(config.github.gh_command)));
   // The classifier tier (§6.2, D5), consumed by the hook and landing.
   const classifier: Classifier =
     options.classifier ?? new JevClassifier({ config: config.classifier });
@@ -134,6 +144,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(rulesService ? { rules: rulesService } : {}),
           // The turn-end rule treats an open routed call like an open question.
           ...(gateService ? { gates: gateService } : {}),
+          onWorkerTurnEnd: (id) => {
+            void mainSync?.turnEnded(id).catch((err) => console.error('main sync failed:', err));
+          },
         })
       : undefined;
   const questionService: QuestionService | undefined =
@@ -172,16 +185,37 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(gateService ? { gates: gateService } : {}),
         })
       : undefined;
+  // T226: sync after merge — main merged into the other live nodes on the repo.
+  const mainSync =
+    store && streamService
+      ? new MainSync({
+          streams: streamService,
+          repos: () => store.getRepos(),
+          ...(options.overlapRecomputeMs !== undefined
+            ? { intervalMs: options.overlapRecomputeMs }
+            : {}),
+        })
+      : undefined;
+  mainSync?.start();
   const landingService =
     store && streamService
-      ? new LandingService({
+      ? new DeliveryService({
           store,
           streams: streamService,
           ...(diffRules ? { diffRules } : {}),
           ...(gateService ? { gates: gateService } : {}),
+          github: (entry) =>
+            createGitHubRest({
+              apiUrl: config.github.api_url,
+              ...(entry.github ? { repo: entry.github } : {}),
+              tokenSource: ghTokenSource(config.github.gh_command),
+            }),
           onStreamEnd: async (id) => {
             await lessonsService?.onStreamEnd(id);
           },
+          ...(mainSync ? { onMainMoved: (repo, id) => mainSync.mainMoved(repo, id) } : {}),
+          // T340: a deliver that finds the PR merged on GitHub records it at once.
+          refreshPr: (id: string): Promise<unknown> | undefined => prPoller?.pollNow(id),
         })
       : undefined;
   if (gateService && landingService) wireLandGateResolution(gateService, landingService);
@@ -265,6 +299,40 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     });
   }
 
+  // T227: overlap tracking — `touched` after edit hooks, commits and every 60 s.
+  const overlapTracker =
+    store && streamService
+      ? new OverlapTracker({
+          streams: streamService,
+          repos: () => store.getRepos(),
+          ...(options.overlapRecomputeMs !== undefined
+            ? { intervalMs: options.overlapRecomputeMs }
+            : {}),
+        })
+      : undefined;
+  overlapTracker?.start();
+
+  // T225: the PR poller — the node's open PR is its status.
+  const prPoller =
+    store && streamService
+      ? new PrPoller({
+          streams: streamService,
+          repos: () => store.getRepos(),
+          github: (entry) =>
+            createGitHubRest({
+              apiUrl: config.github.api_url,
+              ...(entry.github ? { repo: entry.github } : {}),
+              tokenSource: ghTokenSource(config.github.gh_command),
+            }),
+          ...(questionService ? { ask: (q) => questionService.raise(q) } : {}),
+          ...(mainSync
+            ? { onMainMoved: (repo: string, except?: string) => mainSync.mainMoved(repo, except) }
+            : {}),
+          ...(landingService ? { afterTick: () => landingService.settle() } : {}),
+        })
+      : undefined;
+  prPoller?.start();
+
   // T205: "+ Repo" in place (projects-design §7), over the attach service's sessions.
   const repoInPlace =
     store && streamService && attachService
@@ -277,7 +345,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const extraMethods =
     store && gateService && bus
       ? {
-          ...buildStateRpcMethods(store),
+          ...buildStateRpcMethods(store, { githubAuth }),
           ...buildBusRpcMethods(bus),
           ...buildGateRpcMethods(gateService),
           ...(questionService ? buildQuestionRpcMethods(questionService) : {}),
@@ -301,7 +369,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...(rulesService ? buildRuleRpcMethods(rulesService, ruleEvals) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
-          ...(landingService ? buildLandingRpcMethods(landingService) : {}),
+          ...(landingService ? buildDeliveryRpcMethods(landingService) : {}),
           ...buildHookRpcMethods(
             // The route band needs the gates, the pattern tier the rules in
             // scope (a retired rule stops gating on the next call), and the
@@ -312,6 +380,15 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
               agileHome: config.home,
               ...(rulesService ? { rules: rulesService } : {}),
               classifier: { ask: classifier, config: config.classifier },
+              ...(overlapTracker
+                ? {
+                    onFilesMayHaveChanged: (stream: string) => {
+                      void overlapTracker
+                        .recompute(stream)
+                        .catch((err) => console.error('overlap recompute failed:', err));
+                    },
+                  }
+                : {}),
             }),
           ),
           ...(attachService && verbService
@@ -344,9 +421,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(rulesService && ruleEvals ? { ruleEvals } : {}),
     ...(classifierKey ? { classifierKey } : {}),
     ...(landingService ? { landing: landingService } : {}),
+    ...(prPoller ? { prCheck: (id: string) => prPoller.pollNow(id) } : {}),
     ...(attachService ? { attach: attachService } : {}),
     ...(repoInPlace ? { repoInPlace } : {}),
     ...(docsService ? { docs: docsService } : {}),
+    githubAuth,
   });
 
   // §5.4's built-in pattern rules, idempotent, before any call is accepted
@@ -378,6 +457,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       extraMethods,
       // `agile daemon status`: whether a key is loaded and its source, never the key.
       ...(classifierKey ? { classifierStatus: () => classifierKey.status() } : {}),
+      // T221 (§18): whether `gh` can supply a token, never the token.
+      githubAuth,
     });
     await rpc.listening;
   } catch (err) {
@@ -409,6 +490,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       stopped = true;
       try {
         if (gateTimer) clearInterval(gateTimer);
+        overlapTracker?.stop();
+        prPoller?.stop();
+        mainSync?.stop();
         // Sessions are child processes: stop them first so their exit writes land.
         await attachService?.stopAll();
         await http.stop();

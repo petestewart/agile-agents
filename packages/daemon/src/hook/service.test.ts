@@ -224,6 +224,30 @@ describe('HookService without a repoRoot (T125)', () => {
   });
 });
 
+// T229: a corrupt repos.yaml fails the visibility check closed, naming the file.
+describe('HookService — unreadable repos.yaml (T229)', () => {
+  test('a read outside the worktree is denied with the repos.yaml error', async () => {
+    await store.putAgent(WORKER, agentRecord({ role: 'worker', worktree }));
+    writeFileSync(join(stateRoot, 'repos.yaml'), 'repos: [::not yaml\n');
+    const svc = service();
+
+    const outside = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Read',
+      tool_input: { file_path: join(repo, 'README.md') },
+    });
+    expect(outside.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(outside.hookSpecificOutput.permissionDecisionReason).toContain('repos.yaml');
+
+    const inside = await svc.preToolUse({
+      cwd: worktree,
+      tool_name: 'Read',
+      tool_input: { file_path: join(worktree, 'x.ts') },
+    });
+    expect(inside.hookSpecificOutput.permissionDecision).toBe('allow');
+  });
+});
+
 describe('HookService read scope (T213)', () => {
   test('Bash reads reach a registered public repo but not a private one', async () => {
     const other = mkdtempSync(join(tmpdir(), 'agile-hook-other-'));
