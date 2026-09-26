@@ -722,10 +722,10 @@ async function handleDirectorRoute(
  * T245 (projects-design §8): read-only event views.
  *
  *   GET /api/streams/:id/activity  every event routed to the node: reason, delivery status, session or digest
- *   GET /api/repos/:name/events    every event on the repo
  *   GET /api/events                T338: the event log, every routed event, newest first.
  *                                  T383: a page of it, `{events, more, total}`: `?before=<event id>`
  *                                  (only older ones), `?limit=` (1–500, default 200), `?repo=<name>`
+ *   GET /api/repos/:name/events    the repo's events: T407, `/api/events?repo=<name>`, paged the same
  *   GET /api/repos/:name/knowledge T265: the repo's accepted standards and architecture
  */
 function handleActivityRoute(
@@ -736,10 +736,12 @@ function handleActivityRoute(
   if (req.method !== 'GET') return undefined;
   const node = url.pathname.match(/^\/api\/streams\/([^/]+)\/activity$/);
   const repo = url.pathname.match(/^\/api\/repos\/([^/]+)\/events$/);
-  if (url.pathname === '/api/events') {
+  if (url.pathname === '/api/events' || repo) {
     if (!feed?.events) return errorResponse(503, 'events not available');
     const query = eventPageQuery(url.searchParams);
     if (typeof query === 'string') return errorResponse(400, query);
+    // T407: a repo's events are `/api/events?repo=<name>` under their own path, paged the same.
+    if (repo) query.repo = decodeURIComponent(repo[1] ?? '');
     try {
       return jsonResponse(feed.events.page(query));
     } catch (err) {
@@ -762,15 +764,12 @@ function handleActivityRoute(
         .filter((k) => k.kind !== 'decision'),
     });
   }
-  if (!node && !repo) return undefined;
+  if (!node) return undefined;
   if (!feed?.events) return errorResponse(503, 'events not available');
   try {
-    if (node) {
-      const id = UlidSchema.safeParse(decodeURIComponent(node[1] ?? ''));
-      if (!id.success) return errorResponse(400, `invalid stream id: ${node[1]}`);
-      return jsonResponse({ activity: feed.events.activityFor(id.data) });
-    }
-    return jsonResponse({ events: feed.events.forRepo(decodeURIComponent(repo?.[1] ?? '')) });
+    const id = UlidSchema.safeParse(decodeURIComponent(node[1] ?? ''));
+    if (!id.success) return errorResponse(400, `invalid stream id: ${node[1]}`);
+    return jsonResponse({ activity: feed.events.activityFor(id.data) });
   } catch (err) {
     return errorResponse(500, messageOf(err));
   }

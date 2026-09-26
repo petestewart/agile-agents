@@ -1599,6 +1599,25 @@ describe('T383 GET /api/events pages', () => {
     expect((await read('?repo=nope')).body).toEqual({ events: [], more: false, total: 0 });
   });
 
+  test("T407: /api/repos/:name/events is the repo's page, paged the same", async () => {
+    const first = await emit('one', 'api');
+    await emit('elsewhere', 'web');
+    const second = await emit('two', 'api');
+    const at = (query = '') =>
+      fetch(`http://127.0.0.1:${cockpit.port}/api/repos/api/events${query}`).then(async (res) => ({
+        status: res.status,
+        body: (await res.json()) as Page,
+      }));
+    const page = await at('?limit=1');
+    expect(page.status).toBe(200);
+    expect(page.body.events.map((e) => e.id)).toEqual([second.id]);
+    expect(page.body).toMatchObject({ more: true, total: 2 });
+    const next = await at(`?limit=1&before=${second.id}`);
+    expect(next.body.events.map((e) => e.id)).toEqual([first.id]);
+    expect(next.body.more).toBe(false);
+    expect((await at('?limit=0')).status).toBe(400);
+  });
+
   test('a bad limit, an empty repo and an unknown cursor are 400s in words', async () => {
     await emit('hi');
     for (const limit of ['0', '-1', '2.5', 'ten', '501', '']) {
