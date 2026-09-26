@@ -233,7 +233,8 @@ export class AutonomyService {
     );
     await this.note(principal, node, {
       kind: 'proposal',
-      body: `${principal} (${level}) proposes: ${summary}`.slice(0, 800),
+      // T381: the thread reads in words; the level is the card's business.
+      body: `Proposed, waiting for your approval: ${summary}`.slice(0, 800),
       ref: proposalPath(proposal.id),
     });
     return { applied: false, level, proposal };

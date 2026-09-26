@@ -2088,6 +2088,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/feed/merge-state.test.ts packages/ui`; control-room e2e "a finished node with no commits reads No changes…".
 - **Notes:** Branch T380-no-changes. The check is keyed on the agent's last status change, the branch and a recorded conflict, with a 30 s TTL for commits made by hand; a node merged outside the cockpit keeps Merge (the click records it).
 
+### Ticket: T381 QA wording: Knowledge's link, "Can't merge yet", a proposal in words
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the T369 screenshot pass: Knowledge's deep link read `?view=rules`; the Delivery line said "Not landable yet" and "a land gate"; a held proposal's thread line read `director (advise) proposes: …` in the Director's chat.
+- **Acceptance Criteria:** `?view=knowledge` (and the old `?view=rules`) opens Knowledge and the URL it writes says `knowledge`; the Delivery line says "Can’t merge yet" and "asks you to approve each merge"; the proposal line reads "Proposed, waiting for your approval: …".
+- **Validation Steps:** `bun test packages/ui/app/lib/shell.test.ts packages/daemon/src/coordination`; the Director, rules and delivery e2e.
+- **Notes:** Branch T381-qa-wording.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Todo

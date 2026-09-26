@@ -64,7 +64,9 @@ export function parseShellUrl(search: string): ShellLocation {
   const node = params.get('node') || undefined;
   const project = params.get('project') || undefined;
   if (node !== undefined) return { view: 'stream', node, project };
-  const view = params.get('view');
+  // Knowledge is the `rules` view inside; its link says `knowledge` (`rules` still opens it).
+  const raw = params.get('view');
+  const view = raw === 'knowledge' ? 'rules' : raw;
   return { view: isShellView(view) ? view : 'inbox', node: undefined, project };
 }
 
@@ -72,7 +74,8 @@ export function parseShellUrl(search: string): ShellLocation {
 export function shellSearch({ view, node, project }: ShellLocation): string {
   const params = new URLSearchParams();
   if (view === 'stream' && node !== undefined) params.set('node', node);
-  else if (view !== 'inbox' && view !== 'stream') params.set('view', view);
+  else if (view !== 'inbox' && view !== 'stream')
+    params.set('view', view === 'rules' ? 'knowledge' : view);
   if (project !== undefined) params.set('project', project);
   const query = params.toString();
   return query === '' ? '' : `?${query}`;
