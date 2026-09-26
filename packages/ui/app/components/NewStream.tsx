@@ -107,8 +107,8 @@ function NewStreamForm({
 
   return (
     <div className="cr-modal" data-testid="new-stream">
-      <form className="cr-modal-card" onSubmit={submit} aria-label="New stream">
-        <h2>New stream</h2>
+      <form className="cr-modal-card" onSubmit={submit} aria-label="New node">
+        <h2>New node</h2>
         <label>
           Title
           <input
@@ -163,7 +163,7 @@ function NewStreamForm({
             checked={startLater}
             onChange={(e) => setStartLater(e.target.checked)}
           />{' '}
-          Start later <span>(don't start the agent now)</span>
+          Start later <span>(don't start its agent yet)</span>
         </label>
         {error && (
           <p className="cr-error" role="alert" data-testid="new-stream-error">

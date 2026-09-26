@@ -18,18 +18,34 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { moveStream } from '../lib/api';
 import type { CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
 import { isShortcut, useShell } from '../lib/shell';
+import { type NodeStatusKey, ROLE_LABEL, nodeStatus } from '../lib/status';
 import {
-  DOT_LABEL,
-  ROLE_ICON,
   type StreamTreeNode,
   buildStreamTree,
   filterStreamRows,
   parseCollapsed,
   rowsInProject,
-  streamDot,
   subtreeNeedsYou,
 } from '../lib/streams';
+import { Icon, type IconName } from './Icon';
 import { NewProject } from './NewProject';
+import { IconButton, StatusDot } from './ui';
+
+/** Project-row statuses that are not worth a dot: the layers icon says enough. */
+const QUIET_PROJECT: ReadonlySet<NodeStatusKey> = new Set([
+  'idle',
+  'not_started',
+  'stopped',
+  'done',
+]);
+
+/** T360: the role glyphs (design/cockpit-ui.md §2); `data-role` names the role for tests. */
+export const ROLE_GLYPH: Record<CockpitStreamRow['role'], IconName> = {
+  project: 'layers',
+  coordinating: 'network',
+  work: 'git-branch',
+  conversation: 'message-square',
+};
 
 /** T333: the rail's drag state; `canDrop` is a hint, the daemon decides. */
 interface DragProps {
@@ -76,7 +92,7 @@ function Node({
   drag: DragProps;
 }): JSX.Element {
   const { selected, select } = useShell();
-  const dot = streamDot(node.row);
+  const status = nodeStatus(node.row);
   const id = node.row.id;
   const hasChildren = node.children.length > 0;
   const open = !hasChildren || fold.isOpen(id);
@@ -94,7 +110,7 @@ function Node({
           disabled={fold.locked}
           onClick={() => fold.setOpen(id, !open)}
         >
-          {open ? '\u25BE' : '\u25B8'}
+          <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} strokeWidth={2.25} />
         </button>
       )}
       <button
@@ -128,7 +144,8 @@ function Node({
         aria-current={selected === id ? 'true' : undefined}
         aria-expanded={hasChildren ? open : undefined}
         data-role={node.row.role}
-        title={`${node.row.title} — ${node.row.role} — ${DOT_LABEL[dot]}`}
+        data-status={status.key}
+        title={`${node.row.title}\n${ROLE_LABEL[node.row.role]} · ${status.label}`}
         onClick={() => select(id)}
         onDoubleClick={() => {
           if (hasChildren) fold.setOpen(id, !open);
@@ -141,9 +158,18 @@ function Node({
           e.preventDefault();
         }}
       >
-        <span className="cr-dot" data-dot={dot} aria-label={DOT_LABEL[dot]} />
-        <span className="cr-role" data-testid="role-icon" aria-label={node.row.role}>
-          {ROLE_ICON[node.row.role]}
+        {/* A project row shows a dot only when its status is news (a coordinator's question, work, a merge). */}
+        {node.row.role !== 'project' || !QUIET_PROJECT.has(status.key) ? (
+          <StatusDot row={node.row} status={status} />
+        ) : null}
+        <span
+          className="cr-role"
+          data-testid="role-icon"
+          data-role={node.row.role}
+          role="img"
+          aria-label={ROLE_LABEL[node.row.role]}
+        >
+          <Icon name={ROLE_GLYPH[node.row.role]} size={14} />
         </span>
         {/* T347 (D36 D11): the plan badge sits on its own line, so the title keeps the width. */}
         <span className="cr-tree-label">
@@ -155,8 +181,12 @@ function Node({
           )}
         </span>
         {node.row.overlap && (
-          <span className="cr-overlap" data-testid="overlap-mark" title="overlapping changes">
-            ⚠
+          <span
+            className="cr-overlap"
+            data-testid="overlap-mark"
+            title="Overlapping changes with another live node"
+          >
+            <Icon name="alert-triangle" size={13} label="overlapping changes" />
           </span>
         )}
         {node.row.visibility_advisory && (
@@ -191,7 +221,7 @@ export function StreamTree({
   rows: readonly CockpitStreamRow[];
   projects: readonly CockpitProjectRow[];
 }): JSX.Element {
-  const { selected, select, railOpen, toggleRail, project, setProject } = useShell();
+  const { railOpen, toggleRail, project, setProject } = useShell();
   const [filter, setFilter] = useState('');
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const filterRef = useRef<HTMLInputElement>(null);
@@ -257,8 +287,17 @@ export function StreamTree({
   }, [railOpen, toggleRail]);
 
   return (
-    <aside className="cr-rail" id="cr-rail" data-testid="stream-tree">
-      <h2>Streams</h2>
+    <section className="cr-rail" data-testid="stream-tree" aria-label="Projects">
+      <div className="cr-sb-section">
+        <span>Projects</span>
+        <IconButton
+          icon="plus"
+          size="sm"
+          label="New project"
+          data-testid="new-project-open"
+          onClick={() => setNewProjectOpen(true)}
+        />
+      </div>
       <div className="cr-project-bar">
         <select
           data-testid="project-switcher"
@@ -273,14 +312,6 @@ export function StreamTree({
             </option>
           ))}
         </select>
-        <button
-          type="button"
-          className="cr-btn"
-          data-testid="new-project-open"
-          onClick={() => setNewProjectOpen(true)}
-        >
-          New project
-        </button>
       </div>
       {newProjectOpen && <NewProject onClose={() => setNewProjectOpen(false)} />}
       <input
@@ -288,8 +319,9 @@ export function StreamTree({
         type="search"
         className="cr-tree-filter"
         data-testid="stream-filter"
-        placeholder="Filter streams (/)"
-        aria-label="Filter streams"
+        placeholder="Filter nodes…"
+        title="Filter nodes (/)"
+        aria-label="Filter nodes"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
         onKeyDown={(e) => {
@@ -300,19 +332,9 @@ export function StreamTree({
         }}
       />
       {rows.length === 0 ? (
-        <p className="cr-tree-empty">No streams yet.</p>
+        <p className="cr-tree-empty">No projects yet. Create one to start.</p>
       ) : (
         <ul className="cr-tree">
-          <li>
-            <button
-              type="button"
-              className="cr-tree-row"
-              aria-current={selected === undefined ? 'true' : undefined}
-              onClick={() => select(undefined)}
-            >
-              <span className="title">All streams</span>
-            </button>
-          </li>
           {tree.map((node) => (
             <Node key={node.row.id} node={node} fold={fold} drag={drag} />
           ))}
@@ -323,6 +345,6 @@ export function StreamTree({
           {moveError}
         </p>
       )}
-    </aside>
+    </section>
   );
 }

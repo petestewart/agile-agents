@@ -73,8 +73,7 @@ The cockpit is `http://127.0.0.1:4600/`.
 
 | Place | What it holds |
 |---|---|
-| Left rail | Project switcher (**All projects**, Shop, Blog), **New project**, the tree with a role icon per node and a ⚠ mark on overlapping nodes, a filter |
-| Top bar | Quick capture (one line becomes a node), **New stream (n)**, and the views below |
+| Sidebar | **New node (n)**; the views below (**Needs me** with its count, **Director**, **Knowledge**, and under *Views* **Running**, **Repos**, **Dependencies**, **Events**); *Projects*: **+** (new project), the project switcher (**All projects**, Shop, Blog), a filter, and the tree with a status dot and a role icon per node and a ⚠ mark on overlapping nodes; **Settings** at the bottom. Below 900px wide it is a drawer behind the ☰ button |
 | **Needs me** | The inbox, grouped by node: questions (answer inline), gates (Approve/Deny), knowledge proposals (Accept/Retire), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (**Merge**) |
 | **Repos** | Per repo: its delivery mode, the live work nodes on it across projects (ancestors greyed), overlaps, its norms, recent repo events |
 | **Running** | Nodes with a live agent |
@@ -427,7 +426,7 @@ If the coordinator already proposed this link, press **Apply** on its card in
       `agile-test-repo part` in the list that opens, and press **Wait on**.
 - [ ] The page lists `waits on agile-test-repo part` with an **Unlink**
       button.
-- [ ] **Dependencies** (top bar) shows
+- [ ] **Dependencies** (sidebar) shows
       `ledger-lite part waits on agile-test-repo part`. Click either name to
       open that node.
 
@@ -507,9 +506,9 @@ address bar, so a reload comes back to the same node under the same project.
 A Blog node adds `walkthrough-notes.md` to ledger-lite and merges directly.
 
 - [ ] In the rail's project switcher pick **Blog**, then click
-      **All streams** so no node is selected (a new node's parent defaults
+      **Needs me** so no node is selected (a new node's parent defaults
       to the open node).
-- [ ] Press **New stream** in the top bar (or the `n` key). Title
+- [ ] Press **New node** in the sidebar (or the `n` key). Title
       `Walkthrough notes`, Goal
       `Add walkthrough-notes.md with a Blog and a Shop section.`, Parent
       `— none —`, Repo empty, tick **Start later**, press **Create**. The
@@ -547,11 +546,11 @@ cd ~
 
 ### 5.2 Two projects touch the same file
 
-- [ ] Switch the rail to **Shop**, click **All streams**, and create
-      `Shop note` as in 5.1: **New stream**, Title `Shop note`, Goal
+- [ ] Switch the rail to **Shop**, click **Needs me**, and create
+      `Shop note` as in 5.1: **New node**, Title `Shop note`, Goal
       `Fill in the Shop section of walkthrough-notes.md.`, tick **Start later**,
       **Create**, then **+ Repo** → `ledger-lite` → **Add**.
-- [ ] Switch the rail to **Blog**, click **All streams**, and create
+- [ ] Switch the rail to **Blog**, click **Needs me**, and create
       `Blog note` the same way (Goal
       `Fill in the Blog section of walkthrough-notes.md.`), with **+ Repo** →
       `ledger-lite` → **Add**.
@@ -570,7 +569,7 @@ seconds. Wait a minute, then:
 
 - [ ] Switch the rail to **All projects**. Shop note and Blog note carry the
       ⚠ overlap mark, and so do their project roots, Shop and Blog.
-- [ ] **Repos** (top bar) shows, under `ledger-lite (direct)`, both live nodes
+- [ ] **Repos** (sidebar) shows, under `ledger-lite (direct)`, both live nodes
       with their project greyed (`Shop › Shop note`, `Blog › Blog note`) and
       `⚠ Shop note and Blog note both changed walkthrough-notes.md`.
 - [ ] Open Shop note: its **Diff** tab shows the one-line change and the
@@ -696,7 +695,7 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
 
 Again no agent: you play it.
 
-- [ ] Rail → **Blog** → **All streams** → **New stream**: Title
+- [ ] Rail → **Blog** → **Needs me** → **New node**: Title
       `Ledger count`, Goal `Add a count function in src/ledger-count.ts.`,
       tick **Start later**, **Create**. Then **+ Repo** → `ledger-lite` →
       **Add**.
@@ -731,7 +730,7 @@ cd ~
 
 ### 6.4 **[vendor]** A decision reaches a node as an event
 
-- [ ] Rail → **Shop** → **All streams** → **New stream**: Title
+- [ ] Rail → **Shop** → **Needs me** → **New node**: Title
       `Cents check`, Goal
       `Read ledger-lite and tell me how it stores amounts. Then wait: I may send you a decision about this.`,
       leave **Start later** unticked, **Create**. A session appears in its
@@ -768,7 +767,7 @@ done by `director`.
 
 ### 7.1 What needs me today?
 
-- [ ] **Director** (top bar). The line under the heading reads
+- [ ] **Director** (sidebar). The line under the heading reads
       `No session yet: a line below starts one.`
 - [ ] Type `What needs me today?` in `Tell the Director…` and press **Send**.
       The line becomes `claude/… · live`, and your message is on its
@@ -864,7 +863,7 @@ You need one **epic** in Jira with at least one child issue, and its first
 child should be a small task an agent can do in agile-test-repo (for example
 "Add TRACKER.md with one line saying this repo is linked to Jira").
 
-- [ ] Rail → **Shop** → **All streams** → **New stream**: Title
+- [ ] Rail → **Shop** → **Needs me** → **New node**: Title
       `Tracker epic`, Goal `Placeholder until linked`, tick **Start later**,
       **Create**.
 - [ ] On its page press **Tracker issue…** (it shows because Shop has a
@@ -903,7 +902,7 @@ child should be a small task an agent can do in agile-test-repo (for example
 
 ### 8.5 **[vendor]** Create an issue from a node
 
-- [ ] Open **Tracker epic** and press **New stream** (the Parent defaults to
+- [ ] Open **Tracker epic** and press **New node** (the Parent defaults to
       the open node, Tracker epic). Title `Tracker follow-up`, Goal
       `Note in TRACKER.md how issues are linked.`, tick **Start later**,
       **Create**.
@@ -926,7 +925,7 @@ child should be a small task an agent can do in agile-test-repo (for example
       node. The badge on **Needs me** counts them.
 - [ ] The rail's dots say who must act: amber waiting on you, blue agent
       working, grey idle, green landed, red blocked (hover a row to read it).
-      The filter box (`Filter streams (/)`, or the `/` key) narrows the tree
+      The filter box (`Filter nodes…`, or the `/` key) narrows the tree
       by title. **Running** lists the nodes with a live agent.
 - [ ] A node's **Activity** tab is what woke it and why: one row per routed
       event with its type, `[repo]`, why it was routed (self, ancestor,
@@ -935,7 +934,7 @@ child should be a small task an agent can do in agile-test-repo (for example
       `expired`, with `in a digest` when several went in one turn) and when
       (`YYYY-MM-DD HH:MM`, local time; hover a row for the session id and the
       full time). A node with none says `No events routed here yet.`
-- [ ] **Events** (top bar) lists every routed event across projects, newest
+- [ ] **Events** (sidebar) lists every routed event across projects, newest
       first: its type, the node it is about, who it was routed to and why.
 - [ ] **CLI only:** the raw event log (every event, not only routed ones):
       `agile tail | tail -20`, `agile tail --follow` to keep watching (Ctrl-C
@@ -953,7 +952,7 @@ agile daemon status
 ```
 
 - [ ] `stop` prints `agiled stopped: pid=…`; `status` then says
-      `agiled is not running`, and the cockpit's top bar shows
+      `agiled is not running`, and the cockpit's sidebar shows
       `reconnecting…` instead of `live`. After `start` it reconnects with every
       node, thread and event intact. Stopping the daemon stops every agent
       session: open a node that was mid-work and press **Restart** →
@@ -1036,7 +1035,7 @@ agile daemon status
 These steps have no cockpit control, so they stay on the CLI:
 
 - The raw event log, including events routed to no node (9.1): `agile tail`.
-  (**Events** in the top bar lists the routed ones.)
+  (**Events** in the sidebar lists the routed ones.)
 - Stopping and starting the daemon (9.2), and whether GitHub auth is
   available (9.4): `agile daemon stop|start|status`.
 - A pull request's full state as JSON: `agile node show <id> --json`
