@@ -16,7 +16,7 @@
 import { useState } from 'react';
 import type { CockpitProjectRow, CockpitStreamRow, FeedSnapshot } from '../lib/feed-types';
 import { type ShellView, useShell } from '../lib/shell';
-import { useUnreadReplies } from '../lib/use-unread';
+import { useDirectorUnread, useUnreadReplies } from '../lib/use-unread';
 import { openCommandPalette, paletteKeyLabel } from './CommandPalette';
 import { Icon, type IconName } from './Icon';
 import { DeletedNodes, StreamTree } from './StreamTree';
@@ -99,9 +99,17 @@ function NavButton({
         <span
           className="cr-sb-replies"
           data-testid="replies-dot"
-          title={`${replies} ${replies === 1 ? 'reply' : 'replies'} to read`}
+          title={
+            item.view === 'director'
+              ? 'The Director replied'
+              : `${replies} ${replies === 1 ? 'reply' : 'replies'} to read`
+          }
           role="img"
-          aria-label={`${replies} ${replies === 1 ? 'reply' : 'replies'} to read`}
+          aria-label={
+            item.view === 'director'
+              ? 'The Director replied'
+              : `${replies} ${replies === 1 ? 'reply' : 'replies'} to read`
+          }
         />
       )}
       {count !== undefined && count > 0 && (
@@ -175,6 +183,7 @@ export function Sidebar({
 }): JSX.Element {
   const { setNewStreamOpen } = useShell();
   const replies = useUnreadReplies();
+  const directorReply = useDirectorUnread();
   const [viewsOpen, setViewsOpen] = useState(loadViewsOpen);
   // A line under the pinned block once the list has scrolled under it.
   const [scrolled, setScrolled] = useState(false);
@@ -219,7 +228,12 @@ export function Sidebar({
       <nav className="cr-sb-nav cr-sb-primary" aria-label="Main">
         <NavButton item={PRIMARY[0] as NavItem} count={inboxCount} replies={replies.length} />
         {PRIMARY.slice(1).map((item) => (
-          <NavButton key={item.view} item={item} />
+          <NavButton
+            key={item.view}
+            item={item}
+            // T433: the Director replied and you haven't read it.
+            replies={item.view === 'director' && directorReply !== undefined ? 1 : 0}
+          />
         ))}
       </nav>
       <div

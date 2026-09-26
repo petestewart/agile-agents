@@ -121,3 +121,15 @@ export function ancestorTitles(
   }
   return out;
 }
+
+/** T433: the Director's read mark, beside the nodes' (a node id is a ULID, so they never clash). */
+export const DIRECTOR_READ_KEY = 'director';
+
+/** T433: the Director replied since you last read its thread (`reading`: its page is on screen now). */
+export function directorUnread(
+  repliedAt: string | undefined,
+  seen: SeenState,
+  reading: boolean,
+): boolean {
+  return !reading && repliedAt !== undefined && repliedAt > readUpTo(seen, DIRECTOR_READ_KEY);
+}

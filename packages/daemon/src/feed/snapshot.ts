@@ -230,6 +230,8 @@ export interface CockpitFrame {
   contracts: CockpitContractRow[];
   /** T361: deleted (archived) nodes the cockpit can restore, most recently deleted first. */
   archived?: CockpitArchivedRow[];
+  /** T433: when the Director last wrote a line of its own, for the cockpit's unread mark. Absent when it never has. */
+  director?: { replied_at: string };
 }
 
 /** T361: one deleted node: its parent is not deleted, so Restore can bring it back. */
@@ -310,7 +312,10 @@ export function buildCockpitFrame(
   ) => { stat?: CockpitStreamRow['diff_stat']; merged?: true } | undefined,
   /** T411: a live session's context window, as its vendor last reported it (`AttachService.contextFor`). */
   contextOf?: (session: string) => CockpitLiveAgent['context'],
+  /** T433: when the Director last replied (`StateStore.directorReplyAt`). */
+  directorRepliedAt?: () => string | undefined,
 ): CockpitFrame {
+  const repliedAt = directorRepliedAt?.();
   // One read of the home: the archived ones are only for Restore (T361).
   const everything = streams.list({ include_archived: true });
   const all = everything.filter((s) => s.archived !== true);
@@ -368,6 +373,7 @@ export function buildCockpitFrame(
       }
     }),
     contracts: (contracts?.list() ?? []).map((c) => ({ id: c.id, title: c.title, node: c.node })),
+    ...(repliedAt !== undefined ? { director: { replied_at: repliedAt } } : {}),
     ...archivedRows(everything),
   };
 }

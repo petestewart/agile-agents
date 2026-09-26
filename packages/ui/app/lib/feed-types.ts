@@ -125,6 +125,8 @@ export interface CockpitFrame {
   contracts?: CockpitContractRow[];
   /** T361: deleted nodes that can be restored, most recently deleted first (≤200). Absent when none. */
   archived?: CockpitArchivedRow[];
+  /** T433: when the Director last wrote a line of its own. Absent when it never has, or from an older daemon. */
+  director?: { replied_at: string };
 }
 
 /** T361: mirror of `feed/snapshot.ts`'s `CockpitArchivedRow`. */

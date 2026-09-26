@@ -171,6 +171,8 @@ export class StateStore {
   private readonly mutex = new Mutex();
   /** T395: each thread's last line time, from appends here, else the file's mtime (read once). */
   private readonly threadAt = new Map<string, string | undefined>();
+  /** T433: `directorReplyAt`'s cache: `undefined` until read, `null` for none. */
+  private directorRepliedAt: string | null | undefined;
 
   // An absolute symlink target may resolve through a symlinked ancestor of
   // the state root (macOS `tmpdir()` under `/var -> /private/var`), so
@@ -918,11 +920,36 @@ export class StateStore {
     return this.mutate(() => {
       const validated = validateThreadEntry(entry);
       appendJsonlLine(this.abs(join('threads', `${DIRECTOR_NODE}.jsonl`)), validated);
+      if (validated.by === 'director') this.directorRepliedAt = validated.ts;
       const event = buildEvent('thread_appended', {
         data: { thread: DIRECTOR_NODE, by: validated.by, entry_kind: validated.kind },
       });
       return { result: validated, event };
     });
+  }
+
+  /**
+   * T433: when the Director last wrote a line of its own (a reply or a
+   * proposal), for the cockpit's unread mark. Read from the thread once, then
+   * kept as lines are appended.
+   */
+  directorReplyAt(): string | undefined {
+    if (this.directorRepliedAt === undefined) {
+      let at: string | null = null;
+      try {
+        const lines = this.readDirectorThread();
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (lines[i]?.by === 'director') {
+            at = lines[i]?.ts ?? null;
+            break;
+          }
+        }
+      } catch {
+        // A corrupt thread is refused where it is read; here it just has no mark.
+      }
+      this.directorRepliedAt = at;
+    }
+    return this.directorRepliedAt ?? undefined;
   }
 
   readDirectorThread(): ThreadEntry[] {

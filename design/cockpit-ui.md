@@ -370,7 +370,10 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   (open, ✓ to mark read, Mark all read), the sidebar's Needs me shows a dot,
   and one notification says "Replied: …" while you're away (T388's
   setting). Read marks are per browser (localStorage); a first visit starts
-  with everything read.
+  with everything read. T433: the node's row in the rail is bold with a blue
+  dot, and the Director counts too: its reply marks the sidebar's Director,
+  heads Replies, and is read when its page is on screen (the frame's
+  `director.replied_at`).
 - **What a worker proposes next** (T427): an agent's `propose_next` line
   ("Proposal") carries **Create node…**, which opens New node with its title
   and goal filled in, under this node (design §2's "break it down"); the

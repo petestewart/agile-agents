@@ -10172,3 +10172,15 @@ div.cr-lens-ev:hover {
   font-size: var(--text-sm);
   color: var(--text-faint);
 }
+.cr-tree-row[data-unread="true"] .title {
+  font-weight: 600;
+  color: var(--text);
+}
+.cr-tree-unread {
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
