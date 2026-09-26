@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxItem } from '@agile-agents/shared';
 import {
+  NO_CHANGES_TEXT,
   applyFilter,
   branchName,
   cardTitle,
@@ -14,6 +15,7 @@ import {
   isFirstRun,
   isLandGate,
   knowledgeView,
+  noChangesText,
   parseChoices,
   planView,
   proposalOf,
@@ -409,6 +411,15 @@ describe('card titles and text (T364)', () => {
     expect(statusText(item({ kind: 'done', context: 'Added the CSV import.' }))).toBe(
       'Added the CSV import.',
     );
+  });
+
+  test('T380: a finished card with nothing to merge says so, not "merge"', () => {
+    const stock =
+      'The agent finished. Look over the changes, then merge — or close the node if you won’t.';
+    expect(noChangesText(item({ kind: 'done', context: stock }))).toBe(NO_CHANGES_TEXT);
+    const own = noChangesText(item({ kind: 'done', context: 'The feature was already there.' }));
+    expect(own).toStartWith('The feature was already there.');
+    expect(own).toContain('nothing to merge');
   });
 });
 

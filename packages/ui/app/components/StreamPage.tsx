@@ -100,9 +100,11 @@ import {
 export { THREAD_COLLAPSE_LINES, ThreadBody, isLongThreadBody } from './Chat';
 
 /** Decision cards only: `blocked`/`done` are this page's own status and Merge button. */
-function needsYou(items: readonly InboxItem[], stream: string): InboxItem[] {
+function needsYou(items: readonly InboxItem[], stream: string, noChanges = false): InboxItem[] {
+  // The header has Merge; T380: with nothing to merge, the card's Close is the move.
   return items.filter(
-    (item) => item.stream === stream && item.kind !== 'blocked' && item.kind !== 'done',
+    (item) =>
+      item.stream === stream && item.kind !== 'blocked' && (item.kind !== 'done' || noChanges),
   );
 }
 
@@ -399,7 +401,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const waitingForPlan = row?.waiting_for_plan === true;
   // T174: human lines sent mid-turn, not yet delivered to the live worker.
   const queuedLines = new Set(live.flatMap((s) => s.queued ?? []));
-  const cards = needsYou(cockpit?.inbox ?? [], stream.id);
+  const cards = needsYou(cockpit?.inbox ?? [], stream.id, row?.nothing_to_merge === true);
   const questions = openQuestions(cockpit?.inbox ?? [], stream.id);
   const answering = answerTarget(questions, answerChoice);
   const answeringItem = questions.find((q) => q.id === answering);

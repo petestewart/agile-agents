@@ -1,6 +1,6 @@
 # Cockpit UI — design system and UX rules
 
-Status: 2026-09-26 (Phase 15, T360–T379). Follow-ups: `cockpit-ui-followups.md`. Applies to `packages/ui/app`. Where this
+Status: 2026-09-26 (Phase 15, T360–T380). Follow-ups: `cockpit-ui-followups.md`. Applies to `packages/ui/app`. Where this
 file and `cockpit-design.md` §9 disagree on *how the cockpit looks or reads*,
 this file wins; on *what the cockpit does*, the design docs and the Decisions
 log still decide.
@@ -172,6 +172,7 @@ One mapping from a cockpit row to what the UI shows, in precedence order:
 | blocked | agent blocked | Blocked | red |
 | pr_open | done, PR open | PR open | blue |
 | ready | done, a branch to merge | Ready to merge | amber |
+| no_changes | done, a branch with no commits beyond its target (T380) | No changes | amber |
 | done | done, nothing to merge (coordinating); a conversation reads "Replied" | Done / Replied | green |
 | waiting | waiting for the plan, or waits on another node | Waiting | gray |
 | working | a turn in flight | Working | blue (animated) |
@@ -191,6 +192,9 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
 - **Decision cards** (`Card` in `Inbox.tsx`): a title line (kind icon, what it
   is, node path, age), the body, and actions on one row, primary first.
   A question with `options` shows each as a button; typing is always allowed.
+  A finished node with nothing to merge (the row's `nothing_to_merge`) reads
+  "Finished, no changes" and offers Close node instead of Merge, in Needs me
+  and at the end of its own chat.
 - **Chat**: human lines right-aligned bubbles; agent lines as prose with the
   agent's name; daemon lines as one-line system rows (icon + muted text) that
   collapse when there are several in a row. A long message folds with "Show

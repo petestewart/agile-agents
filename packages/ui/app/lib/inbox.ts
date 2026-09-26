@@ -448,6 +448,21 @@ export function statusText(item: InboxItem): string {
   return STOCK_TEXT[text] ?? text;
 }
 
+/** The daemon's line for a finished agent that left none (`DONE_TEXT`): it talks about merging. */
+const DONE_STOCK =
+  'The agent finished. Look over the changes, then merge — or close the node if you won’t.';
+
+/** T380: a finished card's text when its branch has nothing to merge. */
+export const NO_CHANGES_TEXT =
+  'The agent finished without committing anything, so there is nothing to merge. Close the node, or reply to ask for more.';
+
+export function noChangesText(item: InboxItem): string {
+  const text = statusText(item);
+  return text === DONE_STOCK
+    ? NO_CHANGES_TEXT
+    : `${text}\n\n*Nothing was committed, so there is nothing to merge.*`;
+}
+
 // ---------------------------------------------------------------- filter
 
 export type NeedsMeFilter = 'all' | 'questions' | 'decisions' | 'merges';

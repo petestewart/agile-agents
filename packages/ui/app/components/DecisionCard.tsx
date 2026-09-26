@@ -28,6 +28,7 @@ import {
   answerQuestion,
   approvePlan,
   attachSession,
+  closeStream,
   decideGate,
   decideProposal,
   decideRule,
@@ -45,6 +46,7 @@ import {
   fullText,
   gateView,
   knowledgeView,
+  noChangesText,
   planView,
   proposalOf,
   questionView,
@@ -179,11 +181,12 @@ export function Card({
     }
   }
 
-  const tone: CardTone = cardTone(item);
-  const nodeTitle =
-    item.stream !== undefined
-      ? (cockpit?.streams.find((r) => r.id === item.stream)?.title ?? item.stream_path.at(-1))
-      : undefined;
+  const row =
+    item.stream !== undefined ? cockpit?.streams.find((r) => r.id === item.stream) : undefined;
+  // T380: finished with no commits beyond its target: the move is Close, not Merge.
+  const noChanges = item.kind === 'done' && row?.nothing_to_merge === true;
+  const tone: CardTone = noChanges ? 'amber' : cardTone(item);
+  const nodeTitle = item.stream !== undefined ? (row?.title ?? item.stream_path.at(-1)) : undefined;
   const open = item.stream !== undefined ? () => select(item.stream) : undefined;
 
   /** The card's main text: whole on the node page or once expanded; clipped to a line in the list. */
@@ -601,6 +604,35 @@ export function Card({
     }
 
     case 'done': {
+      if (noChanges) {
+        const main = shown(noChangesText(item));
+        foldable = main.foldable;
+        body = <Markdown className="context" text={main.text} testId="inbox-context" />;
+        actions = (
+          <div className="cr-actions">
+            <Button
+              variant="primary"
+              size="sm"
+              icon="x-circle"
+              data-testid="close-empty"
+              busy={busy === 'close'}
+              disabled={locked}
+              onClick={() => {
+                const id = item.stream;
+                if (id !== undefined) void act('close', () => closeStream(id));
+              }}
+            >
+              Close node
+            </Button>
+            {open && !full && (
+              <Button size="sm" iconRight="arrow-right" data-testid="empty-open" onClick={open}>
+                Open node
+              </Button>
+            )}
+          </div>
+        );
+        break;
+      }
       const main = shown(statusText(item));
       foldable = main.foldable;
       body = <Markdown className="context" text={main.text} testId="inbox-context" />;
@@ -664,10 +696,10 @@ export function Card({
     >
       <header className="cr-card-hd">
         <span className="cr-card-icon" data-tone={tone}>
-          <Icon name={iconOf(item)} size={14} />
+          <Icon name={noChanges ? 'check-circle' : iconOf(item)} size={14} />
         </span>
         <span className="kind" id={titleId}>
-          {cardTitle(item)}
+          {noChanges ? 'Finished, no changes' : cardTitle(item)}
         </span>
         <time className="cr-card-age" dateTime={item.ts} title={fullTime(item.ts)}>
           {ago(item.ts)}

@@ -115,6 +115,8 @@ export interface CockpitStreamRow {
   waiting_for_plan?: true;
   /** T341: its PR is open, so it merges on GitHub (not the operator's move here). */
   pr_open?: true;
+  /** T380: its agent finished and its branch has no commits beyond its target: nothing to merge. */
+  nothing_to_merge?: true;
   /** T361: a work node or conversation whose agent never ran (made with "Start later"). */
   never_started?: true;
   /** T361: its agent ran and the human stopped it; nothing is live and the node is still open. */
@@ -207,6 +209,8 @@ export function buildCockpitFrame(
   waitingForPlan?: (node: Stream) => boolean,
   /** T362: a repo's remote, from a cache: the frame never waits on git. */
   remoteOf?: (entry: RepoEntry) => RepoRemote | undefined,
+  /** T380: a finished node with nothing to merge, from a cache (`NothingToMergeCache`). */
+  nothingToMerge?: (node: Stream) => boolean,
 ): CockpitFrame {
   // One read of the home: the archived ones are only for Restore (T361).
   const everything = streams.list({ include_archived: true });
@@ -231,6 +235,7 @@ export function buildCockpitFrame(
       ...(visibilityAdvisory(s, repos) ? { visibility_advisory: true as const } : {}),
       ...(waitingForPlan?.(s) === true ? { waiting_for_plan: true as const } : {}),
       ...(s.delivery_state?.status === 'pr_open' ? { pr_open: true as const } : {}),
+      ...(nothingToMerge?.(s) === true ? { nothing_to_merge: true as const } : {}),
       ...startState(s, all),
     })),
     projects: (projects?.list() ?? []).map((p) => ({

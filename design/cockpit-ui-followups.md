@@ -1,22 +1,18 @@
 # Cockpit UX — follow-ups after Phase 15
 
-Things found while building Phase 15 (T360–T377) that were out of scope,
+Things found while building Phase 15 (T360–T380) that were out of scope,
 deferred, or need a decision. Each names where it lives. Ticket them in
 `PLAN.md` before picking one up. Design rules: `cockpit-ui.md`.
 
 ## P1 — wrong or confusing for the user
 
-- **"Ready to merge" with nothing to merge.** A work node whose agent
-  finished without committing reads *Ready to merge* on the rail and gets a
-  Merge card in Needs me, while its Delivery panel says there is nothing to
-  merge. `lib/status.ts` `statusKey` can't tell: the cockpit row has no
-  "commits ahead" signal. Either the daemon stops raising `done` as a merge
-  when the branch has no commits, or the row carries a cached `ahead` (like
-  T362's remote cache). (`packages/ui/app/lib/status.ts`,
-  `packages/daemon/src/inbox/service.ts`, `feed/snapshot.ts`). Not a quick
-  fix: `done` is what coordinators, auto-review and the tracker push react
-  to, so "finished with no commits" wants its own signal (set once at the
-  worker's exit), not `idle`.
+- **Running shows no agent or model.** `CockpitStreamRow` carries no
+  session fields, so the Running lens can't say which vendor/model/effort a
+  live node runs. Add them in `feed/snapshot.ts` (from the live session).
+- **Events stop at 200.** `/api/events` is capped (`ACTIVITY_MAX`,
+  `events/service.ts`); Events' "Show more" ends there and a repo card's
+  recent events filter that global list, so a quiet repo's older events can
+  fall outside it. Page the route (`before=`) instead.
 
 ## P2 — polish
 

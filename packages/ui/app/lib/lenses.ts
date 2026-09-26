@@ -37,6 +37,7 @@ const RUNNING_RANK: Partial<Record<NodeStatusKey, number>> = {
   needs_you: 0,
   blocked: 0,
   ready: 0,
+  no_changes: 0,
   working: 1,
 };
 

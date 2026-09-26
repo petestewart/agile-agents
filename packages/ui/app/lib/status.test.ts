@@ -28,6 +28,18 @@ describe('statusKey (T360, design/cockpit-ui.md §6)', () => {
     );
   });
 
+  test('T380: a finished work node with nothing to merge reads "No changes", still your move', () => {
+    const empty = { ...base, agent_status: 'done', role: 'work', nothing_to_merge: true } as const;
+    expect(statusKey(empty)).toBe('no_changes');
+    expect(statusKey({ ...empty, human_status: 'waiting_on_you' })).toBe('no_changes');
+    expect(nodeStatus(empty).label).toBe('No changes');
+    expect(nodeStatus(empty).tone).toBe('amber');
+    expect(isYourMove('no_changes')).toBe(true);
+    // Where nothing merges anyway, the flag changes nothing.
+    expect(statusKey({ ...empty, role: 'coordinating' })).toBe('done');
+    expect(statusKey({ ...empty, pr_open: true })).toBe('pr_open');
+  });
+
   test('blocked, waiting for the plan, working', () => {
     expect(statusKey({ ...base, agent_status: 'blocked' })).toBe('blocked');
     expect(statusKey({ ...base, waiting_for_plan: true, agent_status: 'working' })).toBe('waiting');
