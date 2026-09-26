@@ -83,8 +83,8 @@ The cockpit is `http://127.0.0.1:4600/`.
 | **Director** | A chat with the Director, like a node's: its drafts wait on you at the end of the chat as cards (**Create**/**Dismiss**); the **Details** panel has its **Activity** and what it may do in each project |
 | **Events** | Every routed event, newest first, by day: what happened (and a line of detail), to which node, and who it was routed to and why; filter by type (**All** · **Messages** · **Merges and PRs** · **Coordination** · **Knowledge**), by repo, or search; **Show more** for older ones |
 | Anywhere | **Ctrl K** (**⌘K** on a Mac, or the search icon at the top of the sidebar) opens the command palette: on a node's page **This node** first (Merge, Start/Stop agent, Open Changes, Close node…, Copy branch name…), then recent nodes, what waits on you (`Answer: …`, `Merge: …`), the views and the actions (New node, New project, switch theme, Keyboard shortcuts); type to find a node by part of its title or path, a project, a view or an action; ↑↓ and Enter. **?** lists every keyboard shortcut; **g** then a letter goes to a view (**g i** Needs me, **g k** Knowledge…) |
-| **Settings** | Sections on the left: **General** (theme: System, Light, Dark; **Notifications**: a switch, off by default and kept per browser, that asks the browser's permission and then tells you when something new needs you while the tab is in the background, with **Send a test**; the daemon), **Agents** (session defaults, global, per repo and per project, each card saying what a new agent there starts with, e.g. `Claude Opus 5.5 · low`), **Repositories** (**Add repository**: a folder, or a URL to clone; per repo its icon, delivery, auto-merge, visibility), **Classifier** (the TypeSafe API key), **Trackers** (Jira, Linear). General also says what is **Always yours** (merging, accepting knowledge, allowing an action the classifier was unsure of, answering questions) |
-| A node's page | A chat with its agent. The header: path, title (click it to rename), status, role, repo and branch, then **Start agent** (its chevron picks another model), **Stop** while it works (**⋯** → **Stop agent** while it waits on you), **Merge** when there is something to merge, the details toggle and **⋯** (**Ask an agent to review…**, **Restart agent**, **Waits on…**, **Add repository…**, **Tracker issue…**, **Copy branch name**, **Close node…**, **Delete node…**). Tabs **Chat**, **Changes**, **Plan**, **Activity**, **Knowledge**, **Docs**, only where they apply. The chat opens with the goal (**Edit** changes it; the agent reads the change), unless the goal only repeats the title or the node is a project's root: then the goal is in **Details** → **About**, with its **Edit**. What needs you (questions, gates, plans, proposals) sits at the end of the chat, and the composer answers an open question. The **Details** panel: **Delivery** (Check now, Mark as merged, Resolve), **Agent** (sessions), **Children** (every child with its status, not on a project's root), **Waits on**, **Tracker** (**Link**, **Create issue**; then **Unlink**, **Import children**; only when the node's project has a tracker), **Coordinator autonomy** on a coordinating node or a project root (and, on a project root, **Director autonomy** and the project's tracker) |
+| **Settings** | Sections on the left: **General** (theme: System, Light, Dark; **Notifications**: a switch, off by default and kept per browser, that asks the browser's permission and then tells you when something new needs you while the tab is in the background, with **Send a test**; the daemon), **Agents** (session defaults, global, per repo and per project, by name — `Claude Opus 5.5`, `Inherits Claude Opus 5.5` — each card saying what a new agent there starts with, e.g. `Claude Opus 5.5 · low`; a change saves at once), **Repositories** (**Add repository**: a folder, or a URL to clone; per repo its icon, delivery, auto-merge, visibility), **Classifier** (the TypeSafe API key), **Trackers** (Jira, Linear). General also says what is **Always yours** (merging, accepting knowledge, allowing an action the classifier was unsure of, answering questions) |
+| A node's page | A chat with its agent. The header: path, title (click it to rename), status, role, repo and branch, then **Start agent** (its chevron, **Start with…**, picks another model), **Stop** while it works (**⋯** → **Stop agent** while it waits on you), **Merge** when there is something to merge, the details toggle and **⋯** (**Ask an agent to review…**, **Restart agent** (same model), **Waits on…**, **Add repository…**, **Tracker issue…**, **Copy branch name**, **Close node…**, **Delete node…**). Tabs **Chat**, **Changes**, **Plan**, **Activity**, **Knowledge**, **Docs**, only where they apply. The chat opens with the goal (**Edit** changes it; the agent reads the change), unless the goal only repeats the title or the node is a project's root: then the goal is in **Details** → **About**, with its **Edit**. What needs you (questions, gates, plans, proposals) sits at the end of the chat, and the composer answers an open question. The composer's model chip (`Claude Opus 5.5 · low ▾`) opens a list of models by name for your next message; picking starts nothing, and the next message starts the agent with it (or restarts a running one with it). The **Details** panel: **Delivery** (Check now, Mark as merged, Resolve), **Agent** (the model that runs, sessions), **Children** (every child with its status, not on a project's root), **Waits on**, **Tracker** (**Link**, **Create issue**; then **Unlink**, **Import children**; only when the node's project has a tracker), **Autonomy** on a coordinating node or a project root (**Coordinator**, and on a project root **Director**; a change to **Run** asks first), and on a project root **Project** (its repositories and tracker, one **Save changes**) |
 | A project's page (its root) | Opens on **Overview**: the counts by status, one per status with its own dot and word, your move first (`1 needs you · 1 blocked · 1 ready to merge · 3 working · 2 not started · 1 merged`; a count shows only those nodes, **Show all** brings the rest back), the project's nodes as rows (status, where it sits, repo, the agent it runs, age; **Your move**, then **In progress**, then **Not running**; done, merged and closed fold under **Finished**), its repositories (host icon, kind, what Merge does there, open nodes; **Edit** opens the details) and its recent events (**All events** opens Events). A click on a row opens that node. When the project's own chat waits on you, a line says so with **Open chat**. **Chat** is the next tab; the header, the other tabs and the **Details** panel are a node page's (above). An empty project reads **No nodes yet** with **New node** |
 
 ### The CLI
@@ -327,21 +327,22 @@ override on any node:
 
 | Level | The coordinator |
 |---|---|
-| advise (default) | Proposes links, ownership changes and reorders; each is a **proposal** card you Apply or Dismiss |
-| organise | Makes those changes itself and says so on the thread |
-| run | Also approves routine (additive) contract changes |
+| Advise (default) | Proposes links, ownership changes and reorders; each is a **proposal** card you Apply or Dismiss |
+| Organise | Makes those changes itself and says so on the thread |
+| Run | Also approves routine (additive) contract changes |
 
 At every level, a **plan** needs your approval, and so does any contract
 change that alters what gets built. Merging, accepting knowledge and
 answering questions are never the coordinator's. The Director (step 7) has the
 same three levels, set separately.
 
-Shop stays at advise for this run. To change it later:
-`agile project set $SHOP --coordinator-autonomy organise`, or the
-**Coordinator autonomy** picker on the project root's page. On a coordinating
-node the picker (or `agile node set $C --autonomy organise`, and `inherit` to
-go back) overrides the project. A work node or a conversation has no
-coordinator, so its page has no picker.
+Shop stays at Advise for this run. To change it later:
+`agile project set $SHOP --coordinator-autonomy organise`, or **Autonomy** →
+**Coordinator** in the project root's details (a change to **Run** asks
+first). On a coordinating node that picker (or `agile node set $C --autonomy
+organise`, and `inherit` to go back; in the picker, **Inherits Advise from
+the project**) overrides the project. A work node or a conversation has no
+coordinator, so its page has no **Autonomy**.
 
 ### 3.2 Start a conversation
 
@@ -444,7 +445,7 @@ If the coordinator already proposed this link, press **Apply** on its card in
 - [ ] Open the **ledger-lite part** (under Ledger export in the rail). Its
       thread has no `… read it by id` line: that pointer is for its agent
       only. Its page has no **Tracker issue…** (Shop has no tracker until
-      8.2) and no **Coordinator autonomy** (a work node). Open the page's
+      8.2) and no **Autonomy** (a work node). Open the page's
       **⋯** menu, choose **Waits on…**, pick `agile-test-repo part` in the
       list that opens, and press **Wait on**.
 - [ ] The details panel's **Waits on** section lists
@@ -848,12 +849,13 @@ done by `director`.
 
 ### 7.3 Organise: the Director starts the work itself
 
-The Director's level is per project, on the project root's page (next to
-its **Coordinator autonomy** picker, which sets the coordinator's level
+The Director's level is per project, on the project root's page (in its
+**Autonomy** group, under **Coordinator**, which sets the coordinator's level
 only).
 
-- [ ] In the rail click **Blog** (the project root). Set **Director
-      autonomy** to `organise`.
+- [ ] In the rail click **Blog** (the project root). In **Autonomy**, set
+      **Director** to **Organise — creates and starts** (it saves at once;
+      only **Run** asks first).
 - [ ] Or, on the CLI:
 
 ```zsh
@@ -902,10 +904,10 @@ root's page.
 - [ ] In the rail click **Shop** (the project root). It opens on **Overview**:
       the counts (`… merged` among them), and under the folded **Finished**,
       **Shop note** reads **Merged**. **Chat** is the next tab.
-- [ ] In the details panel, under the pickers, set
-      **Tracker** to `Jira`, tick **push status**, fill **In progress**
-      `In Progress`, **In review** `In Review`, **Done** `Done`, and press
-      **Save tracker**.
+- [ ] In the details panel's **Project** group, set
+      **Tracker** (it reads **None**) to `Jira`, tick **push status**, fill
+      **In progress** `In Progress`, **In review** `In Review`, **Done**
+      `Done`, and press **Save changes**.
 - [ ] Or, on the CLI:
 
 ```zsh
@@ -948,7 +950,7 @@ child should be a small task an agent can do in agile-test-repo (for example
       Open **⋯** → **Add repository…** → `agile-test-repo` → **Add**, then press
       **Start agent**: one click starts it with the defaults (the composer's
       chip names them: `Claude Opus 5.5 · low`; the chevron beside
-      **Start agent** picks another model).
+      **Start agent**, **Start with…**, picks another model).
 - [ ] An `Agent` session appears in its session list and starts work in the
       new worktree. In Jira the child issue moves to **In Progress**.
 - [ ] Edit the child issue's description in Jira. Within five minutes the

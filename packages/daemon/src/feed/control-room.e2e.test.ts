@@ -477,6 +477,35 @@ async function waitForText(
   }
 }
 
+/** T423: a select's chosen option, as it reads. */
+async function selectedText(page: Page, selector: string): Promise<string> {
+  return page
+    .locator(selector)
+    .evaluate(
+      (el) =>
+        (el as unknown as { selectedOptions: ArrayLike<{ textContent: string | null }> })
+          .selectedOptions[0]?.textContent ?? '',
+    );
+}
+
+/** T423: the model list's checked row (`<testid>`) and its effort, as the picker shows them. */
+async function pickedModel(
+  page: Page,
+  testid: string,
+): Promise<{ vendor: string; model: string; effort: string; label: string } | undefined> {
+  const row = page.locator(
+    `[data-testid="${testid}"] [data-testid="model-option"][aria-checked="true"]`,
+  );
+  if ((await row.count()) === 0) return undefined;
+  const effort = page.locator(`[data-testid="${testid}-effort"] [aria-checked="true"]`);
+  return {
+    vendor: (await row.getAttribute('data-vendor')) ?? '',
+    model: (await row.getAttribute('data-model')) ?? '',
+    effort: (await effort.count()) > 0 ? ((await effort.getAttribute('data-value')) ?? '') : '',
+    label: (await row.textContent()) ?? '',
+  };
+}
+
 /** Polls until `selector` matches at least one element. */
 async function waitForCount(page: Page, selector: string, atLeast: number): Promise<void> {
   const deadline = Date.now() + POLL_DEADLINE_MS;
@@ -1722,14 +1751,19 @@ describe('stream page (Playwright e2e, T161)', () => {
         await page.locator('.cr-tabs [data-tab="thread"]').click();
 
         // ---- attach: the worker speaks onto the thread, live.
-        // T363: Start agent is one click with the defaults; its chevron opens the
-        // picker (T170), prefilled with the D17 built-in.
+        // T363: Start agent is one click with the defaults; its chevron (T423: Start with…)
+        // opens the picker (T170), prefilled with the D17 built-in, the models by name.
+        expect(await page.locator('[data-testid="attach-options"]').getAttribute('title')).toBe(
+          'Start with…',
+        );
         await page.locator('[data-testid="attach-options"]').click();
         await page.locator('[data-testid="session-picker"][data-role="worker"]').waitFor();
-        expect(await page.locator('[data-testid="picker-model"]').inputValue()).toBe(
-          'claude-opus-5-5',
-        );
-        expect(await page.locator('[data-testid="picker-effort"]').inputValue()).toBe('low');
+        expect(await pickedModel(page, 'picker-model')).toEqual({
+          vendor: 'claude',
+          model: 'claude-opus-5-5',
+          effort: 'low',
+          label: 'Claude Opus 5.5Default',
+        });
         await page.locator('[data-testid="picker-start"]').click();
         await waitForRunningWorker(page, cockpit, stream.id, traffic);
         await page
@@ -2146,6 +2180,144 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
   );
 
   browserTest(
+    'T423: the model chip picks what the next message runs; a pick starts nothing; Send starts with it, and restarts a live agent with another',
+    async () => {
+      const firstLog = join(tmpdir(), `agile-t423-first-${ulid()}.jsonl`);
+      const secondLog = join(tmpdir(), `agile-t423-second-${ulid()}.jsonl`);
+      const cockpit = await startStreamCockpit([
+        // The first agent stays mid-turn, so the second pick restarts a live one.
+        {
+          logFile: firstLog,
+          steps: [{ type: 'tool_call', toolCallId: 'w-1', title: 'read' }, { type: 'hang' }],
+        },
+        {
+          logFile: secondLog,
+          steps: [{ type: 'agent_text', text: 'SECOND-REPLY switched' }, { type: 'end_turn' }],
+        },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'which model?',
+          goal: 'try a model',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        const chip = page.locator('[data-testid="composer-model"]');
+        await waitForText(page, '[data-testid="composer-model"]', 'Claude Opus 5.5 · low');
+        expect(await chip.getAttribute('title')).toContain('resets to the default after you send');
+
+        // One place to pick: not in Details, not in ⋯ (the header keeps Start with…).
+        expect(await page.locator('[data-testid="node-details"]').textContent()).not.toMatch(
+          /Choose model|Restart with/,
+        );
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        const menu = (await page.locator('[data-testid="node-menu"]').textContent()) ?? '';
+        expect(menu).not.toContain('Choose the model');
+        expect(menu).not.toContain('another model');
+        await page.keyboard.press('Escape');
+
+        // The chip opens a popover (never a dialog): models by name, grouped by vendor.
+        await chip.click();
+        const popover = page.locator('[data-testid="model-popover"]');
+        await popover.waitFor();
+        expect(await page.locator('[data-testid="session-picker-dialog"]').count()).toBe(0);
+        expect(await popover.locator('.cr-mpick-group-hd').allTextContents()).toEqual([
+          'Claude',
+          'Other agents',
+        ]);
+        expect(await pickedModel(page, 'model-choice')).toEqual({
+          vendor: 'claude',
+          model: 'claude-opus-5-5',
+          effort: 'low',
+          label: 'Claude Opus 5.5Default',
+        });
+        await popover.locator('[data-model="claude-sonnet-4-6"]').click();
+        await popover.locator('[data-testid="effort-high"]').click();
+        // A vendor without effort says so instead of offering it.
+        await popover.locator('[data-vendor="gemini"]').click();
+        expect(await popover.locator('[data-testid="model-choice-no-effort"]').textContent()).toBe(
+          'Gemini has no effort setting.',
+        );
+        await popover.locator('[data-model="claude-sonnet-4-6"]').click();
+        await page.keyboard.press('Escape');
+        await popover.waitFor({ state: 'detached' });
+
+        // Picking started nothing; the chip and the hint say what Send will do.
+        await Bun.sleep(300);
+        expect(cockpit.streams.get(node.id).sessions).toEqual([]);
+        await waitForText(page, '[data-testid="composer-model"]', 'Claude Sonnet 4.6 · high');
+        expect(await chip.getAttribute('data-chosen')).toBe('true');
+        expect(await page.locator('[data-testid="composer-hint"]').textContent()).toBe(
+          'Starts the agent with Claude Sonnet 4.6 · high.',
+        );
+
+        // Send: the agent starts with the pick, the line its first prompt.
+        await page.locator('[data-testid="composer-input"]').fill('PICKED-START go');
+        await page.locator('[data-testid="composer-send"]').click();
+        await waitUntil(
+          'the first agent to run',
+          () => cockpit.streams.get(node.id).sessions[0]?.status === 'running',
+        );
+        expect(cockpit.streams.get(node.id).sessions).toMatchObject([
+          { role: 'worker', model: 'claude-sonnet-4-6', effort: 'high' },
+        ]);
+        await waitUntil(
+          'the first prompt',
+          () => existsSync(firstLog) && readFileSync(firstLog, 'utf8').includes('PICKED-START go'),
+        );
+        // The pick lasted one message: the chip names what runs now.
+        await waitUntilAsync('the chip to name the live agent', async () =>
+          page ? (await chip.getAttribute('data-live')) === 'true' : false,
+        );
+        expect(await chip.textContent()).toBe('Claude Sonnet 4.6 · high');
+
+        // Another model for a live agent: nothing happens until you send.
+        await chip.click();
+        await popover.waitFor();
+        expect(
+          await popover.locator('[data-model="claude-sonnet-4-6"] .cr-mpick-tag').textContent(),
+        ).toBe('Running');
+        await popover.locator('[data-model="claude-haiku-4-5"]').click();
+        await page.keyboard.press('Escape');
+        await waitForText(
+          page,
+          '[data-testid="composer-hint"]',
+          'Stops Claude’s current step, restarts the agent with Claude Haiku 4.5 · high, then sends this.',
+        );
+        await Bun.sleep(300);
+        expect(cockpit.streams.get(node.id).sessions).toHaveLength(1);
+        await page.locator('[data-testid="composer-input"]').fill('SWITCH-LINE use haiku');
+        await page.locator('[data-testid="composer-send"]').click();
+
+        // Send restarted it with the pick and delivered the line to the new agent.
+        await page
+          .locator('[data-testid="thread-entry"][data-by="agent"]', { hasText: 'SECOND-REPLY' })
+          .waitFor();
+        const sessions = cockpit.streams.get(node.id).sessions;
+        expect(sessions).toHaveLength(2);
+        expect(sessions[0]?.status).toBe('stopped');
+        expect(sessions[1]).toMatchObject({ model: 'claude-haiku-4-5', effort: 'high' });
+        expect(readFileSync(secondLog, 'utf8')).toContain('SWITCH-LINE use haiku');
+        expect(readFileSync(firstLog, 'utf8')).not.toContain('SWITCH-LINE');
+        // Back to the default for the next message.
+        await waitForText(page, '[data-testid="composer-model"]', 'Claude Opus 5.5 · low');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(firstLog, { force: true });
+        rmSync(secondLog, { force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
     'Start agent is one click; Delete node… confirms, goes to Needs me, and Undo brings it back',
     async () => {
       const cockpit = await startStreamCockpit([
@@ -2338,9 +2510,15 @@ describe('session defaults (Playwright e2e, T170)', () => {
         // T382: the default reads in words, as the composer says it; the ids are on hover.
         await contains('[data-testid="settings-session-repo-demo-resolved"]', 'Claude');
         await waitForText(page, home('-resolved'), 'Claude Opus 5.5 · low');
-        await page.locator(home('-field-model')).fill('claude-sonnet-4-6');
+        // T423: models by name, what an unset field inherits in words, and no Save: a change saves.
+        expect(await selectedText(page, home('-field-vendor'))).toBe('Inherits Claude');
+        expect(await selectedText(page, home('-field-model'))).toBe('Inherits Claude Opus 5.5');
+        expect(await selectedText(page, home('-field-effort'))).toBe('Inherits Low');
+        expect(await page.locator(`${home('')} button`, { hasText: 'Save' }).count()).toBe(0);
+        await page.locator(home('-field-model')).selectOption('claude-sonnet-4-6');
+        expect(await selectedText(page, home('-field-model'))).toBe('Claude Sonnet 4.6');
+        await waitForText(page, home('-saved'), 'Saved');
         await page.locator(home('-field-effort')).selectOption('high');
-        await page.locator(home('-save')).click();
         await waitForText(page, home('-resolved'), 'Claude Sonnet 4.6 · high');
         expect(
           await page
@@ -2368,10 +2546,10 @@ describe('session defaults (Playwright e2e, T170)', () => {
         await waitUntilAsync(
           'the picker to prefill',
           async () =>
-            (await page?.locator('[data-testid="picker-model"]').inputValue()) ===
-            'claude-sonnet-4-6',
+            page !== undefined &&
+            (await pickedModel(page, 'picker-model'))?.model === 'claude-sonnet-4-6',
         );
-        expect(await page.locator('[data-testid="picker-effort"]').inputValue()).toBe('high');
+        expect((await pickedModel(page, 'picker-model'))?.effort).toBe('high');
         await page.locator('[data-testid="picker-start"]').click();
         // T382: the details panel's session row reads the model as the composer does.
         await page
@@ -2441,9 +2619,8 @@ describe('session defaults (Playwright e2e, T170)', () => {
           .waitFor();
         await page.locator(card(''), { hasText: 'shop' }).waitFor();
         await waitForText(page, card('-resolved'), 'Claude Opus 5.5 · low');
-        await page.locator(card('-field-model')).fill('claude-haiku-4-5');
+        await page.locator(card('-field-model')).selectOption('claude-haiku-4-5');
         await page.locator(card('-field-effort')).selectOption('max');
-        await page.locator(card('-save')).click();
         await waitForText(page, card('-saved'), 'Saved');
         await waitForText(page, card('-resolved'), 'Claude Haiku 4.5 · max');
         expect(cockpit.store.getProject(shop.id).session).toEqual({
@@ -2471,9 +2648,8 @@ describe('session defaults (Playwright e2e, T170)', () => {
         // Back to inherit: the project's block is cleared, not left empty.
         await page.locator('[data-view="settings"]').click();
         await page.locator('[data-testid="settings-nav-agents"]').click();
-        await page.locator(card('-field-model')).fill('');
+        await page.locator(card('-field-model')).selectOption('');
         await page.locator(card('-field-effort')).selectOption('');
-        await page.locator(card('-save')).click();
         await waitForText(page, card('-resolved'), 'Claude Opus 5.5 · low');
         await waitUntil(
           'the project session cleared',
@@ -2481,19 +2657,32 @@ describe('session defaults (Playwright e2e, T170)', () => {
         );
 
         // T401: a vendor with no effort setting: the level can't be picked, and the label drops it.
-        const model = page.locator(card('-field-model'));
-        expect(await model.getAttribute('placeholder')).toBe('inherit (claude-opus-5-5)');
+        expect(await selectedText(page, card('-field-model'))).toBe('Inherits Claude Opus 5.5');
         await page.locator(card('-field-vendor')).selectOption('gemini');
         // T402: Gemini doesn't inherit a Claude model.
-        expect(await model.getAttribute('placeholder')).toBe('inherit (Gemini default model)');
+        expect(await selectedText(page, card('-field-model'))).toBe(
+          'Inherits Gemini default model',
+        );
         const effort = page.locator(card('-field-effort'));
         expect(await effort.isDisabled()).toBe(true);
         expect(await effort.getAttribute('title')).toBe(
           'Gemini has no effort setting; the level is not used',
         );
-        await page.locator(card('-save')).click();
         await waitForText(page, card('-resolved'), 'Gemini default model');
         expect(cockpit.store.getProject(shop.id).session).toEqual({ vendor: 'gemini' });
+
+        // T423: a model typed by hand (Other…) saves when you're done typing, not per key.
+        await page.locator(card('-field-model')).selectOption('other model');
+        const typed = page.locator(card('-field-model-other'));
+        await typed.fill('gemini-3-pro');
+        expect(cockpit.store.getProject(shop.id).session).toEqual({ vendor: 'gemini' });
+        await typed.press('Enter');
+        await waitForText(page, card('-resolved'), 'gemini-3-pro');
+        await waitUntil(
+          'the typed model saved',
+          () => cockpit.store.getProject(shop.id).session?.model === 'gemini-3-pro',
+        );
+        expect(await selectedText(page, card('-field-model'))).toBe('gemini-3-pro');
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -5225,20 +5414,31 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
         await page.locator('[data-testid="project-controls"]').waitFor({ state: 'visible' });
         // T377: the project's repositories are a checklist on the root's details.
+        // T423: one Save for the group (repositories and tracker), once something changed.
         const apiBox = page.locator(
           '[data-testid="project-repos"] [data-testid="project-repo"][data-repo="api"]',
         );
         expect(await apiBox.isChecked()).toBe(true);
+        expect(await page.locator('[data-testid="project-save"]').count()).toBe(0);
+        expect(await selectedText(page, '[data-testid="project-tracker-system"]')).toBe('None');
         await apiBox.uncheck();
-        await page.locator('[data-testid="project-repos-save"]').click();
+        await page.locator('[data-testid="project-save"]').click();
         await waitUntil(
           'the repo to leave the project',
           () => cockpit.projects.get(shop.id).repos.length === 0,
         );
         await page.locator('[data-testid="project-repos"] [data-testid="project-repo"]').check();
-        await page.locator('[data-testid="project-repos-save"]').click();
+        await page.locator('[data-testid="project-save"]').click();
         await waitUntil('the repo back in the project', () =>
           cockpit.projects.get(shop.id).repos.includes('api'),
+        );
+        await page.locator('[data-testid="project-save"]').waitFor({ state: 'detached' });
+        // T423: the Director's level reads as on its own panel, and Organise saves at once.
+        expect(await selectedText(page, '[data-testid="director-autonomy-select"]')).toBe(
+          'Advise — proposes, you apply',
+        );
+        expect(await page.locator('[data-testid="director-autonomy-hint"]').textContent()).toBe(
+          'Drafts work; you press Create.',
         );
         await page.locator('[data-testid="director-autonomy-select"]').selectOption('organise');
         await waitUntil(
@@ -5249,7 +5449,7 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         await page.locator('[data-testid="project-tracker-system"]').selectOption('linear');
         await page.locator('[data-testid="project-tracker-push"]').check();
         await page.locator('[data-testid="project-tracker-map-done"]').fill('Shipped');
-        await page.locator('[data-testid="project-tracker-save"]').click();
+        await page.locator('[data-testid="project-save"]').click();
         await waitUntil(
           'the tracker to be set',
           () => cockpit.projects.get(shop.id).tracker !== undefined,
@@ -7963,6 +8163,61 @@ describe('coordinator autonomy (Playwright e2e, T282)', () => {
         await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
         await page.locator('[data-testid="stream-title"]', { hasText: 'Shop' }).waitFor();
         await page.locator('[data-testid="autonomy"]').waitFor();
+
+        // T423: one Autonomy group on the root, a labelled row each, the levels in words.
+        const group = page.locator('[data-testid="autonomy-group"]');
+        expect(await group.locator('.cr-autonomy-label').allTextContents()).toEqual([
+          'Coordinator',
+          'Director',
+        ]);
+        expect(
+          await page.locator('[data-testid="autonomy-select"] option').allTextContents(),
+        ).toEqual([
+          'Advise — proposes, you apply',
+          'Organise — makes changes itself',
+          'Run — also approves contracts',
+        ]);
+        expect(await page.locator('[data-testid="autonomy-hint"]').textContent()).toBe(
+          'Proposes new parts, links and owners; you apply them.',
+        );
+        expect(await page.locator('[data-testid="director-autonomy-hint"]').textContent()).toBe(
+          'Drafts work; you press Create.',
+        );
+        // Run lets it act without asking: it asks first, and Cancel changes nothing.
+        await page.locator('[data-testid="autonomy-select"]').selectOption('run');
+        const confirm = page.locator('[data-testid="autonomy-run-confirm"]');
+        await confirm.waitFor();
+        expect(await confirm.textContent()).toContain('Let the coordinator run on its own?');
+        await confirm.getByRole('button', { name: 'Cancel' }).click();
+        await confirm.waitFor({ state: 'detached' });
+        expect(await page.locator('[data-testid="autonomy-select"]').inputValue()).toBe('advise');
+        expect(cockpit.projects.get(shop.id).autonomy.coordinator).toBe('advise');
+        await page.locator('[data-testid="autonomy-select"]').selectOption('run');
+        await page.locator('[data-testid="autonomy-run-confirm-confirm"]').click();
+        await waitUntil(
+          'the coordinator level to be Run',
+          () => cockpit.projects.get(shop.id).autonomy.coordinator === 'run',
+        );
+        await page.locator('[data-testid="director-autonomy-select"]').selectOption('run');
+        await page.locator('[data-testid="autonomy-run-confirm"]', { hasText: 'Shop' }).waitFor();
+        await page.locator('[data-testid="autonomy-run-confirm-confirm"]').click();
+        await waitUntil(
+          'the Director level to be Run',
+          () => cockpit.projects.get(shop.id).autonomy.director === 'run',
+        );
+        // The node follows its project in words; going back to it (now Run) asks too.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        await page
+          .locator('[data-testid="autonomy-select"] option[value="inherit"]', {
+            hasText: 'Inherits Run from the project',
+          })
+          .waitFor({ state: 'attached' });
+        await page.locator('[data-testid="autonomy-select"]').selectOption('inherit');
+        await page.locator('[data-testid="autonomy-run-confirm-confirm"]').click();
+        await waitUntil(
+          'the node to follow its project',
+          () => cockpit.streams.get(node.id).autonomy === undefined,
+        );
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -8830,6 +9085,11 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
         const send = page.locator('[data-testid="composer-send"]');
         expect(await send.isDisabled()).toBe(true);
         expect(await send.getAttribute('title')).toBe('Reconnecting to the daemon…');
+        // T423: the header's Start agent and Start with… are off too, and say why.
+        const start = page.locator('[data-testid="attach"]');
+        expect(await start.isDisabled()).toBe(true);
+        expect(await start.getAttribute('title')).toBe('Reconnecting to the daemon…');
+        expect(await page.locator('[data-testid="attach-options"]').isDisabled()).toBe(true);
         await input.press('Enter');
         const failed = page.locator('[data-testid="send-error"]');
         await failed.waitFor({ state: 'visible' });
@@ -8843,6 +9103,7 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
         socket.restore();
         await bar.waitFor({ state: 'detached', timeout: 15_000 });
         expect(await send.isDisabled()).toBe(false);
+        expect(await start.isDisabled()).toBe(false);
         await page.locator('[data-testid="send-retry"]').click();
         await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
         expect(cockpit.delivered[0]?.question.answer).toBe('Integer cents, please.');

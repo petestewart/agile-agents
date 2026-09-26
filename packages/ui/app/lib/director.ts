@@ -117,9 +117,21 @@ export function draftParts(tree: Pick<DraftTreeFields, 'parts'>): DraftPart[] {
   }));
 }
 
-/** The Director's autonomy per project, in words (projects-design §12). */
-export const DIRECTOR_AUTONOMY: Record<Autonomy, { label: string; hint: string }> = {
-  advise: { label: 'Advise', hint: 'Drafts work; you press Create.' },
-  organise: { label: 'Organise', hint: 'Creates and starts work itself, and tells you.' },
-  run: { label: 'Run', hint: 'Also approves routine contract changes and restarts stuck work.' },
+/**
+ * The Director's autonomy per project, in words (projects-design §12).
+ * T423: `short` is the level's few words in a picker ("Organise — creates
+ * and starts"); the root's details panel reads the same as this panel.
+ */
+export const DIRECTOR_AUTONOMY: Record<Autonomy, { label: string; short: string; hint: string }> = {
+  advise: { label: 'Advise', short: 'proposes, you apply', hint: 'Drafts work; you press Create.' },
+  organise: {
+    label: 'Organise',
+    short: 'creates and starts',
+    hint: 'Creates and starts work itself, and tells you.',
+  },
+  run: {
+    label: 'Run',
+    short: 'also restarts stuck work',
+    hint: 'Also approves routine contract changes and restarts stuck work.',
+  },
 };

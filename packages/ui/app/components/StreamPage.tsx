@@ -14,13 +14,20 @@
  *    Sending to a node whose agent isn't running starts it (T361).
  *  - **Changes / Plan / Activity / Knowledge / Docs** — only where they apply.
  *  - **Details** (`NodeDetails`, a panel on the right): Delivery, Agent,
- *    Children, Waits on, Tracker, Coordinator, Project, Findings, About.
+ *    Children, Waits on, Tracker, Autonomy, Project, Findings, About.
+ *  - T423: the composer's model chip is the one place a model is picked (the
+ *    header's Start with… aside): a pick goes with the next message only.
  *
  * The chat pieces (`Chat.tsx`, `Composer.tsx`) know nothing about streams,
  * so the Director reuses them.
  */
 
-import { type InboxItem, type SessionDefaultsStatus, isAgentRole } from '@agile-agents/shared';
+import {
+  type InboxItem,
+  type ResolvedSessionDefaults,
+  type SessionDefaultsStatus,
+  isAgentRole,
+} from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   type RepoRow,
@@ -57,12 +64,13 @@ import {
   proposedNext,
   questionIdOfRef,
   sendIntent,
+  sessionIdText,
   showGoalCard,
   tidyIds,
   vendorLabel,
   workingAs,
 } from '../lib/chat';
-import { resolvedFor } from '../lib/defaults';
+import { choiceOf, modelChip, resolvedFor } from '../lib/defaults';
 import {
   type MergeFix,
   type MergeRefusal,
@@ -104,7 +112,7 @@ import {
 } from './NodeDetails';
 import { type Crumb, NodeHeader } from './NodeHeader';
 import { SendUpDialog } from './SendUp';
-import { SessionPicker } from './SessionPicker';
+import { ModelChip, SessionPicker } from './SessionPicker';
 import { TurnIntoWorkDialog } from './TurnIntoWork';
 import {
   Button,
@@ -202,7 +210,7 @@ function useDetailsOpen(): [boolean, (open: boolean) => void] {
   return [open, set];
 }
 
-type Picker = 'start' | 'restart' | 'reviewer' | 'resolve';
+type Picker = 'start' | 'reviewer' | 'resolve';
 type Modal = 'repo' | 'wait' | 'close' | 'delete';
 
 function PageSkeleton(): JSX.Element {
@@ -379,6 +387,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [answerChoice, setAnswerChoice] = useState<string | undefined>(undefined);
   const [trackerOpen, setTrackerOpen] = useState(false);
   const [defaults, setDefaults] = useState<SessionDefaultsStatus | undefined>(undefined);
+  // T423: the composer chip's pick for the next message only (undefined: the default, or what runs).
+  const [nextSession, setNextSession] = useState<ResolvedSessionDefaults | undefined>(undefined);
   const [detailsOpen, setDetailsOpen] = useDetailsOpen();
   const composer = useRef<ComposerHandle>(null);
   // T393: review comments on the Changes tab (counted on its tab).
@@ -439,6 +449,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     setTangentQuestion('');
     setAnswerChoice(undefined);
     setTrackerOpen(false);
+    setNextSession(undefined);
     getSessionDefaults()
       .then(setDefaults)
       .catch(() => setDefaults(undefined));
@@ -590,7 +601,22 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const answeringItem = questions.find((q) => q.id === answering);
   const name = agentName(stream.sessions);
   const resolved = defaults ? resolvedFor(defaults, stream.repo, project?.session) : undefined;
-  const startWith = resolved ? agentLabel(resolved) : undefined;
+  // T423: what the live agent runs, and the chip: the next message's model (a pick lasts one
+  // message). It picks only where a line starts (or restarts) the agent; elsewhere it only names
+  // what runs. Picking never starts anything by itself.
+  const canPick = open && !waitingForPlan && lineStarts;
+  const running = liveAgent ? choiceOf(liveAgent, resolved?.effort ?? 'low') : undefined;
+  const chip = resolved
+    ? modelChip({
+        fallback: resolved,
+        ...(running ? { live: running } : {}),
+        ...(nextSession && canPick ? { chosen: nextSession } : {}),
+      })
+    : undefined;
+  const pending = chip?.pending;
+  // What a start by the header's Start agent runs: the default. A line starts with the chip's pick.
+  const defaultLabel = resolved ? agentLabel(resolved) : undefined;
+  const startWith = pending && !liveAgent ? agentLabel(pending) : defaultLabel;
   const statusInput: StatusInput = row ?? {
     agent_status: stream.agent.status,
     human_status: stream.human.status,
@@ -606,6 +632,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     hasRun,
     ...(row?.stopped ? { stopped: true } : {}),
     ...(startWith ? { startWith } : {}),
+    ...(pending && liveAgent ? { restartWith: agentLabel(pending) } : {}),
   });
   const mergeable = isMergeable(page, delivery);
   const actions = headerActions({
@@ -690,21 +717,21 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
 
   const start = () => void act(() => attachSession(stream.id, 'worker'));
   const stop = () => void act(() => stopSessions(stream.id));
-  const restart = (choice?: { vendor?: string; model?: string; effort?: string }) =>
+  // ⋯ Restart agent: a fresh session with the same model.
+  const restart = () =>
     act(async () => {
       const previous = liveAgent;
       await stopSessions(stream.id);
       await attachSession(
         stream.id,
         'worker',
-        choice ??
-          (previous
-            ? {
-                vendor: previous.vendor,
-                ...(previous.model !== 'default' ? { model: previous.model } : {}),
-                ...(previous.effort ? { effort: previous.effort } : {}),
-              }
-            : {}),
+        previous
+          ? {
+              vendor: previous.vendor,
+              ...(previous.model !== 'default' ? { model: previous.model } : {}),
+              ...(previous.effort ? { effort: previous.effort } : {}),
+            }
+          : {},
       );
     });
 
@@ -719,11 +746,30 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     setActionError(undefined);
     setSendError(undefined);
     try {
+      // T423: the chip's pick goes with this line only: it starts the agent with it, or
+      // restarts the live one with it (stop, then a start the line is the first prompt of).
+      const session = pending
+        ? {
+            vendor: pending.vendor,
+            ...(pending.model !== undefined ? { model: pending.model } : {}),
+            effort: pending.effort,
+          }
+        : undefined;
       if (intent.action === 'answer' && answering !== undefined) {
         await answerQuestion(answering, text);
+      } else if (intent.action === 'restart' && session) {
+        await stopSessions(stream.id);
+        const said = await sayOnStream(stream.id, text, { start: true, session });
+        if (said.started)
+          toast({ title: `Restarted with ${agentLabel(session)}`, tone: 'success' });
+        setNextSession(undefined);
       } else if (intent.action === 'start') {
-        const said = await sayOnStream(stream.id, text, { start: true });
+        const said = await sayOnStream(stream.id, text, {
+          start: true,
+          ...(session ? { session } : {}),
+        });
         if (said.started) toast({ title: `Started ${startWith ?? 'the agent'}`, tone: 'success' });
+        setNextSession(undefined);
       } else {
         await sayOnStream(stream.id, text);
       }
@@ -846,13 +892,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       onSelect: () => openAsk(stream.id),
     },
     {
-      label: 'Choose the model and start…',
-      icon: 'sliders',
-      testid: 'attach-choose',
-      hidden: !open || live.length > 0 || waitingForPlan,
-      onSelect: () => setPicker('start'),
-    },
-    {
       label: 'Restart agent',
       icon: 'refresh',
       testid: 'restart',
@@ -860,13 +899,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       hidden: !open || liveAgent === undefined,
       disabled: busy,
       onSelect: () => void restart(),
-    },
-    {
-      label: 'Restart with another model…',
-      icon: 'sliders',
-      hidden: !open || liveAgent === undefined,
-      disabled: busy,
-      onSelect: () => setPicker('restart'),
     },
     {
       // T413: "Review" is what you do on the Changes tab; this starts a reviewer agent.
@@ -954,21 +986,29 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       label: 'Merge',
       icon: 'git-merge',
       hidden: !actions.merge,
-      disabled: delivery.busy,
+      disabled: delivery.busy || offline,
       onSelect: merge,
     },
     {
       label: hasRun ? 'Restart agent' : 'Start agent',
       icon: 'play',
       hidden: actions.agent !== 'start',
-      disabled: busy,
+      disabled: busy || offline,
       onSelect: start,
+    },
+    {
+      // T423: the split button's other half, the one place to start with another model.
+      label: 'Start with…',
+      icon: 'sliders',
+      hidden: actions.agent !== 'start',
+      disabled: busy || offline,
+      onSelect: () => setPicker('start'),
     },
     {
       label: 'Stop agent',
       icon: 'square',
       hidden: actions.agent !== 'stop',
-      disabled: busy,
+      disabled: busy || offline,
       onSelect: stop,
     },
     ...tabs
@@ -1200,29 +1240,26 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     liveAgent !== undefined && row?.live_agent?.role === liveAgent.role
       ? row.live_agent.context
       : undefined;
-  const modelChip =
-    liveAgent !== undefined ? (
+  const modelChipEl =
+    canPick && chip && resolved ? (
+      <ModelChip
+        status={defaults}
+        chip={chip}
+        {...(running ? { running } : {})}
+        fallback={resolved}
+        onPick={setNextSession}
+        onReset={() => setNextSession(undefined)}
+      />
+    ) : liveAgent !== undefined ? (
       <span
         className="cr-model-chip"
         data-testid="composer-model"
         data-live="true"
-        title={`Running: ${liveAgent.vendor}/${liveAgent.model}${liveAgent.effort ? ` · ${liveAgent.effort}` : ''}`}
+        title={`Running ${sessionIdText(liveAgent)}`}
       >
         <span className="cr-model-dot" aria-hidden="true" />
-        {agentLabel(liveAgent)}
+        <span className="cr-model-chip-text">{agentLabel(liveAgent)}</span>
       </span>
-    ) : startWith && open && !waitingForPlan ? (
-      <button
-        type="button"
-        className="cr-model-chip"
-        data-testid="composer-model"
-        title="Choose the model and start the agent"
-        onClick={() => setPicker('start')}
-      >
-        <Icon name="sparkles" size={12} />
-        {startWith}
-        <Icon name="chevron-down" size={12} />
-      </button>
     ) : undefined;
 
   // T385: the goal changes in place. T413: not as a card when it only repeats the title (or on a
@@ -1378,11 +1415,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             chip={
               context !== undefined ? (
                 <>
-                  {modelChip}
+                  {modelChipEl}
                   <ContextMeter context={context} />
                 </>
               ) : (
-                modelChip
+                modelChipEl
               )
             }
             label={answeringItem ? 'Your answer' : 'Message the agent'}
@@ -1447,6 +1484,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           startLabel={hasRun ? 'Restart agent' : 'Start agent'}
           busy={busy}
           merging={delivery.busy}
+          offline={offline}
           onStart={start}
           onChooseStart={() => setPicker('start')}
           onStop={stop}
@@ -1622,13 +1660,10 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           <AgentSection
             stream={stream}
             {...(liveAgent ? { live: liveAgent } : {})}
-            {...(startWith ? { startWith } : {})}
+            {...(defaultLabel ? { startWith: defaultLabel } : {})}
             busy={busy}
             canReview={liveReviewer === undefined}
             {...(stream.repo !== undefined ? { onReview: () => setPicker('reviewer') } : {})}
-            {...(open && !waitingForPlan
-              ? { onChooseModel: () => setPicker(liveAgent ? 'restart' : 'start') }
-              : {})}
           />
           {/* T413: every child, by the status words used everywhere; a root's Overview lists them. */}
           {!projectRoot && <ChildCards parent={stream.id} cards={cockpit?.cards ?? []} />}
@@ -1712,6 +1747,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           purpose={picker === 'reviewer' ? 'reviewer' : picker === 'resolve' ? 'resolve' : 'worker'}
           repo={stream.repo}
           {...(project?.session ? { project: project.session } : {})}
+          {...(picker === 'start' && hasRun ? { submitLabel: 'Restart agent' } : {})}
           busy={busy}
           onCancel={() => setPicker(undefined)}
           onStart={(choice) => {
@@ -1720,10 +1756,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                 () => resolveConflict(stream.id, choice),
                 () => setPicker(undefined),
               );
-              return;
-            }
-            if (picker === 'restart') {
-              void restart(choice).then(() => setPicker(undefined));
               return;
             }
             void act(

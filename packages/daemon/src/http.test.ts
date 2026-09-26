@@ -1084,7 +1084,14 @@ describe('T160 cockpit routes', () => {
       const plain = await say({ body: 'and again' });
       expect(((await plain.json()) as { started?: true }).started).toBeUndefined();
       expect((await say({ body: 'x', start: 'yes' })).status).toBe(400);
-      expect(seen).toEqual([{ start: true }, {}]);
+      // T423: the model chip's choice rides with a starting line, never without one.
+      const session = { vendor: 'claude', model: 'claude-sonnet-4-6', effort: 'high' };
+      expect((await say({ body: 'with a model', start: true, session })).status).toBe(201);
+      const refused = await say({ body: 'no start', session });
+      expect(refused.status).toBe(400);
+      expect(await refused.text()).toContain('only for a line that starts the agent');
+      expect((await say({ body: 'x', start: true, session: { role: 'worker' } })).status).toBe(400);
+      expect(seen).toEqual([{ start: true }, {}, { start: true, session }]);
     } finally {
       await server.stop();
     }

@@ -444,8 +444,8 @@ export class AttachService {
    * T336: starts a node's agent with its pending events in the brief (a
    * part its approved plan starts), rather than as a digest after it.
    */
-  startWithPending(id: string): Promise<AttachResult> {
-    return this.attach(id, { wake: this.events.pendingFor(id).map((p) => p.event) });
+  startWithPending(id: string, flags: AttachFlags = {}): Promise<AttachResult> {
+    return this.attach(id, { ...flags, wake: this.events.pendingFor(id).map((p) => p.event) });
   }
 
   /** T243: at daemon start (after `recover()`), every node with pending events is considered. */
@@ -1031,7 +1031,7 @@ export class AttachService {
   async say(
     streamId: string,
     body: string,
-    options: { start?: boolean } = {},
+    options: { start?: boolean; session?: AttachFlags } = {},
   ): Promise<{ entry: ThreadEntry; prompted?: string; started?: true }> {
     // Held from before the first write: a turn ending before the emit keeps the session.
     const release = this.delivery.hold(streamId);
@@ -1062,7 +1062,7 @@ export class AttachService {
         options.start === true &&
         this.options.plans?.waitingForPlan?.(this.options.streams.get(streamId)) !== true
       ) {
-        started = await this.startFor(streamId);
+        started = await this.startFor(streamId, options.session);
       }
     } finally {
       release();
@@ -1089,8 +1089,10 @@ export class AttachService {
    * pending events, the line among them, are handed over in the brief.
    * Not on a closed, landed or deleted node, nor a bare project root. A
    * failed start is a thread line; the line stays pending.
+   * T423: `flags` (the composer's model chip) name the vendor, model and
+   * effort, as attach's flags do; the defaults fill the rest.
    */
-  private async startFor(id: string): Promise<AttachResult | undefined> {
+  private async startFor(id: string, flags: AttachFlags = {}): Promise<AttachResult | undefined> {
     const { streams } = this.options;
     const stream = streams.get(id);
     if (
@@ -1104,7 +1106,7 @@ export class AttachService {
     const { shape, role } = agentFor(stream, streams.list());
     if (shape === 'project' && role !== 'coordinator') return undefined;
     try {
-      return await this.startWithPending(id);
+      return await this.startWithPending(id, flags);
     } catch (err) {
       await streams.appendThread('daemon', id, {
         kind: 'event',

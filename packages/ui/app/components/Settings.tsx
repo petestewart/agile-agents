@@ -6,8 +6,10 @@
  *    notifications (T388; per browser, off by default), the decisions that
  *    are always yours (T416: what the Permissions page said, as one note) and
  *    the daemon this cockpit talks to.
- *  - **Agents** — T170 (D17) session defaults: global (`config.yaml`) and per
- *    repo (`repos.yaml`). An empty field inherits the next step.
+ *  - **Agents** — T170 (D17) session defaults: global (`config.yaml`), per
+ *    repo (`repos.yaml`) and per project (T379). An unset field inherits the
+ *    next step, and says what ("Inherits Claude Opus 5.5"). T423: models by
+ *    name, and each change saves at once, as the other sections' controls do.
  *  - **Repositories** — `SettingsRepos.tsx`: every repo with its icon,
  *    delivery and visibility; Add repository (`AddRepo.tsx`).
  *  - **Classifier** — T167: the TypeSafe API key, write-only (the daemon
@@ -521,6 +523,11 @@ function sameChoice(a: SessionChoice, b: SessionChoice): boolean {
   return a.vendor === b.vendor && a.model.trim() === b.model.trim() && a.effort === b.effort;
 }
 
+/**
+ * T423: one card's defaults. A change saves at once (a typed model id when
+ * you leave the field or press Enter), then says "Saved" in the card; a
+ * refused save puts the card back and says why.
+ */
 function SessionDefaultsCard({
   title,
   icon,
@@ -544,10 +551,33 @@ function SessionDefaultsCard({
   save: (patch: SessionDefaultsPatch) => Promise<void>;
 }): JSX.Element {
   const [value, setValue] = useState<SessionChoice>(() => toChoice(fields));
-  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(0);
   const [error, setError] = useState<string | undefined>();
   const { saved, markSaved, clear } = useSavedFlash();
-  const dirty = !sameChoice(value, toChoice(fields));
+  // What the card last saved (or read), what it last asked to save, and the saves in order:
+  // quick changes save one after another (the controls stay usable), and a refusal goes back.
+  const stored = useRef<SessionChoice>(toChoice(fields));
+  const asked = useRef<SessionChoice>(toChoice(fields));
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const commit = (next: SessionChoice): void => {
+    if (sameChoice(next, asked.current)) return;
+    asked.current = next;
+    setSaving((n) => n + 1);
+    setError(undefined);
+    clear();
+    queue.current = queue.current
+      .then(() => save(toPatch(next)))
+      .then(() => {
+        stored.current = next;
+        markSaved();
+      })
+      .catch((err: unknown) => {
+        asked.current = stored.current;
+        setValue(stored.current);
+        setError(errorText(err));
+      })
+      .finally(() => setSaving((n) => n - 1));
+  };
 
   return (
     <SetCard
@@ -555,7 +585,6 @@ function SessionDefaultsCard({
       icon={icon}
       description={description}
       testid={testid}
-      label={typeof title === 'string' ? title : undefined}
       status={
         <span
           className="cr-set-resolved"
@@ -569,15 +598,6 @@ function SessionDefaultsCard({
           </span>
         </span>
       }
-      onSubmit={() => {
-        if (busy || !dirty) return;
-        setBusy(true);
-        setError(undefined);
-        save(toPatch(value))
-          .then(markSaved)
-          .catch((err: unknown) => setError(errorText(err)))
-          .finally(() => setBusy(false));
-      }}
     >
       <div className="cr-set-sf">
         <div className="cr-set-sf-labels" aria-hidden="true">
@@ -588,26 +608,18 @@ function SessionDefaultsCard({
         <SessionFields
           status={status}
           value={value}
-          onChange={(next) => {
-            setValue(next);
-            clear();
-          }}
+          onChange={setValue}
+          onCommit={commit}
           inherit={inherit}
           testid={`${testid}-field`}
         />
-        <div className="cr-set-sf-save">
-          {saved ? (
-            <SavedNote show testid={`${testid}-saved`} />
+        <div className="cr-set-sf-save" data-testid={`${testid}-state`}>
+          {saving > 0 ? (
+            <span className="cr-set-muted">
+              <Spinner size={12} /> Saving
+            </span>
           ) : (
-            <Button
-              type="submit"
-              variant={dirty ? 'primary' : 'secondary'}
-              busy={busy}
-              disabled={!dirty}
-              data-testid={`${testid}-save`}
-            >
-              Save
-            </Button>
+            <SavedNote show={saved} testid={`${testid}-saved`} />
           )}
         </div>
       </div>
@@ -637,7 +649,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
   return (
     <SetSection
       title="Agents"
-      description="The agent, model and effort a node starts with: its project’s default, else its repository’s, else the global default. You can still pick another when you start one."
+      description="The agent, model and effort a node starts with: its project’s default, else its repository’s, else the global default. A change saves at once. You can still pick another model for a message, from the composer’s model chip."
     >
       <FormError error={error} />
       {!status && !error ? (
@@ -650,7 +662,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
           <SessionDefaultsCard
             title="Global default"
             icon="sparkles"
-            description="Every node uses this unless its project or repository sets its own."
+            description="Every node uses this unless its project or repository sets its own. What it inherits is built in."
             testid="settings-session-home"
             status={status}
             fields={status.home}
@@ -675,6 +687,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
               key={name}
               title={name}
               icon={<RepoIcon remote={remotes.get(name)} size={16} />}
+              description="What it inherits comes from the global default."
               testid={`settings-session-repo-${name}`}
               status={status}
               fields={repo}
@@ -697,6 +710,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
                 key={project.id}
                 title={project.name}
                 icon="layers"
+                description="What it inherits comes from each node’s repository, then the global default."
                 testid={`settings-session-project-${project.id}`}
                 status={status}
                 fields={fields ?? {}}

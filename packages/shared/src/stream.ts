@@ -680,6 +680,21 @@ export function liveChildrenOf(nodeId: string, all: readonly Stream[]): Stream[]
 }
 
 /**
+ * T423: the vendor, model and effort a caller names for a session it
+ * starts (`agile attach`'s flags, the cockpit's model picker). What it
+ * leaves out comes from the session defaults (D17); the vendor and effort
+ * are checked against the provider registry when the session starts.
+ */
+export const SessionFlagsSchema = z
+  .object({
+    vendor: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+    effort: z.string().min(1).optional(),
+  })
+  .strict();
+export type SessionFlags = z.infer<typeof SessionFlagsSchema>;
+
+/**
  * T161: the cockpit composer's write (`POST /api/streams/:id/say`) — one
  * human line on the thread, which also prompts the attached worker if
  * there is one (cockpit design §9.3). The principal is stamped by the
@@ -693,8 +708,18 @@ export const StreamSayInputSchema = z
      * one, with the session defaults, and the line is its first prompt.
      */
     start: z.boolean().optional(),
+    /**
+     * T423: what that start runs, when the composer's model chip named it
+     * (the session defaults fill the rest). Only with `start`: a live
+     * agent keeps its model.
+     */
+    session: SessionFlagsSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((input) => input.session === undefined || input.start === true, {
+    message: 'session is only for a line that starts the agent (start: true)',
+    path: ['session'],
+  });
 export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;
 
 /**
@@ -728,9 +753,7 @@ export const START_ON_GOAL = 'Now work on the goal above. Report back here when 
 export const StreamAttachRequestSchema = z
   .object({
     role: z.enum(['worker', 'reviewer']).optional(),
-    vendor: z.string().min(1).optional(),
-    model: z.string().min(1).optional(),
-    effort: z.string().min(1).optional(),
+    ...SessionFlagsSchema.shape,
   })
   .strict();
 export type StreamAttachRequest = z.infer<typeof StreamAttachRequestSchema>;

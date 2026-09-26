@@ -21,6 +21,7 @@ import type {
   KnowledgePatch as RulePatch,
   SessionDefaultsPatch,
   SessionDefaultsStatus,
+  SessionFlags,
   Stream,
   StreamCreateInput,
   ThreadEntry,
@@ -295,11 +296,13 @@ export async function getRepoKnowledge(repo: string): Promise<Rule[]> {
 export function sayOnStream(
   id: string,
   body: string,
-  opts: { start?: boolean } = {},
+  /** T423: `session` (the model chip's pick) names what a `start` runs. */
+  opts: { start?: boolean; session?: SessionFlags } = {},
 ): Promise<{ prompted?: string; started?: true }> {
   return post(`/api/streams/${encodeURIComponent(id)}/say`, {
     body,
     ...(opts.start === true ? { start: true } : {}),
+    ...(opts.start === true && opts.session !== undefined ? { session: opts.session } : {}),
   }) as Promise<{ prompted?: string; started?: true }>;
 }
 

@@ -4,7 +4,7 @@
  * to that session's open questions. With nobody live it closes nothing.
  */
 
-import type { ThreadEntry } from '@agile-agents/shared';
+import type { SessionFlags, ThreadEntry } from '@agile-agents/shared';
 import type { QuestionService } from './service';
 
 /** What `AttachService.say` returns: the line, the session it was prompted into, and (T361) whether that session was started for it. */
@@ -14,9 +14,15 @@ export interface SaidLine {
   started?: true;
 }
 
+/** T361: `start` starts an agent on a node with none live; T423: `session` names what it runs. */
+export interface SayOptions {
+  start?: boolean;
+  session?: SessionFlags;
+}
+
 export interface ThreadReplyDeps {
-  /** `AttachService.say`; `start` (T361) starts an agent on a node with none live. */
-  say(streamId: string, body: string, options?: { start?: boolean }): Promise<SaidLine>;
+  /** `AttachService.say`. */
+  say(streamId: string, body: string, options?: SayOptions): Promise<SaidLine>;
   questions?: Pick<QuestionService, 'answerFromThread'>;
 }
 
@@ -24,7 +30,7 @@ export async function sayAndAnswer(
   deps: ThreadReplyDeps,
   streamId: string,
   body: string,
-  options: { start?: boolean } = {},
+  options: SayOptions = {},
 ): Promise<SaidLine> {
   const said = await deps.say(streamId, body, options);
   if (said.prompted !== undefined && deps.questions !== undefined) {

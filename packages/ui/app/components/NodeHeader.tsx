@@ -3,17 +3,22 @@
  * path (each ancestor opens its page), the title, its status in words, its
  * role, where it works (repo and branch; a click copies the branch), and on
  * the right one primary action chosen by state — Start agent (one click, the
- * defaults; the chevron picks another model), Stop while it works, Merge
+ * defaults; the chevron, Start with…, picks another model), Stop while it works, Merge
  * when there is something to merge — then the details toggle and ⋯.
  *
  * T413: the title keeps one line (it truncates; the whole title is its
  * tooltip), the role reads as muted text at the head of the line under it,
  * the branch by its name (the whole name is its tooltip and what it
  * copies), and on a phone the details toggle and ⋯ sit on the path's line.
+ *
+ * T423: the chevron is Start with… (the one place to start with another
+ * model; the composer's chip picks the next message's). While the daemon is
+ * away Start, Stop and Merge are off and say "Reconnecting to the daemon…".
  */
 
 import { type ReactNode, useState } from 'react';
 import type { HeaderActions } from '../lib/chat';
+import { RECONNECTING } from '../lib/errors';
 import type { CockpitStreamRow } from '../lib/feed-types';
 import { branchName } from '../lib/inbox';
 import { ROLE_HINT, ROLE_LABEL, type StatusInput } from '../lib/status';
@@ -48,6 +53,8 @@ export interface NodeHeaderProps {
   startLabel: string;
   busy: boolean;
   merging: boolean;
+  /** T423: the daemon is away: the write buttons are off, and say so. */
+  offline?: boolean;
   onStart: () => void;
   onChooseStart: () => void;
   onStop: () => void;
@@ -131,7 +138,7 @@ function Title({
 
 export function NodeHeader(props: NodeHeaderProps): JSX.Element {
   const copy = useCopy();
-  const { actions } = props;
+  const { actions, offline = false } = props;
   const hasActions = actions.agent !== undefined || actions.merge;
   return (
     <header className="cr-node-hd">
@@ -222,17 +229,18 @@ export function NodeHeader(props: NodeHeaderProps): JSX.Element {
                   icon="play"
                   data-testid="attach"
                   busy={props.busy}
-                  title="Start the agent with the default model"
+                  disabled={offline}
+                  title={offline ? RECONNECTING : 'Start the agent with the default model'}
                   onClick={props.onStart}
                 >
                   {props.startLabel}
                 </Button>
                 <IconButton
                   icon="chevron-down"
-                  label="Choose the model and start"
+                  label={offline ? RECONNECTING : 'Start with…'}
                   variant={actions.primary === 'agent' ? 'primary' : 'secondary'}
                   data-testid="attach-options"
-                  disabled={props.busy}
+                  disabled={props.busy || offline}
                   onClick={props.onChooseStart}
                 />
               </span>
@@ -241,8 +249,12 @@ export function NodeHeader(props: NodeHeaderProps): JSX.Element {
               <Button
                 icon="square"
                 data-testid="stop"
-                disabled={props.busy}
-                title="Stop the agent. It won't wake again until you start it or send it a message."
+                disabled={props.busy || offline}
+                title={
+                  offline
+                    ? RECONNECTING
+                    : "Stop the agent. It won't wake again until you start it or send it a message."
+                }
                 onClick={props.onStop}
               >
                 Stop
@@ -254,7 +266,8 @@ export function NodeHeader(props: NodeHeaderProps): JSX.Element {
                 icon="git-merge"
                 data-testid="stream-land"
                 busy={props.merging}
-                title={props.mergeTitle}
+                disabled={offline}
+                title={offline ? RECONNECTING : props.mergeTitle}
                 onClick={props.onMerge}
               >
                 {props.merging ? 'Merging…' : 'Merge'}

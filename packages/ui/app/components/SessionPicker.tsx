@@ -1,30 +1,48 @@
 /**
- * T170 (**D17**): the session choice — vendor, model and effort.
+ * T170 (**D17**), T423 (audit finding 5): the session choice — vendor,
+ * model and effort — and the one model picker.
  *
- *  - `SessionFields` — the three controls: vendor (the provider registry's
- *    ids), model (free text, the known ids suggested through a datalist)
- *    and effort (`EFFORT_LEVELS`). Settings uses them with an "inherit"
- *    option; the picker without.
- *  - `SessionPicker` — the optional choice behind a node's Start agent
- *    chevron, Ask an agent to review… and Resolve (T363: a dialog; one click on
- *    Start agent never needs it). Prefilled with what the session would
- *    resolve to (the node's project, else its repo entry, else the home defaults, else the
- *    built-in), so Start with no edits attaches exactly the default.
+ *  - `ModelChoice` — the models by name, grouped by vendor (`modelGroups`),
+ *    "Other model…" for an id typed by hand, and Effort as a segmented
+ *    control where the vendor takes one. The composer's chip and the
+ *    Start with… dialog both show it.
+ *  - `ModelChip` — the composer's chip: what the next message runs, and a
+ *    popover with `ModelChoice`. Choosing starts nothing: the next message
+ *    starts the agent with it (or restarts the live one), then the chip
+ *    goes back to the default.
+ *  - `SessionPicker` — the dialog behind the header's Start with…, Ask an
+ *    agent to review… and Resolve. Prefilled with what the session would
+ *    resolve to (the node's project, else its repo entry, else the home
+ *    defaults, else the built-in), so Start with no edits attaches exactly
+ *    the default.
+ *  - `SessionFields` — three selects (agent, model, effort) by name for
+ *    Settings (with what each inherits) and New node.
  */
 
 import {
   EFFORT_LEVELS,
+  type Effort,
   type ProjectSessionDefaults,
   type ResolvedSessionDefaults,
   type SessionDefaultsStatus,
   resolveSessionDefaults,
   vendorTakesEffort,
 } from '@agile-agents/shared';
-import { useEffect, useId, useRef, useState } from 'react';
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react';
 import { getSessionDefaults } from '../lib/api';
-import { agentLabel, vendorLabel } from '../lib/chat';
-import { resolvedFor } from '../lib/defaults';
-import { Button, Dialog, Field, Spinner } from './ui';
+import { agentLabel, modelLabel, sessionIdText, vendorLabel } from '../lib/chat';
+import {
+  type ModelChipState,
+  type ModelRef,
+  effortWord,
+  modelForVendor,
+  modelGroups,
+  modelSelectOptions,
+  resolvedFor,
+  sameModel,
+} from '../lib/defaults';
+import { Icon } from './Icon';
+import { Button, Dialog, Popover, Segmented, Spinner } from './ui';
 
 export interface SessionChoice {
   vendor: string;
@@ -32,157 +50,311 @@ export interface SessionChoice {
   effort: string;
 }
 
-export function SessionFields({
+/** The Model select's value for "Other…" (never a model id: ids have no spaces). */
+const OTHER = 'other model';
+
+// ---------------------------------------------------------------- the model list
+
+/** Arrow keys move between the rows of a list (as a menu does). */
+function onArrows(event: ReactKeyboardEvent<HTMLElement>): void {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  const rows = [
+    ...event.currentTarget.querySelectorAll<HTMLButtonElement>('.cr-mpick-row:not(:disabled)'),
+  ];
+  const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+  if (at === -1) return;
+  event.preventDefault();
+  const next =
+    event.key === 'ArrowDown'
+      ? rows[(at + 1) % rows.length]
+      : rows[(at - 1 + rows.length) % rows.length];
+  next?.focus();
+}
+
+/**
+ * T423: the model list, by name and grouped by vendor, with "Other model…"
+ * and the effort. `marks` tags the rows for what runs and the default.
+ */
+export function ModelChoice({
   status,
   value,
   onChange,
-  inherit,
+  marks = {},
   testid,
-  layout = 'row',
+  autoFocus = false,
 }: {
   status: SessionDefaultsStatus;
-  value: SessionChoice;
-  onChange: (next: SessionChoice) => void;
-  /** Settings: the placeholder/empty option names what an unset field falls through to. */
-  inherit?: ResolvedSessionDefaults;
+  value: ResolvedSessionDefaults;
+  onChange: (next: ResolvedSessionDefaults) => void;
+  marks?: { running?: ModelRef; default?: ModelRef };
   testid: string;
-  /** T363: `stack` puts each control under its label (the picker dialog). */
-  layout?: 'row' | 'stack';
+  /** Focus the chosen row on mount (the popover; a dialog focuses `data-autofocus`). */
+  autoFocus?: boolean;
 }): JSX.Element {
-  const listId = useId();
-  const vendor = value.vendor || inherit?.vendor || status.builtin.vendor;
-  const suggestions = status.known_models[vendor as keyof typeof status.known_models] ?? [];
-  // T402: the model an empty field inherits, for the vendor picked here (another
-  // vendor never takes the inherited one).
-  const inheritedModel =
-    inherit &&
-    (resolveSessionDefaults({
-      ...(value.vendor ? { flags: { vendor: value.vendor } } : {}),
-      home: {
-        default_vendor: inherit.vendor,
-        ...(inherit.model !== undefined ? { default_model: inherit.model } : {}),
-      },
-    }).model ??
-      `${vendorLabel(vendor)} default model`);
-  // T401: a vendor with no effort setting never gets the level; say so rather than offer it.
-  const noEffort = vendorTakesEffort(vendor)
-    ? undefined
-    : `${vendorLabel(vendor)} has no effort setting; the level is not used`;
-  if (layout === 'stack') {
-    return (
-      <div className="cr-picker-fields" data-testid={testid}>
-        <Field label="Vendor" htmlFor={`${listId}-vendor`}>
-          <select
-            id={`${listId}-vendor`}
-            aria-label="Vendor"
-            data-testid={`${testid}-vendor`}
-            value={value.vendor}
-            onChange={(e) => onChange({ ...value, vendor: e.target.value })}
-          >
-            {status.vendors.map((v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field
-          label="Model"
-          htmlFor={`${listId}-model`}
-          hint="Leave it empty for the vendor's own default."
-        >
-          <input
-            id={`${listId}-model`}
-            aria-label="Model"
-            data-testid={`${testid}-model`}
-            list={listId}
-            value={value.model}
-            placeholder="model id"
-            onChange={(e) => onChange({ ...value, model: e.target.value })}
-          />
-        </Field>
-        <datalist id={listId}>
-          {suggestions.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
-        <Field
-          label="Effort"
-          htmlFor={`${listId}-effort`}
-          {...(noEffort !== undefined ? { hint: `${noEffort}.` } : {})}
-        >
-          <select
-            id={`${listId}-effort`}
-            aria-label="Effort"
-            data-testid={`${testid}-effort`}
-            disabled={noEffort !== undefined}
-            value={value.effort}
-            onChange={(e) => onChange({ ...value, effort: e.target.value })}
-          >
-            {EFFORT_LEVELS.map((level) => (
-              <option key={level} value={level}>
-                {level}
-              </option>
-            ))}
-          </select>
-        </Field>
-      </div>
-    );
-  }
+  const list = useRef<HTMLDivElement>(null);
+  const [other, setOther] = useState<{ vendor: string; model: string } | undefined>(undefined);
+  const extra = [value, marks.running, marks.default].filter(
+    (ref): ref is ModelRef => ref !== undefined,
+  );
+  const groups = modelGroups(status.known_models, status.vendors, extra);
+  const choose = (ref: ModelRef): void =>
+    onChange({
+      vendor: ref.vendor,
+      ...(ref.model !== undefined && ref.model !== '' ? { model: ref.model } : {}),
+      effort: value.effort,
+    });
+  const applyOther = (): void => {
+    const model = other?.model.trim() ?? '';
+    if (!other || model === '') return;
+    choose({ vendor: other.vendor, model });
+    setOther(undefined);
+  };
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    list.current?.querySelector<HTMLButtonElement>('.cr-mpick-row[aria-checked="true"]')?.focus();
+  }, [autoFocus]);
+
   return (
-    <div className="cr-actions" data-testid={testid}>
-      <select
-        aria-label="Vendor"
-        data-testid={`${testid}-vendor`}
-        value={value.vendor}
-        onChange={(e) => onChange({ ...value, vendor: e.target.value })}
-      >
-        {inherit && <option value="">inherit ({inherit.vendor})</option>}
-        {status.vendors.map((v) => (
-          <option key={v} value={v}>
-            {v}
-          </option>
-        ))}
-      </select>
-      <input
+    <div className="cr-mpick" data-testid={testid}>
+      <div
+        className="cr-mpick-list"
+        role="radiogroup"
         aria-label="Model"
-        data-testid={`${testid}-model`}
-        list={listId}
-        value={value.model}
-        placeholder={inheritedModel ? `inherit (${inheritedModel})` : 'model id'}
-        onChange={(e) => onChange({ ...value, model: e.target.value })}
-      />
-      <datalist id={listId}>
-        {suggestions.map((m) => (
-          <option key={m} value={m} />
-        ))}
-      </datalist>
-      <select
-        aria-label="Effort"
-        data-testid={`${testid}-effort`}
-        disabled={noEffort !== undefined}
-        {...(noEffort !== undefined ? { title: noEffort } : {})}
-        value={value.effort}
-        onChange={(e) => onChange({ ...value, effort: e.target.value })}
+        ref={list}
+        onKeyDown={onArrows}
       >
-        {inherit && <option value="">inherit ({inherit.effort})</option>}
-        {EFFORT_LEVELS.map((level) => (
-          <option key={level} value={level}>
-            {level}
-          </option>
+        {groups.map((group) => (
+          // biome-ignore lint/a11y/useSemanticElements: a labelled run of rows inside the radiogroup, not a form fieldset.
+          <div key={group.label} className="cr-mpick-group" role="group" aria-label={group.label}>
+            <div className="cr-mpick-group-hd" aria-hidden="true">
+              {group.label}
+            </div>
+            {group.options.map((option) => {
+              const on = sameModel(option, value);
+              const tag =
+                marks.running && sameModel(option, marks.running)
+                  ? 'Running'
+                  : marks.default && sameModel(option, marks.default)
+                    ? 'Default'
+                    : undefined;
+              return (
+                <button
+                  key={`${option.vendor}/${option.model ?? ''}`}
+                  type="button"
+                  // biome-ignore lint/a11y/useSemanticElements: see the radiogroup above.
+                  role="radio"
+                  aria-checked={on}
+                  className="cr-mpick-row"
+                  data-testid="model-option"
+                  data-vendor={option.vendor}
+                  data-model={option.model ?? ''}
+                  data-autofocus={on ? true : undefined}
+                  title={sessionIdText({ vendor: option.vendor, model: option.model })}
+                  onClick={() => {
+                    setOther(undefined);
+                    choose(option);
+                  }}
+                >
+                  <Icon name="check" size={14} className="cr-mpick-check" />
+                  <span className="cr-mpick-name">{option.label}</span>
+                  {tag && <span className="cr-mpick-tag">{tag}</span>}
+                </button>
+              );
+            })}
+          </div>
         ))}
-      </select>
+        <button
+          type="button"
+          className="cr-mpick-row cr-mpick-other-btn"
+          data-testid="model-other"
+          aria-expanded={other !== undefined}
+          onClick={() => setOther(other ? undefined : { vendor: value.vendor, model: '' })}
+        >
+          <Icon name="plus" size={14} className="cr-mpick-check" />
+          <span className="cr-mpick-name">Other model…</span>
+        </button>
+        {other && (
+          <div className="cr-mpick-other" data-testid="model-other-form">
+            <select
+              aria-label="Agent"
+              data-testid="model-other-vendor"
+              value={other.vendor}
+              onChange={(e) => setOther({ ...other, vendor: e.target.value })}
+            >
+              {status.vendors.map((v) => (
+                <option key={v} value={v}>
+                  {vendorLabel(v)}
+                </option>
+              ))}
+            </select>
+            <input
+              aria-label="Model id"
+              data-testid="model-other-input"
+              placeholder="model id"
+              // biome-ignore lint/a11y/noAutofocus: the user just asked to type one.
+              autoFocus
+              value={other.model}
+              onChange={(e) => setOther({ ...other, model: e.target.value })}
+              onKeyDown={(e) => {
+                // Enter uses it; it never sends the message or submits the dialog.
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  applyOther();
+                }
+              }}
+            />
+            <Button
+              size="sm"
+              data-testid="model-other-use"
+              disabled={other.model.trim() === ''}
+              onClick={applyOther}
+            >
+              Use
+            </Button>
+          </div>
+        )}
+      </div>
+      <div className="cr-mpick-effort">
+        <span className="cr-mpick-effort-label">Effort</span>
+        {vendorTakesEffort(value.vendor) ? (
+          <Segmented<Effort>
+            label="Effort"
+            testid={`${testid}-effort`}
+            items={EFFORT_LEVELS.map((level) => ({
+              id: level,
+              label: effortWord(level),
+              testid: `effort-${level}`,
+            }))}
+            value={value.effort}
+            onChange={(effort) => onChange({ ...value, effort })}
+          />
+        ) : (
+          <span className="cr-mpick-noeffort" data-testid={`${testid}-no-effort`}>
+            {vendorLabel(value.vendor)} has no effort setting.
+          </span>
+        )}
+      </div>
     </div>
   );
 }
+
+// ---------------------------------------------------------------- the composer's chip
+
+/**
+ * T423: the composer's model chip and its popover. Choosing sets what the
+ * next message runs; it never starts or restarts anything by itself.
+ */
+export function ModelChip({
+  status,
+  chip,
+  running,
+  fallback,
+  onPick,
+  onReset,
+}: {
+  status: SessionDefaultsStatus | undefined;
+  chip: ModelChipState;
+  /** The live agent's model, if one runs. */
+  running?: ResolvedSessionDefaults;
+  /** The default here. */
+  fallback: ResolvedSessionDefaults;
+  onPick: (next: ResolvedSessionDefaults) => void;
+  onReset: () => void;
+}): JSX.Element {
+  const face = (
+    <>
+      {chip.state === 'live' ? (
+        <span className="cr-model-dot" aria-hidden="true" />
+      ) : (
+        <Icon name={chip.state === 'chosen' ? 'sliders' : 'sparkles'} size={12} />
+      )}
+      <span className="cr-model-chip-text">{chip.label}</span>
+    </>
+  );
+  // The list comes with the defaults; until then the chip only names what runs.
+  if (status === undefined) {
+    return (
+      <span
+        className="cr-model-chip"
+        data-testid="composer-model"
+        data-live={chip.state === 'live' ? 'true' : undefined}
+        title={chip.title}
+      >
+        {face}
+      </span>
+    );
+  }
+  return (
+    <Popover
+      align="start"
+      placement="top"
+      label="Model for your next message"
+      testid="model-popover"
+      className="cr-mpick-pop"
+      trigger={(props) => (
+        <button
+          type="button"
+          className="cr-model-chip"
+          data-testid="composer-model"
+          data-live={chip.state === 'live' ? 'true' : undefined}
+          data-chosen={chip.state === 'chosen' ? 'true' : undefined}
+          title={chip.title}
+          {...props}
+        >
+          {face}
+          <Icon name="chevron-down" size={12} />
+        </button>
+      )}
+    >
+      {() => (
+        <div className="cr-mpick-panel">
+          <div className="cr-mpick-hd">
+            <span className="cr-mpick-title">Model for your next message</span>
+            {chip.pending && (
+              <button
+                type="button"
+                className="cr-link"
+                data-testid="model-reset"
+                title={`Back to ${agentLabel(running ?? fallback)}${running ? ', the model that runs' : ', the default'}`}
+                onClick={onReset}
+              >
+                Reset
+              </button>
+            )}
+          </div>
+          <ModelChoice
+            status={status}
+            value={chip.shows}
+            onChange={onPick}
+            marks={{
+              ...(running ? { running } : {}),
+              default: fallback,
+            }}
+            testid="model-choice"
+            autoFocus
+          />
+          <p className="cr-mpick-note" data-testid="model-note">
+            {running
+              ? 'Nothing changes until you send: another model restarts the agent with your message.'
+              : 'Nothing starts until you send. After that it goes back to the default.'}
+          </p>
+        </div>
+      )}
+    </Popover>
+  );
+}
+
+// ---------------------------------------------------------------- the dialog
 
 const PICKER_COPY: Record<
   'worker' | 'reviewer' | 'resolve',
   { title: string; description: string; submit: string }
 > = {
   worker: {
-    title: 'Start the agent',
-    description: 'Pick what runs this node. The defaults come from Settings.',
+    title: 'Start with…',
+    description: 'Pick the model this node’s agent starts with. The defaults come from Settings.',
     submit: 'Start agent',
   },
   // T413: an agent that reviews; you review on the Changes tab.
@@ -207,6 +379,7 @@ export function SessionPicker({
   onCancel,
   purpose,
   project,
+  submitLabel,
 }: {
   role: 'worker' | 'reviewer';
   repo: string | undefined;
@@ -217,12 +390,14 @@ export function SessionPicker({
   purpose?: 'worker' | 'reviewer' | 'resolve';
   /** T379: the node's project's session defaults, which come before the repo's. */
   project?: ProjectSessionDefaults;
+  /** The submit button's words ("Restart agent"), when not the purpose's. */
+  submitLabel?: string;
 }): JSX.Element {
   const [status, setStatus] = useState<SessionDefaultsStatus | undefined>(undefined);
-  // Read once when the defaults arrive: a frame refresh must not reset the fields.
+  // Read once when the defaults arrive: a frame refresh must not reset the choice.
   const projectRef = useRef(project);
   projectRef.current = project;
-  const [value, setValue] = useState<SessionChoice | undefined>(undefined);
+  const [value, setValue] = useState<ResolvedSessionDefaults | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   const copy = PICKER_COPY[purpose ?? role];
 
@@ -231,9 +406,8 @@ export function SessionPicker({
     getSessionDefaults()
       .then((next) => {
         if (!live) return;
-        const resolved = resolvedFor(next, repo, projectRef.current);
         setStatus(next);
-        setValue({ vendor: resolved.vendor, model: resolved.model ?? '', effort: resolved.effort });
+        setValue(resolvedFor(next, repo, projectRef.current));
       })
       .catch((err: unknown) => live && setError(err instanceof Error ? err.message : String(err)));
     return () => {
@@ -253,11 +427,10 @@ export function SessionPicker({
       label={role === 'worker' ? 'Start a worker' : 'Start a reviewer agent'}
       onSubmit={() => {
         if (!value) return;
-        const model = value.model.trim();
         onStart({
           vendor: value.vendor,
           effort: value.effort,
-          ...(model.length > 0 ? { model } : {}),
+          ...(value.model !== undefined ? { model: value.model } : {}),
         });
       }}
       footer={
@@ -273,7 +446,7 @@ export function SessionPicker({
             busy={busy}
             disabled={!value}
           >
-            {copy.submit}
+            {submitLabel ?? copy.submit}
           </Button>
         </>
       }
@@ -286,14 +459,18 @@ export function SessionPicker({
         )}
         {status && value ? (
           <>
-            <SessionFields
+            <ModelChoice
               status={status}
               value={value}
               onChange={setValue}
-              testid="picker"
-              layout="stack"
+              {...(resolved ? { marks: { default: resolved } } : {})}
+              testid="picker-model"
             />
-            {resolved && <p className="cr-picker-default">Default here: {agentLabel(resolved)}</p>}
+            {resolved && (
+              <p className="cr-picker-default" title={sessionIdText(resolved)}>
+                Default here: {agentLabel(resolved)}
+              </p>
+            )}
           </>
         ) : (
           !error && (
@@ -304,5 +481,154 @@ export function SessionPicker({
         )}
       </div>
     </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------- Settings and New node
+
+/**
+ * The three controls, by name: the agent, its model (the known ones, the
+ * empty value — what it inherits, or the vendor's default — and "Other…"
+ * to type an id), and the effort. `onChange` follows every edit; `onCommit`
+ * (Settings, which saves on change) runs when a select changes or a typed
+ * id is done (Enter, or leaving the field).
+ */
+export function SessionFields({
+  status,
+  value,
+  onChange,
+  onCommit,
+  inherit,
+  testid,
+}: {
+  status: SessionDefaultsStatus;
+  value: SessionChoice;
+  onChange: (next: SessionChoice) => void;
+  onCommit?: (next: SessionChoice) => void;
+  /** Settings: what an empty field falls through to, named in its option ("Inherits Claude"). */
+  inherit?: ResolvedSessionDefaults;
+  testid: string;
+}): JSX.Element {
+  const vendor = value.vendor || inherit?.vendor || status.builtin.vendor;
+  const [typing, setTyping] = useState(false);
+  // The model before Other… was picked: Esc goes back to it.
+  const before = useRef('');
+  const change = (next: SessionChoice, commit = true): void => {
+    onChange(next);
+    if (commit) onCommit?.(next);
+  };
+  // T402: the model an empty field inherits, for the vendor picked here (another
+  // vendor never takes the inherited one).
+  const inheritedModel =
+    inherit &&
+    modelLabel(
+      vendor,
+      resolveSessionDefaults({
+        ...(value.vendor ? { flags: { vendor: value.vendor } } : {}),
+        home: {
+          default_vendor: inherit.vendor,
+          ...(inherit.model !== undefined ? { default_model: inherit.model } : {}),
+        },
+      }).model,
+    );
+  const models = modelSelectOptions(status.known_models, vendor, value.model, inheritedModel);
+  // T401: a vendor with no effort setting never gets the level; say so rather than offer it.
+  const noEffort = vendorTakesEffort(vendor)
+    ? undefined
+    : `${vendorLabel(vendor)} has no effort setting; the level is not used`;
+  const shown = typing ? OTHER : value.model.trim();
+  return (
+    <div className="cr-sf" data-testid={testid}>
+      <select
+        className="cr-sf-vendor"
+        aria-label="Agent"
+        data-testid={`${testid}-vendor`}
+        value={value.vendor}
+        onChange={(e) => {
+          const next = e.target.value;
+          setTyping(false);
+          change({
+            ...value,
+            vendor: next,
+            model: modelForVendor(status.known_models, next || inherit?.vendor || '', value.model),
+          });
+        }}
+      >
+        {inherit && <option value="">Inherits {vendorLabel(inherit.vendor)}</option>}
+        {status.vendors.map((v) => (
+          <option key={v} value={v}>
+            {vendorLabel(v)}
+          </option>
+        ))}
+      </select>
+      <span className="cr-sf-model" data-typing={typing ? 'true' : undefined}>
+        <select
+          aria-label="Model"
+          data-testid={`${testid}-model`}
+          value={shown}
+          title={
+            value.model.trim() !== '' ? sessionIdText({ vendor, model: value.model }) : undefined
+          }
+          onChange={(e) => {
+            if (e.target.value === OTHER) {
+              before.current = value.model;
+              setTyping(true);
+              return;
+            }
+            setTyping(false);
+            change({ ...value, model: e.target.value });
+          }}
+        >
+          {models.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+          <option value={OTHER}>Other…</option>
+        </select>
+        {typing && (
+          <input
+            aria-label="Model id"
+            data-testid={`${testid}-model-other`}
+            placeholder="model id"
+            // biome-ignore lint/a11y/noAutofocus: the user just picked Other… to type one.
+            autoFocus
+            value={value.model}
+            onChange={(e) => change({ ...value, model: e.target.value }, false)}
+            onBlur={() => {
+              onCommit?.(value);
+              if (value.model.trim() !== '') setTyping(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                onCommit?.(value);
+                if (value.model.trim() !== '') setTyping(false);
+              } else if (e.key === 'Escape') {
+                e.stopPropagation();
+                change({ ...value, model: before.current }, false);
+                setTyping(false);
+              }
+            }}
+          />
+        )}
+      </span>
+      <select
+        className="cr-sf-effort"
+        aria-label="Effort"
+        data-testid={`${testid}-effort`}
+        disabled={noEffort !== undefined}
+        {...(noEffort !== undefined ? { title: noEffort } : {})}
+        value={value.effort}
+        onChange={(e) => change({ ...value, effort: e.target.value })}
+      >
+        {inherit && <option value="">Inherits {effortWord(inherit.effort)}</option>}
+        {EFFORT_LEVELS.map((level) => (
+          <option key={level} value={level}>
+            {effortWord(level)}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }

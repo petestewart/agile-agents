@@ -332,6 +332,29 @@ describe('T161 cockpit write bodies', () => {
     expect(StreamSayInputSchema.safeParse({ body: 'go', start: 'yes' }).success).toBe(false);
   });
 
+  test('T423: a starting line may name the session it starts; nothing else takes one', () => {
+    const session = { vendor: 'claude', model: 'claude-sonnet-4-6', effort: 'high' };
+    expect(StreamSayInputSchema.parse({ body: 'go', start: true, session }).session).toEqual(
+      session,
+    );
+    expect(StreamSayInputSchema.parse({ body: 'go', start: true, session: {} }).session).toEqual(
+      {},
+    );
+    // Only with start: a live agent keeps its model.
+    expect(StreamSayInputSchema.safeParse({ body: 'go', session }).success).toBe(false);
+    expect(StreamSayInputSchema.safeParse({ body: 'go', start: false, session }).success).toBe(
+      false,
+    );
+    // Strict, and no empty strings.
+    expect(
+      StreamSayInputSchema.safeParse({ body: 'go', start: true, session: { role: 'worker' } })
+        .success,
+    ).toBe(false);
+    expect(
+      StreamSayInputSchema.safeParse({ body: 'go', start: true, session: { model: '' } }).success,
+    ).toBe(false);
+  });
+
   test('attach takes the two attachable roles only', () => {
     expect(StreamAttachRequestSchema.safeParse({}).success).toBe(true);
     expect(StreamAttachRequestSchema.safeParse({ role: 'reviewer', vendor: 'codex' }).success).toBe(
