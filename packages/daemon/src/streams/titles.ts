@@ -55,7 +55,7 @@ export function cleanTitle(raw: string | undefined): string | undefined {
 }
 
 /**
- * The default run: `claude -p` with Haiku, one turn, no MCP servers, in a
+ * The default run: `claude -p` with Haiku, no tools (one reply), no MCP servers, in a
  * scratch directory (no project instructions to load). `undefined` when
  * there is no `claude` on the PATH or under `bun test`.
  */
@@ -75,8 +75,9 @@ export function claudeTitleRun(
           prompt,
           '--model',
           TITLE_MODEL,
-          '--max-turns',
-          '1',
+          // No tools: the model can only reply, so the call is one turn.
+          '--tools',
+          '',
           '--output-format',
           'text',
           '--strict-mcp-config',
