@@ -48,7 +48,7 @@ import { RepoInPlaceService } from '../streams/repo-in-place';
 import { StreamService } from '../streams/service';
 import { buildAttachRpcMethods } from './rpc';
 import { sayPrompt } from './service';
-import { AttachService, StreamBusyError, endedReason } from './service';
+import { AttachService, DAEMON_SHUTDOWN_REASON, StreamBusyError, endedReason } from './service';
 import { VerbService } from './verbs';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
@@ -282,6 +282,28 @@ describe('the exit path', () => {
     // The registry entry is gone, so the hook can no longer resolve a cwd
     // to a session that has exited.
     expect(store.listAgents().some((a) => a.id === session.id)).toBe(false);
+  }, 20_000);
+});
+
+describe('T370: the daemon stopping mid-work', () => {
+  test('leaves the node idle, not done, and wakeable', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes('looking at the parser now'));
+    expect(streams.get(stream.id).agent.status).toBe('working');
+
+    await attachService.stopAll();
+
+    const after = streams.get(stream.id);
+    expect(after.agent.status).toBe('idle');
+    const ended = after.sessions.find((s) => s.id === session.id);
+    expect(ended?.status).toBe('stopped');
+    expect(ended?.ended_reason).toBe(`stopped: ${DAEMON_SHUTDOWN_REASON}`);
+    expect(threadBodies(stream.id)).toContain(`worker stopped: ${DAEMON_SHUTDOWN_REASON}`);
+    expect(threadBodies(stream.id).some((b) => b.startsWith('session ended:'))).toBe(false);
+    // Not the human's stop: the node's next event wakes it.
+    expect(stoppedByHuman(after)).toBe(false);
   }, 20_000);
 });
 

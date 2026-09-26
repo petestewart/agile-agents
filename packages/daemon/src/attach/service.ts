@@ -127,6 +127,9 @@ function agentFor(
   return { children, shape, role: coordinates ? 'coordinator' : 'worker' };
 }
 
+/** T370: the ended reason of a session the daemon's shutdown stopped. */
+export const DAEMON_SHUTDOWN_REASON = 'the daemon stopped';
+
 /** Not closed, landed or archived: a node an agent may still work on. */
 function isOpen(stream: Stream): boolean {
   return (
@@ -1264,11 +1267,18 @@ export class AttachService {
     return stopped;
   }
 
-  /** Stops every live session: the daemon's shutdown path. */
+  /**
+   * Stops every live session: the daemon's shutdown path. A daemon stop
+   * (T370): the kill ends no work, so the node goes back to `idle` (never
+   * `done`, which read as "ready to merge" after a restart) and is not
+   * "stopped by the human", so its next event wakes it again.
+   */
   async stopAll(): Promise<void> {
     await Promise.all(
       [...this.live.entries()].flatMap(([role, handles]) =>
-        [...handles.keys()].map((streamId) => this.stop(streamId, role)),
+        [...handles.keys()].map((streamId) =>
+          this.stop(streamId, role, { reason: DAEMON_SHUTDOWN_REASON }),
+        ),
       ),
     );
   }
