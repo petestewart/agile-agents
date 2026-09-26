@@ -576,16 +576,17 @@ export function Rules(): JSX.Element {
             <EmptyState
               icon={tab === 'review' ? 'check-circle' : 'search'}
               title={
-                isNarrowed(filter)
-                  ? 'Nothing matches'
-                  : tab === 'review'
-                    ? 'Nothing to review'
+                tab === 'review'
+                  ? 'Nothing to review'
+                  : isNarrowed(filter)
+                    ? 'Nothing matches'
                     : 'Nothing here'
               }
               testid="rules-empty"
               actions={
                 isNarrowed(filter) ? (
                   <Button
+                    data-testid="rules-empty-clear"
                     onClick={() =>
                       setFilter({ status: 'all', scope: 'all', ...(tab === 'all' ? {} : { tab }) })
                     }
@@ -596,7 +597,9 @@ export function Rules(): JSX.Element {
               }
             >
               {isNarrowed(filter)
-                ? 'No item in this list matches the filters.'
+                ? tab === 'review'
+                  ? 'No proposal matches the filters.'
+                  : 'No item in this list matches the filters.'
                 : tab === 'review'
                   ? EMPTY_TEXT.review.body
                   : undefined}

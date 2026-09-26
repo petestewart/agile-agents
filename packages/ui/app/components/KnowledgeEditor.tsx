@@ -220,6 +220,7 @@ export function KnowledgeEditor({
               <label
                 key={value}
                 className="cr-kn-choice"
+                data-value={value}
                 data-checked={draft.enforcement === value ? 'true' : undefined}
               >
                 <input
