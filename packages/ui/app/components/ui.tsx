@@ -568,6 +568,7 @@ export function Dialog({
   testid,
   onSubmit,
   label,
+  className,
 }: PropsWithChildren<{
   open: boolean;
   onClose: () => void;
@@ -580,6 +581,8 @@ export function Dialog({
   onSubmit?: () => void;
   /** The form's accessible name (defaults to the title when it is text). */
   label?: string;
+  /** T368: an extra class on the panel, for a dialog with its own layout (the command palette). */
+  className?: string;
 }>): JSX.Element | null {
   const titleId = useId();
   const panel = useRef<HTMLDivElement>(null);
@@ -644,7 +647,7 @@ export function Dialog({
     >
       <div
         ref={panel}
-        className="cr-dialog"
+        className={className ? `cr-dialog ${className}` : 'cr-dialog'}
         data-size={size}
         // biome-ignore lint/a11y/useSemanticElements: a native <dialog> needs showModal() and the top layer; this one renders in place with its own focus trap.
         role="dialog"

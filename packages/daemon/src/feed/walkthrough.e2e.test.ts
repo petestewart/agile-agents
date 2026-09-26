@@ -1443,10 +1443,11 @@ test.skipIf(!RUN)(
       );
       await openView('Repos');
       const group = page.locator('[data-testid="repo-view"] .cr-group[data-repo="ledger-lite"]');
+      await checkText('the repo heading reads ledger-lite', group.locator('h2'), 'ledger-lite');
       await checkText(
-        'the repo heading reads ledger-lite (direct)',
-        group.locator('h2'),
-        'ledger-lite (direct)',
+        'its delivery reads Merges directly',
+        group.locator('[data-testid="repo-delivery"]'),
+        'Merges directly',
       );
       await checkText(
         'Shop › Shop note is listed',
@@ -1459,9 +1460,9 @@ test.skipIf(!RUN)(
         /Blog › Blog note/,
       );
       await checkText(
-        '⚠ Shop note and Blog note both changed walkthrough-notes.md',
+        'Shop note and Blog note both changed walkthrough-notes.md',
         group.locator('[data-testid="repo-overlap"]'),
-        /⚠ (Shop note and Blog note|Blog note and Shop note) both changed walkthrough-notes\.md/,
+        /(Shop note and Blog note|Blog note and Shop note) both changed walkthrough-notes\.md/,
       );
     });
 
@@ -1570,10 +1571,10 @@ test.skipIf(!RUN)(
       const events = page.locator(
         '[data-testid="repo-view"] .cr-group[data-repo="ledger-lite"] [data-testid="repo-events"]',
       );
-      await checkText('Repos shows main changed under ledger-lite', events, /main changed/);
-      // T347 (D36 D5): ledger-lite merges direct, so its merges read "merged", not "pr merged".
-      await checkText('Repos shows merged under ledger-lite', events, /(?<!pr )merged · /);
-      await checkNotText('a direct merge is not called a PR merge', events, /pr merged/);
+      await checkText('Repos shows Main changed under ledger-lite', events, /Main changed/);
+      // T347 (D36 D5): ledger-lite merges direct, so its merges read "Merged", not "PR merged".
+      await checkText('Repos shows Merged under ledger-lite', events, /(?<!PR )Merged · /);
+      await checkNotText('a direct merge is not called a PR merge', events, /PR merged/i);
       await checkText(
         'the events are labelled',
         page.locator('[data-testid="repo-view"] .cr-group[data-repo="ledger-lite"] .cr-lens-sub'),
@@ -1761,11 +1762,11 @@ test.skipIf(!RUN)(
       );
       await openView('Repos');
       await checkText(
-        'standard · tests-with-src (ship) fired 0, violated 0',
+        'tests-with-src · Standard · Checked before merge · Not fired yet',
         page.locator(
           '[data-testid="repo-view"] .cr-group[data-repo="ledger-lite"] [data-testid="repo-norm"]',
         ),
-        /standard · tests-with-src \(ship\) fired 0, violated 0/,
+        /tests-with-src .*Standard Checked before merge Not fired yet/,
       );
       await openView('Knowledge');
       await card.locator('.cr-kn-row-main').click();

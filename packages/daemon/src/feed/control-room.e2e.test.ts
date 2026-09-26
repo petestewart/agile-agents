@@ -2891,9 +2891,28 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         await page.locator('[data-view="events"]').click();
         const row = `[data-testid="event-log"] [data-event="${event.id}"]`;
         await page.locator(row).waitFor({ state: 'visible' });
+        // T368: the event in words, its node by title, and who was told (by title too).
+        expect(await page.locator(`${row} [data-testid="event-log-type"]`).textContent()).toBe(
+          'Human line',
+        );
+        expect(await page.locator(`${row} [data-testid="event-log-node"]`).textContent()).toBe(
+          'checkout',
+        );
+        expect(
+          await page.locator(`${row} [data-testid="event-log-routing"]`).textContent(),
+        ).toContain('checkout');
         const text = (await page.locator(row).textContent()) ?? '';
-        expect(text).toContain('human line · checkout');
+        expect(text).toContain('hi');
         expect(text).not.toContain(node.id);
+        // The type filter and the search narrow the log; a miss says so.
+        await page.locator('[data-testid="event-log-family"] [data-value="delivery"]').click();
+        await page.locator(row).waitFor({ state: 'detached' });
+        await page.locator('[data-testid="event-log-family"] [data-value="messages"]').click();
+        await page.locator(row).waitFor({ state: 'visible' });
+        await page.locator('[data-testid="event-log-search"]').fill('no such words');
+        await page.locator('[data-testid="event-log"] .cr-empty').waitFor({ state: 'visible' });
+        await page.locator('[data-testid="event-log-search"]').fill('checkout');
+        await page.locator(row).waitFor({ state: 'visible' });
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -3611,7 +3630,7 @@ describe('overlap warnings (Playwright e2e, T227)', () => {
         await waitForText(
           page,
           '[data-testid="repo-view"] [data-repo="api"] [data-testid="repo-overlap"]',
-          '⚠ api: add salePrice and api: add /posts both changed prices.ts',
+          'api: add salePrice and api: add /posts both changed prices.ts',
         );
       } finally {
         await teardown([page]);
@@ -3777,7 +3796,7 @@ describe('repo view and lenses (Playwright e2e, T209)', () => {
         ).toBe(0);
         await page.locator(`${api} [data-stream="${blogApi.id}"]`).waitFor({ state: 'visible' });
         expect(await page.locator(`${api} [data-testid="repo-delivery"]`).textContent()).toBe(
-          '(pr)',
+          'Opens pull requests',
         );
         expect(
           await page
@@ -3794,7 +3813,7 @@ describe('repo view and lenses (Playwright e2e, T209)', () => {
           await page
             .locator('[data-testid="repo-view"] [data-repo="web"] [data-testid="repo-delivery"]')
             .textContent(),
-        ).toBe('(direct)');
+        ).toBe('Merges directly');
 
         await page.locator('[data-view="running"]').click();
         const running = '[data-testid="running-lens"]';
@@ -3806,9 +3825,117 @@ describe('repo view and lenses (Playwright e2e, T209)', () => {
         await page.locator('[data-view="deps"]').click();
         await waitForText(
           page,
-          '[data-testid="deps-lens"] [data-testid="dep-edge"]',
+          '[data-testid="deps-lens"] [data-testid="dep-edge-text"]',
           'api: add /posts waits on api: add salePrice',
         );
+        // T368: the waited-on node's status reads beside it; the ⋯ menu removes the link.
+        expect(
+          await page.locator('[data-testid="deps-lens"] [data-testid="dep-edge"]').textContent(),
+        ).toContain('Idle');
+        await page.locator('[data-testid="dep-menu-trigger"]').click();
+        await page.locator('[data-testid="dep-remove"]').click();
+        await page.locator('[data-testid="deps-lens"] .cr-empty').waitFor({ state: 'visible' });
+        await waitUntil('the link to be removed', () =>
+          (cockpit.streams.get(blogApi.id).waits_on ?? []).every((w) => w.node !== shopApi.id),
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T368: the command palette and the keyboard help ----------------------
+
+describe('command palette and keyboard shortcuts (Playwright e2e, T368)', () => {
+  browserTest(
+    'Ctrl+K finds a node by part of its title and opens it; it runs Knowledge; ? shows the keys',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const sale = await cockpit.streams.create('human', {
+          title: 'api: add salePrice',
+          goal: 'g',
+          project: shop.id,
+        });
+        await cockpit.streams.create('human', {
+          title: 'Fix rounding in totals',
+          goal: 'g',
+          project: shop.id,
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="inbox"]').waitFor({ state: 'visible' });
+        const palette = '[data-testid="command-palette"]';
+        const input = `${palette} [data-testid="palette-input"]`;
+
+        // Part of a title, Enter: the node's page opens and the palette closes.
+        await page.keyboard.press('Control+k');
+        await page.locator(input).waitFor({ state: 'visible' });
+        expect(
+          (await page.evaluate('document.activeElement?.dataset?.testid ?? null')) as string,
+        ).toBe('palette-input');
+        await page.locator(input).fill('salepr');
+        await waitForAttr(page, `${palette} [aria-selected="true"]`, 'data-key', `node:${sale.id}`);
+        await page.keyboard.press('Enter');
+        await page.locator(palette).waitFor({ state: 'detached' });
+        await waitForText(page, '[data-testid="stream-title"]', 'api: add salePrice');
+
+        // With nothing typed, the node just opened is recent — except while you are on it.
+        await page.locator('[data-view="inbox"]').click();
+        await page.keyboard.press('Control+k');
+        await page.locator(input).waitFor({ state: 'visible' });
+        await page
+          .locator(`${palette} [data-testid="palette-item"][data-key="node:${sale.id}"]`)
+          .waitFor({ state: 'visible' });
+        await page.keyboard.press('Escape');
+        await page.locator(palette).waitFor({ state: 'detached' });
+
+        // It runs a view: Knowledge, by name (the sidebar's search button opens it too).
+        await page.locator('[data-testid="palette-open"]').click();
+        await page.locator(input).fill('Knowledge');
+        await waitForAttr(page, `${palette} [aria-selected="true"]`, 'data-key', 'view:rules');
+        await page.keyboard.press('Enter');
+        await page.locator('[data-testid="rules-screen"]').waitFor({ state: 'visible' });
+
+        // The arrows move the highlight; a miss says so.
+        await page.keyboard.press('Control+k');
+        await page.locator(input).fill('zzzzqqq');
+        await page.locator(`${palette} [data-testid="palette-empty"]`).waitFor();
+        await page.locator(input).fill('');
+        const first = await page
+          .locator(`${palette} [aria-selected="true"]`)
+          .getAttribute('data-key');
+        await page.keyboard.press('ArrowDown');
+        expect(
+          await page.locator(`${palette} [aria-selected="true"]`).getAttribute('data-key'),
+        ).not.toBe(first);
+        await page.keyboard.press('Escape');
+        await page.locator(palette).waitFor({ state: 'detached' });
+
+        // ? opens the keyboard help (not while typing); Esc closes it.
+        await page.keyboard.press('?');
+        const help = '[data-testid="shortcuts"]';
+        await page.locator(help).waitFor({ state: 'visible' });
+        expect(await page.locator(help).textContent()).toContain('New node');
+        await page.keyboard.press('Escape');
+        await page.locator(help).waitFor({ state: 'detached' });
+        await page.locator('[data-testid="stream-filter"]').focus();
+        await page.keyboard.press('?');
+        expect(await page.locator(help).count()).toBe(0);
+        await page.locator('[data-testid="stream-filter"]').blur();
+
+        // g then i goes to Needs me.
+        await page.locator('[data-view="events"]').click();
+        await page.locator('[data-testid="event-log"]').waitFor({ state: 'visible' });
+        await page.keyboard.press('g');
+        await page.keyboard.press('i');
+        await page.locator('[data-testid="inbox"]').waitFor({ state: 'visible' });
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -3878,8 +4005,8 @@ describe('node activity (Playwright e2e, T245)', () => {
         await page.locator('[data-view="repos"]').click();
         await waitForText(
           page,
-          `[data-testid="repo-view"] [data-repo="api"] [data-event="${event.id}"]`,
-          'main changed · api: add salePrice',
+          `[data-testid="repo-view"] [data-repo="api"] [data-event="${event.id}"] [data-testid="repo-event-text"]`,
+          'Main changed · api: add salePrice',
         );
       } finally {
         await teardown([page]);
@@ -3924,10 +4051,10 @@ describe('a direct merge reads "merged" (Playwright e2e, T347)', () => {
 
         await page.locator('[data-view="repos"]').click();
         const repoEvent = (id: string) =>
-          `[data-testid="repo-view"] [data-repo="api"] [data-event="${id}"]`;
-        await waitForText(page, repoEvent(merged.id), 'merged · api: direct change');
-        expect(await page.locator(repoEvent(merged.id)).textContent()).not.toContain('pr merged');
-        await waitForText(page, repoEvent(prMerged.id), 'pr merged · api: pr change');
+          `[data-testid="repo-view"] [data-repo="api"] [data-event="${id}"] [data-testid="repo-event-text"]`;
+        await waitForText(page, repoEvent(merged.id), 'Merged · api: direct change');
+        expect(await page.locator(repoEvent(merged.id)).textContent()).not.toContain('PR merged');
+        await waitForText(page, repoEvent(prMerged.id), 'PR merged · api: pr change');
       } finally {
         await teardown([page]);
         await cockpit.stop();

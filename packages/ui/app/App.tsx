@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { CommandPalette } from './components/CommandPalette';
 import { DirectorPage } from './components/Director';
 import { Icon } from './components/Icon';
 import { Inbox } from './components/Inbox';
@@ -20,6 +21,7 @@ import { NewProject } from './components/NewProject';
 import { NewStream } from './components/NewStream';
 import { Rules } from './components/Rules';
 import { Settings } from './components/Settings';
+import { Shortcuts } from './components/Shortcuts';
 import { MobileBar, Sidebar } from './components/Sidebar';
 import { StreamPage } from './components/StreamPage';
 import { useFeed } from './lib/feed-context';
@@ -108,6 +110,8 @@ export function App(): JSX.Element {
         )}
       </main>
       <NewStream rows={rows} projects={projects} />
+      <CommandPalette rows={rows} projects={projects} />
+      <Shortcuts />
       {newProjectOpen && <NewProject onClose={() => setNewProjectOpen(false)} />}
     </div>
   );

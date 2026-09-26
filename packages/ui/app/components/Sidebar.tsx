@@ -13,6 +13,7 @@
 import { useState } from 'react';
 import type { CockpitProjectRow, CockpitStreamRow, FeedSnapshot } from '../lib/feed-types';
 import { type ShellView, useShell } from '../lib/shell';
+import { openCommandPalette } from './CommandPalette';
 import { Icon, type IconName } from './Icon';
 import { StreamTree } from './StreamTree';
 import { Button, IconButton, Kbd } from './ui';
@@ -173,6 +174,14 @@ export function Sidebar({
       <div className="cr-sb-top">
         <Brand name={snapshot?.project?.name ?? 'agile'} />
         <Connection connected={connected} />
+        {/* T368: the command palette (⌘K / Ctrl K). */}
+        <IconButton
+          icon="search"
+          size="sm"
+          label="Search (Ctrl K)"
+          data-testid="palette-open"
+          onClick={openCommandPalette}
+        />
       </div>
       <div className="cr-sb-new">
         <Button
