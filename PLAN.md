@@ -1781,12 +1781,12 @@ agile tail --director
 
 ### Ticket: T345 Workers may cd within their worktree
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** Workers are denied `cd` (e.g. `cd sub && bun test`). Allow `cd` to a directory inside the worktree, with later relative paths resolved from there (as T336 does for coordinators); `tree` on the read-only list.
-- **Acceptance Criteria:** Tests: `cd sub && bun test` allowed; `cd .. && …`, `cd /` and the agile home denied.
+- **Acceptance Criteria:** Tests: `cd ./sub && bun test` allowed (a bare `cd sub` is denied with a fix-it reason); `cd .. && …`, `cd /` and the agile home denied.
 - **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`.
-- **Notes:** From the T336 worker.
+- **Notes:** Branch T345-worker-cd off phase-11, merged 11→14. Worker `cd` only to `./`, `../`, `/`, `~`, `.`, `..` targets that realpath inside the worktree and not under .git; a bare name is denied with "use `cd ./name`" (CDPATH/cdable_vars); any command mentioning CDPATH is held (workers, reviewers) or denied (coordinators); spawn env CDPATH=''; later relative paths are checked from every possible cwd (`&&` replaces, `;`/`||`/`&`/pipe/`sh -c` accumulate; >16 fails closed); coordinator shares the tracker (fixes a `;`-after-failed-cd write); `tree` read-only (not -o/-R). Review (sonnet): CDPATH bypass found and fixed; APPROVE. Also found: a lone `&` bypass (pre-existing) → ci-fix-lone-ampersand on phase-7.
 
 ### Ticket: T341 Walkthrough QA in a browser with the fake agent
 - **Priority:** P0
@@ -1873,6 +1873,8 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-09-26 (T345 worker): a lone `&` was not a command separator in `splitCommandSegments`, so `echo hi & cat /etc/passwd` and `true & rm -rf ~` were auto-allowed for engineers since phase 7. Fixed on ci-fix-lone-ampersand (6ea669a), merged 7→14; reviewed (sonnet) APPROVE.
+- 2026-09-26 (T344 review): T336's `waitingForPlan` re-flagged a part that had started and gone idle, so plan approval could restart it and the rail/card said "waiting" again. Fixed on ci-fix-waiting-started (3e8724d, phase-11): waiting ends once a session starts after the split's waiting line (ULID time). Merged 11→14; reviewed and QA'd (sonnet).
 - 2026-09-25 (CI, phase 9): T131's rule "a reviewer's exit sets `agent.status` done when no worker is live" reversed. A reviewer that died at spawn marked a never-worked stream done. A review is not work, so a reviewer exit now only posts "review finished: N findings"; only a worker (from phase 11, a coordinator) exit moves `agent.status`. Branch ci-fix-review-status (81569dc) on phase-7, merged forward 7→14.
 
 - 2026-09-25 Pete: tangents (D33) and manual moves (D34) approved → Phase 14 on `claude/phase-14`. Cleanup phase starts after Pete finishes the walkthrough.
