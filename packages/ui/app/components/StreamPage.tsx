@@ -14,7 +14,7 @@
  *    **Branch off** (T332, D33): a tangent seeded with that line.
  *  - **Diff / Rules / Docs** tabs — the worktree diff against the landing
  *    target, exactly `rulesInScope(stream)`, and the repo + stream docs.
- *  - **Delivery** (§14.7, direct path; was Land) — the `delivery_state`, the "before" (would `land` refuse right now, and which
+ *  - **Delivery** (§14.7; its button is Merge, the CLI's `land`) — the `delivery_state`, the "before" (would a merge refuse right now, and which
  *    diff-stage rules it checks) and the "after" (the outcome line, or the
  *    refusal's reason, shown on the page).
  */
@@ -528,14 +528,14 @@ function LandPanel({
       </div>
       {stream.human.status === 'landed' ? (
         <p data-testid="land-before" data-ready="landed">
-          Landed.
+          Merged.
         </p>
       ) : conflicts && conflicts.length > 0 ? (
         <div data-testid="land-conflict">
           <p data-testid="land-before" data-ready="conflict">
-            Conflict: landing into {land?.target ?? 'the target'} conflicted in {conflicts.length}{' '}
+            Conflict: merging into {land?.target ?? 'the target'} conflicted in {conflicts.length}{' '}
             file{conflicts.length === 1 ? '' : 's'}. Resolve attaches a worker to merge the target
-            in and fix them; then land again.
+            in and fix them; then merge again.
           </p>
           <ul>
             {conflicts.map((file) => (

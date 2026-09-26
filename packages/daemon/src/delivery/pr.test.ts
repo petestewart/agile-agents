@@ -159,6 +159,8 @@ describe('T288: a helper waits for its parent', () => {
     const midTurn = await landing.land(helper.id);
     expect(midTurn.status).toBe('refused');
     expect(midTurn.status === 'refused' && midTurn.line).toContain('mid-turn');
+    // T347 (D36 D9): a helper waiting on its parent is a hold, not a failure.
+    expect(midTurn.status === 'refused' && midTurn.held).toBe(true);
     expect(streams.get(helper.id).delivery_state?.status).toBe('held');
     const noted = (id: string) =>
       streams.readThread(id, { limit: 50 }).entries.some((e) => e.body.includes('deferred'));

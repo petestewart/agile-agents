@@ -1343,9 +1343,9 @@ test.skipIf(!RUN)(
       );
       await page.locator('[data-testid="stream-land"]').click();
       await checkText(
-        'the panel reads Landed.',
+        'the panel reads Merged.',
         page.locator('[data-testid="land-before"]'),
-        'Landed.',
+        'Merged.',
       );
       await checkText(
         'Delivery: direct · merged',
@@ -1497,9 +1497,9 @@ test.skipIf(!RUN)(
       await openNode('Blog note');
       await page.locator('[data-testid="stream-land"]').click();
       await checkText(
-        'Blog note reads Landed.',
+        'Blog note reads Merged.',
         page.locator('[data-testid="land-before"]'),
-        'Landed.',
+        'Merged.',
       );
       await openNode('Shop note');
       await checkText(
@@ -1519,9 +1519,9 @@ test.skipIf(!RUN)(
       );
       await page.locator('[data-testid="stream-land"]').click();
       await checkText(
-        'Shop note reads Landed.',
+        'Shop note reads Merged.',
         page.locator('[data-testid="land-before"]'),
-        'Landed.',
+        'Merged.',
       );
       await checkText(
         'landed stream/…-shop-note into main (…)',
@@ -1580,7 +1580,7 @@ test.skipIf(!RUN)(
         /agent done/,
       );
       await page.locator('[data-testid="stream-land"]').click();
-      await checkText('Landed.', page.locator('[data-testid="land-before"]'), 'Landed.');
+      await checkText('Merged.', page.locator('[data-testid="land-before"]'), 'Merged.');
       await openNode('Ledger export');
       await tab('Activity').click();
       await until(
@@ -1793,7 +1793,7 @@ test.skipIf(!RUN)(
         'Test count',
       );
       await page.locator('[data-testid="stream-land"]').click();
-      await checkText('Landed.', page.locator('[data-testid="land-before"]'), 'Landed.');
+      await checkText('Merged.', page.locator('[data-testid="land-before"]'), 'Merged.');
       await checkText(
         'Delivery: direct · merged',
         page.locator('[data-testid="delivery-state"]'),
@@ -2110,7 +2110,7 @@ test.skipIf(!RUN)(
         /agent done/,
       );
       await page.locator('[data-testid="stream-land"]').click();
-      await checkText('Landed.', page.locator('[data-testid="land-before"]'), 'Landed.');
+      await checkText('Merged.', page.locator('[data-testid="land-before"]'), 'Merged.');
     });
 
     // ---------------------------------------------------------- 8

@@ -529,7 +529,7 @@ cd ~
 
 - [ ] The Delivery panel reads
       `Ready: stream/…-walkthrough-notes is 1 commit ahead of main.` Press
-      **Merge**. The panel reads `Landed.`, `Delivery: direct · merged` and
+      **Merge**. The panel reads `Merged.`, `Delivery: direct · merged` and
       `landed stream/…-walkthrough-notes into main (…)`; the rail dot turns
       green.
 - [ ] Check the repo:
@@ -584,11 +584,11 @@ seconds. Wait a minute, then:
       `Shop note waits on Blog note`.
 - [ ] Press **Merge** on Shop note. It is held: the panel shows
       `delivery held: waits on Blog note`, and so does the thread.
-- [ ] Open Blog note and press **Merge**. It reads `Landed.`
+- [ ] Open Blog note and press **Merge**. It reads `Merged.`
 - [ ] Open Shop note again. Its thread now ends with
       `synced main into stream/…-shop-note` and `waits on … satisfied`, and
       the wait reads `waits on Blog note · satisfied`. Press **Merge**: it
-      reads `Landed.` and `landed stream/…-shop-note into main (…)`.
+      reads `Merged.` and `landed stream/…-shop-note into main (…)`.
 - [ ] Check the file:
 
 ```zsh
@@ -615,7 +615,7 @@ changes, is synced at the end of its turn.)
       `synced main into stream/…`.
 - [ ] When the line under its title reads `agent done`, press **Merge**. Its
       wait is satisfied, the ship checks pass, and it lands on ledger-lite's
-      main in one click: `Landed.` The coordinator's **Activity** tab gets a
+      main in one click: `Merged.` The coordinator's **Activity** tab gets a
       second `child delivered` row, and its **Children** cards read done.
 - [ ] Check the repo:
 
@@ -724,7 +724,7 @@ cd ~/Projects/ledger-lite/.worktrees/*-ledger-count && mkdir -p test && printf "
 cd ~
 ```
 
-- [ ] Press **Merge** again. The panel reads `Landed.`,
+- [ ] Press **Merge** again. The panel reads `Merged.`,
       `Delivery: direct · merged` and
       `landed stream/…-ledger-count into main (…)`.
 

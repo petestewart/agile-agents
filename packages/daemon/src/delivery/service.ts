@@ -974,7 +974,7 @@ export class DeliveryService {
       kind: 'event',
       body: `helper ${stream.id} is ready to merge into ${target}; deferred: ${why}`,
     });
-    return { status: 'refused', reason: line, line };
+    return { status: 'refused', reason: line, line, held: true };
   }
 
   /** T288: a helper's target is its parent's branch; anything else is refused, never main. */

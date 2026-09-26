@@ -150,7 +150,7 @@ export interface CockpitProjectRow {
   tracker?: TrackerSettings;
 }
 
-/** T161: mirror of `delivery/service.ts`'s `LandPreflight` — the Land button's "before". */
+/** T161: mirror of `delivery/service.ts`'s `LandPreflight` — the Merge button's "before". */
 export interface LandPreflight {
   ready: boolean;
   reason?: string;
@@ -206,7 +206,7 @@ export interface StreamDiff {
   truncated: boolean;
 }
 
-/** T161: mirror of `delivery/service.ts`'s `LandOutcome` — the Land button's "after". */
+/** T161: mirror of `delivery/service.ts`'s `LandOutcome` — the Merge button's "after". */
 export type LandOutcome =
   | { status: 'gated'; gate: HilRequest; line: string }
   /** T347: `held` is a ship-check or waits-on hold: news, not a failure. */
