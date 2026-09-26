@@ -2325,6 +2325,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/store/rpc-methods.test.ts packages/daemon/src/http.test.ts`.
 - **Notes:** Branch T406-main-branch-async.
 
+### Ticket: T407 A repo's events page like the log
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: `GET /api/repos/:name/events` (T245) capped at 200 with no paging, unlike `/api/events` (T383).
+- **Acceptance Criteria:** The route is `/api/events?repo=<name>` under its own path: `{events, more, total}`, `before` and `limit`, the same 400s in words.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T407`.
+- **Notes:** Branch T407-repo-events-paged. The response gains `more` and `total`; `events` is unchanged.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

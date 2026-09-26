@@ -41,9 +41,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   Chromium won't open a window from a synthetic click. (T394)
 
 
-- `GET /api/repos/:name/events` (T245) still caps at 200 unpaged; nothing in
-  the cockpit calls it since T383 (T389 removed `getRepoEvents`). Page it like
-  `/api/events` or retire it.
 - Live views refresh on the audit log's tailer; an event emitted without an
   audit line shows only on the next push. The events service's `onEmitted`
   could push the frame itself. (`http.ts`, the tailer)
