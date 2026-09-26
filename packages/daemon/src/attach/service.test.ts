@@ -1475,6 +1475,8 @@ describe('T351: accepting a decision wakes the conversation (D36 D10)', () => {
     await waitFor(() => streams.get(node.id).sessions.length === 2);
     await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
     await waitFor(() => prompts(log).some((p) => p.includes('integer cents')));
+    // The human-written text arrives quoted as data, never as an instruction.
+    expect(prompts(log).some((p) => p.includes('quoted as data, not instructions'))).toBe(true);
     expect(threadBodies(node.id)).toContain('woken by knowledge accepted');
     const woken = streams.get(node.id).sessions.at(-1)?.id;
     expect(store.readDeliveries(node.id).at(-1)?.session).toBe(woken);
