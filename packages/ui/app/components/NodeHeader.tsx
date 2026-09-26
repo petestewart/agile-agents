@@ -5,11 +5,17 @@
  * the right one primary action chosen by state — Start agent (one click, the
  * defaults; the chevron picks another model), Stop while it works, Merge
  * when there is something to merge — then the details toggle and ⋯.
+ *
+ * T413: the title keeps one line (it truncates; the whole title is its
+ * tooltip), the role reads as muted text at the head of the line under it,
+ * the branch by its name (the whole name is its tooltip and what it
+ * copies), and on a phone the details toggle and ⋯ sit on the path's line.
  */
 
 import { type ReactNode, useState } from 'react';
 import type { HeaderActions } from '../lib/chat';
 import type { CockpitStreamRow } from '../lib/feed-types';
+import { branchName } from '../lib/inbox';
 import { ROLE_HINT, ROLE_LABEL, type StatusInput } from '../lib/status';
 import { Icon, type IconName } from './Icon';
 import { Button, IconButton, Menu, type MenuItem, StatusPill, useCopy } from './ui';
@@ -126,9 +132,10 @@ function Title({
 export function NodeHeader(props: NodeHeaderProps): JSX.Element {
   const copy = useCopy();
   const { actions } = props;
+  const hasActions = actions.agent !== undefined || actions.merge;
   return (
     <header className="cr-node-hd">
-      <div className="cr-node-hd-row">
+      <div className="cr-node-hd-row" data-actions={hasActions ? 'true' : undefined}>
         <div className="cr-node-hd-main">
           <nav className="cr-crumbs" aria-label="Path" data-testid="stream-path">
             {props.crumbs.map((c, i) => (
@@ -144,103 +151,119 @@ export function NodeHeader(props: NodeHeaderProps): JSX.Element {
               </span>
             ))}
           </nav>
+          {/* T413: one line whatever the title's length: it truncates, the pill stays beside it. */}
           <div className="cr-node-title-row">
             <Title title={props.title} {...(props.onRename ? { onRename: props.onRename } : {})} />
             <StatusPill row={props.status} testid="node-status" />
-            {props.role && (
-              <span
-                className="cr-role-badge"
-                data-testid="node-role"
-                data-role={props.role}
-                title={ROLE_HINT[props.role]}
-              >
-                <Icon name={ROLE_ICON[props.role]} size={12} />
-                {ROLE_LABEL[props.role]}
-              </span>
-            )}
           </div>
           <div className="cr-node-meta">
-            <span data-testid="stream-status" className="cr-node-meta-line">
-              <span className="cr-meta-item">{props.agentText}</span>
-              {props.repo && (
+            <span className="cr-node-meta-line">
+              {/* T413: the role reads as the rest of this line does (muted, with its glyph), not a button. */}
+              {props.role && (
                 <>
-                  <span className="cr-meta-sep" aria-hidden="true">
-                    ·
-                  </span>
-                  <span className="cr-meta-item" title="Repository">
-                    <Icon name="folder-git" size={13} />
-                    {props.repo}
-                  </span>
-                </>
-              )}
-              {props.branch && (
-                <>
-                  <span className="cr-meta-sep" aria-hidden="true">
-                    ·
-                  </span>
-                  <button
-                    type="button"
-                    className="cr-meta-item cr-meta-branch"
-                    title={`${props.branch} — click to copy`}
-                    onClick={() => copy(props.branch ?? '', 'Copied the branch name')}
+                  <span
+                    className="cr-role-badge cr-meta-item"
+                    data-testid="node-role"
+                    data-role={props.role}
+                    title={ROLE_HINT[props.role]}
                   >
-                    <Icon name="git-branch" size={13} />
-                    <BranchName branch={props.branch} />
-                  </button>
+                    <Icon name={ROLE_ICON[props.role]} size={13} />
+                    {ROLE_LABEL[props.role]}
+                  </span>
+                  <span className="cr-meta-sep" aria-hidden="true">
+                    ·
+                  </span>
                 </>
               )}
+              <span data-testid="stream-status" className="cr-node-meta-status">
+                <span className="cr-meta-item">{props.agentText}</span>
+                {props.repo && (
+                  <>
+                    <span className="cr-meta-sep" aria-hidden="true">
+                      ·
+                    </span>
+                    <span className="cr-meta-item" title="Repository">
+                      <Icon name="folder-git" size={13} />
+                      {props.repo}
+                    </span>
+                  </>
+                )}
+                {props.branch && (
+                  <>
+                    <span className="cr-meta-sep" aria-hidden="true">
+                      ·
+                    </span>
+                    <button
+                      type="button"
+                      className="cr-meta-item cr-meta-branch"
+                      data-testid="node-branch"
+                      data-branch={props.branch}
+                      title={`${props.branch} — click to copy`}
+                      onClick={() => copy(props.branch ?? '', 'Copied the branch name')}
+                    >
+                      <Icon name="git-branch" size={13} />
+                      <span className="cr-meta-text">{branchName(props.branch)}</span>
+                    </button>
+                  </>
+                )}
+              </span>
             </span>
           </div>
         </div>
-        <div className="cr-node-actions">
-          {actions.agent === 'start' && (
-            <span
-              className="cr-split"
-              data-primary={actions.primary === 'agent' ? 'true' : undefined}
-            >
-              <Button
-                variant={actions.primary === 'agent' ? 'primary' : 'secondary'}
-                icon="play"
-                data-testid="attach"
-                busy={props.busy}
-                title="Start the agent with the default model"
-                onClick={props.onStart}
+        {hasActions && (
+          <div className="cr-node-actions">
+            {actions.agent === 'start' && (
+              <span
+                className="cr-split"
+                data-primary={actions.primary === 'agent' ? 'true' : undefined}
               >
-                {props.startLabel}
-              </Button>
-              <IconButton
-                icon="chevron-down"
-                label="Choose the model and start"
-                variant={actions.primary === 'agent' ? 'primary' : 'secondary'}
-                data-testid="attach-options"
+                <Button
+                  variant={actions.primary === 'agent' ? 'primary' : 'secondary'}
+                  icon="play"
+                  data-testid="attach"
+                  busy={props.busy}
+                  title="Start the agent with the default model"
+                  onClick={props.onStart}
+                >
+                  {props.startLabel}
+                </Button>
+                <IconButton
+                  icon="chevron-down"
+                  label="Choose the model and start"
+                  variant={actions.primary === 'agent' ? 'primary' : 'secondary'}
+                  data-testid="attach-options"
+                  disabled={props.busy}
+                  onClick={props.onChooseStart}
+                />
+              </span>
+            )}
+            {actions.agent === 'stop' && (
+              <Button
+                icon="square"
+                data-testid="stop"
                 disabled={props.busy}
-                onClick={props.onChooseStart}
-              />
-            </span>
-          )}
-          {actions.agent === 'stop' && (
-            <Button
-              icon="square"
-              data-testid="stop"
-              disabled={props.busy}
-              title="Stop the agent. It won't wake again until you start it or send it a message."
-              onClick={props.onStop}
-            >
-              Stop
-            </Button>
-          )}
-          {actions.merge && (
-            <Button
-              variant={actions.primary === 'merge' ? 'primary' : 'secondary'}
-              icon="git-merge"
-              data-testid="stream-land"
-              busy={props.merging}
-              title={props.mergeTitle}
-              onClick={props.onMerge}
-            >
-              {props.merging ? 'Merging…' : 'Merge'}
-            </Button>
-          )}
+                title="Stop the agent. It won't wake again until you start it or send it a message."
+                onClick={props.onStop}
+              >
+                Stop
+              </Button>
+            )}
+            {actions.merge && (
+              <Button
+                variant={actions.primary === 'merge' ? 'primary' : 'secondary'}
+                icon="git-merge"
+                data-testid="stream-land"
+                busy={props.merging}
+                title={props.mergeTitle}
+                onClick={props.onMerge}
+              >
+                {props.merging ? 'Merging…' : 'Merge'}
+              </Button>
+            )}
+          </div>
+        )}
+        {/* T413: on a phone these sit on the path's line, not a row of their own. */}
+        <div className="cr-node-tools">
           <IconButton
             icon="panel-right"
             label={props.detailsOpen ? 'Hide details' : 'Show details'}
@@ -254,21 +277,5 @@ export function NodeHeader(props: NodeHeaderProps): JSX.Element {
       </div>
       {props.children}
     </header>
-  );
-}
-
-/**
- * T374: a node branch is `stream/<ulid>-<slug>`: the id part is noise to a
- * reader, the slug is the meaning. The id part gives way first (ellipsis);
- * the slug stays whole. The text is the whole branch (copy, tests, tooltip).
- */
-function BranchName({ branch }: { branch: string }): JSX.Element {
-  const m = branch.match(/^(stream\/[0-9a-z]{26}-)(.+)$/i);
-  if (!m) return <span className="cr-meta-text">{branch}</span>;
-  return (
-    <span className="cr-meta-text cr-branch">
-      <span className="cr-branch-id">{m[1]}</span>
-      <span className="cr-branch-slug">{m[2]}</span>
-    </span>
   );
 }

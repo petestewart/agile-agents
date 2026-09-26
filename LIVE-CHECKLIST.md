@@ -84,7 +84,7 @@ The cockpit is `http://127.0.0.1:4600/`.
 | **Events** | Every routed event, newest first, by day: what happened (and a line of detail), to which node, and who it was routed to and why; filter by type (**All** · **Messages** · **Merges and PRs** · **Coordination** · **Knowledge**), by repo, or search; **Show more** for older ones |
 | Anywhere | **Ctrl K** (**⌘K** on a Mac, or the search icon at the top of the sidebar) opens the command palette: find a node by part of its title or path, a project, a view or an action (New node, New project, switch theme, Keyboard shortcuts); ↑↓ and Enter. **?** lists every keyboard shortcut; **g** then a letter goes to a view (**g i** Needs me, **g k** Knowledge…) |
 | **Settings** | Sections on the left: **General** (theme: System, Light, Dark; **Notifications**: a switch, off by default and kept per browser, that asks the browser's permission and then tells you when something new needs you while the tab is in the background, with **Send a test**; the daemon), **Agents** (session defaults, global, per repo and per project, each card saying what a new agent there starts with, e.g. `Claude Opus 5.5 · low`), **Repositories** (**Add repository**: a folder, or a URL to clone; per repo its icon, delivery, auto-merge, visibility), **Classifier** (the TypeSafe API key), **Trackers** (Jira, Linear), **Permissions** (who decides) |
-| A node's page | A chat with its agent. The header: path, title (click it to rename), status, role, repo and branch, then **Start agent** (its chevron picks another model), **Stop** while it works (**⋯** → **Stop agent** while it waits on you), **Merge** when there is something to merge, the details toggle and **⋯** (**Review changes…**, **Restart agent**, **Waits on…**, **Add repository…**, **Tracker issue…**, **Copy branch name**, **Close node…**, **Delete node…**). Tabs **Chat**, **Changes**, **Plan**, **Activity**, **Knowledge**, **Docs**, only where they apply. The chat opens with the goal (**Edit** changes it; the agent reads the change). What needs you (questions, gates, plans, proposals) sits at the end of the chat, and the composer answers an open question. The **Details** panel: **Delivery** (Check now, Mark landed, Resolve), **Agent** (sessions), **Children**, **Waits on**, **Tracker** (**Link**, **Create issue**; then **Unlink**, **Import children**; only when the node's project has a tracker), **Coordinator autonomy** on a coordinating node or a project root (and, on a project root, **Director autonomy** and the project's tracker) |
+| A node's page | A chat with its agent. The header: path, title (click it to rename), status, role, repo and branch, then **Start agent** (its chevron picks another model), **Stop** while it works (**⋯** → **Stop agent** while it waits on you), **Merge** when there is something to merge, the details toggle and **⋯** (**Ask an agent to review…**, **Restart agent**, **Waits on…**, **Add repository…**, **Tracker issue…**, **Copy branch name**, **Close node…**, **Delete node…**). Tabs **Chat**, **Changes**, **Plan**, **Activity**, **Knowledge**, **Docs**, only where they apply. The chat opens with the goal (**Edit** changes it; the agent reads the change), unless the goal only repeats the title or the node is a project's root: then the goal is in **Details** → **About**, with its **Edit**. What needs you (questions, gates, plans, proposals) sits at the end of the chat, and the composer answers an open question. The **Details** panel: **Delivery** (Check now, Mark as merged, Resolve), **Agent** (sessions), **Children** (every child with its status, not on a project's root), **Waits on**, **Tracker** (**Link**, **Create issue**; then **Unlink**, **Import children**; only when the node's project has a tracker), **Coordinator autonomy** on a coordinating node or a project root (and, on a project root, **Director autonomy** and the project's tracker) |
 | A project's page (its root) | Opens on **Overview**: the counts by status, your move first (`2 need you · 1 ready to merge · 3 working · 2 idle · 5 done`; a count shows only those nodes, **Show all** brings the rest back), the project's nodes as rows (status, where it sits, repo, the agent it runs, age; your move, then **Working**, then **Idle**; merged and closed fold under **Done**), its repositories (host icon, kind, what Merge does there, open nodes; **Edit** opens the details) and its recent events (**All events** opens Events). A click on a row opens that node. When the project's own chat waits on you, a line says so with **Open chat**. **Chat** is the next tab; the header, the other tabs and the **Details** panel are a node page's (above). An empty project reads **No nodes yet** with **New node** |
 
 ### The CLI
@@ -414,11 +414,12 @@ From here on, every step is done in the cockpit unless it is marked
 - [ ] Press **Approve plan** on the card (or **Approve** on the Plan tab).
       The tab reads `Plan v1 · approved by human` and the card leaves
       **Needs me**. Click the ledger-lite part in the rail and open its
-      **Activity** tab: it has a `plan changed` row. Each part's brief now
+      **Activity** tab: it has a `Plan changed` row. Each part's brief now
       carries its owned paths and the contract.
 - [ ] While the parts work, the Ledger export page shows a **Children**
-      section: one status card per part (its state, what it is doing, the
-      files it touched). If a part wants to change the contract, the
+      section: one row per part, its status in the words the rail uses, and
+      under it what its agent last reported (what it is doing, the files it
+      touched). If a part wants to change the contract, the
       coordinator (at advise) puts a `Coordinator proposal` card in **Needs
       me** with **Apply** and **Dismiss**, and the change shows as one row in
       the coordinator's **Activity** tab.
@@ -460,12 +461,13 @@ If the coordinator already proposed this link, press **Apply** on its card in
       `Ready to merge` card for it with a **Merge** button (the same word as
       the page's). The **Changes** tab shows what it changed against main.
 - [ ] The first delivery is yours. In the details panel's **Delivery** section the line reads
-      `Ready: stream/… is N commits ahead of main.` and
-      `Ship check rules: …` (or `No diff-stage rules in scope.`). Press
+      `The <branch> branch is N commits ahead of main.` (the branch by its
+      name; the whole `stream/…` name is its tooltip) and, when some apply,
+      `Checked before merge: …`. Press
       **Merge** at the top of the page.
 - [ ] The ship checks run first, then the branch is pushed and a PR opens.
-      The panel shows `pushed stream/… to origin; opened PR #N into main: https://github.com/petestewart/agile-test-repo/pull/N`
-      and `Delivery: pr · pr open`; the panel's status line reads
+      The panel shows `pushed <branch> to origin; opened PR #N into main: https://github.com/petestewart/agile-test-repo/pull/N`
+      and `Pull request · PR open`; the panel's status line reads
       `PR #N into main: no review · CI … · auto-merge enabled. It merges on GitHub.`
       with **Open PR**, and **Check now** replaces **Merge** (it polls the PR
       at once instead of waiting for the next poll). The thread adds the
@@ -482,21 +484,21 @@ If the coordinator already proposed this link, press **Apply** on its card in
       PR on github.com: `Please add a one-line description at the top of the schema file.`
 - [ ] The `changelog` check fails (the goal never mentioned CHANGELOG.md).
       Within about a minute the app polls the PR. The part's **Activity** tab
-      shows a `pr review` row and a `ci failed` row, each with its repo, why
-      it was routed (`self`) and how it was delivered
-      (`delivered to the worker session`, with `in a digest` when several
-      events went in one turn, or `pending`). **Check now** on the Delivery
+      shows a `PR review` row and a `CI failed` row, each with its repo, why
+      it came here (`itself`) and whether the agent has seen it
+      (`Seen by the agent`, with `(batched)` when several events went in one
+      turn, or `Not seen by the agent yet`). **Check now** on the Delivery
       panel polls at once.
 - [ ] On the **Chat** tab the agent reads the failing check, adds a
       CHANGELOG.md line, addresses your comment, commits and pushes (its
       `deliver` verb updates the PR). The check goes green.
 - [ ] With the check green and nothing pending, GitHub auto-merges the PR.
       Within about a minute the part's Delivery panel reads
-      `Delivery: pr · merged`.
+      `Pull request · merged`.
 - [ ] Open the **ledger-lite part**: the wait reads
-      `waits on agile-test-repo part · satisfied`, and its thread says
-      `waits on … satisfied`. The coordinator's **Activity** tab has a
-      `child delivered` row.
+      `agile-test-repo part merged, so this no longer waits on it`, and its
+      thread says the same. The coordinator's **Activity** tab has a
+      `Child delivered` row.
 - [ ] Sync after merge is per repo: when main moves, every other live work
       node **on that repo** gets main merged in. The ledger-lite part is on
       ledger-lite, so it is synced in step 5, when Blog's work merges into
@@ -539,8 +541,9 @@ A Blog node adds `walkthrough-notes.md` to ledger-lite and merges directly.
       **Agent** section says `No sessions yet.`), and the rail shows it under
       Blog with the conversation icon ○.
 - [ ] Open **⋯** → **Add repository…**, pick `ledger-lite`, press **Add**. The thread adds
-      `repo added: ledger-lite; now a work node on stream/…-walkthrough-notes`,
-      the line under the title ends with that branch, the rail icon becomes
+      `repo added: ledger-lite; now a work node on walkthrough-notes`,
+      the line under the title ends with that branch (by its name; hover it
+      for the whole `stream/…` name, click it to copy), the rail icon becomes
       the work icon ●, and no agent starts (it never had one). (Leave the
       form's Repository at `No repository`: a repository picked there is only
       used when an agent starts, and no branch is cut until then.)
@@ -552,9 +555,9 @@ cd ~
 ```
 
 - [ ] The Delivery panel reads
-      `Ready: stream/…-walkthrough-notes is 1 commit ahead of main.` Press
-      **Merge**. The panel reads `Merged.`, `Delivery: direct · merged` and
-      `landed stream/…-walkthrough-notes into main (…)`; the rail dot turns
+      `The walkthrough-notes branch is 1 commit ahead of main.` Press
+      **Merge**. The panel reads `Merged.`, `Direct merge · merged` and
+      `landed walkthrough-notes into main (…)`; the rail dot turns
       green.
 - [ ] Check the repo:
 
@@ -598,23 +601,25 @@ seconds. Wait a minute, then:
       with both live nodes, their project greyed (`Shop › Shop note`,
       `Blog › Blog note`), and a warning:
       `Shop note and Blog note both changed walkthrough-notes.md`.
-- [ ] Open Shop note: its **Changes** tab shows the one-line change and the
-      worktree path, and its **Activity** tab has
-      `Overlap · ledger-lite · involved · pending`. (`pending` means no session
-      is attached to take it; a live agent gets it at once.)
+- [ ] Open Shop note: its **Changes** tab shows the one-line change (the
+      folder button beside the branch copies the worktree path), and its
+      **Activity** tab has an `Overlap` row on ledger-lite, routed here as
+      `involved`, `Not seen by the agent yet` (no session is attached to take
+      it; a live agent gets it at once).
 
 ### 5.3 Settle it with "waits on"; sync; merge
 
 - [ ] On Shop note's page open **⋯** → **Waits on…**, pick `Blog note`, press **Wait on**.
-      The page lists `waits on Blog note`, and **Dependencies** shows
+      The page lists `Waits on Blog note`, and **Dependencies** shows
       Shop note `waits on Blog note`.
 - [ ] Press **Merge** on Shop note. It is held: the panel shows
       `delivery held: waits on Blog note`, and so does the thread.
 - [ ] Open Blog note and press **Merge**. It reads `Merged.`
 - [ ] Open Shop note again. Its thread now ends with
-      `synced main into stream/…-shop-note` and `waits on … satisfied`, and
-      the wait reads `waits on Blog note · satisfied`. Press **Merge**: it
-      reads `Merged.` and `landed stream/…-shop-note into main (…)`.
+      `Synced main into this branch` and
+      `Blog note merged, so this no longer waits on it`, and the wait reads
+      the same. Press **Merge**: it reads `Merged.` and
+      `landed shop-note into main (…)`.
 - [ ] Check the file:
 
 ```zsh
@@ -637,12 +642,13 @@ step 3 was synced too. (A part in the middle of a turn, or with uncommitted
 changes, is synced at the end of its turn.)
 
 - [ ] Open the ledger-lite part (under Ledger export). Its **Activity** tab
-      has `Main changed · ledger-lite · same repo` rows, and its thread shows
-      `synced main into stream/…`.
+      has `Main changed` rows on ledger-lite, routed as `same repo`, and its
+      thread shows `Synced main into this branch`.
 - [ ] When the line under its title reads `Agent finished`, press **Merge**. Its
       wait is satisfied, the ship checks pass, and it lands on ledger-lite's
       main in one click: `Merged.` The coordinator's **Activity** tab gets a
-      second `child delivered` row, and its **Children** cards read done.
+      second `Child delivered` row, and its **Children** list reads the part
+      `Merged`.
 - [ ] Check the repo:
 
 ```zsh
@@ -745,11 +751,11 @@ cd ~/Projects/ledger-lite/.worktrees/*-ledger-count && mkdir -p src && printf '/
 cd ~
 ```
 
-- [ ] The Delivery panel lists `Ship check rules: tests-with-src`. Press
+- [ ] The Delivery panel lists `Checked before merge: tests-with-src`. Press
       **Merge**. It is held: the line under the panel, in the neutral
       (news) colour, not error red, reads
       `delivery held by ship check tests-with-src: Every change to a file under src/ comes with a test that exercises it (probability 0.8…)`,
-      and the panel reads `Delivery: direct · held` (the reason is on that
+      and the panel reads `Direct merge · held` (the reason is on that
       line, once; opened later, the Delivery line carries it).
       On a live node the findings go back to the worker to fix; they come to
       you only if the check is unsure or the worker disputes them. (The
@@ -764,8 +770,8 @@ cd ~
 ```
 
 - [ ] Press **Merge** again. The panel reads `Merged.`,
-      `Delivery: direct · merged` and
-      `landed stream/…-ledger-count into main (…)`.
+      `Direct merge · merged` and
+      `landed ledger-count into main (…)`.
 
 ### 6.4 **[vendor]** A decision reaches a node as an event
 
@@ -775,10 +781,10 @@ cd ~
       leave **Start the agent now** on (it names the model it will use:
       `Claude Opus 5.5 · low` unless Settings says
       otherwise), **Create node**. A session appears in its
-      session list (`Claude Opus 5.5 · low · starting`, then `running`), and the
+      session list (`Agent Claude Opus 5.5 · low · Starting`, then `Working`), and the
       rail icon is the conversation icon ○.
 - [ ] Wait for its first answer on the **Chat** tab. Its turn has ended,
-      so its session ends too (`Turn finished`).
+      so its session ends too (`Agent finished its turn`).
 - [ ] **Knowledge** → **Add knowledge**: Kind **Decision**, What agents
       should know `Amounts in exported JSON are integer cents, never floats`,
       Applies to `Project: Shop`, **Guidance**, **Propose**. Then **Accept**
@@ -786,14 +792,14 @@ cd ~
       in **Needs me**).
 - [ ] Back on Cents check: accepting the decision woke it (a Shop
       conversation whose turn ended is woken by an accepted item, D36). Its
-      **Chat** tab has `woken by knowledge accepted` and a new session;
-      its **Activity** row reads
-      `knowledge accepted · … · delivered to the worker session`, and its
+      **Chat** tab has `Woke up for new knowledge` and a new session;
+      its **Activity** has a `Knowledge accepted` row that reads
+      `Seen by the agent`, and its
       reply reacts to it ("new decision in scope: …"). A Blog node never
       gets it.
 - [ ] Its **Knowledge** tab lists the global items and the new
-      decision (`K-… · project:Shop · decision · tell`), and nothing scoped
-      to Blog.
+      decision, as the **Knowledge** screen lists them (`Decision`,
+      `Project Shop`, `Guidance`), and nothing scoped to Blog.
 
 ## 7. **[vendor]** The Director
 
@@ -933,10 +939,10 @@ child should be a small task an agent can do in agile-test-repo (for example
       **Start agent**: one click starts it with the defaults (the composer's
       chip names them: `Claude Opus 5.5 · low`; the chevron beside
       **Start agent** picks another model).
-- [ ] A `worker` session appears in its session list and starts work in the
+- [ ] An `Agent` session appears in its session list and starts work in the
       new worktree. In Jira the child issue moves to **In Progress**.
 - [ ] Edit the child issue's description in Jira. Within five minutes the
-      child's **Activity** tab has an `external changed` row and the agent is
+      child's **Activity** tab has an `External changed` row and the agent is
       told.
 - [ ] When the page reads `Agent finished`, press **Merge**. The PR body's
       `Issues:` line links the child issue. In Jira the issue moves to
@@ -998,13 +1004,17 @@ child should be a small task an agent can do in agile-test-repo (for example
       and the nodes under it leave the rail and their agents stop (branches
       and worktrees stay). **Undo** in the toast, or **Deleted (n)** below the
       tree → **Restore**, brings them back. A project's root has no Delete.
-- [ ] A node's **Activity** tab is what woke it and why: one row per routed
-      event with its type, `[repo]`, why it was routed (self, ancestor,
-      waits on, same repo, party, sibling), the delivery status
-      (`delivered to the worker session`, `pending`, `superseded` or
-      `expired`, with `in a digest` when several went in one turn) and when
-      (`YYYY-MM-DD HH:MM`, local time; hover a row for the session id and the
-      full time). A node with none says `No events routed here yet.`
+- [ ] A node's **Activity** tab is what reached it and why, read as the
+      **Events** view reads: newest first under day headings, one row per
+      routed event with when (`3m` today, a clock time before; hover it for
+      the full time), what happened and what it says, which node it is about
+      (`This node`, or a link) and its repo, why it came here as a small chip
+      (`itself`, `a part of it changed`, `waits on it`, `same repo`,
+      `involved`, `sibling`) and whether the agent saw it (`Seen by the
+      agent`, `(batched)` when several went in one turn,
+      `Not seen by the agent yet`, `Replaced by a newer event` or
+      `Expired before the agent saw it`; hover it for the session id). A
+      node with none says `Nothing has reached this node yet`.
 - [ ] **Events** (sidebar) lists every routed event across projects, newest
       first under a day heading: what happened, the node it is about, and
       who it was routed to and why (a chip per node). The type buttons, the
@@ -1040,11 +1050,13 @@ agile daemon status
 
 - Why a session ended: the node page's session list shows it after the
   session's status when it was not a normal end; a normal end is
-  `Turn finished` on the thread. Two or more
+  `Agent finished its turn` on the thread. Two or more
   ended sessions fold into one `N earlier sessions` row: click it to show
   them. Live sessions are always shown.
-- A node's worktree and branch: the line under its title (branch; a click
-  copies it) and the **Changes** tab (worktree path). Worktrees are
+- A node's worktree and branch: the line under its title (the branch by its
+  name; hover it for the whole name, a click copies it), **Details** →
+  **About** → **Worktree** (**Copy path**) and the **Changes** tab's folder
+  button (copies the worktree path). Worktrees are
   `<repo>/.worktrees/<node-id>-<slug>` on `stream/…` branches.
 - Daemon log: `tail -50 ~/.agile-walkthrough/log/agiled.log`
 - Event log: `~/.agile-walkthrough/log/events.jsonl`

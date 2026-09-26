@@ -156,6 +156,8 @@ describe('event families and reasons', () => {
       expect(reason.hint).toMatch(/\.$/);
     }
     expect(ROUTE_REASON.same_repo.label).toBe('same repo');
+    // T413: said from the reader's side.
+    expect(ROUTE_REASON.ancestor.label).toBe('a part of it changed');
   });
 });
 

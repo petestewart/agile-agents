@@ -464,7 +464,7 @@ const railRow = (title: string) =>
   });
 const streamPage = () => page.locator('[data-testid="stream-page"]');
 const tab = (name: string) =>
-  page.locator('nav[aria-label="Stream views"] button', { hasText: name });
+  page.locator('nav[aria-label="Node views"] button', { hasText: name });
 
 async function openView(label: string): Promise<void> {
   await nav(label).click();
@@ -1082,9 +1082,9 @@ test.skipIf(!RUN)(
           await textOf(streamPage()),
         );
         await checkText(
-          'the page lists waits on agile-test-repo part',
+          'the page lists Waits on agile-test-repo part',
           page.locator('[data-testid="waits-on"]'),
-          /waits on agile-test-repo part/,
+          /Waits on agile-test-repo part/,
         );
         check(
           'with an Unlink button',
@@ -1140,14 +1140,24 @@ test.skipIf(!RUN)(
         /schema\/ledger-entry\.schema\.json/,
       );
       await checkText(
-        'Delivery: Ready: stream/… is N commits ahead of main.',
+        'Delivery: The <branch> branch is N commits ahead of main.',
         page.locator('[data-testid="land-before"]'),
-        /^Ready: stream\/\S+ is 1 commit ahead of main\.$/,
+        /^The \S+ branch is 1 commit ahead of main\.$/,
       );
-      await checkText(
-        'Delivery: No diff-stage rules in scope.',
-        page.locator('[data-testid="land-diff-rules"]'),
-        /No diff-stage rules in scope\.|Ship check rules: /,
+      // T413: the branch by its name; the whole one is its tooltip.
+      check(
+        'the branch reads as its name, the whole one in its tooltip',
+        /^stream\//.test(
+          (await page.locator('[data-testid="land-before"] [title]').getAttribute('title')) ?? '',
+        ),
+        await textOf(page.locator('[data-testid="land-before"]')),
+      );
+      // T413: ship check rules are listed only when there are some.
+      const diffRules = page.locator('[data-testid="land-diff-rules"]');
+      check(
+        'Delivery: no ship check line, or "Checked before merge: …"',
+        (await diffRules.count()) === 0 || /^Checked before merge: /.test(await textOf(diffRules)),
+        await textOf(diffRules),
       );
     });
 
@@ -1155,9 +1165,9 @@ test.skipIf(!RUN)(
       await page.locator('[data-testid="stream-land"]').click();
       const result = page.locator('[data-testid="land-result"]');
       const line = await checkText(
-        'the panel shows pushed … opened PR #N into main: https://github.com/petestewart/agile-test-repo/pull/N',
+        'the panel shows pushed <branch> to origin; opened PR #N into main: https://github.com/petestewart/agile-test-repo/pull/N',
         result,
-        /pushed stream\/\S+ to origin; opened PR #\d+ into main: https:\/\/github\.com\/petestewart\/agile-test-repo\/pull\/\d+/,
+        /pushed \S+ to origin; opened PR #\d+ into main: https:\/\/github\.com\/petestewart\/agile-test-repo\/pull\/\d+/,
       );
       prNumber = Number(/PR #(\d+)/.exec(line)?.[1] ?? 0);
       const tone = await result.getAttribute('class');
@@ -1167,9 +1177,9 @@ test.skipIf(!RUN)(
         tone ?? '',
       );
       await checkText(
-        'Delivery: pr · pr open',
+        'Delivery: Pull request · PR open',
         page.locator('[data-testid="delivery-state"]'),
-        /Delivery: pr · pr open/,
+        /Pull request · PR open/,
       );
       // The outcome line of the click is one; the panel's own status names the PR once more.
       const prLines = await page
@@ -1262,14 +1272,14 @@ test.skipIf(!RUN)(
       await page.locator('[data-testid="stream-pr-check"]').click();
       await tab('Activity').click();
       await checkText(
-        'the Activity tab shows a pr review row',
+        'the Activity tab shows a pr review row (about this node, on agile-test-repo)',
         page.locator('[data-testid="activity"]'),
-        /PR review · agile-test-repo · itself/,
+        /PR review.*agile-test-repo.*itself/,
       );
       await checkText(
         'the Activity tab shows a ci failed row',
         page.locator('[data-testid="activity"]'),
-        /CI failed · agile-test-repo · itself/,
+        /CI failed.*agile-test-repo.*itself/,
       );
       await checkNotText(
         'Activity rows name no raw session or digest ids',
@@ -1298,21 +1308,21 @@ test.skipIf(!RUN)(
       // count and the click (T353); the Delivery check below waits for the merge either way.
       if ((await checkNow.count()) > 0) await checkNow.click({ timeout: 2_000 }).catch(() => {});
       await checkText(
-        'Delivery: pr · merged',
+        'Delivery: Pull request · merged',
         page.locator('[data-testid="delivery-state"]'),
-        /Delivery: pr · merged/,
+        /Pull request · merged/,
       );
       await openNode('ledger-lite part');
       await checkText(
-        'the wait reads waits on agile-test-repo part · satisfied',
+        'the wait reads agile-test-repo part merged, so this no longer waits on it',
         page.locator('[data-testid="waits-on"]'),
-        /waits on agile-test-repo part · satisfied/,
+        /agile-test-repo part merged, so this no longer waits on it/,
       );
       await tab('Chat').click();
       await checkText(
-        'its thread says waits on … satisfied',
+        'its thread says … merged, so this no longer waits on it',
         page.locator('[data-testid="thread"]'),
-        /waits on .* satisfied/,
+        /merged, so this no longer waits on it/,
       );
       await openNode('Ledger export');
       await tab('Activity').click();
@@ -1369,14 +1379,21 @@ test.skipIf(!RUN)(
     await step('5.1b', '+ Repo ledger-lite: a work node, no agent', async () => {
       await addRepo('ledger-lite');
       await checkText(
-        'the thread adds repo added: ledger-lite; now a work node on stream/…-walkthrough-notes',
+        'the thread adds repo added: ledger-lite; now a work node on walkthrough-notes (the branch by its name)',
         page.locator('[data-testid="thread"]'),
-        /repo added: ledger-lite; now a work node on stream\/\S+-walkthrough-notes/,
+        /repo added: ledger-lite; now a work node on walkthrough-notes/,
       );
       await checkText(
-        'the line under the title ends with that branch',
+        'the line under the title ends with that branch, by its name',
         page.locator('[data-testid="stream-status"]'),
-        /stream\/\S+-walkthrough-notes$/,
+        /walkthrough-notes$/,
+      );
+      check(
+        'the whole branch is stream/…-walkthrough-notes (its tooltip, and what it copies)',
+        /^stream\/\S+-walkthrough-notes$/.test(
+          (await page.locator('[data-testid="node-branch"]').getAttribute('data-branch')) ?? '',
+        ),
+        (await page.locator('[data-testid="node-branch"]').getAttribute('data-branch')) ?? '',
       );
       const icon = await railRow('Walkthrough notes')
         .locator('[data-testid="role-icon"]')
@@ -1406,9 +1423,9 @@ test.skipIf(!RUN)(
         async () => (await textOf(page.locator('[data-testid="project-filter"]'))) === 'Only Blog',
       );
       await checkText(
-        'Ready: stream/…-walkthrough-notes is 1 commit ahead of main.',
+        'The walkthrough-notes branch is 1 commit ahead of main.',
         page.locator('[data-testid="land-before"]'),
-        /^Ready: stream\/\S+-walkthrough-notes is 1 commit ahead of main\.$/,
+        /^The walkthrough-notes branch is 1 commit ahead of main\.$/,
       );
       await page.locator('[data-testid="stream-land"]').click();
       await checkText(
@@ -1417,14 +1434,14 @@ test.skipIf(!RUN)(
         'Merged.',
       );
       await checkText(
-        'Delivery: direct · merged',
+        'Delivery: Direct merge · merged',
         page.locator('[data-testid="delivery-state"]'),
-        /Delivery: direct · merged/,
+        /Direct merge · merged/,
       );
       await checkText(
-        'landed stream/…-walkthrough-notes into main (…)',
+        'landed walkthrough-notes into main (…)',
         page.locator('[data-testid="land-result"]'),
-        /landed stream\/\S+-walkthrough-notes into main \(/,
+        /landed walkthrough-notes into main \(/,
       );
       await until(
         'the rail dot turns green',
@@ -1516,15 +1533,23 @@ test.skipIf(!RUN)(
       await openNode('Shop note');
       await tab('Changes').click();
       await checkText(
-        'the Diff tab shows the one-line change and the worktree path',
+        'the Diff tab shows the one-line change',
         page.locator('[data-testid="diff"]'),
-        /\.worktrees\/\S+-shop-note.*Shop was here/,
+        /shop-note.*Shop was here/,
+      );
+      // T413: the worktree is a copy button (its path the tooltip), not a line of text.
+      check(
+        'the worktree path is on its copy button',
+        /\.worktrees\/\S+-shop-note/.test(
+          (await page.locator('[data-testid="diff-copy-worktree"]').getAttribute('title')) ?? '',
+        ),
+        (await page.locator('[data-testid="diff-copy-worktree"]').getAttribute('title')) ?? '',
       );
       await tab('Activity').click();
       await checkText(
-        'Overlap · ledger-lite · involved · pending',
+        'Overlap · ledger-lite · involved · Not seen by the agent yet',
         page.locator('[data-testid="activity"]'),
-        /Overlap · ledger-lite · involved · pending/,
+        /Overlap.*ledger-lite.*involved.*Not seen by the agent yet/,
       );
     });
 
@@ -1535,9 +1560,9 @@ test.skipIf(!RUN)(
       await page.locator('[data-testid="link-wait-select"]').selectOption({ label: 'Blog note' });
       await page.getByRole('button', { name: 'Wait on' }).click();
       await checkText(
-        'waits on Blog note',
+        'Waits on Blog note',
         page.locator('[data-testid="waits-on"]'),
-        /waits on Blog note/,
+        /Waits on Blog note/,
       );
       await page.locator('[data-testid="stream-land"]').click();
       await checkText(
@@ -1574,19 +1599,19 @@ test.skipIf(!RUN)(
       );
       await openNode('Shop note');
       await checkText(
-        'Shop note thread: synced main into stream/…-shop-note',
+        'Shop note thread: Synced main into this branch',
         page.locator('[data-testid="thread"]'),
-        /synced main into stream\/\S+-shop-note/,
+        /Synced main into this branch/,
       );
       await checkText(
-        'Shop note thread: waits on … satisfied',
+        'Shop note thread: Blog note merged, so this no longer waits on it',
         page.locator('[data-testid="thread"]'),
-        /waits on .* satisfied/,
+        /Blog note merged, so this no longer waits on it/,
       );
       await checkText(
-        'the wait reads waits on Blog note · satisfied',
+        'the wait reads Blog note merged, so this no longer waits on it',
         page.locator('[data-testid="waits-on"]'),
-        /waits on Blog note · satisfied/,
+        /Blog note merged, so this no longer waits on it/,
       );
       await page.locator('[data-testid="stream-land"]').click();
       await checkText(
@@ -1595,9 +1620,9 @@ test.skipIf(!RUN)(
         'Merged.',
       );
       await checkText(
-        'landed stream/…-shop-note into main (…)',
+        'landed shop-note into main (…)',
         page.locator('[data-testid="land-result"]'),
-        /landed stream\/\S+-shop-note into main \(/,
+        /landed shop-note into main \(/,
       );
       const notes = readFileSync(join(world.ledger, 'walkthrough-notes.md'), 'utf8');
       check(
@@ -1637,13 +1662,13 @@ test.skipIf(!RUN)(
       await checkText(
         'Main changed · ledger-lite · same repo rows',
         page.locator('[data-testid="activity"]'),
-        /Main changed · ledger-lite · same repo/,
+        /Main changed.*ledger-lite.*same repo/,
       );
       await tab('Chat').click();
       await checkText(
-        'its thread shows synced main into stream/…',
+        'its thread shows Synced main into this branch',
         page.locator('[data-testid="thread"]'),
-        /synced main into stream\//,
+        /Synced main into this branch/,
       );
       await checkText(
         'the line under its title reads Agent finished',
@@ -1851,14 +1876,14 @@ test.skipIf(!RUN)(
         'Add count',
       );
       await checkText(
-        'Ready: stream/…-ledger-count is 1 commit ahead of main.',
+        'The ledger-count branch is 1 commit ahead of main.',
         page.locator('[data-testid="land-before"]'),
-        /^Ready: stream\/\S+-ledger-count is 1 commit ahead of main\.$/,
+        /^The ledger-count branch is 1 commit ahead of main\.$/,
       );
       await checkText(
-        'the Delivery panel lists Ship check rules: tests-with-src',
+        'the Delivery panel lists Checked before merge: tests-with-src',
         page.locator('[data-testid="land-diff-rules"]'),
-        /Ship check rules: tests-with-src/,
+        /Checked before merge: tests-with-src/,
       );
       await page.locator('[data-testid="stream-land"]').click();
       const panel = page.locator('[data-testid="land-panel"]');
@@ -1868,9 +1893,9 @@ test.skipIf(!RUN)(
         /delivery held by ship check tests-with-src: Every change to a file under src\/ comes with a test that exercises it \(probability 0\.8/,
       );
       await checkText(
-        'Delivery: direct · held',
+        'Delivery: Direct merge · held',
         page.locator('[data-testid="delivery-state"]'),
-        /Delivery: direct · held/,
+        /Direct merge · held/,
       );
       // T347 (D36 D9): a ship-check hold is news, not an error: neutral, not red.
       const tone = (await page.locator('[data-testid="land-result"]').getAttribute('class')) ?? '';
@@ -1897,14 +1922,14 @@ test.skipIf(!RUN)(
       await page.locator('[data-testid="stream-land"]').click();
       await checkText('Merged.', page.locator('[data-testid="land-before"]'), 'Merged.');
       await checkText(
-        'Delivery: direct · merged',
+        'Delivery: Direct merge · merged',
         page.locator('[data-testid="delivery-state"]'),
-        /Delivery: direct · merged/,
+        /Direct merge · merged/,
       );
       await checkText(
-        'landed stream/…-ledger-count into main (…)',
+        'landed ledger-count into main (…)',
         page.locator('[data-testid="land-result"]'),
-        /landed stream\/\S+-ledger-count into main \(/,
+        /landed ledger-count into main \(/,
       );
     });
 
@@ -1915,9 +1940,9 @@ test.skipIf(!RUN)(
       const first = claimTitle('Cents check', 'worker', async () => {
         // While its first turn is open: a finished turn ends the session.
         await checkText(
-          'a session appears (Claude … · low · starting, then running)',
+          'a session appears (Agent Claude … · low · Starting, then Working)',
           page.locator('[data-testid="session"]'),
-          /Claude .+ · low · (starting|running)/,
+          /Claude .+ · low · (Starting|Working)/,
           10_000,
         );
         return 'ledger-lite stores `amount` as a plain number on `Entry` (src/ledger.ts): no unit, so floats are possible.';
@@ -1984,9 +2009,9 @@ test.skipIf(!RUN)(
       await openNode('Cents check');
       await tab('Activity').click();
       await checkText(
-        'Knowledge accepted · … · delivered to the worker session (the accept woke it)',
+        'Knowledge accepted · … · Seen by the agent (the accept woke it)',
         page.locator('[data-testid="activity"]'),
-        /Knowledge accepted · \S+ · delivered to the worker session/,
+        /Knowledge accepted.*Seen by the agent/,
       );
       await tab('Chat').click();
       await checkText(
@@ -2010,9 +2035,9 @@ test.skipIf(!RUN)(
       await openNode('Cents check');
       await tab('Knowledge').click();
       await checkText(
-        'the Knowledge tab lists the new decision',
-        page.locator('[data-testid="rules"]'),
-        /decision · tell/,
+        'the Knowledge tab lists the new decision, as Guidance',
+        page.locator('[data-testid="rules"] [data-testid="rule"]', { hasText: 'Decision' }),
+        /Guidance/,
       );
       await checkNotText(
         'the Knowledge tab shows the project by name, not P-…',
@@ -2398,9 +2423,9 @@ test.skipIf(!RUN)(
       );
       await streamPage().getByRole('button', { name: 'Start agent', exact: true }).click();
       await checkText(
-        'a worker session appears',
+        "a worker session appears (it reads as the node's Agent)",
         page.locator('[data-testid="session"][data-role="worker"]'),
-        /worker/,
+        /^Agent /,
       );
       await until(
         'Jira: the child moves to In Progress',
@@ -2439,9 +2464,9 @@ test.skipIf(!RUN)(
       // count and the click (T353); the Delivery check below waits for the merge either way.
       if ((await checkNow.count()) > 0) await checkNow.click({ timeout: 2_000 }).catch(() => {});
       await checkText(
-        'Delivery: pr · merged',
+        'Delivery: Pull request · merged',
         page.locator('[data-testid="delivery-state"]'),
-        /Delivery: pr · merged/,
+        /Pull request · merged/,
       );
       await until(
         'Jira: Done',
@@ -2532,9 +2557,9 @@ test.skipIf(!RUN)(
       await openNode('Tracker follow-up');
       await tab('Activity').click();
       await checkText(
-        'a node with no events says No events routed here yet.',
+        'a node with no events says Nothing has reached this node yet',
         page.locator('[data-testid="activity-empty"]'),
-        'No events routed here yet.',
+        'Nothing has reached this node yet',
       );
     });
 
@@ -2565,7 +2590,7 @@ test.skipIf(!RUN)(
       await checkText(
         'threads are intact',
         page.locator('[data-testid="thread"]'),
-        /landed stream\//,
+        /landed \S+ into main/,
       );
     });
 

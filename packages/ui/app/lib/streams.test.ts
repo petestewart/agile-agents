@@ -10,7 +10,7 @@ import {
   activityDelivery,
   ancestorTitles,
   buildStreamTree,
-  cardDot,
+  childEntries,
   dependencyEdges,
   diffLineKind,
   eventLabel,
@@ -28,6 +28,7 @@ import {
   streamDot,
   subtreeNeedsYou,
   threadAuthorLabel,
+  worktreeName,
 } from './streams';
 
 function row(id: string, extra: Partial<CockpitStreamRow> = {}): CockpitStreamRow {
@@ -263,22 +264,29 @@ describe('T341: an Activity row reads without raw ids', () => {
     { id: '01ARZ3NDEKTSV4RRFFQ69GE001', role: 'worker' as const },
     { id: '01ARZ3NDEKTSV4RRFFQ69GE002', role: 'coordinator' as const },
   ];
-  test('the session by its role, a digest as a word', () => {
+  test('whether the agent saw it, by its role, a digest as "batched" (T413)', () => {
     expect(
       activityDelivery(
         { status: 'delivered', session: '01ARZ3NDEKTSV4RRFFQ69GE002', digest: 'D-1' },
         sessions,
       ),
-    ).toBe('delivered to the coordinator session in a digest');
+    ).toBe('Seen by the coordinator (batched)');
     expect(
       activityDelivery({ status: 'delivered', session: '01ARZ3NDEKTSV4RRFFQ69GE001' }, sessions),
-    ).toBe('delivered to the worker session');
-    expect(activityDelivery({ status: 'pending' }, sessions)).toBe('pending');
+    ).toBe('Seen by the agent');
+    expect(activityDelivery({ status: 'pending' }, sessions)).toBe('Not seen by the agent yet');
     expect(activityDelivery({ status: 'delivered', session: 'gone' }, sessions)).toBe(
-      'delivered to the agent session',
+      'Seen by the agent',
+    );
+    expect(activityDelivery({ status: 'superseded' }, sessions)).toBe('Replaced by a newer event');
+    expect(activityDelivery({ status: 'expired' }, sessions)).toBe(
+      'Expired before the agent saw it',
     );
     expect(activityDelivery({ status: 'delivered', session: 'x' }, [], 'Director')).toBe(
-      'delivered to the Director session',
+      'Seen by the Director',
+    );
+    expect(activityDelivery({ status: 'pending' }, [], 'Director')).toBe(
+      'Not seen by the Director yet',
     );
   });
   test('the time to the minute, in local time', () => {
@@ -299,15 +307,42 @@ describe('eventLabel (T347, D36 D5)', () => {
   });
 });
 
-describe('cardDot (T349)', () => {
-  test("a child waiting on your answer wears the rail's needs-you amber", () => {
-    expect(cardDot('question')).toBe('amber');
-    expect(cardDot('question')).toBe(streamDot({ agent_status: 'question', human_status: 'open' }));
+describe('worktreeName (T413)', () => {
+  test('the folder, without its node id', () => {
+    expect(
+      worktreeName('/home/p/ledger-lite/.worktrees/01m3fh6g4jx8dtfa7pcvg901rk-add-csv-import'),
+    ).toBe('add-csv-import');
+    expect(worktreeName('/tmp/wt/s-review/')).toBe('s-review');
+    expect(worktreeName('C:\\work\\01m3fh6g4jx8dtfa7pcvg901rk-x')).toBe('x');
   });
+});
 
-  test('a real block and every other state keep the plain label', () => {
-    for (const state of ['blocked', 'working', 'done', 'idle'] as const) {
-      expect(cardDot(state)).toBeUndefined();
-    }
+describe('childEntries (T413)', () => {
+  const kid = (id: string, parent: string): CockpitStreamRow => ({
+    id,
+    title: id,
+    parent,
+    role: 'work',
+    agent_status: 'idle',
+    human_status: 'open',
+  });
+  test('every child row, in order, with its card or its card error', () => {
+    const rows = [kid('a', 'P'), kid('x', 'OTHER'), kid('b', 'P'), kid('c', 'P')];
+    const card = {
+      node: 'a',
+      doing: 'adding salePrice',
+      state: 'done' as const,
+      files: ['prices.ts'],
+      exports_changed: [],
+      relies_on: [],
+      updated_at: '2026-09-26T10:00:00.000Z',
+    };
+    const entries = childEntries(rows, 'P', [card, { node: 'c', error: 'cards/c.yaml:3: bad' }]);
+    expect(entries.map((e) => e.row.id)).toEqual(['a', 'b', 'c']);
+    expect(entries[0]?.card?.doing).toBe('adding salePrice');
+    // A child that never posted a card is still listed.
+    expect(entries[1]).toEqual({ row: rows[2] as CockpitStreamRow });
+    expect(entries[2]?.error).toBe('cards/c.yaml:3: bad');
+    expect(childEntries(rows, 'nobody', [card])).toEqual([]);
   });
 });

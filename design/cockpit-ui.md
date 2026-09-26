@@ -234,7 +234,15 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   ("3 comments on 2 files") whose Add to message puts one formatted review
   in the node's composer and opens the chat. It never sends by itself.
 - **Editing in place**: a node's title (click it) and goal (Edit on the goal
-  card) change where they are read; Enter or leaving saves, Esc cancels.
+  card) change where they are read; Enter or leaving saves, Esc cancels. The
+  Goal card shows only when it says more than the title and never on a root;
+  otherwise the goal is in Details → About, with Edit (T413).
+- **A node's Activity** reuses the Events rows (icon, title, the event's
+  words, relative time) with the routing reason as a small chip ("a part of it
+  changed"); its Knowledge tab reuses the Knowledge list row (T413).
+- **Ids stay out of primary text**: a branch reads as its slug
+  (`add-csv-import`), the full name on hover and in Copy; worktree paths sit
+  behind a Copy button (T413).
 - **Notifications** (Settings → General, per browser, off by default): one
   browser notification at a time for what is new in Needs me while the tab is
   away; a click opens it. Never for what was there at load. They go through

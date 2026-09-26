@@ -25,6 +25,7 @@ import {
   KIND_HINT,
   KIND_LABEL,
   type KnowledgeNames,
+  type KnowledgeSectionId,
   STATUS_LABEL,
   acceptBlocker,
   bandWords,
@@ -40,13 +41,14 @@ import {
   plainFinding,
   scopeHint,
   scopeWords,
+  sectionOf,
   sourceWords,
   titleOf,
 } from '../lib/rules';
 import { useShell } from '../lib/shell';
 import { ago } from '../lib/status';
 import { Icon } from './Icon';
-import { CriticalMark, EnforcementBadge, itemIcon } from './KnowledgeList';
+import { CriticalMark, EnforcementBadge, SECTION_ICON } from './KnowledgeList';
 import { Markdown } from './Markdown';
 import { Badge, type BadgeTone, Button, IconButton, Menu, useCopy, useToast } from './ui';
 
@@ -54,6 +56,16 @@ const STATUS_TONE: Record<KnowledgeItem['status'], BadgeTone> = {
   proposed: 'amber',
   accepted: 'green',
   retired: 'neutral',
+};
+
+/** T413: the list group an item is filed under, as one word, for the panel's header. */
+const GROUP_WORD: Record<KnowledgeSectionId, string> = {
+  review: 'To review',
+  rules: 'Rule',
+  standard: 'Standard',
+  architecture: 'Architecture',
+  decision: 'Decision',
+  retired: 'Retired',
 };
 
 function message(err: unknown): string {
@@ -145,10 +157,10 @@ export function KnowledgeDetail({
   return (
     <div className="cr-kn-detail" data-testid="rules-detail" data-rule={item.id}>
       <div className="cr-kn-panel-bar">
-        <span className="cr-kn-panel-crumb">
-          <Icon name={itemIcon(item)} size={14} />
-          {enforced ? 'Rule' : KIND_LABEL[item.kind]}
-          {enforced && <span className="cr-faint"> · {KIND_LABEL[item.kind]}</span>}
+        {/* T413: the group the list files it under; its kind is one of the facts below. */}
+        <span className="cr-kn-panel-crumb" data-testid="rules-detail-group">
+          <Icon name={SECTION_ICON[sectionOf(item)]} size={14} />
+          {GROUP_WORD[sectionOf(item)]}
         </span>
         <Menu
           label="More actions"

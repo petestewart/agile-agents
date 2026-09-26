@@ -242,7 +242,13 @@ function moveFocus(event: KeyboardEvent<HTMLDivElement>): void {
   }
 }
 
-function KnowledgeRow({
+/**
+ * One item as a row. T413: exported, so a node's Knowledge tab lists its
+ * items the way this screen does: `mixed` for a list where kinds mix (the
+ * kind and every enforcement said, a critical rule's lock with its word),
+ * `testid` for the row's own.
+ */
+export function KnowledgeRow({
   item,
   section,
   row,
@@ -253,6 +259,8 @@ function KnowledgeRow({
   onDecide,
   checked,
   onToggle,
+  mixed = false,
+  testid = 'rules-row',
 }: {
   item: KnowledgeItem;
   section: KnowledgeSectionId;
@@ -264,6 +272,8 @@ function KnowledgeRow({
   onDecide: (decision: 'accept' | 'retire') => Promise<void>;
   checked: boolean | undefined;
   onToggle: (() => void) | undefined;
+  mixed?: boolean;
+  testid?: string;
 }): JSX.Element {
   const [busy, setBusy] = useState<'accept' | 'retire' | undefined>(undefined);
   const title = titleOf(item);
@@ -272,7 +282,7 @@ function KnowledgeRow({
   const enforced = isEnforced(item);
   // A kind section names its kind, and a rule is a rule whatever its kind:
   // say the kind where kinds mix and it matters.
-  const showKind = section === 'review' || section === 'retired';
+  const showKind = mixed || section === 'review' || section === 'retired';
   const flag =
     enforced && item.status === 'accepted' && row ? flagWords(row.flag, days) : undefined;
   const blocker = proposed ? acceptBlocker(item) : undefined;
@@ -299,7 +309,7 @@ function KnowledgeRow({
     // biome-ignore lint/a11y/useKeyWithClickEvents: the row's title is a button (keyboard); the row click is a larger mouse target for it.
     <div
       className="cr-kn-row"
-      data-testid="rules-row"
+      data-testid={testid}
       data-rule={item.id}
       data-status={item.status}
       data-open={open ? 'true' : undefined}
@@ -338,7 +348,8 @@ function KnowledgeRow({
         <div className="cr-kn-row-meta">
           {showKind && (
             <span className="cr-kn-row-kind" data-testid="rules-kind">
-              {KIND_LABEL[item.kind]}
+              {/* T413: where kinds mix, an enforced item is a rule, as this screen files it. */}
+              {mixed && enforced ? 'Rule' : KIND_LABEL[item.kind]}
             </span>
           )}
           <span className="cr-kn-row-scope" data-testid="rules-scope" title={scopeHint(item.scope)}>
@@ -386,11 +397,12 @@ function KnowledgeRow({
             <Icon name="alert-triangle" size={14} label={flag} />
           </span>
         )}
-        {item.critical && enforced && <CriticalMark />}
+        {item.critical && enforced && <CriticalMark withLabel={mixed} />}
         {/* In a kind section "Guidance" is the section's own promise; say only the exceptions. */}
-        {(item.enforcement !== 'tell' || section === 'review' || section === 'retired') && (
-          <EnforcementBadge item={item} testid="rules-tier" />
-        )}
+        {(mixed ||
+          item.enforcement !== 'tell' ||
+          section === 'review' ||
+          section === 'retired') && <EnforcementBadge item={item} testid="rules-tier" />}
         {proposed && (
           <div className="cr-kn-row-actions">
             <Button

@@ -183,7 +183,11 @@ export function eventTitle(event: Pick<RoutedEvent, 'type' | 'payload'>): string
 /** Why an event went to a node, in words (a chip) and one sentence (its tooltip). */
 export const ROUTE_REASON: Record<RoutingEntry['because'], { label: string; hint: string }> = {
   self: { label: 'itself', hint: 'The event is about this node.' },
-  ancestor: { label: 'above it', hint: 'It sits above the node the event is about.' },
+  // T413: from the reader's side: a node under it is what the event is about.
+  ancestor: {
+    label: 'a part of it changed',
+    hint: 'The event is about a node under it.',
+  },
   waits_on: { label: 'waits on it', hint: 'It waits on the node the event is about.' },
   same_repo: { label: 'same repo', hint: 'It works on the same repo.' },
   party: { label: 'involved', hint: 'It is one of the nodes the event names.' },
