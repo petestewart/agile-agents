@@ -3761,8 +3761,16 @@ describe('coordinator autonomy (Playwright e2e, T282)', () => {
           goal: 'g',
           project: shop.id,
         });
+        // T347: the parts have a repo, so the node is coordinating (not a conversation).
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
         const child = (title: string) =>
-          cockpit.streams.create('human', { title, goal: 'g', project: shop.id, parent: node.id });
+          cockpit.streams.create('human', {
+            title,
+            goal: 'g',
+            project: shop.id,
+            parent: node.id,
+            repo: 'api',
+          });
         const api = await child('api: add salePrice');
         const web = await child('web: show salePrice');
         const out = await cockpit.autonomy.act(node.id, 'coordinator', 'agent:test', {
