@@ -16,6 +16,7 @@
 import { useState } from 'react';
 import type { CockpitProjectRow, CockpitStreamRow, FeedSnapshot } from '../lib/feed-types';
 import { type ShellView, useShell } from '../lib/shell';
+import { useUnreadReplies } from '../lib/use-unread';
 import { openCommandPalette, paletteKeyLabel } from './CommandPalette';
 import { Icon, type IconName } from './Icon';
 import { DeletedNodes, StreamTree } from './StreamTree';
@@ -74,9 +75,12 @@ function loadViewsOpen(): boolean {
 function NavButton({
   item,
   count,
+  replies = 0,
 }: {
   item: NavItem;
   count?: number;
+  /** T429: replies not read yet: a dot beside the count. */
+  replies?: number;
 }): JSX.Element {
   const { view, setView } = useShell();
   const on = view === item.view;
@@ -91,6 +95,15 @@ function NavButton({
     >
       <Icon name={item.icon} size={16} />
       <span className="cr-sb-item-label">{item.label}</span>
+      {replies > 0 && (
+        <span
+          className="cr-sb-replies"
+          data-testid="replies-dot"
+          title={`${replies} ${replies === 1 ? 'reply' : 'replies'} to read`}
+          role="img"
+          aria-label={`${replies} ${replies === 1 ? 'reply' : 'replies'} to read`}
+        />
+      )}
       {count !== undefined && count > 0 && (
         <span className="badge" data-testid="inbox-badge">
           {count}
@@ -161,6 +174,7 @@ export function Sidebar({
   projects: readonly CockpitProjectRow[];
 }): JSX.Element {
   const { setNewStreamOpen } = useShell();
+  const replies = useUnreadReplies();
   const [viewsOpen, setViewsOpen] = useState(loadViewsOpen);
   // A line under the pinned block once the list has scrolled under it.
   const [scrolled, setScrolled] = useState(false);
@@ -203,7 +217,7 @@ export function Sidebar({
       </div>
       {/* Audit r5 #4: Needs me and its count stay in sight however far the tree scrolls. */}
       <nav className="cr-sb-nav cr-sb-primary" aria-label="Main">
-        <NavButton item={PRIMARY[0] as NavItem} count={inboxCount} />
+        <NavButton item={PRIMARY[0] as NavItem} count={inboxCount} replies={replies.length} />
         {PRIMARY.slice(1).map((item) => (
           <NavButton key={item.view} item={item} />
         ))}

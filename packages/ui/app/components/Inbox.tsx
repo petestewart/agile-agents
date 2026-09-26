@@ -15,6 +15,7 @@
 import type { InboxItem } from '@agile-agents/shared';
 import { useEffect, useRef, useState } from 'react';
 import { useFeed } from '../lib/feed-context';
+import type { CockpitStreamRow } from '../lib/feed-types';
 import {
   type NeedsMeFilter,
   PATH_SEP,
@@ -28,9 +29,12 @@ import {
   setupSteps,
 } from '../lib/inbox';
 import { isShortcut, useShell } from '../lib/shell';
+import { ago } from '../lib/status';
+import { ancestorTitles } from '../lib/unread';
+import { markAllRead, markRead, useUnreadReplies } from '../lib/use-unread';
 import { Card } from './DecisionCard';
 import { Icon, type IconName } from './Icon';
-import { Button, EmptyState, Kbd, PageHeader, Segmented, Spinner } from './ui';
+import { Button, EmptyState, IconButton, Kbd, PageHeader, Segmented, Spinner } from './ui';
 
 export { Card } from './DecisionCard';
 
@@ -116,6 +120,8 @@ export function Inbox({
   const { select } = useShell();
   const [filter, setFilter] = useState<NeedsMeFilter>('all');
   const list = useRef<HTMLDivElement>(null);
+  // T429: answers you haven't read, above what waits on you.
+  const replies = useUnreadReplies();
   useMinuteTick();
   useCardKeys(list, select);
 
@@ -162,13 +168,14 @@ export function Inbox({
         }
       />
 
+      <Replies rows={replies} />
       {cockpit === undefined && items.length === 0 ? (
         <div className="cr-inbox-loading" data-testid="inbox-loading">
           <Spinner size={16} />
           Loading…
         </div>
       ) : items.length === 0 ? (
-        <Empty />
+        <Empty replies={replies.length} />
       ) : (
         <div className="cr-inbox-list" ref={list}>
           {sections.map((section) => (
@@ -241,8 +248,75 @@ export function Inbox({
   );
 }
 
+/**
+ * T429: the replies you haven't read — a conversation, a root or a
+ * coordinator that answered. Opening one (or its check) reads it; they are
+ * never Needs me's cards, which wait on a decision.
+ */
+function Replies({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.Element | null {
+  const { cockpit } = useFeed();
+  const { select } = useShell();
+  if (rows.length === 0) return null;
+  const all = cockpit?.streams ?? [];
+  return (
+    <section className="cr-replies" data-testid="replies" aria-label="Replies">
+      <h2 className="cr-inbox-section-hd">
+        <Icon name="message-square" size={14} />
+        <span className="cr-inbox-section-name">Replies</span>
+        <span className="cr-inbox-section-count">{rows.length}</span>
+        <button
+          type="button"
+          className="cr-link cr-replies-all"
+          data-testid="replies-mark-all"
+          onClick={() => markAllRead(rows)}
+        >
+          Mark all read
+        </button>
+      </h2>
+      <ul className="cr-replies-list">
+        {rows.map((row) => {
+          const parents = ancestorTitles(all, row.id);
+          return (
+            <li key={row.id} className="cr-reply" data-testid="reply" data-stream={row.id}>
+              <button
+                type="button"
+                className="cr-reply-open"
+                title={`Open ${row.title}`}
+                onClick={() => select(row.id, { tab: 'thread' })}
+              >
+                <Icon
+                  name={row.role === 'conversation' ? 'message-square' : 'git-fork'}
+                  size={14}
+                  className="cr-reply-icon"
+                />
+                <span className="cr-reply-text">
+                  {parents.length > 0 && (
+                    <span className="cr-reply-path">{`${nodePath(parents)}${PATH_SEP}`}</span>
+                  )}
+                  <span className="cr-reply-title">{row.title}</span>
+                </span>
+                <span className="cr-reply-when">
+                  {row.role === 'conversation' ? 'Replied' : 'Finished a turn'}
+                  {row.updated_at ? ` · ${ago(row.updated_at)}` : ''}
+                </span>
+              </button>
+              <IconButton
+                icon="check"
+                size="sm"
+                label="Mark read"
+                data-testid="reply-read"
+                onClick={() => row.updated_at && markRead(row.id, row.updated_at)}
+              />
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 /** Nothing waits on you: all caught up — or, on a first run, the steps to get going. */
-function Empty(): JSX.Element {
+function Empty({ replies = 0 }: { replies?: number }): JSX.Element {
   const { cockpit } = useFeed();
   const { setNewStreamOpen } = useShell();
   const steps = setupSteps(cockpit);
@@ -253,7 +327,7 @@ function Empty(): JSX.Element {
     <div data-testid="inbox-empty" data-state="caught-up">
       <EmptyState
         icon="check-circle"
-        title="You’re all caught up"
+        title={replies > 0 ? 'Nothing else waits on you' : 'You’re all caught up'}
         actions={
           <Button
             icon="plus"

@@ -2507,6 +2507,33 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** Screenshots at 390px, light and dark; control-room e2e `T422`, `T365`.
 - **Notes:** Branch T428-picker-sub.
 
+### Ticket: T429 Replies you haven't read
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete: questions have to work in flow state. You ask (D42) and go back to your work; when the answer lands nothing said so. A conversation's, a root's or a coordinator's finished turn has no Needs me card (T336, T341), so the only sign was a dot changing colour in the rail.
+- **Acceptance Criteria:** A node that answered (open, agent done, not a work node) is unread until its page is open in a visible tab, read up to its row's `updated_at`; per browser (localStorage `agile.seen`, capped at 400 marks, other tabs follow); a first visit starts with everything read. Needs me lists unread replies first ("Replies": path › title, "Replied · 3m", ✓ Mark read, Mark all read; a click opens the chat); with nothing else waiting it reads "Nothing else waits on you". The sidebar's Needs me shows a dot ("2 replies to read"). A reply that lands while you're away raises one notification ("Replied: <title>", click opens it) when notifications are on.
+- **Validation Steps:** `bun test packages/ui/app/lib/unread.test.ts`; control-room e2e `T429` (95/0 whole file); the walkthrough; screenshots light, dark, phone.
+- **Notes:** Branch T429-unread-replies. Pure rules in `lib/unread.ts`, the store and hooks in `lib/use-unread.ts`. The rail's own unread mark waits for T424 (it owns `StreamTree.tsx`).
+
+### Ticket: T430 A README for the app
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** The README was one line. Someone opening the repo couldn't tell what the app is, how to install and start it, or where to read more.
+- **Acceptance Criteria:** README.md says what the app does (roles, Needs me, Ask, coordinators and autonomy, the chat, knowledge, delivery, the Director, trackers), what it needs, how to install, start and set up a first project, the keys, a short CLI tour, where state lives and the session default order (P5, D40), the development commands and the package layout, and links the design docs. Every claim checked against the code or the design.
+- **Validation Steps:** `bun run lint`; read through against `agile` usage, `DEFAULT_DAEMON_PORT`, `resolveSessionDefaults` and projects-design §12.
+- **Notes:** Branch T430-readme.
+
+### Ticket: T431 Turn into work's goal is yours while it drafts
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Timed on the demo: the goal draft (one Haiku call) takes about 6 s, and the Goal box was disabled until it came back.
+- **Acceptance Criteria:** The Goal box is editable at once ("Drafting from the conversation…" as its placeholder, "…or write your own" as its hint). The draft fills it only if you haven't typed; otherwise the hint says a draft is ready, with **Use it instead**. Start waits only for a non-empty goal.
+- **Validation Steps:** control-room e2e `T422` (a held draft request: typing survives it, Use it instead swaps it in); a screenshot of both states against the real model.
+- **Notes:** Branch T431-draft-while-typing.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

@@ -340,6 +340,13 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
 - **Send to parent** (T421, D42): in a conversation under another node, a
   reply's hover action (or ⋯) sends a conclusion up. It lands there as your
   message, so that node's agent acts on it as on anything you type.
+- **Replies you haven't read** (T429): a node that answered and has no
+  Needs me card (a conversation, a root, a coordinator) is unread until its
+  page is open in a visible tab. Needs me lists them first under **Replies**
+  (open, ✓ to mark read, Mark all read), the sidebar's Needs me shows a dot,
+  and one notification says "Replied: …" while you're away (T388's
+  setting). Read marks are per browser (localStorage); a first visit starts
+  with everything read.
 - **What a worker proposes next** (T427): an agent's `propose_next` line
   ("Proposal") carries **Create node…**, which opens New node with its title
   and goal filled in, under this node (design §2's "break it down"); the

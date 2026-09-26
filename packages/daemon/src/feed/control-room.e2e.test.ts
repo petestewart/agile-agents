@@ -5786,13 +5786,25 @@ describe('Turn into work (Playwright e2e, T422, D42)', () => {
         });
         await page.goto(`${cockpit.base}/?node=${research.id}`);
         await page.locator(`[data-testid="stream-page"][data-stream="${research.id}"]`).waitFor();
+        // T431: a slow draft (a model call) never blocks the box nor overwrites what you typed.
+        let release: () => void = () => {};
+        const held = new Promise<void>((done) => {
+          release = done;
+        });
+        await page.route('**/draft-goal', async (route) => {
+          await held;
+          await route.continue();
+        });
         await page.locator('[data-testid="node-menu-trigger"]').click();
         await page.locator('[data-testid="turn-into-work-menu"]').click();
-        // Nothing said yet: its question.
-        await waitUntilAsync(
-          'the question',
-          async () => (await goal.inputValue()) === 'what limits the importer?',
-        );
+        await page.locator('[data-testid="turn-into-work-goal"][data-drafting="true"]').waitFor();
+        await goal.fill('Find the largest file the importer takes and why.');
+        release();
+        // Nothing said yet: the draft is its question, offered, not forced.
+        await page.locator('[data-testid="turn-into-work-use-draft"]').waitFor();
+        expect(await goal.inputValue()).toBe('Find the largest file the importer takes and why.');
+        await page.locator('[data-testid="turn-into-work-use-draft"]').click();
+        expect(await goal.inputValue()).toBe('what limits the importer?');
         await goal.fill('Find the largest file the importer takes and why.');
         await page.locator('[data-testid="turn-into-work-start"]').click();
         await waitUntil('the research start', () =>
@@ -5863,6 +5875,70 @@ describe('what a worker proposes next (Playwright e2e, T427)', () => {
             .list()
             .some((s) => s.parent === node.id && s.title === 'Add CSV export' && s.goal === goal),
         );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe("replies you haven't read (Playwright e2e, T429)", () => {
+  browserTest(
+    'a reply that lands while you are elsewhere is listed in Needs me with a sidebar dot; opening it reads it',
+    async () => {
+      const reply = 'It buffers because the parser needs the header row first.';
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'agent_text', text: reply }, { type: 'end_turn' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const convo = await cockpit.streams.create('human', {
+          title: 'Why buffer the file?',
+          goal: 'why does the importer read the whole file?',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="inbox"]').waitFor();
+        expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
+
+        // You asked, and went on with something else: the answer lands.
+        const asked = await fetch(`${cockpit.base}/api/streams/${convo.id}/say`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ body: 'why buffer?', start: true }),
+        });
+        expect(asked.status).toBe(201);
+        const listed = page.locator(`[data-testid="reply"][data-stream="${convo.id}"]`);
+        await listed.waitFor();
+        expect(await listed.textContent()).toContain('Replied');
+        await page.locator('[data-testid="replies-dot"]').waitFor();
+        // It is no Needs me card: nothing waits on a decision.
+        await page.locator('[data-testid="inbox-empty"]').waitFor();
+        expect(await page.locator('[data-testid="inbox-empty"]').textContent()).toContain(
+          'Nothing else waits on you',
+        );
+
+        // Opening it reads it.
+        await listed.locator('.cr-reply-open').click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${convo.id}"]`).waitFor();
+        await page
+          .locator('[data-testid="thread-entry"][data-by="agent"]', { hasText: reply })
+          .waitFor();
+        await page.locator('[data-view="inbox"]').click();
+        await page.locator('[data-testid="inbox"]').waitFor();
+        expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="replies-dot"]').count()).toBe(0);
+        // Read stays read across a reload (per browser).
+        await page.reload();
+        await page.locator('[data-testid="inbox"]').waitFor();
+        await page.locator('[data-testid="inbox-empty"]').waitFor();
+        expect(await page.locator('[data-testid="replies"]').count()).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
