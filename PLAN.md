@@ -1861,12 +1861,12 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T346 A conversation's first part waits for the plan too
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** Found in T334 QA: "+ Repo" on a conversation with tangents makes it coordinating with an "<repo> part" child, but the part starts at once, while T336 makes split parts wait for the coordinator's approved plan. Same gate here, or say why one part needs no plan.
 - **Acceptance Criteria:** Test: the part shows "waiting for the plan" and starts on approval.
 - **Validation Steps:** `bun test packages/daemon/src/streams packages/daemon/src/coordination`.
-- **Notes:** —
+- **Notes:** Branch T346-first-part-waits, merge 0bd8875. repo-in-place `split = !inPlace && !switching` gates coordinator start and plan wait, so + Repo on a conversation with tangents gets a coordinator and a waiting part; a human-stopped node still starts its part at once. Review+QA (sonnet): APPROVE/PASS.
 
 ### Ticket: T347 Cockpit wording and small UI (D36: D1, D5, D6, D7, D9, D11, D12)
 - **Priority:** P1
