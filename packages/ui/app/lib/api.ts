@@ -510,3 +510,11 @@ export interface DaemonHealth {
 export function getHealth(): Promise<DaemonHealth> {
   return get('/health');
 }
+
+/** T372: rename a project or change its repos (registered names only). */
+export function updateProject(
+  id: string,
+  patch: { name?: string; repos?: string[] },
+): Promise<Project> {
+  return post(`/api/projects/${encodeURIComponent(id)}`, patch) as Promise<Project>;
+}

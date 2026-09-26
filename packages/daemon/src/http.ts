@@ -766,7 +766,7 @@ async function handlePlanRoute(
  *
  *   POST /api/proposals/:id/apply|dismiss  the human decides a coordinator's proposal card
  *   POST /api/streams/:id/autonomy         `{autonomy: level|null}`: the node's override
- *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null}`: the project's levels and (T338) tracker settings
+ *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null, name?, repos?}`: the project's levels, (T338) tracker settings and (T372) name and repos
  */
 async function handleAutonomyRoute(
   req: Request,
@@ -798,10 +798,13 @@ async function handleAutonomyRoute(
     }
     if (!feed?.projects) return errorResponse(503, 'projects not available');
     const body = await readJsonBody(req);
+    // T372: the cockpit also renames a project and changes its repos.
     return jsonResponse(
       await feed.projects.update(decodeURIComponent(project?.[1] ?? ''), {
         autonomy: body.autonomy,
         ...(body.tracker !== undefined ? { tracker: body.tracker } : {}),
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.repos !== undefined ? { repos: body.repos } : {}),
       }),
     );
   } catch (err) {
