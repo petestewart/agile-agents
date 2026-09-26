@@ -473,6 +473,7 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     (s) => feed.plans?.waitingForPlan(s) === true,
     (entry) => feed.remotes.peek(entry),
     feed.mergeState ? (s) => feed.mergeState?.peek(s) === true : undefined,
+    (id) => feed.store.threadUpdatedAt(id),
   );
 }
 

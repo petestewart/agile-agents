@@ -7876,7 +7876,17 @@ div.cr-lens-ev:hover {
 }
 .cr-lens-table-hd,
 .cr-lens-run .cr-lens-row {
-  grid-template-columns: 136px minmax(0, 1fr) 96px 208px 132px;
+  grid-template-columns: 136px minmax(0, 1fr) 96px 208px 132px 64px;
+}
+/* T395: when the node last changed. */
+.cr-lens-table-hd > :nth-child(6) {
+  text-align: right;
+}
+.cr-lens-run-age {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  text-align: right;
+  white-space: nowrap;
 }
 .cr-lens-table-hd {
   padding-right: 44px;
@@ -7926,13 +7936,13 @@ div.cr-lens-ev:hover {
 @media (max-width: 1200px) and (min-width: 901px) {
   .cr-lens-table-hd,
   .cr-lens-run .cr-lens-row {
-    grid-template-columns: 136px minmax(0, 1fr) 96px 132px;
+    grid-template-columns: 136px minmax(0, 1fr) 96px 132px 64px;
   }
   .cr-lens-table-hd > :nth-child(4) {
     display: none;
   }
   .cr-lens-run .cr-lens-row {
-    grid-template-areas: "status path role repo" "status agent role repo";
+    grid-template-areas: "status path role repo age" "status agent role repo age";
     row-gap: 1px;
     padding-top: 8px;
     padding-bottom: 8px;
@@ -7951,6 +7961,9 @@ div.cr-lens-ev:hover {
   }
   .cr-lens-run-repo {
     grid-area: repo;
+  }
+  .cr-lens-run-age {
+    grid-area: age;
   }
 }
 .cr-lens-run-menu {
@@ -8282,6 +8295,9 @@ div.cr-lens-ev:hover {
     grid-area: repo;
     justify-content: flex-end;
     max-width: 40vw;
+  }
+  .cr-lens-run-age {
+    display: none;
   }
   .cr-lens-log-row {
     grid-template-columns: minmax(0, 1fr) auto;

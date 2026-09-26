@@ -82,6 +82,12 @@ describe('Running', () => {
     expect(sortRunning(rows).map((r) => r.id)).toEqual(['ask', 'work', 'idle-a', 'idle-b']);
   });
 
+  test('T395: within a rank, the most recently changed first', () => {
+    const a = row('idle-a', { live: true, updated_at: '2026-09-26T10:00:00.000Z' });
+    const b = row('idle-b', { live: true, updated_at: '2026-09-26T11:00:00.000Z' });
+    expect(sortRunning([a, b]).map((r) => r.id)).toEqual(['idle-b', 'idle-a']);
+  });
+
   test('the summary counts each kind in words', () => {
     expect(runningSummary(rows)).toBe('1 needs you · 1 working · 2 idle');
     expect(runningSummary([rows[1] as CockpitStreamRow])).toBe('1 working');

@@ -4823,6 +4823,12 @@ describe("the rail's row menus, Deleted and New project (Playwright e2e, T365)",
         expect(
           (await page.evaluate('document.activeElement?.dataset?.stream ?? null')) as string,
         ).toBe(b.id);
+        // T395: k and j walk the rows too.
+        await page.keyboard.press('k');
+        await page.keyboard.press('j');
+        expect(
+          (await page.evaluate('document.activeElement?.dataset?.stream ?? null')) as string,
+        ).toBe(b.id);
         await page.keyboard.press('ArrowLeft');
         expect(
           (await page.evaluate('document.activeElement?.dataset?.stream ?? null')) as string,

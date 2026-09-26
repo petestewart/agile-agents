@@ -202,18 +202,28 @@ const GROUP_ORDER: readonly OverviewGroupKey[] = ['you', 'working', 'idle', 'don
  * the tree's order. `only` keeps one bucket (a count was clicked). Empty
  * groups are left out.
  */
-export function overviewGroups<T extends StatusInput>(
+export function overviewGroups<T extends StatusInput & { updated_at?: string }>(
   nodes: readonly T[],
   only?: OverviewBucket,
 ): OverviewGroup<T>[] {
   const order = new Map(nodes.map((n, i) => [n, i]));
   const kept = only === undefined ? nodes : nodes.filter((n) => bucketOf(n) === only);
+  // T395: then the most recently changed first (an older daemon's rows: the tree's order).
+  const recent = (a: T, b: T): number =>
+    a.updated_at !== undefined && b.updated_at !== undefined && a.updated_at !== b.updated_at
+      ? a.updated_at < b.updated_at
+        ? 1
+        : -1
+      : 0;
   return GROUP_ORDER.map((key) => ({
     key,
     title: GROUP_TITLE[key],
     rows: kept
       .filter((n) => GROUP_OF[bucketOf(n)] === key)
-      .sort((a, b) => rankOf(a) - rankOf(b) || (order.get(a) ?? 0) - (order.get(b) ?? 0)),
+      .sort(
+        (a, b) =>
+          rankOf(a) - rankOf(b) || recent(a, b) || (order.get(a) ?? 0) - (order.get(b) ?? 0),
+      ),
   })).filter((g) => g.rows.length > 0);
 }
 
@@ -227,6 +237,16 @@ export function createdAt(id: string): number | undefined {
   let ms = 0;
   for (const ch of id.slice(0, 10)) ms = ms * 32 + CROCKFORD.indexOf(ch);
   return ms;
+}
+
+/**
+ * T395: when a row last changed (ISO), for "updated 3m ago": the row's
+ * `updated_at`, else (an older daemon) when it was made.
+ */
+export function lastChange(row: { id: string; updated_at?: string }): string | undefined {
+  if (row.updated_at !== undefined) return row.updated_at;
+  const born = createdAt(row.id);
+  return born !== undefined ? new Date(born).toISOString() : undefined;
 }
 
 // ---------------------------------------------------------------- recent activity

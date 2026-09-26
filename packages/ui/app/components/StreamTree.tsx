@@ -679,7 +679,7 @@ export function StreamTree({
     showAll: () => setProject(undefined),
   };
 
-  // ---- keyboard: one tab stop, the arrows walk the rows
+  // ---- keyboard: one tab stop, the arrows (or j/k) walk the rows
   const order = visibleIds(tree, fold);
   const shown = new Set(order);
   const tabStop = [focused, selected].find((id) => id !== undefined && shown.has(id)) ?? order[0];
@@ -693,7 +693,9 @@ export function StreamTree({
     const id = node.row.id;
     const at = order.indexOf(id);
     const hasChildren = node.children.length > 0;
-    switch (e.key) {
+    // T395: j and k walk the rows as ↓ and ↑ do (not with a modifier: those are the browser's).
+    const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
+    switch (plain && e.key === 'j' ? 'ArrowDown' : plain && e.key === 'k' ? 'ArrowUp' : e.key) {
       case 'ArrowDown':
         focusRow(order[at + 1]);
         break;

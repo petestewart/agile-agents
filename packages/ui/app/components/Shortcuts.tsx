@@ -3,7 +3,7 @@
  * typing) and the `g` then letter jumps to a view (`g i` Needs me). It
  * lists only keys that work: the palette (⌘K), `n` (NewStream), `/`
  * (StreamTree), Esc (every Dialog, Menu and panel), the composer's Enter,
- * `j`/`k` in Needs me (Inbox), the arrows in menus, Knowledge and the tree.
+ * `j`/`k` in Needs me (Inbox) and the tree (T395), the arrows in menus, Knowledge and the tree.
  */
 
 import { Fragment, useEffect, useState } from 'react';
@@ -74,6 +74,7 @@ function sections(mod: string): ReadonlyArray<{
       title: 'Lists',
       rows: [
         { label: 'Move through menus, results and Knowledge', keys: ['↑', '↓'] },
+        { label: 'Move through the tree', keys: ['J', 'K'] },
         { label: 'Fold or unfold a node in the tree', keys: ['←', '→'] },
       ],
     },
