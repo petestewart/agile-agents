@@ -59,6 +59,7 @@ import type { RoutedEventService } from './events';
 import {
   type CockpitFrame,
   type EventTailerHandle,
+  NothingToMergeCache,
   buildCockpitFrame,
   buildSnapshot,
   buildStreamPage,
@@ -446,6 +447,8 @@ interface FeedContext {
   trackerLinks?: TrackerLinks;
   /** T362: each repo's remote for the repo rows, never read on the frame's path. */
   remotes: RepoRemoteCache;
+  /** T380: which finished nodes have nothing to merge, never read on the frame's path. */
+  mergeState?: NothingToMergeCache;
   userHome?: string;
 }
 
@@ -460,6 +463,7 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     feed.contracts,
     (s) => feed.plans?.waitingForPlan(s) === true,
     (entry) => feed.remotes.peek(entry),
+    feed.mergeState ? (s) => feed.mergeState?.peek(s) === true : undefined,
   );
 }
 
@@ -488,6 +492,13 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     autonomy: options.autonomy,
     trackerLinks: options.trackerLinks,
     remotes: options.repoRemotes ?? new RepoRemoteCache(),
+    ...(options.landing
+      ? {
+          mergeState: new NothingToMergeCache({
+            preflight: (id) => options.landing?.preflight(id) ?? {},
+          }),
+        }
+      : {}),
     userHome: options.userHome,
   };
 }
@@ -1591,10 +1602,11 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
   );
 
   // T362: a repo's remote is read in the background; when one changes, re-push the frame once.
+  // T380: the same for a finished node's "nothing to merge".
   let remotePush: ReturnType<typeof setTimeout> | undefined;
   if (feed?.streams) {
     const streams = feed.streams;
-    feed.remotes.onChange = () => {
+    const repush = (): void => {
       if (remotePush !== undefined) return;
       remotePush = setTimeout(() => {
         remotePush = undefined;
@@ -1605,6 +1617,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         }
       }, 50);
     };
+    feed.remotes.onChange = repush;
+    if (feed.mergeState) feed.mergeState.onChange = repush;
     try {
       feed.remotes.warm(Object.values(feed.store.getRepos()));
     } catch {
@@ -1642,6 +1656,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
     async stop() {
       tailer?.stop();
       if (feed) feed.remotes.onChange = undefined;
+      if (feed?.mergeState) feed.mergeState.onChange = undefined;
       clearTimeout(remotePush);
       server.stop(true);
     },

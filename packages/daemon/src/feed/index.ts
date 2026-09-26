@@ -19,3 +19,9 @@ export {
   type EventTailerHandle,
   type EventTailerOptions,
 } from './tailer';
+export {
+  NOTHING_TO_MERGE_TTL_MS,
+  NothingToMergeCache,
+  type MergePreflight,
+  type NothingToMergeCacheOptions,
+} from './merge-state';

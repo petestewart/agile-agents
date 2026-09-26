@@ -209,6 +209,7 @@ export function newNodeDefaults(input: {
 export const LEGEND_ORDER: readonly NodeStatusKey[] = [
   'needs_you',
   'ready',
+  'no_changes',
   'blocked',
   'working',
   'pr_open',
@@ -237,6 +238,8 @@ export function legendRow(key: NodeStatusKey): StatusInput {
       return { ...base, agent_status: 'done', pr_open: true };
     case 'ready':
       return { ...base, agent_status: 'done' };
+    case 'no_changes':
+      return { ...base, agent_status: 'done', nothing_to_merge: true };
     case 'done':
       return { ...base, agent_status: 'done', role: 'coordinating' };
     case 'waiting':
@@ -256,6 +259,7 @@ export function legendRow(key: NodeStatusKey): StatusInput {
 export const LEGEND_NOTE: Record<NodeStatusKey, string> = {
   needs_you: 'Answer or decide',
   ready: 'Review the changes, then merge',
+  no_changes: 'Finished with nothing to merge; close it',
   blocked: 'Stuck; needs a hand',
   working: 'The agent is on it',
   pr_open: 'Merges on GitHub',

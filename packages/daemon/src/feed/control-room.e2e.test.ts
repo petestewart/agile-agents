@@ -2522,6 +2522,59 @@ describe('nothing to deliver (Playwright e2e, T231)', () => {
   );
 });
 
+describe('finished with nothing to merge (Playwright e2e, T380)', () => {
+  browserTest(
+    'a finished node with no commits reads "No changes" and its card closes it, not merges it',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const worktree = join(cockpit.repo, '.worktrees', 's-nothing');
+        git(['worktree', 'add', '-q', '-b', 's-nothing', worktree, 'main'], cockpit.repo);
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const stream = await cockpit.streams.create('human', {
+          title: 'nothing to do',
+          goal: 'g',
+          repo: 'demo',
+          project: shop.id,
+        });
+        await cockpit.streams.update('daemon', stream.id, {
+          branch: 's-nothing',
+          worktree,
+          agent: { status: 'done' },
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-kind="done"][data-id="${stream.id}"]`;
+        // The first frame may still say Merge; the git check lands off the frame's path.
+        await page.locator(`${card} [data-testid="close-empty"]`).waitFor();
+        expect(await page.locator(`${card} .kind`).textContent()).toBe('Finished, no changes');
+        expect(await page.locator(`${card} [data-testid="land"]`).count()).toBe(0);
+        await page
+          .locator(`${card} [data-testid="inbox-context"]`, { hasText: 'nothing to merge' })
+          .waitFor();
+
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        await waitForText(page, '[data-testid="node-status"]', 'No changes');
+
+        await page.locator(`${card} [data-testid="close-empty"]`).click();
+        await waitUntil(
+          'the node closed',
+          () => cockpit.streams.get(stream.id).human.status === 'closed',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('delivery result tone and PR state (Playwright e2e, T338)', () => {
   browserTest(
     'a pushed PR reads as success with a clickable URL; an open PR shows review, checks and auto-merge',

@@ -2079,6 +2079,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui/app/lib/defaults.test.ts packages/daemon/src/http.test.ts`; control-room e2e "T379: a project's own defaults…" (Settings save → the composer chip → Send starts that model → back to inherit clears the block).
 - **Notes:** Branch T379-project-session-defaults. A project card's "starts with" reads "Varies by repository" when its repos resolve differently. `startStreamCockpit` in the e2e now wires `ProjectService` as the daemon does.
 
+### Ticket: T380 A finished node with nothing to merge says so, and offers Close
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups doc: a work node whose agent finished without committing read *Ready to merge* on the rail and got a Merge card in Needs me, while its Delivery panel said there was nothing to merge.
+- **Acceptance Criteria:** The frame's row carries `nothing_to_merge` (from `DeliveryService.preflight`, cached in `feed/merge-state.ts` off the frame's path and re-pushed when it changes); the node reads "No changes" (amber, your move); its card reads "Finished, no changes" with Close node, in Needs me and at the end of its chat. `done` itself is unchanged, so coordinators, auto-review and the tracker push react as before.
+- **Validation Steps:** `bun test packages/daemon/src/feed/merge-state.test.ts packages/ui`; control-room e2e "a finished node with no commits reads No changes…".
+- **Notes:** Branch T380-no-changes. The check is keyed on the agent's last status change, the branch and a recorded conflict, with a 30 s TTL for commits made by hand; a node merged outside the cockpit keeps Merge (the click records it).
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Todo

@@ -236,7 +236,7 @@ describe('newNodeDefaults', () => {
 
 describe('the legend', () => {
   test('every status is listed once, and its row reads as that status', () => {
-    expect(new Set(LEGEND_ORDER).size).toBe(12);
+    expect(new Set(LEGEND_ORDER).size).toBe(13);
     for (const key of LEGEND_ORDER) expect(nodeStatus(legendRow(key)).key).toBe(key);
   });
 });

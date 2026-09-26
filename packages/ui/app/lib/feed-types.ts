@@ -81,6 +81,8 @@ export interface CockpitStreamRow {
   waiting_for_plan?: true;
   /** T341: its PR is open, so it merges on GitHub. */
   pr_open?: true;
+  /** T380: its agent finished with no commits beyond its target: nothing to merge. Absent from an older daemon. */
+  nothing_to_merge?: true;
   /** T361: a work node or conversation whose agent never ran. Absent from an older daemon. */
   never_started?: true;
   /** T361: the human stopped its agent; nothing is live and it is still open. Absent from an older daemon. */
