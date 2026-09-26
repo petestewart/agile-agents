@@ -15,7 +15,15 @@
  */
 
 import { afterAll, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
@@ -36,11 +44,12 @@ import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
 import { runInit } from '../init';
 import { LandingService } from '../landing';
+import { ProjectService } from '../projects';
 import { QuestionService } from '../questions';
 import { type RuleRpcEvalDeps, RulesService, SEED_PROVENANCE } from '../rules';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
-import { StreamService } from '../streams';
+import { RepoInPlaceService, StreamService } from '../streams';
 import {
   BROWSER_ATTEMPTS,
   BROWSER_READY_BUDGET_MS,
@@ -240,7 +249,10 @@ function browserTest(name: string, body: () => Promise<void>, timeoutMs: number)
  * launch and first page go under one budget, and only a browser that has
  * actually produced a page is ever cached.
  */
-async function openPage(options?: { colorScheme?: 'dark' | 'light' }): Promise<Page> {
+async function openPage(options?: {
+  colorScheme?: 'dark' | 'light';
+  serviceWorkers?: 'block';
+}): Promise<Page> {
   const acquired = await acquireBrowserPage({
     label: 'control-room e2e',
     cached: sharedBrowser,
@@ -282,6 +294,109 @@ const TEST_BUDGET_MS = BODY_BUDGET_MS * 2 + 5_000;
  * client reconnecting on a 2s timer against a dead port for the rest of the
  * file. The browser itself outlives the test (`openPage`).
  */
+/**
+ * Waits for a worker session the page shows as `running`. On a timeout it
+ * throws with what explains the miss: the stream's sessions as the API
+ * serves them, the session strip as rendered, the thread's daemon events,
+ * each session's stderr.log, and the page's recent API and socket traffic.
+ */
+async function waitForRunningWorker(
+  page: Page,
+  cockpit: { base: string; home: string; attachErrors?: string[] },
+  streamId: string,
+  traffic: string[],
+): Promise<void> {
+  try {
+    await page
+      .locator('[data-testid="session"][data-role="worker"][data-status="running"]')
+      .waitFor();
+  } catch (err) {
+    type PagePayload = {
+      stream: {
+        sessions: Array<{ id: string }>;
+        worktree?: string;
+        branch?: string;
+        agent: unknown;
+      };
+      thread: Array<{ by: string; body: string }>;
+    };
+    const api = await fetch(`${cockpit.base}/api/streams/${streamId}`)
+      .then((res) => res.json() as Promise<PagePayload>)
+      .catch(() => undefined);
+    const strip = await page
+      .locator('[data-testid="sessions"]')
+      .evaluateAll((els) => els.map((el) => el.outerHTML))
+      .catch((e: unknown) => [`(unreadable: ${String(e)})`]);
+    const alerts = await page
+      .locator('[role="alert"]')
+      .allTextContents()
+      .catch(() => []);
+    const stderr = (api?.stream.sessions ?? []).map((s) => {
+      try {
+        const log = readFileSync(join(cockpit.home, 'sessions', s.id, 'stderr.log'), 'utf8');
+        return `${s.id}:\n${log.slice(-2000)}`;
+      } catch {
+        return `${s.id}: (no stderr.log)`;
+      }
+    });
+    throw new Error(
+      [
+        String(err),
+        `api sessions: ${JSON.stringify(api?.stream.sessions)}`,
+        `stream: ${JSON.stringify({ worktree: api?.stream.worktree, branch: api?.stream.branch, agent: api?.stream.agent })}`,
+        `attach errors: ${(cockpit.attachErrors ?? []).join('\n---\n') || 'none'}`,
+        `thread (daemon): ${JSON.stringify(api?.thread.filter((e) => e.by === 'daemon').map((e) => e.body))}`,
+        `session strip: ${strip.join('\n')}`,
+        `alerts: ${JSON.stringify(alerts)}`,
+        `stderr:\n${stderr.join('\n')}`,
+        `traffic (last 40):\n${traffic.slice(-40).join('\n')}`,
+      ].join('\n'),
+    );
+  }
+}
+
+/** Records the page's API and socket traffic and console errors, for {@link waitForRunningWorker}. */
+function recordTraffic(page: Page): string[] {
+  const log: string[] = [];
+  const t0 = Date.now();
+  const at = (): string => `+${Date.now() - t0}ms`;
+  const path = (url: string): string => new URL(url).pathname;
+  page.on('request', (r) => {
+    if (r.url().includes('/api/')) log.push(`${at()} > ${r.method()} ${path(r.url())}`);
+  });
+  page.on('response', (r) => {
+    if (!r.url().includes('/api/')) return;
+    const line = `${at()} < ${r.status()} ${path(r.url())}`;
+    if (r.status() < 400) {
+      log.push(line);
+      return;
+    }
+    // The refusal's reason is the whole point of a failing call.
+    const index = log.push(line) - 1;
+    void r
+      .text()
+      .then((body) => {
+        log[index] = `${line} ${body.slice(0, 500)}`;
+      })
+      .catch(() => {});
+  });
+  page.on('requestfailed', (r) => log.push(`${at()} x ${r.url()} ${r.failure()?.errorText}`));
+  page.on('console', (m) => {
+    if (m.type() === 'error' || m.type() === 'warning') {
+      log.push(`${at()} console.${m.type()}: ${m.text()}`);
+    }
+  });
+  page.on('websocket', (ws) => {
+    log.push(`${at()} ws open ${path(ws.url())}`);
+    ws.on('close', () => log.push(`${at()} ws close`));
+    ws.on('framereceived', (f) => {
+      const text = typeof f.payload === 'string' ? f.payload : '';
+      log.push(`${at()} ws < ${text.slice(0, 60)}`);
+    });
+  });
+  return log;
+}
+
 async function teardown(pages: Array<Page | undefined>): Promise<void> {
   await Promise.allSettled(
     pages.filter((p): p is Page => p !== undefined).map((p) => p.context().close()),
@@ -368,6 +483,7 @@ interface Cockpit {
   home: string;
   store: StateStore;
   streams: StreamService;
+  projects: ProjectService;
   questions: QuestionService;
   gates: GateService;
   rules: RulesService;
@@ -399,6 +515,7 @@ async function startCockpit(
   const gates = new GateService(store);
   const rules = new RulesService({ store, streams });
   const inbox = new InboxService({ streams, questions, gates, rules });
+  const projects = new ProjectService(store, streams);
   const http = startHttpServer({
     port: 0,
     version: 'test',
@@ -407,6 +524,7 @@ async function startCockpit(
     store,
     gates,
     streams,
+    projects,
     questions,
     inbox,
     rules,
@@ -428,6 +546,7 @@ async function startCockpit(
     home,
     store,
     streams,
+    projects,
     questions,
     gates,
     rules,
@@ -1015,6 +1134,8 @@ interface StreamCockpit {
   rules: RulesService;
   verbs: VerbService;
   attach: AttachService;
+  /** Every attach that threw, with its stack: what a 400 from the attach route was. */
+  attachErrors: string[];
   base: string;
   stop(): Promise<void>;
 }
@@ -1040,7 +1161,11 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
 
   const init = runInit(home);
   const store = StateStore.open(init.stateRoot);
-  await store.putRepos({ demo: { path: repo, protected_branches: [] } });
+  // T205: a second repo, for + Repo's second part (never checked out: parts cut on first attach).
+  await store.putRepos({
+    demo: { path: repo, protected_branches: [] },
+    web: { path: repo, protected_branches: [] },
+  });
   const streams = new StreamService(store);
   const gates = new GateService(store);
   const rules = new RulesService({ store, streams });
@@ -1072,6 +1197,16 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
     questions: { listOpen: () => questions.listOpen() },
     gates: { list: () => gates.list() },
   });
+  const attachErrors: string[] = [];
+  const attachOnce = attach.attach.bind(attach);
+  attach.attach = async (...args) => {
+    try {
+      return await attachOnce(...args);
+    } catch (err) {
+      attachErrors.push(err instanceof Error ? (err.stack ?? err.message) : String(err));
+      throw err;
+    }
+  };
   const verbs = new VerbService({ store, streams, questions, docs, rules });
   const landing = new LandingService({ store, streams, gates });
   const inbox = new InboxService({ streams, questions, gates, rules });
@@ -1088,6 +1223,10 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
     rules,
     landing,
     attach,
+    repoInPlace: new RepoInPlaceService(store, streams, {
+      attach: (id) => attach.attach(id),
+      stop: (id) => attach.stop(id),
+    }),
     docs,
     feedPollIntervalMs: 50,
   });
@@ -1101,6 +1240,7 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
     rules,
     verbs,
     attach,
+    attachErrors,
     base: `http://127.0.0.1:${http.port}`,
     async stop() {
       await attach.stopAll();
@@ -1168,6 +1308,7 @@ describe('stream page (Playwright e2e, T161)', () => {
         );
 
         page = await openPage();
+        const traffic = recordTraffic(page);
         await page.goto(`${cockpit.base}/`);
         await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
         const root = `[data-testid="stream-page"][data-stream="${stream.id}"]`;
@@ -1190,9 +1331,7 @@ describe('stream page (Playwright e2e, T161)', () => {
         );
         expect(await page.locator('[data-testid="picker-effort"]').inputValue()).toBe('low');
         await page.locator('[data-testid="picker-start"]').click();
-        await page
-          .locator('[data-testid="session"][data-role="worker"][data-status="running"]')
-          .waitFor();
+        await waitForRunningWorker(page, cockpit, stream.id, traffic);
         await page
           .locator('[data-testid="thread-entry"][data-by="agent"]', {
             hasText: 'reading the parser',
@@ -1544,7 +1683,7 @@ describe('stream page rough edges (Playwright e2e, T166)', () => {
 
 describe('parents and land conflicts (Playwright e2e, T176)', () => {
   browserTest(
-    'attach on a parent asks first; a conflicted land shows the files, not "Ready"; Resolve then re-land',
+    'attach on a parent starts straight away; a conflicted land shows the files, not "Ready"; Resolve then re-land',
     async () => {
       const quick: FakeAgentScript = { steps: [{ type: 'end_turn' }] };
       const cockpit = await startStreamCockpit([quick, quick]);
@@ -1563,15 +1702,8 @@ describe('parents and land conflicts (Playwright e2e, T176)', () => {
         await page.locator(`[data-testid="stream-page"][data-stream="${parent.id}"]`).waitFor();
         await page.locator('[data-testid="attach"]').click();
         await page.locator('[data-testid="picker-start"]').click();
-        const confirm = page.locator('[data-testid="attach-confirm"]');
-        await confirm.waitFor({ state: 'visible' });
-        expect(await confirm.textContent()).toContain(
-          "A parent's branch is where its children land",
-        );
-        expect(cockpit.streams.get(parent.id).sessions).toHaveLength(0);
-        await page.locator('[data-testid="attach-confirm-force"]').click();
+        // D20: no parent-attach confirmation any more; the worker just starts.
         await page.locator('[data-testid="session"][data-role="worker"]').waitFor();
-        await confirm.waitFor({ state: 'detached' });
 
         // A stream whose branch and main both change shared.txt.
         const worktree = join(cockpit.repo, '.worktrees', 's-conflict');
@@ -1717,6 +1849,68 @@ describe('rule hits on the stream (Playwright e2e, T169)', () => {
   );
 });
 
+describe('a long agent message collapses (Playwright e2e, T330)', () => {
+  browserTest(
+    'an agent line past ~12 lines renders collapsed with Show more / Show less',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', { title: 'plan', goal: 'g' });
+        const paragraphs = Array.from(
+          { length: 30 },
+          (_, i) => `Paragraph ${i}: the plan keeps going across both repos.`,
+        );
+        const body = `${paragraphs.join('\n\n')}\n\nLONG-TAIL-MARKER`;
+        expect(body.length).toBeGreaterThan(1600);
+        await cockpit.store.appendThreadEntry(stream.id, {
+          ts: new Date().toISOString(),
+          by: 'agent:01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          kind: 'line',
+          body,
+        });
+        await cockpit.store.appendThreadEntry(stream.id, {
+          ts: new Date().toISOString(),
+          by: 'agent:01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          kind: 'line',
+          body: 'a short one',
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        const long = page.locator('[data-testid="thread-entry"]', { hasText: 'Paragraph 0' });
+        await long.waitFor({ state: 'visible' });
+        // One entry, the whole text in it.
+        expect(await long.count()).toBe(1);
+        expect(await long.textContent()).toContain('LONG-TAIL-MARKER');
+        const toggle = long.locator('[data-testid="thread-expand"]');
+        expect(await toggle.textContent()).toBe('Show more');
+        const bodyBox = long.locator('[data-testid="thread-body"]');
+        const clipped = () => bodyBox.evaluate((el) => el.scrollHeight > el.clientHeight + 1);
+        expect(await clipped()).toBe(true);
+
+        await toggle.click();
+        expect(await toggle.textContent()).toBe('Show less');
+        expect(await toggle.getAttribute('aria-expanded')).toBe('true');
+        expect(await clipped()).toBe(false);
+        await toggle.click();
+        expect(await toggle.textContent()).toBe('Show more');
+        expect(await clipped()).toBe(true);
+
+        // A short entry has no toggle.
+        const short = page.locator('[data-testid="thread-entry"]', { hasText: 'a short one' });
+        expect(await short.locator('[data-testid="thread-expand"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 // ---- T162: new stream, quick capture, `n` and `/` -------------------------
 
 describe('new stream and quick capture (Playwright e2e, T162)', () => {
@@ -1726,6 +1920,8 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
       try {
+        // T208: the only project is where a capture on "All" files.
+        const shop = await cockpit.projects.create({ name: 'shop' });
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-testid="inbox-empty"]').waitFor({ state: 'visible' });
@@ -1735,11 +1931,12 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
         await page.locator('[data-testid="quick-capture"]').press('Enter');
 
         await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
-        await waitUntil('the stream to exist', () => cockpit.streams.list().length === 1);
-        const created = cockpit.streams.list()[0];
+        await waitUntil('the stream to exist', () => cockpit.streams.list().length === 2);
+        const created = cockpit.streams.list().find((s) => s.id !== shop.root);
         expect(created?.title).toBe('why is the nightly export slow?');
         expect(created?.repo).toBeUndefined();
-        expect(created?.parent).toBeUndefined();
+        expect(created?.parent).toBe(shop.root);
+        expect(created?.project).toBe(shop.id);
         const row = `[data-testid="stream-tree"] [data-stream="${created?.id}"]`;
         await page.locator(row).waitFor({ state: 'visible' });
         expect(await page.locator(row).getAttribute('aria-current')).toBe('true');
@@ -1758,7 +1955,12 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
       try {
-        const parent = await cockpit.streams.create('human', { title: 'ledger-lite', goal: 'g' });
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const parent = await cockpit.streams.create('human', {
+          title: 'ledger-lite',
+          goal: 'g',
+          project: shop.id,
+        });
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page
@@ -1780,8 +1982,8 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
 
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
         await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
-        await waitUntil('the child to exist', () => cockpit.streams.list().length === 2);
-        const child = cockpit.streams.list().find((s) => s.id !== parent.id);
+        await waitUntil('the child to exist', () => cockpit.streams.list().length === 3);
+        const child = cockpit.streams.list().find((s) => s.parent === parent.id);
         expect(child?.title).toBe('import CSV');
         expect(child?.parent).toBe(parent.id);
         await page
@@ -1827,6 +2029,545 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
 
         await page.keyboard.press('Escape');
         await page.locator(`${tree} [data-stream="${other.id}"]`).waitFor({ state: 'visible' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('add a repo from Settings (Playwright e2e, T206)', () => {
+  browserTest(
+    'fixtures/demo-project registers from Settings and shows in the New stream repo picker; a bad path shows the one-line error',
+    async () => {
+      const cockpit = await startCockpit();
+      const fixture = join(import.meta.dir, '..', '..', '..', '..', 'fixtures', 'demo-project');
+      const scratch = mkdtempSync(join(tmpdir(), 'agile-repo-add-e2e-'));
+      const repo = join(scratch, 'demo-project');
+      let page: Page | undefined;
+      try {
+        cpSync(fixture, repo, { recursive: true });
+        git(['init', '-q', '-b', 'master'], repo);
+        git(['config', 'user.email', 'test@example.com'], repo);
+        git(['config', 'user.name', 'Test'], repo);
+        git(['add', '-A'], repo);
+        git(['commit', '-q', '-m', 'init'], repo);
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-view="settings"]').click();
+        await page.locator('[data-testid="settings-repos-empty"]').waitFor({ state: 'visible' });
+
+        // A path inside a repo but not its toplevel is refused with the daemon's line.
+        await page.locator('[data-testid="settings-repo-add-path"]').fill(join(repo, 'src'));
+        await page.locator('[data-testid="settings-repo-add-save"]').click();
+        await waitForText(
+          page,
+          '[data-testid="settings-repo-add-error"]',
+          `state.repo_add: ${join(repo, 'src')} is not the repo's toplevel (that is ${repo})`,
+        );
+        const missing = join(scratch, 'nope');
+        await page.locator('[data-testid="settings-repo-add-path"]').fill(missing);
+        await page.locator('[data-testid="settings-repo-add-save"]').click();
+        await waitForText(
+          page,
+          '[data-testid="settings-repo-add-error"]',
+          `state.repo_add: ${missing} does not exist`,
+        );
+        expect(cockpit.store.getRepos()).toEqual({});
+
+        await page.locator('[data-testid="settings-repo-add-path"]').fill(repo);
+        await page.locator('[data-testid="settings-repo-add-protected"]').fill('master, release');
+        await page.locator('[data-testid="settings-repo-add-save"]').click();
+        await waitForText(page, '[data-testid="settings-repo-demo-project-main"]', 'master');
+        expect(await page.locator('[data-testid="settings-repo-add-error"]').count()).toBe(0);
+        expect(cockpit.store.getRepos()['demo-project']?.protected_branches).toEqual([
+          'master',
+          'release',
+        ]);
+
+        await page.keyboard.press('n');
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
+        await page
+          .locator('[data-testid="new-stream-repo-names"] option[value="demo-project"]')
+          .waitFor({ state: 'attached' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T208: the project tree and switcher -----------------------------------
+
+describe('project tree and switcher (Playwright e2e, T208)', () => {
+  browserTest(
+    "two projects: each one's nodes show only under it; quick capture lands in the selected one",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const shopNode = await cockpit.streams.create('human', {
+          title: 'checkout',
+          goal: 'g',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const tree = '[data-testid="stream-tree"]';
+        await page.locator(`${tree} [data-stream="${shopNode.id}"]`).waitFor({ state: 'visible' });
+        // The root carries the project icon, and the node nests under it.
+        expect(
+          await page.locator(`${tree} [data-stream="${shop.root}"]`).getAttribute('data-role'),
+        ).toBe('project');
+        await page
+          .locator(`[data-stream="${shop.root}"] + ul [data-stream="${shopNode.id}"]`)
+          .waitFor({ state: 'visible' });
+
+        // "New project" from the rail: the switcher moves to it.
+        await page.locator('[data-testid="new-project-open"]').click();
+        await page.locator('[data-testid="new-project-name"]').fill('docs');
+        await page.locator('[data-testid="new-project-create"]').click();
+        await page.locator('[data-testid="new-project"]').waitFor({ state: 'detached' });
+        await waitUntil('the project to exist', () => cockpit.projects.list().length === 2);
+        const docs = cockpit.projects.list().find((p) => p.name === 'docs');
+        if (!docs) throw new Error('docs project missing');
+        await waitUntilAsync(
+          'the switcher to select docs',
+          async () =>
+            (await page?.locator('[data-testid="project-switcher"]').inputValue()) === docs.id,
+        );
+        await page.locator(`${tree} [data-stream="${docs.root}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${tree} [data-stream="${shopNode.id}"]`).count()).toBe(0);
+        expect(await page.locator(`${tree} [data-stream="${shop.root}"]`).count()).toBe(0);
+
+        // Quick capture files into the selected project (not the only/first one).
+        await page.locator('[data-testid="quick-capture"]').fill('write the guide');
+        await page.locator('[data-testid="quick-capture"]').press('Enter');
+        await waitUntil('the capture to exist', () =>
+          cockpit.streams.list().some((s) => s.title === 'write the guide'),
+        );
+        const captured = cockpit.streams.list().find((s) => s.title === 'write the guide');
+        expect(captured?.project).toBe(docs.id);
+        expect(captured?.parent).toBe(docs.root);
+        await page.locator(`${tree} [data-stream="${captured?.id}"]`).waitFor({ state: 'visible' });
+        expect(
+          await page.locator(`${tree} [data-stream="${docs.root}"]`).getAttribute('data-role'),
+        ).toBe('project');
+
+        // Back to shop: only shop's nodes.
+        await page.locator('[data-testid="project-switcher"]').selectOption(shop.id);
+        await page.locator(`${tree} [data-stream="${shopNode.id}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${tree} [data-stream="${captured?.id}"]`).count()).toBe(0);
+        expect(await page.locator(`${tree} [data-stream="${docs.root}"]`).count()).toBe(0);
+
+        // "All" shows both projects' trees.
+        await page.locator('[data-testid="project-switcher"]').selectOption('');
+        await page.locator(`${tree} [data-stream="${captured?.id}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${tree} [data-stream="${shopNode.id}"]`).count()).toBe(1);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('collapsing the rail (Playwright e2e, T331)', () => {
+  browserTest(
+    'a caret folds a subtree without navigating, the fold survives a reload, and a hidden question still shows',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const root = await cockpit.streams.create('human', { title: 'shop', goal: 'g' });
+        const mid = await cockpit.streams.create('human', {
+          title: 'ledger export',
+          goal: 'g',
+          parent: root.id,
+        });
+        const leaf = await cockpit.streams.create('human', {
+          title: 'csv writer',
+          goal: 'g',
+          parent: mid.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const tree = '[data-testid="stream-tree"]';
+        const rowOf = (id: string): string => `${tree} [data-stream="${id}"]`;
+        const caretOf = (id: string): string =>
+          `${tree} li:has(> [data-stream="${id}"]) > [data-testid="tree-caret"]`;
+        await page.locator(rowOf(leaf.id)).waitFor({ state: 'visible' });
+        // Only nodes with children carry a caret.
+        expect(await page.locator(caretOf(leaf.id)).count()).toBe(0);
+        expect(await page.locator(caretOf(root.id)).getAttribute('aria-expanded')).toBe('true');
+
+        // Collapse the root: its subtree goes, and the page stays on the inbox.
+        await page.locator(caretOf(root.id)).click();
+        await page.locator(rowOf(mid.id)).waitFor({ state: 'detached' });
+        expect(await page.locator(rowOf(leaf.id)).count()).toBe(0);
+        expect(await page.locator(caretOf(root.id)).getAttribute('aria-expanded')).toBe('false');
+        expect(await page.locator('[data-testid="inbox-empty"]').isVisible()).toBe(true);
+        expect(
+          await page.locator(`${rowOf(root.id)} [data-testid="collapsed-needs-you"]`).count(),
+        ).toBe(0);
+
+        // A question deep inside the folded subtree shows on the folded row.
+        await cockpit.questions.raise({
+          stream: leaf.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session: ulid(),
+          text: 'quote every field?',
+        });
+        await page
+          .locator(`${rowOf(root.id)} [data-testid="collapsed-needs-you"]`)
+          .waitFor({ state: 'visible' });
+
+        // The fold survives a reload.
+        await page.reload();
+        await page.locator(rowOf(root.id)).waitFor({ state: 'visible' });
+        await page
+          .locator(`${rowOf(root.id)} [data-testid="collapsed-needs-you"]`)
+          .waitFor({ state: 'visible' });
+        expect(await page.locator(rowOf(mid.id)).count()).toBe(0);
+
+        // Expand from the keyboard: the children come back, the marker goes.
+        await page.locator(rowOf(root.id)).focus();
+        await page.keyboard.press('ArrowRight');
+        await page.locator(rowOf(leaf.id)).waitFor({ state: 'visible' });
+        expect(
+          await page.locator(`${rowOf(root.id)} [data-testid="collapsed-needs-you"]`).count(),
+        ).toBe(0);
+
+        // Double-clicking a row folds it too; the caret expands it again.
+        await page.locator(rowOf(mid.id)).dblclick();
+        await page.locator(rowOf(leaf.id)).waitFor({ state: 'detached' });
+        await page.locator(caretOf(mid.id)).click();
+        await page.locator(rowOf(leaf.id)).waitFor({ state: 'visible' });
+
+        // Expanded state persists as well.
+        await page.reload();
+        await page.locator(rowOf(leaf.id)).waitFor({ state: 'visible' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('New stream starts the agent (Playwright e2e, T204)', () => {
+  browserTest(
+    'a node made from New stream shows a running session without a second click',
+    async () => {
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'tool_call', toolCallId: 'w-1', title: 'read' }, { type: 'hang' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const parent = await cockpit.streams.create('human', {
+          title: 'ledger-lite',
+          goal: 'g',
+          project: shop.id,
+        });
+        page = await openPage();
+        const traffic = recordTraffic(page);
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`).click();
+        await page.keyboard.press('n');
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
+        await page.locator('[data-testid="new-stream-title"]').fill('import CSV');
+        await page.locator('[data-testid="new-stream-repo"]').fill('demo');
+        await page.locator('[data-testid="new-stream-create"]').click();
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
+
+        const created = cockpit.streams.list().find((x) => x.title === 'import CSV');
+        await waitForRunningWorker(page, cockpit, created?.id ?? '', traffic);
+        // The control reads Restart once a worker has run.
+        expect(await page.locator('[data-testid="attach"]').textContent()).toBe('Restart');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a stale stream-page read that lands last never hides a running session',
+    async () => {
+      // Every pushed frame and every action re-reads the page, so reads
+      // overlap and their responses can land in any order.
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'tool_call', toolCallId: 'w-1', title: 'read' }, { type: 'hang' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', {
+          title: 'CSV parser',
+          goal: 'g',
+          repo: 'demo',
+        });
+        // The cockpit's service worker would take the reads out of `page.route`'s sight.
+        page = await openPage({ serviceWorkers: 'block' });
+        // The first page read is served before the attach commits (no
+        // session yet). Answer the first read after the attach with that
+        // stale body, late: a read served before a write, arriving after
+        // the reads served after it, the order a loaded CI box can produce.
+        let staleBody: string | undefined;
+        let attached = false;
+        let held = 0;
+        await page.route(
+          (url) => url.pathname.startsWith('/api/streams/'),
+          async (route) => {
+            const request = route.request();
+            const response = await route.fetch();
+            if (request.method() === 'POST') {
+              await route.fulfill({ response });
+              attached = true;
+              return;
+            }
+            if (!request.url().endsWith(`/api/streams/${stream.id}`)) {
+              await route.fulfill({ response });
+              return;
+            }
+            if (staleBody === undefined) staleBody = await response.text();
+            if (attached && held === 0) {
+              held += 1;
+              await new Promise((resolve) => setTimeout(resolve, 1_500));
+              await route.fulfill({ response, body: staleBody });
+              return;
+            }
+            await route.fulfill({ response });
+          },
+        );
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator('[data-testid="attach"]').click();
+        await page.locator('[data-testid="picker-start"]').click();
+        await page
+          .locator('[data-testid="session"][data-role="worker"][data-status="running"]')
+          .waitFor();
+        // Past every held read: the page still shows the fresh state.
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        expect(held).toBeGreaterThan(0);
+        expect(
+          await page
+            .locator('[data-testid="session"][data-role="worker"]')
+            .getAttribute('data-status'),
+        ).toBe('running');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'quick capture files a node and starts no session',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const parent = await cockpit.streams.create('human', {
+          title: 'ledger-lite',
+          goal: 'g',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`).click();
+        await page.locator('[data-testid="quick-capture"]').fill('why is export slow?');
+        await page.locator('[data-testid="quick-capture"]').press('Enter');
+        await waitUntil('the captured node', () =>
+          cockpit.streams.list().some((s) => s.title === 'why is export slow?'),
+        );
+        const captured = cockpit.streams.list().find((s) => s.title === 'why is export slow?');
+        await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
+        expect(captured?.sessions).toEqual([]);
+        expect(await page.locator('[data-testid="attach"]').textContent()).toBe('Start');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('+ Repo in place (Playwright e2e, T205)', () => {
+  browserTest(
+    '+ Repo on a conversation keeps the thread; a second repo (from a proposal) adds part rows',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'Sale prices',
+          goal: 'can we show sale prices?',
+          project: shop.id,
+        });
+        await cockpit.streams.appendThread('human', node.id, {
+          kind: 'line',
+          body: 'THREAD-MARKER-205',
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        const root = `[data-testid="stream-page"][data-stream="${node.id}"]`;
+        await page.locator(root).waitFor();
+
+        // Conversation + demo: a work node with a branch, the same thread.
+        await page.locator('[data-testid="add-repo"]').click();
+        await page.locator('[data-testid="add-repo-select"]').selectOption('demo');
+        await page.locator('[data-testid="add-repo-submit"]').click();
+        await page.locator('[data-testid="stream-status"]', { hasText: 'stream/' }).waitFor();
+        expect(cockpit.streams.get(node.id).repo).toBe('demo');
+        await page
+          .locator(`${root} [data-testid="thread"]`, { hasText: 'THREAD-MARKER-205' })
+          .waitFor();
+
+        // The agent's "web too?" proposal carries an Add button.
+        await cockpit.streams.appendThread('daemon', node.id, {
+          kind: 'proposal',
+          body: 'next: this needs a change in web too; add it?',
+        });
+        await page.locator('[data-testid="proposal-add-repo"]', { hasText: 'Add web' }).click();
+        await waitUntil(
+          'two parts',
+          () => cockpit.streams.list().filter((s) => s.parent === node.id).length === 2,
+        );
+        const parts = cockpit.streams.list().filter((s) => s.parent === node.id);
+        for (const part of parts) {
+          await page.locator(`[data-testid="stream-tree"] [data-stream="${part.id}"]`).waitFor();
+        }
+        expect(parts.map((p) => p.title).sort()).toEqual(['demo part', 'web part']);
+        await page
+          .locator(
+            `[data-testid="stream-tree"] [data-stream="${node.id}"][data-role="coordinating"]`,
+          )
+          .waitFor();
+        await page
+          .locator(`${root} [data-testid="thread"]`, { hasText: 'THREAD-MARKER-205' })
+          .waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T209: the repo view and lenses ----------------------------------------
+
+describe('repo view and lenses (Playwright e2e, T209)', () => {
+  browserTest(
+    'a node on api in two projects shows under api with both paths; Running lists only live sessions',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({
+          api: { path: cockpit.home, delivery: 'pr' },
+          web: { path: cockpit.home },
+        });
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const blog = await cockpit.projects.create({ name: 'Blog' });
+        const feature = await cockpit.streams.create('human', {
+          title: 'Show sale prices',
+          goal: 'g',
+          project: shop.id,
+        });
+        const shopApi = await cockpit.streams.create('human', {
+          title: 'api: add salePrice',
+          goal: 'g',
+          parent: feature.id,
+          repo: 'api',
+        });
+        await cockpit.streams.create('human', {
+          title: 'Show the sale on web',
+          goal: 'g',
+          parent: feature.id,
+        });
+        const blogApi = await cockpit.streams.create('human', {
+          title: 'api: add /posts',
+          goal: 'g',
+          project: blog.id,
+          repo: 'api',
+        });
+        await cockpit.streams.update('human', blogApi.id, {
+          waits_on: [{ node: shopApi.id, added_by: 'human', added_at: new Date().toISOString() }],
+        });
+        await cockpit.store.updateStream('daemon', shopApi.id, (s) => ({
+          ...s,
+          sessions: [
+            {
+              id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+              vendor: 'claude',
+              model: 'm',
+              role: 'worker',
+              status: 'running',
+            },
+          ],
+        }));
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-view="repos"]').click();
+        const api = '[data-testid="repo-view"] [data-repo="api"]';
+        await page.locator(`${api} [data-stream="${blogApi.id}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${api} [data-testid="repo-delivery"]`).textContent()).toBe(
+          '(pr)',
+        );
+        expect(
+          await page
+            .locator(`${api} [data-stream="${shopApi.id}"] [data-testid="node-path"]`)
+            .textContent(),
+        ).toBe('Shop › Show sale prices › api: add salePrice');
+        expect(
+          await page
+            .locator(`${api} [data-stream="${blogApi.id}"] [data-testid="node-path"]`)
+            .textContent(),
+        ).toBe('Blog › api: add /posts');
+        expect(await page.locator(`${api} [data-stream]`).count()).toBe(2);
+        expect(
+          await page
+            .locator('[data-testid="repo-view"] [data-repo="web"] [data-testid="repo-delivery"]')
+            .textContent(),
+        ).toBe('(direct)');
+
+        await page.locator('[data-view="running"]').click();
+        const running = '[data-testid="running-lens"]';
+        await page
+          .locator(`${running} [data-stream="${shopApi.id}"]`)
+          .waitFor({ state: 'visible' });
+        expect(await page.locator(`${running} [data-stream]`).count()).toBe(1);
+
+        await page.locator('[data-view="deps"]').click();
+        await waitForText(
+          page,
+          '[data-testid="deps-lens"] [data-testid="dep-edge"]',
+          'api: add /posts waits on api: add salePrice',
+        );
       } finally {
         await teardown([page]);
         await cockpit.stop();

@@ -14,10 +14,14 @@ import {
 import { RpcParamError, optionalString, paramErrors, requireObject } from '../gates/rpc';
 import { type ThreadReplyDeps, sayAndAnswer } from '../questions/thread-reply';
 import type { RpcMethodHandler } from '../rpc';
+import { WorktreeRefusedError } from '../runner/worktrees';
+import { EmptyRepoError } from '../store/rpc-methods';
 import { AlreadyExistsError } from '../store/store';
+import { RepoInPlaceError, type RepoInPlaceService } from './repo-in-place';
 import {
   type StreamNode,
   type StreamPatch,
+  StreamProjectError,
   type StreamService,
   UnknownParentStreamError,
   UnknownRepoError,
@@ -34,6 +38,14 @@ function requireStreamId(value: unknown): string {
     });
   }
   return result.data;
+}
+
+function requireRepoName(value: unknown): string {
+  const repo = optionalString(value, 'repo');
+  if (repo === undefined) {
+    throw new RpcParamError('invalid "repo": must be a registered repo name', { repo: value });
+  }
+  return repo;
 }
 
 function optionalBoolean(value: unknown, field: string): boolean | undefined {
@@ -82,8 +94,6 @@ function requireHumanPatch(params: Record<string, unknown>): StreamPatch {
   if (title !== undefined) patch.title = title;
   const goal = optionalString(params.goal, 'goal');
   if (goal !== undefined) patch.goal = goal;
-  const targetBranch = optionalString(params.target_branch, 'target_branch');
-  if (targetBranch !== undefined) patch.target_branch = targetBranch;
   if (params.parent !== undefined) patch.parent = requireStreamId(params.parent);
   // §6.4's per-stream opt-out. `'on'` just clears it, so the repo/home default decides.
   if (params.classifier !== undefined) {
@@ -109,6 +119,10 @@ const asParamErrors = paramErrors(
   AlreadyExistsError,
   UnknownParentStreamError,
   UnknownRepoError,
+  StreamProjectError,
+  RepoInPlaceError,
+  WorktreeRefusedError,
+  EmptyRepoError,
 );
 
 /**
@@ -118,16 +132,45 @@ const asParamErrors = paramErrors(
  */
 export interface StreamRpcOptions {
   reply?: ThreadReplyDeps;
+  /** T204: create and start the node's agent (`AttachService.createNode`). */
+  create?: StreamService['create'];
+  /** T205: `node.add_repo` / `node.switch_repo` (projects-design §7). */
+  repoInPlace?: RepoInPlaceService;
 }
 
 export function buildStreamRpcMethods(
   service: StreamService,
   options: StreamRpcOptions = {},
 ): Record<string, RpcMethodHandler> {
+  const repoInPlace = options.repoInPlace;
+  const reshapes: Record<string, RpcMethodHandler> =
+    repoInPlace === undefined
+      ? {}
+      : {
+          'node.add_repo': async (params) => {
+            const p = requireObject(params);
+            const id = requireStreamId(p.id);
+            const repo = requireRepoName(p.repo);
+            return asParamErrors(() => repoInPlace.addRepo(id, repo));
+          },
+          'node.switch_repo': async (params) => {
+            const p = requireObject(params);
+            const id = requireStreamId(p.id);
+            const repo = requireRepoName(p.repo);
+            return asParamErrors(() => repoInPlace.switchRepo(id, repo));
+          },
+        };
   return {
+    ...reshapes,
     'stream.create': async (params) =>
       asParamErrors(() =>
-        service.create(EDGE_PRINCIPAL, validateStreamCreateInput(requireObject(params))),
+        (options.create ?? service.create.bind(service))(
+          EDGE_PRINCIPAL,
+          validateStreamCreateInput(requireObject(params)),
+          {
+            requireProject: true,
+          },
+        ),
       ),
 
     'stream.get': (params) => {

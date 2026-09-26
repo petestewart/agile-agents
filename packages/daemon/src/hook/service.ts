@@ -35,6 +35,7 @@ import {
 import type { Bus } from '../bus';
 import { type Classifier, ClassifierUnavailableError, classifierEnabled } from '../classifier';
 import { isPathInside } from '../permissions/command';
+import { nodeReadScope } from '../permissions/policy-tables';
 import { worktreeBranchLookups } from '../permissions/push-detector';
 import { patternRulesOf, protectedBranchesFor } from '../permissions/rule-checks';
 import type { RuleStatsOutcome } from '../rules/service';
@@ -132,6 +133,8 @@ export interface HookServiceOptions {
    */
   classifier?: HookClassifier;
   limits?: HookLimits;
+  /** T213: the agile home, denied to every read outside the session's own dir. */
+  agileHome?: string;
   /** Injectable for tests; defaults to `node:fs.statSync`. */
   fileSize?: (path: string) => number | undefined;
   now?: () => Date;
@@ -300,12 +303,22 @@ export class HookService {
         : this.bus.poll(session as AgentId),
       limits: this.limits,
       fileSize: this.fileSize,
+      ...this.readScope(stream),
       // Both git lookups are lazy and memoized: an ordinary call spawns none.
       patternRules: this.patternRulesFor(stream),
       protectedBranches: protectedBranchesFor(this.store, stream),
       upstreamBranch: branches.upstream,
       headBranch: branches.head,
     };
+  }
+
+  /** T213, T330: the registered repos this node may read, and what it never may. */
+  private readScope(stream: string): Pick<HookDecisionContext, 'readRoots' | 'hiddenRoots'> {
+    return nodeReadScope(
+      this.streamRecord(stream),
+      () => this.store.getRepos(),
+      this.options.agileHome,
+    );
   }
 
   /** The accepted pattern rules in scope for this stream (§5.3). */

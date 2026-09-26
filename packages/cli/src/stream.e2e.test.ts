@@ -7,7 +7,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Stream } from '@agile-agents/shared';
 import { runCli } from './index';
@@ -27,6 +28,9 @@ async function cli(argv: string[]): Promise<{ code: number; out: string }> {
   }
 }
 
+let projectId: string;
+let projectRoot: string;
+
 async function newStream(title: string, extra: string[] = []): Promise<Stream> {
   const result = await cli([
     'stream',
@@ -35,7 +39,10 @@ async function newStream(title: string, extra: string[] = []): Promise<Stream> {
     title,
     '--goal',
     `goal: ${title}`,
+    ...(extra.includes('--parent') ? [] : ['--project', projectId]),
     ...extra,
+    // T204: these tests attach by hand; `node new` would otherwise start one.
+    '--no-start',
     '--json',
   ]);
   expect(result.code).toBe(0);
@@ -44,10 +51,77 @@ async function newStream(title: string, extra: string[] = []): Promise<Stream> {
 
 beforeEach(async () => {
   daemon = await startTestDaemon('agile-stream-e2e-');
+  const project = JSON.parse((await cli(['project', 'new', '--name', 'Shop', '--json'])).out) as {
+    id: string;
+    root: string;
+  };
+  projectId = project.id;
+  projectRoot = project.root;
 });
 
 afterEach(async () => {
   await daemon.cleanup();
+});
+
+describe('agile node (T201)', () => {
+  test('node is the verb: new needs a project, show --json has the role, list filters', async () => {
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => errors.push(String(msg));
+    try {
+      expect(await runCli(['node', 'new', '--title', 't', '--goal', 'g'], daemon.repo)).toBe(1);
+    } finally {
+      console.error = original;
+    }
+    expect(errors.join('\n')).toContain('a project is required');
+
+    const epic = JSON.parse(
+      (
+        await cli([
+          'node',
+          'new',
+          '--title',
+          'Epic',
+          '--goal',
+          'g',
+          '--project',
+          projectId,
+          '--label',
+          'epic',
+          '--label',
+          'x',
+          '--json',
+        ])
+      ).out,
+    ) as Stream;
+    expect(epic.parent).toBe(projectRoot);
+    expect(epic.labels).toEqual(['epic', 'x']);
+    const task = await newStream('Task', ['--parent', epic.id]);
+    expect(task.project).toBe(projectId);
+
+    const role = async (id: string) =>
+      (JSON.parse((await cli(['node', 'show', id, '--json'])).out) as { role: string }).role;
+    expect(await role(projectRoot)).toBe('project');
+    expect(await role(epic.id)).toBe('coordinating');
+    expect(await role(task.id)).toBe('conversation');
+
+    const byParent = JSON.parse(
+      (await cli(['node', 'list', '--parent', epic.id, '--json'])).out,
+    ) as Array<{ id: string; role: string }>;
+    expect(byParent.map((n) => [n.id, n.role])).toEqual([[task.id, 'conversation']]);
+    const byProject = JSON.parse(
+      (await cli(['node', 'list', '--project', projectId, '--json'])).out,
+    ) as Array<{ id: string }>;
+    expect(byProject.map((n) => n.id).sort()).toEqual([projectRoot, epic.id, task.id].sort());
+    // T205: unfiltered `--json` is the same bare array, each node with its role.
+    const unfiltered = JSON.parse((await cli(['node', 'list', '--json'])).out) as Array<{
+      id: string;
+      role: string;
+    }>;
+    expect(Array.isArray(unfiltered)).toBe(true);
+    expect(unfiltered.find((n) => n.id === epic.id)?.role).toBe('coordinating');
+    expect(unfiltered.map((n) => n.id).sort()).toEqual([projectRoot, epic.id, task.id].sort());
+  });
 });
 
 describe('agile stream against a daemon on a temp AGILE_HOME', () => {
@@ -66,10 +140,11 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     // T128: a header row, then the indented tree under it.
     const lines = listed.out.split('\n');
     expect(lines[0]?.trimEnd().split(/\s{2,}/)).toEqual(['id', 'title', 'agent/human']);
-    expect(lines[1]).toContain(root.id);
-    expect(lines[1]).toContain('idle/open');
-    expect(lines[2]?.startsWith('  ')).toBe(true);
-    expect(lines[2]).toContain(child.id);
+    expect(lines[1]).toContain(projectRoot);
+    expect(lines[2]).toContain(root.id);
+    expect(lines[2]).toContain('idle/open');
+    expect(lines[3]?.startsWith('    ')).toBe(true);
+    expect(lines[3]).toContain(child.id);
 
     expect((await cli(['stream', 'say', root.id, 'let us start with the tree'])).code).toBe(0);
 
@@ -119,7 +194,18 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     try {
       expect(
         await runCli(
-          ['stream', 'new', '--title', 't', '--goal', 'g', '--repo', 'ghost'],
+          [
+            'stream',
+            'new',
+            '--title',
+            't',
+            '--goal',
+            'g',
+            '--project',
+            projectId,
+            '--repo',
+            'ghost',
+          ],
           daemon.repo,
         ),
       ).toBe(1);
@@ -129,6 +215,8 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     expect(errors.join('\n')).toContain('unknown repo: ghost');
 
     // Registered, it works — and still creates no branch or worktree here.
+    // T214: a node can't be made in a repo with no commits.
+    Bun.spawnSync(['git', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: daemon.repo });
     expect((await cli(['repo', 'add', daemon.repo, '--name', 'alpha'])).code).toBe(0);
     const stream = await newStream('With a repo', ['--repo', 'alpha']);
     expect(stream.repo).toBe('alpha');
@@ -299,4 +387,133 @@ describe('agile attach (T130) on a no-repo stream, against the fake driver', () 
     const shown = await cli(['stream', 'show', stream.id, '--json']);
     expect((JSON.parse(shown.out) as { stream: Stream }).stream.sessions.length).toBe(0);
   });
+});
+
+describe('agile node new starts the agent (T204)', () => {
+  test('a conversation node starts a session; --no-start starts none', async () => {
+    const started = await cli([
+      'node',
+      'new',
+      '--title',
+      'Plan',
+      '--goal',
+      'g',
+      '--project',
+      projectId,
+    ]);
+    expect(started.code).toBe(0);
+    expect(started.out).toMatch(
+      /^started [0-9A-HJKMNP-TV-Z]{26} {2}claude\/claude-opus-5-5 {2}effort=low/m,
+    );
+
+    const later = await newStream('Later');
+    expect(later.sessions).toEqual([]);
+    // `agile attach` is the restart: it starts what --no-start skipped.
+    expect((await cli(['attach', later.id])).code).toBe(0);
+  });
+});
+
+describe('agile node add-repo (T205)', () => {
+  function gitRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'agile-t205-repo-'));
+    for (const args of [
+      ['init', '-q', '-b', 'main'],
+      ['config', 'user.email', 'test@example.com'],
+      ['config', 'user.name', 'Test'],
+    ]) {
+      Bun.spawnSync(['git', ...args], { cwd: dir });
+    }
+    writeFileSync(join(dir, 'README.md'), '# r\n');
+    Bun.spawnSync(['git', 'add', '-A'], { cwd: dir });
+    Bun.spawnSync(['git', 'commit', '-q', '-m', 'init'], { cwd: dir });
+    return dir;
+  }
+
+  test("Pete's Phase 7 look: conversation → work → coordinating with two parts", async () => {
+    const ledger = gitRepo();
+    const other = gitRepo();
+    try {
+      expect((await cli(['repo', 'add', ledger, '--name', 'ledger-lite'])).code).toBe(0);
+      expect((await cli(['repo', 'add', other, '--name', 'agile-test-repo'])).code).toBe(0);
+      const q = await newStream('Balance summary');
+      const show = async () =>
+        JSON.parse((await cli(['node', 'show', q.id, '--json'])).out) as {
+          role: string;
+          branch?: string;
+        };
+      expect((await show()).role).toBe('conversation');
+
+      expect((await cli(['node', 'add-repo', q.id, 'ledger-lite'])).code).toBe(0);
+      const work = await show();
+      expect(work.role).toBe('work');
+      expect(work.branch?.startsWith('stream/')).toBe(true);
+
+      expect((await cli(['node', 'add-repo', q.id, 'agile-test-repo'])).code).toBe(0);
+      expect((await show()).role).toBe('coordinating');
+      const parts = JSON.parse(
+        (await cli(['node', 'list', '--parent', q.id, '--json'])).out,
+      ) as Array<{
+        title: string;
+        repo: string;
+        role: string;
+      }>;
+      expect(parts.map((p) => `${p.title}  ${p.repo}  ${p.role}`)).toEqual([
+        'ledger-lite part  ledger-lite  work',
+        'agile-test-repo part  agile-test-repo  work',
+      ]);
+      const status = Bun.spawnSync(['git', 'status', '--short'], { cwd: ledger });
+      expect(new TextDecoder().decode(status.stdout).trim()).toBe('');
+    } finally {
+      for (const dir of [ledger, other]) rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe('a repo with no commits (T214)', () => {
+  async function cliErr(argv: string[]): Promise<{ code: number; out: string; err: string }> {
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => errors.push(String(msg));
+    try {
+      const r = await cli(argv);
+      return { ...r, err: errors.join('\n') };
+    } finally {
+      console.error = original;
+    }
+  }
+
+  test('repo add warns; node new and add-repo are refused and write nothing; after a commit it starts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agile-t214-repo-'));
+    const git = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: dir });
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    const message = 'empty-repo has no commits on main; make an initial commit first';
+    try {
+      const added = await cliErr(['repo', 'add', dir, '--name', 'empty-repo']);
+      expect(added.code).toBe(0);
+      expect(added.err).toBe(`agile repo add: warning: ${message}`);
+
+      const nodeNew = ['node', 'new', '--title', 'T', '--goal', 'g', '--project', projectId];
+      const before = (await cli(['node', 'list', '--all', '--json'])).out;
+      const refused = await cliErr([...nodeNew, '--repo', 'empty-repo']);
+      expect(refused.code).toBe(1);
+      expect(refused.err).toContain(message);
+      expect((await cli(['node', 'list', '--all', '--json'])).out).toBe(before);
+
+      const q = await newStream('Question');
+      const reshaped = await cliErr(['node', 'add-repo', q.id, 'empty-repo']);
+      expect(reshaped.code).toBe(1);
+      expect(reshaped.err).toContain(message);
+
+      writeFileSync(join(dir, 'README.md'), '# r\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'init');
+      const started = await cli([...nodeNew, '--repo', 'empty-repo']);
+      expect(started.code).toBe(0);
+      expect(started.out).toMatch(/^started /m);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

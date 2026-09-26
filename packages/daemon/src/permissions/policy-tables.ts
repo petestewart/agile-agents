@@ -11,6 +11,8 @@
  * the like.
  */
 
+import { resolve } from 'node:path';
+import type { ReposConfig, Stream } from '@agile-agents/shared';
 import * as cmd from './command';
 import { isPathInside } from './command';
 import type { PermissionRequest, PermissionRole } from './types';
@@ -31,6 +33,63 @@ function hil(reason: string): PolicyVerdict {
 export interface PolicyContext {
   role: PermissionRole;
   worktreePath: string;
+  /** T213: where a read may reach beyond the worktree (visible registered repos). */
+  readRoots?: readonly string[];
+  /** T213: never readable unless inside the worktree: private repos not shared with the node, and the agile home. */
+  hiddenRoots?: readonly string[];
+}
+
+/**
+ * T213: the deny reason for a read of `path` (absolute, or relative to the
+ * worktree), or `undefined` when it may be read. An allow-list: the own
+ * worktree (or session dir), then any `readRoots` path not under a hidden root.
+ */
+export function readDenyReason(
+  raw: string,
+  ctx: Pick<PolicyContext, 'worktreePath' | 'readRoots' | 'hiddenRoots'>,
+): string | undefined {
+  const path = resolve(ctx.worktreePath, raw);
+  if (isPathInside(path, ctx.worktreePath)) return undefined;
+  if ((ctx.hiddenRoots ?? []).some((root) => isPathInside(path, root))) {
+    return `${raw} is in the agile home or a private repo this node's project cannot read`;
+  }
+  if ((ctx.readRoots ?? []).some((root) => isPathInside(path, root))) return undefined;
+  return `${raw} is outside the worktree and every repo this node can read`;
+}
+
+/**
+ * T213, T330 (projects-design §4.4, P20): a node's read scope, for the hook
+ * and the ACP responder alike. Any registered repo is readable except a
+ * private one its project isn't listed on; the agile home never is (the
+ * session's own dir, its cwd, is allowed before any root is checked). An
+ * unreadable registry reads nothing beyond the cwd.
+ */
+export function nodeReadScope(
+  node: Pick<Stream, 'repo' | 'project'> | undefined,
+  readRepos: () => ReposConfig,
+  agileHome: string | undefined,
+): { readRoots: string[]; hiddenRoots: string[] } {
+  const readRoots: string[] = [];
+  const hiddenRoots: string[] = [];
+  let repos: ReposConfig = {};
+  try {
+    repos = readRepos();
+  } catch {
+    // Fail closed: only the cwd.
+  }
+  for (const [name, entry] of Object.entries(repos)) {
+    const visibility = entry.visibility;
+    const visible =
+      name === node?.repo ||
+      visibility === undefined ||
+      visibility.mode === 'public' ||
+      (node?.project !== undefined &&
+        (visibility.projects as readonly string[]).includes(node.project));
+    (visible ? readRoots : hiddenRoots).push(entry.path);
+  }
+  // The home holds the classifier key and every node's state: never a read target.
+  if (agileHome !== undefined) hiddenRoots.push(agileHome);
+  return { readRoots, hiddenRoots };
 }
 
 // Never-without-human (§14 "Never without a human"). Checked before any
@@ -190,12 +249,22 @@ const ENGINEER_BENIGN_PATH_TOOLS = new Set([
   'diff',
 ]);
 
+/** T213: of those, the ones that only read, so any `readRoots` path is fine (`sort -o` writes). */
+const ENGINEER_READ_ONLY_PATH_TOOLS = new Set(['cat', 'ls', 'head', 'tail', 'wc', 'cut', 'diff']);
+
 /**
  * Every path must resolve inside the worktree after `~` expansion
  * (`cmd.resolveTargetPath`); a `$`, backtick or `~user` is unclassifiable
  * and routes to `hil`, never a guessed allow.
  */
-function verifyBenignPaths(paths: string[], ctx: PolicyContext): PolicyVerdict {
+/** T343: why a write to `path` is refused when it lands in git's own state, else `undefined`. */
+function gitDirWriteDenyReason(path: string, ctx: PolicyContext): string | undefined {
+  return cmd.isInsideGitDir(path, ctx.worktreePath)
+    ? `${path} is git's own state (.git): change it through git, not by writing into it`
+    : undefined;
+}
+
+function verifyBenignPaths(paths: string[], ctx: PolicyContext, reads = false): PolicyVerdict {
   for (const raw of paths) {
     const resolved = cmd.resolveTargetPath(raw);
     if (!resolved.safe) {
@@ -203,8 +272,14 @@ function verifyBenignPaths(paths: string[], ctx: PolicyContext): PolicyVerdict {
         `"${raw}" contains an unresolved shell variable/backtick/home-directory reference`,
       );
     }
-    if (!isPathInside(resolved.path, ctx.worktreePath)) {
+    if (reads) {
+      const reason = readDenyReason(resolved.path, ctx);
+      if (reason !== undefined) return deny(reason);
+    } else if (!isPathInside(resolved.path, ctx.worktreePath)) {
       return deny(`${raw} is outside the worktree`);
+    } else {
+      const reason = gitDirWriteDenyReason(resolved.path, ctx);
+      if (reason !== undefined) return deny(reason);
     }
   }
   return ALLOW;
@@ -248,11 +323,17 @@ function engineerBenignCommandVerdict(
 
   if (head === 'find') {
     if (cmd.isFindWriteInvocation(tokens)) return undefined; // write primitives: not benign
-    return verifyBenignPaths(cmd.findSearchRoots(tokens), ctx);
+    return verifyBenignPaths(cmd.findSearchRoots(tokens), ctx, true);
   }
 
   if (head === 'grep' || head === 'rg') {
-    return verifyBenignPaths([...cmd.grepPathArgs(tokens), ...cmd.flagPathValues(tokens)], ctx);
+    // `rg --pre <cmd>` runs a command on every file: not a read.
+    if (runsPreprocessor(tokens)) return undefined;
+    return verifyBenignPaths(
+      [...cmd.grepPathArgs(tokens), ...cmd.flagPathValues(tokens)],
+      ctx,
+      true,
+    );
   }
 
   const scriptPath = cmd.scriptExecutionPath(tokens);
@@ -261,9 +342,33 @@ function engineerBenignCommandVerdict(
   }
 
   if (ENGINEER_BENIGN_PATH_TOOLS.has(head)) {
-    return verifyBenignPaths([...cmd.benignPathArgs(tokens), ...cmd.flagPathValues(tokens)], ctx);
+    return verifyBenignPaths(
+      [...cmd.benignPathArgs(tokens), ...cmd.flagPathValues(tokens)],
+      ctx,
+      ENGINEER_READ_ONLY_PATH_TOOLS.has(head),
+    );
   }
 
+  return undefined;
+}
+
+/**
+ * T343: any git argument that may be a path must resolve inside the worktree
+ * and outside `.git`, whatever the subcommand; otherwise it is held.
+ */
+function engineerGitPathVerdict(args: string[], ctx: PolicyContext): PolicyVerdict | undefined {
+  for (const raw of cmd.gitPathArguments(args, ctx.worktreePath)) {
+    const resolved = cmd.resolveTargetPath(raw);
+    if (
+      !resolved.safe ||
+      !isPathInside(resolved.path, ctx.worktreePath) ||
+      cmd.isInsideGitDir(resolved.path, ctx.worktreePath)
+    ) {
+      return hil(
+        `git argument "${raw}" may be a path outside the worktree or into .git: never automatic`,
+      );
+    }
+  }
   return undefined;
 }
 
@@ -292,11 +397,37 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
         if (!isPathInside(resolved.path, ctx.worktreePath)) {
           return deny('redirected output escapes the worktree (or uses tee/process substitution)');
         }
+        const reason = gitDirWriteDenyReason(resolved.path, ctx);
+        if (reason !== undefined) return deny(reason);
       }
       // A safe redirect doesn't make the command allowed: still classify it.
     }
     if (cmd.isRepoScriptCommand(atom.tokens)) continue;
-    if (cmd.gitArgs(atom.tokens) !== undefined) {
+    const gitArgs = cmd.gitArgs(atom.tokens);
+    if (gitArgs !== undefined) {
+      // T343: repo config is shared with the reviewer, the daemon and the
+      // human's own git (a hook, fsmonitor or pager there runs a program).
+      if (cmd.isGitConfigWrite(gitArgs)) {
+        return hil('git config that sets or removes a value is never automatic');
+      }
+      if (cmd.gitProgramOverride(atom)) {
+        return hil('git config overrides that can run programs need the operator');
+      }
+      const redirect = cmd.gitDirRedirectReason(atom);
+      if (redirect !== undefined) return hil(`${redirect}: never automatic`);
+      const written = verifyBenignPaths(cmd.gitWriteTargets(gitArgs), ctx);
+      if (written.action !== 'allow') return written;
+      if (gitArgs.includes('--unsafe-paths')) {
+        return deny(
+          "git --unsafe-paths turns off git apply's own guard against writing outside the worktree",
+        );
+      }
+      const elsewhere = cmd.gitCheckoutElsewhereReason(gitArgs);
+      if (elsewhere !== undefined) {
+        return hil(`${elsewhere} writes a checkout wherever it is told: never automatic`);
+      }
+      const pathVerdict = engineerGitPathVerdict(gitArgs, ctx);
+      if (pathVerdict !== undefined) return pathVerdict;
       // Any git not on the never-without-human list: the worker's own branch work.
       continue;
     }
@@ -312,9 +443,16 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
 
 function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): PolicyVerdict {
   switch (classified.toolClass) {
-    case 'read':
-      // Reads are never gated by ACP (spike-findings §A), but answer consistently.
+    case 'read': {
+      // Reads are never gated by ACP (spike-findings §A), but answer
+      // consistently: under a read scope (T330), as the hook's Read would.
+      if (ctx.readRoots === undefined && ctx.hiddenRoots === undefined) return ALLOW;
+      for (const path of allTargetPaths(classified)) {
+        const reason = readDenyReason(path, ctx);
+        if (reason !== undefined) return deny(reason);
+      }
       return ALLOW;
+    }
     case 'edit': {
       // Every path must resolve inside the worktree, not just the first.
       const paths = allTargetPaths(classified);
@@ -324,7 +462,12 @@ function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): Pol
         );
       }
       const outside = paths.find((p) => !isPathInside(p, ctx.worktreePath));
-      return outside === undefined ? ALLOW : deny(`edit target ${outside} is outside the worktree`);
+      if (outside !== undefined) return deny(`edit target ${outside} is outside the worktree`);
+      for (const p of paths) {
+        const reason = gitDirWriteDenyReason(p, ctx);
+        if (reason !== undefined) return deny(reason);
+      }
+      return ALLOW;
     }
     case 'execute':
       if (classified.command === undefined) {
@@ -369,9 +512,15 @@ function isSedInPlace(tokens: string[]): boolean {
   );
 }
 
+/** `rg --pre`/`--pre-glob`: a preprocessor command run per file. */
+function runsPreprocessor(tokens: string[]): boolean {
+  return tokens.some((t) => t === '--pre' || t.startsWith('--pre=') || t.startsWith('--pre-glob'));
+}
+
 function isReviewerSafeTool(tokens: string[]): boolean {
   const head = tokens[0];
   if (head === undefined) return false;
+  if ((head === 'rg' || head === 'grep') && runsPreprocessor(tokens)) return false;
   if (REVIEWER_PLAIN_READ_ONLY_TOOLS.has(head)) return true;
   if (head === 'sed') return !isSedInPlace(tokens);
   if (head === 'find')
@@ -382,6 +531,11 @@ function isReviewerSafeTool(tokens: string[]): boolean {
   return false;
 }
 
+/** T343: `git diff -O<orderfile>` reads a file named on the command line. */
+function readsGitOrderFile(tokens: string[]): boolean {
+  return tokens.some((t) => t.startsWith('-O'));
+}
+
 function reviewerExecuteVerdict(command: string): PolicyVerdict {
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
     // Benign redirects write nothing (`git diff 2>/dev/null` is a read);
@@ -389,10 +543,9 @@ function reviewerExecuteVerdict(command: string): PolicyVerdict {
     if (cmd.hasWritingRedirectionOrTee(atom.tokens)) {
       return deny('reviewer role denies exec with redirection/tee — those are write primitives');
     }
-    const args = cmd.gitArgs(atom.tokens);
-    const isReadOnlyGit =
-      args !== undefined && REVIEWER_READ_ONLY_GIT_SUBCOMMANDS.has(args[0] ?? '');
-    if (isReadOnlyGit) continue;
+    // T343: git by T336's strict allowlist (no -c/--config-env, `GIT_*=` prefix,
+    // pager, ext-diff, textconv, output), and no `-O<orderfile>`.
+    if (cmd.isReadOnlyGitAtom(atom) && !readsGitOrderFile(atom.tokens)) continue;
     if (isReviewerSafeTool(atom.tokens)) continue;
     return deny(
       'reviewer role denies all exec except read-only tools (git diff/log/show, grep, …)',

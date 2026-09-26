@@ -8,7 +8,18 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { type AcquirableBrowser, acquireBrowserPage, runWithinBudget } from './chromium';
+import childProcess, { type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { readdirSync, readlinkSync } from 'node:fs';
+import {
+  type AcquirableBrowser,
+  type GuardedChild,
+  type SpawnHost,
+  acquireBrowserPage,
+  guardStdioPipes,
+  pinnedStdioCount,
+  runWithinBudget,
+} from './chromium';
 
 class FakeBrowser implements AcquirableBrowser {
   closes = 0;
@@ -224,19 +235,294 @@ describe('acquireBrowserPage', () => {
     expect(cached.closes).toBe(1);
   });
 
-  test('a launch that rejects still rejects — this only covers never-returns', async () => {
+  test('a launch that rejects on every attempt rejects with its own error', async () => {
+    let launches = 0;
+    const warnings: string[] = [];
     await expect(
       acquireBrowserPage({
         label: 'test',
         launch: async () => {
+          launches += 1;
           throw new Error('no chromium here');
         },
         openPage: async () => 'page',
         budgetMs: 10,
-        warn: silent,
+        attempts: 3,
+        warn: (m) => warnings.push(m),
       }),
     ).rejects.toThrow('no chromium here');
+    expect(launches).toBe(3);
+    expect(warnings).toHaveLength(2);
   });
+
+  test('a launch that rejects once (a transient spawn failure) is retried with a fresh launch', async () => {
+    const good = new FakeBrowser('good');
+    let launches = 0;
+    const warnings: string[] = [];
+    const acquired = await acquireBrowserPage({
+      label: 'test',
+      launch: async () => {
+        launches += 1;
+        if (launches === 1) throw new Error('Failed to connect');
+        return good;
+      },
+      openPage: async () => 'page',
+      budgetMs: 1_000,
+      warn: (m) => warnings.push(m),
+    });
+    expect(acquired.browser).toBe(good);
+    expect(launches).toBe(2);
+    expect(warnings).toEqual([
+      'test: launch() rejected (attempt 1/3: Failed to connect) — launching another',
+    ]);
+  });
+
+  test('a page that rejects on a launched browser still rejects, without a retry', async () => {
+    let launches = 0;
+    await expect(
+      acquireBrowserPage({
+        label: 'test',
+        launch: async () => {
+          launches += 1;
+          return new FakeBrowser('b');
+        },
+        openPage: async () => {
+          throw new Error('newPage broke');
+        },
+        budgetMs: 10,
+        warn: silent,
+      }),
+    ).rejects.toThrow('newPage broke');
+    expect(launches).toBe(1);
+  });
+});
+
+/**
+ * CI job 108116908628: the lost pipe that no promise sees. Bun opens a
+ * Chromium launch's extra stdio pipes (fds 3 and 4) as sockets at spawn
+ * time, and when that connect fails it emits `error` on the socket from a
+ * `.catch`: with no listener yet, that escapes as an unhandled rejection
+ * (failing whatever test is running) while the launch itself hangs. The fake
+ * host below spawns a child shaped like bun's and fails fd 4 exactly that way.
+ */
+class FakeChild implements GuardedChild {
+  readonly stdio = [
+    null,
+    new EventEmitter(),
+    new EventEmitter(),
+    new EventEmitter(),
+    new EventEmitter(),
+  ];
+  kills: Array<string | undefined> = [];
+  kill(signal?: NodeJS.Signals): boolean {
+    this.kills.push(signal);
+    return true;
+  }
+}
+
+/** Bun's own shape: `doConnect(...).catch((error) => socket.emit('error', error))`. */
+function loseStdioPipe(child: FakeChild, fd = 4): void {
+  const socket = child.stdio[fd] as EventEmitter;
+  const err = Object.assign(new Error('Failed to connect'), { syscall: 'connect', code: 'ENOENT' });
+  void Promise.reject(err).catch((error: Error) => {
+    socket.emit('error', error);
+  });
+}
+
+function fakeSpawnHost(): { host: SpawnHost; children: FakeChild[]; original: SpawnHost['spawn'] } {
+  const children: FakeChild[] = [];
+  const original = (() => {
+    const child = new FakeChild();
+    children.push(child);
+    return child;
+  }) as SpawnHost['spawn'];
+  return { host: { spawn: original }, children, original };
+}
+
+describe('acquireBrowserPage: a stdio pipe lost at spawn (Bun 1.3.11)', () => {
+  test('the socket error is caught, the child killed, and a fresh launch is tried at once', async () => {
+    const { host, children, original } = fakeSpawnHost();
+    const good = new FakeBrowser('good');
+    const warnings: string[] = [];
+    let launches = 0;
+    const started = Date.now();
+
+    const acquired = await acquireBrowserPage({
+      label: 'test',
+      spawnHost: host,
+      launch: async () => {
+        launches += 1;
+        if (launches > 1) return good;
+        // Playwright spawns a few awaits into launch(), then waits on the
+        // dead pipe forever: the launch neither resolves nor rejects.
+        await Promise.resolve();
+        const child = host.spawn() as FakeChild;
+        loseStdioPipe(child);
+        return new Promise<FakeBrowser>(() => {});
+      },
+      openPage: async () => 'page',
+      budgetMs: 5_000,
+      warn: (m) => warnings.push(m),
+    });
+
+    expect(acquired.browser).toBe(good);
+    expect(launches).toBe(2);
+    // Retried on the error, not after the 5 s budget ran out.
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(children[0]?.kills).toEqual(['SIGKILL']);
+    expect(warnings).toEqual([
+      "test: launch() lost Chromium's stdio pipe (Failed to connect) (attempt 1/3) — launching another",
+    ]);
+    // Nothing is left wrapped once no launch is in flight.
+    expect(host.spawn).toBe(original);
+  });
+
+  test('a pipe lost on every attempt fails loudly with that error', async () => {
+    const { host, children } = fakeSpawnHost();
+    await expect(
+      acquireBrowserPage({
+        label: 'test',
+        spawnHost: host,
+        launch: async () => {
+          await Promise.resolve();
+          loseStdioPipe(host.spawn() as FakeChild, 3);
+          return new Promise<FakeBrowser>(() => {});
+        },
+        openPage: async () => 'page',
+        budgetMs: 5_000,
+        attempts: 2,
+        warn: silent,
+      }),
+    ).rejects.toThrow(
+      "test: launch() lost Chromium's stdio pipe (Failed to connect) on attempt 2/2",
+    );
+    expect(children).toHaveLength(2);
+  });
+
+  test('a pipe error after the launch is decided stays caught, and inert', async () => {
+    const { host, children, original } = fakeSpawnHost();
+    const acquired = await acquireBrowserPage({
+      label: 'test',
+      spawnHost: host,
+      launch: async () => {
+        host.spawn();
+        return new FakeBrowser('ok');
+      },
+      openPage: async () => 'page',
+      warn: silent,
+    });
+    expect(host.spawn).toBe(original);
+    const child = children[0] as FakeChild;
+    loseStdioPipe(child);
+    await drainMicrotasks();
+    expect(child.kills).toEqual([]);
+    expect(acquired.browser.closes).toBe(0);
+  });
+
+  test('only the extra pipes are guarded, and nested guards restore spawn once', () => {
+    const { host, children, original } = fakeSpawnHost();
+    const outer = guardStdioPipes(host);
+    const inner = guardStdioPipes(host);
+    host.spawn();
+    const child = children[0] as FakeChild;
+    expect((child.stdio[1] as EventEmitter).listenerCount('error')).toBe(0);
+    expect((child.stdio[3] as EventEmitter).listenerCount('error')).toBe(1);
+    expect((child.stdio[4] as EventEmitter).listenerCount('error')).toBe(1);
+    inner.release();
+    expect(host.spawn).not.toBe(original);
+    outer.release();
+    outer.release();
+    expect(host.spawn).toBe(original);
+  });
+});
+
+/**
+ * CI jobs 108131833599 / 108131816730 (and the T161 stream-page wedge every
+ * run): on Bun 1.3.11 a dead child's extra-stdio socket closes its fd number
+ * again when it is garbage-collected, shutting whatever reused that number.
+ * The guard keeps those sockets reachable so they are never finalized.
+ */
+describe('guardStdioPipes: a dead launch never closes a live fd', () => {
+  test('a guarded spawn pins its extra-stdio sockets past a GC', () => {
+    const { host } = fakeSpawnHost();
+    const before = pinnedStdioCount();
+    const guard = guardStdioPipes(host);
+    let ref: WeakRef<object> | undefined;
+    (() => {
+      const child = host.spawn() as FakeChild;
+      ref = new WeakRef(child.stdio[3] as object);
+    })();
+    guard.release();
+    Bun.gc(true);
+    expect(pinnedStdioCount()).toBe(before + 2);
+    expect(ref?.deref()).toBeDefined();
+  });
+
+  /** The live fds of this process, as `fd -> target`. */
+  function openFds(): Map<string, string> {
+    const fds = new Map<string, string>();
+    for (const fd of readdirSync('/proc/self/fd')) {
+      try {
+        fds.set(fd, readlinkSync(`/proc/self/fd/${fd}`));
+      } catch {}
+    }
+    return fds;
+  }
+
+  function exited(child: ChildProcess): Promise<void> {
+    return new Promise((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) resolve();
+      else child.once('exit', () => resolve());
+    });
+  }
+
+  /** A Chromium-shaped spawn (Playwright's pipe launch: fds 3 and 4), made under the guard. */
+  function spawnPipeLaunch(): ChildProcess {
+    const guard = guardStdioPipes();
+    try {
+      // Through the module object, as Playwright's `require('child_process')` does.
+      return childProcess.spawn('sleep', ['30'], {
+        stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+        detached: true,
+      });
+    } finally {
+      guard.release();
+    }
+  }
+
+  // The reproduction itself, on real processes: without the pin, the second
+  // child's fd 3/4 sockets are closed within the first round or two.
+  test.skipIf(process.platform !== 'linux')(
+    "a killed launch's sockets, once collected, leave the next launch's fds open",
+    async () => {
+      for (let round = 0; round < 5; round++) {
+        {
+          const dead = spawnPipeLaunch();
+          await Bun.sleep(20);
+          dead.kill('SIGKILL');
+          await exited(dead);
+        }
+        const before = openFds();
+        const live = spawnPipeLaunch();
+        try {
+          await Bun.sleep(20);
+          // By fd and target: a number freed after `before` and reused counts too.
+          const mine = [...openFds()].filter(([fd, target]) => before.get(fd) !== target);
+          expect(mine.length).toBeGreaterThanOrEqual(4);
+          Bun.gc(true);
+          await Bun.sleep(20);
+          Bun.gc(true);
+          await Bun.sleep(20);
+          const now = openFds();
+          expect(mine.filter(([fd, target]) => now.get(fd) !== target)).toEqual([]);
+        } finally {
+          live.kill('SIGKILL');
+          await exited(live);
+        }
+      }
+    },
+    20_000,
+  );
 });
 
 describe('runWithinBudget', () => {

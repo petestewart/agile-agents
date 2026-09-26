@@ -40,6 +40,13 @@ export interface HookDecisionContext {
   upstreamBranch?: () => string | undefined;
   /** The worktree's checked-out branch; called only for a `git merge` with no preceding checkout. */
   headBranch?: () => string | undefined;
+  /**
+   * T213 (projects-design §4.4): the registered repos this node may read
+   * (public, private to its project, its own), and those it may not.
+   * Absent: reads stay in the worktree for Bash, unchecked for built-ins.
+   */
+  readRoots?: readonly string[];
+  hiddenRoots?: readonly string[];
 }
 
 /** Raw Claude `PreToolUse` stdin payload (spike-findings.md §B). */

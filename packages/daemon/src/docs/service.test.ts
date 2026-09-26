@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Stream } from '@agile-agents/shared';
@@ -22,9 +22,13 @@ let root: Stream;
 let child: Stream;
 let orphan: Stream;
 
+function repoDocsDir(): string {
+  return join(home, 'repos', 'ledger', 'docs');
+}
+
 function repoDoc(name: string, body: string): void {
-  mkdirSync(join(repo, '.agile-docs'), { recursive: true });
-  writeFileSync(join(repo, '.agile-docs', name), body);
+  mkdirSync(repoDocsDir(), { recursive: true });
+  writeFileSync(join(repoDocsDir(), name), body);
 }
 
 function streamDoc(streamId: string, name: string, body: string): void {
@@ -35,6 +39,22 @@ function streamDoc(streamId: string, name: string, body: string): void {
 beforeEach(async () => {
   repo = mkdtempSync(join(tmpdir(), 'agile-docs-'));
   Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
+  // T214: a node needs a repo with a commit.
+  Bun.spawnSync(
+    [
+      'git',
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'init',
+    ],
+    { cwd: repo },
+  );
   const init = runInit(repo);
   home = init.stateRoot;
   store = StateStore.open(init.stateRoot);
@@ -56,6 +76,49 @@ afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
 });
 
+describe('legacy `.agile-docs/` import (T207, P3)', () => {
+  function legacyDoc(name: string, body: string): void {
+    mkdirSync(join(repo, '.agile-docs'), { recursive: true });
+    writeFileSync(join(repo, '.agile-docs', name), body);
+  }
+
+  test('is copied into the home once, logged, and never deleted', () => {
+    const lines: string[] = [];
+    const logged = new DocsService(store, streams, home, (l) => lines.push(l));
+    legacyDoc('brief.md', 'old brief\n');
+    expect(logged.listRepoDocs('ledger').map((d) => d.path)).toEqual([
+      join(repoDocsDir(), 'brief.md'),
+    ]);
+    expect(readFileSync(join(repoDocsDir(), 'brief.md'), 'utf8')).toBe('old brief\n');
+    expect(existsSync(join(repo, '.agile-docs', 'brief.md'))).toBe(true);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('may be removed');
+    // Once the home dir exists the repo dir is no longer read.
+    legacyDoc('later.md', 'ignored');
+    expect(logged.listRepoDocs('ledger').map((d) => d.name)).toEqual(['brief.md']);
+    expect(lines).toHaveLength(1);
+  });
+
+  test('home docs win: no import when the home dir already exists', () => {
+    repoDoc('home.md', 'mine');
+    legacyDoc('brief.md', 'old');
+    expect(docs.listRepoDocs('ledger').map((d) => d.name)).toEqual(['home.md']);
+  });
+
+  test('a repo name that is not one path segment is refused', () => {
+    expect(() => docs.repoDocsDir('../x')).toThrow('invalid repo name');
+  });
+
+  test('a bad repo name is skipped and logged, not fatal to a home-wide search', async () => {
+    const lines: string[] = [];
+    const logged = new DocsService(store, streams, home, (l) => lines.push(l));
+    await store.addRepo('../bad', { path: repo });
+    repoDoc('brief.md', 'shared truth\n');
+    expect(await logged.search('shared truth', {})).toHaveLength(1);
+    expect(lines.some((l) => l.includes('skipped repo'))).toBe(true);
+  });
+});
+
 describe('DocsService (T134)', () => {
   test('a doc added to a repo shows up for a stream in that repo', () => {
     repoDoc('brief.md', '# Ledger\n\nthe product brief\n');
@@ -66,14 +129,14 @@ describe('DocsService (T134)', () => {
     expect(docs.docsForStream(child.id).map((d) => d.name)).toEqual(['brief.md']);
   });
 
-  test('only `.md` files directly in `.agile-docs/` are docs', () => {
+  test('only `.md` files directly in `<home>/repos/<name>/docs/` are docs', () => {
     repoDoc('brief.md', 'yes');
-    writeFileSync(join(repo, '.agile-docs', 'notes.txt'), 'no');
-    mkdirSync(join(repo, '.agile-docs', 'nested.md'), { recursive: true });
+    writeFileSync(join(repoDocsDir(), 'notes.txt'), 'no');
+    mkdirSync(join(repoDocsDir(), 'nested.md'), { recursive: true });
     expect(docs.listRepoDocs('ledger').map((d) => d.name)).toEqual(['brief.md']);
   });
 
-  test('a repo with no `.agile-docs/`, and an unregistered repo, have no docs', () => {
+  test('a repo with no docs dir, and an unregistered repo, have no docs', () => {
     expect(docs.listRepoDocs('ledger')).toEqual([]);
     expect(docs.listRepoDocs('nope')).toEqual([]);
   });
@@ -110,7 +173,7 @@ describe('DocsService (T134)', () => {
     repoDoc('brief.md', 'line one\nthe Ledger invariant\nline three\n');
     const hits = await docs.search('LEDGER inVariant', { stream: child.id });
     expect(hits).toEqual([
-      { path: join(repo, '.agile-docs', 'brief.md'), line: 2, text: 'the Ledger invariant' },
+      { path: join(repoDocsDir(), 'brief.md'), line: 2, text: 'the Ledger invariant' },
     ]);
     expect(await docs.search('absent', { stream: child.id })).toEqual([]);
   });

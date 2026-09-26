@@ -15,3 +15,6 @@ out/
 spike/spike-out/*.log
 spike/queue/STOP
 _to_delete_staging/
+.review-*.md
+.pipeline-*.md
+.qa-report.md

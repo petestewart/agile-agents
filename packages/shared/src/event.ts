@@ -34,6 +34,11 @@ export const EVENT_KINDS = [
   'stream_closed',
   'stream_archived',
 
+  // -- project (store.createProject / updateProject, via ProjectService) --
+  // data: {id, name, root, archived}
+  'project_created',
+  'project_updated',
+
   // -- thread (store.appendThreadEntry) --  data: {stream, by, entry_kind}
   'thread_appended',
 
@@ -90,6 +95,10 @@ export const EVENT_KINDS = [
   'home_config_put',
   'entity_put',
   'entity_deleted',
+
+  // -- migration (store/migrate.ts, T202) --  once per migrated home.
+  // data: {project, reparented, streams, repos, parent_branches}
+  'home_migrated',
 
   // -- bus --  the one message event; T130 prunes it with the bus itself.
   'message',

@@ -10,6 +10,7 @@
  */
 
 import { Inbox } from './components/Inbox';
+import { DependenciesLens, RepoView, RunningLens } from './components/Lenses';
 import { NewStream } from './components/NewStream';
 import { Rules } from './components/Rules';
 import { Settings } from './components/Settings';
@@ -24,15 +25,29 @@ export function App(): JSX.Element {
   const { view, selected, railOpen } = useShell();
   const rows = cockpit?.streams ?? [];
   const items = cockpit?.inbox ?? [];
+  const projects = cockpit?.projects ?? [];
+  const repos = cockpit?.repos ?? [];
 
   return (
     <div className="cr-root" data-rail={railOpen ? 'open' : 'closed'}>
-      <TopBar snapshot={snapshot} inboxCount={items.length} connected={connected} />
+      <TopBar
+        snapshot={snapshot}
+        inboxCount={items.length}
+        connected={connected}
+        rows={rows}
+        projects={projects}
+      />
       <div className="cr-frame">
-        <StreamTree rows={rows} />
+        <StreamTree rows={rows} projects={projects} />
         <main className="cr-main">
           {view === 'settings' ? (
             <Settings />
+          ) : view === 'repos' ? (
+            <RepoView rows={rows} repos={repos} />
+          ) : view === 'running' ? (
+            <RunningLens rows={rows} />
+          ) : view === 'deps' ? (
+            <DependenciesLens rows={rows} />
           ) : view === 'rules' ? (
             <Rules />
           ) : view === 'stream' && selected !== undefined ? (
@@ -42,7 +57,7 @@ export function App(): JSX.Element {
           )}
         </main>
       </div>
-      <NewStream rows={rows} />
+      <NewStream rows={rows} projects={projects} />
     </div>
   );
 }

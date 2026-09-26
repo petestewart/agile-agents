@@ -8,6 +8,7 @@
 import type {
   ClassifierKeyStatus,
   Policy,
+  Project,
   Rule,
   RuleCreateInput,
   RulePatch,
@@ -39,6 +40,11 @@ async function post(path: string, body: unknown = {}, signal?: AbortSignal): Pro
 /** T162: "New stream" and the top bar's quick capture. */
 export function createStream(input: StreamCreateInput): Promise<Stream> {
   return post('/api/streams', input) as Promise<Stream>;
+}
+
+/** T208: the rail's "New project". */
+export function createProject(name: string): Promise<Project> {
+  return post('/api/projects', { name }) as Promise<Project>;
 }
 
 /** A question card: the typed text reaches the asking session verbatim (§3.3). */
@@ -152,12 +158,10 @@ export function attachSession(
   id: string,
   role: 'worker' | 'reviewer',
   choice: { vendor?: string; model?: string; effort?: string } = {},
-  force = false,
 ): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/attach`, {
     role,
     ...choice,
-    ...(force ? { force: true } : {}),
   });
 }
 
@@ -210,9 +214,38 @@ export function markStreamLanded(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/mark-landed`);
 }
 
+/** T205: + Repo in place (projects-design §7); `switch` moves a work node with nothing committed. */
+export function addRepoToStream(id: string, repo: string, switching = false): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/add-repo`, {
+    repo,
+    ...(switching ? { switch: true } : {}),
+  });
+}
+
 export async function getPolicy(): Promise<Policy> {
   const res = await fetch('/api/policy');
   const payload = (await res.json()) as Policy & { error?: string };
   if (!res.ok) throw new Error(payload.error ?? `policy read failed (${res.status})`);
   return payload;
+}
+
+/** T206: a registered repo as Settings → Repos shows it. */
+export interface RepoRow {
+  name: string;
+  path: string;
+  protected_branches: string[];
+  main_branch: string;
+}
+
+export async function listRepos(): Promise<RepoRow[]> {
+  return (await get<{ repos: RepoRow[] }>('/api/repos')).repos;
+}
+
+/** T206: the same `state.repo_add` RPC as `agile repo add`; resolves to every repo. */
+export async function addRepo(input: {
+  name: string;
+  path: string;
+  protected_branches?: string[];
+}): Promise<RepoRow[]> {
+  return ((await post('/api/repos', input)) as { repos: RepoRow[] }).repos;
 }

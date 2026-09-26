@@ -26,10 +26,16 @@ import {
   type SessionRole,
   type SessionStatus,
   type Stream,
+  type StreamPrincipal,
   type ThreadEntry,
+  liveChildrenOf,
+  nodeRole,
   ulid,
+  validateStreamCreateInput,
 } from '@agile-agents/shared';
 import { readHomeConfigFile } from '../config';
+import { settingsFileName } from '../hook/settings';
+import { nodeReadScope } from '../permissions/policy-tables';
 import type { RuleStatsOutcome } from '../rules/service';
 import type { BriefDoc } from '../runner/brief';
 import { buildBrief } from '../runner/brief';
@@ -37,7 +43,7 @@ import type { CliInvocation } from '../runner/cli-bin';
 import { type AgentSessionHandle, startAgentSession } from '../runner/session';
 import { createWorktree, slugify } from '../runner/worktrees';
 import type { StateStore } from '../store';
-import { buildEvent } from '../store';
+import { assertRepoHasCommits, buildEvent } from '../store';
 import type { StreamService } from '../streams/service';
 import { type AttachFlags, effortIgnoredLine, resolveSessionSettings } from './resolve';
 
@@ -60,19 +66,6 @@ export class UnregisteredRepoError extends Error {
   constructor(public readonly repo: string) {
     super(`stream repo ${repo} is not registered in repos.yaml`);
     this.name = 'UnregisteredRepoError';
-  }
-}
-
-/** T176: a worker on a parent builds on the branch its children land into. RPC: -32602, HTTP 409. */
-export class ParentAttachError extends Error {
-  constructor(
-    public readonly stream: string,
-    public readonly children: string[],
-  ) {
-    super(
-      `stream ${stream} has ${children.length} open child stream(s) (${children.join(', ')}); a parent's branch is where its children land, so work there conflicts with them. Attach to a child, or pass --force to attach here anyway`,
-    );
-    this.name = 'ParentAttachError';
   }
 }
 
@@ -116,13 +109,13 @@ export interface AttachOptions extends AttachFlags {
   role?: SessionRole;
   /** Appended after the brief: the lessons session's material and instruction (§5.5). The caller caps it. */
   briefAppendix?: string;
-  /** T176: attach a worker even though the stream has open children. */
-  force?: boolean;
 }
 
 /** `detach: true`: the human pulled the plug, not a shutdown. */
 export interface StopOptions {
   detach?: boolean;
+  /** T213: why the daemon stopped it (a reshape, a shutdown); the thread says so instead of an exit code. */
+  reason?: string;
 }
 
 export interface AttachResult {
@@ -153,6 +146,15 @@ export interface AttachServiceOptions {
   now?: () => Date;
 }
 
+/** P5: the project step of the session defaults; absent when the project names nothing. */
+function projectSession(store: StateStore, id: string) {
+  try {
+    return store.getProject(id).session;
+  } catch {
+    return undefined;
+  }
+}
+
 export class AttachService {
   /** Live handles, one map per role: a reviewer coexists with a worker (§4.2). */
   private readonly live = new Map<SessionRole, Map<string, AgentSessionHandle>>([
@@ -167,6 +169,8 @@ export class AttachService {
 
   /** Sessions being stopped by `agile detach`: the exit path writes `idle`, not `done`. */
   private readonly detaching = new Set<string>();
+  /** Sessions the daemon stopped on purpose, with the reason the thread gives. */
+  private readonly stopReasons = new Map<string, string>();
 
   constructor(private readonly options: AttachServiceOptions) {}
 
@@ -184,6 +188,34 @@ export class AttachService {
     return this.handles(role).get(streamId);
   }
 
+  /**
+   * T204 (P5): `node new` starts the node's agent: a worker for a work
+   * node, a worktree-less session for a conversation node. `start: false`
+   * (`--no-start`, "Start later") skips it. The node is made either way; a
+   * failed start is a thread line, not a failed create.
+   */
+  async createNode(
+    principal: StreamPrincipal,
+    rawInput: unknown,
+    options: { requireProject?: boolean } = {},
+  ): Promise<Stream> {
+    const { start, ...input } = validateStreamCreateInput(rawInput);
+    const { streams } = this.options;
+    const created = await streams.create(principal, input, options);
+    if (start === false) return created;
+    const role = nodeRole(created, liveChildrenOf(created.id, streams.list()));
+    if (role !== 'work' && role !== 'conversation') return created;
+    try {
+      return (await this.attach(created.id)).stream;
+    } catch (err) {
+      await streams.appendThread('daemon', created.id, {
+        kind: 'line',
+        body: `could not start the agent: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return streams.get(created.id);
+    }
+  }
+
   async attach(streamId: string, options: AttachOptions = {}): Promise<AttachResult> {
     const { store, streams } = this.options;
     const role: SessionRole = options.role ?? 'worker';
@@ -193,15 +225,6 @@ export class AttachService {
     // same worktree, but never beside a second reviewer (§4.2).
     const busy = liveSession(stream, role);
     if (busy !== undefined) throw new StreamBusyError(stream.id, busy.id, role);
-    if (role === 'worker' && options.force !== true) {
-      const open = streams
-        .list()
-        .filter(
-          (s) => s.parent === stream.id && ['open', 'waiting_on_you'].includes(s.human.status),
-        )
-        .map((s) => s.id);
-      if (open.length > 0) throw new ParentAttachError(stream.id, open);
-    }
 
     const repos = store.getRepos();
     const repoEntry = stream.repo === undefined ? undefined : repos[stream.repo];
@@ -209,8 +232,11 @@ export class AttachService {
       throw new UnregisteredRepoError(stream.repo);
     }
 
+    const project =
+      stream.project === undefined ? undefined : projectSession(store, stream.project);
     const settings = resolveSessionSettings({
       flags: { vendor: options.vendor, model: options.model, effort: options.effort },
+      ...(project !== undefined ? { project } : {}),
       ...(repoEntry !== undefined ? { repo: repoEntry } : {}),
       home: readHomeConfigFile(this.options.home),
     });
@@ -221,12 +247,16 @@ export class AttachService {
     const sessionId = ulid();
 
     // 2. Branch + worktree, only for a stream that has a repo (§4.4).
-    let worktreePath = stream.worktree;
+    // D20: a coordinating node has no worktree; its session runs in the session dir.
+    const coordinating =
+      nodeRole(stream, liveChildrenOf(stream.id, streams.list())) === 'coordinating';
+    let worktreePath = coordinating ? undefined : stream.worktree;
     let branch = stream.branch;
-    if (repoEntry !== undefined) {
+    if (repoEntry !== undefined && !coordinating) {
       // §4.2: a reviewer never cuts a branch. On a never-attached stream it
       // reviews from the session dir, like a no-repo stream.
       if (worktreePath === undefined && role === 'worker') {
+        assertRepoHasCommits(stream.repo as string, repoEntry);
         const created = await createWorktree(repoEntry.path, {
           id: stream.id,
           slug: slugify(stream.title),
@@ -247,6 +277,9 @@ export class AttachService {
     const sessionDir = join(this.options.home, 'sessions', sessionId);
     mkdirSync(sessionDir, { recursive: true });
     const cwd = worktreePath ?? sessionDir;
+    // P4: refuse before any session or status write when the hook settings
+    // would have to change a tracked file.
+    settingsFileName(cwd);
 
     const session: SessionRef = {
       id: sessionId,
@@ -266,9 +299,17 @@ export class AttachService {
       });
     }
 
-    // 3. The brief.
+    // T330 (§4.4, P20): the same read scope the hook tier gives this node.
+    const readScope = nodeReadScope(stream, () => repos, this.options.home);
+    // 3. The brief. It names the repos the node may read (a work node: the
+    // others than its own), so the agent knows where they are.
+    const readableRepos = Object.entries(repos)
+      .filter(([name, entry]) => readScope.readRoots.includes(entry.path) && name !== stream.repo)
+      .map(([name, entry]) => ({ name, path: entry.path }));
+    const inWorktree = worktreePath !== undefined;
     const ancestors = this.ancestorsOf(stream);
     const brief = buildBrief({
+      ...(!inWorktree || readableRepos.length > 0 ? { readableRepos, inWorktree } : {}),
       role,
       stream,
       ancestors,
@@ -329,6 +370,7 @@ export class AttachService {
       brief: prompt,
       sessionDir,
       provider,
+      readScope,
       ...(this.options.rules !== undefined ? { rules: this.options.rules } : {}),
       ...(this.options.spawn !== undefined ? { spawn: this.options.spawn } : {}),
       ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
@@ -663,14 +705,20 @@ export class AttachService {
     const handles = this.handles(role);
     if (handles.get(streamId)?.sessionId === sessionId) handles.delete(streamId);
     const detached = this.detaching.delete(sessionId);
+    const stopReason = this.stopReasons.get(sessionId);
+    this.stopReasons.delete(sessionId);
     // `stop()` already holds the promise it awaits; dropping it cannot lose a write.
     this.exitHandled.delete(sessionId);
     try {
       await this.setSessionStatus(
         streamId,
         sessionId,
-        ok ? 'stopped' : 'error',
-        detached ? undefined : endedReason(reason, ok, vendorError),
+        ok || detached || stopReason !== undefined ? 'stopped' : 'error',
+        detached
+          ? undefined
+          : stopReason !== undefined
+            ? `stopped: ${stopReason}`
+            : endedReason(reason, ok, vendorError),
       );
       // A human pulled the plug: back to `idle`. `done` would claim the kill finished the work.
       if (detached) {
@@ -680,6 +728,18 @@ export class AttachService {
         await this.options.streams.appendThread('daemon', streamId, {
           kind: 'event',
           body: `${role} detached by human`,
+          ref: sessionId,
+        });
+        return;
+      }
+      // Stopped on purpose: not a crash and not finished work, so `idle`.
+      if (stopReason !== undefined) {
+        if (role === 'worker') {
+          await this.options.streams.update('daemon', streamId, { agent: { status: 'idle' } });
+        }
+        await this.options.streams.appendThread('daemon', streamId, {
+          kind: 'event',
+          body: `${role} stopped: ${stopReason}`.slice(0, 800),
           ref: sessionId,
         });
         return;
@@ -712,7 +772,12 @@ export class AttachService {
     if (ok) await this.maybeAutoReview(streamId);
   }
 
-  /** A reviewer's exit (§4.2): reports its findings; moves `agent.status` only when no worker is left. */
+  /**
+   * A reviewer's exit (§4.2): reports its findings on the thread. A review
+   * is not work, so it never moves `agent.status`: only a worker's (the
+   * work session's) exit does. A reviewer that died at spawn once marked a
+   * never-worked stream `done` (CI, phase 9).
+   */
   private async onReviewerExit(
     streamId: string,
     sessionId: string,
@@ -726,9 +791,6 @@ export class AttachService {
       body: `review finished: ${found} finding${found === 1 ? '' : 's'} (${reason})`.slice(0, 800),
       ref: sessionId,
     });
-    if (liveSession(stream, 'worker') === undefined && stream.agent.status !== 'done') {
-      await this.options.streams.update('daemon', streamId, { agent: { status: 'done' } });
-    }
   }
 
   /** §4.2's per-repo `auto_review` on a clean worker exit. Best effort: never fails the exit. */
@@ -772,6 +834,8 @@ export class AttachService {
         const handled = this.exitHandled.get(handle.sessionId);
         // Marked before anything can resolve `exited`: a detach, not a finish.
         if (options.detach === true) this.detaching.add(handle.sessionId);
+        else if (options.reason !== undefined)
+          this.stopReasons.set(handle.sessionId, options.reason);
         handle.stop();
         await handle.exited;
         // `agile detach` prints from the RPC result, which must already be on disk.

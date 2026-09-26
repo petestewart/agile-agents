@@ -7,16 +7,26 @@
  */
 
 import { type FormEvent, useEffect, useRef, useState } from 'react';
-import { createStream } from '../lib/api';
-import type { CockpitStreamRow } from '../lib/feed-types';
+import { createStream, listRepos } from '../lib/api';
+import type { CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
 import { isShortcut, useShell } from '../lib/shell';
+import { projectForNew } from '../lib/streams';
 
-export function NewStream({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.Element | null {
-  const { newStreamOpen, setNewStreamOpen, select, selected } = useShell();
+export function NewStream({
+  rows,
+  projects,
+}: {
+  rows: readonly CockpitStreamRow[];
+  projects: readonly CockpitProjectRow[];
+}): JSX.Element | null {
+  const { newStreamOpen, setNewStreamOpen, select, selected, project } = useShell();
   const [title, setTitle] = useState('');
   const [goal, setGoal] = useState('');
   const [parent, setParent] = useState('');
   const [repo, setRepo] = useState('');
+  // T204: the node starts its agent on create unless this is ticked.
+  const [startLater, setStartLater] = useState(false);
+  const [repoNames, setRepoNames] = useState<string[]>([]);
   const [error, setError] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
@@ -40,7 +50,12 @@ export function NewStream({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.
     setTitle('');
     setGoal('');
     setRepo('');
+    setStartLater(false);
     setError(undefined);
+    // T206: the picker lists what is registered now, including repos added in Settings.
+    listRepos()
+      .then((repos) => setRepoNames(repos.map((r) => r.name)))
+      .catch(() => setRepoNames([]));
     setParent(selected ?? '');
     titleRef.current?.focus();
   }, [newStreamOpen, selected]);
@@ -54,11 +69,16 @@ export function NewStream({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.
     setBusy(true);
     setError(undefined);
     try {
+      // T208: a parent carries its project; otherwise the current one.
+      const into = parent ? undefined : projectForNew(project, selected, rows, projects);
+      if (!parent && into === undefined) throw new Error('Pick a project in the rail first');
       const created = await createStream({
         title: t,
         goal: goal.trim() || t,
         ...(parent ? { parent } : {}),
+        ...(into !== undefined ? { project: into } : {}),
         ...(repo.trim() ? { repo: repo.trim() } : {}),
+        ...(startLater ? { start: false } : {}),
       });
       setNewStreamOpen(false);
       select(created.id);
@@ -110,9 +130,24 @@ export function NewStream({ rows }: { rows: readonly CockpitStreamRow[] }): JSX.
           Repo <span>(optional, a registered name)</span>
           <input
             data-testid="new-stream-repo"
+            list="new-stream-repo-names"
             value={repo}
             onChange={(e) => setRepo(e.target.value)}
           />
+          <datalist id="new-stream-repo-names" data-testid="new-stream-repo-names">
+            {repoNames.map((n) => (
+              <option key={n} value={n} />
+            ))}
+          </datalist>
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            data-testid="new-stream-start-later"
+            checked={startLater}
+            onChange={(e) => setStartLater(e.target.checked)}
+          />{' '}
+          Start later <span>(don't start the agent now)</span>
         </label>
         {error && (
           <p className="cr-error" role="alert" data-testid="new-stream-error">

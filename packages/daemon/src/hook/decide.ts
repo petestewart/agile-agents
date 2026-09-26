@@ -40,6 +40,7 @@ import type {
   AcpToolKind,
 } from '../permissions';
 import type { PermissionRole } from '../permissions';
+import { readDenyReason } from '../permissions/policy-tables';
 import type { RuleCheckContext } from '../permissions/rule-checks';
 import { patternRulesOf, runPatternRules } from '../permissions/rule-checks';
 import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from './types';
@@ -146,6 +147,33 @@ function claudeToolRawInput(
   return typeof path === 'string' ? { file_path: path } : {};
 }
 
+/** Claude's built-in read tools: their paths go through the same read allow-list as Bash's. */
+const BUILT_IN_READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead']);
+
+/** T213: the deny reason for a built-in read outside what this node may read. */
+function builtInReadDenyReason(
+  ctx: HookDecisionContext,
+  payload: ClaudePreToolUsePayload,
+): string | undefined {
+  if (payload.tool_name === undefined || !BUILT_IN_READ_TOOLS.has(payload.tool_name)) {
+    return undefined;
+  }
+  const input = payload.tool_input ?? {};
+  const paths = [input.file_path, input.path, input.notebook_path].filter(
+    (v): v is string => typeof v === 'string' && v.length > 0,
+  );
+  const policy = {
+    worktreePath: ctx.worktreePath,
+    ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
+    ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
+  };
+  for (const raw of paths) {
+    const reason = readDenyReason(raw, policy);
+    if (reason !== undefined) return reason;
+  }
+  return undefined;
+}
+
 /**
  * The role × tool verdict: `deny` → `deny`, `hil` → `ask` (translated into
  * the route band by `service.ts`), `allow` → `undefined` (fall through).
@@ -154,6 +182,8 @@ function roleToolVerdict(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
 ): HookDecision | undefined {
+  const readDenied = builtInReadDenyReason(ctx, payload);
+  if (readDenied !== undefined) return { decision: 'deny', reason: readDenied };
   const kind = claudeToolKind(payload);
   if (kind === undefined) return undefined;
 
@@ -166,6 +196,8 @@ function roleToolVerdict(
   const decision = decidePermission({
     role: permissionRoleFor(ctx.role),
     worktreePath: ctx.worktreePath,
+    ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
+    ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
     request,
   });
 
@@ -254,8 +286,9 @@ function computeGateVerdict(
   if (roleTool !== undefined) {
     // A role-policy deny that an accepted pattern rule also covers names
     // the rule: the human wrote it for exactly this call. Same verdict,
-    // better reason, and the rule's stats count it.
-    if (roleTool.decision === 'deny') {
+    // better reason, and the rule's stats count it. A rule's deny also beats
+    // a role hold (T343): the human already said no to this call.
+    if (roleTool.decision === 'deny' || roleTool.decision === 'ask') {
       const byRule = patternRuleVerdict(ctx, payload);
       if (byRule?.decision === 'deny') return byRule;
     }

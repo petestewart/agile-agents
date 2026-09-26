@@ -7,19 +7,27 @@ import { describe, expect, test } from 'bun:test';
 import type { InboxItem, SessionRef } from '@agile-agents/shared';
 import type { CockpitStreamRow } from './feed-types';
 import {
+  ancestorTitles,
   buildStreamTree,
+  dependencyEdges,
   diffLineKind,
   filterStreamRows,
+  groupByRepo,
   groupInbox,
   isLiveSession,
   isThinking,
+  parseCollapsed,
+  projectForNew,
+  rowsInProject,
   ruleHitOf,
+  runningRows,
   streamDot,
+  subtreeNeedsYou,
   threadAuthorLabel,
 } from './streams';
 
 function row(id: string, extra: Partial<CockpitStreamRow> = {}): CockpitStreamRow {
-  return { id, title: id, agent_status: 'idle', human_status: 'open', ...extra };
+  return { id, title: id, role: 'work', agent_status: 'idle', human_status: 'open', ...extra };
 }
 
 describe('streamDot', () => {
@@ -58,6 +66,29 @@ describe('buildStreamTree', () => {
     expect(tree.map((n) => n.row.id)).toEqual(['root', 'orphan']);
     expect(tree[0]?.children[0]?.row.id).toBe('mid');
     expect(tree[0]?.children[0]?.children[0]?.row.id).toBe('leaf');
+  });
+});
+
+describe('rail collapse (T331)', () => {
+  test('subtreeNeedsYou sees an amber dot anywhere below, not on the node itself', () => {
+    const quiet = buildStreamTree([
+      row('root', { agent_status: 'question' }),
+      row('a', { parent: 'root' }),
+    ]);
+    expect(quiet[0] && subtreeNeedsYou(quiet[0])).toBe(false);
+    const deep = buildStreamTree([
+      row('root'),
+      row('mid', { parent: 'root', agent_status: 'working' }),
+      row('leaf', { parent: 'mid', human_status: 'waiting_on_you' }),
+    ]);
+    expect(deep[0] && subtreeNeedsYou(deep[0])).toBe(true);
+  });
+
+  test('parseCollapsed keeps string ids and shrugs off anything malformed', () => {
+    expect([...parseCollapsed('["a","b",3]')]).toEqual(['a', 'b']);
+    expect(parseCollapsed('{"a":1}').size).toBe(0);
+    expect(parseCollapsed('not json').size).toBe(0);
+    expect(parseCollapsed(null).size).toBe(0);
   });
 });
 
@@ -154,5 +185,66 @@ describe('ruleHitOf (T169)', () => {
     expect(
       ruleHitOf({ by: 'daemon', kind: 'event', body: 'rule_hit: x', ref: 'questions/Q-1.yaml' }),
     ).toBeUndefined();
+  });
+});
+
+describe('T208: projects in the rail', () => {
+  const rows = [row('a', { project: 'P1' }), row('b', { project: 'P2' }), row('c')];
+  const projects = [
+    { id: 'P1', name: 'one', root: 'r1' },
+    { id: 'P2', name: 'two', root: 'r2' },
+  ];
+
+  test('rowsInProject keeps one project, or everything for "All"', () => {
+    expect(rowsInProject(rows, 'P1').map((r) => r.id)).toEqual(['a']);
+    expect(rowsInProject(rows, undefined)).toHaveLength(3);
+  });
+
+  test('projectForNew: the switcher, then the open stream, then the only project', () => {
+    expect(projectForNew('P2', 'a', rows, projects)).toBe('P2');
+    expect(projectForNew(undefined, 'a', rows, projects)).toBe('P1');
+    expect(projectForNew(undefined, 'c', rows, projects)).toBeUndefined();
+    expect(projectForNew(undefined, undefined, rows, projects.slice(0, 1))).toBe('P1');
+  });
+});
+
+describe('repo view and lenses (T209)', () => {
+  const rows = [
+    row('P1', { title: 'Shop', role: 'project' }),
+    row('F', { title: 'Show sale prices', role: 'coordinating', parent: 'P1' }),
+    row('A', { title: 'api: salePrice', parent: 'F', repo: 'api', live: true }),
+    row('P2', { title: 'Blog', role: 'project' }),
+    row('B', { title: 'api: posts', parent: 'P2', repo: 'api', waits_on: ['A', 'GONE'] }),
+    row('L', { title: 'landed', parent: 'P2', repo: 'api', human_status: 'landed' }),
+    row('W', { title: 'web: x', parent: 'P1', repo: 'web' }),
+  ];
+
+  test('ancestors run root first', () => {
+    expect(ancestorTitles(rows[2] as CockpitStreamRow, rows)).toEqual(['Shop', 'Show sale prices']);
+    expect(ancestorTitles(rows[0] as CockpitStreamRow, rows)).toEqual([]);
+  });
+
+  test('live work nodes group by repo across projects, with the delivery mode', () => {
+    const groups = groupByRepo(rows, [
+      { name: 'api', delivery: 'pr' },
+      { name: 'empty', delivery: 'direct' },
+    ]);
+    expect(groups.map((g) => [g.repo, g.delivery, g.rows.map((r) => r.id)])).toEqual([
+      ['api', 'pr', ['A', 'B']],
+      ['empty', 'direct', []],
+      ['web', 'direct', ['W']],
+    ]);
+  });
+
+  test('running is only nodes with a live session', () => {
+    expect(runningRows(rows).map((r) => r.id)).toEqual(['A']);
+  });
+
+  test('dependencies list every open edge', () => {
+    const edges = dependencyEdges(rows);
+    expect(edges.map((e) => [e.from.id, typeof e.on === 'string' ? e.on : e.on.id])).toEqual([
+      ['B', 'A'],
+      ['B', 'GONE'],
+    ]);
   });
 });

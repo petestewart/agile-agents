@@ -10,13 +10,14 @@ import {
   type Stream,
   type StreamCreateInput,
   type StreamPrincipal,
-  THREAD_BODY_MAX_CHARS,
   type ThreadAuthor,
   type ThreadEntry,
   type ThreadEntryKind,
+  threadBodyMaxFor,
   ulid,
   validateStreamCreateInput,
 } from '@agile-agents/shared';
+import { assertRepoHasCommits } from '../store/rpc-methods';
 import type { StateStore } from '../store/store';
 
 /** One node of the `list` tree: the record plus its child streams. */
@@ -62,6 +63,14 @@ export class UnknownParentStreamError extends Error {
   }
 }
 
+/** `create` named a project that does not exist, or none when one is required (-32602 at the edge). */
+export class StreamProjectError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StreamProjectError';
+  }
+}
+
 /** `create` was given a `repo` that is not registered in `repos.yaml`. */
 export class UnknownRepoError extends Error {
   constructor(
@@ -79,6 +88,7 @@ export class UnknownRepoError extends Error {
 
 /** The thread author a principal writes as; `agent` needs its session id (`agent:<ulid>`, §2.1). */
 export function threadAuthorFor(principal: StreamPrincipal, sessionId?: string): ThreadAuthor {
+  // coordinator/director write under their own name (§14.12).
   if (principal !== 'agent') return principal;
   if (sessionId === undefined) {
     throw new Error('an agent principal must name its session id to write to a thread');
@@ -97,31 +107,94 @@ export class StreamService {
     private readonly options: StreamServiceOptions = {},
   ) {}
 
-  /** §2.3: create ⇒ `human.status: open`, `agent.status: idle`. The daemon mints id and timestamps. */
-  async create(principal: StreamPrincipal, rawInput: unknown): Promise<Stream> {
+  /**
+   * §2.3: create ⇒ `human.status: open`, `agent.status: idle`. The daemon mints id and timestamps.
+   *
+   * T201: with `project`, the parent defaults to the project's root and a
+   * given parent must be in that project; without one, the parent's project
+   * is inherited. `requireProject` (the RPC edge) refuses a node that would
+   * end up with none.
+   */
+  async create(
+    principal: StreamPrincipal,
+    rawInput: unknown,
+    options: { requireProject?: boolean } = {},
+  ): Promise<Stream> {
     const input: StreamCreateInput = validateStreamCreateInput(rawInput);
     if (input.parent !== undefined && !this.store.hasStream(input.parent)) {
       throw new UnknownParentStreamError(input.parent);
     }
+    const parentProject =
+      input.parent !== undefined ? this.store.getStream(input.parent).project : undefined;
+    let parent = input.parent;
+    let project = input.project;
+    if (project !== undefined) {
+      let root: string;
+      try {
+        root = this.store.getProject(project).root;
+      } catch {
+        throw new StreamProjectError(`unknown project: ${project}`);
+      }
+      if (parent === undefined) parent = root;
+      else if (parent !== root && parentProject !== project) {
+        throw new StreamProjectError(`parent ${parent} is not in project ${project}`);
+      }
+    } else {
+      project = parentProject;
+    }
+    if (options.requireProject === true && project === undefined) {
+      throw new StreamProjectError(
+        'a project is required: pass "project" (or a parent that belongs to one)',
+      );
+    }
+    if (input.helper_of !== undefined && input.helper_of !== parent) {
+      throw new StreamProjectError('helper_of must name the parent node');
+    }
     if (input.repo !== undefined) {
       const repos = this.store.getRepos();
-      if (repos[input.repo] === undefined) {
-        throw new UnknownRepoError(input.repo, Object.keys(repos).sort());
-      }
+      const entry = repos[input.repo];
+      if (entry === undefined) throw new UnknownRepoError(input.repo, Object.keys(repos).sort());
+      assertRepoHasCommits(input.repo, entry);
     }
     const now = new Date().toISOString();
     const stream: Stream = {
       id: ulid(),
       title: input.title,
       goal: input.goal,
-      ...(input.parent !== undefined ? { parent: input.parent } : {}),
+      ...(parent !== undefined ? { parent } : {}),
       ...(input.repo !== undefined ? { repo: input.repo } : {}),
-      ...(input.target_branch !== undefined ? { target_branch: input.target_branch } : {}),
+      ...(project !== undefined ? { project } : {}),
+      ...(input.labels !== undefined ? { labels: input.labels } : {}),
+      ...(input.helper_of !== undefined ? { helper_of: input.helper_of } : {}),
       created_at: now,
       agent: { status: 'idle', updated_at: now },
       human: { status: 'open' },
       sessions: [],
     };
+    return this.insert(principal, stream);
+  }
+
+  /** A project's root node (T200/T201): no parent, carries the project id. */
+  async createRoot(
+    principal: StreamPrincipal,
+    project: string,
+    title: string,
+    goal: string,
+  ): Promise<Stream> {
+    const now = new Date().toISOString();
+    return this.insert(principal, {
+      id: ulid(),
+      title,
+      goal,
+      project,
+      created_at: now,
+      agent: { status: 'idle', updated_at: now },
+      human: { status: 'open' },
+      sessions: [],
+    });
+  }
+
+  private async insert(principal: StreamPrincipal, stream: Stream): Promise<Stream> {
     const created = await this.store.createStream(stream);
     await this.appendThread(principal, created.id, {
       kind: 'event',
@@ -200,14 +273,16 @@ export class StreamService {
     input: ThreadAppendInput,
     sessionId?: string,
   ): Promise<ThreadEntry> {
-    if (input.body.length > THREAD_BODY_MAX_CHARS) {
+    const by = threadAuthorFor(principal, sessionId);
+    const max = threadBodyMaxFor(by, input.kind);
+    if (input.body.length > max) {
       throw new Error(
-        `thread body is ${input.body.length} characters; the cap is ${THREAD_BODY_MAX_CHARS} — write the detail to a file and pass it as "ref"`,
+        `thread body is ${input.body.length} characters; the cap is ${max} — write the detail to a file and pass it as "ref"`,
       );
     }
     return this.store.appendThreadEntry(id, {
       ts: new Date().toISOString(),
-      by: threadAuthorFor(principal, sessionId),
+      by,
       kind: input.kind,
       body: input.body,
       ...(input.ref !== undefined ? { ref: input.ref } : {}),
@@ -244,12 +319,22 @@ export interface StreamPatch {
   repo?: string;
   branch?: string;
   worktree?: string;
-  target_branch?: string;
   archived?: true;
   /** `'off'` opts the stream out of the classifier tier (§6.4); `null` clears the opt-out. */
   classifier?: 'off' | null;
   /** T176: `null` clears it. */
   land_conflict?: Stream['land_conflict'] | null;
+  /** Node fields (§14.2, T201). `delivery_state`/`touched` pass the store only for the daemon. */
+  project?: Stream['project'];
+  labels?: Stream['labels'];
+  waits_on?: Stream['waits_on'];
+  external_link?: Stream['external_link'];
+  autonomy?: Stream['autonomy'];
+  delivery?: Stream['delivery'];
+  merge_together?: Stream['merge_together'];
+  helper_of?: Stream['helper_of'];
+  delivery_state?: Stream['delivery_state'];
+  touched?: Stream['touched'];
   agent?: Partial<Stream['agent']>;
   human?: Partial<Stream['human']>;
 }

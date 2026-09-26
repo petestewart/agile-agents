@@ -6,7 +6,7 @@
  *    rules as inbox cards with their *full* text (the inbox clips at 200
  *    chars, §3.2), answerable here exactly as in the inbox.
  *  - **Sessions strip** — vendor/model/role/status per session, with
- *    Attach (a worker), Review (a reviewer) and Stop.
+ *    Start/Restart (a worker), Review (a reviewer) and Stop.
  *  - **Thread** — the spine: every line, markdown, live (re-read on every
  *    pushed cockpit frame), with a thinking indicator while a session is
  *    mid-turn; the composer under it writes a human line and, when a
@@ -21,11 +21,14 @@
 import type { InboxItem } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  type RepoRow,
+  addRepoToStream,
   attachSession,
   closeStream,
   getStreamDiff,
   getStreamPage,
   landStream,
+  listRepos,
   markStreamLanded,
   resolveConflict,
   sayOnStream,
@@ -61,6 +64,49 @@ function needsYou(items: readonly InboxItem[], stream: string): InboxItem[] {
   return items.filter(
     (item) => item.stream === stream && item.kind !== 'blocked' && item.kind !== 'done',
   );
+}
+
+/** T330: past ~12 lines a thread entry renders collapsed, with a Show more / Show less toggle. */
+export const THREAD_COLLAPSE_LINES = 12;
+
+/** Long enough to collapse: more than 12 source lines, or ~12 wrapped lines of prose. */
+export function isLongThreadBody(body: string): boolean {
+  return (
+    body.split('\n').length > THREAD_COLLAPSE_LINES || body.length > THREAD_COLLAPSE_LINES * 100
+  );
+}
+
+function ThreadBody({ body }: { body: string }): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  if (!isLongThreadBody(body)) return <Markdown text={body} />;
+  return (
+    <>
+      <Markdown
+        text={body}
+        className={expanded ? undefined : 'cr-collapsed'}
+        testId="thread-body"
+      />
+      <button
+        type="button"
+        className="cr-link"
+        data-testid="thread-expand"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((open) => !open)}
+      >
+        {expanded ? 'Show less' : 'Show more'}
+      </button>
+    </>
+  );
+}
+
+/** T205: the registered repos a proposal names, so its card can offer "Add <repo>" (§7). */
+export function reposNamedIn(body: string, repos: readonly RepoRow[], current?: string): string[] {
+  return repos
+    .map((r) => r.name)
+    .filter((name) => name !== current)
+    .filter((name) =>
+      new RegExp(`(^|[^\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\w-]|$)`).test(body),
+    );
 }
 
 function errorText(err: unknown): string {
@@ -268,18 +314,31 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   // T170: Attach/Review open the session picker first.
   const [picker, setPicker] = useState<'worker' | 'reviewer' | 'resolve' | undefined>(undefined);
+  // T205: + Repo in place — the registered repos, and the open picker's choice.
+  const [repos, setRepos] = useState<RepoRow[]>([]);
+  const [addingRepo, setAddingRepo] = useState(false);
+  const [repoChoice, setRepoChoice] = useState('');
   // T176: the server refused a worker on a parent with open children; this is its reason.
-  const [confirmParent, setConfirmParent] = useState<string | undefined>(undefined);
   const threadRef = useRef<HTMLOListElement | null>(null);
-  const pendingChoice = useRef<{ vendor?: string; model?: string; effort?: string }>({});
 
+  // Every pushed frame and every action re-reads the page, so reads
+  // overlap, and their responses can arrive in any order. Only the latest
+  // read may land: an older one resolving last would put back a stale page
+  // (a worker still `starting` after it went `running`), and with the
+  // session quiet no later frame would ever correct it.
+  const loadSeq = useRef(0);
   const load = useCallback(() => {
+    const seq = ++loadSeq.current;
     getStreamPage(id)
       .then((next) => {
+        if (seq !== loadSeq.current) return;
         setPage(next);
         setLoadError(undefined);
       })
-      .catch((err: unknown) => setLoadError(errorText(err)));
+      .catch((err: unknown) => {
+        if (seq !== loadSeq.current) return;
+        setLoadError(errorText(err));
+      });
   }, [id]);
 
   // A pushed cockpit frame follows every batch of events — a new thread
@@ -289,6 +348,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     load();
   }, [load, cockpit]);
 
+  useEffect(() => {
+    listRepos()
+      .then(setRepos)
+      .catch(() => setRepos([]));
+  }, []);
+
   // A different stream opened: back to its thread.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `id` is the trigger.
   useEffect(() => {
@@ -296,7 +361,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     setDraft('');
     setActionError(undefined);
     setPicker(undefined);
-    setConfirmParent(undefined);
+    setAddingRepo(false);
+    setRepoChoice('');
   }, [id]);
 
   const threadLength = page?.thread.length ?? 0;
@@ -348,6 +414,15 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const cards = needsYou(cockpit?.inbox ?? [], stream.id);
   const findings = stream.agent.findings ?? [];
   const text = draft.trim();
+  const open = stream.human.status !== 'landed' && stream.human.status !== 'closed';
+  const repoOptions = repos.map((r) => r.name).filter((name) => name !== stream.repo);
+  const chosenRepo = repoChoice || repoOptions[0] || '';
+  function addRepo(repo: string, switching = false): void {
+    void act(
+      () => addRepoToStream(stream.id, repo, switching),
+      () => setAddingRepo(false),
+    );
+  }
 
   return (
     <section className="cr-stream" data-testid="stream-page" data-stream={stream.id}>
@@ -416,7 +491,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             disabled={busy || liveWorker !== undefined || stream.human.status === 'landed'}
             onClick={() => setPicker('worker')}
           >
-            Attach
+            {/* T204: a new node starts its own agent; this is for "Start later" or after one ended. */}
+            {stream.sessions.some((s) => s.role === 'worker') ? 'Restart' : 'Start'}
           </button>
           <button
             type="button"
@@ -447,7 +523,54 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               Close
             </button>
           )}
+          {open && stream.parent !== undefined && (
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="add-repo"
+              disabled={busy || repoOptions.length === 0}
+              onClick={() => setAddingRepo((v) => !v)}
+            >
+              + Repo
+            </button>
+          )}
         </div>
+        {addingRepo && (
+          <div className="cr-actions" data-testid="add-repo-form">
+            <select
+              data-testid="add-repo-select"
+              value={chosenRepo}
+              onChange={(e) => setRepoChoice(e.target.value)}
+            >
+              {repoOptions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="cr-btn"
+              data-testid="add-repo-submit"
+              disabled={busy || chosenRepo === ''}
+              onClick={() => addRepo(chosenRepo)}
+            >
+              Add
+            </button>
+            {stream.branch !== undefined && (
+              <button
+                type="button"
+                className="cr-btn"
+                data-testid="switch-repo-submit"
+                title="Only when nothing is committed on this branch"
+                disabled={busy || chosenRepo === ''}
+                onClick={() => addRepo(chosenRepo, true)}
+              >
+                Switch
+              </button>
+            )}
+          </div>
+        )}
         {picker && (
           <SessionPicker
             key={picker}
@@ -456,7 +579,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             busy={busy}
             onCancel={() => setPicker(undefined)}
             onStart={(choice) => {
-              pendingChoice.current = choice;
               if (picker === 'resolve') {
                 void act(
                   () => resolveConflict(stream.id, choice),
@@ -465,56 +587,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                 return;
               }
               void act(
-                async () => {
-                  try {
-                    await attachSession(stream.id, picker, choice);
-                  } catch (err) {
-                    // T176: a parent's branch is where its children land — confirm first.
-                    if (picker === 'worker' && /open child/.test(errorText(err))) {
-                      setConfirmParent(errorText(err));
-                      setPicker(undefined);
-                      return;
-                    }
-                    throw err;
-                  }
-                },
+                () => attachSession(stream.id, picker, choice),
                 () => setPicker(undefined),
               );
             }}
           />
-        )}
-        {confirmParent && (
-          <div className="cr-confirm" data-testid="attach-confirm" role="alertdialog">
-            <p>
-              This stream has open children. A parent's branch is where its children land, so a
-              worker here builds on the branch they merge into and their lands will conflict.
-            </p>
-            <p className="cr-dim">{confirmParent}</p>
-            <div className="cr-actions">
-              <button
-                type="button"
-                className="cr-btn danger"
-                data-testid="attach-confirm-force"
-                disabled={busy}
-                onClick={() =>
-                  void act(
-                    () => attachSession(stream.id, 'worker', pendingChoice.current, true),
-                    () => setConfirmParent(undefined),
-                  )
-                }
-              >
-                Attach anyway
-              </button>
-              <button
-                type="button"
-                className="cr-btn"
-                data-testid="attach-confirm-cancel"
-                onClick={() => setConfirmParent(undefined)}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
         )}
         {actionError && (
           <p className="cr-error" role="alert" data-testid="stream-error">
@@ -617,7 +694,21 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                     {threadAuthorLabel(entry.by, stream.sessions)}
                     {entry.kind !== 'line' ? ` · ${entry.kind}` : ''}
                   </div>
-                  <Markdown text={entry.body} />
+                  <ThreadBody body={entry.body} />
+                  {entry.kind === 'proposal' &&
+                    open &&
+                    reposNamedIn(entry.body, repos, stream.repo).map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        className="cr-btn"
+                        data-testid="proposal-add-repo"
+                        disabled={busy}
+                        onClick={() => addRepo(name)}
+                      >
+                        Add {name}
+                      </button>
+                    ))}
                   {entry.by === 'human' && entry.kind === 'line' && queuedLines.has(entry.ts) && (
                     <div className="cr-dim cr-queued" data-testid="thread-queued">
                       queued — the worker reads it after its current step
@@ -713,7 +804,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       {tab === 'docs' && (
         <ul className="cr-docs" data-testid="docs">
           {page.docs.length === 0 && (
-            <li className="cr-dim">No docs — repo `.agile-docs/` and stream docs appear here.</li>
+            <li className="cr-dim">No docs — repo docs and stream docs appear here.</li>
           )}
           {page.docs.map((doc) => (
             <li key={doc.path} data-testid="doc">

@@ -83,7 +83,7 @@ describe('T034: git()/gitWrite()/runGit() spawn with a sandboxed HOME, never the
       expect(result.exitCode).toBe(0);
     } finally {
       if (original === undefined) {
-        process.env.GIT_CONFIG_GLOBAL = undefined;
+        Reflect.deleteProperty(process.env, 'GIT_CONFIG_GLOBAL');
       } else {
         process.env.GIT_CONFIG_GLOBAL = original;
       }

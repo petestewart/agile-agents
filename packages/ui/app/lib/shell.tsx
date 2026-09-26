@@ -12,9 +12,16 @@ import { type PropsWithChildren, createContext, useContext, useMemo, useState } 
 import { DEFAULT_RULES_FILTER, type RulesFilter } from './rules';
 
 /** `stream` is the stream page (T161) — the stream is `selected`. `rules` is T163's rules screen. */
-export type ShellView = 'inbox' | 'rules' | 'settings' | 'stream';
+export type ShellView = 'inbox' | 'repos' | 'running' | 'deps' | 'rules' | 'settings' | 'stream';
 /** The views a `?view=` deep link may name; `stream` needs an id, so it is not one. */
-export const SHELL_VIEWS: readonly ShellView[] = ['inbox', 'rules', 'settings'];
+export const SHELL_VIEWS: readonly ShellView[] = [
+  'inbox',
+  'repos',
+  'running',
+  'deps',
+  'rules',
+  'settings',
+];
 
 export function isShellView(value: string | null): value is ShellView {
   return value !== null && (SHELL_VIEWS as readonly string[]).includes(value);
@@ -38,6 +45,9 @@ export interface ShellValue {
   /** T162: the "New stream" dialog — opened by the top bar's button or `n`. */
   newStreamOpen: boolean;
   setNewStreamOpen(open: boolean): void;
+  /** T208: the rail's project switcher; `undefined` is "All". New nodes file into it. */
+  project: string | undefined;
+  setProject(id: string | undefined): void;
 }
 
 const ShellContext = createContext<ShellValue | undefined>(undefined);
@@ -50,6 +60,7 @@ export function ShellProvider({
   const [selected, setSelected] = useState<string | undefined>(undefined);
   const [railOpen, setRailOpen] = useState(false);
   const [newStreamOpen, setNewStreamOpen] = useState(false);
+  const [project, setProject] = useState<string | undefined>(undefined);
   const [rulesFilter, setRulesFilter] = useState<RulesFilter>(DEFAULT_RULES_FILTER);
 
   const value = useMemo<ShellValue>(
@@ -74,8 +85,10 @@ export function ShellProvider({
       },
       newStreamOpen,
       setNewStreamOpen,
+      project,
+      setProject,
     }),
-    [view, selected, railOpen, newStreamOpen, rulesFilter],
+    [view, selected, railOpen, newStreamOpen, rulesFilter, project],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;

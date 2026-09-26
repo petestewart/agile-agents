@@ -303,3 +303,54 @@ describe('a stream without a repo never touches git', () => {
     expect(names).not.toContain('.git');
   });
 });
+
+describe('node fields (T201)', () => {
+  const waitOn = (node: string) => ({ node, added_by: 'human' as const, added_at: 't' });
+
+  test('a project root carries the project id; children inherit it', async () => {
+    const { ProjectService } = await import('../projects/service');
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    expect(streams.get(project.root).project).toBe(project.id);
+    const child = await newStream('c', { project: project.id });
+    expect(child.parent).toBe(project.root);
+    const grandchild = await newStream('g', { parent: child.id });
+    expect(grandchild.project).toBe(project.id);
+  });
+
+  test('a waits_on cycle is refused at write time (P8)', async () => {
+    const a = await newStream('a');
+    const b = await newStream('b');
+    await streams.update('human', a.id, { waits_on: [waitOn(b.id)] });
+    await expect(streams.update('human', b.id, { waits_on: [waitOn(a.id)] })).rejects.toThrow(
+      StreamCycleError,
+    );
+    await expect(streams.update('human', a.id, { waits_on: [waitOn(a.id)] })).rejects.toThrow(
+      /cycle/,
+    );
+  });
+
+  test('a waits_on target must exist', async () => {
+    const a = await newStream('a');
+    await expect(streams.update('human', a.id, { waits_on: [waitOn(ulid())] })).rejects.toThrow(
+      /not found/,
+    );
+  });
+
+  test('the store refuses delivery_state and touched from anyone but the daemon', async () => {
+    const a = await newStream('a');
+    const touched = { files: ['x.ts'], base: 'abc', at: 't' };
+    for (const p of ['human', 'agent', 'coordinator', 'director'] as const) {
+      await expect(streams.update(p, a.id, { touched })).rejects.toThrow(/only the daemon/);
+    }
+    expect((await streams.update('daemon', a.id, { touched })).touched).toEqual(touched);
+  });
+
+  test('coordinator and director may not write human.*', async () => {
+    const a = await newStream('a');
+    for (const p of ['coordinator', 'director'] as const) {
+      await expect(streams.update(p, a.id, { human: { status: 'closed' } })).rejects.toThrow(
+        /may not change human/,
+      );
+    }
+  });
+});

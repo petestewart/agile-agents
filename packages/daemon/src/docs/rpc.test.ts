@@ -20,14 +20,31 @@ let stream: Stream;
 beforeEach(async () => {
   repo = mkdtempSync(join(tmpdir(), 'agile-docs-rpc-'));
   Bun.spawnSync(['git', 'init', '-q'], { cwd: repo });
+  // T214: a node needs a repo with a commit.
+  Bun.spawnSync(
+    [
+      'git',
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'init',
+    ],
+    { cwd: repo },
+  );
   const init = runInit(repo);
   store = StateStore.open(init.stateRoot);
   const streams = new StreamService(store);
   await store.addRepo('ledger', { path: repo });
   methods = buildDocsRpcMethods(new DocsService(store, streams, init.stateRoot));
   stream = await streams.create('human', { title: 's', goal: 'g', repo: 'ledger' });
-  mkdirSync(join(repo, '.agile-docs'), { recursive: true });
-  writeFileSync(join(repo, '.agile-docs', 'brief.md'), 'the invariant\n');
+  const docsDir = join(init.stateRoot, 'repos', 'ledger', 'docs');
+  mkdirSync(docsDir, { recursive: true });
+  writeFileSync(join(docsDir, 'brief.md'), 'the invariant\n');
 });
 
 afterEach(() => {

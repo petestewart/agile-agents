@@ -28,7 +28,7 @@ import {
   spawnSession as defaultSpawnSession,
 } from '@agile-agents/acp-client';
 import type { AgentId, SessionRef, SessionRole, Stream } from '@agile-agents/shared';
-import { THREAD_BODY_MAX_CHARS } from '@agile-agents/shared';
+import { AGENT_LINE_MAX_CHARS } from '@agile-agents/shared';
 import { writeClaudeSettings } from '../hook';
 import { permissionRoleFor } from '../hook/decide';
 import {
@@ -38,6 +38,7 @@ import {
   buildPermissionResponder,
   cursorModeIdFor,
 } from '../permissions';
+import { readOnlyGitEnv } from '../permissions/git-env';
 import type { PatternRuleRules } from '../permissions/rule-checks';
 import { patternRuleGate } from '../permissions/rule-checks';
 import {
@@ -97,6 +98,8 @@ export interface AgentSessionOptions {
   /** `AGILE_SOCKET_PATH` for the hook and MCP bridge (a worktree cwd would resolve the wrong root). */
   socketPath?: string;
   provider?: AcpProviderConfig;
+  /** T330 (P20): the ACP read scope (`readRoots`/`hiddenRoots`), as the hook tier's. */
+  readScope?: { readRoots: readonly string[]; hiddenRoots: readonly string[] };
   /** Test seam: a fake `spawnSession`. */
   spawn?: typeof defaultSpawnSession;
   now?: () => Date;
@@ -281,6 +284,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   // `SandboxRequiredError` when `requiresSandbox` and no backend resolves;
   // an available backend alone is never a reason to wrap.
   const wrapCommand = opts.wrapCommand ?? defaultWrapAgentCommand;
+  // T343: a read-only role's git can't run a repo-configured program.
+  const gitEnv = readOnlyGitEnv(policyRole, { ...process.env, ...provider.envOverrides });
   const wrapped = wrapCommand({
     role: policyRole,
     worktreePath,
@@ -290,6 +295,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     requiresSandbox: opts.requiresSandbox,
     enabled: opts.sandboxEnabled,
     socketPath: opts.socketPath,
+    ...(Object.keys(gitEnv).length > 0 ? { envPassthroughNames: Object.keys(gitEnv) } : {}),
   });
 
   // Pi has no ACP-level hook: enforcement is the `agile` extension. A
@@ -345,6 +351,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       AGILE_STREAM: stream.id,
       // Headless git: a `commit` without -m would open core.editor and hang.
       GIT_EDITOR: 'true',
+      ...gitEnv,
       ...(opts.socketPath ? { AGILE_SOCKET_PATH: opts.socketPath } : {}),
       ...(provider.id === 'pi' ? { [PI_GATE_ENV_VAR]: '1' } : {}),
     },
@@ -363,6 +370,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     agent: sessionId as AgentId,
     worktreePath,
     session: spawned,
+    ...(opts.readScope ?? {}),
     // The same rules the hook tier enforces, bound to this stream: the
     // only tier a vendor without a pre-tool-use hook has.
     ...(opts.rules !== undefined
@@ -388,20 +396,44 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   // ---------------------------------------------------------------- output
   // One thread `line` per ACP message, not per chunk (chunks are deltas of
   // one message). `output.log` gets everything; the line is capped and
-  // points at the log.
+  // points at the log. T330: a message is one line with its whole text up
+  // to `AGENT_LINE_MAX_CHARS` (it once split mid-sentence at 800 chars);
+  // past that it is cut at the end and the overflow streams to the log.
   let buffer = '';
+  let overflowed = false;
   function flushOutput(): void {
-    const text = buffer.trim();
+    const text = overflowed ? buffer.trimStart() : buffer.trim();
+    const wasOverflowed = overflowed;
     buffer = '';
+    overflowed = false;
+    if (wasOverflowed) outputLog.append('\n');
     if (text.length === 0) return;
-    outputLog.append(`${text}\n`);
+    if (!wasOverflowed) outputLog.append(`${text}\n`);
     const body =
-      text.length > THREAD_BODY_MAX_CHARS ? `${text.slice(0, THREAD_BODY_MAX_CHARS - 1)}…` : text;
+      wasOverflowed || text.length > AGENT_LINE_MAX_CHARS
+        ? `${text.slice(0, AGENT_LINE_MAX_CHARS - 1).trimEnd()}…`
+        : text;
+    const append = () =>
+      streams.appendThread(
+        'agent',
+        stream.id,
+        { kind: 'line', body, ref: outputLog.path },
+        sessionId,
+      );
+    const logFailure = (attempt: string, err: unknown) =>
+      // Into stderr.log, not the stderr tail: it is the daemon's failure, not the vendor's.
+      stderrLog.append(
+        `[agiled] thread append failed (${attempt}): ${err instanceof Error ? err.message : String(err)}\n`,
+      );
     track(
-      streams
-        .appendThread('agent', stream.id, { kind: 'line', body, ref: outputLog.path }, sessionId)
-        .catch(() => {
-          // An unwritable thread must not take the session down; the log has the text.
+      append()
+        .catch((err: unknown) => {
+          logFailure('retrying once', err);
+          return append();
+        })
+        .catch((err: unknown) => {
+          // An unwritable thread must not take the session down; output.log has the text.
+          logFailure('gave up', err);
         }),
     );
   }
@@ -496,9 +528,16 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       if (kind === 'agent_message_chunk') {
         const text = chunkText(update?.content);
         if (text !== null) {
-          buffer += text;
-          // A message longer than the cap is flushed as it goes.
-          if (buffer.length >= THREAD_BODY_MAX_CHARS) flushOutput();
+          if (overflowed) {
+            outputLog.append(text);
+          } else if (buffer.length + text.length > AGENT_LINE_MAX_CHARS) {
+            // Past the cap: the head stays for the line, the rest goes to the log as it comes.
+            outputLog.append((buffer + text).trimStart());
+            buffer = (buffer + text).slice(0, AGENT_LINE_MAX_CHARS);
+            overflowed = true;
+          } else {
+            buffer += text;
+          }
         }
         return;
       }
@@ -535,6 +574,20 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
    * `prompt()` still resolves on its own turn's outcome.
    */
   let turnQueue: Promise<void> = Promise.resolve();
+  /**
+   * `session/cancel` ahead of a close. acp-client's `cancel()` does not
+   * throw on a failed send (it reports it as the session's transport error),
+   * so the catch is defence in depth: a provider or a future `cancel()` that
+   * throws for any reason must still never skip the close and `finish()`
+   * after it, or the session is left half-stopped.
+   */
+  function cancelBeforeClose(): void {
+    try {
+      spawned.cancel();
+    } catch {
+      // Already reported through the session's error path, or moot: closing.
+    }
+  }
   let turnCount = 0;
   /** Turns enqueued and not yet finished, the running one included. */
   let inFlight = 0;
@@ -589,7 +642,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
           .catch(() => {
             // Best effort: `finish()` recovers the state either way.
           });
-        spawned.cancel();
+        cancelBeforeClose();
         spawned.close();
         await finish(`prompt failed: ${message}`, false);
         throw err;
@@ -662,7 +715,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       stopRequested = true;
       // No unsubscribe: `finish()` runs off the session's later `exit`
       // event, and silencing it would leave `exited` unresolved.
-      spawned.cancel();
+      cancelBeforeClose();
       spawned.close();
     },
   };

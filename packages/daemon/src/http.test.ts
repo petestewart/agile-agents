@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_DENY_AT,
+  type Event,
   type Policy,
   type Rule,
   type SessionDefaultsStatus,
@@ -20,6 +21,7 @@ import { GateService } from './gates';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService } from './inbox';
 import { runInit } from './init';
+import { ProjectService } from './projects';
 import { QuestionService } from './questions';
 import { RulesService } from './rules';
 import { StateStore } from './store';
@@ -131,6 +133,7 @@ describe('T160 cockpit routes', () => {
       store,
       gates,
       streams,
+      projects: new ProjectService(store, streams),
       questions,
       rules,
       inbox: new InboxService({ streams, questions, gates, rules }),
@@ -160,6 +163,7 @@ describe('T160 cockpit routes', () => {
       id: leaf.id,
       title: 'leaf',
       parent: root.id,
+      role: 'conversation',
       agent_status: 'question',
       human_status: 'waiting_on_you',
     });
@@ -566,27 +570,63 @@ describe('T160 cockpit routes', () => {
     }
   });
 
-  test('T162: POST /api/streams creates a stream stamped human; strict body; unknown parent 400; cross-origin 403', async () => {
-    const post = (body: unknown, headers: Record<string, string> = {}) =>
-      fetch(url('/api/streams'), {
+  test('T162/T208: POST /api/streams creates a stream stamped human, in a project; strict body; unknown parent 400; cross-origin 403', async () => {
+    const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(path), {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...headers },
         body: JSON.stringify(body),
       });
-    expect((await post({ title: 't', goal: 'g' }, { origin: 'http://evil.example' })).status).toBe(
-      403,
-    );
-    expect((await post({ title: 't', goal: 'g', by: 'daemon' })).status).toBe(400);
-    expect((await post({ title: 't', goal: 'g', parent: ulid() })).status).toBe(400);
-    expect((await post({ title: 't', goal: 'g', repo: 'nope' })).status).toBe(400);
-    const parent = await streams.create('human', { title: 'p', goal: 'g' });
-    const res = await post({ title: 'child', goal: 'g', parent: parent.id });
+    const shopRes = await post('/api/projects', { name: 'shop' });
+    expect(shopRes.status).toBe(201);
+    const shop = (await shopRes.json()) as { id: string; root: string };
+    expect((await post('/api/projects', { name: 'shop' })).status).toBe(400);
+    expect(
+      (await post('/api/projects', { name: 'x' }, { origin: 'http://evil.example' })).status,
+    ).toBe(403);
+    const listed = (await (await fetch(url('/api/projects'))).json()) as Array<{ id: string }>;
+    expect(listed.map((p) => p.id)).toEqual([shop.id]);
+
+    const s = (body: Record<string, unknown>, headers?: Record<string, string>) =>
+      post('/api/streams', body, headers);
+    expect(
+      (await s({ title: 't', goal: 'g', project: shop.id }, { origin: 'http://evil.example' }))
+        .status,
+    ).toBe(403);
+    expect((await s({ title: 't', goal: 'g', project: shop.id, by: 'daemon' })).status).toBe(400);
+    expect((await s({ title: 't', goal: 'g', parent: ulid() })).status).toBe(400);
+    expect((await s({ title: 't', goal: 'g', project: shop.id, repo: 'nope' })).status).toBe(400);
+    // No project, and no parent that carries one: refused.
+    const noProject = await s({ title: 't', goal: 'g' });
+    expect(noProject.status).toBe(400);
+    expect(((await noProject.json()) as { error: string }).error).toContain('project');
+
+    const top = await s({ title: 'top', goal: 'g', project: shop.id });
+    expect(top.status).toBe(201);
+    const parent = (await top.json()) as { id: string; parent?: string; project?: string };
+    expect(parent.parent).toBe(shop.root);
+    expect(parent.project).toBe(shop.id);
+    // A parent in the project is enough: the project is inherited.
+    const res = await s({ title: 'child', goal: 'g', parent: parent.id });
     expect(res.status).toBe(201);
-    const created = (await res.json()) as { id: string; parent?: string; repo?: string };
+    const created = (await res.json()) as {
+      id: string;
+      parent?: string;
+      repo?: string;
+      project?: string;
+    };
     expect(created.parent).toBe(parent.id);
+    expect(created.project).toBe(shop.id);
     expect(created.repo).toBeUndefined();
     const entries = streams.readThread(created.id).entries;
     expect(entries.map((e) => [e.by, e.kind])).toEqual([['human', 'event']]);
+
+    const frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(frame.projects).toEqual([{ id: shop.id, name: 'shop', root: shop.root }]);
+    const roles = Object.fromEntries(frame.streams.map((r) => [r.id, [r.role, r.project]]));
+    expect(roles[shop.root]).toEqual(['project', shop.id]);
+    expect(roles[parent.id]).toEqual(['coordinating', shop.id]);
+    expect(roles[created.id]).toEqual(['conversation', shop.id]);
   });
 
   test('T161: attach/stop without an attach service are 503, and are same-origin only', async () => {
@@ -636,6 +676,63 @@ describe('T160 cockpit routes', () => {
       expect(pushed?.streams.find((s) => s.id === stream.id)?.human_status).toBe('waiting_on_you');
     } finally {
       ws.close();
+    }
+  });
+
+  test('/ws delivers an event exactly once when it lands between tailer polls and the connect snapshot', async () => {
+    // A slow poll so the event is on disk (and in a naive snapshot) before the
+    // tailer's next poll publishes it to the now-subscribed socket.
+    const slow = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      feedPollIntervalMs: 400,
+    });
+    const agentId = '01ARZ3NDEKTSV4RRFFQ69GE902';
+    const seen: string[] = [];
+    let snapshots = 0;
+    await store.putAgent(agentId, {
+      vendor: 'claude',
+      model: 'claude-sonnet-4-5',
+      last_seen: new Date().toISOString(),
+    });
+    const ws = new WebSocket(`ws://127.0.0.1:${slow.port}/ws`);
+    ws.onmessage = (event) => {
+      const frame = JSON.parse(event.data as string) as {
+        type: string;
+        events?: Event[];
+        event?: Event;
+      };
+      if (frame.type === 'snapshot') {
+        snapshots++;
+        for (const e of frame.events ?? []) if (e.agent === agentId) seen.push(e.kind);
+      } else if (frame.type === 'event' && frame.event?.agent === agentId) {
+        seen.push(frame.event.kind);
+      }
+    };
+    try {
+      const deadline = Date.now() + 5000;
+      while (snapshots === 0 && Date.now() < deadline) await Bun.sleep(10);
+      expect(snapshots).toBe(1);
+      // Past two poll intervals: any duplicate publish has arrived by now.
+      await Bun.sleep(1000);
+      expect(seen).toEqual(['agent_put']);
+
+      // And an event written after the connect still arrives, once.
+      await store.putAgent(agentId, {
+        vendor: 'claude',
+        model: 'claude-sonnet-4-5',
+        last_seen: new Date().toISOString(),
+      });
+      while (seen.length < 2 && Date.now() < deadline) await Bun.sleep(10);
+      await Bun.sleep(500);
+      expect(seen).toEqual(['agent_put', 'agent_put']);
+    } finally {
+      ws.close();
+      await slow.stop();
     }
   });
 });

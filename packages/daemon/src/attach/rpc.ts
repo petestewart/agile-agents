@@ -16,14 +16,10 @@ import type { LandingService } from '../landing/service';
 import { LandRefusedError } from '../landing/service';
 import type { RpcMethodHandler } from '../rpc';
 import { WorktreeRefusedError } from '../runner/worktrees';
+import { EmptyRepoError } from '../store/rpc-methods';
 import { NotFoundError } from '../store/store';
 import { UnknownVendorError } from './resolve';
-import {
-  type AttachService,
-  ParentAttachError,
-  StreamBusyError,
-  UnregisteredRepoError,
-} from './service';
+import { type AttachService, StreamBusyError, UnregisteredRepoError } from './service';
 import { NoWorktreeError, UnknownSessionError, type VerbService, verbHandlers } from './verbs';
 
 function requireObject(params: unknown): Record<string, unknown> {
@@ -46,8 +42,8 @@ const asParamErrors = paramErrors(
   NoWorktreeError,
   WorktreeRefusedError,
   NotFoundError,
-  ParentAttachError,
   LandRefusedError,
+  EmptyRepoError,
 );
 
 /** The picker's flags, shared by `attach.start` and `attach.resolve`. */
@@ -74,14 +70,10 @@ export function buildAttachRpcMethods(
       if (role !== undefined && role !== 'worker' && role !== 'reviewer') {
         throw new RpcParamError('invalid "role": must be "worker" or "reviewer"', { role });
       }
-      if (p.force !== undefined && typeof p.force !== 'boolean') {
-        throw new RpcParamError('invalid "force": must be a boolean', { force: p.force });
-      }
       const result = await asParamErrors(() =>
         attach.attach(stream, {
           ...flagsOf(p),
           ...(role !== undefined ? { role } : {}),
-          ...(p.force === true ? { force: true } : {}),
         }),
       );
       // The handle is in-process only; the wire carries the record.
@@ -96,7 +88,6 @@ export function buildAttachRpcMethods(
       const result = await asParamErrors(() =>
         attach.attach(stream, {
           ...flagsOf(p),
-          force: true,
           briefAppendix: landing.resolvePrompt(stream),
         }),
       );

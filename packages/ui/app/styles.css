@@ -191,8 +191,11 @@ body {
 .cr-nav {
   display: flex;
   gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
 }
 .cr-nav button {
+  white-space: nowrap;
   border: 0;
   background: transparent;
   color: var(--text-dim);
@@ -304,6 +307,43 @@ body {
 }
 .cr-tree ul {
   padding-left: 14px;
+}
+/* T331: a caret column before every row; the children span the full width. */
+.cr-tree li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+}
+.cr-tree li > .cr-tree-row {
+  grid-column: 2;
+}
+.cr-tree li > ul {
+  grid-column: 1 / -1;
+}
+.cr-tree-caret {
+  grid-column: 1;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cr-tree-caret:hover {
+  color: var(--text);
+  background: var(--bg-raised);
+}
+.cr-tree-caret:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+.cr-tree-hidden-dot {
+  margin-left: auto;
+  width: 7px;
+  height: 7px;
 }
 .cr-tree-row {
   display: flex;
@@ -611,6 +651,11 @@ body {
 }
 .cr-thread li.cr-rule-hit .who {
   color: var(--danger);
+}
+/* T330: a long entry, collapsed to ~12 lines until "Show more". */
+.cr-thread .cr-collapsed {
+  max-height: 12lh;
+  overflow: hidden;
 }
 .cr-thread .who {
   font-size: 11px;
@@ -924,4 +969,67 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* ---- T208: the project switcher and role icons ---- */
+.cr-project-bar {
+  display: flex;
+  gap: 6px;
+  margin: 0 8px 8px;
+}
+.cr-project-bar select {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.cr-role {
+  flex: none;
+  width: 1em;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ---- T209: repo view and lenses ---- */
+.cr-lens-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cr-lens-row,
+.cr-lens-link {
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding: 4px 0;
+}
+.cr-lens-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+.cr-lens-row:hover .title,
+.cr-lens-link:hover {
+  text-decoration: underline;
+}
+.cr-lens-path .anc,
+.cr-lens-list .anc,
+.cr-lens-mode,
+.cr-lens-empty {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+.cr-lens-empty {
+  font-size: 12px;
+  margin: 4px 0 0;
 }

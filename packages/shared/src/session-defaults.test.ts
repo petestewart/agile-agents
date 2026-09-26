@@ -43,3 +43,15 @@ describe('T170 session defaults (D17)', () => {
     expect(SessionDefaultsPatchSchema.safeParse({ extra: 1 }).success).toBe(false);
   });
 });
+
+describe('P5: the project step', () => {
+  test('sits between the flag and the repo', () => {
+    const r = resolveSessionDefaults({
+      flags: { effort: 'max' },
+      project: { model: 'claude-sonnet-4-6', effort: 'high' },
+      repo: { model: 'claude-haiku-4-5', vendor: 'claude' },
+      home: { default_effort: 'low' },
+    });
+    expect(r).toEqual({ vendor: 'claude', model: 'claude-sonnet-4-6', effort: 'max' });
+  });
+});

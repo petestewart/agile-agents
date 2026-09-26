@@ -6,9 +6,20 @@
  */
 
 import { basename } from 'node:path';
-import type { Event, HilRequest, InboxItem, Question, Stream } from '@agile-agents/shared';
+import {
+  type Event,
+  type HilRequest,
+  type InboxItem,
+  type NodeRole,
+  type Question,
+  type ReposConfig,
+  type Stream,
+  liveChildrenOf,
+  nodeRole,
+} from '@agile-agents/shared';
 import type { GateService } from '../gates';
 import type { InboxService } from '../inbox';
+import type { ProjectService } from '../projects';
 import type { QuestionService } from '../questions';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams';
@@ -47,8 +58,14 @@ export function buildSnapshot(
   questions?: QuestionService,
   /** The repo root; without it, no `project`. */
   projectRoot?: string,
+  /**
+   * Read events only up to this byte of `events.jsonl`. The `/ws` connect
+   * snapshot passes the live tailer's offset, so every line is either in the
+   * snapshot or published afterwards by the tailer, never both.
+   */
+  eventsEndOffset?: number,
 ): FeedSnapshot {
-  const events = store.listEvents().slice(-eventLimit);
+  const events = store.listEvents(eventsEndOffset).slice(-eventLimit);
   // Resolved gates are history: only pending ones ship.
   const hil = gates.list().filter((request) => request.status === 'pending');
   const openQuestions = questions?.listOpen() ?? [];
@@ -70,8 +87,17 @@ export interface CockpitStreamRow {
   id: string;
   title: string;
   parent?: string;
+  /** T208: the node's project, and its derived role (P1). */
+  project?: string;
+  role: NodeRole;
   agent_status: Stream['agent']['status'];
   human_status: Stream['human']['status'];
+  /** T209: the repo a work node is on (the repo view groups by it). */
+  repo?: string;
+  /** T209: a session is starting, running or idle (the Running lens). */
+  live?: true;
+  /** T209: the nodes this one still waits on (the Dependencies lens). */
+  waits_on?: string[];
 }
 
 /** The cockpit's live frame: inbox and stream tree, pushed on connect and after every event batch (§3.3). */
@@ -79,18 +105,58 @@ export interface CockpitFrame {
   type: 'cockpit';
   inbox: InboxItem[];
   streams: CockpitStreamRow[];
+  /** T208: the live projects, for the rail's switcher and grouping. */
+  projects: CockpitProjectRow[];
+  /** T209: the registered repos and their delivery mode (the repo view). */
+  repos: CockpitRepoRow[];
 }
 
-export function buildCockpitFrame(streams: StreamService, inbox?: InboxService): CockpitFrame {
+/** One registered repo (T209). `delivery` is `direct` unless repos.yaml says otherwise. */
+export interface CockpitRepoRow {
+  name: string;
+  delivery: 'direct' | 'pr';
+}
+
+const LIVE_SESSION = new Set(['starting', 'running', 'idle']);
+
+/** One entry of the rail's project switcher (T208). */
+export interface CockpitProjectRow {
+  id: string;
+  name: string;
+  root: string;
+}
+
+export function buildCockpitFrame(
+  streams: StreamService,
+  inbox?: InboxService,
+  projects?: ProjectService,
+  repos: ReposConfig = {},
+): CockpitFrame {
+  const all = streams.list();
   return {
     type: 'cockpit',
     inbox: inbox?.list() ?? [],
-    streams: streams.list().map((s) => ({
+    streams: all.map((s) => ({
       id: s.id,
       title: s.title,
       ...(s.parent !== undefined ? { parent: s.parent } : {}),
+      ...(s.project !== undefined ? { project: s.project } : {}),
+      role: nodeRole(s, liveChildrenOf(s.id, all)),
       agent_status: s.agent.status,
       human_status: s.human.status,
+      ...(s.repo !== undefined ? { repo: s.repo } : {}),
+      ...(s.sessions.some((x) => LIVE_SESSION.has(x.status)) ? { live: true as const } : {}),
+      ...waitsOn(s),
+    })),
+    projects: (projects?.list() ?? []).map((p) => ({ id: p.id, name: p.name, root: p.root })),
+    repos: Object.entries(repos).map(([name, entry]) => ({
+      name,
+      delivery: entry.delivery ?? 'direct',
     })),
   };
+}
+
+function waitsOn(s: Stream): { waits_on?: string[] } {
+  const open = (s.waits_on ?? []).filter((w) => w.satisfied_at === undefined).map((w) => w.node);
+  return open.length > 0 ? { waits_on: open } : {};
 }

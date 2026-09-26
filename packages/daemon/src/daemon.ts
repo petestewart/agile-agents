@@ -29,12 +29,14 @@ import {
 } from './landing';
 import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
+import { ProjectService, buildProjectRpcMethods } from './projects';
 import { QuestionService, buildQuestionRpcMethods, wireQuestionSupersession } from './questions';
 import { type RpcServerHandle, startRpcServer } from './rpc';
 import { RulesService, buildRuleRpcMethods, ensureBuiltinRules } from './rules';
 import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
-import { StreamService, buildStreamRpcMethods } from './streams';
+import { migrateHome } from './store/migrate';
+import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -109,6 +111,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         },
       })
     : undefined;
+  const projectService =
+    store && streamService ? new ProjectService(store, streamService) : undefined;
   // How spawned sessions reach this daemon's CLI for hooks and MCP,
   // resolved to something that runs on this host, never assumed on $PATH.
   const cliBin = resolveCliBin();
@@ -151,7 +155,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(rulesService ? { rules: rulesService } : {}),
         })
       : undefined;
-  // Docs: plain Markdown under `<repo>/.agile-docs/` and `<home>/streams/<id>.docs/`.
+  // Docs: plain Markdown under `<home>/repos/<name>/docs/` and `<home>/streams/<id>.docs/`.
   const docsService =
     store && streamService ? new DocsService(store, streamService, config.stateRoot) : undefined;
   // The landing path (§8.2) and its diff-level rule tier, which needs a
@@ -251,6 +255,25 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       }
     : undefined;
 
+  // §17.1 (T202): the one-shot, idempotent migration into projects.
+  if (store && streamService && projectService && questionService) {
+    await migrateHome({
+      store,
+      streams: streamService,
+      projects: projectService,
+      questions: questionService,
+    });
+  }
+
+  // T205: "+ Repo" in place (projects-design §7), over the attach service's sessions.
+  const repoInPlace =
+    store && streamService && attachService
+      ? new RepoInPlaceService(store, streamService, {
+          attach: (id) => attachService.attach(id),
+          stop: (id, reason) =>
+            attachService.stop(id, undefined, reason !== undefined ? { reason } : {}),
+        })
+      : undefined;
   const extraMethods =
     store && gateService && bus
       ? {
@@ -263,6 +286,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
                 // `agile stream say` is the composer's path too.
                 ...(attachService
                   ? {
+                      create: (principal, input, opts) =>
+                        attachService.createNode(principal, input, opts),
+                      ...(repoInPlace ? { repoInPlace } : {}),
                       reply: {
                         say: (id: string, body: string) => attachService.say(id, body),
                         ...(questionService ? { questions: questionService } : {}),
@@ -271,6 +297,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
                   : {}),
               })
             : {}),
+          ...(projectService ? buildProjectRpcMethods(projectService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
           ...(rulesService ? buildRuleRpcMethods(rulesService, ruleEvals) : {}),
           ...(docsService ? buildDocsRpcMethods(docsService) : {}),
@@ -282,6 +309,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             // policy). No repo root: a relative worktree fails closed.
             new HookService(store, bus, {
               gates: gateService,
+              agileHome: config.home,
               ...(rulesService ? { rules: rulesService } : {}),
               classifier: { ask: classifier, config: config.classifier },
             }),
@@ -309,6 +337,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     store,
     gates: gateService,
     streams: streamService,
+    ...(projectService ? { projects: projectService } : {}),
     questions: questionService,
     inbox: inboxService,
     ...(rulesService ? { rules: rulesService } : {}),
@@ -316,6 +345,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(classifierKey ? { classifierKey } : {}),
     ...(landingService ? { landing: landingService } : {}),
     ...(attachService ? { attach: attachService } : {}),
+    ...(repoInPlace ? { repoInPlace } : {}),
     ...(docsService ? { docs: docsService } : {}),
   });
 

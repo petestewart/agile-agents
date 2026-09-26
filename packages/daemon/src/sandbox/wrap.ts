@@ -39,6 +39,8 @@ export interface WrapAgentCommandInput {
   extraAllowedHosts?: readonly string[];
   /** `AGILE_SOCKET_PATH`: the profile must grant the daemon socket or the hooks break under tier 0. */
   socketPath?: string;
+  /** Env names the container backend forwards too (T343: a read-only role's git env). */
+  envPassthroughNames?: readonly string[];
 }
 
 export type WrapAgentCommandFn = (input: WrapAgentCommandInput) => WrappedCommand;
@@ -172,8 +174,13 @@ export function wrapAgentCommand(
     imageIsCliLessDefault && deps.resolveHostBinaryPath
       ? deps.resolveHostBinaryPath(input.command)
       : undefined;
+  const extraEnvPassthroughNames = [
+    ...(deps.containerOptions?.extraEnvPassthroughNames ?? []),
+    ...(input.envPassthroughNames ?? []),
+  ];
   const wrapped = buildContainerCommand(profile, input.command, input.args, {
     ...deps.containerOptions,
+    ...(extraEnvPassthroughNames.length > 0 ? { extraEnvPassthroughNames } : {}),
     ...(hostBinaryPath ? { hostBinaryPath } : {}),
   });
   return { backend, command: wrapped.command, args: wrapped.args, envOverrides: {} };

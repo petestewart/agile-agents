@@ -17,7 +17,7 @@ import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { LandRefusedError, LandingService, wireLandGateResolution } from './service';
+import { LandRefusedError, LandingService, mainBranch, wireLandGateResolution } from './service';
 
 let home: string;
 let repo: string;
@@ -58,9 +58,8 @@ async function makeStream(
     goal: 'ship it',
     ...(repoName !== undefined ? { repo: repoName } : {}),
     ...(patch.parent !== undefined ? { parent: patch.parent } : {}),
-    ...(patch.target_branch !== undefined ? { target_branch: patch.target_branch } : {}),
   });
-  const { title: _t, parent: _p, target_branch: _tb, ...rest } = patch;
+  const { title: _t, parent: _p, ...rest } = patch;
   if (Object.keys(rest).length === 0) return created;
   return streams.update('daemon', created.id, rest);
 }
@@ -137,8 +136,11 @@ describe('refusals (typed, before anything is touched)', () => {
   });
 
   test('a target branch that does not exist is named in the refusal', async () => {
+    await store.putRepos({
+      demo: { path: repo, protected_branches: ['main'], target_branch: 'nope' },
+    });
     const work = branchWithWork('s-target', 'a.txt', 'a\n');
-    const stream = await makeStream({ ...work, target_branch: 'nope' });
+    const stream = await makeStream(work);
     expect(landing.land(stream.id)).rejects.toThrow(/nope does not exist/);
   });
 });
@@ -177,7 +179,7 @@ describe('the success path', () => {
     expect(git(['rev-parse', '--verify', 'refs/heads/s-ok']).length).toBe(40);
   });
 
-  test("the stream's own target_branch beats the repo entry's, which beats the default branch", async () => {
+  test("the repo entry's main branch beats the repo's default branch", async () => {
     git(['branch', 'integration', 'main']);
     await store.putRepos({
       demo: { path: repo, protected_branches: ['main'], target_branch: 'integration' },
@@ -189,13 +191,6 @@ describe('the success path', () => {
     expect(git(['rev-parse', 'refs/heads/main'])).not.toBe(
       git(['rev-parse', 'refs/heads/integration']),
     );
-
-    // And a stream naming its own target wins over the repo entry's.
-    git(['branch', 'staging', 'main']);
-    const other = branchWithWork('s-staging', 'b.txt', 'b\n');
-    const otherStream = await makeStream({ ...other, target_branch: 'staging' });
-    const second = await landing.land(otherStream.id);
-    expect(second.status === 'landed' && second.target).toBe('staging');
   });
 
   function repoEntryTarget(): { branch: string; worktree: string } {
@@ -203,29 +198,26 @@ describe('the success path', () => {
   }
 });
 
-describe('child into parent (§8.2: a child with a repo-bearing parent merges into the PARENT branch)', () => {
-  test('lands into the parent branch, not the repo default', async () => {
+describe('D20: a child delivers to main, never into its parent', () => {
+  test("a child of a node that has a repo and a branch lands on main, not the parent's branch", async () => {
     const parentWork = branchWithWork('s-parent', 'parent.txt', 'parent\n');
     const parent = await makeStream({ ...parentWork, title: 'parent stream' });
-    const childWork = branchWithWork('s-child', 'child.txt', 'child\n', 's-parent');
+    const childWork = branchWithWork('s-child', 'child.txt', 'child\n');
     const child = await makeStream({ ...childWork, parent: parent.id, title: 'child stream' });
 
     const outcome = await landing.land(child.id);
-    expect(outcome.status === 'landed' && outcome.target).toBe('s-parent');
-    // The parent's branch carries the child's file; main is untouched.
-    expect(git(['show', 's-parent:child.txt'])).toBe('child');
-    expect(() => git(['show', 'main:child.txt'])).toThrow();
+    expect(outcome.status === 'landed' && outcome.target).toBe('main');
+    expect(git(['show', 'main:child.txt'])).toBe('child');
+    expect(() => git(['show', 's-parent:child.txt'])).toThrow();
     expect(streams.get(child.id).human.status).toBe('landed');
     expect(streams.get(parent.id).human.status).toBe('open');
   });
 
-  test('a parent without a repo/branch (a planning stream) falls through to the repo default', async () => {
-    const parent = await makeStream({ title: 'planning' }, undefined);
-    const childWork = branchWithWork('s-child2', 'child.txt', 'child\n');
-    const child = await makeStream({ ...childWork, parent: parent.id });
-
-    const outcome = await landing.land(child.id);
-    expect(outcome.status === 'landed' && outcome.target).toBe('main');
+  test('main_branch (T202) wins over the old target_branch, which wins over the default', () => {
+    const entry = { path: repo, protected_branches: ['main'], target_branch: 'integration' };
+    expect(mainBranch({ ...entry, main_branch: 'trunk' } as typeof entry, repo)).toBe('trunk');
+    expect(mainBranch(entry, repo)).toBe('integration');
+    expect(mainBranch({ path: repo, protected_branches: [] }, repo)).toBe('main');
   });
 });
 

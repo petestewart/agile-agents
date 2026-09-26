@@ -7,14 +7,35 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
-import type { HilId, Policy, Question, Stream } from '@agile-agents/shared';
+import {
+  ACP_PROVIDERS,
+  type AcpProviderConfig,
+  type SpawnSessionOptions,
+  spawnSession,
+} from '@agile-agents/acp-client';
+import {
+  AGENT_LINE_MAX_CHARS,
+  type HilId,
+  type Policy,
+  type Question,
+  type Stream,
+} from '@agile-agents/shared';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { LandingService } from '../landing/service';
+import { EMPTY_TREE_SHA } from '../permissions/git-env';
+import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { wireQuestionSupersession } from '../questions/supersede';
 import type { FakeAgentScript } from '../runner/fake-agent';
@@ -22,7 +43,7 @@ import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { buildAttachRpcMethods } from './rpc';
 import { sayPrompt } from './service';
-import { AttachService, ParentAttachError, StreamBusyError, endedReason } from './service';
+import { AttachService, StreamBusyError, endedReason } from './service';
 import { VerbService } from './verbs';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
@@ -79,7 +100,10 @@ const SPEAKS_THEN_HANGS: FakeAgentScript = {
  * delivers an answer by prompting the live session. Both sides are read
  * lazily so a test may rebuild either one.
  */
-function buildAttachService(provider: AcpProviderConfig): AttachService {
+function buildAttachService(
+  provider: AcpProviderConfig,
+  spawn?: typeof spawnSession,
+): AttachService {
   return new AttachService({
     store,
     streams,
@@ -87,6 +111,7 @@ function buildAttachService(provider: AcpProviderConfig): AttachService {
     provider: () => provider,
     questions: { listOpen: () => questions.listOpen() },
     gates: { list: () => gates.list() },
+    ...(spawn !== undefined ? { spawn } : {}),
   });
 }
 
@@ -196,6 +221,22 @@ describe('attach on a stream with a repo', () => {
   });
 });
 
+describe('T207: both .claude settings files tracked', () => {
+  test('attach is refused before the stream is marked working or a session recorded', async () => {
+    mkdirSync(join(repo, '.claude'), { recursive: true });
+    writeFileSync(join(repo, '.claude', 'settings.json'), '{}\n');
+    writeFileSync(join(repo, '.claude', 'settings.local.json'), '{}\n');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'settings']);
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const stream = await makeStream('demo');
+    await expect(attachService.attach(stream.id)).rejects.toThrow('tracks both');
+    const after = streams.get(stream.id);
+    expect(after.agent.status).not.toBe('working');
+    expect(after.sessions ?? []).toEqual([]);
+  });
+});
+
 describe('the exit path', () => {
   test('writes agent.status done, the session status, and a thread entry', async () => {
     const stream = await makeStream();
@@ -214,6 +255,31 @@ describe('the exit path', () => {
     // The registry entry is gone, so the hook can no longer resolve a cwd
     // to a session that has exited.
     expect(store.listAgents().some((a) => a.id === session.id)).toBe(false);
+  }, 20_000);
+});
+
+describe('a detach that loses the race to a failed turn', () => {
+  test('ends the session as stopped even when the exit path reports ok: false', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).agent.status === 'working');
+
+    // Force the ordering CI hit: the kill rejects the in-flight prompt, so
+    // `finish('prompt failed: …', false)` resolves `exited` before the
+    // process exit's clean `ok: true` can.
+    const service = attachService as unknown as {
+      onExit: (...args: [string, string, string, boolean, ...unknown[]]) => Promise<void>;
+    };
+    const original = service.onExit.bind(attachService);
+    service.onExit = (streamId, sessionId, _reason, _ok, ...rest) =>
+      original(streamId, sessionId, 'prompt failed: session stopped', false, ...rest);
+
+    expect(await attachService.stop(stream.id, 'worker', { detach: true })).toEqual([session.id]);
+    const after = streams.get(stream.id);
+    expect(after.sessions.find((s) => s.id === session.id)?.status).toBe('stopped');
+    expect(after.agent.status).toBe('idle');
+    expect(threadBodies(stream.id)).toContain('worker detached by human');
   }, 20_000);
 });
 
@@ -282,27 +348,29 @@ describe('one live worker per stream (§2.3)', () => {
   }, 30_000);
 });
 
-describe('T176: a worker on a parent with open children needs force', () => {
-  test('refused without force, allowed with it; reviewers and finished children are not guarded', async () => {
-    const parent = await makeStream();
-    const child = await streams.create('human', { title: 'c', goal: 'g', parent: parent.id });
-    await expect(attachService.attach(parent.id)).rejects.toThrow(ParentAttachError);
-    await expect(attachService.attach(parent.id)).rejects.toThrow(
-      /a parent's branch is where its children land/,
-    );
-    expect(streams.get(parent.id).sessions).toHaveLength(0);
+describe('D20: a coordinating node has no worktree', () => {
+  test('a worker on a node with live children gets no branch or worktree; a work node does', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const root = await makeStream();
+    const node = await streams.create('human', {
+      title: 'ledger',
+      goal: 'g',
+      parent: root.id,
+      repo: 'demo',
+    });
+    const child = await streams.create('human', { title: 'c', goal: 'g', parent: node.id });
 
-    const review = await attachService.attach(parent.id, { role: 'reviewer' });
-    expect(review.session.role).toBe('reviewer');
-    const forced = await attachService.attach(parent.id, { force: true });
-    expect(forced.session.role).toBe('worker');
+    const coordinating = await attachService.attach(node.id);
+    expect(coordinating.session.worktree).toBeUndefined();
+    expect(streams.get(node.id).worktree).toBeUndefined();
+    expect(streams.get(node.id).branch).toBeUndefined();
     await attachService.stopAll();
 
+    // Once its only child is closed it is a work node again, and cuts one.
     await streams.close('human', child.id);
-    const other = await makeStream();
-    await streams.create('human', { title: 'c2', goal: 'g', parent: other.id });
-    await streams.close('human', (streams.list().find((s) => s.title === 'c2') as Stream).id);
-    expect((await attachService.attach(other.id)).session.role).toBe('worker');
+    const work = await attachService.attach(node.id);
+    expect(work.session.worktree?.startsWith(join(repo, '.worktrees'))).toBe(true);
+    await attachService.stopAll();
   }, 30_000);
 });
 
@@ -404,17 +472,65 @@ describe('the reviewer (§4.2)', () => {
     expect(after.sessions.find((s) => s.id === session.id)?.status).not.toBe('running');
   }, 30_000);
 
-  test('a reviewer on a stream with no worker left moves agent.status to done', async () => {
+  test('T343: a reviewer is spawned with the read-only git env, a worker without it', async () => {
+    const spawned: SpawnSessionOptions[] = [];
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS), (o) => {
+      spawned.push(o);
+      return spawnSession(o);
+    });
+    const stream = await makeStream();
+    const worker = await attachService.attach(stream.id);
+    worker.handle.stop();
+    await worker.handle.exited;
+    const reviewer = await attachService.attach(stream.id, { role: 'reviewer' });
+    reviewer.handle.stop();
+    await reviewer.handle.exited;
+
+    const [workerEnv, reviewerEnv] = spawned.map((o) => o.envOverrides ?? {});
+    expect(workerEnv?.GIT_ATTR_SOURCE).toBeUndefined();
+    expect(workerEnv?.GIT_PAGER).toBeUndefined();
+    expect(workerEnv?.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(reviewerEnv?.GIT_ATTR_SOURCE).toBe(EMPTY_TREE_SHA);
+    expect(reviewerEnv?.GIT_PAGER).toBe('cat');
+    const count = Number(reviewerEnv?.GIT_CONFIG_COUNT);
+    const config = Object.fromEntries(
+      Array.from({ length: count }, (_, i) => [
+        reviewerEnv?.[`GIT_CONFIG_KEY_${i}`],
+        reviewerEnv?.[`GIT_CONFIG_VALUE_${i}`],
+      ]),
+    );
+    expect(config).toMatchObject({
+      'core.fsmonitor': 'false',
+      'core.hooksPath': '/dev/null',
+      'core.pager': 'cat',
+    });
+    // Everything else the worker got, the reviewer got too.
+    expect(reviewerEnv?.GIT_EDITOR).toBe('true');
+  }, 30_000);
+
+  test('a reviewer never moves agent.status, even with no worker left', async () => {
     const stream = await makeStream();
     const { handle } = await attachService.attach(stream.id, { role: 'reviewer' });
     // No worker ever attached, so `agent.status` is still `idle` here.
     expect(streams.get(stream.id).agent.status).toBe('idle');
+    // The review ends before anything is checked (CI saw it end at spawn).
     handle.stop();
     await handle.exited;
-    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('review finished:')));
     expect(threadBodies(stream.id).some((b) => b.startsWith('review finished: 0 findings'))).toBe(
       true,
     );
+    // A review is not work: the worker's field is untouched.
+    expect(streams.get(stream.id).agent.status).toBe('idle');
+  }, 20_000);
+
+  test('a reviewer whose turn ends on its own leaves agent.status alone', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
+    const stream = await makeStream();
+    const { handle } = await attachService.attach(stream.id, { role: 'reviewer' });
+    await handle.exited;
+    await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('review finished:')));
+    expect(streams.get(stream.id).agent.status).toBe('idle');
   }, 20_000);
 
   test('auto_review starts a reviewer when the worker exits done', async () => {
@@ -482,6 +598,36 @@ describe('one ACP message is one thread entry (T137)', () => {
     await waitFor(() => threadBodies(stream.id).some((b) => b.includes('read the parser')));
     const lines = threadBodies(stream.id).filter((b) => b.includes('read the parser'));
     expect(lines).toEqual(['Plan:\n- read the parser']);
+  }, 20_000);
+});
+
+describe('a failed thread append is logged and retried', () => {
+  test('the first agent append throws: stderr.log says so and the line still lands', async () => {
+    const original = streams.appendThread.bind(streams);
+    let failed = 0;
+    streams.appendThread = (async (...args: Parameters<typeof original>) => {
+      if (args[0] === 'agent' && failed === 0) {
+        failed += 1;
+        throw new Error('disk hiccup');
+      }
+      return original(...args);
+    }) as typeof streams.appendThread;
+    try {
+      attachService = buildAttachService(
+        fakeProviderFor(ACP_PROVIDERS.claude, {
+          steps: [{ type: 'agent_text', text: 'still here' }, { type: 'end_turn' }],
+        }),
+      );
+      const stream = await makeStream();
+      const { session } = await attachService.attach(stream.id);
+      await waitFor(() => threadBodies(stream.id).includes('still here'));
+      expect(failed).toBe(1);
+      const stderr = readFileSync(join(home, 'sessions', session.id, 'stderr.log'), 'utf8');
+      expect(stderr).toContain('thread append failed (retrying once): disk hiccup');
+      expect(stderr).not.toContain('gave up');
+    } finally {
+      streams.appendThread = original;
+    }
   }, 20_000);
 });
 
@@ -562,7 +708,8 @@ describe('ask → answer → continue (T137)', () => {
     await waitFor(() =>
       threadBodies(stream.id).some((b) => b.startsWith('answer recorded with no live session')),
     );
-    expect(streams.get(stream.id).agent.status).toBe('idle');
+    // T336: the exit path's `done` stays; `idle` would read as the human's stop.
+    expect(streams.get(stream.id).agent.status).toBe('done');
   }, 30_000);
 });
 
@@ -841,5 +988,319 @@ describe('say — the stream page composer (T161)', () => {
       release();
       store.updateStream = original;
     }
+  }, 30_000);
+});
+
+describe('T204: creating a node starts its agent (P5)', () => {
+  async function makeProject(session?: { model?: string; effort?: 'high' }) {
+    const projects = new ProjectService(store, streams);
+    const project = await projects.create({ name: 'Shop' });
+    if (session !== undefined) await projects.update(project.id, { session });
+    return project;
+  }
+
+  test('a work node gets a running worker in its worktree, with the project defaults', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'], effort: 'low' } });
+    const project = await makeProject({ model: 'claude-sonnet-4-6', effort: 'high' });
+
+    const node = await attachService.createNode('human', {
+      title: 'CSV parser',
+      goal: 'g',
+      project: project.id,
+      repo: 'demo',
+    });
+
+    expect(node.sessions).toHaveLength(1);
+    const [session] = node.sessions;
+    expect(session?.role).toBe('worker');
+    // P5: flag → project → repo → home → built-in; the project beats the repo.
+    expect(session?.vendor).toBe('claude');
+    expect(session?.model).toBe('claude-sonnet-4-6');
+    expect(session?.effort).toBe('high');
+    expect(node.worktree?.startsWith(join(repo, '.worktrees'))).toBe(true);
+    expect(attachService.handleFor(node.id)).toBeDefined();
+  });
+
+  test('a conversation node gets a session with no worktree', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const project = await makeProject();
+    const node = await attachService.createNode('human', {
+      title: 'Plan',
+      goal: 'g',
+      project: project.id,
+    });
+    expect(node.sessions).toHaveLength(1);
+    expect(node.sessions[0]?.model).toBe('claude-opus-5-5');
+    expect(node.worktree).toBeUndefined();
+  });
+
+  test('start: false makes the node and starts nothing', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const project = await makeProject();
+    const node = await attachService.createNode('human', {
+      title: 'Later',
+      goal: 'g',
+      project: project.id,
+      repo: 'demo',
+      start: false,
+    });
+    expect(node.sessions).toEqual([]);
+    expect(node.worktree).toBeUndefined();
+    expect(attachService.handleFor(node.id)).toBeUndefined();
+  });
+
+  test('a failed start still returns the node, with the reason on its thread', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    await store.updateProject(project.id, (p) => ({ ...p, session: { vendor: 'nope' } }));
+    const node = await attachService.createNode('human', {
+      title: 'Broken',
+      goal: 'g',
+      project: project.id,
+    });
+    expect(node.sessions).toEqual([]);
+    expect(
+      threadBodies(node.id).some((b) =>
+        b.startsWith('could not start the agent: unknown vendor: nope'),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('T330: a conversation node reads the registered repos (§4.4)', () => {
+  let other: string;
+  let secret: string;
+  let shared: string;
+
+  beforeEach(() => {
+    other = mkdtempSync(join(tmpdir(), 'agile-attach-other-'));
+    secret = mkdtempSync(join(tmpdir(), 'agile-attach-secret-'));
+    shared = mkdtempSync(join(tmpdir(), 'agile-attach-shared-'));
+    writeFileSync(join(other, 'README.md'), '# other\n');
+  });
+
+  afterEach(() => {
+    for (const dir of [other, secret, shared]) rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function shopWithRepos() {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    await store.putRepos({
+      'ledger-lite': { path: other, protected_branches: ['main'] },
+      secret: {
+        path: secret,
+        protected_branches: ['main'],
+        visibility: { mode: 'private', projects: ['P-01ARZ3NDEKTSV4RRFFQ69G5FAV'] },
+      },
+      shared: {
+        path: shared,
+        protected_branches: ['main'],
+        visibility: { mode: 'private', projects: [project.id] },
+      },
+    });
+    return project;
+  }
+
+  test('the brief lists the repos it may read, with their paths, and + Repo', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const project = await shopWithRepos();
+    const node = await attachService.createNode('human', {
+      title: 'Plan',
+      goal: 'plan work across ledger-lite',
+      project: project.id,
+    });
+    const session = node.sessions[0];
+    if (session === undefined) throw new Error('no session');
+    const brief = readFileSync(join(home, 'sessions', session.id, 'brief.md'), 'utf8');
+    expect(brief).toContain('## Repos you can read');
+    expect(brief).toContain(`- ledger-lite: \`${other}\``);
+    expect(brief).toContain(`- shared: \`${shared}\``);
+    expect(brief).not.toContain(secret);
+    expect(brief).toContain('+ Repo');
+  });
+
+  test('a work node is told the other repos it may read, beside its worktree', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const project = await shopWithRepos();
+    await store.putRepos({
+      ...store.getRepos(),
+      'agile-test-repo': { path: repo, protected_branches: ['main'] },
+    });
+    const node = await attachService.createNode('human', {
+      title: 'Entries',
+      goal: 'use ledger-lite entries',
+      project: project.id,
+      repo: 'agile-test-repo',
+    });
+    const session = node.sessions[0];
+    if (session === undefined) throw new Error('no session');
+    expect(node.worktree).toBeDefined();
+    const brief = readFileSync(join(home, 'sessions', session.id, 'brief.md'), 'utf8');
+    expect(brief).toContain('## Repos you can read');
+    expect(brief).toContain('Besides your own worktree');
+    expect(brief).toContain(`- ledger-lite: \`${other}\``);
+    expect(brief).toContain(`- shared: \`${shared}\``);
+    expect(brief).not.toContain('- agile-test-repo:');
+    expect(brief).not.toContain(secret);
+    expect(brief).not.toContain('+ Repo');
+  });
+
+  test('a work node with no other readable repo gets no list', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const stream = await makeStream('demo');
+    const { session } = await attachService.attach(stream.id);
+    const brief = readFileSync(join(home, 'sessions', session.id, 'brief.md'), 'utf8');
+    expect(brief).not.toContain('## Repos you can read');
+  });
+
+  test('ACP: reads reach a registered repo, never the agile home or an unlisted private repo', async () => {
+    const results = ['public', 'home', 'secret', 'write'].map((n) => join(scratch, `${n}.json`));
+    const permission = (
+      id: string,
+      kind: string,
+      rawInput: Record<string, unknown>,
+      resultFile: string,
+    ) => ({
+      type: 'request_permission' as const,
+      toolCall: { toolCallId: id, kind, rawInput },
+      options: [
+        { optionId: 'allow', kind: 'allow_once' },
+        { optionId: 'reject', kind: 'reject_once' },
+      ],
+      resultFile,
+    });
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          permission('r1', 'execute', { command: `cat ${other}/README.md` }, results[0] as string),
+          permission('r2', 'read', { file_path: join(home, 'config.yaml') }, results[1] as string),
+          permission('r3', 'execute', { command: `ls ${secret}` }, results[2] as string),
+          permission('r4', 'edit', { file_path: join(other, 'README.md') }, results[3] as string),
+          { type: 'hang' },
+        ],
+      }),
+    );
+    const project = await shopWithRepos();
+    await attachService.createNode('human', { title: 'Plan', goal: 'g', project: project.id });
+    await waitFor(() => results.every((path) => existsSync(path)));
+    const chosen = results.map(
+      (path) => JSON.parse(readFileSync(path, 'utf8')).outcome?.optionId as string | undefined,
+    );
+    // Writes stay confined to the session dir, as before.
+    expect(chosen).toEqual(['allow', 'reject', 'reject', 'reject']);
+  }, 30_000);
+});
+
+describe('T330: one long agent message is one thread entry', () => {
+  /** A message streamed in `chunks` chunks of `sentence`, then a tool call, then a short message. */
+  function longMessageScript(sentence: string, chunks: number): FakeAgentScript {
+    return {
+      steps: [
+        { type: 'agent_text', text: 'Start: ' },
+        ...Array.from({ length: chunks }, () => ({ type: 'agent_text' as const, text: sentence })),
+        { type: 'agent_text', text: 'and it ends here' },
+        { type: 'tool_call', toolCallId: 'read-1', title: 'read parser.ts' },
+        { type: 'agent_text', text: 'next message' },
+        { type: 'end_turn' },
+      ],
+    };
+  }
+
+  async function agentLinesOf(script: FakeAgentScript) {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, script));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    // A session that ended first (a pipe Bun lost mid-turn, CI job
+    // 108116863174) fails here at once, with the thread to read, rather
+    // than after the whole waitFor budget.
+    await waitFor(() =>
+      threadBodies(stream.id).some((b) => b === 'next message' || b.startsWith('session ended')),
+    );
+    expect(threadBodies(stream.id)).toContain('next message');
+    const lines = streams
+      .readThread(stream.id, { limit: 500 })
+      .entries.filter((e) => e.by.startsWith('agent:') && e.kind === 'line');
+    const log = readFileSync(join(home, 'sessions', session.id, 'output.log'), 'utf8');
+    return { lines, log, logPath: join(home, 'sessions', session.id, 'output.log') };
+  }
+
+  test('a 3,000-char message is one entry with all of its text', async () => {
+    const sentence = 'All of this is one sentence that keeps going. '.repeat(10);
+    const whole = `Start: ${sentence.repeat(7)}and it ends here`;
+    expect(whole.length).toBeGreaterThan(3000);
+    const { lines, log } = await agentLinesOf(longMessageScript(sentence, 7));
+    expect(lines.map((e) => e.body)).toEqual([whole.trim(), 'next message']);
+    expect(log).toContain(`${whole.trim()}\nnext message\n`);
+  }, 30_000);
+
+  test('a 20,000-char message is one entry, cut at the end with the output.log ref', async () => {
+    const sentence = 'x'.repeat(1000);
+    const { lines, log, logPath } = await agentLinesOf(longMessageScript(sentence, 20));
+    expect(lines.map((e) => e.body.slice(0, 7))).toEqual(['Start: ', 'next me']);
+    const [long] = lines;
+    expect(long?.body.length).toBe(AGENT_LINE_MAX_CHARS);
+    expect(long?.body.endsWith('…')).toBe(true);
+    expect(long?.ref).toBe(logPath);
+    expect(log).toContain(`Start: ${sentence.repeat(20)}and it ends here\nnext message\n`);
+  }, 30_000);
+});
+
+describe('a send to an agent already gone (CI job 108169280649)', () => {
+  /**
+   * Every session this spawns throws EPIPE from `cancel()`, as Bun's stdin
+   * writer did when the daemon sent `session/cancel` to a dead agent. The
+   * runner must still close and finish the session, and nothing may escape.
+   */
+  const cancelThrows: typeof spawnSession = (opts) => {
+    const session = spawnSession(opts);
+    session.cancel = () => {
+      throw Object.assign(new Error('EPIPE: broken pipe, send'), { code: 'EPIPE' });
+    };
+    return session;
+  };
+
+  function buildWithSpawn(provider: AcpProviderConfig): AttachService {
+    return new AttachService({
+      store,
+      streams,
+      home,
+      provider: () => provider,
+      questions: { listOpen: () => questions.listOpen() },
+      gates: { list: () => gates.list() },
+      spawn: cancelThrows,
+    });
+  }
+
+  test('an agent that dies mid-turn still ends the session, recorded as failed', async () => {
+    attachService = buildWithSpawn(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          { type: 'agent_text', text: 'about to crash' },
+          { type: 'tool_call', toolCallId: 'x-1', title: 'read' },
+          { type: 'exit', code: 1 },
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('session ended')));
+    const ended = streams.get(stream.id).sessions.find((s) => s.id === session.id);
+    expect(ended?.status).toBe('stopped');
+    expect(threadBodies(stream.id)).toContain('about to crash');
+  }, 30_000);
+
+  test('stop() on a live session still closes it when the cancel send fails', async () => {
+    attachService = buildWithSpawn(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('looking at the parser')));
+    // Resolves (before the fix the throw escaped from `stop()`), and the
+    // session is let go exactly as with a cancel that worked.
+    expect(await attachService.stop(stream.id)).toEqual([session.id]);
+    expect(streams.get(stream.id).sessions.find((s) => s.id === session.id)?.status).not.toBe(
+      'running',
+    );
+    expect(await attachService.stop(stream.id)).toEqual([]);
   }, 30_000);
 });

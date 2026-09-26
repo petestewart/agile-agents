@@ -13,6 +13,7 @@ import type {
   Event,
   HilRequest,
   InboxItem,
+  NodeRole,
   Question,
   Rule,
   Stream,
@@ -55,8 +56,17 @@ export interface CockpitStreamRow {
   id: string;
   title: string;
   parent?: string;
+  /** T208: the node's project and derived role (P1). */
+  project?: string;
+  role: NodeRole;
   agent_status: Stream['agent']['status'];
   human_status: Stream['human']['status'];
+  /** T209: the repo a work node is on. */
+  repo?: string;
+  /** T209: a session is starting, running or idle. */
+  live?: true;
+  /** T209: the nodes this one still waits on. */
+  waits_on?: string[];
 }
 
 /** T160: mirror of `feed/snapshot.ts`'s `CockpitFrame` — the inbox and the tree, pushed on connect and after every event batch. */
@@ -64,6 +74,23 @@ export interface CockpitFrame {
   type: 'cockpit';
   inbox: InboxItem[];
   streams: CockpitStreamRow[];
+  /** T208: the live projects (the rail's switcher). */
+  projects: CockpitProjectRow[];
+  /** T209: the registered repos and their delivery mode. */
+  repos: CockpitRepoRow[];
+}
+
+/** T209: mirror of `feed/snapshot.ts`'s `CockpitRepoRow`. */
+export interface CockpitRepoRow {
+  name: string;
+  delivery: 'direct' | 'pr';
+}
+
+/** T208: mirror of `feed/snapshot.ts`'s `CockpitProjectRow`. */
+export interface CockpitProjectRow {
+  id: string;
+  name: string;
+  root: string;
 }
 
 /** T161: mirror of `landing/service.ts`'s `LandPreflight` — the Land button's "before". */

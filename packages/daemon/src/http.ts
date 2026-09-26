@@ -21,6 +21,7 @@ import {
   RulePatchSchema,
   RuleTestInputSchema,
   SessionDefaultsPatchSchema,
+  StreamAddRepoRequestSchema,
   StreamAttachRequestSchema,
   StreamCreateInputSchema,
   StreamSayInputSchema,
@@ -31,7 +32,6 @@ import {
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import {
   type AttachService,
-  ParentAttachError,
   SessionDefaultsService,
   StreamBusyError,
   UnknownVendorError,
@@ -49,6 +49,7 @@ import {
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import type { InboxService } from './inbox';
 import { LandRefusedError, type LandingService } from './landing';
+import type { ProjectService } from './projects';
 import {
   QuestionAlreadyAnsweredError,
   QuestionNotFoundError,
@@ -63,8 +64,8 @@ import {
   buildRuleReport,
   testRules,
 } from './rules';
-import { NotFoundError, type StateStore } from './store';
-import type { StreamService } from './streams';
+import { NotFoundError, type StateStore, buildStateRpcMethods, resolveMainBranch } from './store';
+import type { RepoInPlaceService, StreamService } from './streams';
 
 /** The installable-app files served at site root, with their content types. */
 const INSTALLABLE_FILES: Record<string, string> = {
@@ -123,6 +124,8 @@ export interface HttpServerOptions {
   /** `GET /api/inbox` (§3); without it the route 503s. */
   inbox?: InboxService;
   streams?: StreamService;
+  /** T208: `GET/POST /api/projects` and the cockpit frame's projects. */
+  projects?: ProjectService;
   /** The rules routes (`/api/rules...`). */
   rules?: RulesService;
   /** "Test examples": `rule.test`'s evals through the configured classifier. */
@@ -133,6 +136,8 @@ export interface HttpServerOptions {
   landing?: LandingService;
   /** The stream page's sessions strip and composer. */
   attach?: AttachService;
+  /** T205: the stream page's + Repo (projects-design §7). */
+  repoInPlace?: RepoInPlaceService;
   /** The stream page's docs tab. */
   docs?: DocsService;
   /** Test hook: the tailer's poll interval (default 250ms). */
@@ -353,6 +358,7 @@ interface FeedContext {
   store: StateStore;
   gates: GateService;
   streams?: StreamService;
+  projects?: ProjectService;
   questions?: QuestionService;
   inbox?: InboxService;
   rules?: RulesService;
@@ -360,6 +366,7 @@ interface FeedContext {
   classifierKey?: ClassifierKeyService;
   landing?: LandingService;
   attach?: AttachService;
+  repoInPlace?: RepoInPlaceService;
   docs?: DocsService;
 }
 
@@ -369,6 +376,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     store: options.store,
     gates: options.gates,
     streams: options.streams,
+    projects: options.projects,
     questions: options.questions,
     inbox: options.inbox,
     rules: options.rules,
@@ -376,6 +384,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     classifierKey: options.classifierKey,
     landing: options.landing,
     attach: options.attach,
+    repoInPlace: options.repoInPlace,
     docs: options.docs,
   };
 }
@@ -488,6 +497,44 @@ async function handleSessionSettingsRoute(
 }
 
 /**
+ * T206: Settings → Repos, over the same `state.repo_add` RPC as `agile repo add`:
+ *
+ *   GET  /api/repos   every registered repo with its resolved `main_branch`
+ *   POST /api/repos   `{name, path, protected_branches?}`; a bad path is the RPC's one-line 400
+ */
+async function handleRepoRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/repos') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  const list = () =>
+    Object.entries(feed.store.getRepos()).map(([name, entry]) => ({
+      name,
+      path: entry.path,
+      protected_branches: entry.protected_branches,
+      main_branch: resolveMainBranch(entry),
+    }));
+  if (req.method === 'GET') return jsonResponse({ repos: list() });
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return errorResponse(400, 'invalid repo: body must be JSON {name, path, protected_branches?}');
+  }
+  try {
+    await buildStateRpcMethods(feed.store)['state.repo_add']?.(body);
+    return jsonResponse({ repos: list() });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
  * The rules routes (§5, §9):
  *
  *   GET  /api/rules               every rule, §5.7's pruning report, and whether evals can run
@@ -590,6 +637,7 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
  *   POST /api/streams/:id/close   the page's Close
  *   POST /api/streams/:id/mark-landed  merged outside `land`
+ *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
  *
  * `land` is matched before this. Every write is same-origin only
  * and stamps `human`; no principal is ever read from the body (§2.2).
@@ -602,7 +650,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|add-repo))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -640,6 +688,16 @@ async function handleStreamRoute(
       return jsonResponse(await feed.landing.markLanded(id));
     }
     const body = await readJsonBody(req);
+    if (action === 'add-repo') {
+      if (!feed.repoInPlace) return errorResponse(503, 'sessions not available');
+      const input = StreamAddRepoRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('add-repo', input.error));
+      const { repo } = input.data;
+      const result = input.data.switch
+        ? await feed.repoInPlace.switchRepo(id, repo)
+        : await feed.repoInPlace.addRepo(id, repo);
+      return jsonResponse(result, 201);
+    }
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('say', input.error));
@@ -681,7 +739,6 @@ async function handleStreamRoute(
         ...(vendor ? { vendor } : {}),
         ...(model ? { model } : {}),
         ...(effort ? { effort } : {}),
-        force: true,
         briefAppendix: feed.landing.resolvePrompt(id),
       });
       return jsonResponse({ session: result.session, stream: result.stream }, 201);
@@ -691,11 +748,7 @@ async function handleStreamRoute(
   } catch (err) {
     const message = messageOf(err);
     if (err instanceof NotFoundError) return errorResponse(404, message);
-    if (
-      err instanceof StreamBusyError ||
-      err instanceof LandRefusedError ||
-      err instanceof ParentAttachError
-    ) {
+    if (err instanceof StreamBusyError || err instanceof LandRefusedError) {
       return errorResponse(409, message);
     }
     if (err instanceof UnregisteredRepoError || err instanceof UnknownVendorError) {
@@ -799,7 +852,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         // The cockpit frame (§9): the stream tree and the inbox.
         if (url.pathname === '/api/cockpit' && req.method === 'GET') {
           if (!feed?.streams) return errorResponse(503, 'streams not available');
-          return jsonResponse(buildCockpitFrame(feed.streams, feed.inbox));
+          return jsonResponse(
+            buildCockpitFrame(feed.streams, feed.inbox, feed.projects, feed.store.getRepos()),
+          );
         }
 
         if (url.pathname === '/api/policy' && req.method === 'GET') {
@@ -828,6 +883,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         const sessionSettingsRoute = await handleSessionSettingsRoute(req, url, feed, sameOrigin);
         if (sessionSettingsRoute) return sessionSettingsRoute;
 
+        const repoRoute = await handleRepoRoute(req, url, feed, sameOrigin);
+        if (repoRoute) return repoRoute;
+
         const ruleRoute = await handleRuleRoute(req, url, feed, sameOrigin, () =>
           srv.timeout(req, 0),
         );
@@ -847,6 +905,20 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           }
         }
 
+        // T208: the rail's switcher and "New project" (the same service as `project.*`).
+        if (url.pathname === '/api/projects') {
+          if (!feed?.projects) return errorResponse(503, 'projects not available');
+          if (req.method === 'GET') return jsonResponse(feed.projects.list());
+          if (req.method === 'POST') {
+            if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+            try {
+              return jsonResponse(await feed.projects.create(await readJsonBody(req)), 201);
+            } catch (err) {
+              return errorResponse(400, messageOf(err));
+            }
+          }
+        }
+
         // "New stream" and quick capture (§9.1): the same `StreamService.create` as the RPC.
         if (url.pathname === '/api/streams' && req.method === 'POST') {
           if (!feed?.streams) return errorResponse(503, 'streams not available');
@@ -854,7 +926,12 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           try {
             const input = StreamCreateInputSchema.safeParse(await readJsonBody(req));
             if (!input.success) return errorResponse(400, formatZodError('stream', input.error));
-            return jsonResponse(await feed.streams.create('human', input.data), 201);
+            // T208: every node the cockpit makes belongs to a project.
+            // T204: and starts its agent unless "Start later" was ticked.
+            const create = feed.attach
+              ? feed.attach.createNode.bind(feed.attach)
+              : feed.streams.create.bind(feed.streams);
+            return jsonResponse(await create('human', input.data, { requireProject: true }), 201);
           } catch (err) {
             // An unknown parent or repo, or a bad body: the human's to fix.
             return errorResponse(400, messageOf(err));
@@ -914,13 +991,27 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
           if (feed) {
             ws.subscribe(FEED_WS_TOPIC);
+            // The snapshot's events stop where the tailer has read to: a line
+            // past that seam reaches this socket as a live `event` frame on the
+            // next poll, so reading it here too would deliver it twice.
             ws.send(
               JSON.stringify(
-                buildSnapshot(feed.store, feed.gates, undefined, feed.questions, options.repoRoot),
+                buildSnapshot(
+                  feed.store,
+                  feed.gates,
+                  undefined,
+                  feed.questions,
+                  options.repoRoot,
+                  tailer?.getOffset(),
+                ),
               ),
             );
             if (feed.streams) {
-              ws.send(JSON.stringify(buildCockpitFrame(feed.streams, feed.inbox)));
+              ws.send(
+                JSON.stringify(
+                  buildCockpitFrame(feed.streams, feed.inbox, feed.projects, feed.store.getRepos()),
+                ),
+              );
             }
           }
         },
@@ -945,7 +1036,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           try {
             server.publish(
               FEED_WS_TOPIC,
-              JSON.stringify(buildCockpitFrame(feed.streams, feed.inbox)),
+              JSON.stringify(
+                buildCockpitFrame(feed.streams, feed.inbox, feed.projects, feed.store.getRepos()),
+              ),
             );
           } catch (err) {
             console.error(messageOf(err));

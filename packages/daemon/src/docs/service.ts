@@ -1,12 +1,14 @@
 /**
- * `DocsService`: docs are plain Markdown, in `<repo>/.agile-docs/*.md`
- * (tracked, shared by the repo's streams) or `<home>/streams/<id>.docs/*.md`
- * (one stream's notes). No index: listing is a `readdir`, search a
+ * `DocsService`: docs are plain Markdown, in `<home>/repos/<name>/docs/*.md`
+ * (shared by the repo's streams) or `<home>/streams/<id>.docs/*.md`
+ * (one stream's notes). Nothing lives in the user's repo (D24, P3): a
+ * legacy `<repo>/.agile-docs/` is copied into the home once, the first time
+ * the repo's docs are read with no home docs dir, and is never deleted. No index: listing is a `readdir`, search a
  * case-insensitive substring scan. A stream sees its repo's docs plus the
  * stream docs of every ancestor, root→leaf.
  */
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { UlidSchema } from '@agile-agents/shared';
 import type { StateStore } from '../store';
@@ -85,15 +87,19 @@ export class DocsService implements DocsSearch {
   constructor(
     private readonly store: StateStore,
     private readonly streams: StreamService,
-    /** The state home, where `streams/<id>.docs/` lives. */
+    /** The state home, where `repos/<name>/docs/` and `streams/<id>.docs/` live. */
     private readonly home: string,
+    /** Where the one-time import line goes (the daemon's stderr is `agiled.log`). */
+    private readonly log: (line: string) => void = (line) => console.error(line),
   ) {}
 
-  /** `<repo root>/.agile-docs/*.md`. An unregistered repo has no docs (not an error). */
+  /** `<home>/repos/<name>/docs/*.md`. An unregistered repo has no docs (not an error). */
   listRepoDocs(repoId: string): Doc[] {
     const entry = this.store.getRepos()[repoId];
     if (entry === undefined) return [];
-    return listMarkdown(join(entry.path, '.agile-docs')).flatMap((path) => {
+    const dir = this.repoDocsDir(repoId);
+    this.importLegacyDocs(repoId, entry.path, dir);
+    return listMarkdown(dir).flatMap((path) => {
       const doc = readDoc('repo', path);
       return doc ? [doc] : [];
     });
@@ -139,7 +145,12 @@ export class DocsService implements DocsSearch {
   private allDocs(): Doc[] {
     const docs: Doc[] = [];
     for (const repoId of Object.keys(this.store.getRepos()).sort()) {
-      docs.push(...this.listRepoDocs(repoId));
+      try {
+        docs.push(...this.listRepoDocs(repoId));
+      } catch (err) {
+        // One bad repo name must not fail a home-wide search.
+        this.log(`docs: skipped repo ${JSON.stringify(repoId)}: ${(err as Error).message}`);
+      }
     }
     for (const stream of this.streams.list({ include_archived: true })) {
       docs.push(...this.listStreamDocs(stream.id));
@@ -164,6 +175,30 @@ export class DocsService implements DocsSearch {
       id = stream.parent;
     }
     return chain;
+  }
+
+  /** `<home>/repos/<name>/docs`. A name that isn't one path segment is refused. */
+  repoDocsDir(repoId: string): string {
+    if (repoId === '' || repoId === '.' || repoId === '..' || /[/\\]/.test(repoId)) {
+      throw new Error(`invalid repo name for a docs path: ${JSON.stringify(repoId)}`);
+    }
+    return join(this.home, 'repos', repoId, 'docs');
+  }
+
+  /**
+   * P3: copies `<repo>/.agile-docs/*.md` into `dir` when `dir` doesn't exist
+   * yet. Once `dir` exists this never runs again. The old directory is left
+   * in place; the log line says it may be removed.
+   */
+  private importLegacyDocs(repoId: string, repoPath: string, dir: string): void {
+    if (existsSync(dir)) return;
+    const legacy = listMarkdown(join(repoPath, '.agile-docs'));
+    if (legacy.length === 0) return;
+    mkdirSync(dir, { recursive: true });
+    for (const path of legacy) copyFileSync(path, join(dir, path.slice(path.lastIndexOf('/') + 1)));
+    this.log(
+      `docs: imported ${legacy.length} doc(s) for repo ${repoId} from ${join(repoPath, '.agile-docs')} to ${dir}; the old directory is no longer read and may be removed`,
+    );
   }
 
   /** `<home>/streams/<id>.docs`; the id is ULID-checked before it reaches a path. */

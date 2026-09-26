@@ -5,8 +5,8 @@
  * covers them.
  */
 
-import type { InboxItem, SessionRef, Stream } from '@agile-agents/shared';
-import type { CockpitStreamRow } from './feed-types';
+import type { InboxItem, NodeRole, SessionRef, Stream } from '@agile-agents/shared';
+import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from './feed-types';
 
 /** §9.2's five dots. */
 export type StreamDot = 'amber' | 'blue' | 'grey' | 'green' | 'red';
@@ -58,6 +58,26 @@ export function buildStreamTree(rows: readonly CockpitStreamRow[]): StreamTreeNo
     else roots.push(node);
   }
   return roots;
+}
+
+/**
+ * T331: whether anything below `node` (not `node` itself) waits on the
+ * operator — an amber dot. A collapsed row shows it so a question is never
+ * hidden inside a folded subtree.
+ */
+export function subtreeNeedsYou(node: StreamTreeNode): boolean {
+  return node.children.some((child) => streamDot(child.row) === 'amber' || subtreeNeedsYou(child));
+}
+
+/** T331: the rail's collapsed nodes, read back from storage; anything malformed is an empty set. */
+export function parseCollapsed(raw: string | null): Set<string> {
+  if (!raw) return new Set();
+  try {
+    const value: unknown = JSON.parse(raw);
+    return new Set(Array.isArray(value) ? value.filter((v) => typeof v === 'string') : []);
+  } catch {
+    return new Set();
+  }
 }
 
 /**
@@ -174,4 +194,107 @@ export function ruleHitOf(entry: {
   return entry.ref !== undefined && /^R-[0-9A-HJKMNP-TV-Z]{26}$/.test(entry.ref)
     ? entry.ref
     : undefined;
+}
+
+/** T208: the rail's role glyphs and their labels (projects-design, P1). */
+export const ROLE_ICON: Record<NodeRole, string> = {
+  project: '\u25A0',
+  coordinating: '\u25C6',
+  work: '\u25CF',
+  conversation: '\u25CB',
+};
+
+/** T208: the rows the rail shows for the switcher's choice (`undefined` is "All"). */
+export function rowsInProject(
+  rows: readonly CockpitStreamRow[],
+  project: string | undefined,
+): readonly CockpitStreamRow[] {
+  return project === undefined ? rows : rows.filter((row) => row.project === project);
+}
+
+/**
+ * T208: where a new node (New stream, quick capture) files. The switcher's
+ * project; on "All", the open stream's project; failing that, the only
+ * project if there is exactly one. `undefined` means the operator must pick.
+ */
+export function projectForNew(
+  current: string | undefined,
+  selected: string | undefined,
+  rows: readonly CockpitStreamRow[],
+  projects: readonly CockpitProjectRow[],
+): string | undefined {
+  if (current !== undefined) return current;
+  const open = selected !== undefined ? rows.find((row) => row.id === selected) : undefined;
+  if (open?.project !== undefined) return open.project;
+  return projects.length === 1 ? projects[0]?.id : undefined;
+}
+
+// ---- T209: the repo view and lenses ----------------------------------------
+
+/** T209: the titles of a row's ancestors, root first (the project node is the root). */
+export function ancestorTitles(row: CockpitStreamRow, rows: readonly CockpitStreamRow[]): string[] {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const out: string[] = [];
+  const seen = new Set<string>([row.id]);
+  let parent = row.parent !== undefined ? byId.get(row.parent) : undefined;
+  while (parent && !seen.has(parent.id)) {
+    seen.add(parent.id);
+    out.unshift(parent.title);
+    parent = parent.parent !== undefined ? byId.get(parent.parent) : undefined;
+  }
+  return out;
+}
+
+/** A node still in play: not landed or closed. */
+export function isLiveNode(row: Pick<CockpitStreamRow, 'human_status'>): boolean {
+  return row.human_status !== 'landed' && row.human_status !== 'closed';
+}
+
+export interface RepoGroup {
+  repo: string;
+  /** `direct` unless repos.yaml names another mode. */
+  delivery: CockpitRepoRow['delivery'];
+  rows: CockpitStreamRow[];
+}
+
+/**
+ * T209: live work nodes grouped by repo, across projects. Every registered
+ * repo gets a group (an empty one says so); a node on an unregistered repo
+ * still shows, as `direct`.
+ */
+export function groupByRepo(
+  rows: readonly CockpitStreamRow[],
+  repos: readonly CockpitRepoRow[],
+): RepoGroup[] {
+  const groups = new Map<string, RepoGroup>();
+  for (const r of repos) groups.set(r.name, { repo: r.name, delivery: r.delivery, rows: [] });
+  for (const row of rows) {
+    if (row.repo === undefined || row.role !== 'work' || !isLiveNode(row)) continue;
+    let group = groups.get(row.repo);
+    if (!group) {
+      group = { repo: row.repo, delivery: 'direct', rows: [] };
+      groups.set(row.repo, group);
+    }
+    group.rows.push(row);
+  }
+  return [...groups.values()].sort((a, b) => a.repo.localeCompare(b.repo));
+}
+
+/** T209: the Running lens — nodes with a live session. */
+export function runningRows(rows: readonly CockpitStreamRow[]): CockpitStreamRow[] {
+  return rows.filter((row) => row.live === true);
+}
+
+export interface DependencyEdge {
+  from: CockpitStreamRow;
+  /** The waited-on node, or just its id when it is not in the tree. */
+  on: CockpitStreamRow | string;
+}
+
+/** T209: the Dependencies lens — every open `waits_on` edge, as a list. */
+export function dependencyEdges(rows: readonly CockpitStreamRow[]): DependencyEdge[] {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return rows.flatMap((from) =>
+    (from.waits_on ?? []).map((id) => ({ from, on: byId.get(id) ?? id })),
+  );
 }

@@ -58,6 +58,28 @@ const FORCE_KILL_TIMEOUT_MS = 2000;
 const INITIALIZE_TIMEOUT_MS = 120_000;
 const ACP_PROTOCOL_VERSION = 1;
 
+/**
+ * Bun 1.3.11 loses a child's stdio pipe when its `epoll_ctl` fails with
+ * `EBADF` (the T161 family; measured by injecting the error with strace).
+ * On the stdin pipe at spawn, `spawn()` throws a bogus `RangeError: Out of
+ * memory` and leaves no child behind. On the stdout pipe, `stdout` emits
+ * `close` with no `end` and every byte the agent writes is dropped while
+ * the agent lives on, so the handshake never answers and the session hangs.
+ * On the stdin pipe's re-arm, the agent's stdin is closed with no signal
+ * here (writes still report success): the agent reads EOF and exits 0.
+ * A session makes at most this many spawns in all, over first spawns,
+ * retries of a spawn that throws, and replacements of an agent whose stdout
+ * died, or that exited cleanly, before it said anything (nothing is lost by
+ * replacing it: only the handshake was sent, and it is replayed). Past that
+ * point the session fails, with an `error` event, instead of hanging or
+ * ending as if clean. A pidfd
+ * EBADF in `node:child_process` Bun retries itself (unlike `Bun.spawn`'s
+ * `exited`, T161).
+ */
+const MAX_SPAWN_ATTEMPTS = 3;
+/** How long a stdout `close` without `end` waits for the process's own exit before it counts as a lost pipe. */
+const STDOUT_LOSS_GRACE_MS = 50;
+
 /** A JSON-RPC error response, surfaced with its code/data intact (not flattened into a string). */
 export class AcpRpcError extends Error {
   constructor(
@@ -231,14 +253,41 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   /** Serializes `load()` so two in-flight loads cannot interleave (matches Terma's `loadChain`). */
   let loadChain: Promise<void> = Promise.resolve();
 
-  const child: ChildProcess = doSpawn(opts.cmd, opts.args ?? [], {
-    cwd,
-    env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    // Own process group: a resolver (`npx`) execs a child of its own, so
-    // killing only the direct pid leaves the real agent orphaned.
-    detached: true,
-  });
+  /** Spawns left for this session, over first spawns, throw retries and replacements alike. */
+  let spawnsLeft = MAX_SPAWN_ATTEMPTS;
+  /** Spawns the agent, retrying a synchronous throw while `spawnsLeft` allows. */
+  function spawnChild(): ChildProcess {
+    for (;;) {
+      spawnsLeft -= 1;
+      try {
+        return doSpawn(opts.cmd, opts.args ?? [], {
+          cwd,
+          env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          // Own process group: a resolver (`npx`) execs a child of its own, so
+          // killing only the direct pid leaves the real agent orphaned.
+          detached: true,
+        });
+      } catch (err) {
+        if (spawnsLeft <= 0) throw err;
+      }
+    }
+  }
+
+  /** The current agent process. Replaced only while its stdout has never spoken. */
+  let child: ChildProcess = spawnChild();
+  /** Whether the current child's stdout has delivered anything. */
+  let stdoutSpoke = false;
+  /** Every line written while `stdoutSpoke` is false: what a replacement agent is sent again. */
+  let handshake: string[] = [];
+  /** Set by `close()`: an exit from here on is the one asked for, never a lost pipe. */
+  let closeRequested = false;
+  /** Set while `cancel()` writes: a stdin failure then fails the session, never replaces the agent. */
+  let cancelling = false;
+  /** The last of the agent's stderr, for the error when an agent is given up on. */
+  let stderrTail = '';
+  /** Pending `STDOUT_LOSS_GRACE_MS` checks, cleared by `close()`. */
+  const graceTimers = new Set<ReturnType<typeof setTimeout>>();
 
   function emit(event: AgentEvent): void {
     for (const listener of [...listeners]) listener(event);
@@ -279,7 +328,25 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
 
   function writeLine(obj: unknown): boolean {
     if (exited || !child.stdin || child.stdin.destroyed) return false;
-    child.stdin.write(`${JSON.stringify(obj)}\n`);
+    const line = `${JSON.stringify(obj)}\n`;
+    if (!stdoutSpoke) handshake.push(line);
+    return writeTo(child, line);
+  }
+
+  /**
+   * Every write to an agent's stdin goes through here. Bun's stdin writer
+   * throws EPIPE synchronously when the agent is already gone but its exit
+   * is not reported yet: a transport failure of the session, never a throw
+   * into whoever sent the line (often an event-emitter callback, where a
+   * throw is an uncaught exception). False when the write failed.
+   */
+  function writeTo(target: ChildProcess, line: string): boolean {
+    try {
+      target.stdin?.write(line);
+    } catch (err) {
+      onStdinFailed(target, err);
+      return false;
+    }
     return true;
   }
 
@@ -440,8 +507,9 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     }
   }
 
-  child.stdout?.setEncoding('utf8');
-  child.stdout?.on('data', (chunk: string) => {
+  function onStdout(chunk: string): void {
+    stdoutSpoke = true;
+    handshake = [];
     let lines: string[];
     try {
       lines = framer.push(chunk);
@@ -462,10 +530,9 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
       }
       handleMessage(message);
     }
-  });
+  }
 
-  child.stderr?.setEncoding('utf8');
-  child.stderr?.on('data', (chunk: string) => {
+  function onStderr(chunk: string): void {
     // Agent stderr is diagnostics, not protocol — never parsed here. Handed
     // to the caller's sink when one is given (`onStderr`), dropped otherwise.
     if (opts.onStderr === undefined) return;
@@ -474,7 +541,7 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     } catch {
       // A failing sink must never take the session down.
     }
-  });
+  }
 
   const onDead = (code: number | null) => {
     if (exited) return;
@@ -483,14 +550,164 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     rejectPending(new Error(exitReason()));
     emit({ type: 'exit', exitCode: code ?? -1 });
   };
-  // `exit` and `close` are both handled: Node emits `error` + `close`
-  // (never `exit`) when the process could not be spawned at all.
-  child.on('exit', onDead);
-  child.on('close', onDead);
-  child.on('error', (err) => {
-    emit({ type: 'error', message: err.message });
-    spawnError = err;
-  });
+
+  /**
+   * Replaces an agent that lost a pipe before it ever spoke (see
+   * `MAX_SPAWN_ATTEMPTS`): nothing is lost, since only the handshake was
+   * sent, and the replacement is sent it again. False when the session is
+   * past that point (it spoke, is closing, or has no respawns left).
+   */
+  function replaceChild(lost: ChildProcess, why: string): boolean {
+    if (stdoutSpoke || closeRequested || spawnsLeft <= 0) return false;
+    signalTree('SIGKILL', lost);
+    let next: ChildProcess;
+    try {
+      next = spawnChild();
+    } catch (err) {
+      emit({
+        type: 'error',
+        message: `ACP agent ${why} and the agent could not be restarted: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      onDead(null);
+      return true;
+    }
+    child = next;
+    wire(next);
+    onStderr(`[acp-client] agent ${why} before it spoke (lost pipe); restarted the agent\n`);
+    // Guarded like every other write: this runs inside an `exit`/`error`/
+    // `close` listener. A failed replay is `next`'s own lost pipe, handled
+    // (replaced again, within the spawn budget, or failed) by `writeTo`.
+    for (const line of handshake) {
+      if (!writeTo(next, line)) break;
+    }
+    return true;
+  }
+
+  /**
+   * The current child's stdout closed without `end`: the pipe is gone but
+   * the agent may not be. An agent that never spoke is replaced; one that
+   * did has session state a replacement would not, so the session fails
+   * now, as a transport error, instead of hanging on a reply that can
+   * never arrive.
+   */
+  function onStdoutLost(lost: ChildProcess): void {
+    if (lost !== child || exited || closeRequested || spawnError !== null) return;
+    if (typeof lost.exitCode === 'number' || typeof lost.signalCode === 'string') return;
+    if (replaceChild(lost, 'stdout closed')) return;
+    emit({ type: 'error', message: 'ACP agent stdout closed unexpectedly (lost pipe)' });
+    close();
+  }
+
+  /**
+   * A write to the agent's stdin failed: thrown by `write()` (Bun's fast
+   * path, EPIPE) or emitted later as the stream's `error` (a write that
+   * completed asynchronously). With nobody listening, that `error` would be
+   * an uncaught exception in the daemon (CI job 108169280649: a
+   * `session/cancel` sent after a failed prompt, to an agent already gone).
+   * An agent that never spoke is replaced, like any pipe lost before the
+   * handshake; past that the session fails as a transport error. Nothing to
+   * report once the session is closing or has exited.
+   */
+  function onStdinFailed(failed: ChildProcess, err: unknown): void {
+    if (failed !== child || exited || closeRequested) return;
+    const why = err instanceof Error ? err.message : String(err);
+    // Never a replacement for a failed `session/cancel`: whoever cancels is
+    // stopping the turn (the runner closes right after), so a fresh agent
+    // would only be spawned to be killed.
+    if (!cancelling && replaceChild(failed, 'stdin failed')) return;
+    emit({ type: 'error', message: `ACP agent stdin failed (lost pipe): ${why}` });
+    close();
+  }
+
+  /**
+   * The current child exited. A lost stdin pipe gives no signal of its own
+   * (writes still report success): the agent reads EOF and exits cleanly.
+   * So a clean exit before the agent ever answered the handshake, that
+   * nobody asked for, is treated as that lost pipe and the agent replaced;
+   * any other exit is the session's.
+   */
+  function onChildExit(c: ChildProcess, code: number | null): void {
+    if (c !== child) return;
+    if (
+      code === 0 &&
+      !exited &&
+      spawnError === null &&
+      handshake.length > 0 &&
+      replaceChild(c, 'exited')
+    ) {
+      return;
+    }
+    if (code === 0 && !exited && !stdoutSpoke && !closeRequested && handshake.length > 0) {
+      // Out of replacements: an agent that never answered is a failure,
+      // never a clean end (a vendor CLI that exits 0 before speaking ACP).
+      const last = stderrTail
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .at(-1);
+      emit({
+        type: 'error',
+        message: `ACP agent exited before it answered the handshake (${MAX_SPAWN_ATTEMPTS} attempts)${last ? `: ${last.slice(0, 300)}` : ''}`,
+      });
+    } else if (
+      code === 0 &&
+      !exited &&
+      stdoutSpoke &&
+      !closeRequested &&
+      spawnError === null &&
+      pending.size > 0
+    ) {
+      // Past the handshake a replacement would lack the agent's session
+      // state, so this fails the session, but as what it is: an agent does
+      // not end cleanly with a request of ours unanswered, and a stdin pipe
+      // Bun lost on re-arm reads as exactly that (measured under strace).
+      emit({
+        type: 'error',
+        message: 'ACP agent exited cleanly with a request unanswered (lost stdin pipe?)',
+      });
+    }
+    onDead(code);
+  }
+
+  /** Listens to one child; a replaced child's late events are ignored. */
+  function wire(c: ChildProcess): void {
+    let stdoutEnded = false;
+    // Always listened to: an unheard stream `error` is an uncaught exception.
+    c.stdin?.on('error', (err: Error) => onStdinFailed(c, err));
+    c.stdout?.setEncoding('utf8');
+    c.stdout?.on('data', (chunk: string) => {
+      if (c === child) onStdout(chunk);
+    });
+    c.stdout?.on('end', () => {
+      stdoutEnded = true;
+    });
+    c.stdout?.on('close', () => {
+      if (stdoutEnded || c !== child) return;
+      // A dying process can close its pipe a moment before its exit is reported.
+      const timer = setTimeout(() => {
+        graceTimers.delete(timer);
+        onStdoutLost(c);
+      }, STDOUT_LOSS_GRACE_MS);
+      graceTimers.add(timer);
+    });
+    c.stderr?.setEncoding('utf8');
+    c.stderr?.on('data', (chunk: string) => {
+      if (c !== child) return;
+      stderrTail = `${stderrTail}${chunk}`.slice(-2000);
+      onStderr(chunk);
+    });
+    // `exit` and `close` are both handled: Node emits `error` + `close`
+    // (never `exit`) when the process could not be spawned at all.
+    const dead = (code: number | null) => onChildExit(c, code);
+    c.on('exit', dead);
+    c.on('close', dead);
+    c.on('error', (err) => {
+      if (c !== child) return;
+      emit({ type: 'error', message: err.message });
+      spawnError = err;
+    });
+  }
+  wire(child);
 
   function clearForceKillTimer(): void {
     if (forceKillTimer) {
@@ -499,14 +716,14 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     }
   }
 
-  function signalTree(signal: NodeJS.Signals): void {
-    const pid = child.pid;
+  function signalTree(signal: NodeJS.Signals, target: ChildProcess = child): void {
+    const pid = target.pid;
     if (!pid) return;
     try {
       process.kill(-pid, signal);
     } catch {
       try {
-        child.kill(signal);
+        target.kill(signal);
       } catch {
         // Process already reaped.
       }
@@ -515,6 +732,9 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
 
   function close(): void {
     if (exited) return;
+    closeRequested = true;
+    for (const timer of graceTimers) clearTimeout(timer);
+    graceTimers.clear();
     clearForceKillTimer();
     signalTree('SIGTERM');
     forceKillTimer = setTimeout(() => {
@@ -716,7 +936,12 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     },
     cancel(): boolean {
       if (acpSessionId === null) return false;
-      return notify('session/cancel', { sessionId: acpSessionId });
+      cancelling = true;
+      try {
+        return notify('session/cancel', { sessionId: acpSessionId });
+      } finally {
+        cancelling = false;
+      }
     },
     async load(sessionId: string): Promise<unknown> {
       const run = async (): Promise<unknown> => {

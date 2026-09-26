@@ -21,6 +21,8 @@ import {
   type Event,
   type HomeConfig,
   type Policy,
+  type Project,
+  ProjectIdSchema,
   type RepoEntry,
   type ReposConfig,
   type Rule,
@@ -33,13 +35,16 @@ import {
   type ThreadEntry,
   UlidSchema,
   assertNoStreamCycle,
+  assertNoWaitsOnCycle,
   assertRuleAcceptable,
   assertRuleWrite,
   assertStreamWrite,
+  projectNameKey,
   validateAgentRecord,
   validateEvent,
   validateHomeConfig,
   validatePolicy,
+  validateProject,
   validateRepoEntry,
   validateReposConfig,
   validateRule,
@@ -369,9 +374,12 @@ export class StateStore {
     });
   }
 
-  /** Read-only: the full `log/events.jsonl` audit stream. */
-  listEvents(): Event[] {
-    return readJsonlFile<unknown>(this.abs('log', 'events.jsonl')).map((line) =>
+  /**
+   * Read-only: the `log/events.jsonl` audit stream. `endOffset` stops at that
+   * byte (a line boundary), so a reader can pair it with a tailer's offset.
+   */
+  listEvents(endOffset?: number): Event[] {
+    return readJsonlFile<unknown>(this.abs('log', 'events.jsonl'), endOffset).map((line) =>
       validateEvent(line),
     );
   }
@@ -611,7 +619,15 @@ export class StateStore {
    * name replaces that entry.
    */
   async addRepo(name: string, entry: unknown): Promise<ReposConfig> {
-    const next = { ...this.getRepos(), [name]: validateRepoEntry(entry) };
+    // §14.8 defaults written out, so a repo added after the migration looks migrated.
+    const next = {
+      ...this.getRepos(),
+      [name]: validateRepoEntry({
+        delivery: 'direct',
+        visibility: { mode: 'public' },
+        ...(entry as object),
+      }),
+    };
     return this.putRepos(next);
   }
 
@@ -677,6 +693,7 @@ export class StateStore {
         throw new AlreadyExistsError('Stream', validated.id);
       }
       assertNoStreamCycle(validated.id, validated.parent, (sid) => this.lookupStreamParent(sid));
+      this.assertWaitsOn(validated, undefined);
       writeYamlFileAtomic(this.abs(relPath), validated);
       const event = buildEvent('stream_created', {
         stream: validated.id,
@@ -687,6 +704,22 @@ export class StateStore {
         },
       });
       return { result: validated, event };
+    });
+  }
+
+  /** P8: every new `waits_on` target exists, and the edges stay acyclic. */
+  private assertWaitsOn(after: Stream, before: Stream | undefined): void {
+    const targets = (after.waits_on ?? []).map((w) => w.node);
+    const old = new Set((before?.waits_on ?? []).map((w) => w.node));
+    for (const target of targets) {
+      if (!old.has(target) && target !== after.id && !this.hasStream(target)) {
+        throw new NotFoundError('Stream', target);
+      }
+    }
+    assertNoWaitsOnCycle(after.id, targets, (sid) => {
+      const path = this.abs(this.streamRelPath(sid));
+      if (!fileExists(path)) return [];
+      return (this.readStreamFile(path).waits_on ?? []).map((w) => w.node);
     });
   }
 
@@ -720,6 +753,9 @@ export class StateStore {
       assertNoStreamCycle(after.id, after.parent, (sid) =>
         sid === after.id ? after.parent : this.lookupStreamParent(sid),
       );
+      if (JSON.stringify(before.waits_on) !== JSON.stringify(after.waits_on)) {
+        this.assertWaitsOn(after, before);
+      }
       writeYamlFileAtomic(this.abs(relPath), after);
       const event = buildEvent(options.kind ?? 'stream_updated', {
         stream: after.id,
@@ -844,6 +880,69 @@ export class StateStore {
     });
   }
 
+  // ------------------------------------------------------------------ Projects
+
+  /** `projects/P-<ulid>.yaml`, one file per project (projects-design §14.1). */
+  private projectRelPath(id: string): string {
+    const result = ProjectIdSchema.safeParse(id);
+    if (!result.success) throw new Error(`invalid Project id: ${id} must look like P-<ulid>`);
+    return join('projects', `${result.data}.yaml`);
+  }
+
+  private readProjectFile(absPath: string): Project {
+    return readRecord(absPath, 'project', validateProject);
+  }
+
+  getProject(id: string): Project {
+    const path = this.abs(this.projectRelPath(id));
+    if (!fileExists(path)) throw new NotFoundError('Project', id);
+    return this.readProjectFile(path);
+  }
+
+  /** Every project in the home, oldest id first. */
+  listProjects(): Project[] {
+    const dir = this.abs('projects');
+    return listDataFiles(dir, '.yaml')
+      .map((name) => this.readProjectFile(join(dir, name)))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /** Names are unique case-insensitively, archived projects included. */
+  assertProjectNameFree(name: string, self?: string): void {
+    const key = projectNameKey(name);
+    const clash = this.listProjects().find((p) => p.id !== self && projectNameKey(p.name) === key);
+    if (clash !== undefined) throw new AlreadyExistsError('Project', `named "${clash.name}"`);
+  }
+
+  async createProject(project: unknown): Promise<Project> {
+    return this.mutate(() => {
+      const validated = validateProject(project);
+      const relPath = this.projectRelPath(validated.id);
+      if (fileExists(this.abs(relPath))) throw new AlreadyExistsError('Project', validated.id);
+      this.assertProjectNameFree(validated.name);
+      writeYamlFileAtomic(this.abs(relPath), validated);
+      return { result: validated, event: projectEvent('project_created', validated) };
+    });
+  }
+
+  /** Read-modify-write under the mutex; `id`, `root` and `created_at` never change. */
+  async updateProject(id: string, mutator: (before: Project) => Project): Promise<Project> {
+    return this.mutate(() => {
+      const relPath = this.projectRelPath(id);
+      if (!fileExists(this.abs(relPath))) throw new NotFoundError('Project', id);
+      const before = this.readProjectFile(this.abs(relPath));
+      const after = validateProject(mutator(before));
+      for (const field of ['id', 'root', 'created_at'] as const) {
+        if (after[field] !== before[field]) {
+          throw new Error(`invalid Project write: ${field} may not change`);
+        }
+      }
+      this.assertProjectNameFree(after.name, after.id);
+      writeYamlFileAtomic(this.abs(relPath), after);
+      return { result: after, event: projectEvent('project_updated', after) };
+    });
+  }
+
   /**
    * Reads the thread, validating every line and naming the file *and the
    * line number* of the first bad one (§7.3). Missing file = empty thread,
@@ -945,6 +1044,18 @@ function mappingCopy(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? { ...(value as Record<string, unknown>) }
     : {};
+}
+
+function projectEvent(kind: 'project_created' | 'project_updated', project: Project): Event {
+  return buildEvent(kind, {
+    stream: project.root,
+    data: {
+      id: project.id,
+      name: project.name,
+      root: project.root,
+      archived: project.archived === true,
+    },
+  });
 }
 
 /** Reads and validates one YAML record; a corrupt one is refused with its path (§7.3). */

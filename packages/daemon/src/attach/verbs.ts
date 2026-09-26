@@ -18,6 +18,7 @@ import {
   type ThreadEntry,
   formatRuleScope,
   parseRuleScope,
+  quoteThreadBody,
   validateVerbInput,
 } from '@agile-agents/shared';
 import type { DocsSearch, SearchHit } from '../docs/service';
@@ -219,12 +220,15 @@ export class VerbService {
     const take = limit ?? 20;
     return {
       stream: caller.stream,
-      entries: page.entries.slice(-take),
+      // T330: an agent line may run to 16k chars; the tool result quotes the head.
+      entries: page.entries
+        .slice(-take)
+        .map((entry) => ({ ...entry, body: quoteThreadBody(entry.body) })),
       total: page.total,
     };
   }
 
-  /** Repo `.agile-docs/` plus this stream's own notes; empty with no docs service. */
+  /** Repo docs (`<home>/repos/<name>/docs/`) plus this stream's own notes; empty with no docs service. */
   async searchDocs(input: unknown): Promise<SearchHit[]> {
     const { session, query } = validateVerbInput('search_docs', input);
     const caller = this.caller(session);

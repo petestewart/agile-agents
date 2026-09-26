@@ -15,6 +15,9 @@
  * T170 (D17): the session defaults — home-wide (`config.yaml`) and per repo
  * (`repos.yaml`). An empty field inherits the next step of the order, which
  * each control names; the next attach uses the saved values, no restart.
+ *
+ * T206: Repos — register a repo by path (its git toplevel), name and
+ * protected branches, through the same RPC as `agile repo add`.
  */
 
 import type {
@@ -28,9 +31,12 @@ import type {
 import { GATE_KINDS } from '@agile-agents/shared';
 import { useEffect, useState } from 'react';
 import {
+  type RepoRow,
+  addRepo,
   getClassifierKey,
   getPolicy,
   getSessionDefaults,
+  listRepos,
   removeClassifierKey,
   saveClassifierKey,
   saveHomeSessionDefaults,
@@ -65,6 +71,7 @@ export function Settings(): JSX.Element {
       <h1>Settings</h1>
       {error && <p className="cr-error">{error}</p>}
       <ClassifierKey />
+      <Repos />
       <SessionDefaults />
       <h2>Who decides</h2>
       {GATE_KINDS.map((gate) => (
@@ -315,6 +322,112 @@ function SessionDefaults(): JSX.Element {
           ))}
         </>
       )}
+    </>
+  );
+}
+
+function Repos(): JSX.Element {
+  const [repos, setRepos] = useState<RepoRow[] | undefined>(undefined);
+  const [name, setName] = useState('');
+  const [path, setPath] = useState('');
+  const [protectedRaw, setProtectedRaw] = useState('');
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    listRepos()
+      .then(setRepos)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  const trimmedPath = path.trim().replace(/\/+$/, '');
+  const derivedName = name.trim() || trimmedPath.split('/').pop() || '';
+  const branches = protectedRaw
+    .split(',')
+    .map((b) => b.trim())
+    .filter((b) => b.length > 0);
+
+  return (
+    <>
+      <h2>Repos</h2>
+      {repos?.length === 0 && (
+        <p className="cr-dim" data-testid="settings-repos-empty">
+          No repos registered yet.
+        </p>
+      )}
+      {repos?.map((repo) => (
+        <div className="cr-gate-row" key={repo.name} data-testid={`settings-repo-${repo.name}`}>
+          <div>
+            <div>{repo.name}</div>
+            <div className="what">{repo.path}</div>
+            <div className="what">protected: {repo.protected_branches.join(', ') || '—'}</div>
+          </div>
+          <code data-testid={`settings-repo-${repo.name}-main`}>{repo.main_branch}</code>
+        </div>
+      ))}
+      <form
+        className="cr-gate-row"
+        data-testid="settings-repo-add"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!trimmedPath || !derivedName || busy) return;
+          setBusy(true);
+          setError(undefined);
+          addRepo({
+            name: derivedName,
+            path: trimmedPath,
+            ...(branches.length > 0 ? { protected_branches: branches } : {}),
+          })
+            .then((next) => {
+              setRepos(next);
+              setName('');
+              setPath('');
+              setProtectedRaw('');
+            })
+            .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+            .finally(() => setBusy(false));
+        }}
+      >
+        <div>
+          <div>Add a repo</div>
+          <div className="what">
+            The path to the repo's toplevel; the name defaults to its folder.
+          </div>
+          {error && (
+            <p className="cr-error" role="alert" data-testid="settings-repo-add-error">
+              {error}
+            </p>
+          )}
+        </div>
+        <div className="cr-actions">
+          <input
+            data-testid="settings-repo-add-path"
+            placeholder="/path/to/repo"
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+          />
+          <input
+            data-testid="settings-repo-add-name"
+            placeholder={derivedName || 'name'}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <input
+            data-testid="settings-repo-add-protected"
+            placeholder="main, master"
+            value={protectedRaw}
+            onChange={(e) => setProtectedRaw(e.target.value)}
+          />
+          <button
+            type="submit"
+            className="cr-btn signal"
+            data-testid="settings-repo-add-save"
+            disabled={busy}
+          >
+            Add
+          </button>
+        </div>
+      </form>
     </>
   );
 }

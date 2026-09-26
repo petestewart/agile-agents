@@ -16,6 +16,7 @@ import { type ParsedArgs, parseArgs } from './args';
 import { runAnswer } from './commands/answer';
 import { runAttach, runDetach } from './commands/attach';
 import {
+  agileHomeProblem,
   daemonStatusReport,
   formatDaemonStatus,
   runDaemonForeground,
@@ -28,6 +29,7 @@ import { parseHookArgs, runHook } from './commands/hook';
 import { runInbox } from './commands/inbox';
 import { runCliInit } from './commands/init';
 import { runLand } from './commands/land';
+import { runProjectList, runProjectNew, runProjectSet, runProjectShow } from './commands/project';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runRepoAdd, runRepoList } from './commands/repo';
 import { runReview } from './commands/review';
@@ -44,6 +46,7 @@ import {
 } from './commands/rules';
 import { runStatus } from './commands/status';
 import {
+  runStreamAddRepo,
   runStreamArchive,
   runStreamClose,
   runStreamList,
@@ -69,12 +72,22 @@ function usage(): string {
     '  init                       create the state home ($AGILE_HOME, default ~/.agile/) if missing',
     '  repo add <path> [--name <n>] [--protected a,b] [--target-branch <b>] [--vendor <v>]',
     '  repo list                  list registered repos',
-    '  stream new --title <t> --goal <g> [--parent <id>] [--repo <name>] [--target-branch <b>]',
-    '  stream list [--all] [--status <s>] [--landed]   the stream tree (--all includes archived)',
-    '  stream show <id>           the record plus the last 20 thread lines',
-    '  stream close <id> [--note <text>]',
-    '  stream archive <id>        hide from `stream list` (nothing moves on disk)',
-    '  stream say <id> <text>     append one human line to the stream thread',
+    '  project new --name <n> [--repo a] [--repo b|a,b]   a project and its root stream',
+    '  project list [--all]       projects (--all includes archived)',
+    '  project show <id>',
+    '  project set <id> [--name n] [--repo a,b] [--vendor v] [--model m] [--effort e] [--delivery direct|pr] [--auto-merge on|off] [--coordinator|--director advise|organise|run]',
+    '  node new --title <t> --goal <g> --project <P-id> [--parent <id>] [--repo <name>] [--label l]… [--no-start]',
+    "                             starts the node's agent unless --no-start",
+    '                             (--project may be left out when --parent names a node in a project)',
+    '  node list [--all] [--status <s>] [--landed] [--project <P-id>] [--parent <id>]',
+    '                             the tree; with --project/--parent a flat list with each role',
+    '  node show <id>             the record, its role and the last 20 thread lines',
+    '  node close <id> [--note <text>]',
+    '  node archive <id>          hide from `node list` (nothing moves on disk)',
+    '  node say <id> <text>       append one human line to the node thread',
+    '  node add-repo <id> <repo>  + Repo in place: conversation → work, work → coordinating with parts',
+    '  node switch-repo <id> <repo>  move a work node with nothing committed to another repo',
+    '  stream …                   alias of `node`',
     '  rules list [--status proposed|accepted|retired] [--scope global|repo:<n>|stream:<id>]',
     '  rules show <id>            one rule: tier, scope, pattern, provenance, stats, examples',
     '  rules add --text "…" [--scope …] [--enforcement pattern|classifier|guidance] [--critical]',
@@ -90,7 +103,7 @@ function usage(): string {
     '  rules report [--days N]         per-rule fired/violated/routed counts and prune flags',
     '  rules test [rule-id]            run accepted classifier rules\u2019 examples through the classifier',
     '  rules seed --from PLAN-v1.md     import that plan\u2019s decisions as proposed rules',
-    '  attach <stream> [--vendor v] [--model m] [--effort low|medium|high|max] [--role worker|reviewer] [--force]',
+    '  attach <stream> [--vendor v] [--model m] [--effort low|medium|high|max] [--role worker|reviewer]',
     '  resolve <stream> [--vendor v] [--model m] [--effort ...]   a worker that fixes the last land conflict',
     '  review <stream> [--vendor v] [--model m] [--effort ...]   read-only reviewer session',
     '  detach <stream>            stop the live session on a stream',
@@ -134,6 +147,13 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
   const json = argv.includes('--json');
   const rest = argv.filter((a) => a !== '--json');
   const [command, sub, ...restArgv] = rest;
+
+  // T210: a non-directory AGILE_HOME is refused up front, one line.
+  const homeProblem = agileHomeProblem();
+  if (homeProblem) {
+    console.error(homeProblem);
+    return 1;
+  }
 
   if (command === 'init') {
     console.log(runCliInit().message);
@@ -224,7 +244,20 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         console.error(usage());
         return 1;
 
+      // T200: projects — a record plus a root stream (projects-design §14.1).
+      case 'project': {
+        const projectArgs = parseArgs(restArgv);
+        if (sub === 'new') return await runProjectNew(socketPath, projectArgs, json);
+        if (sub === 'list') return await runProjectList(socketPath, projectArgs, json);
+        if (sub === 'show') return await runProjectShow(socketPath, projectArgs, json);
+        if (sub === 'set') return await runProjectSet(socketPath, projectArgs, json);
+        console.error(usage());
+        return 1;
+      }
+
       // T120: streams — the reshape's unit of work (cockpit design §2).
+      // T201: `node` is the verb; `stream` stays as an alias.
+      case 'node':
       case 'stream':
         if (sub === 'new') return await runStreamNew(socketPath, parseArgs(restArgv), json);
         if (sub === 'list') return await runStreamList(socketPath, parseArgs(restArgv), json);
@@ -232,6 +265,14 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'close') return await runStreamClose(socketPath, parseArgs(restArgv), json);
         if (sub === 'archive') return await runStreamArchive(socketPath, parseArgs(restArgv), json);
         if (sub === 'say') return await runStreamSay(socketPath, parseArgs(restArgv), json);
+        if (sub === 'add-repo' || sub === 'switch-repo') {
+          return await runStreamAddRepo(
+            socketPath,
+            parseArgs(restArgv),
+            json,
+            sub === 'switch-repo',
+          );
+        }
         console.error(usage());
         return 1;
 

@@ -8,11 +8,16 @@
 
 import { type FormEvent, useState } from 'react';
 import { createStream } from '../lib/api';
-import type { FeedSnapshot } from '../lib/feed-types';
+import type { CockpitProjectRow, CockpitStreamRow, FeedSnapshot } from '../lib/feed-types';
 import { type ShellView, useShell } from '../lib/shell';
+import { projectForNew } from '../lib/streams';
 
 const NAV: ReadonlyArray<{ view: ShellView; label: string }> = [
-  { view: 'inbox', label: 'Inbox' },
+  // T209: the inbox is the Needs me lens (grouped by node).
+  { view: 'inbox', label: 'Needs me' },
+  { view: 'repos', label: 'Repos' },
+  { view: 'running', label: 'Running' },
+  { view: 'deps', label: 'Dependencies' },
   { view: 'rules', label: 'Rules' },
   { view: 'settings', label: 'Settings' },
 ];
@@ -21,12 +26,25 @@ export function TopBar({
   snapshot,
   inboxCount,
   connected,
+  rows,
+  projects,
 }: {
   snapshot: FeedSnapshot | undefined;
   inboxCount: number;
   connected: boolean;
+  rows: readonly CockpitStreamRow[];
+  projects: readonly CockpitProjectRow[];
 }): JSX.Element {
-  const { view, setView, railOpen, toggleRail, select, setNewStreamOpen } = useShell();
+  const {
+    view,
+    setView,
+    railOpen,
+    toggleRail,
+    select,
+    selected,
+    setNewStreamOpen,
+    project: current,
+  } = useShell();
   const project = snapshot?.project;
   const [capture, setCapture] = useState('');
   const [captureError, setCaptureError] = useState<string | undefined>(undefined);
@@ -36,7 +54,11 @@ export function TopBar({
     const line = capture.trim();
     if (!line) return;
     try {
-      const created = await createStream({ title: line, goal: line });
+      // T208: it files into the current project (the daemon refuses none).
+      const project = projectForNew(current, selected, rows, projects);
+      if (project === undefined) throw new Error('Pick a project in the rail first');
+      // T204: a jotted line is filed, not started; Start on its page runs the agent.
+      const created = await createStream({ title: line, goal: line, project, start: false });
       setCapture('');
       setCaptureError(undefined);
       select(created.id);

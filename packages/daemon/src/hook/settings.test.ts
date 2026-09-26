@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { renderClaudeSettings, writeClaudeSettings } from './settings';
+import { createWorktree } from '../runner/worktrees';
+import { renderClaudeSettings, settingsFileName, writeClaudeSettings } from './settings';
 
 describe('renderClaudeSettings', () => {
   test('renders PreToolUse/PostToolUse/Stop, each invoking agile hook <event>, matcher "*"', () => {
@@ -154,6 +155,69 @@ describe('writeClaudeSettings', () => {
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('nothing in the user repo (T207, D24, P4)', () => {
+  function gitIn(cwd: string) {
+    return (args: string[]) => {
+      const r = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+      if (r.exitCode !== 0) throw new Error(new TextDecoder().decode(r.stderr));
+      return new TextDecoder().decode(r.stdout).trim();
+    };
+  }
+
+  async function setup(trackSettings: boolean) {
+    const repo = mkdtempSync(join(tmpdir(), 'agile-nothing-'));
+    const git = gitIn(repo);
+    git(['init', '-q']);
+    git(['config', 'user.email', 't@example.com']);
+    git(['config', 'user.name', 't']);
+    writeFileSync(join(repo, 'README.md'), 'x\n');
+    if (trackSettings) {
+      mkdirSync(join(repo, '.claude'), { recursive: true });
+      writeFileSync(join(repo, '.claude', 'settings.json'), '{"permissions":{}}\n');
+    }
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'init']);
+    const wt = await createWorktree(repo, { id: 's1', slug: 'work' });
+    return { repo, git, wt: wt.path, wtGit: gitIn(wt.path) };
+  }
+
+  test('attach then `git add -A` commit: user checkout clean, no .claude/settings.json in the commit', async () => {
+    const { repo, git, wt, wtGit } = await setup(false);
+    try {
+      writeClaudeSettings(wt, { agileBin: 'agile' });
+      writeFileSync(join(wt, 'code.ts'), 'export {};\n');
+      wtGit(['add', '-A']);
+      wtGit(['commit', '-q', '-m', 'work']);
+      expect(wtGit(['show', '--name-only', '--format=', 'HEAD']).split('\n')).toEqual(['code.ts']);
+      expect(git(['status', '--porcelain'])).toBe('');
+      expect(wtGit(['status', '--porcelain'])).toBe('');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('a tracked .claude/settings.json is left alone; the hooks go to settings.local.json', async () => {
+    const { repo, git, wt, wtGit } = await setup(true);
+    try {
+      expect(settingsFileName(wt)).toBe('settings.local.json');
+      writeClaudeSettings(wt, { agileBin: 'agile' });
+      expect(readFileSync(join(wt, '.claude', 'settings.json'), 'utf8')).toBe(
+        '{"permissions":{}}\n',
+      );
+      const local = JSON.parse(readFileSync(join(wt, '.claude', 'settings.local.json'), 'utf8'));
+      expect(local.hooks.PreToolUse[0].hooks[0].command).toBe('agile hook pre-tool-use || exit 2');
+      writeFileSync(join(wt, 'code.ts'), 'export {};\n');
+      wtGit(['add', '-A']);
+      wtGit(['commit', '-q', '-m', 'work']);
+      expect(wtGit(['show', '--name-only', '--format=', 'HEAD']).split('\n')).toEqual(['code.ts']);
+      expect(git(['status', '--porcelain'])).toBe('');
+      expect(wtGit(['status', '--porcelain'])).toBe('');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
     }
   });
 });

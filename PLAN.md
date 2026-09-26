@@ -29,6 +29,20 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D16** (2026-09-23, Pete): the TypeSafe key stays in the cloud environment config. Workers, reviewers and QA may make real classifier (Jev) calls and should prefer them over `FakeClassifier` when checking classifier behaviour; unit tests stay offline. The key is never printed, logged or committed. Replaces the standing "no TypeSafe key in the cloud" rule. Vendor logins are still absent in the cloud and `test:live` / `AGILE_LIVE=1` stay off.
 - **D17** (2026-09-23, Pete): the default session is Claude Code with model `claude-opus-5-5` at effort `low`, applied when no flag, repo entry or home config says otherwise (step 4 of the D12 order, before the provider's own default). Vendor, model and effort — home-wide and per repo — are all editable in the cockpit Settings screen, and Attach/Review can override per session.
 - **D18** (2026-09-24, Pete): the daemon source target in §6 is raised from 18,000 to 20,000 lines for now (18,273 after T174–T177). Guard against bloat anyway: every ticket reports its line delta, and growth that is not new product (narration, duplication, dead code) is trimmed in the ticket that caused it.
+- **D19** (2026-09-24, Pete): the next stage follows `design/projects-design.md`, which wins over `design/cockpit-design.md` where they differ. Projects are the top level of the tree. A project holds settings (repos, default session, delivery override, autonomy levels, tracker link). Every node belongs to exactly one project.
+- **D20** (2026-09-24, Pete): there is one node kind, the stream. Its role (project, coordinating, work, conversation) follows from whether it has children and a repo. It is derived, never stored. A work node has exactly one repo, one branch and one worktree. Work that spans two repos is a coordinating node with one work node per repo. Epic, ticket and task are only labels. Parent integration branches are removed: work nodes deliver straight to their repo, and "waits on" and "merge together" replace the parent branch. Same-repo helper children are the one exception: they merge back into their work node's branch.
+- **D21** (2026-09-24, Pete): delivery is set per repo (`direct` or `pr`), and a project or node can override it. Direct means you click Merge. PR means the agent pushes and opens a PR, and the PR state becomes the node's status. After a PR opens, the node's agent looks after it: it fixes CI failures and small review asks, brings in main, and sends design disagreements to the inbox. `auto_merge` is a per-repo setting, off by default. When it is on, the agent enables GitHub auto-merge once its own checks pass and its "waits on" links are satisfied. The app itself never merges a PR through the API. After every merge, other live work nodes on the repo are synced to the new main. Overlaps between live work nodes are tracked across projects.
+- **D22** (2026-09-24, Pete): events are a core system that replaces ad hoc prompts to live sessions. An event is typed and routed to its subject, the subject's ancestors, nodes on its "waits on" links and, for repo events, the same repo. It is stored before delivery and delivered once. A burst of events becomes one digest on wake. No event is ever dropped because an agent is busy or asleep. Each node has an activity feed showing what woke it.
+- **D23** (2026-09-24, Pete): rules become knowledge items of three kinds: standard, architecture and decision. Each item has a stacked scope (global, repo, project, subtree, plus optional paths) and one enforcement setting: `tell`, `action` (hook: a pattern or the classifier), `ship` (the classifier over the diff before a PR or merge) or `review` (the reviewer's checklist at ship). Nothing applies until you accept it. Agents get the knowledge in scope at start, as events when it changes, and on demand through a lookup tool. Lessons stay and propose items with a kind.
+- **D24** (2026-09-24, Pete): nothing the app knows or holds goes into a user's repo. Only the code the work produces is committed. Everything else lives in `~/.agile/`. Worktree ignores go in `<git-common-dir>/info/exclude` (T177). This supersedes the §9 Q4 assumption that repo docs are tracked in `.agile-docs/`.
+- **D25** (2026-09-24, Pete): siblings work through the parent. The parent writes the plan (who owns what) and the contracts. Status cards and mechanical alerts (same file, a changed symbol, a contract touched) keep siblings informed. Siblings may settle details directly with "ask sibling", copied to the parent. Changes to the plan, a contract or ownership go through the parent: siblings who agree on one propose it together, and the parent approves it or asks you. Collisions go to the parent's agent first.
+- **D26** (2026-09-24, Pete): coordinators and the Director share three autonomy levels. **Advise** (the default): they propose and you click. **Organise**: they create and restructure nodes, start agents and add links, then tell you. **Run**: they also approve routine contract changes and restart stuck work. The level is set per project and can be overridden on a node. At every level, merging, accepting norms and answering a question as if they were you stay yours. Changes to what gets built always come to you.
+- **D27** (2026-09-24, Pete): one Director sits above all projects. It starts work (drafts trees and plans), sees across projects (overlaps, links, norms), keeps things moving (stuck and idle nodes, "what needs me today?") and suggests norms. Every action it takes is recorded as done by the Director. It supersedes the unfiled "Desk"/side-quest proposal.
+- **D28** (2026-09-24, Pete): Jira and Linear are optional links on a node (at most one issue each), never a kind of node. A node with no link rolls up to its nearest linked ancestor. Pulling the issue into the node's goal is on by default. Importing an epic's children is a click. Pushing status to the tracker is off until you turn it on per project. Creating an issue is always a click. The app never closes an issue or edits its text. This lifts the §3 non-goal for tracker links only. It does not bring back the shelved sync.
+- **D29** (2026-09-24, Pete): any agent may read any registered repo by default. A repo set private is readable only by the projects it lists. Changing code is always limited to the node's own repo.
+- **D30** (2026-09-24, Pete): Phases 7–13 are built on stacked branches. `claude/phase-7` comes off the current integration tip, and each `claude/phase-N` comes off `claude/phase-(N-1)`. Ticket branches `T###-<slug>` fork from their phase branch and merge back `--no-ff`. Pete reviews each phase at its QA ticket and lands the phases in order. A fix found in phase N while phase N+1 exists is made on phase N and merged forward into every later phase branch, never cherry-picked backwards.
+- **D31** (2026-09-24, Pete): P17 approved. Jira and Linear tokens may be stored in the home `config.yaml`, the second written credential exception after the TypeSafe key (D16), with the same rules: written only through the store at mode 0600, never printed, logged, committed or sent to the browser; Settings shows only whether a token is set. T320 is unblocked.
+- **D32** (2026-09-24, Pete): proposed decisions P1–P16 and P18–P20 (design/projects-design.md §19) accepted as written. Q5–Q24 are closed by D31 and D32.
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -85,6 +99,21 @@ Landing path per stream: human presses Land → daemon runs diff-level rules (cl
 - Daemon source under 18,000 lines (today 35,928). Tests may be any size.
 - Pete can, from a fresh machine with Claude Code logged in: start the daemon, register `~/Projects/ledger-lite`, open a coding stream with three sub-streams, attach a worker to each, answer their questions from the inbox, review one, land all three, accept two proposed rules, and see one of them deny a tool call on the next stream. The whole walkthrough is `LIVE-CHECKLIST.md`, rewritten.
 - Every ceremony file, role brief, and schema named in §8 "Deleted" is gone from `main`.
+
+### 6.1 Definition of done for the projects stage (Phases 7–13)
+
+- The same offline gate: `bun install && bun run build && bun run typecheck && bun run lint && bun test && bun run test:integration && bun run test:e2e` is green from a clean clone, with no vendor login and no network. GitHub is exercised only through the fake GitHub (T220), and Jira/Linear only through their fakes (T320).
+- Daemon source stays under **20,000 lines** (D18). The new stage pays for itself by deleting code: parent branches, attach as a separate step, `say`/answer prompts, `seed-plan-v1.ts`, `bus/` leftovers and the rules/knowledge duplication. Every ticket reports its line delta, and every phase QA reports the count. If the target can't be held, the QA says why and Pete decides. The target is not raised silently.
+- Nothing the app holds is committed to a user repo (D24). A test asserts `git status --porcelain` is empty in the user's checkout after a full walkthrough.
+- Pete can, on his Mac with Claude Code and `gh` logged in, run this walkthrough, which is `LIVE-CHECKLIST.md` rewritten for the stage:
+  1. Create projects Shop and Blog. Register `~/Projects/ledger-lite` (direct) and `~/Projects/agile-test-repo` (PR, `https://github.com/petestewart/agile-test-repo`).
+  2. Turn a conversation into a coordinating node with + Repo on both repos. Approve its plan and contract.
+  3. Watch one work node open a PR, react to a review comment and a failing check, and merge (auto-merge on). Watch the other wait on it, get synced, pass its ship check, and merge directly with one click.
+  4. See a cross-project overlap flagged and resolved with a "waits on" link.
+  5. Accept a proposed knowledge item and see it reach a live node as an event.
+  6. Ask the Director "what needs me today?", and at Organise have it start a small project.
+  7. Link a node to a Linear or Jira issue and see the roll-up. (This step needs D-approval of P17.)
+- Every proposed decision P1–P20 in `design/projects-design.md` §19 is confirmed, amended or replaced by a D-entry before the phase that depends on it starts.
 
 ## 7. Phases and tickets
 
@@ -622,7 +651,7 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 
 ### Ticket: T175 Setup rough edges from Pete's walkthrough
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Superseded (2026-09-24): items (1)–(2) → T210, item (3) → T260 (`--name` on knowledge items), item (4) → T211
 - **Owner:** —
 - **Scope:** From Pete's 2026-09-24 walkthrough. (1) An `AGILE_HOME` that exists and is not a directory (his pointed at the `agile` binary) is refused by every command with one clear line naming the variable and the path, not EEXIST/ENOTDIR. (2) When `daemon start` finds the port held, it names the holder when it can (pid and command via `lsof`), and says whether it looks like another `agiled` and how to stop it; `daemon stop` on a home with no pidfile hints at a daemon from another home on the port. (3) `agile rules add --name` so CLI-made rules show a name on cards instead of the id. (4) Quickstart/LIVE-CHECKLIST mention that a fresh home starts with three built-in rules.
 - **Acceptance Criteria:** Tests for (1)–(3); checklist line for (4).
@@ -656,6 +685,903 @@ Build order: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6. Within a phase, ticket
 - **Validation Steps:** `bun run test:e2e`; Pete installs it on his Mac.
 - **Notes:** Runs after T164 so the UI is settled; step 1 may run earlier alongside any Phase 6 ticket if a worker is idle. Phone access over the network (auth, tunnel) is out of scope; see Discovered Issues.
 
+## 7b. The projects stage (Phases 7–13)
+
+**Resume here (handoff, 2026-09-24).** The reshape (Phases 0–6) is merged to `main` (PR #3, e66dfd5). Phase 7 has not started; nothing below T200 is In Progress. Work on `claude/phase-7` (already carries `main`); each later phase gets `claude/phase-N` cut from the previous phase branch, and fixes from Pete's reviews merge forward. Drive with `/project --yolo`: per ticket a worktree `.worktrees/T###-slug` off the phase branch → worker (opus) → independent reviewer (sonnet) → verify the diff yourself → merge `--no-ff` → push. Black-box QA (sonnet) at each phase's QA ticket. Pete reviews per phase but asked that work continue into the next phase without waiting; stop only for decisions only he can make. Commits end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and the session line. Every ticket reports its daemon line delta (D18). Never print, log or commit credentials; never list or dump environment variables (D16, D31). Live-check commands for Pete must be zsh-paste-safe (no placeholders, no inline `#`), verified against the real CLI, and include `export AGILE_HOME=…`. Pete's checkout is `~/agile-agents`; his test repos are `~/Projects/ledger-lite` and https://github.com/petestewart/agile-test-repo.
+
+
+Design: `design/projects-design.md`, which wins over `design/cockpit-design.md` where they differ (D19). Branches are stacked (D30): `claude/phase-7` → `claude/phase-8` → … → `claude/phase-13`. Each ticket branches from its phase branch. Every phase ends with a QA ticket and Pete's look, and Pete lands the phases in order.
+
+**Build order.** 7 → 8 → 9 → 10 → 11 → 12 → 13. PR babysitting (review comments and CI failures reaching the agent) depends on events, so it is not in Phase 8. It is T246 in Phase 9, right after the event core. Phase 8 still delivers PRs and tracks their state mechanically, so each phase is usable on its own (projects-design §19.1). Knowledge (10) comes after events because `knowledge_accepted` is an event. Coordination (11) needs events, knowledge scopes and delivery holds. The Director (12) uses coordination's tools and levels. External links (13) are independent after Phase 9, but come last because they are optional (D28) and need P17 approved.
+
+**Leftovers folded in.**
+
+- T175 is superseded: items (1) and (2) land in T210, item (3) (`--name`) in T260, and item (4) (the built-in rules note) in T211.
+- Unfiled items from the doc comments:
+  - attach friction and "start the worker when the stream is created" → T204;
+  - add a repo from the UI → T206;
+  - the Desk/side-quest proposal → superseded by the Director (T300–T303) and helper children (T288).
+- T165 step 2 stays Todo, independent of this stage.
+
+**Shared assumptions for every ticket.**
+
+- Tickets assume the proposed decisions P1–P20 in projects-design §19 unless a D-entry replaces them.
+- A worker that finds a proposal wrong stops and escalates. It does not decide.
+- Every ticket reports its daemon line delta (D18).
+- Live-check commands in the QA tickets assume `agile` is built from the phase branch (LIVE-CHECKLIST §1) and use a scratch home per phase.
+
+### Phase 7 — Projects and the tree
+
+### Ticket: T200 Project record, store, RPC and CLI
+- **Priority:** P0
+- **Status:** Done (merge c9a79b7)
+- **Owner:** —
+- **Scope:** Add the `Project` schema (projects-design §14.1) in `packages/shared` (`P-<ulid>` ids, `.strict()`). Add `projects/<id>.yaml` through the validating store with audit events `project_created` and `project_updated`. Add `daemon/projects` with a service and RPC: create (which also creates the root node), list, show, update settings, archive. Add the CLI verbs `agile project new --name --repo… [--json]`, `list`, `show`, `set`. Names are unique, case-insensitive.
+- **Acceptance Criteria:** Store round-trip; a corrupt project file is refused with path and line; creating a project writes its root stream; the CLI prints JSON with `id` and `root`.
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/projects packages/cli`.
+- **Notes:** P2. Blocks every other Phase 7 ticket. Branch T200-project-record. Review (sonnet): 1 blocking (repeated `--repo` dropped) fixed. Daemon +243 lines. `--repo` accepts repeats and commas.
+
+### Ticket: T201 Node fields and the derived role
+- **Priority:** P0
+- **Status:** Done (merge 362ac3f)
+- **Owner:** —
+- **Scope:** Extend the stream schema with `project`, `labels`, `waits_on`, `external_link` (schema only), `autonomy`, `delivery`, `merge_together`, `helper_of`, `delivery_state` and `touched` (§14.2). Only the daemon writes `delivery_state` and `touched`. Add `nodeRole()` in shared (P1). `stream.create` requires a project and defaults the parent to the project root. `waits_on` writes refuse cycles (P8). Add `agile node` as the verb, with `agile stream` kept as an alias; `node show --json` includes `role`; `node list` takes `--project` and `--parent` and prints JSON with `--json`. Principals gain `coordinator` and `director` (§14.12), which the store refuses on `human.*`.
+- **Acceptance Criteria:** Table tests for `nodeRole` (project, coordinating, work, conversation, a same-repo helper not making the parent coordinating); the cycle refusal; the two-writer split for the new principals.
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/streams packages/daemon/src/store`.
+- **Notes:** After T200. Review (sonnet) PASS. Daemon +106. Gaps carried: HTTP `POST /api/streams` does not yet require a project (→ T208); `waits_on`/`labels` have no RPC/CLI edit path yet (store enforces P8); landed children count as live per §14.2.
+
+### Ticket: T202 Migrate an existing home into projects
+- **Priority:** P0
+- **Status:** Done (merge fc668ea)
+- **Owner:** —
+- **Scope:** Add a one-shot, idempotent migration on daemon start (§17.1 steps 1, 3 and 4):
+  - create project "Unfiled" and re-parent every parentless stream under its root;
+  - set `project` on every stream;
+  - add `delivery: direct` and `visibility: public` to each `repos.yaml` entry, and carry `target_branch` over as `main_branch`;
+  - list any unmerged parent-integration branches in one inbox card.
+
+  Step 2 (rules → knowledge) is T260.
+- **Acceptance Criteria:** A fixture home from before the migration comes up with every stream in "Unfiled". A second start changes nothing. The audit log carries one `home_migrated` event.
+- **Validation Steps:** `bun test packages/daemon/src/store`; `bun run test:integration`.
+- **Notes:** After T201. Uses the T168 pattern of forward-compat tests on an old home. Review (sonnet) PASS; manager fixed a semantic merge clash with T208 (duplicate `projectService`) and dropped T203's `main_branch` cast. Daemon +196. Repo `target_branch` stays beside `main_branch` (read as fallback). A migration error stops the daemon start (retried next start). Parent-branch inbox card is by stream state, not a git merge check.
+
+### Ticket: T203 Work nodes deliver to main; parent branches removed
+- **Priority:** P0
+- **Status:** Done (merge 44d92d2)
+- **Owner:** —
+- **Scope:**
+  - Landing's target becomes the repo's `main_branch`. Remove `parentBranch()` in `landing/service.ts` and the stream's `target_branch`.
+  - A coordinating node never gets a branch or worktree.
+  - Remove the T176 parent-attach guard, since the case can no longer happen, and replace it with "a coordinating node has no worktree".
+  - Update LIVE-CHECKLIST §9–14 wording that assumes children land into the parent.
+- **Acceptance Criteria:** Unit: a child of a node that has a repo lands on `main`. A coordinating node refuses a worktree. The existing landing tests pass, rewritten for the new target.
+- **Validation Steps:** `bun test packages/daemon/src/landing packages/daemon/src/attach`; `bun run test:integration`.
+- **Notes:** After T201. D20. Review (sonnet) PASS. Daemon −46. Stream `target_branch` kept in the schema as deprecated/ignored for old records (design §14.2 prose is stale vs §17). Helpers land on main, not `helper_of`'s branch → T205. T176 `--force`/confirm removed.
+
+### Ticket: T204 Starting a node starts its agent
+- **Priority:** P1
+- **Status:** Done (merge 233a781)
+- **Owner:** —
+- **Scope:**
+  - `node new` for a work or conversation node starts its agent: a worker for work nodes, and a conversation session with no worktree for conversation nodes. `--no-start` and the cockpit's "Start later" checkbox skip this.
+  - The cockpit's Attach control becomes Start/Restart. `agile attach` stays as restart.
+  - The session defaults order gains the project step (P5).
+
+  This folds in the doc-comment item "attach friction / start worker on create".
+- **Acceptance Criteria:** Fake-agent test: creating a work node yields a running worker session with the resolved defaults. `--no-start` yields none. e2e: New stream → the session strip shows running without a second click.
+- **Validation Steps:** `bun test packages/daemon/src/attach packages/cli`; `bun run test:e2e`.
+- **Notes:** After T203. Review (sonnet): 1 blocking (start-failure path untested) fixed. Daemon +54 net. Quick capture sends `start: false` (a jot never spawns an agent; tested) — Pete may overrule. P5 node step not built (nodes have no session field yet).
+
+### Ticket: T205 + Repo in place
+- **Priority:** P1
+- **Status:** Done (merge ca8e9ff)
+- **Owner:** —
+- **Scope:** Add `node.add_repo` and `node.switch_repo` (RPC, `agile node add-repo`/`switch-repo`, and a + Repo button on the stream page), with the three reshapes in projects-design §7:
+  - conversation → work: create the branch and worktree;
+  - work → coordinating: move the branch, worktree and sessions into a new child "<repo> part", keeping the commits, and create a second part;
+  - switch with nothing committed: as above, then close the empty part.
+
+  New parts start with the thread-so-far pointer, the docs and the decisions. The chat stays on the node.
+- **Acceptance Criteria:** Unit tests for all three reshapes, including that the moved branch keeps its commits and that `nodeRole` changes. e2e: + Repo on a conversation shows the same thread with a new part row.
+- **Validation Steps:** `bun test packages/daemon/src/streams`; `bun run test:e2e`.
+- **Notes:** After T204. An agent's "add web too?" suggestion is a `propose_next` card with an Add button (UI only). From T203: make helpers deliver to `helper_of`'s branch when this ticket starts populating `helper_of`, or record why not. From T204: a live conversation node that gains a part becomes coordinating while its session is live — handle per §7. Review (sonnet): 1 blocking (unfiltered `node list --json` kept the old shape) fixed; split now rolls back on a mid-sequence failure. Daemon +302. `node list --json` is a bare array with `role`; `node show --json` flattens the record (keeps `stream`). A live worker is stopped and restarted across the reshape; parts are not auto-started. `helper_of` delivery deferred: T205 never sets `helper_of` (§7 parts are ordinary work nodes delivering to main) — belongs with T288 (same-repo helpers).
+
+### Ticket: T206 ∥ Add a repo from the cockpit
+- **Priority:** P2
+- **Status:** Done (merge 77af69d)
+- **Owner:** —
+- **Scope:** Settings → Repos: register a repo by path (validated as a git toplevel), with a name and protected branches, and show the resolved `main_branch`. It uses the same RPC as `agile repo add`. This is the unfiled doc-comment item "add repo in UI".
+- **Acceptance Criteria:** e2e: add `fixtures/demo-project` from Settings; it shows in the New stream repo picker. A bad path shows the daemon's one-line error.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** Independent after T200. Review (sonnet) PASS. `state.repo_add` (CLI too) now refuses non-toplevel paths and stores the realpath. `main_branch` is display-only until T202 stores it. Daemon +70.
+
+### Ticket: T207 ∥ Nothing in the user's repo
+- **Priority:** P1
+- **Status:** Done (merge d186411)
+- **Owner:** —
+- **Scope:**
+  - Docs move from `<repo>/.agile-docs/` to `~/.agile/repos/<name>/docs/`, with a one-time import that never deletes the old directory (P3).
+  - The worktree's `.claude/settings.json` goes into `info/exclude`. If the repo tracks its own `.claude/settings.json`, use the vendor's settings-file flag or local settings instead, and find out which the pinned Claude ACP adapter supports (P4).
+  - Update design text only in `projects-design.md`, if needed.
+- **Acceptance Criteria:** Unit: after worktree creation, attach and a commit made with `git add -A` in the worktree, `git status --porcelain` on the user's checkout is empty and the commit contains no `.claude/settings.json`. Docs tests read the home path.
+- **Validation Steps:** `bun test packages/daemon/src/docs packages/daemon/src/hook packages/daemon/src/runner`.
+- **Notes:** D24. Can run alongside T203–T205. Review (sonnet) PASS; two follow-ups fixed (allDocs skips bad repo names; both-settings-tracked refusal before any state write). Hooks go to `.claude/settings.local.json` when the repo tracks `.claude/settings.json` (adapter 0.81.1 loads local settings; not yet live-checked). Daemon +73.
+
+### Ticket: T208 Project tree and switcher in the cockpit
+- **Priority:** P0
+- **Status:** Done (merge 56e9c20)
+- **Owner:** —
+- **Scope:** The left rail groups the tree by project, with a project switcher ("All" and each project), role icons (project, coordinating, work, conversation) and labels. New stream and quick capture file into the current project. There is a "New project" dialog. The snapshot carries projects and roles.
+- **Acceptance Criteria:** e2e: create two projects; each one's nodes show only under it; quick capture lands in the selected project.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** After T201. Pete looks at it before T209. From T201: make HTTP `POST /api/streams` require a project (default to the current project in the cockpit). Review (sonnet) PASS; merge conflicts with T206 (imports, adjacent e2e describes) resolved by the manager. Daemon +54. Follow-ups: New stream parent dropdown not filtered by project; `/api/projects` has no update/archive routes.
+
+### Ticket: T209 Repo view and lenses
+- **Priority:** P1
+- **Status:** Done (merge 7d48238)
+- **Owner:** —
+- **Scope:** Add a repo view: live work nodes grouped by repo across projects, with the ancestors greyed and the repo's delivery mode shown. The norms and overlap slots are placeholders until T227 and T266. Add lenses: Needs me (the inbox, grouped by node), Running, and Dependencies (the `waits_on` graph as a list).
+- **Acceptance Criteria:** e2e: a node on api in two projects shows under api with both paths; Running lists only nodes with a live session.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** After T208. Review (sonnet) PASS. Daemon +38. Inbox nav label is now "Needs me" (projects-design §5); nav scrolls sideways at phone width. Running counts sessions that are starting/running/idle (alive) — Pete may want idle excluded.
+
+### Ticket: T210 ∥ Setup rough edges (from T175)
+- **Priority:** P2
+- **Status:** Done (merge 605e13f)
+- **Owner:** —
+- **Scope:** T175 items (1) and (2):
+  - An `AGILE_HOME` that exists and is not a directory is refused by every command with one line naming the variable and the path.
+  - `daemon start` on a held port names the holder (pid and command via `lsof` when available) and says whether it looks like another `agiled`. `daemon stop` with no pidfile hints at a daemon from another home on the port.
+- **Acceptance Criteria:** CLI tests for both.
+- **Validation Steps:** `bun test packages/cli packages/daemon`; `bun run test:integration`.
+- **Notes:** Independent. Review (sonnet) PASS. CLI only, daemon +0. Holder lookup is best effort (lsof).
+
+### Ticket: T211 LIVE-CHECKLIST for projects
+- **Priority:** P1
+- **Status:** Done (merge 993c824)
+- **Owner:** —
+- **Scope:** Rewrite LIVE-CHECKLIST.md for Phase 7: a scratch home, projects, `node new`, + Repo, and the views. Add T175 item (4), that a fresh home starts with the built-in rules. All commands are zsh-paste-safe: no placeholders, no inline comments, ids captured with `jq`.
+- **Acceptance Criteria:** Every command in the file runs as pasted against a fresh home on the phase branch (checked by the QA ticket).
+- **Validation Steps:** Read-through by QA.
+- **Notes:** After T205 and T208. Every non-vendor block ran as pasted under `sh` (no zsh in the container) against a scratch home; [vendor] steps marked. Read-through by T212 QA.
+
+### Ticket: T213 Pete's Phase 7 look: reads, parts start, stop wording
+- **Priority:** P0
+- **Status:** Done (merge 4ba62e0)
+- **Owner:** —
+- **Scope:** From Pete's live run of the T212 script (2026-09-24, step 3). (1) The hook's role policy denies reads outside the session's own worktree, so the coordinator of "Balance summary" could not `ls` its ledger-lite part's worktree. projects-design §4.4 and P20 say any agent may read any registered repo (and its worktrees) subject to private visibility; writes stay limited to the node's own worktree (a coordinator or conversation session: its scratch dir). Fix the read side for Bash and the built-in read tools, for every role, keeping T229's visibility check and the write limits. (2) Parts created by + Repo (§7 reshapes, T205) are never started, so after a work → coordinating split nobody works on the code. A new part starts its worker like any new work node (T204), unless the operator created the node with `--no-start`; a moved part whose worker was live restarts in its worktree. (3) A session the daemon stops on purpose (reshape, detach, restart) shows "process exited (code -1)" on the thread, which reads as a crash. Say what stopped it ("stopped: node reshaped into parts").
+- **Acceptance Criteria:** Hook tests: a coordinator and a worker may read a sibling part's worktree and another public repo; a Blog node still cannot read a private repo listed for Shop; writes outside the own worktree/scratch dir are still denied. Fake-agent test: conversation → + repo → + repo leaves both parts with a running worker and the coordinator running. The thread line for a deliberate stop names the reason.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/permissions packages/daemon/src/streams packages/daemon/src/attach`; `bun run test:integration`.
+- **Notes:** Fixed on `claude/phase-7` and merged forward into phase-8 and phase-9 (D30). Review (sonnet): 1 blocking fixed — built-in Read/Grep/Glob/LS are now an allow-list (own dir, readable repos; the agile home, private repos and everything else denied), shared with Bash reads; `rg --pre` no longer read-only. The -1 exits were the daemon's own reshape stops. Also fixed a T205 bug (moved part kept a stale running session). Parts start after a reshape unless the node never had a worker. Daemon shutdown status unchanged. Daemon +175.
+
+### Ticket: T214 A repo with no commits is refused up front
+- **Priority:** P1
+- **Status:** Done (merge bb13e6d)
+- **Owner:** —
+- **Scope:** From Pete's Phase 8 live run (2026-09-24): `node new --repo agile-test-repo` on a repo with no commits created the node, but the agent never started; the thread got only a raw `git rev-parse --verify HEAD^{commit} failed … Needed a single revision` and the node sat idle with no hint. Refuse up front, before anything is written: `node new`/`add-repo`/attach on a repo whose main branch has no commit fail with one line ("<repo> has no commits on <branch>; make an initial commit first"). `agile repo add` on such a repo succeeds but prints the same warning.
+- **Acceptance Criteria:** CLI e2e: `repo add` on an empty repo warns; `node new --repo` on it is refused with the message and creates no node; after one commit it starts.
+- **Validation Steps:** `bun test packages/daemon/src/attach packages/daemon/src/streams packages/cli`.
+- **Notes:** Fixed on `claude/phase-7`, merged forward. Review (sonnet) PASS. Daemon +38. Test fixtures that `git init` a repo for nodes now make an empty commit.
+
+### Ticket: T212 Phase 7 QA and Pete's look
+- **Priority:** P0
+- **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
+- **Owner:** Pete
+- **Scope:** Black-box QA of T200–T211 on a real daemon with the fake agent: projects, migration of a copied old home, roles, start-on-create, the three + Repo reshapes, and the views. Daemon line count. Then Pete runs the live look below.
+- **Acceptance Criteria:** QA ACCEPT; Pete's look passes: projects show, + Repo reshapes a live conversation without losing the thread, and ledger-lite's `git status --short` is empty after the run.
+- **Validation Steps:** Pete, on his Mac:
+
+```zsh
+export AGILE_HOME=~/.agile-phase7
+agile daemon stop
+rm -rf ~/.agile-phase7
+agile init
+agile daemon start
+cd ~/Projects/ledger-lite
+agile repo add . --name ledger-lite
+[ -d ~/Projects/agile-test-repo ] || git clone https://github.com/petestewart/agile-test-repo ~/Projects/agile-test-repo
+cd ~/Projects/agile-test-repo
+agile repo add . --name agile-test-repo
+SHOP=$(agile project new --name Shop --repo ledger-lite --repo agile-test-repo --json | jq -r .id)
+BLOG=$(agile project new --name Blog --repo ledger-lite --json | jq -r .id)
+agile project list
+Q=$(agile node new --project $SHOP --title "Balance summary" --goal "Can ledger-lite print a per-account balance summary? Explain how." --json | jq -r .id)
+agile node show $Q --json | jq -r .role
+agile node add-repo $Q ledger-lite
+agile node show $Q --json | jq -r '.role, .branch'
+agile node add-repo $Q agile-test-repo
+agile node show $Q --json | jq -r .role
+agile node list --parent $Q --json | jq -r '.[] | .title + "  " + .repo + "  " + .role'
+cd ~/Projects/ledger-lite
+git status --short
+```
+
+  In the cockpit: switch between Shop and Blog; open `Balance summary` and check the thread is intact with two parts under it; open the repo view for ledger-lite and see the part under Shop.
+- **Notes:** D10: Phase 8 starts only after Pete says go. QA (sonnet, black-box) ACCEPT on 3ab7109: bun test 1861/0, integration 8 suites green, T212 script ran verbatim with scratch paths and `--no-start`. Minor: `project list` shows `-` repos for the migrated "Unfiled" project. Daemon 19,360 lines (18,273 before Phase 7). Note: `node new` without `--no-start` now starts the agent, so the Balance summary step starts a real session.
+
+### Phase 8 — Delivery
+
+### Ticket: T220 Fake GitHub harness
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Add `daemon/src/github/fake-server.ts` (test support, like `runner/fake-agent.ts`), a `Bun.serve` server implementing the REST subset in projects-design §18:
+  - repo, pulls (create, get, list, update);
+  - reviews, review comments, issue comments;
+  - check runs and combined status for a ref;
+  - the `enablePullRequestAutoMerge` GraphQL mutation;
+  - ETag/304 responses and a 403 rate-limit response.
+
+  It is backed by a bare git repo used as `origin` (a `file://` remote). There are test controls: add a review or comment, set a check result, merge (a real `git merge` into the bare repo, honouring auto-merge once approved and green), and close.
+- **Acceptance Criteria:** Self-tests: create a PR from a pushed branch, add a review, set a check failing then passing, merge; the bare repo's main moves; a conditional GET returns 304.
+- **Validation Steps:** `bun test packages/daemon/src/github`.
+- **Notes:** First ticket of Phase 8; everything else in the phase tests against it. No network.
+
+### Ticket: T221 GitHub port and REST adapter
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** `github/port.ts` (the subset above) and `github/rest.ts`:
+  - `fetch` against `github.api_url` (config, default `https://api.github.com`);
+  - a token from `gh auth token` per call, never stored or logged (P18); a static token only when `api_url` points at localhost (tests);
+  - owner and repo inferred from the remote URL.
+
+  `agile daemon status` reports "GitHub auth: available/unavailable" without the token.
+- **Acceptance Criteria:** Adapter tests against the fake. A missing `gh` gives one clear error. A test asserts the token never appears in logs or audit events.
+- **Validation Steps:** `bun test packages/daemon/src/github`.
+- **Notes:** After T220.
+
+### Ticket: T222 ∥ Repo delivery settings
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Add `delivery`, `auto_merge`, `remote`, `github`, `main_branch` and `visibility` on `RepoEntry` (§14.8); project and node overrides are resolved in one function. Add `agile repo set <name> --delivery pr|direct --auto-merge on|off --visibility public|private --project …`, and the same fields in Settings → Repos. `pr` is refused when the remote isn't GitHub or GitHub auth is unavailable.
+- **Acceptance Criteria:** Resolution table tests (repo, then project, then node). e2e: change the delivery mode in Settings.
+- **Validation Steps:** `bun test packages/shared packages/daemon packages/cli`; `bun run test:e2e`.
+- **Notes:** After T200, and T221 for the refusal.
+
+### Ticket: T223 Delivery service (direct path) replaces landing
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Rename `landing/` to `delivery/` and give it `DeliveryState` on the node (§14.7):
+  - the direct path is today's land with the ship check (today's diff rules) as a `held` reason;
+  - `agile deliver`, with `land` kept as an alias;
+  - the cockpit Land panel becomes the Delivery panel (Merge button for direct);
+  - Resolve (T176) is kept.
+
+  Lessons run after `merged`.
+- **Acceptance Criteria:** The existing landing tests pass under the new names; `delivery_state` moves through ship_checking → ready → merged; a ship-check deny shows as held with the rule named.
+- **Validation Steps:** `bun test packages/daemon/src/delivery`; `bun run test:integration`; `bun run test:e2e`.
+- **Notes:** After T203 and T222.
+
+### Ticket: T224 PR delivery: push and open a PR
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** For `pr` repos, delivery means:
+  1. run the ship checks;
+  2. `git push <remote> <branch>` from the worktree;
+  3. open a PR. The title and body come from the node's goal and progress, with the roll-up issue line left empty for T322.
+
+  Store `pr` on `delivery_state`. A second deliver updates the existing PR, never opens a new one. Protected-branch push rules are unchanged.
+- **Acceptance Criteria:** Against the fake: deliver opens PR #1 with the branch; a second deliver after a commit pushes and keeps #1; a ship-check hold never pushes.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/github`.
+- **Notes:** After T221 and T223.
+
+### Ticket: T225 PR poller: PR state is the node's status
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - Poll the open PRs of live nodes (60 s; 15 s when flagged; backoff; ETag; rate-limit pause with a thread note) and map them to `PullRequestState`.
+  - The node shows review requested, changes requested, CI failing, approved, merged or closed. Merged → `human.status: landed`. Closed unmerged → a question for you.
+  - Detect main moving on `pr` repos with `ls-remote`.
+  - In this phase, changes appear as thread lines and audit events only. Routed events come in T244.
+- **Acceptance Criteria:** Against the fake with a fake clock: each transition shows on the node. 304s don't rewrite the record. A 403 pauses polling.
+- **Validation Steps:** `bun test packages/daemon/src/github packages/daemon/src/delivery`.
+- **Notes:** After T224.
+
+### Ticket: T226 Sync after merge
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Add `daemon/sync`. After any merge into a repo's main (a direct merge, a PR merged, or main moving outside the app), merge main into every other live work node's branch on that repo (P15):
+  - deferred while the session is mid-turn or the worktree is dirty;
+  - on a conflict: abort, set the node to `conflict` with the files, and the existing Resolve applies;
+  - pushed branches are pushed again after a clean sync.
+- **Acceptance Criteria:** Unit: two nodes on one repo; merging one syncs the other; a conflicting pair is flagged with its files; a mid-turn node syncs at the end of the turn.
+- **Validation Steps:** `bun test packages/daemon/src/sync`; `bun run test:integration`.
+- **Notes:** After T223; the PR half needs T225.
+
+### Ticket: T227 ∥ Overlap tracking
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Keep `touched` updated for every live work node: the merge-base diff plus uncommitted changes, recomputed after edit hooks, after commits and every 60 s. Two live nodes on the same repo, in any project, sharing a file raise an overlap. It shows on both nodes, on their ancestors and in the repo view (T209 slot), and clears when either node merges or stops touching the file.
+- **Acceptance Criteria:** Unit: an overlap appears within one recompute and clears after a merge. e2e: the repo view shows the warning.
+- **Validation Steps:** `bun test packages/daemon/src/sync`; `bun run test:e2e`.
+- **Notes:** After T201. Can run alongside T224–T226.
+
+### Ticket: T228 Waits-on, merge-together and auto-merge
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - `waits_on` holds delivery until the target is merged, or closed for a non-work target (P8). `satisfied_at` is set by the daemon. Add `agile node wait <id> --on <id>` and a Link button.
+  - `merge_together` groups deliver together (P7).
+  - With `auto_merge` on, the daemon enables GitHub auto-merge once the ship checks pass and every `waits_on` is satisfied; if GitHub refuses, it shows `auto_merge: unavailable` (P19).
+  - No agent is involved yet.
+- **Acceptance Criteria:** Against the fake:
+  - a waiting node is held until its target merges, then enables auto-merge and is merged by the fake;
+  - a merge-together pair of direct nodes merges together or not at all;
+  - "unavailable" is shown when the fake refuses.
+- **Validation Steps:** `bun test packages/daemon/src/delivery`.
+- **Notes:** After T225 and T226.
+
+### Ticket: T229 ∥ Repo visibility
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** A private repo is readable only by the projects it lists (P13):
+  - it is left out of the session's readable directories;
+  - there is a built-in path check that denies reads under its path for nodes in projects that aren't listed;
+  - code changes are always limited to the node's own repo, whatever the visibility.
+
+  The node shows "visibility advisory" for hookless vendors.
+- **Acceptance Criteria:** Hook tests: a Blog node reading a private api listed only for Shop is denied with the reason; a Shop node is allowed.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/permissions`.
+- **Notes:** After T222.
+
+### Ticket: T230 Phase 8 QA and Pete's look
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Black-box QA against the fake GitHub and the fake agent: direct delivery, PR delivery, the poller transitions, sync, overlaps, holds, auto-merge, visibility, and the migration of the Phase 7 home. Daemon line count. Pete then runs one direct delivery on ledger-lite and one PR on agile-test-repo.
+- **Acceptance Criteria:** QA ACCEPT. Live: the ledger-lite node merges with one click. The agile-test-repo node opens a real PR whose state shows on the node. After Pete merges on GitHub, the node shows merged and the other live node on the repo is synced.
+- **Validation Steps:** Pete, on his Mac:
+
+```zsh
+export AGILE_HOME=~/.agile-phase7
+agile daemon start
+gh auth status
+agile repo set agile-test-repo --delivery pr --auto-merge off
+agile repo set ledger-lite --delivery direct
+SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
+A=$(agile node new --project $SHOP --title "Test repo note" --goal "Add one line to README.md saying the repo is used for agile-agents live checks; commit it" --repo agile-test-repo --json | jq -r .id)
+B=$(agile node new --project $SHOP --title "Test repo second note" --goal "Add a file NOTES.md with one line; commit it" --repo agile-test-repo --json | jq -r .id)
+L=$(agile node new --project $SHOP --title "Ledger help text" --goal "Make the CLI print a one-line usage when run with no arguments; add a test" --repo ledger-lite --json | jq -r .id)
+agile node show $A --json | jq -r '.agent.status'
+```
+
+  Wait until A and L are `done` (repeat the last line, or watch the cockpit). Then:
+
+```zsh
+agile deliver $A
+agile node show $A --json | jq -r '.delivery_state.status, .delivery_state.pr.url'
+agile deliver $L
+agile node show $L --json | jq -r .delivery_state.status
+```
+
+  Merge the PR on github.com. Within two minutes:
+
+```zsh
+agile node show $A --json | jq -r '.delivery_state.status, .human.status'
+agile node show $B --json | jq -r '.delivery_state.status'
+agile tail --stream $B
+cd ~/Projects/ledger-lite
+git status --short
+```
+
+- **Notes:** D10. Close the test PRs and branches on agile-test-repo afterwards if you don't want them kept.
+
+### Phase 9 — Events
+
+### Ticket: T240 Routed event schema and store
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - Add `RoutedEvent` and `Delivery` (§14.9) in `shared/routed-event.ts`, with typed payloads per event type (§15).
+  - Add `events/log.jsonl` and `events/queue/<node>.jsonl` through the store, fsynced before `emit` returns.
+  - A corrupt line is refused with path and line.
+  - The audit log is unchanged (P9).
+- **Acceptance Criteria:** Store tests: emit then a crash (simulated) then a restart shows the delivery still `pending`; payloads over the cap are refused.
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/events`.
+- **Notes:** First ticket of Phase 9.
+
+### Ticket: T241 Router
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** `events/router.ts`: routes to self, ancestors, waits-on, same-repo (live work nodes, any project), parties and sibling (§15), with the reason recorded in `routing`. Coalesce keys. A closed node gets `expired`.
+- **Acceptance Criteria:** Table tests over the worked example tree: Blog's merge reaches its parent (`ancestor`) and Shop's api part (`same_repo`), and nothing on web.
+- **Validation Steps:** `bun test packages/daemon/src/events`.
+- **Notes:** After T240.
+
+### Ticket: T242 Delivery to sessions, digests, no drops
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - Pending deliveries for a node with an idle session fold into one digest prompt within 2 s, and are marked delivered in the same write (P10). A mid-turn session holds them until the turn ends.
+  - Replace `AttachService.say` and the answer-delivery prompts with `human_line` and `answer` events. T174's queue and its "queued" marker become the event queue.
+  - A delivery is never lost when a session ends with events pending: it waits for the next session or wake.
+- **Acceptance Criteria:** Fake-agent tests:
+  - three events during a turn produce one digest after it;
+  - a restart between send and mark causes no duplicate within the digest;
+  - T174's tests pass rewritten on events.
+- **Validation Steps:** `bun test packages/daemon/src/events packages/daemon/src/attach`; `bun run test:integration`.
+- **Notes:** After T241. Removes the old prompt paths (line delta should be small).
+
+### Ticket: T243 Wake policy
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Per P11:
+  - which event types start a session for each role when none is live;
+  - a wake budget per node per hour (config, default 20) that goes to the inbox when exceeded;
+  - stopped nodes are never woken.
+- **Acceptance Criteria:** Table tests per role and type; the budget test; a stopped node keeps its events pending.
+- **Validation Steps:** `bun test packages/daemon/src/events`.
+- **Notes:** After T242.
+
+### Ticket: T244 Event producers
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Emit the §15 types that exist so far: `human_line`, `answer`, `child_status`, `child_delivered`, `pr_review`, `ci_failed`, `pr_behind`, `pr_merged`, `pr_closed` (from T225), `main_changed` and `sync_conflict` (from T226), `overlap` (T227), `dependency_satisfied` (T228). Each has its one-line summary text as in §15. The `read_event` verb returns a payload.
+- **Acceptance Criteria:** One test per producer asserting the type, routing and summary; `read_event` over MCP.
+- **Validation Steps:** `bun test packages/daemon`; `bun run test:integration`.
+- **Notes:** After T241. It may split into two workers (PR-related and the rest) if large.
+
+### Ticket: T245 ∥ Activity feed per node
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Add a node Activity tab: every event routed to the node with its reason, delivery status and which session or digest carried it ("what woke it and why"). Add `agile tail --node <id> --events`. The repo view shows repo events.
+- **Acceptance Criteria:** e2e: a `main_changed` shows on the other node's Activity with "same repo".
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** After T242.
+
+### Ticket: T246 PR babysitting
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** The work node's agent looks after its PR (projects-design §4.1):
+  - A babysit brief section, and wake on `pr_review`, `ci_failed` and `pr_behind`.
+  - A CI log excerpt is written to `sessions/<id>/` with a pointer.
+  - After the fix, the agent pushes through `deliver` (T224 update path).
+  - Design disagreements go to the inbox with `ask`. A flaky test is reported, never skipped.
+  - With auto-merge on, T228's enable runs after each green push.
+- **Acceptance Criteria:** Fake GitHub + fake agent: a failing check wakes the agent and the scripted fix pushes; the check goes green; an approval with auto-merge on gets merged by the fake; the node shows merged with no human click.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/events`; `bun run test:integration`.
+- **Notes:** After T243 and T244. Moved here from Phase 8 because it needs events (see the build order note).
+
+### Ticket: T247 Phase 9 QA and Pete's look
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Black-box QA: routing across projects, digests, restart without loss, the wake budget, babysitting on the fake. Daemon line count. Pete runs a PR on agile-test-repo with auto-merge on, comments on it on GitHub, and watches the agent respond.
+- **Acceptance Criteria:** QA ACCEPT. Live: Pete's review comment reaches the agent as an event, the agent pushes a fix, and the PR auto-merges after Pete approves. The node's Activity tab shows each event.
+- **Validation Steps:** Pete, on his Mac:
+
+```zsh
+export AGILE_HOME=~/.agile-phase7
+agile daemon start
+agile repo set agile-test-repo --delivery pr --auto-merge on
+SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
+P=$(agile node new --project $SHOP --title "Test repo greeting" --goal "Add hello.sh that prints hello; make it executable; commit" --repo agile-test-repo --json | jq -r .id)
+agile node show $P --json | jq -r .agent.status
+```
+
+  When it is `done`:
+
+```zsh
+agile deliver $P
+agile node show $P --json | jq -r .delivery_state.pr.url
+```
+
+  On GitHub, comment on the PR: "print hello world instead". Then:
+
+```zsh
+agile tail --node $P --events
+agile node show $P --json | jq -r '.delivery_state.pr.review, .delivery_state.pr.checks'
+```
+
+  After the agent has pushed, approve the PR on GitHub (if the repo has no required review, auto-merge may merge straight away). Then:
+
+```zsh
+agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.auto_merge'
+```
+
+- **Notes:** If GitHub says auto-merge is not allowed on agile-test-repo, turn on "Allow auto-merge" in the repo settings first. P19 says the node shows `unavailable` otherwise.
+
+### Phase 10 — Knowledge
+
+### Ticket: T260 Knowledge items replace rules
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - Add `KnowledgeItem` (§14.3) in `shared/knowledge.ts`, and `knowledge/` in the store.
+  - Migrate `rules/` (§17.1 step 2, P6), keeping the ulids. Rename `daemon/rules` to `daemon/knowledge`.
+  - Add `agile knowledge add|list|show|accept|retire|test|report`, with `rules` kept as an alias, and `--kind`, `--scope`, `--path` and `--name` (T175 item 3).
+  - Built-ins become `standard` items with `action`.
+  - Delete `seed-plan-v1.ts`.
+- **Acceptance Criteria:** Migration test on a copied home with every enforcement and stage combination. The CLI shows the name on cards. The existing rules tests pass under the new names.
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/knowledge packages/cli`.
+- **Notes:** First ticket of Phase 10.
+
+### Ticket: T261 Stacked scopes and paths
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** One scope filter (global, repo, project, subtree, plus `paths`) used by the brief, the hook and ship. In the worked example, the web part gets global, web and Shop items and its parent's contracts, and nothing from Blog. Paths filter against the files being edited (action) or changed (ship); the brief lists path-limited items under their globs.
+- **Acceptance Criteria:** Table tests from the worked example (§11 step 3).
+- **Validation Steps:** `bun test packages/daemon/src/knowledge packages/daemon/src/hook`.
+- **Notes:** After T260.
+
+### Ticket: T262 Ship checks: classifier and reviewer checklist
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** At delivery:
+  - `ship` items run through the classifier over the diff (the old diff-rules code);
+  - then a reviewer session with a checklist of every `review` item in scope, returning findings.
+
+  Findings hold delivery and go back to the worker as a `ship_findings` event (added to §15). They go to you only when the check is unsure (route band) or the worker disputes them with `ask`.
+- **Acceptance Criteria:** FakeClassifier + fake reviewer: a held delivery, a fix, a pass; a routed result reaches the inbox; the checklist appears in the reviewer's `brief.md`.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/knowledge`.
+- **Notes:** After T261 and T244. The real key may be used for a manual check (D16).
+
+### Ticket: T263 ∥ Lookup tool and briefs
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Add a `lookup_knowledge(path)` verb (MCP) that returns the accepted items in scope for that path. Briefs include everything in scope and tell the agent to use the lookup before touching unfamiliar areas.
+- **Acceptance Criteria:** A verb test over MCP; a brief snapshot test.
+- **Validation Steps:** `bun test packages/daemon/src/runner packages/cli`.
+- **Notes:** After T261.
+
+### Ticket: T264 Proposals, lessons kinds and `knowledge_accepted`
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - `propose_knowledge` replaces `propose_rule`. The agent picks the kind; the scope defaults to the node's subtree.
+  - Lessons propose items with a kind (projects-design §17, lessons row).
+  - Accepting an item emits `knowledge_accepted` to every live node in scope.
+  - Items that never fire are flagged in the report (unchanged logic, re-keyed).
+- **Acceptance Criteria:** Tests: accepting a Shop decision reaches Shop's live nodes and not Blog's; lessons after `merged` propose with a kind.
+- **Validation Steps:** `bun test packages/daemon/src/knowledge packages/daemon/src/lessons packages/daemon/src/events`.
+- **Notes:** After T244 and T260.
+
+### Ticket: T265 ∥ Per-repo norms in the repo view
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** The repo view (T209) lists the accepted standards and architecture for that repo, with enforcement and stats.
+- **Acceptance Criteria:** e2e: an accepted api standard shows under api.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** After T260.
+
+### Ticket: T266 Knowledge screen
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** The Rules screen becomes Knowledge:
+  - filter by kind, scope and enforcement; edit text, paths, enforcement and check;
+  - bulk accept and retire; Test examples (unchanged);
+  - the "never fires" flag.
+
+  Inbox cards say "standard/architecture/decision proposed".
+- **Acceptance Criteria:** e2e: accept a proposed decision and see it on a node's Knowledge-in-scope tab.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** After T260. Pete looks at it.
+
+### Ticket: T267 Phase 10 QA and Pete's look
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Black-box QA of the migration, scopes, action and ship enforcement (real key allowed per D16), lookup and events. Daemon line count. Pete adds a ship-check standard on ledger-lite and watches a delivery get held and fixed.
+- **Acceptance Criteria:** QA ACCEPT. Live: the delivery is held with the item named, the worker adds the test, and the next deliver merges. A decision accepted mid-run shows in the live node's Activity.
+- **Validation Steps:** Pete, on his Mac:
+
+```zsh
+export AGILE_HOME=~/.agile-phase7
+agile daemon start
+agile knowledge list
+K=$(agile knowledge add --name tests-with-changes --kind standard --scope repo:ledger-lite --text "Every change to a file under src/ comes with a test that exercises it" --enforcement ship --example "diff changes src/ledger.ts and adds no test::true" --example "diff changes src/ledger.ts and test/ledger.test.ts::false" --json | jq -r .id)
+agile knowledge accept $K
+SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
+N=$(agile node new --project $SHOP --title "Ledger total" --goal "Add a total command that prints the sum of all entries. Do not write a test unless a check asks for one." --repo ledger-lite --json | jq -r .id)
+agile node show $N --json | jq -r .agent.status
+```
+
+  When it is `done`:
+
+```zsh
+agile deliver $N
+agile node show $N --json | jq -r '.delivery_state.status, .delivery_state.held_by'
+D=$(agile knowledge add --name totals-in-cents --kind decision --scope project:$SHOP --text "Totals are printed in integer cents" --enforcement tell --json | jq -r .id)
+agile knowledge accept $D
+agile tail --node $N --events
+```
+
+- **Notes:** The goal's "do not write a test" wording is deliberate, so the hold fires.
+
+### Phase 11 — Coordination
+
+### Ticket: T280 Coordinator role
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - Add a `coordinator` session role for coordinating nodes and project roots (P20): no worktree, the scratch cwd, read access under visibility, writes denied by the hook.
+  - The coordinator brief: children, their cards (once T283 exists), knowledge in scope, the autonomy level.
+  - The coordinator is woken by any event routed to it (T243).
+- **Acceptance Criteria:** A fake-agent test: `child_status` wakes the coordinator with a digest. A hook test: a coordinator write is denied.
+- **Validation Steps:** `bun test packages/daemon/src/runner packages/daemon/src/events packages/daemon/src/hook`.
+- **Notes:** First ticket of Phase 11.
+
+### Ticket: T281 Plans and contracts
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - Add `Plan` and `Contract` records (§14.4), with the verbs `plan_write` and `contract_write` for coordinators.
+  - A plan starts as `draft`. Approval is an inbox card at every level, because the plan decides what gets built.
+  - Children get their owned paths and the contracts they rely on in their brief.
+  - Add a Plan tab on the stream page.
+  - `plan_changed` and `contract_changed` events.
+- **Acceptance Criteria:** Tests: approving the plan gives both children the contract in their brief; bumping a contract notifies its parties only.
+- **Validation Steps:** `bun test packages/daemon/src/coordination`; `bun run test:e2e`.
+- **Notes:** After T280.
+
+### Ticket: T282 Autonomy levels for coordinators
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** One gate function `allowed(principal, action, level)` for:
+  - the coordinator actions `add_child`, `add_waits_on`, reorder, `set_owner`, `merge_siblings` and `approve_contract`;
+  - the level from the node override, else the project;
+  - at Advise, an action becomes an inbox proposal card with Apply;
+  - at Organise, it is applied and a thread line tells you;
+  - at Run, routine contract approvals are allowed too (P12);
+  - never: merge, accept knowledge, answer a question, or change a goal.
+
+  Add the setting to the project and node UI, plus `agile project set <id> --coordinator-autonomy|--director-autonomy advise|organise|run` and `agile node set <id> --autonomy …`.
+- **Acceptance Criteria:** A table test over principal × action × level; e2e: Apply on an Advise card.
+- **Validation Steps:** `bun test packages/daemon/src/coordination`; `bun run test:e2e`.
+- **Notes:** After T281. The Director reuses this function (T301).
+
+### Ticket: T283 ∥ Status cards
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Add `cards/<node>.yaml` (§14.5). The daemon updates `files`, `state` and `relies_on`; the `progress` verb updates `doing`. The `read_card(node)` verb is limited to siblings, ancestors and the Director. Cards show on the parent's page.
+- **Acceptance Criteria:** A card follows edits within one recompute; a sibling can read it; a node in another project can't.
+- **Validation Steps:** `bun test packages/daemon/src/coordination`.
+- **Notes:** After T280 and T227.
+
+### Ticket: T284 Import index and sibling alerts
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Build `index/<repo>.json` for TS/JS only (P14) and keep `exports_changed` on cards. Alerts:
+  - the same file edited by siblings → `overlap` to both plus the parent;
+  - a changed export used by a sibling → `symbol_changed`;
+  - a contract's paths touched → the parent and its parties.
+- **Acceptance Criteria:** A fixture repo: changing the export `salePrice` in `prices.ts` alerts the sibling that imports it, and nobody else.
+- **Validation Steps:** `bun test packages/daemon/src/sync packages/daemon/src/coordination`.
+- **Notes:** After T283.
+
+### Ticket: T285 Contract proposals
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** The `propose_contract` verb (from one child, or co-signed by siblings) adds a `contract_proposal` to the parent. The coordinator approves it (at Run, when it is routine), rejects it with a reason, or asks you (an inbox card). Approval bumps the version and notifies the parties.
+- **Acceptance Criteria:** The worked-example test: api proposes `saleEndsAt`, the coordinator approves at Run, and web gets `contract_changed`. At Organise the same proposal goes to the inbox.
+- **Validation Steps:** `bun test packages/daemon/src/coordination`.
+- **Notes:** After T282.
+
+### Ticket: T286 ∥ Ask sibling
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** The `ask_sibling(node, question)` and `reply_sibling` verbs. The exchange is written to both threads, and the parent gets a copy. A joint proposal is `propose_contract` with both signatures. The brief states the line between details and plan changes.
+- **Acceptance Criteria:** The fake-agent currency example from §9.5 end to end.
+- **Validation Steps:** `bun test packages/daemon/src/coordination packages/daemon/src/events`.
+- **Notes:** After T285.
+
+### Ticket: T287 Sibling finished and collisions go to the parent
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - When a child merges, the parent is woken first, and its `note_child` verb sends targeted notes. Same-repo siblings still get the sync.
+  - An overlap or collision wakes the parent with options: add `waits_on`, give ownership, or merge the siblings. The action is gated by T282.
+- **Acceptance Criteria:** Fake-agent test: an overlap reaches the parent; at Organise the scripted `add_waits_on` is applied and you are told.
+- **Validation Steps:** `bun test packages/daemon/src/coordination`.
+- **Notes:** After T284.
+
+### Ticket: T288 ∥ Helper children on the same repo
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - `node new --helper-of <work node>` creates a same-repo child that branches off the work node's branch and delivers back into it (a direct merge into that branch). The parent stays a work node (P1).
+  - A helper on another repo triggers the §7 reshape instead.
+  - This supersedes the unfiled "side-quest" proposal.
+- **Acceptance Criteria:** A test: the helper merges into its parent's branch; the parent delivers one PR containing both.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/streams`.
+- **Notes:** After T205 and T223.
+
+### Ticket: T289 Phase 11 QA and Pete's look
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Black-box QA of the coordinator, plans, contracts, levels, cards, alerts, ask-sibling and helpers with fake agents. Daemon line count. Pete runs the worked example on his two repos with a live coordinator.
+- **Acceptance Criteria:** QA ACCEPT. Live: the coordinator writes a plan and a contract that Pete approves. The two parts work from them. A contract proposal reaches the parent and is decided. Pete sees it as one line in the activity feed.
+- **Validation Steps:** Pete, on his Mac:
+
+```zsh
+export AGILE_HOME=~/.agile-phase7
+agile daemon start
+SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
+agile project set $SHOP --coordinator-autonomy organise
+C=$(agile node new --project $SHOP --title "Ledger export" --goal "Export ledger entries as JSON; the test repo gets a schema file describing the JSON" --json | jq -r .id)
+agile node add-repo $C ledger-lite
+agile node add-repo $C agile-test-repo
+agile node show $C --json | jq -r .role
+agile inbox
+```
+
+  Approve the plan card in the cockpit. Then:
+
+```zsh
+agile node list --parent $C --json | jq -r '.[] | .id + "  " + .title + "  " + .agent.status'
+agile tail --node $C --events
+```
+
+- **Notes:** —
+
+### Phase 12 — The Director
+
+### Ticket: T300 Director record, thread and page
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Add `director.yaml` and `threads/director.jsonl` (P16). A Director session (the coordinator mechanics, no worktree) is woken by `director_request`. There is a Director page in the cockpit (thread plus activity) plus `agile director say` and `agile tail --director`. Every Director action is recorded with principal `director`.
+- **Acceptance Criteria:** A fake-agent test: a human line reaches the Director and its reply lands on its thread. e2e: the page exists.
+- **Validation Steps:** `bun test packages/daemon/src/director`; `bun run test:e2e`.
+- **Notes:** First ticket of Phase 12.
+
+### Ticket: T301 Director tools and guards
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - Verbs: `draft_tree`, which returns a draft that renders as a tree with a Create button at Advise; `create_project`, `create_node`, `start_node`, `add_waits_on` and `restart_node`, gated by T282's function with the project's `director` level.
+  - The Director never merges, accepts knowledge, or answers a question (hard refusals, tested).
+- **Acceptance Criteria:** Table tests per level; e2e: Create on an Advise draft builds the tree.
+- **Validation Steps:** `bun test packages/daemon/src/director packages/daemon/src/coordination`; `bun run test:e2e`.
+- **Notes:** After T300 and T282.
+
+### Ticket: T302 Cross-project sight and "what needs me today?"
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - The Director's brief gets a digest of all projects: overlaps, waits-on, stuck or idle nodes (no activity for longer than a configured time while `working`), and the inbox.
+  - It proposes links and spots when a norm from one project is about to be broken in another.
+  - "What needs me today?" answers from the snapshot, not from memory.
+- **Acceptance Criteria:** A snapshot test of the digest; a fake-agent test where a stuck node yields a suggestion card.
+- **Validation Steps:** `bun test packages/daemon/src/director`.
+- **Notes:** After T301.
+
+### Ticket: T303 ∥ Norm suggestions
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Findings that repeat across projects (the same file area or wording across reviewer findings and PR comments) wake the Director, which may `propose_knowledge`. The proposal comes to you as usual.
+- **Acceptance Criteria:** A test: three similar findings across two projects produce one proposal with its sources.
+- **Validation Steps:** `bun test packages/daemon/src/director packages/daemon/src/knowledge`.
+- **Notes:** After T264 and T301.
+
+### Ticket: T304 Phase 12 QA and Pete's look
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Black-box QA of the Director levels and guards with a fake agent. Daemon line count. Pete talks to a live Director at Advise and then Organise.
+- **Acceptance Criteria:** QA ACCEPT. Live: at Advise, Pete gets a draft tree with Create. At Organise, the Director creates and starts a small project and posts what it did. It refuses a merge request.
+- **Validation Steps:** Pete, on his Mac:
+
+```zsh
+export AGILE_HOME=~/.agile-phase7
+agile daemon start
+agile director say "What needs me today?"
+agile director say "Blog needs a CHANGELOG.md in ledger-lite listing the last five commits"
+BLOG=$(agile project list --json | jq -r '.[] | select(.name=="Blog") | .id')
+agile project set $BLOG --director-autonomy organise
+agile director say "Go ahead with the changelog"
+agile node list --project $BLOG --json | jq -r '.[] | .title + "  " + .agent.status'
+agile director say "Merge the changelog when it is done"
+agile tail --director
+```
+
+- **Notes:** The last `say` must be refused ("merging is yours").
+
+### Phase 13 — External links
+
+### Ticket: T320 Tracker port, fakes and credentials
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** `daemon/trackers` with one port (get issue, list epic children, add comment, add link, transition status, create issue) and two adapters (Jira REST, Linear GraphQL). There are fake servers for both, as in T220. Credentials follow P17 **only once Pete has approved it as a D-entry**. `agile daemon status` reports each tracker as configured or not.
+- **Acceptance Criteria:** Adapter tests against the fakes. The token never appears in logs or events (asserted).
+- **Validation Steps:** `bun test packages/daemon/src/trackers`.
+- **Notes:** P17 approved (D31). First ticket of Phase 13.
+
+### Ticket: T321 Link a node; pull its goal; edits as events
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** `agile node link <id> SHOP-11` and a Link field on the stream page. Linking sets the goal from the title, description and acceptance criteria. A poller (5 min) emits `external_changed` on edits and updates the goal with a thread line.
+- **Acceptance Criteria:** Against the fake: link, edit the description in the fake, then the event and the goal update.
+- **Validation Steps:** `bun test packages/daemon/src/trackers packages/daemon/src/events`.
+- **Notes:** After T320.
+
+### Ticket: T322 ∥ Roll-up
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** An unlinked node resolves to its nearest linked ancestor. The PR body mentions that issue (fills T224's line). The linked node shows progress as children merged/total.
+- **Acceptance Criteria:** Unit tests for resolution and the PR body.
+- **Validation Steps:** `bun test packages/daemon/src/trackers packages/daemon/src/delivery`.
+- **Notes:** After T321.
+
+### Ticket: T323 ∥ Import an epic's children
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** An "Import children" button and `agile node import-children <id>` create one linked child per issue in the epic. It is idempotent: already-linked issues are skipped.
+- **Acceptance Criteria:** A test against the fake: running it twice creates each child once.
+- **Validation Steps:** `bun test packages/daemon/src/trackers`.
+- **Notes:** After T321.
+
+### Ticket: T324 Status push and create issue
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** —
+- **Scope:**
+  - A per-project `push_status` (off by default) and `status_map`: in progress, in review and done are pushed, and the PR link is added as a link or comment. The app never closes an issue or edits its text.
+  - "Create issue" is a click only.
+- **Acceptance Criteria:** Against the fake: with `push_status` off, nothing is sent; with it on, the mapped transitions are sent. There is no call that edits text (asserted on the fake's request log).
+- **Validation Steps:** `bun test packages/daemon/src/trackers`.
+- **Notes:** After T321.
+
+### Ticket: T325 Phase 13 QA and Pete's look
+- **Priority:** P0
+- **Status:** Todo
+- **Owner:** —
+- **Scope:** Black-box QA against the fakes. Daemon line count, plus the full §6.1 walkthrough on the final branch. Pete links a node to a real issue in whichever tracker he uses.
+- **Acceptance Criteria:** QA ACCEPT. Live: the goal is pulled from the issue, an edit shows as an event, and with `push_status` on the issue moves to in review when the PR opens. §6.1 is met.
+- **Validation Steps:** Pete, on his Mac, after adding the tracker token in Settings (P17), with a real issue key typed in place of the example key below:
+
+```zsh
+export AGILE_HOME=~/.agile-phase7
+agile daemon start
+agile daemon status
+SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
+N=$(agile node new --project $SHOP --title "Linked work" --goal "Placeholder until linked" --repo agile-test-repo --no-start --json | jq -r .id)
+agile node link $N SHOP-1
+agile node show $N --json | jq -r '.goal, .external_link.url'
+```
+
+- **Notes:** `SHOP-1` is an example. Pete types his own issue key, because there is no shared test tracker. This is the one command in the phase that can't be pasted unchanged.
+
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
 Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `plan/`, `review/` rounds, `sync/` (shelved on a branch), `feed/stories.ts`, `runner/pipeline-glue.ts`, sprint parts of `merge/`, `bus/` unless the thread reuses it. CLI: `run`, `send`, `halt`, `approve`, `sync`. Shared: `Ticket`, `Sprint`, `Stanza`, `Message`, `Halt`, `Quota`, `Review`, `Qa`, `Oracle`, `Kb`, `Ledger`. Briefs: all but `worker.md`, `reviewer.md`, `lessons.md`. UI: `plan/`, `sprint/`, `review/`, `OraclePanel`. State: the `agile-state` orphan branch and per-repo `.agile/`.
@@ -665,10 +1591,13 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Q1. Should a coding stream's target default to an integration branch (current behaviour) or straight to `main` when the repo has no integration branch? Plan assumes the repo's default branch; Pete to confirm at T132.
 - Q2. Classifier thresholds (0.80 / 0.40 / confidence 0.50) are starting points; T153's live agreement rate decides whether to move them.
 - Q3. Whether `bus/` survives as the thread's transport or is deleted; decided in T120 by whichever is less code.
-- Q4. Whether repo docs live in `.agile-docs/` (tracked) or under the home (untracked). Plan says tracked so a repo carries its own guidance; Pete to confirm at T134.
+- Q4. Whether repo docs live in `.agile-docs/` (tracked) or under the home (untracked). Plan says tracked so a repo carries its own guidance; Pete to confirm at T134. Superseded by D24: docs move to the home (T207).
+- Q5–Q24. The proposed decisions P1–P20 in `design/projects-design.md` §19 are open until Pete confirms each one as a D-entry. Tickets assume them. P17 (tracker tokens in `config.yaml`, a second credential exception) must be approved before T320.
 
 ## 10. Discovered Issues Log
 
+- Phase 7 complete on `claude/phase-7` (2026-09-24, tip 3ab7109): T200–T211 merged, T212 QA ACCEPT; awaiting Pete's look. Phase 8 proceeds on `claude/phase-8` cut from it (Pete: don't wait).
+- mode: yolo (2026-09-24), projects stage. Phase branches stacked (D30), `claude/phase-7` first; tickets `T###-<slug>` off the phase branch, merged back `--no-ff`. DIRECT_MODE (no `gh`). Phase N+1 starts without waiting for Pete's review of phase N (Pete, 2026-09-24).
 - mode: yolo (2026-09-19). Integration branch for the reshape is `claude/reshape`; ticket branches `T###-<slug>` fork from it and merge back `--no-ff`. Pete lands each phase on `main` by PR. Mode: DIRECT_MODE (no `gh`).
 - Q1 assumption in force: a coding stream's target is the repo's default branch when the repo has no integration branch (T132).
 - Q4 assumption in force: repo docs are tracked in `<repo>/.agile-docs/` (T134).
