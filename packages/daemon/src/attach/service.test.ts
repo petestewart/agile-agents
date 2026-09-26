@@ -828,6 +828,26 @@ describe('the brief is written beside the session logs (T145)', () => {
   }, 20_000);
 });
 
+describe('T420 (D42): a conversation under a node is told about it', () => {
+  test('its brief frames the question and carries the parent’s state and newest lines', async () => {
+    const parent = await makeStream();
+    await streams.appendThread('human', parent.id, { kind: 'line', body: 'prefer semicolons' });
+    const side = await streams.create('human', {
+      title: 'Why this dialect?',
+      goal: 'why did it pick this dialect?',
+      parent: parent.id,
+    });
+    const { session } = await attachService.attach(side.id);
+    const path = join(home, 'sessions', session.id, 'brief.md');
+    await waitFor(() => existsSync(path));
+    const brief = readFileSync(path, 'utf8');
+    expect(brief).toContain('The human asked:\n\n> why did it pick this dialect?');
+    expect(brief).toContain('## What you were asked about');
+    expect(brief).toContain(`(\`${parent.id}\``);
+    expect(brief).toContain('prefer semicolons');
+  }, 20_000);
+});
+
 describe("the brief carries the repo's own check commands (T339)", () => {
   async function briefFor(): Promise<string> {
     const stream = await makeStream('demo');

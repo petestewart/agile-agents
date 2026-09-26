@@ -2435,6 +2435,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui/app/lib/ask.test.ts`; control-room e2e `T419` (two tests) and `T385`.
 - **Notes:** Branch T419-ask. The palette entry and the `?` sheet line come with T416's palette and shortcut work.
 
+### Ticket: T420 A conversation knows what it was asked about (D42)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** A question asked under a node got only that node's title and goal in its brief, so "what is the developer on this ticket doing?" couldn't be answered; and its goal read as a task.
+- **Acceptance Criteria:** A conversation's brief opens with "The human asked:" and the question quoted, then "What you were asked about": the parent's goal, state and last progress, repo, branch and worktree (to read, never to change), its status card, its parts with their state, its plan (owners by title) and its newest dozen lines; it answers here, and its conclusion reaches the parent only when the human sends it. A coordinator's "Your children" lists its parts only (D42).
+- **Validation Steps:** `bun test packages/daemon/src/runner/brief.test.ts packages/daemon/src/attach/service.test.ts -t T420`; full `bun test`.
+- **Notes:** Branch T420-parent-context.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
