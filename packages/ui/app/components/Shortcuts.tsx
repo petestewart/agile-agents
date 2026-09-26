@@ -10,6 +10,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { modKeyLabel } from '../lib/palette';
 import { type ShellView, isShortcut, useShell } from '../lib/shell';
+import { DRAG_NOTE } from '../lib/tree';
 import { Dialog, Kbd } from './ui';
 
 const openers = new Set<() => void>();
@@ -89,6 +90,8 @@ function sections(mod: string): ReadonlyArray<{
         { label: 'Move through menus, results and Knowledge', keys: ['↑', '↓'] },
         { label: 'Move through the tree', keys: ['J', 'K'] },
         { label: 'Fold or unfold a node in the tree', keys: ['←', '→'] },
+        // T424: the tree's drag has no key; the sheet says it is there.
+        { label: DRAG_NOTE, keys: [] },
       ],
     },
   ];

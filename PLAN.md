@@ -2472,6 +2472,24 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/streams/titles.test.ts packages/daemon/src/http.test.ts -t T422`; control-room e2e `T422`.
 - **Notes:** Branch T422-turn-into-work. `START_ON_GOAL` lives in shared, so the cockpit and the tests say the same line.
 
+### Ticket: T423 ∥ One model picker; the root's autonomy panel (audit round 5)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Audit round 5 findings 5 and 15. The composer's model chip opened a blocking "Start the agent" dialog that started the agent at once, with a free-text model field; the same choice had four more entry points under four labels; Settings → Agents showed raw values with a Save per row. A root's Details had two lowercase autonomy dropdowns (one without a hint) that saved on change, Run included, and a Save per field.
+- **Acceptance Criteria:** The chip opens a popover of models by name grouped by vendor (Default and Running tags, "Other model…", Effort only where the vendor takes it); picking starts nothing; Send starts the agent with the pick, restarts a live one on another model (stop, then `say {start, session}`), or just sends; the hint says which. `StreamSayInputSchema.session` (`SessionFlagsSchema`, strict; refused without `start`). One **Start with…** in the header's split button; the ⋯ and Details model items are gone. Settings → Agents by name ("Inherits Claude Opus 5.5"), saved on change through a queue. The header's Start, Stop and Merge are off while the daemon is away. One **Autonomy** group (Coordinator; Director on a root), capitalised with the Director panel's words, "Inherits Advise from the project"; a change up to **Run** asks first; the Project group (repos, tracker "None") has one **Save changes**.
+- **Validation Steps:** `bun test` (3161/0 on the integrated tip); control-room e2e (96/0); the walkthrough.
+- **Notes:** Branch T423-model-picker (worker), merged. Model names from `KNOWN_MODEL_IDS` (served as `known_models`).
+
+### Ticket: T424 ∥ Overview counts, the tree's marks, Dependencies and Running (audit round 5)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Audit round 5 findings 16, 17, 23, 36, 37: Overview chips that counted other statuses than the list under them; roots and coordinators that never ran reading "Idle"; an overlap mark in the Blocked triangle that named no one and did nothing; a draggable tree with no grip; two status styles in Dependencies; a Running Node column truncated beside slack.
+- **Acceptance Criteria:** Each Overview chip counts one status key with that key's dot and word, from the same grouping as the list (Your move · In progress · Not running · Finished, folded), a chip filters to its rows; `never_started` for any open node without a worker or coordinator session (a root or a coordinator reads "Not started"); the overlap mark is a neutral two-squares button naming the other node and files, opening it (a menu for several; a folded parent speaks for the node inside); a grip and `cursor: grab` on row hover (not on touch), the legend and the `?` sheet say "Drag a row to move it (or ⋯ → Move to…)"; Dependencies uses `StatusPill` on both sides; Running sizes Status to its pill, gives Node `minmax(280px, 2fr)`, follows the rail's project filter and drops the project from paths when filtered.
+- **Validation Steps:** `bun test` (snapshot never_started tests); control-room e2e (the chips, the overlap button, Dependencies, Running's filter, the grip); the walkthrough.
+- **Notes:** Branch T424-overview-tree (worker), merged. Running now follows the rail's "Show only this project". Left: the Repos lens rows still show plain status text.
+
 ### Ticket: T425 Loose ends from T416 and T419
 - **Priority:** P2
 - **Status:** Done
