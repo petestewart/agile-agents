@@ -892,6 +892,25 @@ describe('T160 cockpit routes', () => {
     expect(((await renamed.json()) as { name: string }).name).toBe('Shop');
     expect((await post(`/api/projects/${shop.id}`, { name: 'shop' })).status).toBe(200);
     expect((await post(`/api/projects/${shop.id}`, { repos: ['nope'] })).status).toBe(400);
+    // T379: the project's session defaults; the frame carries them; `null` clears them.
+    const session = await post(`/api/projects/${shop.id}`, {
+      session: { model: 'claude-haiku-4-5', effort: 'high' },
+    });
+    expect(session.status).toBe(200);
+    expect(((await session.json()) as { session?: unknown }).session).toEqual({
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+    });
+    const withSession = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
+    expect(withSession.projects[0]?.session).toEqual({ model: 'claude-haiku-4-5', effort: 'high' });
+    expect(
+      (await post(`/api/projects/${shop.id}`, { session: { effort: 'extreme' } })).status,
+    ).toBe(400);
+    expect((await post(`/api/projects/${shop.id}`, { session: null })).status).toBe(200);
+    expect(
+      (((await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame).projects[0] ?? {})
+        .session,
+    ).toBeUndefined();
     expect(
       (await post(`/api/projects/${shop.id}`, { name: 'x' }, { origin: 'http://evil.example' }))
         .status,

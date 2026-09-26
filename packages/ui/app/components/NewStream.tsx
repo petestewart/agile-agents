@@ -22,6 +22,7 @@ import {
   getSessionDefaults,
   listRepos,
 } from '../lib/api';
+import { resolvedFor } from '../lib/defaults';
 import { useOptionalFeed } from '../lib/feed-context';
 import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
 import { type NewStreamPreset, isShortcut, useShell } from '../lib/shell';
@@ -30,7 +31,7 @@ import { newNodeDefaults, projectOutline, splitRepos, titleFromGoal } from '../l
 import { AddRepoDialog } from './AddRepo';
 import { Icon } from './Icon';
 import { type PickOption, PickerField } from './Pickers';
-import { type SessionChoice, SessionFields, resolvedFor } from './SessionPicker';
+import { type SessionChoice, SessionFields } from './SessionPicker';
 import { ROLE_GLYPH } from './StreamTree';
 import { Button, Dialog, EmptyState, Field, Kbd, RepoIcon, repoKindLabel, useToast } from './ui';
 
@@ -183,7 +184,9 @@ function NewStreamForm({
   const projectLabel = projectRow?.name;
   const outline = useMemo(() => projectOutline(rows, projectId), [rows, projectId]);
   const parentRow = parent ? rows.find((r) => r.id === parent) : undefined;
-  const resolved = session ? resolvedFor(session, repo || undefined) : undefined;
+  const resolved = session
+    ? resolvedFor(session, repo || undefined, projectRow?.session)
+    : undefined;
   const custom =
     choice !== undefined &&
     resolved !== undefined &&

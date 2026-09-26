@@ -1593,6 +1593,8 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
     plans,
     contracts,
     docs,
+    // T379: the frame's projects, as the daemon wires them.
+    projects: new ProjectService(store, streams),
     feedPollIntervalMs: 50,
   });
   return {
@@ -2249,6 +2251,79 @@ describe('session defaults (Playwright e2e, T170)', () => {
           .entries.filter((e) => e.by === 'human' && e.kind === 'line');
         expect(said.map((e) => e.body)).toEqual(['first line\nsecond line']);
         expect(cockpit.streams.get(stream.id).sessions).toHaveLength(1);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    "T379: a project's own defaults in Settings are what its nodes start with",
+    async () => {
+      const cockpit = await startStreamCockpit([{ steps: [{ type: 'hang' }] }]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+          repos: ['demo'],
+        });
+        const stream = await cockpit.streams.create('human', {
+          title: 'project defaults',
+          goal: 'g',
+          repo: 'demo',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-view="settings"]').click();
+        await page.locator('[data-testid="settings-nav-agents"]').click();
+        const card = (suffix: string) =>
+          `[data-testid="settings-session-project-${shop.id}${suffix}"]`;
+        await page
+          .locator('[data-testid="settings-session-projects-heading"]', { hasText: 'Per project' })
+          .waitFor();
+        await page.locator(card(''), { hasText: 'shop' }).waitFor();
+        await waitForText(page, card('-resolved'), 'claude · claude-opus-5-5 · low effort');
+        await page.locator(card('-field-model')).fill('claude-haiku-4-5');
+        await page.locator(card('-field-effort')).selectOption('max');
+        await page.locator(card('-save')).click();
+        await waitForText(page, card('-saved'), 'Saved');
+        await waitForText(page, card('-resolved'), 'claude · claude-haiku-4-5 · max effort');
+        expect(cockpit.store.getProject(shop.id).session).toEqual({
+          model: 'claude-haiku-4-5',
+          effort: 'max',
+        });
+
+        // The composer names the project's model, and Send starts exactly that.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
+        await page
+          .locator('[data-testid="composer-model"]', { hasText: 'Claude Haiku 4.5 · max' })
+          .waitFor();
+        await page.locator('[data-testid="composer-input"]').fill('go');
+        await page.locator('[data-testid="composer-input"]').press('Enter');
+        await waitUntil(
+          'the worker to start',
+          () => cockpit.streams.get(stream.id).sessions.length === 1,
+        );
+        expect(cockpit.streams.get(stream.id).sessions[0]).toMatchObject({
+          model: 'claude-haiku-4-5',
+          effort: 'max',
+        });
+
+        // Back to inherit: the project's block is cleared, not left empty.
+        await page.locator('[data-view="settings"]').click();
+        await page.locator('[data-testid="settings-nav-agents"]').click();
+        await page.locator(card('-field-model')).fill('');
+        await page.locator(card('-field-effort')).selectOption('');
+        await page.locator(card('-save')).click();
+        await waitForText(page, card('-resolved'), 'claude · claude-opus-5-5 · low effort');
+        await waitUntil(
+          'the project session cleared',
+          () => cockpit.store.getProject(shop.id).session === undefined,
+        );
       } finally {
         await teardown([page]);
         await cockpit.stop();

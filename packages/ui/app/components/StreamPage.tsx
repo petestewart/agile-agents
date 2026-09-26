@@ -54,6 +54,7 @@ import {
   sessionLabel,
   vendorLabel,
 } from '../lib/chat';
+import { resolvedFor } from '../lib/defaults';
 import { useFeed } from '../lib/feed-context';
 import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
@@ -80,7 +81,7 @@ import {
 } from './NodeDetails';
 import { type Crumb, NodeHeader } from './NodeHeader';
 import { ActivityView, DocsView, KnowledgeView, PlanView } from './NodeViews';
-import { SessionPicker, resolvedFor } from './SessionPicker';
+import { SessionPicker } from './SessionPicker';
 import {
   Button,
   ConfirmDialog,
@@ -403,7 +404,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const answering = answerTarget(questions, answerChoice);
   const answeringItem = questions.find((q) => q.id === answering);
   const name = agentName(stream.sessions);
-  const resolved = defaults ? resolvedFor(defaults, stream.repo) : undefined;
+  const resolved = defaults ? resolvedFor(defaults, stream.repo, project?.session) : undefined;
   const startWith = resolved ? sessionLabel(resolved) : undefined;
   const statusInput: StatusInput = row ?? {
     agent_status: stream.agent.status,
@@ -1117,6 +1118,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           role={picker === 'reviewer' ? 'reviewer' : 'worker'}
           purpose={picker === 'reviewer' ? 'reviewer' : picker === 'resolve' ? 'resolve' : 'worker'}
           repo={stream.repo}
+          {...(project?.session ? { project: project.session } : {})}
           busy={busy}
           onCancel={() => setPicker(undefined)}
           onStart={(choice) => {

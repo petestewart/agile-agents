@@ -2069,6 +2069,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/http.test.ts packages/daemon/src/store`; CLI `repo.e2e`.
 - **Notes:** Branch T378-repo-name-clash. `state.repo_add` merges onto the existing entry; the HTTP route answers 409 for a different folder (the CLI keeps re-registering, since there is no `repo remove`). Also T376 (a question reads once on its page) and T377 (a project's repos editable on its root) were merged by the manager with their own tests.
 
+### Ticket: T379 A project's own session defaults are shown and editable
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups doc: attach applies a project's `session` (P5) before the repo's, but the cockpit never showed it. New node's "Starts with", the composer's model chip and the picker's prefill could name the wrong model, and Settings could not edit it.
+- **Acceptance Criteria:** The frame's project rows carry `session`; `POST /api/projects/:id` takes `session` (`null` clears); Settings → Agents has a "Per project" card per project; New node, the composer and the picker resolve with the project step (`lib/defaults.ts` `resolvedFor`).
+- **Validation Steps:** `bun test packages/ui/app/lib/defaults.test.ts packages/daemon/src/http.test.ts`; control-room e2e "T379: a project's own defaults…" (Settings save → the composer chip → Send starts that model → back to inherit clears the block).
+- **Notes:** Branch T379-project-session-defaults. A project card's "starts with" reads "Varies by repository" when its repos resolve differently. `startStreamCockpit` in the e2e now wires `ProjectService` as the daemon does.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Todo

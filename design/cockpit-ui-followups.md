@@ -17,12 +17,7 @@ deferred, or need a decision. Each names where it lives. Ticket them in
   fix: `done` is what coordinators, auto-review and the tracker push react
   to, so "finished with no commits" wants its own signal (set once at the
   worker's exit), not `idle`.
-- **Project session defaults are invisible.** `/api/settings/session` has
-  global and per-repo defaults but not a project's (`project.session`), which
-  attach applies; New node's "Starts with …" line and the composer's model
-  chip can name the wrong model for such a project; Settings can't edit them.
-  (`packages/daemon/src/http.ts` session route, `components/NewStream.tsx`,
-  `components/Settings.tsx`)
+
 ## P2 — polish
 
 - Inbox items carry the call, rule, name and scope only inside `context`

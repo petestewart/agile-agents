@@ -15,6 +15,7 @@ import type {
   HilRequest,
   InboxItem,
   NodeRole,
+  ProjectSessionDefaults,
   Question,
   RepoRemote,
   RoutedEvent,
@@ -165,6 +166,8 @@ export interface CockpitProjectRow {
   /** T338: the project's repos and tracker settings. Absent from an older daemon. */
   repos?: string[];
   tracker?: TrackerSettings;
+  /** T379: the project's own session defaults (P5). Absent when it names none, or from an older daemon. */
+  session?: ProjectSessionDefaults;
 }
 
 /** T161: mirror of `delivery/service.ts`'s `LandPreflight` — the Merge button's "before". */

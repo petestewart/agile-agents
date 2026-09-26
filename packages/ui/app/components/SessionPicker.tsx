@@ -8,19 +8,21 @@
  *  - `SessionPicker` — the optional choice behind a node's Start agent
  *    chevron, Review changes… and Resolve (T363: a dialog; one click on
  *    Start agent never needs it). Prefilled with what the session would
- *    resolve to (the node's repo entry, else the home defaults, else the
+ *    resolve to (the node's project, else its repo entry, else the home defaults, else the
  *    built-in), so Start with no edits attaches exactly the default.
  *  - `sessionModelText` — the session strip's model, never a bare "default".
  */
 
 import {
   EFFORT_LEVELS,
+  type ProjectSessionDefaults,
   type ResolvedSessionDefaults,
   type SessionDefaultsStatus,
 } from '@agile-agents/shared';
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { getSessionDefaults } from '../lib/api';
 import { sessionLabel } from '../lib/chat';
+import { resolvedFor } from '../lib/defaults';
 import { Button, Dialog, Field, Spinner } from './ui';
 
 export interface SessionChoice {
@@ -32,14 +34,6 @@ export interface SessionChoice {
 /** A session record's model for display: the provider's own default is named as such. */
 export function sessionModelText(session: { vendor: string; model: string }): string {
   return session.model === 'default' ? `${session.vendor} default model` : session.model;
-}
-
-/** What a stream in `repo` (or no repo) resolves to with nothing named. */
-export function resolvedFor(
-  status: SessionDefaultsStatus,
-  repo: string | undefined,
-): ResolvedSessionDefaults {
-  return (repo !== undefined ? status.repos[repo]?.resolved : undefined) ?? status.resolved;
 }
 
 export function SessionFields({
@@ -193,6 +187,7 @@ export function SessionPicker({
   onStart,
   onCancel,
   purpose,
+  project,
 }: {
   role: 'worker' | 'reviewer';
   repo: string | undefined;
@@ -201,8 +196,13 @@ export function SessionPicker({
   onCancel: () => void;
   /** What the dialog says; defaults to the role's. */
   purpose?: 'worker' | 'reviewer' | 'resolve';
+  /** T379: the node's project's session defaults, which come before the repo's. */
+  project?: ProjectSessionDefaults;
 }): JSX.Element {
   const [status, setStatus] = useState<SessionDefaultsStatus | undefined>(undefined);
+  // Read once when the defaults arrive: a frame refresh must not reset the fields.
+  const projectRef = useRef(project);
+  projectRef.current = project;
   const [value, setValue] = useState<SessionChoice | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   const copy = PICKER_COPY[purpose ?? role];
@@ -212,7 +212,7 @@ export function SessionPicker({
     getSessionDefaults()
       .then((next) => {
         if (!live) return;
-        const resolved = resolvedFor(next, repo);
+        const resolved = resolvedFor(next, repo, projectRef.current);
         setStatus(next);
         setValue({ vendor: resolved.vendor, model: resolved.model ?? '', effort: resolved.effort });
       })
@@ -222,7 +222,7 @@ export function SessionPicker({
     };
   }, [repo]);
 
-  const resolved = status ? resolvedFor(status, repo) : undefined;
+  const resolved = status ? resolvedFor(status, repo, project) : undefined;
   return (
     <Dialog
       open
