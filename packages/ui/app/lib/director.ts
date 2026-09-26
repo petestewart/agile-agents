@@ -44,7 +44,7 @@ export function directorState(
   if (session.status === 'error') {
     return { text: `${model} · Stopped with an error`, working, live };
   }
-  return { text: `${model} · Asleep — a message or an event wakes it`, working, live };
+  return { text: `${model} · Idle — a message or an event wakes it`, working, live };
 }
 
 /** What Send does, under the composer. */

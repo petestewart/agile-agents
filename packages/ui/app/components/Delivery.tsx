@@ -12,8 +12,9 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { checkStreamPr, landStream, markStreamLanded } from '../lib/api';
-import { deliveryBadge } from '../lib/chat';
+import { deliveryBadge, deliveryStateWords, tidyIds } from '../lib/chat';
 import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
+import { branchName } from '../lib/inbox';
 import { isLiveSession } from '../lib/streams';
 import { Icon } from './Icon';
 import { Linked } from './Markdown';
@@ -187,9 +188,9 @@ export function DeliveryPanel({
       ) : conflicts && conflicts.length > 0 ? (
         <div className="cr-delivery-conflict" data-testid="land-conflict">
           <p className="cr-delivery-line" data-testid="land-before" data-ready="conflict">
-            Conflict: merging into {land?.target ?? 'the target'} conflicted in {conflicts.length}{' '}
-            file{conflicts.length === 1 ? '' : 's'}. Resolve attaches a worker to merge the target
-            in and fix them; then merge again.
+            Merging into {land?.target ?? 'the target'} conflicts in {conflicts.length} file
+            {conflicts.length === 1 ? '' : 's'}. Resolve starts an agent that merges{' '}
+            {land?.target ?? 'the target'} in and fixes them; then merge again.
           </p>
           <ul className="cr-delivery-files">
             {conflicts.map((file) => (
@@ -239,11 +240,26 @@ export function DeliveryPanel({
           data-testid="land-before"
           data-ready={land.ready ? 'yes' : 'no'}
         >
-          {land.ready
-            ? `Ready: ${land.branch} is ${land.ahead} commit${land.ahead === 1 ? '' : 's'} ahead of ${land.target}${
-                land.gated ? ' — this repo asks you to approve each merge' : ''
-              }.`
-            : `Can’t merge yet: ${land.reason}`}
+          {land.ready ? (
+            <>
+              {/* T413: the branch by its name; the whole one is its tooltip (and ⋯ → Copy). */}
+              {land.branch !== undefined ? (
+                <>
+                  The{' '}
+                  <span className="cr-delivery-branch" title={land.branch}>
+                    {branchName(land.branch)}
+                  </span>{' '}
+                  branch
+                </>
+              ) : (
+                'This branch'
+              )}{' '}
+              is {land.ahead} commit{land.ahead === 1 ? '' : 's'} ahead of {land.target}
+              {land.gated ? '. This repo asks you to approve each merge.' : '.'}
+            </>
+          ) : (
+            `Can’t merge yet: ${tidyIds(land.reason ?? '')}`
+          )}
         </p>
       ) : null}
       {outcome && !(conflicts && conflicts.length > 0) && (
@@ -253,7 +269,8 @@ export function DeliveryPanel({
           data-status={outcome.status}
           aria-live="polite"
         >
-          <Linked text={outcome.line} />
+          {/* T413: a branch by its name, no ids; the Merge toast keeps the daemon's line. */}
+          <Linked text={tidyIds(outcome.line)} />
         </p>
       )}
       {refused && (
@@ -272,7 +289,7 @@ export function DeliveryPanel({
           data-testid="delivery-state"
           data-status={stream.delivery_state.status}
         >
-          Delivery: {stream.delivery_state.mode} · {stream.delivery_state.status.replace('_', ' ')}
+          {deliveryStateWords(stream.delivery_state)}
           {/* T341: the result line above already says why; the reason reads once. */}
           {(outcome === undefined && refused === undefined
             ? (stream.delivery_state.held_by ?? [])
@@ -306,14 +323,14 @@ export function DeliveryPanel({
           {pr.mergeable !== 'clean' && pr.mergeable !== 'unknown' ? ` · ${pr.mergeable}` : ''}
         </p>
       )}
-      {!finished && (
+      {/* T413: said only when there are some; none is the usual case. */}
+      {!finished && page.diff_rules.length > 0 && (
         <p className="cr-delivery-meta" data-testid="land-diff-rules">
-          {page.diff_rules.length === 0
-            ? 'No diff-stage rules in scope.'
-            : `Ship check rules: ${page.diff_rules
-                // T341: a named item reads by its name.
-                .map((id) => page.rules.find((r) => r.id === id)?.name ?? id)
-                .join(', ')}`}
+          Checked before merge:{' '}
+          {page.diff_rules
+            // T341: a named item reads by its name.
+            .map((id) => page.rules.find((r) => r.id === id)?.name ?? id)
+            .join(', ')}
         </p>
       )}
       {!finished && (land?.merged || openPr) && (
@@ -326,7 +343,7 @@ export function DeliveryPanel({
               busy={busy}
               onClick={() => void delivery.markLanded()}
             >
-              Mark landed
+              Mark as merged
             </Button>
           )}
           {openPr && (

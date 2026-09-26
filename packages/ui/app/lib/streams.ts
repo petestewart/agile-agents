@@ -7,6 +7,7 @@
 
 import type { NodeRole, RoutedEvent, SessionRef, Stream } from '@agile-agents/shared';
 import type {
+  CockpitCardError,
   CockpitProjectRow,
   CockpitRepoRow,
   CockpitStatusCard,
@@ -60,21 +61,31 @@ function nothingToLand(
   );
 }
 
-export const DOT_LABEL: Record<StreamDot, string> = {
-  amber: 'waiting on you',
-  blue: 'agent working',
-  grey: 'idle',
-  green: 'landed',
-  red: 'blocked',
-};
-
 /**
- * T349 (D36 D3): a Children card's dot. A child waiting on your answer
- * (`question`) wears the rail's needs-you amber; every other state, a real
- * `blocked` included, keeps its plain label.
+ * T413: a node's children for its details panel: every child row, in tree
+ * order, with the agent's last status card when it posted one (its progress
+ * line and files) or the card's read error. The status itself is the row's
+ * (`nodeStatus`), never the card's.
  */
-export function cardDot(state: CockpitStatusCard['state']): StreamDot | undefined {
-  return state === 'question' ? 'amber' : undefined;
+export interface ChildEntry {
+  row: CockpitStreamRow;
+  card?: CockpitStatusCard;
+  error?: string;
+}
+
+export function childEntries(
+  rows: readonly CockpitStreamRow[],
+  parent: string,
+  cards: ReadonlyArray<CockpitStatusCard | CockpitCardError>,
+): ChildEntry[] {
+  const byNode = new Map(cards.map((c) => [c.node, c]));
+  return rows
+    .filter((row) => row.parent === parent)
+    .map((row) => {
+      const card = byNode.get(row.id);
+      if (card === undefined) return { row };
+      return 'error' in card ? { row, error: card.error } : { row, card };
+    });
 }
 
 export interface StreamTreeNode {
@@ -181,10 +192,19 @@ export function threadAuthorLabel(by: string, sessions: readonly SessionRef[]): 
   return session ? `${session.role} · ${session.vendor}` : 'agent';
 }
 
+/** T413: who an Activity row's event went to, by the session's role ("the agent"). */
+const DELIVERED_TO: Record<string, string> = {
+  worker: 'agent',
+  coordinator: 'coordinator',
+  reviewer: 'reviewer',
+  lessons: 'lessons pass',
+};
+
 /**
- * T341: how an Activity row's delivery reads — the session by its role, not
- * its id (the id is the row's hover title), and "in a digest" rather than
- * the digest's id.
+ * T341, reworded in T413: whether the agent has seen an Activity row's
+ * event, in words — "Seen by the agent", "Not seen by the agent yet" — by
+ * the session's role, never its id (the id is the row's hover title), and a
+ * digest as "batched". `owner` names the reader outright ("Director").
  */
 export function activityDelivery(
   entry: { status: string; session?: string; digest?: string },
@@ -192,12 +212,30 @@ export function activityDelivery(
   owner?: string,
 ): string {
   const role =
-    entry.session === undefined
-      ? undefined
-      : (owner ?? sessions.find((s) => s.id === entry.session)?.role ?? 'agent');
-  return `${entry.status}${role !== undefined ? ` to the ${role} session` : ''}${
-    entry.digest !== undefined ? ' in a digest' : ''
-  }`;
+    entry.session === undefined ? undefined : sessions.find((s) => s.id === entry.session)?.role;
+  const who = `the ${owner ?? (role !== undefined ? (DELIVERED_TO[role] ?? role) : 'agent')}`;
+  switch (entry.status) {
+    case 'pending':
+      return `Not seen by ${who} yet`;
+    case 'delivered':
+      return `Seen by ${who}${entry.digest !== undefined ? ' (batched)' : ''}`;
+    case 'superseded':
+      return 'Replaced by a newer event';
+    case 'expired':
+      return `Expired before ${who} saw it`;
+    default:
+      return entry.status.replace(/_/g, ' ');
+  }
+}
+
+/** T413: a worktree folder by its name, without the node id: `…/.worktrees/01h…-add-csv` → `add-csv`. */
+export function worktreeName(path: string): string {
+  const base =
+    path
+      .replace(/[\\/]+$/, '')
+      .split(/[\\/]/)
+      .pop() ?? path;
+  return base.replace(/^[0-9a-z]{26}-/i, '');
 }
 
 /**

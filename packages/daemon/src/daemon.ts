@@ -58,7 +58,10 @@ import {
   type MoveCoordination,
   RepoInPlaceService,
   StreamService,
+  TitleNamer,
+  type TitleRun,
   buildStreamRpcMethods,
+  claudeTitleRun,
 } from './streams';
 import { MainSync, OverlapTracker, SymbolWatcher } from './sync';
 import { trackerFromConfig } from './trackers/create';
@@ -105,6 +108,11 @@ export interface DaemonHandle {
 export interface StartDaemonOptions extends DiscoverConfigOptions {
   /** Test seam: the classifier (`bun test` has no network). Real usage gets a `JevClassifier`. */
   classifier?: Classifier;
+  /**
+   * T414 (D41): the model call that names untitled nodes. Default: `claude -p`
+   * with Haiku when the CLI is on the PATH (never under `bun test`); `null` turns it off.
+   */
+  titleRun?: TitleRun | null;
   /** Test seam: whether GitHub auth is available (default: `gh auth token` succeeds). */
   githubAuth?: () => Promise<boolean>;
   /** Test/offline seam: `GateService`'s delegate. Real usage leaves it unset. */
@@ -700,6 +708,19 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
    * `startRpcServer` unlinks a stale socket a second daemon must never
    * unlink under the live one.
    */
+  // T414 (D41): untitled nodes are named by a cheap model, off the create path.
+  const titleRun = options.titleRun === null ? undefined : (options.titleRun ?? claudeTitleRun());
+  const titleNamer =
+    streamService && titleRun
+      ? new TitleNamer({
+          streams: streamService,
+          run: titleRun,
+          onError: (err) =>
+            console.error(
+              `naming a node failed: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+        })
+      : undefined;
   const http: HttpServerHandle = startHttpServer({
     port: config.port,
     hostname: '127.0.0.1',
@@ -718,6 +739,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(rulesService && ruleEvals ? { ruleEvals } : {}),
     ...(classifierKey ? { classifierKey } : {}),
     ...(landingService ? { landing: landingService } : {}),
+    ...(titleNamer ? { titleNamer } : {}),
     ...(prPoller ? { prCheck: (id: string) => prPoller.pollNow(id) } : {}),
     ...(attachService ? { attach: attachService } : {}),
     ...(routedEvents ? { events: routedEvents } : {}),

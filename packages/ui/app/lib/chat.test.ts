@@ -15,10 +15,12 @@ import {
   contextMeter,
   dayLabel,
   deliveryBadge,
+  deliveryStateWords,
   detailsOpenFrom,
   diffTotals,
   headerActions,
   isNearBottom,
+  listWords,
   liveAgentOf,
   modelLabel,
   nodeTabs,
@@ -29,9 +31,15 @@ import {
   sendIntent,
   sessionIdText,
   sessionLabel,
+  sessionLabelLong,
+  sessionRoleWord,
+  sessionStatusWord,
+  showGoalCard,
   systemLine,
+  tidyIds,
   tokensText,
   vendorLabel,
+  wakeWords,
   workingAs,
 } from './chat';
 
@@ -104,11 +112,11 @@ describe('names', () => {
     const sessions = [session({ role: 'coordinator' })];
     expect(chatAuthor('human', sessions)).toEqual({ name: 'You' });
     expect(chatAuthor('daemon', sessions)).toEqual({ name: 'agile' });
-    expect(chatAuthor(`agent:${SESSION}`, sessions)).toEqual({
-      name: 'Claude',
-      role: 'coordinator',
-      vendor: 'claude',
-    });
+    // T413: the node's own agent goes untagged; a reviewer says so.
+    expect(chatAuthor(`agent:${SESSION}`, sessions)).toEqual({ name: 'Claude', vendor: 'claude' });
+    expect(
+      chatAuthor(`agent:${SESSION}`, [session({ role: 'reviewer', vendor: 'codex' })]),
+    ).toEqual({ name: 'Codex', role: 'reviewer', vendor: 'codex' });
     expect(chatAuthor('agent:01ARZ3NDEKTSV4RRFFQ69G5FAW', sessions)).toEqual({ name: 'Agent' });
     expect(agentName([session({ role: 'reviewer', vendor: 'gemini' }), session()])).toBe('Claude');
     expect(agentName([])).toBe('The agent');
@@ -180,7 +188,7 @@ describe('chat rows', () => {
     expect(dayLabel('garbage', now)).toBe('');
   });
 
-  test('system rows: three noisy lines tidied, the rest verbatim with an icon and a tone', () => {
+  test('system rows: the noisy lines tidied, the rest verbatim with an icon and a tone', () => {
     expect(systemLine('stream created: Ledger export')).toEqual({
       icon: 'plus',
       text: 'Node created',
@@ -188,14 +196,25 @@ describe('chat rows', () => {
     });
     expect(
       systemLine('worker attached: claude/claude-opus-5-5 effort=low in /tmp/x/.worktrees/abc'),
-    ).toEqual({ icon: 'play', text: 'Worker started · Claude Opus 5.5 · low', tone: 'muted' });
-    expect(systemLine('session ended: its turn finished').text).toBe('Turn finished');
+    ).toEqual({
+      icon: 'play',
+      text: 'Agent started · Claude Opus 5.5 · low effort',
+      tone: 'muted',
+    });
+    // T401: no effort for a vendor that has none.
+    expect(systemLine('reviewer attached: gemini/default effort=low').text).toBe(
+      'Reviewer started · Gemini default model',
+    );
+    expect(systemLine('session ended: its turn finished').text).toBe('Agent finished its turn');
     const held = systemLine('delivery held: waits on Blog note');
     expect(held.text).toBe('delivery held: waits on Blog note');
     expect(held.tone).toBe('warn');
     expect(held.icon).toBe('clock');
     expect(systemLine('opened PR #3 into main: https://x').icon).toBe('git-pull-request');
     expect(systemLine('landed stream/abc into main (1234567)').icon).toBe('git-merge');
+    expect(systemLine('landed stream/abc into main (1234567)').text).toBe(
+      'landed stream/abc into main (1234567)',
+    );
     expect(systemLine('could not start the agent: no vendor').icon).toBe('alert-triangle');
     expect(systemLine('something else').icon).toBe('info');
     // T385: an edited goal.
@@ -204,6 +223,99 @@ describe('chat rows', () => {
       text: 'Goal changed: Import CSV and TSV',
       tone: 'muted',
     });
+  });
+});
+
+describe('T413: system rows in words', () => {
+  const BRANCH = 'stream/01m3fh6grhqp0ygwcpk6zep3en-migrate-docs-to-astro';
+
+  test('what woke the agent, in words', () => {
+    expect(systemLine('woken by knowledge accepted, overlap, ship findings')).toEqual({
+      icon: 'play',
+      text: 'Woke up for new knowledge, overlapping changes and ship check findings',
+      tone: 'muted',
+    });
+    expect(wakeWords('human line')).toBe('Woke up for your message');
+    expect(wakeWords('something new')).toBe('Woke up for something new');
+    expect(wakeWords('')).toBe('Woke up');
+  });
+
+  test('a wait that is over says what happened, not "satisfied"', () => {
+    expect(systemLine('waits on Update README badges satisfied').text).toBe(
+      'Update README badges merged, so this no longer waits on it',
+    );
+    expect(systemLine('waits on A, B satisfied').text).toBe(
+      'A, B merged, so this no longer waits on them',
+    );
+    expect(listWords(['a', 'b', 'c'])).toBe('a, b and c');
+  });
+
+  test('no node branch or id in the text; the tooltip keeps the raw line', () => {
+    expect(systemLine(`synced main into ${BRANCH}`)).toEqual({
+      icon: 'refresh',
+      text: 'Synced main into this branch',
+      tone: 'muted',
+    });
+    expect(systemLine(`synced main into ${BRANCH} and pushed`).text).toBe(
+      'Synced main into this branch and pushed it',
+    );
+    expect(systemLine(`marked landed: ${BRANCH} was already merged into main`).text).toBe(
+      'Marked as merged: migrate-docs-to-astro was already in main',
+    );
+    expect(systemLine('worker detached by human').text).toBe('You stopped the agent');
+    expect(tidyIds(`push of ${BRANCH} after sync failed: no remote`)).toBe(
+      'push of migrate-docs-to-astro after sync failed: no remote',
+    );
+    expect(tidyIds('moved away: Ledger (01ARZ3NDEKTSV4RRFFQ69G5FAV) is now under Shop')).toBe(
+      'moved away: Ledger is now under Shop',
+    );
+    expect(tidyIds('land gate raised (G-01ARZ3NDEKTSV4RRFFQ69G5FAV) for x into main')).toBe(
+      'land gate raised for x into main',
+    );
+  });
+
+  test('a session in words: its role, its state, the effort as "low effort"', () => {
+    expect(sessionRoleWord('worker')).toBe('Agent');
+    expect(sessionRoleWord('reviewer')).toBe('Reviewer');
+    expect(sessionRoleWord('helper')).toBe('Helper');
+    expect(sessionStatusWord('running')).toBe('Working');
+    expect(sessionStatusWord('idle')).toBe('Waiting for you');
+    expect(sessionStatusWord('stopped')).toBe('Ended');
+    expect(sessionLabelLong({ vendor: 'claude', model: 'claude-opus-5-5', effort: 'low' })).toBe(
+      'Claude Opus 5.5 · low effort',
+    );
+    expect(sessionLabelLong({ vendor: 'gemini', effort: 'low' })).toBe('Gemini default model');
+  });
+
+  test('delivery state in words', () => {
+    expect(deliveryStateWords({ mode: 'direct', status: 'held' })).toBe('Direct merge · held');
+    expect(deliveryStateWords({ mode: 'pr', status: 'pr_open' })).toBe('Pull request · PR open');
+    expect(deliveryStateWords({ mode: 'pr', status: 'closed_unmerged' })).toBe(
+      'Pull request · closed without merging',
+    );
+  });
+});
+
+describe('T413: the Goal card', () => {
+  test('shows a goal that says more than the title', () => {
+    expect(showGoalCard({ goal: 'import CSV', title: 'csv thing', projectRoot: false })).toBe(true);
+    expect(
+      showGoalCard({
+        goal: 'Add CSV import\nWith a header row.',
+        title: 'Add CSV import',
+        projectRoot: false,
+      }),
+    ).toBe(true);
+  });
+  test("hides one that repeats the title, an empty one, and a project root's", () => {
+    expect(
+      showGoalCard({ goal: 'Add CSV import', title: 'Add CSV import', projectRoot: false }),
+    ).toBe(false);
+    expect(
+      showGoalCard({ goal: ' add csv  import. ', title: 'Add CSV import', projectRoot: false }),
+    ).toBe(false);
+    expect(showGoalCard({ goal: '  ', title: 'x', projectRoot: false })).toBe(false);
+    expect(showGoalCard({ goal: 'Project Blog', title: 'Blog', projectRoot: true })).toBe(false);
   });
 });
 

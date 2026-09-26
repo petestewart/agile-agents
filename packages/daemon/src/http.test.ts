@@ -19,6 +19,7 @@ import {
   type RepoRemote,
   type RoutedEvent,
   type SessionDefaultsStatus,
+  type Stream,
   classifierQuestion,
   examplesOf,
   patternOf,
@@ -41,7 +42,7 @@ import { ProjectService } from './projects';
 import { QuestionService } from './questions';
 import { type DirListing, RepoRemoteCache, StateStore } from './store';
 import { buildEvent } from './store/events';
-import { StreamService } from './streams';
+import { StreamService, TitleNamer } from './streams';
 
 // T121: gates are raised on a stream; the HIL routes only need an id, the
 // question routes need a real one (the questions suite creates it).
@@ -729,6 +730,52 @@ describe('T160 cockpit routes', () => {
       expect((await fetch(url('/api/director/steps'))).status).toBe(503);
     } finally {
       await withDirector.stop();
+    }
+  });
+
+  test('T414: POST /api/streams with auto_title asks for a title; without it, none is asked', async () => {
+    const asked: string[] = [];
+    const titleNamer = new TitleNamer({
+      streams,
+      run: async (prompt) => {
+        asked.push(prompt);
+        return 'Refunds in the ledger';
+      },
+    });
+    const named = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      titleNamer,
+    });
+    try {
+      const shop = await new ProjectService(store, streams).create({ name: 'shop' });
+      const create = (body: Record<string, unknown>) =>
+        fetch(`http://127.0.0.1:${named.port}/api/streams`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ project: shop.id, start: false, ...body }),
+        }).then(async (res) => ({ status: res.status, stream: (await res.json()) as Stream }));
+      const auto = await create({
+        title: 'how do refunds work',
+        goal: 'how do refunds work in the ledger?',
+        auto_title: true,
+      });
+      expect(auto.status).toBe(201);
+      // Created with the placeholder; the better title follows.
+      expect(auto.stream.title).toBe('how do refunds work');
+      await titleNamer.settled();
+      expect(streams.get(auto.stream.id).title).toBe('Refunds in the ledger');
+      const own = await create({ title: 'My own title', goal: 'something else' });
+      await titleNamer.settled();
+      expect(streams.get(own.stream.id).title).toBe('My own title');
+      expect(asked).toHaveLength(1);
+    } finally {
+      await named.stop();
     }
   });
 

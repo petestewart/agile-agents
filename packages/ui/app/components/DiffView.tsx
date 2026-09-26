@@ -20,6 +20,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { getStreamDiff } from '../lib/api';
 import { type DiffFile, type DiffRow, diffTotals, parseDiff } from '../lib/chat';
 import type { StreamDiff } from '../lib/feed-types';
+import { branchName } from '../lib/inbox';
 import { modKeyLabel } from '../lib/palette';
 import {
   MESSAGE_MAX,
@@ -30,11 +31,13 @@ import {
   lineLabel,
   lineRef,
   newComment,
+  openAt,
   reviewSummary,
   reviews,
   rowKey,
   rowsBetween,
   useReview,
+  whereLabel,
 } from '../lib/review';
 import { Icon, type IconName } from './Icon';
 import { Badge, Button, ConfirmDialog, EmptyState, IconButton, Kbd, useCopy, useToast } from './ui';
@@ -87,7 +90,11 @@ function focusMovedOn(): boolean {
   return active !== null && active !== document.body && active.isConnected;
 }
 
-/** The comment box: a new comment under its line, or an edit in place of the comment. */
+/**
+ * The comment box: a new comment under its line, or an edit in place of the
+ * comment. T413: `where` names the file with the line ("src/ledger.ts:1"),
+ * so a comment never reads as if it were on another file.
+ */
 function CommentBox({
   draft,
   where,
@@ -97,6 +104,7 @@ function CommentBox({
   where: string;
   actions: ReviewActions;
 }): JSX.Element {
+  const label = `${draft.editing ? 'Edit comment on' : 'Comment on'} ${where}`;
   const mod = modKeyLabel(typeof navigator === 'undefined' ? '' : navigator.platform);
   const empty = draft.text.trim() === '';
   const area = useRef<HTMLTextAreaElement>(null);
@@ -129,7 +137,7 @@ function CommentBox({
       <textarea
         className="cr-diff-compose-input"
         data-testid="diff-comment-input"
-        aria-label={`Comment on ${where.toLowerCase()}`}
+        aria-label={label}
         placeholder={draft.editing ? 'Edit your comment…' : 'Leave a comment for the agent…'}
         ref={area}
         value={draft.text}
@@ -151,7 +159,9 @@ function CommentBox({
         }}
       />
       <div className="cr-diff-compose-bar">
-        <span className="cr-diff-compose-where">{where}</span>
+        <span className="cr-diff-compose-where" data-testid="diff-comment-where" title={label}>
+          {label}
+        </span>
         <span className="cr-diff-compose-keys" aria-hidden="true">
           <Kbd>{mod}</Kbd>
           <Kbd>Enter</Kbd> {draft.editing ? 'save' : 'add'} · <Kbd>Esc</Kbd> cancel
@@ -191,7 +201,11 @@ function Comment({
   actions: ReviewActions;
 }): JSX.Element {
   const where = lineLabel(comment);
-  if (editing) return <CommentBox draft={editing} where={where} actions={actions} />;
+  if (editing) {
+    return (
+      <CommentBox draft={editing} where={whereLabel(comment.path, comment)} actions={actions} />
+    );
+  }
   const quote = comment.quote.find((l) => l.trim() !== '')?.trim();
   return (
     <article
@@ -244,7 +258,7 @@ function Thread({
   comments: readonly ReviewComment[];
   outdated: ReadonlySet<string>;
   draft: ReviewDraft | undefined;
-  /** The new comment's box goes here, with its "Comment on …" label. */
+  /** The new comment's box goes here; this is where it is ("src/ledger.ts:1"). */
   newDraft?: string;
   actions: ReviewActions;
 }): JSX.Element {
@@ -304,7 +318,7 @@ function FileBlock({
   const range = drafting ? rowsBetween(file, drafting.start, drafting.end) : undefined;
   const selected = new Set(range?.map(rowKey));
   const boxAt = range?.length ? rowKey(range[range.length - 1] as DiffRow) : undefined;
-  const boxWhere = range ? `Comment on ${lineLabel(lineRef(range)).toLowerCase()}` : '';
+  const boxWhere = range ? whereLabel(file.path, lineRef(range)) : '';
 
   const firstKey = useMemo(() => {
     for (const row of file.rows) {
@@ -572,6 +586,7 @@ export function DiffView({
   const [discarding, setDiscarding] = useState(false);
   const review = useReview(id);
   const toast = useToast();
+  const copy = useCopy();
   // biome-ignore lint/correctness/useExhaustiveDependencies: `version` and `seq` are re-read triggers.
   useEffect(() => {
     let live = true;
@@ -604,21 +619,17 @@ export function DiffView({
   const actions = useMemo<ReviewActions>(
     () => ({
       open(file, key, extend) {
+        // T413: text being written stays on its line (added there); only Shift carries it (a range).
+        let kept: ReviewComment | undefined;
         update((r) => {
-          const d = r.draft;
-          if (
-            extend &&
-            d &&
-            !d.editing &&
-            d.path === file.path &&
-            rowsBetween(file, d.start, key)
-          ) {
-            return { ...r, draft: { ...d, end: key } };
-          }
-          // A new comment elsewhere: text being written comes along; an edit is dropped.
-          const text = d && !d.editing ? d.text : '';
-          return { ...r, draft: { path: file.path, start: key, end: key, text } };
+          const next = openAt(r, files, file, key, extend, () => reviews.nextId());
+          kept = next.kept;
+          return next.review;
         });
+        if (kept !== undefined) {
+          const at = whereLabel(kept.path, kept);
+          toast({ title: `Added your comment on ${at}`, tone: 'info', duration: 3000 });
+        }
       },
       edit(comment) {
         update((r) => ({
@@ -697,17 +708,22 @@ export function DiffView({
     <div className="cr-diffview" data-testid="diff">
       <div className="cr-diff-summary">
         <div className="cr-diff-summary-main">
-          <div className="cr-diff-branch">
+          {/* T413: the branch by its name (the whole one is its tooltip); the worktree copies. */}
+          <div className="cr-diff-branch" data-testid="diff-branch" title={diff.branch}>
             <Icon name="git-branch" size={14} />
-            <code>{diff.branch}</code>
+            <code>{branchName(diff.branch)}</code>
             <Icon name="arrow-right" size={12} className="cr-faint" />
             <code>{diff.target}</code>
           </div>
           {diff.worktree && (
-            <div className="cr-diff-wt" title="The worktree on disk">
-              <Icon name="folder" size={13} />
-              <span>{diff.worktree}</span>
-            </div>
+            <IconButton
+              icon="folder"
+              size="sm"
+              label="Copy the worktree path"
+              data-testid="diff-copy-worktree"
+              title={`Copy the worktree path: ${diff.worktree}`}
+              onClick={() => copy(diff.worktree ?? '', 'Copied the worktree path')}
+            />
           )}
         </div>
         <div className="cr-diff-summary-side">
@@ -728,7 +744,7 @@ export function DiffView({
       </div>
       {files.length === 0 ? (
         <EmptyState icon="file-diff" title="No changes yet">
-          Nothing is committed on {diff.branch} beyond {diff.target}.
+          Nothing is committed on this branch beyond {diff.target}.
         </EmptyState>
       ) : (
         <>

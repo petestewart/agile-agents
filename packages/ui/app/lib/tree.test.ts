@@ -55,14 +55,20 @@ describe('titleFromGoal', () => {
     expect(titleFromGoal('   ')).toBe('');
   });
 
-  test('a long line is cut at a word, with an ellipsis', () => {
+  test('T413: a long line is cut at a word, at most 60 characters, with no ellipsis', () => {
     const goal =
       'Compare the pricing pages of three competitors and write up what each tier includes, what it costs and who it is for';
     const title = titleFromGoal(goal);
-    expect(title.length).toBeLessThanOrEqual(81);
-    expect(title.endsWith('…')).toBe(true);
-    expect(goal.startsWith(title.slice(0, -1))).toBe(true);
-    expect(title.slice(0, -1).endsWith(' ')).toBe(false);
+    expect(title).toBe('Compare the pricing pages of three competitors and write up');
+    expect(title.length).toBeLessThanOrEqual(60);
+    expect(title.includes('…')).toBe(false);
+    expect(goal.startsWith(title)).toBe(true);
+    // A cut never ends on a comma or a dash.
+    expect(titleFromGoal(`${'a'.repeat(50)}, bbbbbbbbbbbb cccc`)).toBe('a'.repeat(50));
+    // One word longer than the limit is cut at the limit.
+    expect(titleFromGoal('x'.repeat(70))).toBe('x'.repeat(60));
+    // Exactly the limit stays whole.
+    expect(titleFromGoal('y'.repeat(60))).toBe('y'.repeat(60));
   });
 });
 

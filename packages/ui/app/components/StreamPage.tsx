@@ -56,6 +56,7 @@ import {
   openQuestions,
   questionIdOfRef,
   sendIntent,
+  showGoalCard,
   vendorLabel,
   workingAs,
 } from '../lib/chat';
@@ -99,7 +100,6 @@ import {
   WaitsOnSection,
 } from './NodeDetails';
 import { type Crumb, NodeHeader } from './NodeHeader';
-import { ActivityView, DocsView, KnowledgeView, PlanView } from './NodeViews';
 import { SessionPicker } from './SessionPicker';
 import {
   Button,
@@ -118,6 +118,12 @@ import {
 // T394: loaded on demand; a throw in any tab stays in that tab (`TabBoundary`).
 const DiffView = lazyNamed(() => import('./DiffView'), 'DiffView');
 const ProjectOverview = lazyNamed(() => import('./ProjectOverview'), 'ProjectOverview');
+// T413: Activity and Knowledge read as the Events and Knowledge screens, with their rows.
+const loadNodeViews = () => import('./NodeViews');
+const ActivityView = lazyNamed(loadNodeViews, 'ActivityView');
+const PlanView = lazyNamed(loadNodeViews, 'PlanView');
+const KnowledgeView = lazyNamed(loadNodeViews, 'KnowledgeView');
+const DocsView = lazyNamed(loadNodeViews, 'DocsView');
 
 // The Director (and older imports) read these from here.
 export { THREAD_COLLAPSE_LINES, ThreadBody, isLongThreadBody } from './Chat';
@@ -820,10 +826,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       onSelect: () => setPicker('restart'),
     },
     {
-      label: 'Review changes…',
+      // T413: "Review" is what you do on the Changes tab; this starts a reviewer agent.
+      label: 'Ask an agent to review…',
       icon: 'eye',
       testid: 'review',
-      title: 'A read-only reviewer reads the diff and reports findings',
+      title: 'A read-only reviewer agent reads the diff and reports findings',
       hidden: stream.repo === undefined,
       disabled: busy || liveReviewer !== undefined,
       onSelect: () => setPicker('reviewer'),
@@ -1138,6 +1145,17 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       </button>
     ) : undefined;
 
+  // T385: the goal changes in place. T413: not as a card when it only repeats the title (or on a
+  // project's root, whose goal is its name); the details panel's About keeps it and its Edit then.
+  const saveGoal = open
+    ? async (goal: string) => {
+        await updateStream(stream.id, { goal });
+        load();
+        refresh();
+      }
+    : undefined;
+  const goalCard = showGoalCard({ goal: stream.goal, title: stream.title, projectRoot });
+
   const emptyChat = !conversation && !thinking && cards.length === 0;
   // The open questions whose own line the chat shows (an older one may be above the loaded lines).
   const askedInChat = new Set(
@@ -1160,18 +1178,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         resetKey={stream.id}
         label="Conversation"
       >
-        <GoalCard
-          goal={stream.goal}
-          {...(open
-            ? {
-                onSave: async (goal: string) => {
-                  await updateStream(stream.id, { goal });
-                  load();
-                  refresh();
-                },
-              }
-            : {})}
-        />
+        {goalCard && <GoalCard goal={stream.goal} {...(saveGoal ? { onSave: saveGoal } : {})} />}
         {page.thread_total > page.thread.length && (
           <p className="cr-chat-older">
             Showing the newest {page.thread.length} of {page.thread_total} lines.
@@ -1214,7 +1221,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               {liveAgent
                 ? 'Send it a message below.'
                 : intent.action === 'start'
-                  ? `Your message ${hasRun ? 'wakes' : 'starts'} it with ${startWith ?? 'the default model'}. The goal above is its brief.`
+                  ? `Your message ${hasRun ? 'wakes' : 'starts'} it with ${startWith ?? 'the default model'}.${goalCard ? ' The goal above is its brief.' : ''}`
                   : intent.hint}
             </p>
           </div>
@@ -1439,7 +1446,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           }))}
           value={shownTab}
           onChange={setTab}
-          label="Stream views"
+          label="Node views"
           className="cr-node-tabs"
         />
         <TabBoundary tab={shownTab} node={stream.id}>
@@ -1521,12 +1528,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               ? { onChooseModel: () => setPicker(liveAgent ? 'restart' : 'start') }
               : {})}
           />
-          <ChildCards
-            cards={(cockpit?.cards ?? []).filter(
-              (c) => rows.find((r) => r.id === c.node)?.parent === stream.id,
-            )}
-            titleOf={titleOf}
-          />
+          {/* T413: every child, by the status words used everywhere; a root's Overview lists them. */}
+          {!projectRoot && <ChildCards parent={stream.id} cards={cockpit?.cards ?? []} />}
           {canWait && (
             <WaitsOnSection
               stream={stream}
@@ -1551,7 +1554,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           <AutonomySection stream={stream} role={role} project={project} busy={busy} act={act} />
           {rootOf && <ProjectSection key={rootOf.id} project={rootOf} busy={busy} act={act} />}
           <FindingsSection findings={stream.agent.findings ?? []} />
-          <AboutSection stream={stream} role={role} />
+          <AboutSection
+            stream={stream}
+            role={role}
+            {...(goalCard ? {} : { goal: saveGoal ? { onSave: saveGoal } : {} })}
+          />
         </DetailsPanel>
       )}
       {detailsOpen && (

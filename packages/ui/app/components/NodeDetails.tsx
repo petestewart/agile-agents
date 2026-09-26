@@ -18,7 +18,7 @@ import {
   updateProject,
   waitOnStream,
 } from '../lib/api';
-import { agentLabel, sessionIdText } from '../lib/chat';
+import { agentLabel, sessionIdText, sessionRoleWord, sessionStatusWord } from '../lib/chat';
 import { useOptionalFeed } from '../lib/feed-context';
 import type {
   CockpitCardError,
@@ -29,11 +29,10 @@ import type {
 } from '../lib/feed-types';
 import { useShell } from '../lib/shell';
 import { ROLE_HINT, ROLE_LABEL } from '../lib/status';
-import { DOT_LABEL, cardDot, isLiveSession, sessionRows } from '../lib/streams';
+import { childEntries, isLiveSession, sessionRows, worktreeName } from '../lib/streams';
 import { Icon } from './Icon';
 import { Linked } from './Markdown';
-import { NodeLink } from './NodeViews';
-import { Badge, Button, IconButton, RepoIcon } from './ui';
+import { Button, IconButton, RepoIcon, StatusPill, useCopy } from './ui';
 
 type Act = (fn: () => Promise<unknown>) => Promise<void> | void;
 
@@ -57,6 +56,31 @@ export function DetailSection({
       </div>
       {children}
     </section>
+  );
+}
+
+/** T338: a node by its title, as a link that opens its page (never the raw id). */
+export function NodeLink({
+  id,
+  titleOf,
+}: {
+  id: string;
+  titleOf: (id: string) => string;
+}): JSX.Element {
+  const { select } = useShell();
+  return (
+    <a
+      href={`#${id}`}
+      className="cr-ref"
+      data-node={id}
+      title={id}
+      onClick={(e) => {
+        e.preventDefault();
+        select(id);
+      }}
+    >
+      {titleOf(id)}
+    </a>
   );
 }
 
@@ -87,12 +111,12 @@ function SessionItem({ session }: { session: SessionRef }): JSX.Element {
       />
       <div className="cr-sess-main">
         <div className="cr-sess-top">
-          <strong className="cr-sess-role">{session.role}</strong>{' '}
+          <strong className="cr-sess-role">{sessionRoleWord(session.role)}</strong>{' '}
           <span className="cr-sess-model">
             <span data-testid="session-model" title={sessionIdText(session)}>
               {agentLabel(session)}
             </span>{' '}
-            · {session.status}
+            · {sessionStatusWord(session.status)}
           </span>
         </div>
         {session.ended_reason && (
@@ -135,136 +159,92 @@ export function SessionList({ sessions }: { sessions: readonly SessionRef[] }): 
 
 // ---------------------------------------------------------------- Children
 
-/** T349: the rail's needs-you dot on a child that is waiting on your answer. */
-function CardDot({ state }: { state: CockpitStatusCard['state'] }): JSX.Element | null {
-  const dot = cardDot(state);
-  if (dot === undefined) return null;
-  return (
-    <span
-      className="cr-dot cr-card-dot"
-      data-dot={dot}
-      data-testid="status-card-dot"
-      aria-label={DOT_LABEL[dot]}
-    />
-  );
-}
-
-const CARD_TONE: Record<CockpitStatusCard['state'], 'blue' | 'amber' | 'red' | 'green' | 'gray'> = {
-  working: 'blue',
-  question: 'amber',
-  blocked: 'red',
-  done: 'green',
-  idle: 'gray',
-};
-
-/** T390: a card's state in the status words the rail uses (design/cockpit-ui.md §6). */
-const CARD_WORD: Record<CockpitStatusCard['state'], string> = {
-  working: 'Working',
-  question: 'Needs you',
-  blocked: 'Blocked',
-  done: 'Done',
-  idle: 'Idle',
-};
-
-/** A merged or closed child says so, whatever its last card said. */
-function cardWord(
-  state: CockpitStatusCard['state'],
-  human: string | undefined,
-): { word: string; tone: 'blue' | 'amber' | 'red' | 'green' | 'gray' | 'purple' } {
-  if (human === 'landed') return { word: 'Merged', tone: 'purple' };
-  if (human === 'closed') return { word: 'Closed', tone: 'gray' };
-  return { word: CARD_WORD[state], tone: CARD_TONE[state] };
-}
-
-/** A child's title; a click opens its page. (The card itself carries `data-node`.) */
-function ChildTitle({ id, titleOf }: { id: string; titleOf: (id: string) => string }): JSX.Element {
+/** A child's title; a click opens its page. (Its row carries `data-node`.) */
+function ChildTitle({ id, title }: { id: string; title: string }): JSX.Element {
   const { select } = useShell();
   return (
-    <button
-      type="button"
-      className="cr-child-title"
-      title="Open its page"
-      onClick={() => select(id)}
-    >
-      {titleOf(id)}
+    <button type="button" className="cr-child-title" title={title} onClick={() => select(id)}>
+      {title}
     </button>
   );
 }
 
-/** T283 (§14.5): the children's status cards, on the parent's page. */
+/**
+ * T283, T413: the node's children, each with its status in the words every
+ * other place uses (`nodeStatus`, the rail's and the header's), and under
+ * it what its agent last said it was doing (its status card), when it said.
+ * Every child is listed, whether or not it ever posted a card. A project's
+ * root leaves it out: its Overview lists them.
+ */
 export function ChildCards({
+  parent,
   cards,
-  titleOf,
 }: {
-  cards: Array<CockpitStatusCard | CockpitCardError>;
-  titleOf: (id: string) => string;
+  parent: string;
+  cards: ReadonlyArray<CockpitStatusCard | CockpitCardError>;
 }): JSX.Element | null {
-  const rows = useOptionalFeed()?.cockpit?.streams;
-  if (cards.length === 0) return null;
-  const humanOf = (id: string): string | undefined => rows?.find((r) => r.id === id)?.human_status;
+  const rows = useOptionalFeed()?.cockpit?.streams ?? [];
+  const entries = childEntries(rows, parent, cards);
+  if (entries.length === 0) return null;
   return (
     <DetailSection
       title="Children"
       testid="child-cards"
-      aside={<span className="cr-count">{cards.length}</span>}
+      aside={<span className="cr-count">{entries.length}</span>}
     >
       <ul className="cr-children">
-        {cards.map((card) =>
-          'error' in card ? (
-            <li
-              key={card.node}
-              className="cr-child"
-              data-testid="status-card-error"
-              data-node={card.node}
-            >
-              <div className="cr-child-top">
-                <ChildTitle id={card.node} titleOf={titleOf} />
-              </div>
-              <p className="cr-child-error" data-testid="status-card-error-text">
-                {card.error}
+        {entries.map(({ row, card, error }) => (
+          <li
+            key={row.id}
+            className="cr-child"
+            data-testid="status-card"
+            data-node={row.id}
+            data-state={card?.state}
+          >
+            <div className="cr-child-top">
+              <ChildTitle id={row.id} title={row.title} />
+              <StatusPill row={row} testid="status-card-state" />
+            </div>
+            {card !== undefined && card.doing !== '' && (
+              <p className="cr-child-doing" data-testid="status-card-doing">
+                {card.doing}
               </p>
-            </li>
-          ) : (
-            <li
-              key={card.node}
-              className="cr-child"
-              data-testid="status-card"
-              data-node={card.node}
-              data-state={card.state}
-            >
-              <div className="cr-child-top">
-                <CardDot state={card.state} />
-                <ChildTitle id={card.node} titleOf={titleOf} />
-                <Badge tone={cardWord(card.state, humanOf(card.node)).tone}>
-                  <span data-testid="status-card-state">
-                    {cardWord(card.state, humanOf(card.node)).word}
-                  </span>
-                </Badge>
-              </div>
-              {card.doing !== '' && (
-                <p className="cr-child-doing" data-testid="status-card-doing">
-                  {card.doing}
-                </p>
-              )}
-              {card.files.length > 0 && (
-                <p className="cr-child-files" data-testid="status-card-files">
-                  {card.files.join(', ')}
-                </p>
-              )}
-              {card.relies_on.length > 0 && (
-                <p className="cr-child-files" data-testid="status-card-relies">
-                  relies on <Linked text={card.relies_on.join(', ')} />
-                </p>
-              )}
-            </li>
-          ),
-        )}
+            )}
+            {card !== undefined && card.files.length > 0 && (
+              <p className="cr-child-files" data-testid="status-card-files">
+                {card.files.join(', ')}
+              </p>
+            )}
+            {card !== undefined && card.relies_on.length > 0 && (
+              <p className="cr-child-files" data-testid="status-card-relies">
+                relies on <Linked text={card.relies_on.join(', ')} />
+              </p>
+            )}
+            {error !== undefined && (
+              <p className="cr-child-error" data-testid="status-card-error-text" title={error}>
+                Couldn’t read what its agent last reported.
+              </p>
+            )}
+          </li>
+        ))}
       </ul>
     </DetailSection>
   );
 }
 
 // ---------------------------------------------------------------- Waits on
+
+/** T413: a wait that is over, in words: "<node> merged, so this no longer waits on it". */
+function WaitDone({ id, titleOf }: { id: string; titleOf: (id: string) => string }): JSX.Element {
+  const closed =
+    useOptionalFeed()?.cockpit?.streams.find((r) => r.id === id)?.human_status === 'closed';
+  return (
+    <>
+      <NodeLink id={id} titleOf={titleOf} /> {closed ? 'closed' : 'merged'}, so this no longer waits
+      on it
+    </>
+  );
+}
 
 export function WaitsOnSection({
   stream,
@@ -304,15 +284,20 @@ export function WaitsOnSection({
       }
     >
       {waits.length === 0 ? (
-        <p className="cr-dsec-empty">Its merge waits on nothing.</p>
+        <p className="cr-dsec-empty">Nothing to wait for.</p>
       ) : (
         <ul className="cr-waits" data-testid="waits-on">
           {waits.map((w) => (
             <li key={w.node} data-satisfied={w.satisfied_at ? 'true' : undefined}>
               <Icon name={w.satisfied_at ? 'check-circle' : 'clock'} size={14} />
               <span className="cr-waits-text">
-                waits on <NodeLink id={w.node} titleOf={titleOf} />
-                {w.satisfied_at ? ' · satisfied' : ''}
+                {w.satisfied_at ? (
+                  <WaitDone id={w.node} titleOf={titleOf} />
+                ) : (
+                  <>
+                    Waits on <NodeLink id={w.node} titleOf={titleOf} />
+                  </>
+                )}
               </span>
               {open && (
                 <Button
@@ -775,13 +760,107 @@ export function FindingsSection({
 
 // ---------------------------------------------------------------- About
 
+/**
+ * T413: the goal, in the details panel, when the chat leaves its Goal card
+ * out (a project's root, or a goal that only repeats the title): still read
+ * and edited here (Edit, then Save; Esc cancels).
+ */
+function GoalField({
+  goal,
+  onSave,
+}: {
+  goal: string;
+  onSave?: (goal: string) => Promise<void>;
+}): JSX.Element {
+  const [draft, setDraft] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const save = (): void => {
+    const next = (draft ?? '').trim();
+    if (!onSave || busy) return;
+    if (next === '' || next === goal.trim()) {
+      setDraft(undefined);
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    onSave(next)
+      .then(() => setDraft(undefined))
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBusy(false));
+  };
+  if (draft !== undefined) {
+    return (
+      <form
+        className="cr-about-goal-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save();
+        }}
+      >
+        <textarea
+          className="cr-about-goal-input"
+          data-testid="goal-input"
+          aria-label="Goal"
+          value={draft}
+          rows={Math.min(10, Math.max(3, draft.split('\n').length + 1))}
+          // biome-ignore lint/a11y/noAutofocus: the user just asked to edit it.
+          autoFocus
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.stopPropagation();
+              setDraft(undefined);
+              setError(undefined);
+            } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              save();
+            }
+          }}
+        />
+        {error && <p className="cr-field-error">{error}</p>}
+        <div className="cr-dsec-actions">
+          <Button size="sm" variant="primary" type="submit" busy={busy} data-testid="goal-save">
+            Save goal
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setDraft(undefined)}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    );
+  }
+  return (
+    <div className="cr-about-goal" data-testid="about-goal">
+      <span className="cr-about-goal-text" data-testid="about-goal-text">
+        {goal}
+      </span>
+      {onSave && (
+        <button
+          type="button"
+          className="cr-link cr-about-goal-edit"
+          data-testid="goal-edit"
+          title="Edit the goal. The agent reads the new goal on its next turn."
+          onClick={() => setDraft(goal)}
+        >
+          Edit
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function AboutSection({
   stream,
   role,
+  goal,
 }: {
   stream: Stream;
   role: CockpitStreamRow['role'] | undefined;
+  /** T413: the goal, when the chat shows no Goal card; `onSave` where it may change. */
+  goal?: { onSave?: (goal: string) => Promise<void> };
 }): JSX.Element {
+  const copy = useCopy();
   const created = new Date(stream.created_at);
   return (
     <DetailSection title="About">
@@ -795,6 +874,18 @@ export function AboutSection({
             </dd>
           </>
         )}
+        {goal && (
+          <>
+            <dt>Goal</dt>
+            <dd>
+              <GoalField
+                key={stream.goal}
+                goal={stream.goal}
+                {...(goal.onSave ? { onSave: goal.onSave } : {})}
+              />
+            </dd>
+          </>
+        )}
         {stream.repo && (
           <>
             <dt>Repo</dt>
@@ -804,8 +895,19 @@ export function AboutSection({
         {stream.worktree && (
           <>
             <dt>Worktree</dt>
-            <dd className="cr-about-path" title={stream.worktree}>
-              {stream.worktree}
+            {/* T413: the path is long and all id; it copies, and reads in the tooltip. */}
+            <dd className="cr-about-worktree">
+              <span className="cr-about-worktree-name">{worktreeName(stream.worktree)}</span>
+              <button
+                type="button"
+                className="cr-link"
+                data-testid="copy-worktree"
+                title={stream.worktree}
+                onClick={() => copy(stream.worktree ?? '', 'Copied the worktree path')}
+              >
+                <Icon name="copy" size={12} />
+                Copy path
+              </button>
             </dd>
           </>
         )}
@@ -859,7 +961,7 @@ export function AgentSection({
               disabled={busy || !canReview}
               onClick={onReview}
             >
-              Review changes…
+              Ask an agent to review…
             </Button>
           )}
           {onChooseModel && (

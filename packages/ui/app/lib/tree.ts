@@ -15,10 +15,11 @@ type Row = Pick<CockpitStreamRow, 'id' | 'title' | 'parent' | 'project' | 'role'
 
 /**
  * New node: the title a goal suggests — its first non-empty line, without
- * markdown's heading, list or quote markers, cut at a word boundary near
- * `max` characters (with an ellipsis).
+ * markdown's heading, list or quote markers, cut at a word boundary at most
+ * `max` characters long. T413: no ellipsis character: the title is stored
+ * as it reads, and a narrow place truncates it with CSS.
  */
-export function titleFromGoal(goal: string, max = 80): string {
+export function titleFromGoal(goal: string, max = 60): string {
   const line =
     goal
       .split('\n')
@@ -30,9 +31,10 @@ export function titleFromGoal(goal: string, max = 80): string {
       )
       .find((l) => l !== '') ?? '';
   if (line.length <= max) return line;
-  const cut = line.slice(0, max);
-  const space = cut.lastIndexOf(' ');
-  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).replace(/[\s,;:.–-]+$/, '')}…`;
+  // After the last word that ends within `max`; a very long word is cut at `max`.
+  const space = line.lastIndexOf(' ', max);
+  const cut = space > max / 2 ? line.slice(0, space) : line.slice(0, max);
+  return cut.replace(/[\s,;:–—-]+$/, '');
 }
 
 /** `id` and every node under it, depth first, `id` first. */

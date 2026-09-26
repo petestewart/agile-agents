@@ -108,6 +108,11 @@ export function newComment(
   };
 }
 
+/** T413: "src/ledger.ts:12", "src/ledger.ts:12–14 (removed)": where a comment sits, its file first. */
+export function whereLabel(path: string, ref: Pick<ReviewComment, 'lines' | 'removed'>): string {
+  return `${path}:${ref.lines}${ref.removed ? ' (removed)' : ''}`;
+}
+
 /** The lines it was written on are gone from the diff, or read differently now. */
 export function isOutdated(c: ReviewComment, files: readonly DiffFile[]): boolean {
   const file = files.find((f) => f.path === c.path);
@@ -249,6 +254,55 @@ export interface NodeReview {
 }
 
 const EMPTY: NodeReview = { comments: [] };
+
+/**
+ * T413: a click on a line's gutter (or C) while a comment is open.
+ *
+ *  - Shift on a line of the same file and hunk stretches the open comment
+ *    to it, its text with it (a range).
+ *  - A line the open comment already covers changes nothing.
+ *  - Anywhere else a new, empty comment opens there. Text already written
+ *    never moves to another line or file: it stays where it was written,
+ *    added as a comment (an edit is saved), and `kept` says which one.
+ *
+ * `files` is the diff as shown (the open comment may be on another file);
+ * `nextId` names a comment it adds.
+ */
+export function openAt(
+  review: NodeReview,
+  files: readonly DiffFile[],
+  file: DiffFile,
+  key: string,
+  extend: boolean,
+  nextId: () => string,
+): { review: NodeReview; kept?: ReviewComment } {
+  const d = review.draft;
+  if (d && !d.editing && d.path === file.path) {
+    if (extend && rowsBetween(file, d.start, key)) {
+      return { review: { ...review, draft: { ...d, end: key } } };
+    }
+    if (rowsBetween(file, d.start, d.end)?.some((row) => rowKey(row) === key)) return { review };
+  }
+  const fresh: ReviewDraft = { path: file.path, start: key, end: key, text: '' };
+  const text = d?.text.trim() ?? '';
+  if (!d || text === '') return { review: { ...review, draft: fresh } };
+  if (d.editing) {
+    const before = review.comments.find((c) => c.id === d.editing);
+    if (before === undefined || before.body === text) {
+      return { review: { comments: review.comments, draft: fresh } };
+    }
+    const kept = { ...before, body: text };
+    return {
+      review: { comments: review.comments.map((c) => (c.id === kept.id ? kept : c)), draft: fresh },
+      kept,
+    };
+  }
+  const from = files.find((f) => f.path === d.path);
+  const kept = from && newComment(from, d.start, d.end, d.text, nextId());
+  // Its lines left the diff: the text stays open where it is rather than be lost.
+  if (kept === undefined) return { review };
+  return { review: { comments: [...review.comments, kept], draft: fresh }, kept };
+}
 
 /**
  * Review comments per node, for this browser session (in memory: they

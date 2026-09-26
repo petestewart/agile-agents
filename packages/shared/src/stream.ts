@@ -449,6 +449,11 @@ export const StreamCreateInputSchema = z
      * with that line quoted. The parent must be a conversation. Not stored.
      */
     seed_line: z.number().int().nonnegative().optional(),
+    /**
+     * T414 (D41): `title` is a placeholder the cockpit derived from the goal;
+     * the daemon asks a cheap model for a better one after creating. Not stored.
+     */
+    auto_title: z.boolean().optional(),
   })
   .strict();
 export type StreamCreateInput = z.infer<typeof StreamCreateInputSchema>;
