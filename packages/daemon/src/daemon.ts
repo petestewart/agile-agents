@@ -10,6 +10,11 @@ import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
 import { Bus, buildBusRpcMethods } from './bus';
 import { type Classifier, ClassifierKeyService, JevClassifier } from './classifier';
 import { type AgileConfig, type DiscoverConfigOptions, discoverConfig } from './config';
+import { AutonomyService } from './coordination/autonomy';
+import { CardService } from './coordination/cards';
+import { ContractService } from './coordination/contracts';
+import { PlanService } from './coordination/plans';
+import { SiblingService } from './coordination/siblings';
 import {
   ClassifierDiffRules,
   DeliveryService,
@@ -42,7 +47,7 @@ import { resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
 import { RepoInPlaceService, StreamService, buildStreamRpcMethods } from './streams';
-import { MainSync, OverlapTracker } from './sync';
+import { MainSync, OverlapTracker, SymbolWatcher } from './sync';
 
 export const DAEMON_VERSION: string = daemonPackageJson.version;
 
@@ -122,9 +127,21 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         // T244: record changes that are routed events (child_status, pr_merged, …).
         onUpdated: async (before, after): Promise<void> => {
           if (emitRouted) await emitTransitions(emitRouted)(before, after);
+          // T283: the node's status card follows its record.
+          await cardService?.refresh(after);
         },
       })
     : undefined;
+  // T283: status cards; `read_card` and the cockpit read them.
+  const cardService: CardService | undefined =
+    store && streamService
+      ? new CardService({
+          store,
+          streams: streamService,
+          // T281: the contracts this node is a party to (read lazily; built below).
+          reliesOn: (s) => contractService?.forParty(s.id).map((c) => c.id),
+        })
+      : undefined;
   const projectService =
     store && streamService ? new ProjectService(store, streamService) : undefined;
   // How spawned sessions reach this daemon's CLI for hooks and MCP,
@@ -144,6 +161,39 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(emitRouted ? { emitRouted } : {}),
         })
       : undefined;
+  // T281: plans and contracts (§14.4) — the coordinator's verbs, briefs, the inbox card.
+  const contractService =
+    store && streamService
+      ? new ContractService({
+          store,
+          streams: streamService,
+          ...(emitRouted ? { emit: emitRouted } : {}),
+        })
+      : undefined;
+  const planService =
+    store && streamService && contractService
+      ? new PlanService({
+          store,
+          streams: streamService,
+          contracts: contractService,
+          ...(emitRouted ? { emit: emitRouted } : {}),
+          // T336: a part waiting for the plan starts when the approved plan gives it paths.
+          start: async (id: string): Promise<unknown> => {
+            if (attachService === undefined) throw new Error('attach is not available');
+            return attachService.startWithPending(id);
+          },
+        })
+      : undefined;
+  // T282: the autonomy gate for a coordinator's structural changes, and its proposals.
+  const autonomyService =
+    store && streamService
+      ? new AutonomyService({
+          store,
+          streams: streamService,
+          ...(planService ? { plans: planService } : {}),
+          ...(contractService ? { contracts: contractService } : {}),
+        })
+      : undefined;
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
   const attachService =
@@ -157,6 +207,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           docs: { docsForStream: (id) => docsService?.docsForStream(id) ?? [] },
           questions: { listOpen: () => questionService?.listOpen() ?? [] },
           ...(rulesService ? { rules: rulesService } : {}),
+          ...(planService ? { plans: planService } : {}),
+          ...(contractService ? { contracts: contractService } : {}),
           // The turn-end rule treats an open routed call like an open question.
           ...(gateService ? { gates: gateService } : {}),
           ...(routedEvents ? { events: routedEvents } : {}),
@@ -182,6 +234,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           questions: questionService,
           gates: gateService,
           ...(rulesService ? { rules: rulesService } : {}),
+          ...(planService ? { plans: planService } : {}),
+          ...(contractService ? { contracts: contractService } : {}),
+          ...(autonomyService ? { proposals: autonomyService } : {}),
         })
       : undefined;
   // Docs: plain Markdown under `<home>/repos/<name>/docs/` and `<home>/streams/<id>.docs/`.
@@ -291,6 +346,20 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(docsService ? { docs: docsService } : {}),
           ...(rulesService ? { rules: rulesService } : {}),
           ...(routedEvents ? { events: routedEvents } : {}),
+          ...(cardService ? { cards: cardService } : {}),
+          ...(planService ? { plans: planService } : {}),
+          ...(contractService ? { contracts: contractService } : {}),
+          ...(autonomyService ? { autonomy: autonomyService } : {}),
+          ...(routedEvents && emitRouted
+            ? {
+                siblings: new SiblingService({
+                  streams: streamService,
+                  emit: emitRouted,
+                  events: routedEvents,
+                }),
+              }
+            : {}),
+          ...(emitRouted ? { emitRouted } : {}),
           // T246: an agent's push; its PR is then polled at the babysit cadence.
           ...(landingService
             ? {
@@ -363,6 +432,16 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     });
   }
 
+  // T284: the import index, changed exports on cards, and `symbol_changed`.
+  const symbolWatcher =
+    store && streamService
+      ? new SymbolWatcher({
+          store,
+          streams: streamService,
+          repos: () => store.getRepos(),
+          ...(emitRouted ? { emit: emitRouted } : {}),
+        })
+      : undefined;
   // T227: overlap tracking — `touched` after edit hooks, commits and every 60 s.
   const overlapTracker =
     store && streamService
@@ -373,6 +452,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             ? { intervalMs: options.overlapRecomputeMs }
             : {}),
           ...(emitRouted ? { emit: emitRouted } : {}),
+          ...(symbolWatcher
+            ? {
+                afterTouched: (id: string) =>
+                  symbolWatcher
+                    .onTouched(id)
+                    .catch((err) => console.error('symbol watch failed:', err)),
+              }
+            : {}),
         })
       : undefined;
   overlapTracker?.start();
@@ -494,6 +581,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(routedEvents ? { events: routedEvents } : {}),
     ...(repoInPlace ? { repoInPlace } : {}),
     ...(docsService ? { docs: docsService } : {}),
+    ...(planService ? { plans: planService } : {}),
+    ...(contractService ? { contracts: contractService } : {}),
+    ...(autonomyService ? { autonomy: autonomyService } : {}),
     githubAuth,
   });
 

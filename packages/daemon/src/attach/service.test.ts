@@ -223,6 +223,28 @@ describe('attach on a stream with a repo', () => {
   });
 });
 
+describe('T288: a helper attaches off its parent', () => {
+  test("the helper's worktree branches from the parent's branch", async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const parent = await makeStream('demo');
+    git(['branch', 'host-branch']);
+    const hostWt = join(repo, '.worktrees', 'host');
+    git(['worktree', 'add', '-q', hostWt, 'host-branch']);
+    writeFileSync(join(hostWt, 'host.txt'), 'host\n');
+    git(['add', '-A'], hostWt);
+    git(['commit', '-q', '-m', 'host work'], hostWt);
+    await streams.update('daemon', parent.id, { branch: 'host-branch', worktree: hostWt });
+    const helper = await streams.create('human', {
+      title: 'helper',
+      goal: 'help',
+      parent: parent.id,
+      helper_of: parent.id,
+    });
+    const { stream: updated } = await attachService.attach(helper.id);
+    expect(existsSync(join(updated.worktree ?? '', 'host.txt'))).toBe(true);
+  });
+});
+
 describe('T207: both .claude settings files tracked', () => {
   test('attach is refused before the stream is marked working or a session recorded', async () => {
     mkdirSync(join(repo, '.claude'), { recursive: true });
@@ -510,6 +532,9 @@ describe('the reviewer (§4.2)', () => {
     });
     // Everything else the worker got, the reviewer got too.
     expect(reviewerEnv?.GIT_EDITOR).toBe('true');
+    // T345: no inherited CDPATH can redirect a checked `cd`.
+    expect(workerEnv?.CDPATH).toBe('');
+    expect(reviewerEnv?.CDPATH).toBe('');
   }, 30_000);
 
   test('a reviewer never moves agent.status, even with no worker left', async () => {
@@ -1279,11 +1304,10 @@ describe('T243: the wake policy (P11)', () => {
     await reshape.addRepo(node.id, 'ledger-lite');
     const { parts } = await reshape.addRepo(node.id, 'agile-test-repo');
     expect(parts.map((p) => p.title)).toEqual(['ledger-lite part', 'agile-test-repo part']);
-    // T213: the parts start; T336: so does the coordinator, though nothing was live.
-    for (const part of parts) {
-      expect(streams.get(part.id).sessions.some((s) => s.role === 'worker')).toBe(true);
-    }
-    expect(streams.get(node.id).sessions).toHaveLength(1);
+    // T336: the coordinator starts, though nothing was live; the parts wait for its plan.
+    for (const part of parts) expect(attachService.handleFor(part.id)).toBeUndefined();
+    expect(streams.get(parts[1]?.id as string).sessions).toHaveLength(0);
+    expect(streams.get(node.id).sessions.map((s) => s.role)).toEqual(['coordinator']);
     await waitFor(() => streams.get(node.id).agent.status === 'done' && settled(node.id));
 
     await attachService.say(node.id, 'Go ahead. Write the plan and a contract');
@@ -1348,6 +1372,140 @@ describe('T243: the wake policy (P11)', () => {
     const read = reader.readEvent({ session: woken, id: event });
     expect(read.id).toBe(event);
     expect(read.summary).toContain('use the ledger CSV format');
+  }, 30_000);
+});
+
+describe('T280: the coordinator role (P20)', () => {
+  test('a coordinating node runs a coordinator; child_status wakes it with a digest', async () => {
+    const log = join(scratch, 'coordinator.jsonl');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
+      { deliveryDelayMs: 5 },
+    );
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Checkout',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+    const child = await attachService.createNode('human', {
+      title: 'Cart API',
+      goal: 'g',
+      project: project.id,
+      parent: node.id,
+      start: false,
+    });
+
+    const first = await attachService.attach(node.id);
+    expect(first.session.role).toBe('coordinator');
+    expect(first.session.worktree).toBeUndefined();
+    const brief = readFileSync(join(home, 'sessions', first.session.id, 'brief.md'), 'utf8');
+    expect(brief).toContain('# Coordinator brief');
+    expect(brief).toContain('## Your children');
+    expect(brief).toContain('Cart API');
+    expect(brief).toContain('Autonomy: **advise**');
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    await waitFor(() => attachService.handleFor(node.id, 'coordinator') === undefined);
+
+    await new RoutedEventService(store).emit({
+      type: 'child_status',
+      subject: child.id,
+      payload: { child: child.id, title: 'Cart API', status: 'blocked', progress: 'stuck on auth' },
+      by: 'daemon',
+      routing: [{ node: node.id, because: 'ancestor' }],
+    });
+    attachService.wakePending();
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    expect(streams.get(node.id).sessions.map((s) => s.role)).toEqual([
+      'coordinator',
+      'coordinator',
+    ]);
+    await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
+    await waitFor(() =>
+      (existsSync(log) ? readFileSync(log, 'utf8') : '')
+        .split('\n')
+        .some((l) => l.includes('"session/prompt"') && l.includes('stuck on auth')),
+    );
+    expect(threadBodies(node.id)).toContain('woken by child_status');
+  }, 30_000);
+
+  test('a parentless project root that has had a coordinator is woken by child_status', async () => {
+    const log = join(scratch, 'root.jsonl');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
+      { deliveryDelayMs: 5 },
+    );
+    const root = await streams.create('human', { title: 'Shop', goal: 'g' });
+    expect(root.parent).toBeUndefined();
+    const child = await streams.create('human', { title: 'Cart', goal: 'g', parent: root.id });
+    const first = await attachService.attach(root.id);
+    expect(first.session.role).toBe('coordinator');
+    await waitFor(() => streams.get(root.id).agent.status === 'done');
+    await waitFor(() => attachService.handleFor(root.id, 'coordinator') === undefined);
+
+    await new RoutedEventService(store).emit({
+      type: 'child_status',
+      subject: child.id,
+      payload: { child: child.id, title: 'Cart', status: 'done', progress: 'cart shipped' },
+      by: 'daemon',
+      routing: [{ node: root.id, because: 'ancestor' }],
+    });
+    attachService.wakePending();
+    await waitFor(() => streams.get(root.id).sessions.length === 2);
+    expect(streams.get(root.id).sessions.at(-1)?.role).toBe('coordinator');
+    await waitFor(() =>
+      (existsSync(log) ? readFileSync(log, 'utf8') : '')
+        .split('\n')
+        .some((l) => l.includes('"session/prompt"') && l.includes('cart shipped')),
+    );
+    expect(threadBodies(root.id)).toContain('woken by child_status');
+  }, 30_000);
+
+  test("T336: a work node woken by its coordinator's note is handed the note, quoted, with its id", async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const log = join(scratch, 't336-note.jsonl');
+    const prompts = () =>
+      (existsSync(log) ? readFileSync(log, 'utf8') : '')
+        .split('\n')
+        .filter((l) => l.includes('"session/prompt"'));
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
+      { deliveryDelayMs: 5 },
+    );
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const parent = await streams.create('human', {
+      title: 'Ledger export',
+      goal: 'g',
+      project: project.id,
+    });
+    const node = await attachService.createNode('human', {
+      title: 'ledger-lite part',
+      goal: 'ledger-lite share of: g',
+      project: project.id,
+      parent: parent.id,
+      repo: 'demo',
+    });
+    await waitFor(
+      () =>
+        streams.get(node.id).agent.status === 'done' &&
+        attachService.handleFor(node.id) === undefined,
+    );
+    // The parent's `note_child`, emitted by another service instance.
+    const note = await new RoutedEventService(store).emit({
+      type: 'coordinator_note',
+      subject: node.id,
+      payload: { body: 'export CSV with a header row' },
+      by: `agent:${parent.id}`,
+      routing: [{ node: node.id, because: 'self' }],
+    });
+    attachService.wakePending();
+    await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
+    await waitFor(() => prompts().length === 2);
+    const brief = prompts()[1] ?? '';
+    expect(brief).toContain(`${note.id} (coordinator_note)`);
+    expect(brief).toContain('Your coordinator says: \\"export CSV with a header row\\"');
+    expect(threadBodies(node.id)).toContain('woken by coordinator_note');
   }, 30_000);
 });
 

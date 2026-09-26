@@ -47,7 +47,8 @@ export async function runStreamNew(
 ): Promise<number> {
   const title = requireOption(args.options, 'title');
   const goal = requireOption(args.options, 'goal');
-  const parent = optionalString(args.options, 'parent');
+  const helperOf = optionalString(args.options, 'helper-of');
+  const parent = optionalString(args.options, 'parent') ?? helperOf;
   const repo = optionalString(args.options, 'repo');
   const project = optionalString(args.options, 'project');
   const labels = optionalList(args, 'label');
@@ -61,6 +62,7 @@ export async function runStreamNew(
     ...(labels !== undefined ? { labels } : {}),
     ...(parent !== undefined ? { parent } : {}),
     ...(repo !== undefined ? { repo } : {}),
+    ...(helperOf !== undefined ? { helper_of: helperOf } : {}),
     ...(noStart ? { start: false } : {}),
   });
 
@@ -404,5 +406,25 @@ export async function runStreamWait(
   console.log(
     `agile node wait: ${id} waits on ${open.length > 0 ? open.map((w) => w.node).join(', ') : 'nothing'}`,
   );
+  return 0;
+}
+
+/** T282: `node set <id> --autonomy advise|organise|run|inherit`. */
+export async function runStreamSetAutonomy(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'node-id');
+  const level = optionalString(args.options, 'autonomy');
+  if (level === undefined) {
+    throw new Error('agile node set: --autonomy advise|organise|run|inherit is required');
+  }
+  const node = await callRpc<Stream>(socketPath, 'node.autonomy', {
+    id,
+    autonomy: level === 'inherit' ? null : level,
+  });
+  if (json) printJson(node);
+  else console.log(`agile node set: ${id} autonomy ${node.autonomy ?? 'inherit'}`);
   return 0;
 }

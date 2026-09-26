@@ -74,6 +74,27 @@ describe('agile project against a daemon on a temp AGILE_HOME', () => {
     expect(updated.session).toEqual({ vendor: 'claude', effort: 'high' });
     expect(updated.autonomy.director).toBe('run');
 
+    // T282: the flags T289's script uses, and a node override.
+    const organise = await cli([
+      'project',
+      'set',
+      project.id,
+      '--coordinator-autonomy',
+      'organise',
+      '--json',
+    ]);
+    expect(organise.err).toBe('');
+    expect((JSON.parse(organise.out) as Project).autonomy).toEqual({
+      coordinator: 'organise',
+      director: 'run',
+    });
+    const node = await cli(['node', 'set', project.root, '--autonomy', 'advise', '--json']);
+    expect(node.err).toBe('');
+    expect((JSON.parse(node.out) as Stream).autonomy).toBe('advise');
+    const inherit = await cli(['node', 'set', project.root, '--autonomy', 'inherit', '--json']);
+    expect((JSON.parse(inherit.out) as Stream).autonomy).toBeUndefined();
+    expect((await cli(['node', 'set', project.root, '--autonomy', 'wild'])).code).toBe(1);
+
     // Repeated --repo accumulates (with commas too) on new and set.
     // T206: a repo is registered by its toplevel, so the second one is its own repo.
     const ledger = mkdtempSync(join(tmpdir(), 'agile-project-ledger-'));
@@ -106,7 +127,7 @@ describe('agile project against a daemon on a temp AGILE_HOME', () => {
     expect((JSON.parse(reset.out) as Project).repos).toEqual(['ledger', 'shop-web']);
 
     const shown = JSON.parse((await cli(['project', 'show', project.id, '--json'])).out);
-    expect(shown).toEqual(updated);
+    expect(shown).toEqual({ ...updated, autonomy: { coordinator: 'organise', director: 'run' } });
     const listed = JSON.parse((await cli(['project', 'list', '--json'])).out) as Project[];
     expect(listed.map((p) => p.id)).toEqual([project.id, twoP.id]);
     const table = await cli(['project', 'list']);

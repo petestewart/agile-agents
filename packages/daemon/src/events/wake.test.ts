@@ -16,6 +16,7 @@ const WORK: RoutedEventType[] = [
   'pr_behind',
   'sync_conflict',
   'contract_changed',
+  'coordinator_note',
 ];
 const CONVERSATION: RoutedEventType[] = ['human_line', 'answer'];
 
@@ -24,7 +25,7 @@ describe('wakesRole (P11 table)', () => {
     coordinating: () => true,
     work: (t) => WORK.includes(t),
     conversation: (t) => CONVERSATION.includes(t),
-    project: () => false,
+    project: () => true,
   };
   for (const role of Object.keys(expected) as NodeRole[]) {
     for (const type of ROUTED_EVENT_TYPES) {
@@ -53,6 +54,11 @@ describe('wakeVerdict', () => {
       'wake',
     );
   });
+  test("T290: a parent's coordinator_note wakes an ended work node, never a stopped one", () => {
+    expect(wakeVerdict(node(), 'work', [{ type: 'coordinator_note' }])).toBe('wake');
+    const landed = node({ human: { status: 'landed' } } as Partial<Stream>);
+    expect(wakeVerdict(landed, 'work', [{ type: 'coordinator_note' }])).toBe('stopped');
+  });
   test('stopped nodes are never woken', () => {
     for (const stopped of [
       node({ agent: { status: 'idle' } } as Partial<Stream>),
@@ -79,12 +85,16 @@ describe('wakeVerdict', () => {
     } as Partial<Stream>);
     expect(stoppedByHuman(detached)).toBe(true);
   });
-  test('a project node, or a coordinating node that never had an agent, is not woken', () => {
+  test('a project root or coordinating node that never had an agent is not woken', () => {
     expect(wakeVerdict(node(), 'project', [{ type: 'human_line' }])).toBe('no_agent');
     expect(wakeVerdict(node({ sessions: [] }), 'coordinating', [{ type: 'overlap' }])).toBe(
       'no_agent',
     );
     expect(wakeVerdict(node(), 'coordinating', [{ type: 'overlap' }])).toBe('wake');
+    const coordinated = node({ sessions: [{ role: 'coordinator' }] } as Partial<Stream>);
+    expect(wakeVerdict(coordinated, 'coordinating', [{ type: 'child_status' }])).toBe('wake');
+    // P20: a project root is woken once it has had a coordinator.
+    expect(wakeVerdict(coordinated, 'project', [{ type: 'child_status' }])).toBe('wake');
   });
 });
 

@@ -16,6 +16,7 @@ import {
   type KnowledgeScope,
   type RoutedEvent,
   type SessionRole,
+  type StatusCard,
   type StreamFinding,
   type ThreadEntry,
   formatKnowledgeScope,
@@ -24,8 +25,13 @@ import {
   validateVerbInput,
   withExamplesNote,
 } from '@agile-agents/shared';
+import type { AutonomyService } from '../coordination/autonomy';
+import { type ContractService, assertChildren } from '../coordination/contracts';
+import type { PlanService } from '../coordination/plans';
+import type { SiblingService } from '../coordination/siblings';
 import type { DocsSearch, SearchHit } from '../docs/service';
 import { summaryOf } from '../events/delivery';
+import type { EmitRouted } from '../events/producers';
 import { type KnowledgeService, worktreeRelativePaths } from '../knowledge/service';
 import type { QuestionService } from '../questions/service';
 import { NotFoundError, type StateStore } from '../store';
@@ -101,6 +107,17 @@ export interface VerbServiceOptions {
   events?: { get(id: string): RoutedEvent | undefined };
   /** T246: `deliver`'s write side (`DeliveryService.push`). */
   delivery?: { push(stream: string): Promise<unknown> };
+  /** T283: `read_card`'s read side. */
+  cards?: { read(caller: string, target: string): StatusCard };
+  /** T281: `plan_write` / `contract_write`, coordinator sessions only. */
+  plans?: PlanService;
+  contracts?: ContractService;
+  /** T282: the autonomy gate for the coordinator's structural verbs. */
+  autonomy?: AutonomyService;
+  /** T286: `ask_sibling` / `reply_sibling`, and the joint-proposal check. */
+  siblings?: SiblingService;
+  /** T287: `note_child`'s write side (a `coordinator_note` routed event). */
+  emitRouted?: EmitRouted;
   proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
 }
 
@@ -338,6 +355,203 @@ export class VerbService {
     };
   }
 
+  /** T283 (§14.5): a sibling's or ancestor's status card. */
+  readCard(input: unknown): StatusCard {
+    const { session, node } = validateVerbInput('read_card', input);
+    const caller = this.caller(session);
+    if (this.options.cards === undefined) throw new Error('read_card: cards are not available');
+    return this.options.cards.read(caller.stream, node);
+  }
+
+  /** T281 (§14.4): the coordinator's plan; always lands `draft` for the operator to approve. */
+  async planWrite(input: unknown): Promise<unknown> {
+    const { session, owners, contracts } = validateVerbInput('plan_write', input);
+    const caller = this.coordinatorCaller(session, 'plan_write');
+    if (this.options.plans === undefined) throw new Error('plan_write: plans are not available');
+    return this.options.plans.write(caller.stream, owners, contracts);
+  }
+
+  /** T281 (§14.4): create or bump a contract on the coordinator's node; a bump tells its parties. */
+  async contractWrite(input: unknown): Promise<unknown> {
+    const { session, ...fields } = validateVerbInput('contract_write', input);
+    const caller = this.coordinatorCaller(session, 'contract_write');
+    if (this.options.contracts === undefined) {
+      throw new Error('contract_write: contracts are not available');
+    }
+    const by = `agent:${session}`;
+    // T282: changing an agreed contract is `approve_contract`, gated by the
+    // autonomy level; creating one is covered by the plan's approval.
+    if (this.options.autonomy !== undefined && fields.id !== undefined) {
+      const before = this.options.contracts.get(fields.id);
+      const sameParties =
+        [...before.parties].sort().join(',') === [...new Set(fields.parties)].sort().join(',');
+      // Any change to an agreed contract (title, body or parties) is gated.
+      if (
+        before.body !== fields.body.trim() ||
+        before.title !== fields.title.trim() ||
+        !sameParties
+      ) {
+        const { id, ...rest } = fields;
+        return this.options.autonomy.act(caller.stream, 'coordinator', by, {
+          action: 'approve_contract',
+          contract: id,
+          ...rest,
+        });
+      }
+    }
+    const { routine: _routine, ...write } = fields;
+    return this.options.contracts.write(caller.stream, write, by);
+  }
+
+  /** T285 (§9.1): a child, co-signed by siblings in `with`, proposes a contract change. */
+  async proposeContract(input: unknown): Promise<unknown> {
+    const {
+      session,
+      contract,
+      with: cosigners,
+      ...proposal
+    } = validateVerbInput('propose_contract', input);
+    const caller = this.caller(session);
+    if (caller.role !== 'worker' && caller.role !== 'coordinator') {
+      throw new Error(`propose_contract: a ${caller.role} session cannot propose`);
+    }
+    if (this.options.contracts === undefined) {
+      throw new Error('propose_contract: contracts are not available');
+    }
+    // T286: a co-signer must actually have agreed (answered an ask_sibling from the caller).
+    const unagreed = (cosigners ?? []).filter(
+      (id) =>
+        id !== caller.stream &&
+        this.options.siblings?.agreed(caller.stream, id, contract, proposal.body) !== true,
+    );
+    if (unagreed.length > 0) {
+      throw new Error(
+        `propose_contract: ${unagreed.join(', ')} has not agreed to this contract and body; ask_sibling and wait for a reply with agree`,
+      );
+    }
+    return this.options.contracts.propose(
+      contract,
+      [caller.stream, ...(cosigners ?? [])],
+      proposal,
+    );
+  }
+
+  /** T286 (§9.5): ask a sibling about a detail. */
+  async askSibling(input: unknown): Promise<unknown> {
+    const { session, node, question } = validateVerbInput('ask_sibling', input);
+    return this.siblingsFor(session, 'ask_sibling', (s, from) => s.ask(from, node, question));
+  }
+
+  async replySibling(input: unknown): Promise<unknown> {
+    const { session, ask, body, agree } = validateVerbInput('reply_sibling', input);
+    return this.siblingsFor(session, 'reply_sibling', (s, from) => s.reply(from, ask, body, agree));
+  }
+
+  private siblingsFor<T>(
+    session: string,
+    verb: string,
+    run: (siblings: SiblingService, from: string) => Promise<T>,
+  ): Promise<T> {
+    const caller = this.caller(session);
+    if (caller.role !== 'worker' && caller.role !== 'coordinator') {
+      throw new Error(`${verb}: a ${caller.role} session cannot`);
+    }
+    if (this.options.siblings === undefined) throw new Error(`${verb}: siblings are not available`);
+    return run(this.options.siblings, caller.stream);
+  }
+
+  /**
+   * T285: the coordinator decides a proposal on its own node's contract.
+   * Approval goes through the gate as `approve_contract` (applied at Run
+   * when the coordinator judges it routine, else an inbox card).
+   */
+  async decideContract(input: unknown): Promise<unknown> {
+    const {
+      session,
+      proposal: id,
+      decision,
+      reason,
+      routine,
+    } = validateVerbInput('decide_contract', input);
+    const caller = this.coordinatorCaller(session, 'decide_contract');
+    const { contracts, autonomy } = this.options;
+    if (contracts === undefined || autonomy === undefined) {
+      throw new Error('decide_contract: contracts are not available');
+    }
+    const { contract, proposal } = contracts.findProposal(id);
+    if (contract.node !== caller.stream) {
+      throw new Error(`decide_contract: ${contract.id} belongs to another node`);
+    }
+    if (proposal.status !== 'open') throw new Error(`decide_contract: ${id} is ${proposal.status}`);
+    const by = `agent:${session}`;
+    if (decision === 'reject') return contracts.reject(id, reason ?? '', by);
+    const outcome = await autonomy.act(caller.stream, 'coordinator', by, {
+      action: 'approve_contract',
+      contract: contract.id,
+      title: contract.title,
+      body: proposal.body,
+      parties: contract.parties,
+      reason: reason ?? proposal.reason,
+      routine: routine ?? false,
+      proposal: id,
+    });
+    if (!outcome.applied) await contracts.markAsked(id);
+    return outcome;
+  }
+
+  /** T282: the coordinator's structural verbs, all through the autonomy gate. */
+  async addChild(input: unknown): Promise<unknown> {
+    const { session, ...change } = validateVerbInput('add_child', input);
+    return this.gated(session, 'add_child', { action: 'add_child', ...change });
+  }
+
+  async addWaitsOn(input: unknown): Promise<unknown> {
+    const { session, ...change } = validateVerbInput('add_waits_on', input);
+    return this.gated(session, 'add_waits_on', { action: 'add_waits_on', ...change });
+  }
+
+  async setOwner(input: unknown): Promise<unknown> {
+    const { session, ...change } = validateVerbInput('set_owner', input);
+    return this.gated(session, 'set_owner', { action: 'set_owner', ...change });
+  }
+
+  /** T287 (§9.4): a targeted note from a coordinator to one of its children. Not gated: it changes nothing. */
+  async noteChild(input: unknown): Promise<{ event: string }> {
+    const { session, child, body } = validateVerbInput('note_child', input);
+    const caller = this.coordinatorCaller(session, 'note_child');
+    if (this.options.emitRouted === undefined)
+      throw new Error('note_child: events are not available');
+    assertChildren(this.options.streams, caller.stream, [child], 'note_child');
+    const project = this.options.streams.get(child).project;
+    const event = await this.options.emitRouted({
+      type: 'coordinator_note',
+      subject: child,
+      by: `agent:${session}`,
+      ...(project !== undefined ? { project } : {}),
+      payload: { body },
+    });
+    if (event === undefined) throw new Error('note_child: the note was not sent');
+    return { event: event.id };
+  }
+
+  private async gated(
+    session: string,
+    verb: string,
+    change: Parameters<AutonomyService['act']>[3],
+  ): Promise<unknown> {
+    const caller = this.coordinatorCaller(session, verb);
+    if (this.options.autonomy === undefined) throw new Error(`${verb}: autonomy is not available`);
+    return this.options.autonomy.act(caller.stream, 'coordinator', `agent:${session}`, change);
+  }
+
+  private coordinatorCaller(session: string, verb: string): VerbCaller {
+    const caller = this.caller(session);
+    if (caller.role !== 'coordinator') {
+      throw new Error(`${verb}: only a coordinator can; a ${caller.role} proposes`);
+    }
+    return caller;
+  }
+
   /** The repo's own test command, in this session's worktree. Failures only, never a green log. */
   async testRun(input: unknown): Promise<TestRunOutput> {
     const { session, command } = validateVerbInput('test_run', input);
@@ -367,5 +581,16 @@ export function verbHandlers(
     read_event: (input) => service.readEvent(input),
     deliver: (input) => service.deliver(input),
     lookup_knowledge: (input) => service.lookupKnowledge(input),
+    read_card: (input) => service.readCard(input),
+    plan_write: (input) => service.planWrite(input),
+    contract_write: (input) => service.contractWrite(input),
+    add_child: (input) => service.addChild(input),
+    add_waits_on: (input) => service.addWaitsOn(input),
+    set_owner: (input) => service.setOwner(input),
+    note_child: (input) => service.noteChild(input),
+    propose_contract: (input) => service.proposeContract(input),
+    decide_contract: (input) => service.decideContract(input),
+    ask_sibling: (input) => service.askSibling(input),
+    reply_sibling: (input) => service.replySibling(input),
   };
 }

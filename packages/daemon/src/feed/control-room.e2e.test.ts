@@ -41,6 +41,10 @@ import {
 import { type Browser, type Page, chromium } from 'playwright-core';
 import { AttachService, VerbService } from '../attach';
 import { ClassifierKeyService, FakeClassifier } from '../classifier';
+import { AutonomyService } from '../coordination/autonomy';
+import { CardService } from '../coordination/cards';
+import { ContractService } from '../coordination/contracts';
+import { PlanService, WAITING_FOR_PLAN } from '../coordination/plans';
 import { DeliveryService } from '../delivery';
 import { DocsService } from '../docs';
 import { RoutedEventService, routeAndEmit } from '../events';
@@ -495,6 +499,9 @@ interface Cockpit {
   gates: GateService;
   rules: KnowledgeService;
   events: RoutedEventService;
+  plans: PlanService;
+  contracts: ContractService;
+  autonomy: AutonomyService;
   /** Every `deliver(sessionId, question)` the question service made — the hand-off to the asking session. */
   delivered: Array<{ session: string; question: Question }>;
   http: HttpServerHandle;
@@ -526,7 +533,18 @@ async function startCockpit(
   });
   const gates = new GateService(store);
   const rules = new KnowledgeService({ store, streams });
-  const inbox = new InboxService({ streams, questions, gates, rules });
+  const contracts = new ContractService({ store, streams });
+  const plans = new PlanService({ store, streams, contracts });
+  const autonomy = new AutonomyService({ store, streams, plans, contracts });
+  const inbox = new InboxService({
+    streams,
+    questions,
+    gates,
+    rules,
+    plans,
+    contracts,
+    proposals: autonomy,
+  });
   const projects = new ProjectService(store, streams);
   const events = new RoutedEventService(store);
   const http = startHttpServer({
@@ -542,6 +560,9 @@ async function startCockpit(
     questions,
     inbox,
     rules,
+    plans,
+    contracts,
+    autonomy,
     ...(extra.ruleEvals ? { ruleEvals: extra.ruleEvals } : {}),
     // T167: a key service over a fresh config and no env, so the operator's
     // own TYPESAFE_API_KEY never counts and no real call is possible.
@@ -567,6 +588,9 @@ async function startCockpit(
     gates,
     rules,
     events,
+    plans,
+    contracts,
+    autonomy,
     delivered,
     http,
     base: `http://127.0.0.1:${http.port}`,
@@ -1264,6 +1288,7 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
       attach: (id) => attach.attach(id),
       stop: (id) => attach.stop(id),
     }),
+    plans: new PlanService({ store, streams, contracts: new ContractService({ store, streams }) }),
     docs,
     feedPollIntervalMs: 50,
   });
@@ -1858,8 +1883,9 @@ describe('parents and land conflicts (Playwright e2e, T176)', () => {
         await page.locator(`[data-testid="stream-page"][data-stream="${parent.id}"]`).waitFor();
         await page.locator('[data-testid="attach"]').click();
         await page.locator('[data-testid="picker-start"]').click();
-        // D20: no parent-attach confirmation any more; the worker just starts.
-        await page.locator('[data-testid="session"][data-role="worker"]').waitFor();
+        // D20: no parent-attach confirmation any more; the agent just starts,
+        // as a coordinator (P20, T280).
+        await page.locator('[data-testid="session"][data-role="coordinator"]').waitFor();
 
         // A stream whose branch and main both change shared.txt.
         const worktree = join(cockpit.repo, '.worktrees', 's-conflict');
@@ -2742,6 +2768,32 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
         await page
           .locator(`${root} [data-testid="thread"]`, { hasText: 'THREAD-MARKER-205' })
           .waitFor();
+
+        // T336: once the node has had a coordinator, the split's parts wait for its plan.
+        await cockpit.store.updateStream('daemon', node.id, (before) => ({
+          ...before,
+          sessions: [
+            { id: ulid(), vendor: 'claude', model: 'm', role: 'coordinator', status: 'stopped' },
+          ],
+        }));
+        // The split writes this on each part when the node has a coordinator (repo-in-place.ts).
+        for (const part of parts) {
+          await cockpit.streams.appendThread('daemon', part.id, {
+            kind: 'event',
+            body: `${WAITING_FOR_PLAN}this part starts when "Sale prices"'s plan is approved`,
+          });
+        }
+        for (const part of parts) {
+          await page
+            .locator(
+              `[data-testid="stream-tree"] [data-stream="${part.id}"] [data-testid="waiting-for-plan"]`,
+            )
+            .waitFor();
+        }
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${parts[0]?.id}"]`).click();
+        await page
+          .locator('[data-testid="stream-status"]', { hasText: 'waiting for the plan' })
+          .waitFor();
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -2801,6 +2853,65 @@ describe('overlap warnings (Playwright e2e, T227)', () => {
           '[data-testid="repo-view"] [data-repo="api"] [data-testid="repo-overlap"]',
           '⚠ api: add salePrice and api: add /posts both changed prices.ts',
         );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T283: status cards ---------------------------------------------------
+
+describe('status cards on the parent page (Playwright e2e, T283)', () => {
+  browserTest(
+    "a child's card shows its doing, state and files on its parent's page",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const api = await cockpit.streams.create('human', {
+          title: 'api: add salePrice',
+          goal: 'g',
+          project: shop.id,
+          parent: shop.root,
+          repo: 'api',
+        });
+        const cards = new CardService({ store: cockpit.store, streams: cockpit.streams });
+        const after = await cockpit.streams.update('daemon', api.id, {
+          agent: { status: 'working', progress: 'adding salePrice' },
+          touched: { files: ['prices.ts'], base: 'abc', at: new Date().toISOString() },
+        });
+        await cards.refresh(after);
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+        const card = `[data-testid="child-cards"] [data-node="${api.id}"]`;
+        await waitForAttr(page, card, 'data-state', 'working');
+        await waitForText(page, `${card} [data-testid="status-card-doing"]`, 'adding salePrice');
+        await waitForText(page, `${card} [data-testid="status-card-files"]`, 'prices.ts');
+
+        // A corrupt card is an error line naming path:line; the others still render.
+        const web = await cockpit.streams.create('human', {
+          title: 'web: show sale',
+          goal: 'g',
+          project: shop.id,
+          parent: shop.root,
+          repo: 'api',
+        });
+        writeFileSync(
+          join(cockpit.home, 'cards', `${web.id}.yaml`),
+          `node: ${web.id}\ndoing: x\nstate: exploding\n`,
+        );
+        await cockpit.streams.update('human', web.id, { title: 'web: show sale!' });
+        const bad = `[data-testid="child-cards"] [data-node="${web.id}"] [data-testid="status-card-error-text"]`;
+        await page.locator(bad).waitFor();
+        expect(await page.locator(bad).textContent()).toContain(`cards/${web.id}.yaml:3:`);
+        await waitForAttr(page, card, 'data-state', 'working');
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -2994,6 +3105,122 @@ describe('node activity (Playwright e2e, T245)', () => {
           `[data-testid="repo-view"] [data-repo="api"] [data-event="${event.id}"]`,
           'main changed · api: add salePrice',
         );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('plan approval (Playwright e2e, T281)', () => {
+  browserTest(
+    'a draft plan is an inbox card; Approve moves it to approved on the Plan tab',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const node = await cockpit.streams.create('human', {
+          title: 'Show sale prices',
+          goal: 'g',
+          project: shop.id,
+        });
+        const child = (title: string) =>
+          cockpit.streams.create('human', { title, goal: 'g', project: shop.id, parent: node.id });
+        const api = await child('api: add salePrice');
+        const web = await child('web: show salePrice');
+        const contract = await cockpit.contracts.write(
+          node.id,
+          {
+            title: 'GET /price/:id',
+            body: 'returns { cents, saleCents? }',
+            parties: [api.id, web.id],
+          },
+          'human',
+        );
+        await cockpit.plans.write(
+          node.id,
+          [
+            { child: api.id, owns: ['prices.ts'] },
+            { child: web.id, owns: ['shop.html'] },
+          ],
+          [contract.id],
+        );
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-kind="plan_approve"][data-id="${node.id}"]`;
+        await page.locator(`${card} [data-testid="plan-approve"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
+          'api: add salePrice owns prices.ts',
+        );
+        await page.locator(`${card} [data-testid="plan-approve"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
+        expect(cockpit.plans.get(node.id)?.status).toBe('approved');
+
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        await page.locator('.cr-tabs [data-tab="plan"]').click();
+        await waitForAttr(page, '[data-testid="plan-status"]', 'data-status', 'approved');
+        await page.locator(`[data-contract="${contract.id}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`[data-contract="${contract.id}"]`).textContent()).toContain(
+          'saleCents',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('coordinator autonomy (Playwright e2e, T282)', () => {
+  browserTest(
+    'at Advise a coordinator change is an inbox card; Apply performs it; the node picker overrides the level',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const node = await cockpit.streams.create('human', {
+          title: 'Show sale prices',
+          goal: 'g',
+          project: shop.id,
+        });
+        const child = (title: string) =>
+          cockpit.streams.create('human', { title, goal: 'g', project: shop.id, parent: node.id });
+        const api = await child('api: add salePrice');
+        const web = await child('web: show salePrice');
+        const out = await cockpit.autonomy.act(node.id, 'coordinator', 'agent:test', {
+          action: 'add_waits_on',
+          child: web.id,
+          on: api.id,
+        });
+        expect(out.applied).toBe(false);
+        const id = out.applied ? '' : out.proposal.id;
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-kind="proposal"][data-id="${id}"]`;
+        await page.locator(`${card} [data-testid="proposal-apply"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
+          'web: show salePrice waits on api: add salePrice',
+        );
+        await page.locator(`${card} [data-testid="proposal-apply"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
+        expect(cockpit.streams.get(web.id).waits_on?.map((w) => w.node)).toEqual([api.id]);
+        expect(cockpit.autonomy.get(id).status).toBe('applied');
+
+        // The node's picker: override the project's Advise with Organise.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        await page.locator('[data-testid="autonomy-select"]').selectOption('organise');
+        const deadline = Date.now() + 10_000;
+        while (cockpit.streams.get(node.id).autonomy !== 'organise' && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        expect(cockpit.autonomy.levelFor(node.id)).toBe('organise');
       } finally {
         await teardown([page]);
         await cockpit.stop();

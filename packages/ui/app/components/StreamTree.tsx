@@ -105,6 +105,11 @@ function Node({ node, fold }: { node: StreamTreeNode; fold: Fold }): JSX.Element
             ⚠
           </span>
         )}
+        {node.row.waiting_for_plan && (
+          <span className="cr-waiting" data-testid="waiting-for-plan">
+            waiting for the plan
+          </span>
+        )}
         {node.row.visibility_advisory && (
           <span className="cr-visibility" data-testid="visibility-advisory">
             visibility advisory

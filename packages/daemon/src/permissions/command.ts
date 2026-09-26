@@ -143,6 +143,15 @@ export function hasUnsafeShellConstruct(command: string): boolean {
   return false;
 }
 
+/**
+ * T345: the command names `CDPATH` anywhere (`CDPATH=/ cd etc`, `export
+ * CDPATH=`, `env CDPATH=...`): `cd <name>` may then land wherever it points,
+ * so no `cd` in it can be checked.
+ */
+export function mentionsCdpath(command: string): boolean {
+  return /\bCDPATH\b/.test(command);
+}
+
 // Wrapper/env-prefix stripping
 
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=.*$/;
@@ -179,6 +188,10 @@ export interface CommandAtom {
   prefixed?: true;
   /** T343: the stripped tokens themselves (`VAR=value`, wrappers), when `prefixed`. */
   prefix?: string[];
+  /** T345: the operator before this atom, for a top-level atom. */
+  delimiterBefore?: SegmentDelimiter;
+  /** T345: the atom came from inside an `sh -c "..."`, whose `cd` never moves the outer shell. */
+  nested?: true;
 }
 
 const SHELL_RUNNERS = new Set(['sh', 'bash', 'zsh']);
@@ -209,9 +222,10 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
             precededByPipe: seg.delimiterBefore === '|',
             prevTokens: seg.delimiterBefore === '|' ? prev?.tokens : undefined,
             ...(atom.prefixed ? { prefixed: true as const, prefix: atom.prefix ?? [] } : prefixed),
+            nested: true,
           });
         } else {
-          atoms.push(atom.prefixed ? atom : { ...atom, ...prefixed });
+          atoms.push({ ...(atom.prefixed ? atom : { ...atom, ...prefixed }), nested: true });
         }
       }
       continue;
@@ -222,6 +236,7 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
       precededByPipe: seg.delimiterBefore === '|',
       prevTokens: seg.delimiterBefore === '|' ? prev?.tokens : undefined,
       ...prefixed,
+      delimiterBefore: seg.delimiterBefore,
     });
   }
   return atoms;

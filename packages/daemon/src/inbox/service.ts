@@ -19,6 +19,9 @@ import {
   inboxDetail,
   liveChildrenOf,
 } from '@agile-agents/shared';
+import type { AutonomyService } from '../coordination/autonomy';
+import type { ContractService } from '../coordination/contracts';
+import type { PlanService } from '../coordination/plans';
 import type { GateService } from '../gates/service';
 import type { KnowledgeService } from '../knowledge/service';
 import type { QuestionService } from '../questions/service';
@@ -42,6 +45,11 @@ export interface InboxServiceDeps {
   gates: GateService;
   /** A proposed rule is a `rule_accept` item (§3.1). */
   rules?: KnowledgeService;
+  /** T281: a draft plan is a `plan_approve` item (§9.1: approval at every level). */
+  plans?: Pick<PlanService, 'listDraft'>;
+  contracts?: Pick<ContractService, 'find'>;
+  /** T282: a coordinator's change held at Advise is a `proposal` item with Apply. */
+  proposals?: Pick<AutonomyService, 'listOpen'>;
 }
 
 export class InboxService {
@@ -78,6 +86,54 @@ export class InboxService {
       }
     }
     for (const [source, rules] of seeded) items.push(this.ruleBatchItem(source, rules));
+    for (const plan of this.deps.plans?.listDraft() ?? []) {
+      const stream = byId.get(plan.node);
+      if (stream === undefined || stream.archived === true) continue;
+      const titleOf = (id: string) => byId.get(id)?.title ?? id;
+      // A revision reads as its change against the last approved version.
+      const was = new Map(plan.approved?.owners.map((o) => [o.child, o.owns.join(', ')]) ?? []);
+      const owners = plan.owners.map((o) => {
+        const now = o.owns.length === 0 ? 'nothing' : o.owns.join(', ');
+        const before = was.get(o.child);
+        const change =
+          plan.approved === undefined || before === o.owns.join(', ')
+            ? ''
+            : ` (was ${before === undefined ? 'not in the plan' : before || 'nothing'})`;
+        return `${titleOf(o.child)} owns ${now}${change}`;
+      });
+      const contracts = plan.contracts.map((id) => {
+        const c = this.deps.contracts?.find(id);
+        return c === undefined ? id : `${c.title}: ${c.body}`;
+      });
+      const text = `Approve ${plan.approved === undefined ? 'the plan' : `the revised plan (approved v${plan.approved.version})`} for ${stream.title}: ${owners.join('; ') || 'no owners'}${
+        contracts.length > 0 ? `. Contracts: ${contracts.join(' | ')}` : ''
+      }`;
+      items.push({
+        kind: 'plan_approve',
+        id: stream.id,
+        stream: stream.id,
+        stream_path: this.path(stream, byId),
+        ts: plan.updated_at,
+        context: inboxContext(text),
+        ...withDetail(text),
+        ref: `plans/${stream.id}.yaml`,
+      });
+    }
+    for (const proposal of this.deps.proposals?.listOpen() ?? []) {
+      const stream = byId.get(proposal.node);
+      if (stream === undefined || stream.archived === true) continue;
+      const text = `${proposal.principal} proposes: ${proposal.summary}`;
+      items.push({
+        kind: 'proposal',
+        id: proposal.id,
+        stream: stream.id,
+        stream_path: this.path(stream, byId),
+        ts: proposal.created_at,
+        context: inboxContext(text),
+        ...withDetail(text),
+        ref: `proposals/${proposal.id}.yaml`,
+      });
+    }
     for (const stream of byId.values()) {
       const item = this.streamItem(stream, byId);
       if (item) items.push(item);
@@ -175,9 +231,11 @@ export class InboxService {
     if (stream.archived === true) return undefined;
     if (stream.human.status !== 'open') return undefined;
     if (stream.agent.status !== 'blocked' && stream.agent.status !== 'done') return undefined;
-    // T336: a coordinating node (or a project root with parts) has no branch
-    // of its own; its coordinator finishing a turn is nothing to land.
-    if (stream.agent.status === 'done' && hasParts(stream.id, byId)) return undefined;
+    // T336: a coordinating node or a project root has no branch of its own;
+    // its coordinator finishing a turn is nothing to land.
+    if (stream.agent.status === 'done' && (hasParts(stream.id, byId) || isProjectRoot(stream))) {
+      return undefined;
+    }
     return {
       kind: stream.agent.status,
       id: stream.id,
@@ -199,4 +257,9 @@ export class InboxService {
 /** Live children other than helpers: what makes a node coordinating (`nodeRole`). */
 function hasParts(id: string, byId: Map<string, Stream>): boolean {
   return liveChildrenOf(id, [...byId.values()]).some((c) => c.helper_of !== id);
+}
+
+/** A project's root node (P20: its agent is the project's coordinator). */
+function isProjectRoot(stream: Stream): boolean {
+  return stream.parent === undefined && stream.project !== undefined;
 }

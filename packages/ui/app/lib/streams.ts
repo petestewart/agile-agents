@@ -151,8 +151,7 @@ export function isLiveSession(session: Pick<SessionRef, 'status'>): boolean {
 export function isThinking(stream: Pick<Stream, 'sessions'>): boolean {
   return stream.sessions.some(
     (session) =>
-      (session.role === 'worker' || session.role === 'reviewer') &&
-      (session.status === 'starting' || session.status === 'running'),
+      session.role !== 'lessons' && (session.status === 'starting' || session.status === 'running'),
   );
 }
 

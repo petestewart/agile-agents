@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { AgentMessage, ReposConfig } from '@agile-agents/shared';
+import type { AgentMessage, KnowledgeItem, ReposConfig } from '@agile-agents/shared';
 import { decidePreToolUse } from './decide';
 import { DEFAULT_MAX_READ_BYTES, type HookDecisionContext } from './types';
 
@@ -339,5 +339,191 @@ describe('decidePreToolUse — T213 read scope', () => {
 
   test('without a read scope, Bash reads stay in the worktree', () => {
     expect(decidePreToolUse(baseCtx(), bash(`ls ${part}`)).decision).toBe('deny');
+  });
+});
+
+describe('T280: a coordinator writes only in its scratch session dir (P20)', () => {
+  const home = '/home/u/.agile';
+  const dir = `${home}/sessions/01J9AAAAAAAAAAAAAAAAAAAAAA`;
+  const ctx = baseCtx({ role: 'coordinator', worktreePath: dir });
+  const decide = (tool_name: string, tool_input: Record<string, unknown>) =>
+    decidePreToolUse(ctx, { tool_name, tool_input }).decision;
+
+  test('Write/Edit inside the session dir are allowed', () => {
+    expect(decide('Write', { file_path: `${dir}/notes.md` })).toBe('allow');
+    expect(decide('Edit', { file_path: `${dir}/plan.md` })).toBe('allow');
+  });
+
+  test('a write outside it is denied: the repo, and .agile state elsewhere', () => {
+    expect(decide('Write', { file_path: '/repo/src/a.ts' })).toBe('deny');
+    expect(decide('Edit', { file_path: `${home}/config.yaml` })).toBe('deny');
+    expect(decide('Write', { file_path: `${home}/sessions/01J9OTHER/notes.md` })).toBe('deny');
+  });
+
+  test('Bash writes follow the same line; reads are allowed', () => {
+    expect(decide('Bash', { command: `echo x > ${dir}/notes.md` })).toBe('allow');
+    expect(decide('Bash', { command: `echo x > ${home}/config.yaml` })).toBe('deny');
+    expect(decide('Bash', { command: 'echo x > /repo/a.ts' })).toBe('deny');
+    expect(decide('Bash', { command: 'rm -rf /repo' })).toBe('deny');
+    expect(decide('Read', { file_path: `${dir}/brief.md` })).toBe('allow');
+  });
+});
+
+describe('T336: a coordinator reads other repos with realistic Bash', () => {
+  const home = '/home/u/.agile';
+  const dir = `${home}/sessions/01J9AAAAAAAAAAAAAAAAAAAAAA`;
+  const ledger = '/home/u/Projects/ledger-lite';
+  const shop = '/home/u/Projects/shop-private';
+  const ctx = baseCtx({
+    role: 'coordinator',
+    worktreePath: dir,
+    readRoots: [ledger, '/home/u/Projects/agile-test-repo'],
+    hiddenRoots: [shop, home],
+  });
+  const bash = (command: string) =>
+    decidePreToolUse(ctx, { tool_name: 'Bash', tool_input: { command, description: 'x' } });
+
+  test('read-only commands on a readable repo are allowed, cd included', () => {
+    for (const command of [
+      `ls ${ledger}`,
+      `cat ${ledger}/README.md`,
+      `git -C ${ledger} log --oneline -5`,
+      `cd ${ledger} && git log --oneline -5`,
+      `cd ${ledger} && ls -la && git status`,
+      `cd ${dir} && echo draft > notes.md`,
+    ]) {
+      expect([command, bash(command).decision]).toEqual([command, 'allow']);
+    }
+  });
+
+  test('cd does not open a way to write or read what was closed', () => {
+    for (const command of [
+      // A relative redirect after cd lands in the repo, not the session dir.
+      `cd ${ledger} && echo x > notes.md`,
+      `cd ${ledger} && git commit -m x`,
+      `cd ${ledger} && touch x`,
+      `cd ${shop} && ls`,
+      `cd ${home} && cat config.yaml`,
+      'cd && ls',
+      'cd - && ls',
+      'cd $HOME && ls',
+      // T345: a failed cd leaves the shell in the repo; CDPATH sends cd anywhere.
+      `cd ${ledger} ; cd ${dir}/nope ; echo x > notes.md`,
+      `CDPATH=${home} cd sessions`,
+      // A bare name: CDPATH in the user's shell could send it anywhere.
+      `cd ${dir} && cd notes`,
+    ]) {
+      expect([command, bash(command).decision]).toEqual([command, 'deny']);
+    }
+  });
+});
+
+describe("T336 review: only a coordinator's read-only git -C leaves the worktree", () => {
+  const home = '/home/u/.agile';
+  const ledger = '/home/u/Projects/ledger-lite';
+  const shop = '/home/u/Projects/shop-private';
+  // The built-in no_worktree_escape rule (§5.4), as the knowledge store holds it.
+  const noEscape = {
+    id: 'K-01J9ESCAPE',
+    name: 'path_deny',
+    enforcement: 'action',
+    status: 'accepted',
+    check: { by: 'pattern', pattern: { kind: 'path_deny', args: { globs: [] } } },
+  } as unknown as KnowledgeItem;
+  const scope = {
+    readRoots: [ledger, '/home/u/Projects/agile-test-repo'],
+    hiddenRoots: [shop, home],
+    patternRules: [noEscape],
+  };
+  const bash = (role: HookDecisionContext['role'], worktreePath: string, command: string) =>
+    decidePreToolUse(baseCtx({ role, worktreePath, ...scope }), {
+      tool_name: 'Bash',
+      tool_input: { command, description: 'x' },
+    }).decision;
+  const coordinator = (command: string) =>
+    bash('coordinator', `${home}/sessions/01J9AAAAAAAAAAAAAAAAAAAAAA`, command);
+
+  test('a worker is denied git -C into another registered repo, reads included', () => {
+    const worker = '/home/u/Projects/agile-test-repo/.worktrees/01part';
+    expect(bash('worker', worker, `git -C ${ledger} log --oneline -5`)).toBe('deny');
+    expect(bash('worker', worker, `git -C ${ledger} status`)).toBe('deny');
+  });
+
+  test('a coordinator may git -C log a readable repo; not an unregistered or hidden one', () => {
+    expect(coordinator(`git -C ${ledger} log --oneline -5`)).toBe('allow');
+    expect(coordinator(`git -C ${ledger} status && git -C ${ledger} diff main`)).toBe('allow');
+    expect(coordinator('git -C /srv/other-repo log --oneline -5')).toBe('deny');
+    expect(coordinator(`git -C ${shop} log`)).toBe('deny');
+    expect(coordinator(`git -C ${home} log`)).toBe('deny');
+  });
+
+  test('a coordinator git -C that sets config, runs a program or writes is denied', () => {
+    for (const command of [
+      `git --config-env=alias.log=VAR -C ${ledger} log`,
+      `git -C ${ledger} -c alias.log=!touch_x log`,
+      `GIT_PAGER=touch_x git -C ${ledger} log`,
+      `git -C ${ledger} diff --ext-diff`,
+      `git -C ${ledger} log --output=/tmp/x`,
+      `git -C ${ledger} commit -m x`,
+    ]) {
+      expect([command, coordinator(command)]).toEqual([command, 'deny']);
+    }
+  });
+});
+
+describe('T291: a coordinator has no network (P20)', () => {
+  const web = (role: HookDecisionContext['role'], tool_name: string) =>
+    decidePreToolUse(baseCtx({ role }), {
+      tool_name,
+      tool_input: { url: 'https://example.com', query: 'x' },
+    });
+
+  test('WebFetch and WebSearch are denied for a coordinator', () => {
+    for (const tool of ['WebFetch', 'WebSearch']) {
+      const d = web('coordinator', tool);
+      expect(d.decision).toBe('deny');
+      expect(d.reason).toContain('no network');
+    }
+  });
+
+  test('a worker (engineer) is unchanged: both fall through to allow', () => {
+    expect(web('worker', 'WebFetch').decision).toBe('allow');
+    expect(web('worker', 'WebSearch').decision).toBe('allow');
+  });
+});
+
+describe('T345: a worker may cd within its worktree', () => {
+  const home = '/home/u/.agile';
+  const ctx = baseCtx({ readRoots: ['/home/u/Projects/ledger-lite'], hiddenRoots: [home] });
+  const bash = (command: string) =>
+    decidePreToolUse(ctx, { tool_name: 'Bash', tool_input: { command, description: 'x' } })
+      .decision;
+
+  test('cd into the worktree and work there is allowed', () => {
+    for (const command of ['cd ./sub && bun test', 'cd ./pkg && git status', 'tree -L 2']) {
+      expect([command, bash(command)]).toEqual([command, 'allow']);
+    }
+  });
+
+  test('cd out of it, and escapes through a later relative path, are denied', () => {
+    for (const command of [
+      'cd .. && ls',
+      'cd / && ls',
+      'cd ~ && ls',
+      `cd ${home} && cat config.yaml`,
+      'cd /home/u/Projects/ledger-lite && ls',
+      'cd ./.git && ls',
+      'cd ./sub && echo x > ../../out',
+    ]) {
+      expect([command, bash(command)]).toEqual([command, 'deny']);
+    }
+    expect(bash('cd $(git rev-parse --show-toplevel) && ls')).toBe('ask');
+    expect(bash('CDPATH=/ cd etc && cat shadow')).toBe('ask');
+    const bare = decidePreToolUse(ctx, {
+      tool_name: 'Bash',
+      tool_input: { command: 'cd sub && bun test', description: 'x' },
+    });
+    expect(bare.decision).toBe('deny');
+    expect(bare.reason).toContain('use `cd ./sub`');
   });
 });

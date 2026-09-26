@@ -27,6 +27,13 @@ import {
   KnowledgePathsSchema,
   RuleExampleSchema,
 } from './knowledge';
+import {
+  CONTRACT_BODY_MAX_CHARS,
+  ContractIdSchema,
+  ContractProposalIdSchema,
+  ContractWriteFieldsSchema,
+  PlanWriteFieldsSchema,
+} from './plan';
 import { RoutedEventIdSchema } from './routed-event';
 import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
@@ -111,8 +118,103 @@ export const LookupKnowledgeInputSchema = z
   .strict();
 export type LookupKnowledgeInput = z.infer<typeof LookupKnowledgeInputSchema>;
 
+/** T283 (§14.5): a sibling's, an ancestor's (or, for the Director, any) node's status card. */
+export const ReadCardInputSchema = z.object({ session: Session, node: UlidSchema }).strict();
+export type ReadCardInput = z.infer<typeof ReadCardInputSchema>;
+
 export const DeliverInputSchema = z.object({ session: Session }).strict();
 export type DeliverInput = z.infer<typeof DeliverInputSchema>;
+
+/** T281 (§14.4): a coordinator writes its plan; it lands `draft` until approved. */
+export const PlanWriteInputSchema = PlanWriteFieldsSchema.extend({ session: Session }).strict();
+export type PlanWriteInput = z.infer<typeof PlanWriteInputSchema>;
+
+/** T281 (§14.4): a coordinator creates a contract (no `id`) or bumps one. */
+export const ContractWriteInputSchema = ContractWriteFieldsSchema.extend({
+  session: Session,
+}).strict();
+export type ContractWriteInput = z.infer<typeof ContractWriteInputSchema>;
+
+/**
+ * T282 (§9 Autonomy): a coordinator's structural verbs. Each is gated by
+ * the node's autonomy level: at Advise it becomes an inbox proposal, at
+ * Organise and Run it is applied with a thread line.
+ */
+export const AddChildInputSchema = z
+  .object({
+    session: Session,
+    title: z.string().trim().min(1).max(200),
+    goal: Body,
+    repo: z.string().min(1).optional(),
+  })
+  .strict();
+export const AddWaitsOnInputSchema = z
+  .object({ session: Session, child: UlidSchema, on: UlidSchema })
+  .strict();
+export const SetOwnerInputSchema = z
+  .object({
+    session: Session,
+    child: UlidSchema,
+    owns: z.array(z.string().trim().min(1).max(512)).max(50),
+  })
+  .strict();
+/** T287 (§9.4): a coordinator's targeted note to one of its children. */
+export const NoteChildInputSchema = z
+  .object({ session: Session, child: UlidSchema, body: Body })
+  .strict();
+
+/**
+ * T285 (§9.1, §9.5): a child (optionally co-signed by siblings in `with`)
+ * proposes a new body for a contract it relies on. It lands on the
+ * contract as an open proposal and wakes the coordinator.
+ */
+export const ProposeContractInputSchema = z
+  .object({
+    session: Session,
+    contract: ContractIdSchema,
+    body: z.string().trim().min(1).max(CONTRACT_BODY_MAX_CHARS),
+    reason: z.string().max(400),
+    routine: z.boolean().optional(),
+    with: z.array(UlidSchema).max(10).optional(),
+  })
+  .strict();
+export type ProposeContractInput = z.infer<typeof ProposeContractInputSchema>;
+
+/** T285: the coordinator approves (gated by autonomy) or rejects a proposal. */
+export const DecideContractInputSchema = z
+  .object({
+    session: Session,
+    proposal: ContractProposalIdSchema,
+    decision: z.enum(['approve', 'reject']),
+    reason: z.string().max(400).optional(),
+    routine: z.boolean().optional(),
+  })
+  .strict();
+export type DecideContractInput = z.infer<typeof DecideContractInputSchema>;
+
+/**
+ * T286 (§9.5): a child asks a sibling (same parent) a question about a
+ * detail; the sibling answers with `reply_sibling`. Both threads and the
+ * parent see the exchange.
+ */
+export const AskSiblingInputSchema = z
+  .object({ session: Session, node: UlidSchema, question: z.string().trim().min(1).max(800) })
+  .strict();
+export const ReplySiblingInputSchema = z
+  .object({
+    session: Session,
+    ask: RoutedEventIdSchema,
+    body: z.string().trim().min(1).max(800),
+    /** Agree to a joint `propose_contract`: the contract and the exact proposed body. */
+    agree: z
+      .object({
+        contract: ContractIdSchema,
+        body: z.string().trim().min(1).max(CONTRACT_BODY_MAX_CHARS),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
 /** The verb table, in the order §4.1 lists it. */
 export const AGENT_VERBS = [
@@ -127,6 +229,17 @@ export const AGENT_VERBS = [
   'read_event',
   'deliver',
   'lookup_knowledge',
+  'read_card',
+  'plan_write',
+  'contract_write',
+  'add_child',
+  'add_waits_on',
+  'set_owner',
+  'note_child',
+  'propose_contract',
+  'decide_contract',
+  'ask_sibling',
+  'reply_sibling',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -142,6 +255,17 @@ export const AGENT_VERB_SCHEMAS = {
   read_event: ReadEventInputSchema,
   deliver: DeliverInputSchema,
   lookup_knowledge: LookupKnowledgeInputSchema,
+  read_card: ReadCardInputSchema,
+  plan_write: PlanWriteInputSchema,
+  contract_write: ContractWriteInputSchema,
+  add_child: AddChildInputSchema,
+  add_waits_on: AddWaitsOnInputSchema,
+  set_owner: SetOwnerInputSchema,
+  note_child: NoteChildInputSchema,
+  propose_contract: ProposeContractInputSchema,
+  decide_contract: DecideContractInputSchema,
+  ask_sibling: AskSiblingInputSchema,
+  reply_sibling: ReplySiblingInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -160,6 +284,28 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Push your committed fix and update your open PR (babysitting). Only once a PR is open; commit first.',
   lookup_knowledge:
     'List the accepted standards, architecture and decisions that apply to a repo-relative path ({path}). Use it before touching an unfamiliar area.',
+  read_card:
+    'Read the status card ({node}) of a sibling or an ancestor: what it is doing, its state, the files it changed and the contracts it relies on.',
+  plan_write:
+    'Coordinator only: write the plan ({owners: [{child, owns: [path globs]}], contracts?: [C-ids]}). It stays draft until the operator approves it.',
+  contract_write:
+    'Coordinator only: create a contract ({title, body ≤800, parties: [child ids]}) or bump one ({id, …, reason, routine?}); a bump of an agreed contract is gated by your autonomy level (routine = additive only).',
+  add_child:
+    'Coordinator only: add a child node ({title, goal, repo?}). At Advise it is proposed to the operator; at Organise/Run it is created.',
+  add_waits_on:
+    'Coordinator only: make one child wait on another node ({child, on}). Gated by your autonomy level.',
+  set_owner:
+    'Coordinator only: give a child ownership of paths ({child, owns: [globs]}). Gated by your autonomy level.',
+  note_child:
+    'Coordinator only: send one child a targeted note ({child, body}), e.g. after a sibling merged or collided.',
+  propose_contract:
+    'Propose a change to a contract you rely on ({contract, body ≤800, reason, routine?, with?: [sibling ids who agreed]}). Each co-signer in `with` must have answered your latest `ask_sibling` with `agree` naming this contract and this exact body. Your coordinator approves, rejects or asks the operator; you are told which.',
+  decide_contract:
+    'Coordinator only: decide a child’s contract proposal ({proposal, decision: approve|reject, reason?, routine?}). Approval is gated by your autonomy level (routine = additive only).',
+  ask_sibling:
+    'Ask a sibling (same parent) a question about a detail ({node, question ≤800}). Both threads show it and your parent gets a copy. Plan, contract or ownership changes go to your parent (`propose_contract`), not here.',
+  reply_sibling:
+    'Answer a sibling’s `ask_sibling` ({ask: the event id, body ≤800, agree?: {contract, body}}). Pass `agree` only to co-sign their contract proposal with that exact body. Both threads show it and your parent gets a copy.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

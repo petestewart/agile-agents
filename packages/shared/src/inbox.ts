@@ -25,12 +25,17 @@ import { KnowledgeIdSchema, KnowledgeKindSchema } from './knowledge';
  * `seed:<source>`), collapsed into one card that opens the rules screen
  * filtered to them. Its `id` is the provenance, `rules` the rule ids.
  * Lessons and agent proposals stay one `rule_accept` item each.
+ *
+ * T281 adds `plan_approve`: a coordinator's draft plan (projects-design
+ * §9.1, §14.4). Its `id` is the coordinating node's id.
  */
 export const INBOX_ITEM_KINDS = [
   'question',
   'gate',
   'rule_accept',
   'rule_batch',
+  'plan_approve',
+  'proposal',
   'blocked',
   'done',
 ] as const;

@@ -51,9 +51,10 @@ import type { ClaudePreToolUsePayload, HookDecision, HookDecisionContext } from 
 /**
  * The permission-table role a session role is judged under: the table
  * speaks the older vocabulary (a worker is the engineer). The lessons
- * session writes nothing but proposals, so it gets the reviewer's policy.
+ * session writes nothing but proposals, so it gets the reviewer's policy. A coordinator has its own table (P20).
  */
 export function permissionRoleFor(role: SessionRole): PermissionRole {
+  if (role === 'coordinator') return 'coordinator';
   return role === 'reviewer' || role === 'lessons' ? 'reviewer' : 'engineer';
 }
 
@@ -187,6 +188,17 @@ function roleToolVerdict(
 ): HookDecision | undefined {
   const readDenied = builtInReadDenyReason(ctx, payload);
   if (readDenied !== undefined) return { decision: 'deny', reason: readDenied };
+  // P20: a coordinator has no network. WebFetch/WebSearch have no ACP kind,
+  // so the role table never sees them; deny them here by name.
+  if (
+    permissionRoleFor(ctx.role) === 'coordinator' &&
+    (payload.tool_name === 'WebFetch' || payload.tool_name === 'WebSearch')
+  ) {
+    return {
+      decision: 'deny',
+      reason: `${payload.tool_name} denied: a coordinator has no network access (P20)`,
+    };
+  }
   const kind = claudeToolKind(payload);
   if (kind === undefined) return undefined;
 
@@ -246,6 +258,15 @@ function patternRuleVerdict(
     protectedBranches: ctx.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
     upstream: ctx.upstreamBranch ?? (() => undefined),
     head: ctx.headBranch ?? (() => undefined),
+    // T336: only a coordinator's read-only git -C may reach a repo it can read.
+    ...(permissionRoleFor(ctx.role) === 'coordinator'
+      ? {
+          coordinatorReads: {
+            ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
+            ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
+          },
+        }
+      : {}),
   };
 
   const outcome = runPatternRules(rules, checkCtx);

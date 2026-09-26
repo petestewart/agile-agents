@@ -98,6 +98,85 @@ afterEach(async () => {
   for (const dir of [home, repo]) rmSync(dir, { recursive: true, force: true });
 });
 
+describe('T288: helper then parent, one PR', () => {
+  test("the helper merges into the parent's branch; the parent's PR head holds both files", async () => {
+    const { stream: parent, worktree } = await prStream();
+    const helper = await streams.create('human', {
+      title: 'helper',
+      goal: 'help',
+      parent: parent.id,
+      helper_of: parent.id,
+    });
+    const hwt = join(repo, '.worktrees', 's-helper');
+    mustGit(['worktree', 'add', '-q', '-b', 'stream/s-helper', hwt, 'stream/s-pr']);
+    commitIn(hwt, 'h.txt', 'h\n');
+    await streams.update('daemon', helper.id, { branch: 'stream/s-helper', worktree: hwt });
+    const landing = service();
+
+    const landed = await landing.land(helper.id);
+    expect(landed.status === 'landed' && landed.target).toBe('stream/s-pr');
+    expect(streams.get(helper.id).delivery_state?.mode).toBe('direct');
+    // The parent's own worktree moved with its branch: clean, and holding the helper's work.
+    expect(mustGit(['status', '--porcelain'], worktree)).toBe('');
+    expect(readFileSync(join(worktree, 'h.txt'), 'utf8')).toBe('h\n');
+
+    const delivered = await landing.land(parent.id);
+    expect(delivered.status).toBe('pr_open');
+    const files = mustGit(['ls-tree', '--name-only', 'stream/s-pr'], gh.bareDir).split('\n');
+    expect(files).toContain('a.txt');
+    expect(files).toContain('h.txt');
+  });
+});
+
+describe('T288: a helper waits for its parent', () => {
+  test('deferred while the parent is mid-turn or dirty, with a note on both; lands after', async () => {
+    const { stream: parent, worktree } = await prStream();
+    const helper = await streams.create('human', {
+      title: 'helper',
+      goal: 'help',
+      parent: parent.id,
+      helper_of: parent.id,
+    });
+    const hwt = join(repo, '.worktrees', 's-helper');
+    mustGit(['worktree', 'add', '-q', '-b', 'stream/s-helper', hwt, 'stream/s-pr']);
+    commitIn(hwt, 'h.txt', 'h\n');
+    await streams.update('daemon', helper.id, { branch: 'stream/s-helper', worktree: hwt });
+    const landing = service();
+    const before = mustGit(['rev-parse', 'stream/s-pr']);
+
+    await store.updateStream('daemon', parent.id, (s) => ({
+      ...s,
+      sessions: [
+        {
+          id: '01J0000000000000000000000X',
+          vendor: 'claude',
+          model: 'opus',
+          role: 'worker',
+          status: 'running',
+        },
+      ],
+    }));
+    const midTurn = await landing.land(helper.id);
+    expect(midTurn.status).toBe('refused');
+    expect(midTurn.status === 'refused' && midTurn.line).toContain('mid-turn');
+    expect(streams.get(helper.id).delivery_state?.status).toBe('held');
+    const noted = (id: string) =>
+      streams.readThread(id, { limit: 50 }).entries.some((e) => e.body.includes('deferred'));
+    expect(noted(helper.id)).toBe(true);
+    expect(noted(parent.id)).toBe(true);
+
+    await store.updateStream('daemon', parent.id, (s) => ({ ...s, sessions: [] }));
+    writeFileSync(join(worktree, 'a.txt'), 'edited\n');
+    const dirty = await landing.land(helper.id);
+    expect(dirty.status === 'refused' && dirty.line).toContain('uncommitted');
+    expect(mustGit(['rev-parse', 'stream/s-pr'])).toBe(before);
+
+    mustGit(['checkout', '--', 'a.txt'], worktree);
+    expect((await landing.land(helper.id)).status).toBe('landed');
+    expect(readFileSync(join(worktree, 'h.txt'), 'utf8')).toBe('h\n');
+  });
+});
+
 describe('PR delivery (T224)', () => {
   test('deliver pushes and opens PR #1; a second deliver after a commit pushes and keeps #1', async () => {
     const { stream, worktree } = await prStream();

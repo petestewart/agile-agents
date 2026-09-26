@@ -10,6 +10,8 @@ import { join } from 'node:path';
 import { ACP_PROVIDERS } from '@agile-agents/acp-client';
 import { type Stream, liveChildrenOf, nodeRole } from '@agile-agents/shared';
 import { AttachService } from '../attach/service';
+import { ContractService } from '../coordination/contracts';
+import { PlanService } from '../coordination/plans';
 import { runInit } from '../init';
 import { ProjectService } from '../projects/service';
 import { StateStore } from '../store';
@@ -140,7 +142,18 @@ describe('T205 + Repo in place', () => {
     expect(attach.handleFor(node.id)).toBeDefined();
   }, 30_000);
 
-  test('T213: conversation → + api → + web leaves both parts and the coordinator running', async () => {
+  /** The plan service as the daemon wires it: approval starts the waiting parts. */
+  function planService(): PlanService {
+    return new PlanService({
+      store,
+      streams,
+      contracts: new ContractService({ store, streams }),
+      start: (id) => attach.startWithPending(id),
+    });
+  }
+
+  test('T213/T336: conversation → + api → + web: the coordinator runs, the parts wait for the plan', async () => {
+    const plans = planService();
     const node = await conversation();
     await attach.attach(node.id);
     await reshape.addRepo(node.id, 'api');
@@ -148,12 +161,18 @@ describe('T205 + Repo in place', () => {
 
     expect(parts).toHaveLength(2);
     expect(roleOf(node.id)).toBe('coordinating');
-    expect(attach.handleFor(node.id)).toBeDefined();
+    expect(attach.handleFor(node.id, 'coordinator')).toBeDefined();
+    // §9.1: the plan comes before work. Nothing runs in a part yet.
     for (const part of parts) {
-      expect(attach.handleFor(part.id)).toBeDefined();
-      const live = streams.get(part.id).sessions.find((s) => s.status === 'running');
-      expect(live?.worktree).toBe(part.worktree);
+      expect(attach.handleFor(part.id)).toBeUndefined();
+      expect(plans.waitingForPlan(streams.get(part.id))).toBe(true);
+      expect(bodies(part.id)).toContain(
+        `waiting for the plan: this part starts when "Sale prices"'s plan is approved`,
+      );
     }
+    expect(
+      bodies(node.id).some((b) => b.includes('wait for the plan: write it with plan_write')),
+    ).toBe(true);
     // The deliberate stops say why, not an exit code.
     const stops = bodies(node.id).filter((b) => b.startsWith('worker stopped: '));
     expect(stops).toEqual([
@@ -161,9 +180,25 @@ describe('T205 + Repo in place', () => {
       'worker stopped: node reshaped into parts',
     ]);
     expect(bodies(node.id).some((b) => b.includes('process exited'))).toBe(false);
+
+    // A draft is not enough; the approval starts each part in its own worktree.
+    const [apiPart, webPart] = parts as [Stream, Stream];
+    await plans.write(node.id, [
+      { child: apiPart.id, owns: ['src/prices.ts'] },
+      { child: webPart.id, owns: ['shop.html'] },
+    ]);
+    expect(attach.handleFor(apiPart.id)).toBeUndefined();
+    await plans.approve(node.id);
+    for (const part of parts) {
+      expect(attach.handleFor(part.id)).toBeDefined();
+      const live = streams.get(part.id).sessions.find((s) => s.status === 'running');
+      expect(live?.worktree).toBe(streams.get(part.id).worktree);
+      expect(plans.waitingForPlan(streams.get(part.id))).toBe(false);
+    }
   }, 60_000);
 
   test('T336: a node whose session ended still gets its coordinator; parts get their share', async () => {
+    const plans = planService();
     const node = await conversation();
     await attach.attach(node.id);
     await reshape.addRepo(node.id, 'api');
@@ -172,11 +207,15 @@ describe('T205 + Repo in place', () => {
     expect(streams.get(node.id).agent.status).toBe('done');
     const { parts } = await reshape.addRepo(node.id, 'web');
 
-    expect(attach.handleFor(node.id)).toBeDefined();
+    expect(attach.handleFor(node.id, 'coordinator')).toBeDefined();
     const coordinator = streams.get(node.id).sessions.at(-1);
+    expect(coordinator?.role).toBe('coordinator');
     expect(coordinator?.status).toBe('running');
     expect(coordinator?.worktree).toBeUndefined();
-    for (const part of parts) expect(attach.handleFor(part.id)).toBeDefined();
+    for (const part of parts) {
+      expect(attach.handleFor(part.id)).toBeUndefined();
+      expect(plans.waitingForPlan(streams.get(part.id))).toBe(true);
+    }
     expect(parts.map((p) => p.goal)).toEqual(['api share of: can we?', 'web share of: can we?']);
   }, 60_000);
 
@@ -231,7 +270,7 @@ describe('T205 + Repo in place', () => {
     expect(streams.readThread(webPart?.id ?? '').entries.some((e) => e.ref === node.id)).toBe(true);
     expect(after.sessions).toHaveLength(1);
     expect(after.sessions[0]?.worktree).toBeUndefined();
-    expect(attach.handleFor(node.id)).toBeDefined();
+    expect(attach.handleFor(node.id, 'coordinator')).toBeDefined();
   }, 30_000);
 
   test('switch with nothing committed: the empty part is closed, the node is on web', async () => {

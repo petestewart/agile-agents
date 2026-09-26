@@ -21,20 +21,25 @@ import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
   type HilRequest,
   type KnowledgeItem,
+  type Plan,
   type Question,
   type RoutedEvent,
   type SessionRef,
   type SessionRole,
   type SessionStatus,
+  type StatusCard,
   type Stream,
   type StreamPrincipal,
   type ThreadEntry,
+  isAgentRole,
   liveChildrenOf,
   nodeRole,
   ulid,
   validateStreamCreateInput,
 } from '@agile-agents/shared';
 import { readHomeConfigFile } from '../config';
+import type { ContractService } from '../coordination/contracts';
+import type { PlanService } from '../coordination/plans';
 import { REPLY_FIRST, SessionDelivery, type WakeDelivery } from '../events/delivery';
 import { routeAndEmit } from '../events/router';
 import { RoutedEventService } from '../events/service';
@@ -87,6 +92,11 @@ export function liveSession(stream: Stream, role: SessionRole = 'worker'): Sessi
   return stream.sessions.find(
     (session) => session.role === role && LIVE_SESSION_STATUSES.includes(session.status),
   );
+}
+
+/** The node's live agent session: its worker, or its coordinator (P20). */
+function liveAgent(stream: Stream): SessionRef | undefined {
+  return liveSession(stream, 'worker') ?? liveSession(stream, 'coordinator');
 }
 
 /** What is still open: a turn that ends on an open question is waiting, not finished. */
@@ -149,6 +159,9 @@ export interface AttachServiceOptions {
   /** The open questions, for the turn-end rule. */
   questions?: OpenQuestionsSource;
   rules?: BriefRulesSource;
+  /** T281: plans and contracts for the coordinator's and each child's brief. */
+  plans?: Pick<PlanService, 'get' | 'childView'>;
+  contracts?: Pick<ContractService, 'forNode'>;
   /** The gates, for the same rule. */
   gates?: OpenGatesSource;
   /** Test seam: inject a fake `spawnSession`. */
@@ -167,9 +180,52 @@ export interface AttachServiceOptions {
 }
 
 /** P5: the project step of the session defaults; absent when the project names nothing. */
+/** T283: each child's card for the coordinator brief; a corrupt one is named, not defaulted. */
+function childCards(
+  store: StateStore,
+  children: readonly { id: string }[],
+): Map<string, StatusCard | { error: string }> {
+  const out = new Map<string, StatusCard | { error: string }>();
+  for (const c of children) {
+    try {
+      const card = store.getCard(c.id);
+      if (card !== undefined) out.set(c.id, card);
+    } catch (err) {
+      out.set(c.id, { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return out;
+}
+
 function projectSession(store: StateStore, id: string) {
   try {
     return store.getProject(id).session;
+  } catch {
+    return undefined;
+  }
+}
+
+/** T281: the coordinator's own plan, as a spreadable field. */
+function planOf(plans: AttachServiceOptions['plans'], node: string): { plan?: Plan } {
+  const plan = plans?.get(node);
+  return plan === undefined ? {} : { plan };
+}
+
+/** T281: a worker's (or reviewer's) part of its parent's approved plan. */
+function childPlanOf(
+  plans: AttachServiceOptions['plans'],
+  stream: Stream,
+  role: SessionRole,
+): { plan?: NonNullable<ReturnType<PlanService['childView']>> } {
+  if (role === 'coordinator' || role === 'lessons') return {};
+  const plan = plans?.childView(stream);
+  return plan === undefined ? {} : { plan };
+}
+
+/** P20: the project's coordinator autonomy; absent when the project is unreadable. */
+function projectAutonomy(store: StateStore, id: string) {
+  try {
+    return store.getProject(id).autonomy.coordinator;
   } catch {
     return undefined;
   }
@@ -215,7 +271,7 @@ export class AttachService {
         options.streams.list({ include_archived: true }).find((s) => s.id === id)?.title,
       ...(options.deliveryDelayMs !== undefined ? { delayMs: options.deliveryDelayMs } : {}),
       target: (node) => {
-        const handle = this.handleFor(node, 'worker');
+        const handle = this.agentHandle(node);
         if (handle === undefined || handle.stopped()) return undefined;
         return {
           sessionId: handle.sessionId,
@@ -260,7 +316,7 @@ export class AttachService {
     } catch {
       return;
     }
-    if (liveSession(stream, 'worker') !== undefined) return;
+    if (liveAgent(stream) !== undefined) return;
     const role = nodeRole(stream, liveChildrenOf(stream.id, streams.list()));
     if (wakeVerdict(stream, role, pending) !== 'wake') return;
     const limit =
@@ -303,6 +359,14 @@ export class AttachService {
     }
   }
 
+  /**
+   * T336: starts a node's agent with its pending events in the brief (a
+   * part its approved plan starts), rather than as a digest after it.
+   */
+  startWithPending(id: string): Promise<AttachResult> {
+    return this.attach(id, { wake: this.events.pendingFor(id).map((p) => p.event) });
+  }
+
   /** T243: at daemon start (after `recover()`), every node with pending events is considered. */
   wakePending(): void {
     for (const stream of this.options.streams.list()) {
@@ -326,6 +390,11 @@ export class AttachService {
       this.live.set(role, map);
     }
     return map;
+  }
+
+  /** The node's live agent handle: its worker, or its coordinator (P20). */
+  agentHandle(streamId: string): AgentSessionHandle | undefined {
+    return this.handleFor(streamId, 'worker') ?? this.handleFor(streamId, 'coordinator');
   }
 
   /** The live handle for a stream, for a caller that wants to prompt or stop it. */
@@ -382,12 +451,22 @@ export class AttachService {
     wake: WakeDelivery | undefined,
   ): Promise<AttachResult> {
     const { store, streams } = this.options;
-    const role: SessionRole = options.role ?? 'worker';
-
     const stream = streams.get(streamId);
+    // P20 (T280): the agent of a coordinating node or a project root is a
+    // coordinator: no worktree, the session dir, every write denied.
+    // A project root counts once it has children: a bare root is still a
+    // single stream a worker runs on (the pre-projects shape).
+    const children = liveChildrenOf(stream.id, streams.list());
+    const shape = nodeRole(stream, children);
+    const coordinates =
+      shape === 'coordinating' ||
+      (shape === 'project' && children.some((c) => c.helper_of !== stream.id));
+    const requested: SessionRole = options.role ?? 'worker';
+    const role: SessionRole = requested === 'worker' && coordinates ? 'coordinator' : requested;
     // One live session per role: a reviewer may run beside a worker on the
-    // same worktree, but never beside a second reviewer (§4.2).
-    const busy = liveSession(stream, role);
+    // same worktree, but never beside a second reviewer (§4.2). A node has
+    // one agent, worker or coordinator.
+    const busy = isAgentRole(role) ? liveAgent(stream) : liveSession(stream, role);
     if (busy !== undefined) throw new StreamBusyError(stream.id, busy.id, role);
 
     const repos = store.getRepos();
@@ -412,8 +491,7 @@ export class AttachService {
 
     // 2. Branch + worktree, only for a stream that has a repo (§4.4).
     // D20: a coordinating node has no worktree; its session runs in the session dir.
-    const coordinating =
-      nodeRole(stream, liveChildrenOf(stream.id, streams.list())) === 'coordinating';
+    const coordinating = coordinates;
     let worktreePath = coordinating ? undefined : stream.worktree;
     let branch = stream.branch;
     if (repoEntry !== undefined && !coordinating) {
@@ -421,10 +499,18 @@ export class AttachService {
       // reviews from the session dir, like a no-repo stream.
       if (worktreePath === undefined && role === 'worker') {
         assertRepoHasCommits(stream.repo as string, repoEntry);
-        const created = await createWorktree(repoEntry.path, {
-          id: stream.id,
-          slug: slugify(stream.title),
-        });
+        // T288: a helper branches off its parent's branch.
+        const host = stream.helper_of !== undefined ? streams.get(stream.helper_of) : undefined;
+        if (host !== undefined && host.branch === undefined) {
+          throw new Error(
+            `helper ${stream.id}: its parent ${host.id} has no branch yet; start the parent first`,
+          );
+        }
+        const created = await createWorktree(
+          repoEntry.path,
+          { id: stream.id, slug: slugify(stream.title) },
+          host?.branch !== undefined ? { baseRef: `refs/heads/${host.branch}` } : {},
+        );
         worktreePath = created.path;
         branch = created.branch;
       }
@@ -481,6 +567,23 @@ export class AttachService {
       docs: this.options.docs?.docsForStream(stream.id) ?? [],
       // §5.3: the accepted rules in scope for this stream and its ancestors.
       rules: this.options.rules?.inScope(stream.id) ?? [],
+      ...(role === 'coordinator'
+        ? {
+            coordinator: {
+              children,
+              cards: childCards(store, children),
+              autonomy:
+                stream.autonomy ??
+                (stream.project === undefined
+                  ? undefined
+                  : projectAutonomy(store, stream.project)) ??
+                'advise',
+              ...planOf(this.options.plans, stream.id),
+              contracts: this.options.contracts?.forNode(stream.id) ?? [],
+            },
+          }
+        : {}),
+      ...childPlanOf(this.options.plans, stream, role),
     });
     // The lessons material rides after the brief, never inside it (the
     // brief's own ceiling protects its parts; the caller caps the appendix).
@@ -498,7 +601,7 @@ export class AttachService {
 
     // 5. Record the session before it can produce anything. A reviewer never
     // moves `agent.status`: a read-only second opinion is not work (§4.2).
-    if (role === 'worker') {
+    if (isAgentRole(role)) {
       // T176: a worker on the branch makes the last land's conflict stale.
       await streams.update('daemon', stream.id, {
         agent: { status: 'working' },
@@ -676,7 +779,7 @@ export class AttachService {
     if (queued > 0) return;
     // T242: routed events waiting on this node go in as one digest turn,
     // and that turn's end decides again.
-    if (role === 'worker' && this.delivery.waiting(streamId)) {
+    if (isAgentRole(role) && this.delivery.waiting(streamId)) {
       if (await this.delivery.flushWhenReady(streamId)) return;
       if (this.handles(role).get(streamId) !== handle) return;
     }
@@ -691,7 +794,7 @@ export class AttachService {
         // worker moves `agent.status` (§4.2). Written before the session's
         // `idle`, so a decision delivered the moment `idle` appears cannot
         // be overwritten by this turn's trailing write.
-        if (role === 'worker') {
+        if (isAgentRole(role)) {
           await this.options.streams.update('daemon', streamId, {
             agent: { status: 'question' },
             human: { status: 'waiting_on_you' },
@@ -755,7 +858,7 @@ export class AttachService {
     let busy = false;
     try {
       entry = await this.options.streams.appendThread('human', streamId, { kind: 'line', body });
-      handle = this.handleFor(streamId, 'worker');
+      handle = this.agentHandle(streamId);
       if (handle?.stopped()) handle = undefined;
       busy = handle !== undefined && handle.turnsInFlight() > 0;
       await routeAndEmit(
@@ -866,7 +969,7 @@ export class AttachService {
       );
       // A human pulled the plug: back to `idle`. `done` would claim the kill finished the work.
       if (detached) {
-        if (role === 'worker') {
+        if (isAgentRole(role)) {
           await this.options.streams.update('daemon', streamId, { agent: { status: 'idle' } });
         }
         await this.options.streams.appendThread('daemon', streamId, {
@@ -878,7 +981,7 @@ export class AttachService {
       }
       // Stopped on purpose: not a crash and not finished work, so `idle`.
       if (stopReason !== undefined) {
-        if (role === 'worker') {
+        if (isAgentRole(role)) {
           await this.options.streams.update('daemon', streamId, { agent: { status: 'idle' } });
         }
         await this.options.streams.appendThread('daemon', streamId, {
@@ -913,13 +1016,13 @@ export class AttachService {
       // The stream or home went away mid-session: nothing to record on.
       return;
     }
-    if (ok) await this.maybeAutoReview(streamId);
+    if (ok && role === 'worker') await this.maybeAutoReview(streamId);
   }
 
   /**
    * A reviewer's exit (§4.2): reports its findings on the thread. A review
-   * is not work, so it never moves `agent.status`: only a worker's (the
-   * work session's) exit does. A reviewer that died at spawn once marked a
+   * is not work, so it never moves `agent.status`: only a worker's or a
+   * coordinator's (a work session's) exit does. A reviewer that died at spawn once marked a
    * never-worked stream `done` (CI, phase 9).
    */
   private async onReviewerExit(

@@ -13,6 +13,7 @@ import {
   type NodeRole,
   type Question,
   type ReposConfig,
+  type StatusCard,
   type Stream,
   liveChildrenOf,
   nodeRole,
@@ -104,6 +105,8 @@ export interface CockpitStreamRow {
   overlap?: true;
   /** T229 (P13): a live session's vendor has no pre-tool-use hook, and a private repo is hidden from this node: the deny is advisory only. */
   visibility_advisory?: true;
+  /** T336: a part not yet started because its coordinator's plan is not approved. */
+  waiting_for_plan?: true;
 }
 
 /** Vendors whose tool calls pass the `agile hook` path check (Claude's hook, Pi's extension). */
@@ -127,7 +130,12 @@ export interface CockpitFrame {
   repos: CockpitRepoRow[];
   /** T227: live work nodes on one repo that changed the same files (§4.3). */
   overlaps: Overlap[];
+  /** T283 (§14.5): the status cards of child nodes, shown on the parent's page. */
+  cards: CockpitCard[];
 }
+
+/** A card, or the refusal of a corrupt one (path:line) so the rest still render. */
+export type CockpitCard = StatusCard | { node: string; error: string };
 
 /** One registered repo (T209). `delivery` is `direct` unless repos.yaml says otherwise. */
 export interface CockpitRepoRow {
@@ -142,6 +150,11 @@ export interface CockpitProjectRow {
   id: string;
   name: string;
   root: string;
+  /** T282: the project's autonomy levels (the root node's Autonomy picker). */
+  autonomy?: {
+    coordinator: 'advise' | 'organise' | 'run';
+    director: 'advise' | 'organise' | 'run';
+  };
 }
 
 export function buildCockpitFrame(
@@ -149,6 +162,8 @@ export function buildCockpitFrame(
   inbox?: InboxService,
   projects?: ProjectService,
   repos: ReposConfig = {},
+  cardOf?: (node: string) => StatusCard | undefined,
+  waitingForPlan?: (node: Stream) => boolean,
 ): CockpitFrame {
   const all = streams.list();
   const overlaps = findOverlaps(all);
@@ -169,13 +184,28 @@ export function buildCockpitFrame(
       ...waitsOn(s),
       ...(marked.has(s.id) ? { overlap: true as const } : {}),
       ...(visibilityAdvisory(s, repos) ? { visibility_advisory: true as const } : {}),
+      ...(waitingForPlan?.(s) === true ? { waiting_for_plan: true as const } : {}),
     })),
-    projects: (projects?.list() ?? []).map((p) => ({ id: p.id, name: p.name, root: p.root })),
+    projects: (projects?.list() ?? []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      root: p.root,
+      autonomy: p.autonomy,
+    })),
     repos: Object.entries(repos).map(([name, entry]) => ({
       name,
       delivery: entry.delivery ?? 'direct',
     })),
     overlaps,
+    cards: all.flatMap((s): CockpitCard[] => {
+      if (s.parent === undefined || cardOf === undefined) return [];
+      try {
+        const card = cardOf(s.id);
+        return card !== undefined ? [card] : [];
+      } catch (err) {
+        return [{ node: s.id, error: err instanceof Error ? err.message : String(err) }];
+      }
+    }),
   };
 }
 

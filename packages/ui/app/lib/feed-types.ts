@@ -74,6 +74,8 @@ export interface CockpitStreamRow {
   overlap?: true;
   /** T229: a hookless vendor is live and a private repo is hidden from this node. */
   visibility_advisory?: true;
+  /** T336: a part not yet started because its coordinator's plan is not approved. */
+  waiting_for_plan?: true;
 }
 
 /** T160: mirror of `feed/snapshot.ts`'s `CockpitFrame` — the inbox and the tree, pushed on connect and after every event batch. */
@@ -87,6 +89,25 @@ export interface CockpitFrame {
   repos: CockpitRepoRow[];
   /** T227: live work nodes on one repo sharing changed files. Absent from an older daemon. */
   overlaps?: CockpitOverlap[];
+  /** T283: the child nodes' status cards. Absent from an older daemon. */
+  cards?: Array<CockpitStatusCard | CockpitCardError>;
+}
+
+/** T283: a corrupt card file, refused with its path:line. */
+export interface CockpitCardError {
+  node: string;
+  error: string;
+}
+
+/** T283: mirror of shared `StatusCard` (projects-design §14.5). */
+export interface CockpitStatusCard {
+  node: string;
+  doing: string;
+  state: 'working' | 'blocked' | 'done' | 'idle';
+  files: string[];
+  exports_changed: string[];
+  relies_on: string[];
+  updated_at: string;
 }
 
 /** T227: mirror of `sync/overlap.ts`'s `Overlap`. */
@@ -107,6 +128,11 @@ export interface CockpitProjectRow {
   id: string;
   name: string;
   root: string;
+  /** T282: the project's autonomy levels (the root node's Autonomy picker). */
+  autonomy?: {
+    coordinator: 'advise' | 'organise' | 'run';
+    director: 'advise' | 'organise' | 'run';
+  };
 }
 
 /** T161: mirror of `delivery/service.ts`'s `LandPreflight` — the Land button's "before". */

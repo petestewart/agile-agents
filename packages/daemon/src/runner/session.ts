@@ -353,6 +353,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       AGILE_STREAM: stream.id,
       // Headless git: a `commit` without -m would open core.editor and hang.
       GIT_EDITOR: 'true',
+      // T345: the hook checks `cd <dir>` from the cwd; an inherited CDPATH
+      // would send it elsewhere. Empty searches only the cwd (bash, dash, zsh).
+      CDPATH: '',
       ...gitEnv,
       ...(opts.socketPath ? { AGILE_SOCKET_PATH: opts.socketPath } : {}),
       ...(provider.id === 'pi' ? { [PI_GATE_ENV_VAR]: '1' } : {}),
@@ -363,7 +366,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     // Omitted entirely when the provider has no mode.
     ...(modeId !== undefined ? { modeId } : {}),
     // Grok routes all file I/O through client fs, its only gateable surface (spike-findings.md §C2/§C3).
-    ...(provider.id === 'grok' ? { fsImpl: buildGrokFsPolicy(policyRole) } : {}),
+    ...(provider.id === 'grok' ? { fsImpl: buildGrokFsPolicy(policyRole, worktreePath) } : {}),
   };
   const spawned = spawn(spawnOptions);
 

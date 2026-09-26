@@ -233,6 +233,67 @@ describe('D20: a child delivers to main, never into its parent', () => {
   });
 });
 
+describe('T288: a same-repo helper merges into its parent', () => {
+  test("the helper lands on the parent's branch (direct, even in a pr repo); the parent carries both", async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'], delivery: 'pr' } });
+    const parentWork = branchWithWork('s-host', 'parent.txt', 'parent\n');
+    const parent = await makeStream({ ...parentWork, title: 'host' });
+    const helper = await streams.create('human', {
+      title: 'helper',
+      goal: 'help',
+      parent: parent.id,
+      helper_of: parent.id,
+    });
+    expect(helper.repo).toBe('demo');
+    const helperWork = branchWithWork('s-helper', 'helper.txt', 'helper\n', 's-host');
+    await streams.update('daemon', helper.id, helperWork);
+
+    const outcome = await landing.land(helper.id);
+    expect(outcome.status === 'landed' && outcome.target).toBe('s-host');
+    expect(streams.get(helper.id).delivery_state?.mode).toBe('direct');
+    expect(() => git(['show', 'main:helper.txt'])).toThrow();
+    // The parent's one delivery (its PR) now holds both changes.
+    const files = git(['diff', '--name-only', 'main...s-host']).split('\n').sort();
+    expect(files).toEqual(['helper.txt', 'parent.txt']);
+    expect(streams.get(parent.id).human.status).toBe('open');
+  });
+
+  test('delivery refuses a helper whose parent has no branch, is closed, or is on another repo', async () => {
+    await store.putRepos({
+      demo: { path: repo, protected_branches: ['main'] },
+      other: { path: repo, protected_branches: ['main'] },
+    });
+    const parent = await makeStream({ title: 'host' });
+    const helper = await streams.create('human', {
+      title: 'helper',
+      goal: 'help',
+      parent: parent.id,
+      helper_of: parent.id,
+    });
+    await streams.update('daemon', helper.id, branchWithWork('s-orphan', 'h.txt', 'h\n'));
+    expect(landing.land(helper.id)).rejects.toThrow(/parent has no branch/);
+    await streams.update('daemon', parent.id, { branch: 's-host2' });
+    await streams.close('human', parent.id);
+    expect(landing.land(helper.id)).rejects.toThrow(/closed or archived/);
+    await store.updateStream('daemon', helper.id, (h) => ({ ...h, repo: 'other' }));
+    expect(landing.land(helper.id)).rejects.toThrow(/the parent is on demo/);
+    expect(() => git(['show', 'main:h.txt'])).toThrow();
+  });
+
+  test('a helper on another repo is refused toward the reshape', async () => {
+    const parent = await makeStream({ title: 'host' });
+    expect(
+      streams.create('human', {
+        title: 'h',
+        goal: 'g',
+        parent: parent.id,
+        helper_of: parent.id,
+        repo: 'other',
+      }),
+    ).rejects.toThrow(/add-repo/);
+  });
+});
+
 describe('conflict (acceptance: blocked, conflict files on the thread, worktree kept, no partial merge)', () => {
   test('aborts the merge, leaves the target where it was, and blocks the stream', async () => {
     const work = branchWithWork('s-conflict', 'shared.txt', 'from the stream\n');

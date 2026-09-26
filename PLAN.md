@@ -1344,7 +1344,7 @@ agile tail --node $N --events
 
 ### Ticket: T280 Coordinator role
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge 9780ade)
 - **Owner:** —
 - **Scope:**
   - Add a `coordinator` session role for coordinating nodes and project roots (P20): no worktree, the scratch cwd, read access under visibility, writes denied by the hook.
@@ -1352,11 +1352,11 @@ agile tail --node $N --events
   - The coordinator is woken by any event routed to it (T243).
 - **Acceptance Criteria:** A fake-agent test: `child_status` wakes the coordinator with a digest. A hook test: a coordinator write is denied.
 - **Validation Steps:** `bun test packages/daemon/src/runner packages/daemon/src/events packages/daemon/src/hook`.
-- **Notes:** First ticket of Phase 11.
+- **Notes:** First ticket of Phase 11. Review (sonnet): 2 blocking fixed (writes allowed only inside the scratch session dir per P20, own coordinator policy on hook + ACP + Grok fs; project roots that had a coordinator wake). Adversarial re-review of the policy PASS (symlinks, `..`, cd, sh -c, cp/mv/ln, find -fprint). Daemon +80. Open: a root whose children all closed attaches as a worker again; Cursor has no hook so edits aren't gated for it.
 
 ### Ticket: T281 Plans and contracts
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge af549a2)
 - **Owner:** —
 - **Scope:**
   - Add `Plan` and `Contract` records (§14.4), with the verbs `plan_write` and `contract_write` for coordinators.
@@ -1366,11 +1366,11 @@ agile tail --node $N --events
   - `plan_changed` and `contract_changed` events.
 - **Acceptance Criteria:** Tests: approving the plan gives both children the contract in their brief; bumping a contract notifies its parties only.
 - **Validation Steps:** `bun test packages/daemon/src/coordination`; `bun run test:e2e`.
-- **Notes:** After T280.
+- **Notes:** After T280. Review (sonnet): 1 blocking fixed — children keep the last approved plan (an `approved` snapshot) while a revision is draft; the card and Plan tab show the change against it. Approval is human-only (cockpit/HTTP; no CLI/RPC yet). `contract_write` is not yet autonomy-gated (T282/T285). Daemon +588.
 
 ### Ticket: T282 Autonomy levels for coordinators
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge 6b4bbdc)
 - **Owner:** —
 - **Scope:** One gate function `allowed(principal, action, level)` for:
   - the coordinator actions `add_child`, `add_waits_on`, reorder, `set_owner`, `merge_siblings` and `approve_contract`;
@@ -1383,20 +1383,20 @@ agile tail --node $N --events
   Add the setting to the project and node UI, plus `agile project set <id> --coordinator-autonomy|--director-autonomy advise|organise|run` and `agile node set <id> --autonomy …`.
 - **Acceptance Criteria:** A table test over principal × action × level; e2e: Apply on an Advise card.
 - **Validation Steps:** `bun test packages/daemon/src/coordination`; `bun run test:e2e`.
-- **Notes:** After T281. The Director reuses this function (T301).
+- **Notes:** After T281. The Director reuses this function (T301). Review (sonnet): 2 blocking fixed (every contract change incl. parties goes through the gate; Apply re-checks and refuses stale proposals). Daemon +502. New home dir `proposals/<AP-id>.yaml` (follows plans/, contracts/, cards/; not in the design's home layout — Pete to confirm). Verbs add_child (idle), add_waits_on, set_owner; reorder/merge_siblings gated but no verb; proposals apply/dismiss only in the cockpit.
 
 ### Ticket: T283 ∥ Status cards
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge d3116fb)
 - **Owner:** —
 - **Scope:** Add `cards/<node>.yaml` (§14.5). The daemon updates `files`, `state` and `relies_on`; the `progress` verb updates `doing`. The `read_card(node)` verb is limited to siblings, ancestors and the Director. Cards show on the parent's page.
 - **Acceptance Criteria:** A card follows edits within one recompute; a sibling can read it; a node in another project can't.
 - **Validation Steps:** `bun test packages/daemon/src/coordination`.
-- **Notes:** After T280 and T227.
+- **Notes:** After T280 and T227. Review (sonnet) PASS. Daemon ≈+210. read_card: siblings, ancestors, descendants (the parent coordinator), Director hook; the coordinator brief lists child cards. A corrupt card is refused with path:line and isolated in the frame. relies_on = contracts the node is party to, refreshed on the node's next update (not on contract write).
 
 ### Ticket: T284 Import index and sibling alerts
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge 3e6e72c)
 - **Owner:** —
 - **Scope:** Build `index/<repo>.json` for TS/JS only (P14) and keep `exports_changed` on cards. Alerts:
   - the same file edited by siblings → `overlap` to both plus the parent;
@@ -1404,40 +1404,60 @@ agile tail --node $N --events
   - a contract's paths touched → the parent and its parties.
 - **Acceptance Criteria:** A fixture repo: changing the export `salePrice` in `prices.ts` alerts the sibling that imports it, and nobody else.
 - **Validation Steps:** `bun test packages/daemon/src/sync packages/daemon/src/coordination`.
-- **Notes:** After T283.
+- **Notes:** After T283. Review (sonnet) PASS. Daemon +401. Regex scanner (P14), no dependency; index cached by main sha. A sibling "uses" a symbol only via files it changed (imports already on main are shared by all siblings and would alert everyone) — false negatives accepted. Not built: the contract-paths alert — §14.4 `Contract` has no paths; needs Pete: add `Contract.paths`, or derive from the plan owner's globs. Same-file overlap was already delivered by T227/T244.
 
 ### Ticket: T285 Contract proposals
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge 8677401)
 - **Owner:** —
 - **Scope:** The `propose_contract` verb (from one child, or co-signed by siblings) adds a `contract_proposal` to the parent. The coordinator approves it (at Run, when it is routine), rejects it with a reason, or asks you (an inbox card). Approval bumps the version and notifies the parties.
 - **Acceptance Criteria:** The worked-example test: api proposes `saleEndsAt`, the coordinator approves at Run, and web gets `contract_changed`. At Organise the same proposal goes to the inbox.
 - **Validation Steps:** `bun test packages/daemon/src/coordination`.
-- **Notes:** After T282.
+- **Notes:** After T282. Review (sonnet) PASS. Daemon +201. `propose_contract` (child's `routine` is only a claim) and `decide_contract` (coordinator of the contract's node; its own `routine` drives the gate). Gap → T286: a rejected proposal only writes thread lines, no routed event to the proposer; co-signers unverified.
 
 ### Ticket: T286 ∥ Ask sibling
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge 34befbd)
 - **Owner:** —
 - **Scope:** The `ask_sibling(node, question)` and `reply_sibling` verbs. The exchange is written to both threads, and the parent gets a copy. A joint proposal is `propose_contract` with both signatures. The brief states the line between details and plan changes.
 - **Acceptance Criteria:** The fake-agent currency example from §9.5 end to end.
 - **Validation Steps:** `bun test packages/daemon/src/coordination packages/daemon/src/events`.
-- **Notes:** After T285.
+- **Notes:** After T285. From T285 review: tell the proposer (routed event) when its contract proposal is rejected or approved; co-signers must actually agree (via ask/reply) before a joint proposal is filed. Review (sonnet): 1 blocking fixed — co-sign needs `reply_sibling` `agree: {contract, body}` to the proposer's latest ask, matching this contract and body (sha256). Decision notices say "by the operator" or "by your coordinator". Daemon +229. Full bun test after merge: 2235/0.
 
 ### Ticket: T287 Sibling finished and collisions go to the parent
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge 98672b7)
 - **Owner:** —
 - **Scope:**
   - When a child merges, the parent is woken first, and its `note_child` verb sends targeted notes. Same-repo siblings still get the sync.
   - An overlap or collision wakes the parent with options: add `waits_on`, give ownership, or merge the siblings. The action is gated by T282.
 - **Acceptance Criteria:** Fake-agent test: an overlap reaches the parent; at Organise the scripted `add_waits_on` is applied and you are told.
 - **Validation Steps:** `bun test packages/daemon/src/coordination`.
-- **Notes:** After T284.
+- **Notes:** After T284. Review (sonnet) PASS. Daemon +26. `note_child` → `coordinator_note` to that child only. Overlap summary lists the parent's options. Question for Pete: `coordinator_note` doesn't wake a finished work node under P11, so a note to a done child may never be read.
+
+### Ticket: T290 A coordinator note wakes an ended work node
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Pete (2026-09-24): a parent's `coordinator_note` must reach its children, so it wakes a work node whose session has ended (added to P11's work wake types). Nodes the human stopped, landed or closed still never wake; the per-node wake budget still applies.
+- **Acceptance Criteria:** Wake-policy and delivery tests: a note to an ended work node starts a session; a landed one stays pending.
+- **Validation Steps:** `bun test packages/daemon/src/events`.
+- **Notes:** Answers T287's question.
+- T290: coordinator_note added to the work wake types; wake + delivery tests; full bun test 2243/0. One-line change reviewed by the manager. merge 3832ebb.
+
+
+### Ticket: T291 Coordinators are denied WebFetch/WebSearch
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** P20: a coordinator has no network. Claude's WebFetch/WebSearch have no ACP kind, so the role table never saw them; `roleToolVerdict` (hook/decide.ts) now denies them for the coordinator permission role. Engineers and reviewers unchanged.
+- **Acceptance Criteria:** Hook tests: coordinator denied both; worker allowed both.
+- **Validation Steps:** `bun test packages/daemon/src/hook`.
+- **Notes:** Found in T300 review. Full bun test 2245/0. Manager reviewed the diff (small). merge 7d767ec. Open: other network-capable tools (e.g. MCP servers) are not covered by name.
 
 ### Ticket: T288 ∥ Helper children on the same repo
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge 63cdedc)
 - **Owner:** —
 - **Scope:**
   - `node new --helper-of <work node>` creates a same-repo child that branches off the work node's branch and delivers back into it (a direct merge into that branch). The parent stays a work node (P1).
@@ -1445,12 +1465,12 @@ agile tail --node $N --events
   - This supersedes the unfiled "side-quest" proposal.
 - **Acceptance Criteria:** A test: the helper merges into its parent's branch; the parent delivers one PR containing both.
 - **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/streams`.
-- **Notes:** After T205 and T223.
+- **Notes:** After T205 and T223. Review (sonnet): 2 blocking fixed (parent PR carrying both changes tested against the fake GitHub; a bad helper target is refused, never main). MainSync skips helpers. A helper's land waits (held, `waits_on`) while the parent is mid-turn or dirty; no automatic retry at the parent's turn end. Daemon +84.
 
 ### Ticket: T289 Phase 11 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
+- **Owner:** Pete
 - **Scope:** Black-box QA of the coordinator, plans, contracts, levels, cards, alerts, ask-sibling and helpers with fake agents. Daemon line count. Pete runs the worked example on his two repos with a live coordinator.
 - **Acceptance Criteria:** QA ACCEPT. Live: the coordinator writes a plan and a contract that Pete approves. The two parts work from them. A contract proposal reaches the parent and is decided. Pete sees it as one line in the activity feed.
 - **Validation Steps:** Pete, on his Mac:
@@ -1474,7 +1494,7 @@ agile node list --parent $C --json | jq -r '.[] | .id + "  " + .title + "  " + .
 agile tail --node $C --events
 ```
 
-- **Notes:** —
+- **Notes:** — QA (sonnet, black-box) ACCEPT on 556a2b5: bun test 2235/0, integration and e2e (36) green. Driven by hand: autonomy settings, the split into a coordinating node, a real coordinator session and its brief, helpers (cross-repo refused). Agent-side verbs (plans, contracts, proposals, cards, helper merge) covered by the suites only. Minor: `agile tail --node <id> --events` printed nothing for a node with events → T248 (Phase 9). Daemon 27,255 lines (24,729 at Phase 10).
 
 ### Phase 12 — The Director
 
@@ -1625,6 +1645,11 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-09-25 Pete: skip `Contract.paths` (T284); the import-index alerts cover contract breakage. Revisit only if a miss shows up.
+
+- 2026-09-24 Pete: `proposals/<AP-id>.yaml` home dir APPROVED (T282). T287 question answered: coordinator notes wake ended work nodes (T290).
+
+- Phase 11 complete on `claude/phase-11` (2026-09-24): T280–T288 merged, T289 QA ACCEPT; awaiting Pete's look. Open for Pete: `proposals/` home dir (T282); `Contract.paths` for the contract-touched alert (T284); should `coordinator_note` wake a finished work node (T287). Phase 12 proceeds on `claude/phase-12`.
 - Phase 10 complete on `claude/phase-10` (2026-09-24): T260–T266 merged, T267 QA ACCEPT; T268 (real-classifier ship hold) before Pete's look. Phase 11 proceeds on `claude/phase-11`.
 - Phase 9 complete on `claude/phase-9` (2026-09-24): T240–T246 merged, T247 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/6, base claude/phase-8). Phase 10 proceeds on `claude/phase-10`.
 - (Pete, 2026-09-24) P13 bullet 1 (leave a private repo out of a session's readable directories) is deferred until it becomes a need; the hook check (T229) stands alone.

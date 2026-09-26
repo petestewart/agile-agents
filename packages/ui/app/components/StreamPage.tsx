@@ -18,27 +18,44 @@
  *    refusal's reason, shown on the page).
  */
 
-import { type InboxItem, formatKnowledgeScope } from '@agile-agents/shared';
+import {
+  type Autonomy,
+  type InboxItem,
+  formatKnowledgeScope,
+  isAgentRole,
+} from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   type RepoRow,
   addRepoToStream,
+  approvePlan,
   attachSession,
   checkStreamPr,
   closeStream,
   getStreamActivity,
   getStreamDiff,
   getStreamPage,
+  getStreamPlan,
   landStream,
   listRepos,
   markStreamLanded,
   resolveConflict,
   sayOnStream,
+  setNodeAutonomy,
+  setProjectAutonomy,
   stopSessions,
   waitOnStream,
 } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
-import type { ActivityEntry, LandOutcome, StreamDiff, StreamPagePayload } from '../lib/feed-types';
+import type {
+  ActivityEntry,
+  CockpitCardError,
+  CockpitProjectRow,
+  CockpitStatusCard,
+  LandOutcome,
+  StreamDiff,
+  StreamPagePayload,
+} from '../lib/feed-types';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
 import {
@@ -54,11 +71,12 @@ import { Card } from './Inbox';
 import { Markdown } from './Markdown';
 import { SessionPicker, sessionModelText } from './SessionPicker';
 
-type Tab = 'thread' | 'diff' | 'activity' | 'rules' | 'docs';
+type Tab = 'thread' | 'diff' | 'activity' | 'plan' | 'rules' | 'docs';
 const TABS: ReadonlyArray<{ tab: Tab; label: string }> = [
   { tab: 'thread', label: 'Thread' },
   { tab: 'diff', label: 'Diff' },
   { tab: 'activity', label: 'Activity' },
+  { tab: 'plan', label: 'Plan' },
   { tab: 'rules', label: 'Knowledge in scope' },
   { tab: 'docs', label: 'Docs' },
 ];
@@ -115,6 +133,104 @@ export function reposNamedIn(body: string, repos: readonly RepoRow[], current?: 
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** T281 (§9.1): who owns what, the contracts between the children, and the draft's Approve. */
+function PlanView({
+  id,
+  tick,
+  onChanged,
+}: {
+  id: string;
+  tick: unknown;
+  onChanged: () => void;
+}): JSX.Element {
+  const [data, setData] = useState<Awaited<ReturnType<typeof getStreamPlan>> | undefined>();
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [seq, setSeq] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` and `seq` are re-read triggers.
+  useEffect(() => {
+    let live = true;
+    getStreamPlan(id)
+      .then((r) => live && setData(r))
+      .catch((err: unknown) => live && setError(errorText(err)));
+    return () => {
+      live = false;
+    };
+  }, [id, tick, seq]);
+  if (error) return <p className="cr-dim">{error}</p>;
+  if (!data) return <p className="cr-dim">Loading…</p>;
+  const { plan, contracts } = data;
+  if (!plan && contracts.length === 0) {
+    return (
+      <p className="cr-dim" data-testid="plan-empty">
+        No plan yet — the coordinator writes one when it splits the work.
+      </p>
+    );
+  }
+  return (
+    <section className="cr-docs" data-testid="plan">
+      {plan && (
+        <p data-testid="plan-status" data-status={plan.status}>
+          Plan v{plan.version} · {plan.status}
+          {plan.approved_by ? ` by ${plan.approved_by}` : ''}{' '}
+          {plan.status === 'draft' && (
+            <button
+              type="button"
+              className="cr-btn signal"
+              data-testid="plan-tab-approve"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                approvePlan(id)
+                  .catch((err: unknown) => setError(errorText(err)))
+                  .finally(() => {
+                    setBusy(false);
+                    setSeq((n) => n + 1);
+                    onChanged();
+                  });
+              }}
+            >
+              Approve
+            </button>
+          )}
+        </p>
+      )}
+      {plan && (
+        <ul data-testid="plan-owners">
+          {plan.owners.map((o) => (
+            <li key={o.child} data-testid="plan-owner" data-child={o.child}>
+              {o.child}: {o.owns.length === 0 ? 'nothing' : o.owns.join(', ')}
+              {plan.status === 'draft' && plan.approved
+                ? (() => {
+                    const before = plan.approved.owners.find((a) => a.child === o.child);
+                    const same = before?.owns.join(', ') === o.owns.join(', ');
+                    return same ? null : (
+                      <span className="cr-dim" data-testid="plan-owner-was">
+                        {' '}
+                        (approved v{plan.approved.version}:{' '}
+                        {before ? before.owns.join(', ') || 'nothing' : 'not in the plan'})
+                      </span>
+                    );
+                  })()
+                : null}
+            </li>
+          ))}
+        </ul>
+      )}
+      <ul data-testid="contracts">
+        {contracts.map((c) => (
+          <li key={c.id} data-testid="contract" data-contract={c.id}>
+            <div className="cr-dim">
+              {c.title} · v{c.version} · parties {c.parties.length}
+            </div>
+            <Markdown text={c.body} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 /** T245: what woke this node and why — every routed event, its reason, and what carried it. */
@@ -415,6 +531,105 @@ function LandPanel({
   );
 }
 
+const AUTONOMY_LEVELS = ['advise', 'organise', 'run'] as const;
+
+/**
+ * T282 (§9 Autonomy): how far this node's coordinator acts on its own. On
+ * a project root it sets the project's level; elsewhere it overrides it.
+ */
+function AutonomyPicker({
+  stream,
+  project,
+  busy,
+  act,
+}: {
+  stream: StreamPagePayload['stream'];
+  project: CockpitProjectRow | undefined;
+  busy: boolean;
+  act: (fn: () => Promise<unknown>) => Promise<void> | void;
+}): JSX.Element | null {
+  if (project === undefined) return null;
+  const isRoot = project.root === stream.id;
+  const inherited = project.autonomy?.coordinator ?? 'advise';
+  const value = isRoot ? inherited : (stream.autonomy ?? 'inherit');
+  return (
+    <label className="cr-dim" data-testid="autonomy">
+      Coordinator autonomy{' '}
+      <select
+        data-testid="autonomy-select"
+        value={value}
+        disabled={busy}
+        onChange={(e) => {
+          const next = e.target.value;
+          void act(() =>
+            isRoot
+              ? setProjectAutonomy(project.id, { coordinator: next as Autonomy })
+              : setNodeAutonomy(stream.id, next === 'inherit' ? null : (next as Autonomy)),
+          );
+        }}
+      >
+        {!isRoot && <option value="inherit">inherit ({inherited})</option>}
+        {AUTONOMY_LEVELS.map((l) => (
+          <option key={l} value={l}>
+            {l}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** T283 (§14.5): the children's status cards, on the parent's page. */
+function ChildCards({
+  cards,
+  titleOf,
+}: {
+  cards: Array<CockpitStatusCard | CockpitCardError>;
+  titleOf: (id: string) => string;
+}): JSX.Element | null {
+  if (cards.length === 0) return null;
+  return (
+    <section className="cr-findings" data-testid="child-cards">
+      <h2>Children</h2>
+      <ul>
+        {cards.map((card) =>
+          'error' in card ? (
+            <li key={card.node} data-testid="status-card-error" data-node={card.node}>
+              <strong>{titleOf(card.node)}</strong>{' '}
+              <span className="sev" data-testid="status-card-error-text">
+                {card.error}
+              </span>
+            </li>
+          ) : (
+            <li
+              key={card.node}
+              data-testid="status-card"
+              data-node={card.node}
+              data-state={card.state}
+            >
+              <strong>{titleOf(card.node)}</strong> <span className="cr-dim">{card.state}</span>
+              {card.doing !== '' && (
+                <>
+                  {' — '}
+                  <span data-testid="status-card-doing">{card.doing}</span>
+                </>
+              )}
+              {card.files.length > 0 && (
+                <p className="cr-dim" data-testid="status-card-files">
+                  {card.files.join(', ')}
+                </p>
+              )}
+              {card.relies_on.length > 0 && (
+                <p className="cr-dim">relies on {card.relies_on.join(', ')}</p>
+              )}
+            </li>
+          ),
+        )}
+      </ul>
+    </section>
+  );
+}
+
 export function StreamPage({ id }: { id: string }): JSX.Element {
   const { cockpit, refresh } = useFeed();
   const { openRules } = useShell();
@@ -521,7 +736,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const { stream } = page;
   const dot = streamDot({ agent_status: stream.agent.status, human_status: stream.human.status });
   const live = stream.sessions.filter(isLiveSession);
-  const liveWorker = live.find((s) => s.role === 'worker');
+  const liveWorker = live.find((s) => isAgentRole(s.role));
   const liveReviewer = live.find((s) => s.role === 'reviewer');
   // T174: human lines sent mid-turn, not yet delivered to the live worker.
   const queuedLines = new Set(live.flatMap((s) => s.queued ?? []));
@@ -532,6 +747,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const repoOptions = repos.map((r) => r.name).filter((name) => name !== stream.repo);
   const chosenRepo = repoChoice || repoOptions[0] || '';
   const waits = stream.waits_on ?? [];
+  // T336: a part is not started until its coordinator's plan is approved.
+  const waitingForPlan = cockpit?.streams.find((r) => r.id === stream.id)?.waiting_for_plan;
   const titleOf = (id: string) => cockpit?.streams.find((r) => r.id === id)?.title ?? id;
   const linkOptions = (cockpit?.streams ?? []).filter(
     (r) => r.id !== stream.id && !waits.some((w) => w.node === r.id),
@@ -555,7 +772,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           <span data-testid="stream-title">{stream.title}</span>
         </h1>
         <p className="cr-dim" data-testid="stream-status">
-          agent {stream.agent.status} · you {stream.human.status.replace(/_/g, ' ')}
+          agent {waitingForPlan ? 'waiting for the plan' : stream.agent.status} · you{' '}
+          {stream.human.status.replace(/_/g, ' ')}
           {stream.branch ? ` · ${stream.branch}` : ''}
         </p>
         <Markdown className="cr-goal" text={stream.goal} />
@@ -580,6 +798,13 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           />
         ))}
       </section>
+
+      <ChildCards
+        cards={(cockpit?.cards ?? []).filter(
+          (c) => cockpit?.streams.find((r) => r.id === c.node)?.parent === stream.id,
+        )}
+        titleOf={titleOf}
+      />
 
       <section className="cr-sessions" data-testid="sessions">
         <ul>
@@ -612,7 +837,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             onClick={() => setPicker('worker')}
           >
             {/* T204: a new node starts its own agent; this is for "Start later" or after one ended. */}
-            {stream.sessions.some((s) => s.role === 'worker') ? 'Restart' : 'Start'}
+            {stream.sessions.some((s) => isAgentRole(s.role)) ? 'Restart' : 'Start'}
           </button>
           <button
             type="button"
@@ -688,6 +913,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             ))}
           </ul>
         )}
+        <AutonomyPicker
+          stream={stream}
+          project={cockpit?.projects.find((p) => p.id === stream.project)}
+          busy={busy}
+          act={act}
+        />
         {linking && (
           <div className="cr-actions" data-testid="link-wait-form">
             <select
@@ -971,6 +1202,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         ))}
 
       {tab === 'activity' && <ActivityView id={stream.id} tick={cockpit} />}
+
+      {tab === 'plan' && <PlanView id={stream.id} tick={cockpit} onChanged={refresh} />}
 
       {tab === 'rules' && (
         <ul className="cr-rules" data-testid="rules">

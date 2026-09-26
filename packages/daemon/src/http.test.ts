@@ -647,7 +647,14 @@ describe('T160 cockpit routes', () => {
     expect(entries.map((e) => [e.by, e.kind])).toEqual([['human', 'event']]);
 
     const frame = (await (await fetch(url('/api/cockpit'))).json()) as CockpitFrame;
-    expect(frame.projects).toEqual([{ id: shop.id, name: 'shop', root: shop.root }]);
+    expect(frame.projects).toEqual([
+      {
+        id: shop.id,
+        name: 'shop',
+        root: shop.root,
+        autonomy: { coordinator: 'advise', director: 'advise' },
+      },
+    ]);
     const roles = Object.fromEntries(frame.streams.map((r) => [r.id, [r.role, r.project]]));
     expect(roles[shop.root]).toEqual(['project', shop.id]);
     expect(roles[parent.id]).toEqual(['coordinating', shop.id]);

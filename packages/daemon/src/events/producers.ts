@@ -154,7 +154,7 @@ export function summarize(
       return `Child ${String(p.title)} is ${word}: ${String(p.progress ?? 'no progress line')}.`;
     }
     case 'child_delivered':
-      return `Child ${String(p.title)} merged into ${String(p.repo)} main (${String(p.sha).slice(0, 12)}).`;
+      return `Child ${String(p.title)} merged into ${String(p.repo)} main (${String(p.sha).slice(0, 12)}). Tell the siblings it affects with \`note_child\`; same-repo siblings get the main sync.`;
     case 'pr_review': {
       if (!self) return `${pr} on ${name(event.subject)}: ${String(p.state)}.`;
       const comments = list(p.comments) || 'none';
@@ -198,18 +198,49 @@ export function summarize(
     case 'overlap': {
       const files = list(p.files);
       if (node !== event.subject && node !== p.other) {
-        return `${name(event.subject)} and ${name(p.other)} both changed ${files}.`;
+        return `${name(event.subject)} and ${name(p.other)} both changed ${files}. If they are your children, decide: \`add_waits_on\` (one waits), \`set_owner\` (one owns the files), or ask the operator to merge them; then \`note_child\` each.`;
       }
       const other = node === p.other ? event.subject : p.other;
       const proj = node === p.other ? event.project : p.other_project;
       const project = typeof proj === 'string' ? ` (${proj})` : '';
       return `You and ${name(other)}${project} both changed ${files}. Your coordinator decides who waits; don't rewrite their part.`;
     }
+    case 'symbol_changed':
+      if (node !== event.subject && !isImporter(event, node)) {
+        return `${name(event.subject)} changed ${String(p.symbol)}, which a sibling imports in ${String(p.file)}.`;
+      }
+      return `${name(event.subject)} changed ${String(p.symbol)}, which you import in ${String(p.file)}. Check your use still fits; ask your sibling or coordinator if it doesn't.`;
     case 'dependency_satisfied': {
       const project = typeof p.project === 'string' ? ` (${p.project})` : '';
       return `${String(p.title ?? p.node)}${project} ${String(p.outcome)}; your wait on it has cleared.`;
     }
+    case 'plan_changed': {
+      const paths = list(p.paths);
+      return `The plan changed: ${String(p.summary)}. You own ${paths || 'no paths yet'}.`;
+    }
+    case 'coordinator_note':
+      // T286: a daemon notice (a contract decision) is not the coordinator speaking.
+      if (event.by === 'daemon') return String(p.body);
+      // T336: quoted, so the agent reads it as the note, not as an operator instruction.
+      return `Your coordinator says: "${String(p.body)}"`;
+    case 'contract_changed':
+      return `Contract ${String(p.title)} is now v${String(p.version)}: ${String(p.diff)}. Adjust your side.`;
+    case 'contract_proposal':
+      return `${list(p.children)} propose a change to contract ${String(p.contract)}: ${String(p.body)}. Reason: ${String(p.reason)}. Decide it with \`decide_contract\`.`;
+    case 'sibling_ask':
+      if (node === p.sibling) {
+        return `${name(event.subject)} asks you (${event.id}): ${String(p.question)}. Answer with \`reply_sibling\`.`;
+      }
+      return `${name(event.subject)} asks ${name(p.sibling)}: ${String(p.question)}.`;
+    case 'sibling_reply':
+      if (node === p.sibling) return `${name(event.subject)} replies: ${String(p.body)}.`;
+      return `${name(event.subject)} replies to ${name(p.sibling)}: ${String(p.body)}.`;
     default:
       return `${event.type}: read_event ${event.id}.`;
   }
+}
+
+/** The sibling a `symbol_changed` was routed to because it imports the symbol. */
+function isImporter(event: RoutedEvent, node: string | undefined): boolean {
+  return event.routing.some((r) => r.node === node && r.because === 'sibling');
 }

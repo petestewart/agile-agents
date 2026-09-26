@@ -421,7 +421,7 @@ describe('PR poller routed events (T244)', () => {
     const delivered = one('child_delivered');
     expect(routed(delivered)).toEqual([[parentId, 'ancestor']]);
     expect(summarize(delivered, parentId)).toBe(
-      `Child CSV merged into demo main (${sha.slice(0, 12)}).`,
+      `Child CSV merged into demo main (${sha.slice(0, 12)}). Tell the siblings it affects with \`note_child\`; same-repo siblings get the main sync.`,
     );
     const dep = one('dependency_satisfied');
     expect(routed(dep)).toEqual([[waiter.id, 'waits_on']]);

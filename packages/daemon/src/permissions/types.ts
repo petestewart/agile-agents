@@ -14,8 +14,8 @@
 
 import type { KnowledgeItem } from '@agile-agents/shared';
 
-/** The permission-table role a session is judged under (`permissionRoleFor`): worker = `engineer`, reviewer/lessons = `reviewer`. */
-export type PermissionRole = 'engineer' | 'reviewer';
+/** The permission-table role a session is judged under (`permissionRoleFor`): worker = `engineer`, reviewer/lessons = `reviewer`, coordinator = `coordinator` (P20). */
+export type PermissionRole = 'engineer' | 'reviewer' | 'coordinator';
 
 /** ACP permission option kinds seen on the wire (spike-findings.md §A). */
 export type AcpPermissionOptionKind =

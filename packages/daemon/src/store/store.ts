@@ -34,6 +34,8 @@ import {
   type RoutedEvent,
   type SessionDefaultsPatch,
   SessionDefaultsPatchSchema,
+  type StatusCard,
+  StatusCardSchema,
   type Stream,
   type StreamPrincipal,
   type ThreadEntry,
@@ -44,6 +46,7 @@ import {
   assertNoWaitsOnCycle,
   assertStreamWrite,
   formatKnowledgeScope,
+  formatZodError,
   projectNameKey,
   validateAgentRecord,
   validateDelivery,
@@ -56,9 +59,11 @@ import {
   validateRepoEntry,
   validateReposConfig,
   validateRoutedEvent,
+  validateStatusCard,
   validateStream,
   validateThreadEntry,
 } from '@agile-agents/shared';
+import { parse as parseYaml } from 'yaml';
 import { buildEvent, needsFsync } from './events';
 import {
   appendJsonlLine,
@@ -1027,6 +1032,38 @@ export class StateStore {
     return out;
   }
 
+  // ------------------------------------------------------- Status cards
+  // T283, projects-design §14.5: `cards/<node-id>.yaml`. Rewritten on every
+  // recompute, so, like routed events, no audit `Event` per write.
+
+  private cardRelPath(node: string): string {
+    return join('cards', `${this.streamIdSegment(node)}.yaml`);
+  }
+
+  /** The node's card, or `undefined` before the daemon first writes it. */
+  getCard(node: string): StatusCard | undefined {
+    const path = this.abs(this.cardRelPath(node));
+    if (!fileExists(path)) return undefined;
+    return readCardFile(path);
+  }
+
+  /** Read-modify-write under the mutex; the mutator returns `undefined` to leave the file alone. */
+  async updateCard(
+    node: string,
+    mutator: (before: StatusCard | undefined) => StatusCard | undefined,
+  ): Promise<StatusCard | undefined> {
+    return this.mutex.run(() => {
+      const relPath = this.cardRelPath(node);
+      const before = this.getCard(node);
+      const next = mutator(before);
+      if (next === undefined) return before;
+      const after = validateStatusCard(next);
+      if (after.node !== node) throw new Error(`invalid card write: node ${after.node} ≠ ${node}`);
+      writeYamlFileAtomic(this.abs(relPath), after);
+      return after;
+    });
+  }
+
   // ------------------------------------------------------- Routed events
   // T240, projects-design §14.9, P9: `events/log.jsonl` plus one queue per
   // recipient. Not the audit log: these writes emit no audit `Event`.
@@ -1173,6 +1210,30 @@ function projectEvent(kind: 'project_created' | 'project_updated', project: Proj
 }
 
 /** Reads and validates one YAML record; a corrupt one is refused with its path (§7.3). */
+/**
+ * A card, refused with `path:line` when corrupt (T283): the YAML error's
+ * line, or the line of the first invalid top-level key (1 if none).
+ */
+function readCardFile(absPath: string): StatusCard {
+  const text = readFileSync(absPath, 'utf8');
+  const fail = (line: number, msg: string): never => {
+    throw new Error(`corrupt card file ${absPath}:${line}: ${msg}`);
+  };
+  let raw: unknown;
+  try {
+    raw = parseYaml(text);
+  } catch (err) {
+    const line = (err as { linePos?: Array<{ line: number }> }).linePos?.[0]?.line ?? 1;
+    return fail(line, err instanceof Error ? (err.message.split('\n')[0] ?? '') : String(err));
+  }
+  const result = StatusCardSchema.safeParse(raw);
+  if (result.success) return result.data;
+  const key = result.error.issues[0]?.path[0];
+  const idx =
+    typeof key === 'string' ? text.split('\n').findIndex((l) => l.startsWith(`${key}:`)) : -1;
+  return fail(idx >= 0 ? idx + 1 : 1, formatZodError('StatusCard', result.error));
+}
+
 function readRecord<T>(absPath: string, what: string, validate: (raw: unknown) => T): T {
   try {
     return validate(readYamlFile(absPath));

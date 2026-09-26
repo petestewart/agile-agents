@@ -51,6 +51,7 @@ import {
   runStreamList,
   runStreamNew,
   runStreamSay,
+  runStreamSetAutonomy,
   runStreamShow,
   runStreamWait,
 } from './commands/stream';
@@ -76,8 +77,9 @@ function usage(): string {
     '  project new --name <n> [--repo a] [--repo b|a,b]   a project and its root stream',
     '  project list [--all]       projects (--all includes archived)',
     '  project show <id>',
-    '  project set <id> [--name n] [--repo a,b] [--vendor v] [--model m] [--effort e] [--delivery direct|pr] [--auto-merge on|off] [--coordinator|--director advise|organise|run]',
+    '  project set <id> [--name n] [--repo a,b] [--vendor v] [--model m] [--effort e] [--delivery direct|pr] [--auto-merge on|off] [--coordinator-autonomy|--director-autonomy advise|organise|run]',
     '  node new --title <t> --goal <g> --project <P-id> [--parent <id>] [--repo <name>] [--label l]… [--no-start]',
+    "                             [--helper-of <id>]: a same-repo helper off that node's branch, merged back into it",
     "                             starts the node's agent unless --no-start",
     '                             (--project may be left out when --parent names a node in a project)',
     '  node list [--all] [--status <s>] [--landed] [--project <P-id>] [--parent <id>]',
@@ -89,6 +91,7 @@ function usage(): string {
     '  node add-repo <id> <repo>  + Repo in place: conversation → work, work → coordinating with parts',
     '  node switch-repo <id> <repo>  move a work node with nothing committed to another repo',
     '  node wait <id> --on <id>… [--remove]  hold delivery until each --on node is merged',
+    '  node set <id> --autonomy advise|organise|run|inherit  this node\u2019s coordinator autonomy',
     '  stream …                   alias of `node`',
     '  knowledge list [--status proposed|accepted|retired] [--scope global|repo:<n>|project:<id>|subtree:<id>]',
     '  knowledge show <id>        one item: kind, scope, paths, enforcement, check, source, stats, examples',
@@ -286,6 +289,9 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'archive') return await runStreamArchive(socketPath, parseArgs(restArgv), json);
         if (sub === 'say') return await runStreamSay(socketPath, parseArgs(restArgv), json);
         if (sub === 'wait') return await runStreamWait(socketPath, parseArgs(restArgv), json);
+        if (sub === 'set') {
+          return await runStreamSetAutonomy(socketPath, parseArgs(restArgv), json);
+        }
         if (sub === 'add-repo' || sub === 'switch-repo') {
           return await runStreamAddRepo(
             socketPath,
