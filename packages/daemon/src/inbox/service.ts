@@ -258,6 +258,9 @@ export class InboxService {
   ): InboxItem | undefined {
     const plans = this.deps.plans;
     if (plans?.waitingParts === undefined || stream.archived === true) return undefined;
+    if (stream.human.status === 'closed' || stream.human.status === 'landed') return undefined;
+    // Only a node that has had a coordinator has parts waiting on it (`waitingForPlan`).
+    if (!stream.sessions.some((s) => s.role === 'coordinator')) return undefined;
     if (drafted.has(stream.id) || !hasParts(stream.id, byId)) return undefined;
     const live = stream.sessions.some(
       (s) => isAgentRole(s.role) && s.status !== 'stopped' && s.status !== 'error',
