@@ -11,6 +11,7 @@
  * the like.
  */
 
+import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ReposConfig, Stream } from '@agile-agents/shared';
 import * as cmd from './command';
@@ -251,10 +252,27 @@ const ENGINEER_BENIGN_PATH_TOOLS = new Set([
   'cut',
   'touch',
   'diff',
+  'tree',
 ]);
 
 /** T213: of those, the ones that only read, so any `readRoots` path is fine (`sort -o` writes). */
-const ENGINEER_READ_ONLY_PATH_TOOLS = new Set(['cat', 'ls', 'head', 'tail', 'wc', 'cut', 'diff']);
+const ENGINEER_READ_ONLY_PATH_TOOLS = new Set([
+  'cat',
+  'ls',
+  'head',
+  'tail',
+  'wc',
+  'cut',
+  'diff',
+  'tree',
+]);
+
+/** T345: `tree -o <file>` writes its listing, and `-R` writes `00Tree.html` into every dir. */
+function treeWrites(tokens: string[]): boolean {
+  return (
+    tokens[0] === 'tree' && tokens.some((t) => /^-[^-]*[oR]/.test(t) || t.startsWith('--output'))
+  );
+}
 
 /**
  * Every path must resolve inside the worktree after `~` expansion
@@ -268,7 +286,25 @@ function gitDirWriteDenyReason(path: string, ctx: PolicyContext): string | undef
     : undefined;
 }
 
-function verifyBenignPaths(paths: string[], ctx: PolicyContext, reads = false): PolicyVerdict {
+/**
+ * T345: every dir a worker's atom may run in. A `cd` adds its target but
+ * never drops the dir before it: a failed `cd`, a `;`, a pipe or a nested
+ * `sh -c` leaves the next atom where it was, so a path must hold from each.
+ */
+type Cwds = readonly string[];
+const MAX_CWDS = 16;
+
+/** `path` as seen from `cwd`: unchanged from the worktree itself (so reasons keep the raw path). */
+function fromCwd(path: string, cwd: string, ctx: PolicyContext): string {
+  return cwd === ctx.worktreePath ? path : resolve(cwd, path);
+}
+
+function verifyBenignPaths(
+  paths: string[],
+  ctx: PolicyContext,
+  reads = false,
+  cwds: Cwds = [ctx.worktreePath],
+): PolicyVerdict {
   for (const raw of paths) {
     const resolved = cmd.resolveTargetPath(raw);
     if (!resolved.safe) {
@@ -276,14 +312,17 @@ function verifyBenignPaths(paths: string[], ctx: PolicyContext, reads = false): 
         `"${raw}" contains an unresolved shell variable/backtick/home-directory reference`,
       );
     }
-    if (reads) {
-      const reason = readDenyReason(resolved.path, ctx);
-      if (reason !== undefined) return deny(reason);
-    } else if (!isPathInside(resolved.path, ctx.worktreePath)) {
-      return deny(`${raw} is outside the worktree`);
-    } else {
-      const reason = gitDirWriteDenyReason(resolved.path, ctx);
-      if (reason !== undefined) return deny(reason);
+    for (const cwd of cwds) {
+      const path = fromCwd(resolved.path, cwd, ctx);
+      if (reads) {
+        const reason = readDenyReason(path, ctx);
+        if (reason !== undefined) return deny(reason);
+      } else if (!isPathInside(path, ctx.worktreePath)) {
+        return deny(`${raw} is outside the worktree`);
+      } else {
+        const reason = gitDirWriteDenyReason(path, ctx);
+        if (reason !== undefined) return deny(reason);
+      }
     }
   }
   return ALLOW;
@@ -293,6 +332,7 @@ function verifyBenignPaths(paths: string[], ctx: PolicyContext, reads = false): 
 function engineerBenignCommandVerdict(
   atom: cmd.CommandAtom,
   ctx: PolicyContext,
+  cwds: Cwds,
 ): PolicyVerdict | undefined {
   const { tokens } = atom;
   const head = tokens[0];
@@ -327,7 +367,7 @@ function engineerBenignCommandVerdict(
 
   if (head === 'find') {
     if (cmd.isFindWriteInvocation(tokens)) return undefined; // write primitives: not benign
-    return verifyBenignPaths(cmd.findSearchRoots(tokens), ctx, true);
+    return verifyBenignPaths(cmd.findSearchRoots(tokens), ctx, true, cwds);
   }
 
   if (head === 'grep' || head === 'rg') {
@@ -337,19 +377,22 @@ function engineerBenignCommandVerdict(
       [...cmd.grepPathArgs(tokens), ...cmd.flagPathValues(tokens)],
       ctx,
       true,
+      cwds,
     );
   }
 
   const scriptPath = cmd.scriptExecutionPath(tokens);
   if (scriptPath !== undefined) {
-    return verifyBenignPaths([scriptPath], ctx);
+    return verifyBenignPaths([scriptPath], ctx, false, cwds);
   }
 
   if (ENGINEER_BENIGN_PATH_TOOLS.has(head)) {
+    if (treeWrites(tokens)) return undefined;
     return verifyBenignPaths(
       [...cmd.benignPathArgs(tokens), ...cmd.flagPathValues(tokens)],
       ctx,
       ENGINEER_READ_ONLY_PATH_TOOLS.has(head),
+      cwds,
     );
   }
 
@@ -360,24 +403,85 @@ function engineerBenignCommandVerdict(
  * T343: any git argument that may be a path must resolve inside the worktree
  * and outside `.git`, whatever the subcommand; otherwise it is held.
  */
-function engineerGitPathVerdict(args: string[], ctx: PolicyContext): PolicyVerdict | undefined {
-  for (const raw of cmd.gitPathArguments(args, ctx.worktreePath)) {
-    const resolved = cmd.resolveTargetPath(raw);
-    if (
-      !resolved.safe ||
-      !isPathInside(resolved.path, ctx.worktreePath) ||
-      cmd.isInsideGitDir(resolved.path, ctx.worktreePath)
-    ) {
-      return hil(
-        `git argument "${raw}" may be a path outside the worktree or into .git: never automatic`,
-      );
+function engineerGitPathVerdict(
+  args: string[],
+  ctx: PolicyContext,
+  cwds: Cwds,
+): PolicyVerdict | undefined {
+  for (const cwd of cwds) {
+    for (const raw of cmd.gitPathArguments(args, cwd)) {
+      const resolved = cmd.resolveTargetPath(raw);
+      const path = resolved.safe ? fromCwd(resolved.path, cwd, ctx) : '';
+      if (
+        !resolved.safe ||
+        !isPathInside(path, ctx.worktreePath) ||
+        cmd.isInsideGitDir(path, ctx.worktreePath)
+      ) {
+        return hil(
+          `git argument "${raw}" may be a path outside the worktree or into .git: never automatic`,
+        );
+      }
     }
   }
   return undefined;
 }
 
+/**
+ * T336, T345: `cd <dir>` resolved from `cwd`, or why it is refused: no
+ * dir, `cd -`, a flag, extra words, or a path the shell must expand.
+ */
+function cdTarget(tokens: string[], cwd: string, role: string): { dir: string } | PolicyVerdict {
+  const [, target, ...rest] = tokens;
+  if (target === undefined || target === '-' || target.startsWith('-') || rest.length > 0) {
+    return deny(`${role} role allows cd only as \`cd <dir>\``);
+  }
+  const resolved = cmd.resolveTargetPath(target);
+  if (!resolved.safe) return deny(`${role} role cannot resolve the path "${target}"`);
+  return { dir: resolve(cwd, resolved.path) };
+}
+
+/**
+ * T345: a worker's `cd` from each dir it may be in: into its own worktree,
+ * never `.git`. The new dir is `realpath`'d, as the kernel resolves a later
+ * `..` from the physical dir. Returns every dir later atoms may run in.
+ */
+function engineerCd(
+  tokens: string[],
+  ctx: PolicyContext,
+  cwds: Cwds,
+): { cwds: Cwds } | PolicyVerdict {
+  const next = new Set(cwds);
+  for (const cwd of cwds) {
+    const moved = cdTarget(tokens, cwd, 'engineer');
+    if ('action' in moved) return moved;
+    if (!isPathInside(moved.dir, ctx.worktreePath)) {
+      return deny(`cd ${tokens[1]} leaves the worktree`);
+    }
+    if (cmd.isInsideGitDir(moved.dir, ctx.worktreePath)) {
+      return deny(`cd ${tokens[1]} goes into git's own state (.git)`);
+    }
+    let dir = moved.dir;
+    try {
+      dir = realpathSync(dir);
+    } catch {
+      // Not there yet: the cd fails and the atoms after it stay where they were.
+    }
+    next.add(dir);
+  }
+  // Each cd can double the set: bound it so a long chain can't stall the hook.
+  if (next.size > MAX_CWDS) return deny('engineer role allows only a few cd per command');
+  return { cwds: [...next] };
+}
+
 function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
+  let cwds: Cwds = [ctx.worktreePath];
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
+    if (atom.tokens[0] === 'cd') {
+      const moved = engineerCd(atom.tokens, ctx, cwds);
+      if ('action' in moved) return moved;
+      cwds = moved.cwds;
+      continue;
+    }
     if (cmd.hasRedirectionOrTee(atom.tokens)) {
       // Every non-benign redirection target (`>`, `1>`, `2>`, `&>`, a second
       // `>`, ...) must resolve inside the worktree. `tee`, an unresolvable
@@ -398,11 +502,16 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
             `"${raw}" contains an unresolved shell variable/backtick/home-directory reference`,
           );
         }
-        if (!isPathInside(resolved.path, ctx.worktreePath)) {
-          return deny('redirected output escapes the worktree (or uses tee/process substitution)');
+        for (const cwd of cwds) {
+          const path = fromCwd(resolved.path, cwd, ctx);
+          if (!isPathInside(path, ctx.worktreePath)) {
+            return deny(
+              'redirected output escapes the worktree (or uses tee/process substitution)',
+            );
+          }
+          const reason = gitDirWriteDenyReason(path, ctx);
+          if (reason !== undefined) return deny(reason);
         }
-        const reason = gitDirWriteDenyReason(resolved.path, ctx);
-        if (reason !== undefined) return deny(reason);
       }
       // A safe redirect doesn't make the command allowed: still classify it.
     }
@@ -419,7 +528,7 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
       }
       const redirect = cmd.gitDirRedirectReason(atom);
       if (redirect !== undefined) return hil(`${redirect}: never automatic`);
-      const written = verifyBenignPaths(cmd.gitWriteTargets(gitArgs), ctx);
+      const written = verifyBenignPaths(cmd.gitWriteTargets(gitArgs), ctx, false, cwds);
       if (written.action !== 'allow') return written;
       if (gitArgs.includes('--unsafe-paths')) {
         return deny(
@@ -430,12 +539,12 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
       if (elsewhere !== undefined) {
         return hil(`${elsewhere} writes a checkout wherever it is told: never automatic`);
       }
-      const pathVerdict = engineerGitPathVerdict(gitArgs, ctx);
+      const pathVerdict = engineerGitPathVerdict(gitArgs, ctx, cwds);
       if (pathVerdict !== undefined) return pathVerdict;
       // Any git not on the never-without-human list: the worker's own branch work.
       continue;
     }
-    const benign = engineerBenignCommandVerdict(atom, ctx);
+    const benign = engineerBenignCommandVerdict(atom, ctx, cwds);
     if (benign !== undefined) {
       if (benign.action === 'allow') continue;
       return benign;
@@ -507,6 +616,7 @@ const REVIEWER_PLAIN_READ_ONLY_TOOLS = new Set([
   'diff',
   'pwd',
   'which',
+  'tree',
 ]);
 
 /** `sed -i`, `-i.bak`, `--in-place[=.bak]`: in-place edits, so `sed` is gated on flags. */
@@ -525,6 +635,7 @@ function isReviewerSafeTool(tokens: string[]): boolean {
   const head = tokens[0];
   if (head === undefined) return false;
   if ((head === 'rg' || head === 'grep') && runsPreprocessor(tokens)) return false;
+  if (treeWrites(tokens)) return false;
   if (REVIEWER_PLAIN_READ_ONLY_TOOLS.has(head)) return true;
   if (head === 'sed') return !isSedInPlace(tokens);
   if (head === 'find')
@@ -615,13 +726,9 @@ function coordinatorCd(
   ctx: PolicyContext,
   cwd: string,
 ): { cwd: string } | PolicyVerdict {
-  const [, target, ...rest] = tokens;
-  if (target === undefined || target === '-' || target.startsWith('-') || rest.length > 0) {
-    return deny('coordinator role allows cd only as `cd <dir>`');
-  }
-  const resolved = cmd.resolveTargetPath(target);
-  if (!resolved.safe) return deny(`coordinator role cannot resolve the path "${target}"`);
-  const dir = resolve(cwd, resolved.path);
+  const moved = cdTarget(tokens, cwd, 'coordinator');
+  if ('action' in moved) return moved;
+  const dir = moved.dir;
   if (ctx.readRoots !== undefined || ctx.hiddenRoots !== undefined) {
     const reason = readDenyReason(dir, ctx);
     if (reason !== undefined) return deny(reason);

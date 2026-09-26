@@ -486,3 +486,32 @@ describe('T291: a coordinator has no network (P20)', () => {
     expect(web('worker', 'WebSearch').decision).toBe('allow');
   });
 });
+
+describe('T345: a worker may cd within its worktree', () => {
+  const home = '/home/u/.agile';
+  const ctx = baseCtx({ readRoots: ['/home/u/Projects/ledger-lite'], hiddenRoots: [home] });
+  const bash = (command: string) =>
+    decidePreToolUse(ctx, { tool_name: 'Bash', tool_input: { command, description: 'x' } })
+      .decision;
+
+  test('cd into the worktree and work there is allowed', () => {
+    for (const command of ['cd sub && bun test', 'cd pkg && git status', 'tree -L 2']) {
+      expect([command, bash(command)]).toEqual([command, 'allow']);
+    }
+  });
+
+  test('cd out of it, and escapes through a later relative path, are denied', () => {
+    for (const command of [
+      'cd .. && ls',
+      'cd / && ls',
+      'cd ~ && ls',
+      `cd ${home} && cat config.yaml`,
+      'cd /home/u/Projects/ledger-lite && ls',
+      'cd .git && ls',
+      'cd sub && echo x > ../../out',
+    ]) {
+      expect([command, bash(command)]).toEqual([command, 'deny']);
+    }
+    expect(bash('cd $(git rev-parse --show-toplevel) && ls')).toBe('ask');
+  });
+});

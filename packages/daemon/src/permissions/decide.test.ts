@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { decidePermission } from './decide';
 import type { AcpPermissionRequestParams, PermissionRole } from './types';
@@ -1673,5 +1673,127 @@ describe('decidePermission — T343 engineer git config overrides that can run p
       'git commit -m "msg" ../outside.ts',
       'hil',
     ]);
+  });
+});
+
+describe('decidePermission — T345 a worker may cd within its worktree', () => {
+  let root: string;
+  let worktree: string;
+  const decideIn = (command: string) =>
+    decidePermission({
+      role: 'engineer',
+      worktreePath: worktree,
+      request: request('execute', { command }),
+    }).kind;
+
+  beforeEach(() => {
+    root = mkdtempSync(joinPath(tmpdir(), 'agile-perm-decide-cd-'));
+    worktree = joinPath(root, 'wt');
+    mkdirSync(joinPath(worktree, 'sub', 'deep'), { recursive: true });
+    mkdirSync(joinPath(worktree, 'pkg'), { recursive: true });
+    mkdirSync(joinPath(worktree, '.git', 'hooks'), { recursive: true });
+    mkdirSync(joinPath(root, 'outside'), { recursive: true });
+    symlinkSync(joinPath(root, 'outside'), joinPath(worktree, 'escape'));
+    symlinkSync(joinPath(worktree, 'sub', 'deep'), joinPath(worktree, 'inner'));
+    symlinkSync(joinPath(root, 'outside'), joinPath(worktree, 'sub', 'out'));
+    writeFileSync(joinPath(root, 'outside', 'secret'), 'x');
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test('cd into a dir inside the worktree, then work there', () => {
+    for (const command of [
+      'cd sub && bun test',
+      'cd pkg && git status',
+      'cd sub/deep && ls',
+      'cd inner && cat x.ts',
+      `cd ${worktree}/sub && bun run build`,
+      'cd . && tree',
+      'cd sub && tree -L 2',
+      'cd sub && echo x > out.txt',
+      'cd sub && cd deep && ls',
+    ]) {
+      expect([command, decideIn(command)]).toEqual([command, 'allow']);
+    }
+  });
+
+  test('cd out of the worktree, into .git, or to a dir the shell must work out, is denied', () => {
+    for (const command of [
+      'cd .. && ls',
+      'cd ../.. && bun test',
+      'cd sub && cd ../.. && ls',
+      'cd / && ls',
+      'cd ~ && ls',
+      'cd ~/.agile && cat config.yaml',
+      `cd ${homedir()}/.agile && ls`,
+      `cd ${root}/outside && ls`,
+      'cd escape && ls',
+      'cd .git && ls',
+      'cd .git/hooks && echo x > pre-commit',
+      'cd sub/../.git && ls',
+      'cd $HOME && ls',
+      'cd && ls',
+      'cd - && ls',
+      'cd -P sub && ls',
+      'cd sub deep && ls',
+      'cd sub & echo x > ../out',
+      Array.from({ length: 30 }, (_, i) => `cd d${i}`).join(' && '),
+    ]) {
+      expect([command, decideIn(command)]).toEqual([command, 'deny']);
+    }
+  });
+
+  test('cd $(...) is never allowed: command substitution is held for the human', () => {
+    expect(decideIn('cd $(mktemp -d) && ls')).toBe('hil');
+    expect(decideIn('cd `echo /` && ls')).toBe('hil');
+  });
+
+  test('a later relative path resolves from the new dir, and from the old one too', () => {
+    for (const command of [
+      // From sub, ../../out is outside the worktree.
+      'cd sub && echo x > ../../out',
+      'cd sub/deep && echo x > ../../../out',
+      'cd sub && cp a.ts ../../out.ts',
+      'cd sub && cat ../../outside/secret',
+      'cd sub/deep && touch ../../.git/config',
+      'cd inner && echo x > ../../../out',
+      'cd sub && git format-patch -o ../../patches HEAD~1',
+      // A failed or subshell cd leaves the next atom where it was.
+      'cd nope ; echo x > ../out',
+      'cd sub | echo x > ../out',
+      'bash -c "cd sub" ; echo x > ../out',
+    ]) {
+      expect([command, decideIn(command)]).toEqual([command, 'deny']);
+    }
+    expect(decideIn('cd sub && echo x > ../top.txt')).toBe('deny');
+    // Only from sub is `out` the symlink out of the worktree.
+    expect(decideIn('echo x > out/pwn')).toBe('allow');
+    for (const command of [
+      'cd sub && echo x > out/pwn',
+      'cd sub && touch out/pwn',
+      'cd sub && cat out/secret',
+      'cd sub && git add out/secret',
+      'cd sub && cd out && ls',
+    ]) {
+      expect([command, decideIn(command)]).not.toEqual([command, 'allow']);
+    }
+    expect(decideIn('cd sub && echo x > deep/out.txt')).toBe('allow');
+  });
+
+  test('tree is read-only: its writing forms are not', () => {
+    expect(decideIn('tree sub')).toBe('allow');
+    expect(decideIn(`tree ${root}/outside`)).toBe('deny');
+    for (const command of ['tree -o out.txt', 'tree -ao out.txt', 'tree -R -H . sub']) {
+      expect([command, decideIn(command)]).toEqual([command, 'deny']);
+    }
+    const reviewer = (command: string) =>
+      decidePermission({
+        role: 'reviewer',
+        worktreePath: worktree,
+        request: request('execute', { command }),
+      }).kind;
+    expect(reviewer('tree -L 2')).toBe('allow');
+    expect(reviewer('tree -o out.txt')).toBe('deny');
   });
 });
