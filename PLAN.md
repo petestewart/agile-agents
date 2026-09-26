@@ -2407,6 +2407,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** control-room e2e `audit r5 #4` (40 nodes, the last one open: its row and Needs me are both on screen; fails on the old sidebar).
 - **Notes:** Branch T417a-sidebar-pinned.
 
+### Ticket: T413 ∥ The node page in words (audit round 5)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Audit round 5 findings 2, 3, 8, 9, 10, 11, 14, 19, 22, 32, 35 on the node page: the details panel's Children spoke its own status words and left children out; a comment being written jumped to another file; ids, full branches and paths in primary text; system rows and details in the daemon's words; an Activity tab unlike Events; raw enums on the Knowledge tab; "Review changes…" meant starting a reviewer; a tall phone header; long titles wrapping the pills; a Goal card repeating the title; role badges that looked like buttons.
+- **Acceptance Criteria:** Children lists every child with `StatusPill` from `nodeStatus` (none on a root); a draft never moves files (its text is added where it was written; Shift in the same hunk makes a range; the footer names the file); branches read as their slug everywhere with the full name on hover and in Copy; system rows and Details in plain words; Activity rows are the Events rows with the routing reason as a chip; the Knowledge tab reuses the Knowledge list row; "Ask an agent to review…"; the phone header about half as tall; a long title truncates with the pills beside it and `titleFromGoal` cuts at a word ≤60 with no "…"; no Goal card on roots or when it repeats the title (the goal moves to Details → About with Edit); role badges are muted text with an icon.
+- **Validation Steps:** `bun test packages/ui`; the whole control-room e2e (84/0) and the walkthrough, with the new draft-comment e2e.
+- **Notes:** Branch T413-node-page-words (worker), merged. The Activity, Plan, Knowledge and Docs tabs load on demand (main script 339 → 331 KB).
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
