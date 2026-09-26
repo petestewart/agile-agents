@@ -1,7 +1,7 @@
 /** T348 (D36 D2): the open node, view and project filter round-trip through the URL. */
 
 import { describe, expect, test } from 'bun:test';
-import { type ShellLocation, parseShellUrl, shellSearch } from './shell';
+import { type ShellLocation, keepScreenParams, parseShellUrl, shellSearch } from './shell';
 
 const NODE = '01J8Z3K4M5N6P7Q8R9S0T1V2W3';
 const PROJECT = 'P-01J8Z3K4M5N6P7Q8R9S0T1V2W4';
@@ -84,5 +84,21 @@ describe('shellSearch', () => {
       { view: 'director', node: undefined, project: PROJECT },
     ];
     for (const c of cases) expect(parseShellUrl(shellSearch(c))).toEqual(c);
+  });
+});
+
+describe('T409: keepScreenParams', () => {
+  test("the screen's own params stay; the shell's are the new ones", () => {
+    expect(keepScreenParams('?view=settings', '?view=settings&section=repos')).toBe(
+      '?view=settings&section=repos',
+    );
+    // The project filter moved: the new filter, the section kept.
+    expect(
+      keepScreenParams('?view=settings&project=P-2', '?view=settings&project=P-1&section=agents'),
+    ).toBe('?view=settings&project=P-2&section=agents');
+    // The filter cleared: gone, not carried over from the old URL.
+    expect(keepScreenParams('?view=settings', '?view=settings&project=P-1')).toBe('?view=settings');
+    expect(keepScreenParams('', '?utm=x')).toBe('?utm=x');
+    expect(keepScreenParams('', '')).toBe('');
   });
 });

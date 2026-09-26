@@ -27,10 +27,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   the UI imports small helpers from `@agile-agents/shared`, whose index pulls
   in schema modules that can't be tree-shaken. A schema-free entry for the UI
   would drop them. (T394)
-- The shell's first effect drops query params it doesn't own
-  (`lib/shell.tsx`); Settings' `section` survives only because a deep link
-  preloads Settings before the first render. Another lazy screen reading its
-  own params would hit the same problem. (T394)
 - `sw.js` still sends every request through its fetch handler, which recent
   Chrome no longer needs for install. Removing it takes the worker out of
   every request's path; check installability on the browsers in use first.

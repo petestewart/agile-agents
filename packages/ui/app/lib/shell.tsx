@@ -71,6 +71,24 @@ export function parseShellUrl(search: string): ShellLocation {
   return { view: isShellView(view) ? view : 'inbox', node: undefined, project };
 }
 
+/** The query params the shell owns; any other belongs to the screen showing (Settings' `section`). */
+const SHELL_PARAMS: ReadonlySet<string> = new Set(['node', 'view', 'project']);
+
+/**
+ * T409: `next` (the shell's own query) plus the screen's params from
+ * `current`, for a rewrite that stays on the same view and node (the project
+ * filter moved, or the first sync after load). Moving to another view drops
+ * them: they were that screen's.
+ */
+export function keepScreenParams(next: string, current: string): string {
+  const params = new URLSearchParams(next);
+  for (const [key, value] of new URLSearchParams(current)) {
+    if (!SHELL_PARAMS.has(key) && !params.has(key)) params.append(key, value);
+  }
+  const query = params.toString();
+  return query === '' ? '' : `?${query}`;
+}
+
 /** The `location.search` for a shell location: `''` for the plain inbox. */
 export function shellSearch({ view, node, project }: ShellLocation): string {
   const params = new URLSearchParams();
@@ -171,11 +189,13 @@ export function ShellProvider({
   // State → URL. Opening another node or view is a new history entry (so
   // back returns to it); the project filter alone only rewrites the current one.
   useEffect(() => {
-    const next = shellSearch({ view, node: selected, project });
-    if (next === location.search) return;
+    const own = shellSearch({ view, node: selected, project });
     const current = parseShellUrl(location.search);
-    const target = parseShellUrl(next);
+    const target = parseShellUrl(own);
     const moved = current.view !== target.view || current.node !== target.node;
+    // T409: staying put keeps the screen's own params (a deep link's `section`).
+    const next = moved ? own : keepScreenParams(own, location.search);
+    if (next === location.search) return;
     const url = `${location.pathname}${next}${location.hash}`;
     if (moved && !replaceNext.current) history.pushState(null, '', url);
     else history.replaceState(null, '', url);
