@@ -84,8 +84,17 @@ export function appendJsonlLine(
   value: unknown,
   options: { fsync?: boolean } = {},
 ): void {
+  appendJsonlLines(path, [value], options);
+}
+
+/** Appends several JSON lines in one write (and one fsync when asked). */
+export function appendJsonlLines(
+  path: string,
+  values: readonly unknown[],
+  options: { fsync?: boolean } = {},
+): void {
   ensureDir(dirname(path));
-  const line = `${JSON.stringify(value)}\n`;
+  const line = values.map((value) => `${JSON.stringify(value)}\n`).join('');
   if (options.fsync !== true) {
     writeFileSync(path, line, { flag: 'a' });
     return;

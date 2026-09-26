@@ -91,6 +91,8 @@ export interface AgentSessionOptions {
   worktreePath: string;
   /** The rendered brief, sent as the first `prompt()`. */
   brief: string;
+  /** T336: the brief's turn started (the session accepted it). */
+  onBriefDelivered?: () => void;
   /** `<home>/sessions/<session id>/`: stderr and output logs. */
   sessionDir: string;
   /** How to invoke the `agile` CLI for the hook and MCP commands. Defaults to `'agile'`. */
@@ -689,7 +691,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         }),
       );
     })
-    .then(() => runPromptTurn(brief))
+    .then(() => runPromptTurn(brief, opts.onBriefDelivered))
     .catch(() => {
       // `runPromptTurn` already stopped and recorded the failure.
     });

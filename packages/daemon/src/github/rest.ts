@@ -309,6 +309,7 @@ export function createGitHubRest(options: GitHubRestOptions): GitHubPort {
             name: str(c.name),
             status: str(c.status),
             conclusion: typeof c.conclusion === 'string' ? c.conclusion : null,
+            ...checkOutput(c.output),
           })),
         opts,
       ),
@@ -354,4 +355,11 @@ export function createGitHubRest(options: GitHubRestOptions): GitHubPort {
       };
     },
   };
+}
+
+/** A check run's `output.summary` and `output.text`, joined; nothing when both are empty. */
+function checkOutput(o: unknown): { output?: string } {
+  const j = (o ?? {}) as Json;
+  const text = [j.summary, j.text].filter((x) => typeof x === 'string' && x !== '').join('\n\n');
+  return text === '' ? {} : { output: text };
 }

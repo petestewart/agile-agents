@@ -22,8 +22,9 @@
  * claim that a mid-line poll "just waits for the next tick".)
  */
 
-import { existsSync, statSync } from 'node:fs';
-import type { Event } from '@agile-agents/shared';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { type Delivery, type Event, type RoutedEvent, UlidSchema } from '@agile-agents/shared';
 import { printJson } from '../format';
 
 /**
@@ -158,5 +159,114 @@ export async function runTail(options: RunTailOptions): Promise<number> {
     offset = next.size;
   }
 
+  return 0;
+}
+
+// ---- T245: `agile tail --node <id> --events` --------------------------------
+
+/**
+ * One row of a node's Activity (projects-design §8): an event routed to the
+ * node, why, and the latest delivery line for it. Read off disk, like the
+ * audit tail above: `<home>/events/log.jsonl` and `events/queue/<node>.jsonl`
+ * (the daemon's store writes both, fsynced, `events/service.ts` is the API).
+ */
+export interface NodeActivityRow {
+  event: RoutedEvent;
+  because: string;
+  status: string;
+  delivered_at?: string;
+  session?: string;
+  digest?: string;
+}
+
+function readJsonl(path: string): unknown[] {
+  if (!existsSync(path)) return [];
+  const out: unknown[] = [];
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      out.push(JSON.parse(line));
+    } catch {
+      // A torn final line (a write in flight) is picked up on the next read.
+    }
+  }
+  return out;
+}
+
+/** Every event routed to `node`, oldest first, with its latest delivery status. */
+export function readNodeActivity(home: string, node: string): NodeActivityRow[] {
+  const id = UlidSchema.parse(node);
+  const events = new Map<string, RoutedEvent>();
+  for (const raw of readJsonl(join(home, 'events', 'log.jsonl'))) {
+    const event = raw as RoutedEvent;
+    events.set(event.id, event);
+  }
+  const latest = new Map<string, Delivery>();
+  for (const raw of readJsonl(join(home, 'events', 'queue', `${id}.jsonl`))) {
+    const line = raw as Delivery;
+    latest.set(line.event, line);
+  }
+  const rows: NodeActivityRow[] = [];
+  for (const [eventId, line] of latest) {
+    const event = events.get(eventId);
+    if (event === undefined) continue;
+    rows.push({
+      event,
+      because: event.routing.find((r) => r.node === id)?.because ?? 'self',
+      status: line.status,
+      ...(line.delivered_at !== undefined ? { delivered_at: line.delivered_at } : {}),
+      ...(line.session !== undefined ? { session: line.session } : {}),
+      ...(line.digest !== undefined ? { digest: line.digest } : {}),
+    });
+  }
+  return rows;
+}
+
+export function formatActivityRow(row: NodeActivityRow): string {
+  const repo = row.event.repo ? ` [${row.event.repo}]` : '';
+  const carrier = row.session
+    ? ` in session ${row.session}`
+    : row.digest
+      ? ` in digest ${row.digest}`
+      : '';
+  return `${row.event.at} ${row.event.type}${repo} because ${row.because.replace(/_/g, ' ')} · ${row.status}${carrier} (${row.event.id})`;
+}
+
+export interface RunNodeEventsOptions {
+  home: string;
+  node: string;
+  follow: boolean;
+  json: boolean;
+  pollMs?: number;
+  signal?: AbortSignal;
+}
+
+/** Prints the node's Activity; `--follow` prints each new row or status change as it lands. */
+export async function runNodeEvents(options: RunNodeEventsOptions): Promise<number> {
+  const printed = new Set<string>();
+  const flush = () => {
+    for (const row of readNodeActivity(options.home, options.node)) {
+      const key = `${row.event.id}:${row.status}`;
+      if (printed.has(key)) continue;
+      printed.add(key);
+      if (options.json) printJson(row);
+      else console.log(formatActivityRow(row));
+    }
+  };
+  flush();
+  // T248: routed events are not the audit log (`log/events.jsonl`); a node
+  // nothing has routed to yet says so rather than printing nothing.
+  if (printed.size === 0 && !options.json) {
+    console.log(
+      `no routed events for ${options.node} (its audit log is \`agile tail --stream ${options.node}\`)`,
+    );
+  }
+  if (!options.follow) return 0;
+  const pollMs = options.pollMs ?? 200;
+  while (!options.signal?.aborted) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    if (options.signal?.aborted) break;
+    flush();
+  }
   return 0;
 }

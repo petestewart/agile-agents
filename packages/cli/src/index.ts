@@ -55,7 +55,7 @@ import {
   runStreamShow,
   runStreamWait,
 } from './commands/stream';
-import { runTail } from './commands/tail';
+import { runNodeEvents, runTail } from './commands/tail';
 
 export const PACKAGE_NAME = '@agile-agents/cli';
 
@@ -117,6 +117,7 @@ function usage(): string {
     '  daemon status              is agiled running? pid, port, socket, home, classifier key loaded?',
     '  status                     daemon, streams and what is waiting on you',
     '  tail                       tail the event log (--follow, --stream, --kind, --session)',
+    '  tail --node <id> --events  the node\u2019s routed events: reason, delivery status, session or digest (--follow)',
     '  gate list                  list open HIL requests',
     '  inbox                      everything waiting on you, across all streams, oldest first',
     '  answer <id> <text|yes|no>  answer an inbox item: Q-… takes the answer text, HIL-… takes yes|no [note]',
@@ -208,6 +209,19 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
 
       case 'tail': {
         const args = parseArgs(rest.slice(1));
+        // T245: a node's routed events (its Activity), not the audit log.
+        if (args.options.events !== undefined) {
+          if (typeof args.options.node !== 'string') {
+            console.error('agile tail --events needs --node <id>');
+            return 1;
+          }
+          return await runNodeEvents({
+            home: resolveHomePaths().home,
+            node: args.options.node,
+            follow: args.options.follow !== undefined,
+            json,
+          });
+        }
         const eventsPath = resolveHomePaths().eventsPath;
         return await runTail({
           eventsPath,

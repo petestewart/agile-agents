@@ -9,6 +9,7 @@ import type {
   ClassifierKeyStatus,
   Policy,
   Project,
+  RoutedEvent,
   Rule,
   RuleCreateInput,
   RulePatch,
@@ -18,6 +19,7 @@ import type {
   StreamCreateInput,
 } from '@agile-agents/shared';
 import type {
+  ActivityEntry,
   LandOutcome,
   RuleEvalReport,
   RulesPayload,
@@ -144,6 +146,20 @@ export function getStreamPage(id: string): Promise<StreamPagePayload> {
 /** T161: the diff tab. */
 export function getStreamDiff(id: string): Promise<StreamDiff> {
   return get(`/api/streams/${encodeURIComponent(id)}/diff`);
+}
+
+/** T245: the Activity tab. */
+export async function getStreamActivity(id: string): Promise<ActivityEntry[]> {
+  const out = await get<{ activity: ActivityEntry[] }>(
+    `/api/streams/${encodeURIComponent(id)}/activity`,
+  );
+  return out.activity;
+}
+
+/** T245: the repo view's events. */
+export async function getRepoEvents(repo: string): Promise<RoutedEvent[]> {
+  const out = await get<{ events: RoutedEvent[] }>(`/api/repos/${encodeURIComponent(repo)}/events`);
+  return out.events;
 }
 
 /** T161: the composer — a human line on the thread, and a prompt to the attached worker if there is one. */

@@ -21,6 +21,7 @@ import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
 import {
   type HilRequest,
   type Question,
+  type RoutedEvent,
   type Rule,
   type SessionRef,
   type SessionRole,
@@ -34,6 +35,15 @@ import {
   validateStreamCreateInput,
 } from '@agile-agents/shared';
 import { readHomeConfigFile } from '../config';
+import { REPLY_FIRST, SessionDelivery, type WakeDelivery } from '../events/delivery';
+import { routeAndEmit } from '../events/router';
+import { RoutedEventService } from '../events/service';
+import {
+  DAEMON_STOP_PREFIX,
+  DEFAULT_WAKE_BUDGET_PER_HOUR,
+  WakeBudget,
+  wakeVerdict,
+} from '../events/wake';
 import { settingsFileName } from '../hook/settings';
 import { nodeReadScope } from '../permissions/policy-tables';
 import type { RuleStatsOutcome } from '../rules/service';
@@ -109,6 +119,8 @@ export interface AttachOptions extends AttachFlags {
   role?: SessionRole;
   /** Appended after the brief: the lessons session's material and instruction (§5.5). The caller caps it. */
   briefAppendix?: string;
+  /** T336: pending events handed over in the brief (a wake), so no digest repeats them. */
+  wake?: readonly RoutedEvent[];
 }
 
 /** `detach: true`: the human pulled the plug, not a shutdown. */
@@ -146,6 +158,12 @@ export interface AttachServiceOptions {
   now?: () => Date;
   /** T226: a worker's turn ended (a deferred main sync runs now). */
   onWorkerTurnEnd?: (streamId: string) => void;
+  /** T242: the routed events delivered to sessions (default: one over `store`). */
+  events?: RoutedEventService;
+  /** T242: how long an idle session waits for a burst to settle (default 250 ms). */
+  deliveryDelayMs?: number;
+  /** T243: the wake budget's clock (tests). */
+  wakeClock?: () => number;
 }
 
 /** P5: the project step of the session defaults; absent when the project names nothing. */
@@ -158,6 +176,11 @@ function projectSession(store: StateStore, id: string) {
 }
 
 export class AttachService {
+  /** T242: pending routed events reach the node's worker as one digest (P10). */
+  readonly delivery: SessionDelivery;
+  private readonly events: RoutedEventService;
+  /** Per-stream chain of `queued` marker writes, so a fast delivery never leaves a stale marker. */
+  private readonly markers = new Map<string, Promise<unknown>>();
   /** Live handles, one map per role: a reviewer coexists with a worker (§4.2). */
   private readonly live = new Map<SessionRole, Map<string, AgentSessionHandle>>([
     ['worker', new Map()],
@@ -174,7 +197,127 @@ export class AttachService {
   /** Sessions the daemon stopped on purpose, with the reason the thread gives. */
   private readonly stopReasons = new Map<string, string>();
 
-  constructor(private readonly options: AttachServiceOptions) {}
+  /** T243 (P11): wakes per node in the last hour, and wakes being started now. */
+  private readonly wakeBudget: WakeBudget;
+  private readonly waking = new Set<string>();
+  /** Nodes already sent to the inbox for a spent budget (one thread line per episode). */
+  private readonly overBudget = new Set<string>();
+
+  constructor(private readonly options: AttachServiceOptions) {
+    this.events = options.events ?? new RoutedEventService(options.store);
+    this.wakeBudget = new WakeBudget(options.wakeClock);
+    this.delivery = new SessionDelivery({
+      wake: (node, pending) => {
+        void this.wake(node, pending).catch((err) => console.error('wake failed:', err));
+      },
+      events: this.events,
+      titleOf: (id) =>
+        options.streams.list({ include_archived: true }).find((s) => s.id === id)?.title,
+      ...(options.deliveryDelayMs !== undefined ? { delayMs: options.deliveryDelayMs } : {}),
+      target: (node) => {
+        const handle = this.handleFor(node, 'worker');
+        if (handle === undefined || handle.stopped()) return undefined;
+        return {
+          sessionId: handle.sessionId,
+          busy: () => handle.turnsInFlight() > 0,
+          prompt: (text, opts) => {
+            const turn = handle.prompt(text, opts);
+            // Back to work: an idle (waiting) session is running again.
+            void this.setSessionStatus(node, handle.sessionId, 'running').catch(() => {
+              // Best effort: the prompt is what matters.
+            });
+            return turn;
+          },
+        };
+      },
+      onDelivered: (node, sessionId, events) => {
+        // T174's "queued" marker: a human line's thread `ts` rides in `ref`.
+        const done = new Set(
+          events.flatMap((e) => (e.type === 'human_line' && e.ref ? [e.ref] : [])),
+        );
+        if (done.size > 0) {
+          this.chainMarker(node, () =>
+            this.setSessionQueued(node, sessionId, (queued) =>
+              queued.filter((ts) => !done.has(ts)),
+            ),
+          );
+        }
+      },
+    });
+  }
+
+  /**
+   * T243 (P11): a node with pending events and no live worker. Starts a
+   * worker when the policy says so and the budget allows; past the budget
+   * the node is `blocked` (an inbox item) and its events stay pending.
+   */
+  private async wake(node: string, pending: readonly RoutedEvent[]): Promise<void> {
+    if (this.waking.has(node)) return;
+    const { streams } = this.options;
+    let stream: Stream;
+    try {
+      stream = streams.get(node);
+    } catch {
+      return;
+    }
+    if (liveSession(stream, 'worker') !== undefined) return;
+    const role = nodeRole(stream, liveChildrenOf(stream.id, streams.list()));
+    if (wakeVerdict(stream, role, pending) !== 'wake') return;
+    const limit =
+      readHomeConfigFile(this.options.home).events?.wake_budget_per_hour ??
+      DEFAULT_WAKE_BUDGET_PER_HOUR;
+    if (!this.wakeBudget.take(node, limit)) {
+      if (this.overBudget.has(node)) return;
+      this.overBudget.add(node);
+      await streams.update('daemon', node, {
+        agent: { status: 'blocked' },
+        human: { status: 'waiting_on_you' },
+      });
+      await streams.appendThread('daemon', node, {
+        kind: 'event',
+        body: `wake budget spent (${limit} wakes in the last hour); ${pending.length} event(s) stay pending until you restart the agent`,
+      });
+      return;
+    }
+    this.overBudget.delete(node);
+    this.waking.add(node);
+    try {
+      await streams.appendThread('daemon', node, {
+        kind: 'event',
+        body: `woken by ${[...new Set(pending.map((e) => e.type))].join(', ')}`.slice(0, 800),
+      });
+      // T336: the first prompt carries the events, so the agent never has to ask for them.
+      await this.attach(node, { wake: pending });
+    } catch (err) {
+      await streams
+        .appendThread('daemon', node, {
+          kind: 'event',
+          body: `could not wake the agent: ${err instanceof Error ? err.message : String(err)}`.slice(
+            0,
+            800,
+          ),
+        })
+        .catch(() => undefined);
+    } finally {
+      this.waking.delete(node);
+    }
+  }
+
+  /** T243: at daemon start (after `recover()`), every node with pending events is considered. */
+  wakePending(): void {
+    for (const stream of this.options.streams.list()) {
+      if (this.events.pendingFor(stream.id).length > 0) this.delivery.notify(stream.id);
+    }
+  }
+
+  /** Serializes `queued` marker writes per stream (display only, best effort). */
+  private chainMarker(streamId: string, write: () => Promise<unknown>): Promise<unknown> {
+    const next = (this.markers.get(streamId) ?? Promise.resolve()).then(write).catch(() => {
+      // The stream or session is gone; the exit path clears the list.
+    });
+    this.markers.set(streamId, next);
+    return next;
+  }
 
   private handles(role: SessionRole): Map<string, AgentSessionHandle> {
     let map = this.live.get(role);
@@ -219,6 +362,25 @@ export class AttachService {
   }
 
   async attach(streamId: string, options: AttachOptions = {}): Promise<AttachResult> {
+    const wake =
+      options.wake !== undefined && options.wake.length > 0
+        ? this.delivery.inBrief(streamId, options.wake)
+        : undefined;
+    try {
+      const result = await this.attachSession(streamId, options, wake);
+      if (wake !== undefined) void result.handle.exited.finally(wake.release);
+      return result;
+    } catch (err) {
+      wake?.release();
+      throw err;
+    }
+  }
+
+  private async attachSession(
+    streamId: string,
+    options: AttachOptions,
+    wake: WakeDelivery | undefined,
+  ): Promise<AttachResult> {
     const { store, streams } = this.options;
     const role: SessionRole = options.role ?? 'worker';
 
@@ -322,8 +484,10 @@ export class AttachService {
     });
     // The lessons material rides after the brief, never inside it (the
     // brief's own ceiling protects its parts; the caller caps the appendix).
-    const prompt =
-      options.briefAppendix === undefined ? brief : `${brief}\n\n${options.briefAppendix}`;
+    // T336: a woken session is told what woke it, after everything else.
+    const prompt = [brief, options.briefAppendix, wake?.text]
+      .filter((part): part is string => part !== undefined)
+      .join('\n\n');
     // What the agent was handed, beside its logs: "what did it see" is a
     // file read. Best effort: a full disk must not stop a session starting.
     try {
@@ -370,6 +534,7 @@ export class AttachService {
       role,
       worktreePath: cwd,
       brief: prompt,
+      ...(wake !== undefined ? { onBriefDelivered: () => wake.delivered(sessionId) } : {}),
       sessionDir,
       provider,
       readScope,
@@ -509,6 +674,12 @@ export class AttachService {
     // never dropped by letting the session go here; it runs as its own
     // turn, and that turn's end decides again.
     if (queued > 0) return;
+    // T242: routed events waiting on this node go in as one digest turn,
+    // and that turn's end decides again.
+    if (role === 'worker' && this.delivery.waiting(streamId)) {
+      if (await this.delivery.flushWhenReady(streamId)) return;
+      if (this.handles(role).get(streamId) !== handle) return;
+    }
     if (role === 'worker') this.options.onWorkerTurnEnd?.(streamId);
     const waitingOnQuestion = this.openQuestionFor(streamId, sessionId) !== undefined;
     const waitingOnGate = this.openGateFor(streamId, sessionId) !== undefined;
@@ -536,110 +707,80 @@ export class AttachService {
   }
 
   /**
-   * Delivery is a prompt: the answer goes into the live session as a new
-   * turn, the only thing that makes a waiting vendor continue (an answer
-   * once sat unread in a mailbox for 19 minutes). With no live session the
-   * answer stays on the thread for the next attach's brief.
+   * T242: an answer is an `answer` event to the asking node (§15). Its
+   * live worker gets it as a digest turn, the only thing that makes a
+   * waiting vendor continue; with none it stays pending for the next session.
    */
   async deliverAnswer(sessionId: string, question: Question): Promise<void> {
-    const handle = this.liveHandleBySession(sessionId);
-    if (handle === undefined) {
+    const stream = this.options.streams.get(question.stream);
+    await routeAndEmit(
+      this.events,
+      {
+        type: 'answer',
+        subject: stream.id,
+        payload: {
+          question: cap(question.text),
+          answer: cap(question.answer ?? '') || '(empty)',
+        },
+        ref: question.id,
+        by: 'human',
+      },
+      [stream],
+    );
+    if (this.liveHandleBySession(sessionId) === undefined) {
       await this.options.streams.appendThread('daemon', question.stream, {
         kind: 'event',
-        body: `answer recorded with no live session (${sessionId}); the next attach's brief carries it`.slice(
+        body: `answer recorded with no live session (${sessionId}); the next session gets it`.slice(
           0,
           800,
         ),
         ref: sessionId,
       });
-      return;
     }
-    await this.setSessionStatus(question.stream, sessionId, 'running').catch(() => {
-      // Best effort: the prompt below is what matters.
-    });
-    void handle
-      .prompt(
-        `Answer to your question "${question.text}" from ${question.answered_by ?? 'human'}: ${
-          question.answer ?? ''
-        }\n\nContinue the work.`,
-      )
-      .catch(() => {
-        // `runPromptTurn` already stopped the session and recorded why; the
-        // exit path writes `blocked` on the stream.
-      });
   }
 
   /**
-   * The stream page's composer (§9.3): a human line, and if a worker is
-   * attached, a prompt too. Turns are serialized (`runner/session.ts`), so
-   * a line typed mid-turn is read when that turn ends; until then its
-   * thread `ts` sits in the session's `queued` list, which the stream page
-   * shows as waiting. A session already being let go gets no prompt: the
-   * line stays on the thread for the next attach's brief.
+   * The stream page's composer (§9.3): a human line, and a `human_line`
+   * event to the node (T242). A live idle worker gets it as a digest turn
+   * within the delivery delay; a line typed mid-turn is read when that
+   * turn ends, and until then its thread `ts` sits in the session's
+   * `queued` list, which the stream page shows as waiting. With no live
+   * worker the event stays pending for the next session.
    */
   async say(streamId: string, body: string): Promise<{ entry: ThreadEntry; prompted?: string }> {
-    const entry = await this.options.streams.appendThread('human', streamId, {
-      kind: 'line',
-      body,
-    });
-    const handle = this.handleFor(streamId, 'worker');
-    if (handle === undefined || handle.stopped()) return { entry };
-    const sessionId = handle.sessionId;
-    const busy = handle.turnsInFlight() > 0;
-    if (!busy) {
-      // Nothing is running, so nothing can end and let the session go
-      // before the prompt below is queued.
-      await this.setSessionStatus(streamId, sessionId, 'running').catch(() => {
-        // Best effort: the prompt below is what matters.
-      });
-    }
-    // Reserve the turn in the runner before any further await: a running
-    // turn that ends meanwhile then sees this one queued and keeps the
-    // session (T174 review). Marker writes are chained, so a fast delivery
-    // never leaves a stale `queued` entry behind.
-    let delivered = false;
-    let markers: Promise<unknown> = Promise.resolve();
-    const unqueue = (): void => {
-      if (delivered) return;
-      delivered = true;
-      if (!busy) return;
-      markers = markers
-        .then(() =>
-          this.setSessionQueued(streamId, sessionId, (queued) =>
-            queued.filter((ts) => ts !== entry.ts),
-          ),
-        )
-        .catch(() => {
-          // The stream or session is gone; the exit path clears the list.
-        });
-    };
-    void handle
-      .prompt(sayPrompt(body), {
-        onDelivered: () => {
-          unqueue();
-          if (busy) {
-            void this.setSessionStatus(streamId, sessionId, 'running').catch(() => {
-              // Best effort.
-            });
-          }
+    // Held from before the first write: a turn ending before the emit keeps the session.
+    const release = this.delivery.hold(streamId);
+    let entry: ThreadEntry;
+    let handle: AgentSessionHandle | undefined;
+    let busy = false;
+    try {
+      entry = await this.options.streams.appendThread('human', streamId, { kind: 'line', body });
+      handle = this.handleFor(streamId, 'worker');
+      if (handle?.stopped()) handle = undefined;
+      busy = handle !== undefined && handle.turnsInFlight() > 0;
+      await routeAndEmit(
+        this.events,
+        {
+          type: 'human_line',
+          subject: streamId,
+          payload: { body: cap(body) },
+          ref: entry.ts,
+          by: 'human',
         },
-      })
-      .catch(() => {
-        // `runPromptTurn` already stopped the session and recorded why, or
-        // the session was stopped before the line was delivered.
-        unqueue();
+        [this.options.streams.get(streamId)],
+      );
+    } finally {
+      release();
+    }
+    if (handle === undefined) return { entry };
+    const sessionId = handle.sessionId;
+    if (busy) {
+      const ts = entry.ts;
+      await this.chainMarker(streamId, async () => {
+        // Skipped when the digest already carried it.
+        const still = this.events.pendingFor(streamId).some((p) => p.event.ref === ts);
+        if (still) await this.setSessionQueued(streamId, sessionId, (q) => [...q, ts]);
       });
-    if (busy && !delivered) {
-      markers = markers
-        .then(() =>
-          delivered
-            ? undefined
-            : this.setSessionQueued(streamId, sessionId, (queued) => [...queued, entry.ts]),
-        )
-        .catch(() => {
-          // Best effort: the marker is display only.
-        });
-      await markers;
     }
     return { entry, prompted: sessionId };
   }
@@ -720,7 +861,7 @@ export class AttachService {
         detached
           ? undefined
           : stopReason !== undefined
-            ? `stopped: ${stopReason}`
+            ? `${DAEMON_STOP_PREFIX}${stopReason}`
             : endedReason(reason, ok, vendorError),
       );
       // A human pulled the plug: back to `idle`. `done` would claim the kill finished the work.
@@ -883,9 +1024,10 @@ export function endedReason(
  * work.") let a worker read a question and carry on without answering.
  */
 export function sayPrompt(body: string): string {
-  return [
-    `The operator wrote on the stream: ${body}`,
-    '',
-    'Reply to the operator on the stream first, with `progress`: if it is a question, answer it directly; if it is an instruction, acknowledge it and follow it. Then continue the work.',
-  ].join('\n');
+  return [`The operator wrote on the stream: ${body}`, '', REPLY_FIRST].join('\n');
+}
+
+/** A routed event's payload strings are capped (the full text is on the thread). */
+function cap(text: string): string {
+  return text.length > 800 ? `${text.slice(0, 799)}…` : text;
 }

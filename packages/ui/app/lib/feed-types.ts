@@ -11,10 +11,13 @@
 
 import type {
   Event,
+  EventDeliveryStatus,
   HilRequest,
   InboxItem,
   NodeRole,
   Question,
+  RoutedEvent,
+  RoutingEntry,
   Rule,
   Stream,
   ThreadEntry,
@@ -138,6 +141,16 @@ export interface StreamPagePayload {
   diff_rules: string[];
   docs: StreamDoc[];
   land?: LandPreflight;
+}
+
+/** T245: mirror of `events/service.ts`'s `ActivityEntry` (`GET /api/streams/:id/activity`). */
+export interface ActivityEntry {
+  event: RoutedEvent;
+  because: RoutingEntry['because'];
+  status: EventDeliveryStatus;
+  delivered_at?: string;
+  session?: string;
+  digest?: string;
 }
 
 /** T161: mirror of `delivery/service.ts`'s `StreamDiff` (`GET /api/streams/:id/diff`). */

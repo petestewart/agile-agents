@@ -1088,7 +1088,7 @@ git status --short
 
 ### Ticket: T240 Routed event schema and store
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge c6575ea)
 - **Owner:** —
 - **Scope:**
   - Add `RoutedEvent` and `Delivery` (§14.9) in `shared/routed-event.ts`, with typed payloads per event type (§15).
@@ -1097,20 +1097,20 @@ git status --short
   - The audit log is unchanged (P9).
 - **Acceptance Criteria:** Store tests: emit then a crash (simulated) then a restart shows the delivery still `pending`; payloads over the cap are refused.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/events`.
-- **Notes:** First ticket of Phase 9.
+- **Notes:** First ticket of Phase 9. Review (sonnet) PASS. Daemon +212. `RoutedEventService` (emit, pendingFor, mark, get, recover). Payload fields read from §15 templates; 800-char strings, 4096-byte payload cap (worker's number). `recover()` not yet called at start → T242.
 
 ### Ticket: T241 Router
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge e6e772f)
 - **Owner:** —
 - **Scope:** `events/router.ts`: routes to self, ancestors, waits-on, same-repo (live work nodes, any project), parties and sibling (§15), with the reason recorded in `routing`. Coalesce keys. A closed node gets `expired`.
 - **Acceptance Criteria:** Table tests over the worked example tree: Blog's merge reaches its parent (`ancestor`) and Shop's api part (`same_repo`), and nothing on web.
 - **Validation Steps:** `bun test packages/daemon/src/events`.
-- **Notes:** After T240.
+- **Notes:** After T240. Review (sonnet) PASS. Daemon +195. `routeEvent` (pure) + `routeAndEmit`. §15 rows with no dedicated reason use `party`/`ancestor`. Coalesce supersede is not atomic across concurrent emits → T242 digests tolerate >1 pending per key.
 
 ### Ticket: T242 Delivery to sessions, digests, no drops
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge 104ceb6)
 - **Owner:** —
 - **Scope:**
   - Pending deliveries for a node with an idle session fold into one digest prompt within 2 s, and are marked delivered in the same write (P10). A mid-turn session holds them until the turn ends.
@@ -1121,11 +1121,11 @@ git status --short
   - a restart between send and mark causes no duplicate within the digest;
   - T174's tests pass rewritten on events.
 - **Validation Steps:** `bun test packages/daemon/src/events packages/daemon/src/attach`; `bun run test:integration`.
-- **Notes:** After T241. Removes the old prompt paths (line delta should be small).
+- **Notes:** After T241. Removes the old prompt paths (line delta should be small). From T240/T241: call `recover()` at daemon start; digest folding must tolerate more than one pending event per coalesce key. Review (sonnet) PASS (no lost/duplicated lines across the checked cases). Daemon +283 net. Digest to the worker only; marked delivered only after the vendor accepts. Gate decisions still prompt directly. `recover()` does not notify delivery → T243 wakes nodes with pending events at start.
 
 ### Ticket: T243 Wake policy
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge 86e1d3d)
 - **Owner:** —
 - **Scope:** Per P11:
   - which event types start a session for each role when none is live;
@@ -1133,29 +1133,29 @@ git status --short
   - stopped nodes are never woken.
 - **Acceptance Criteria:** Table tests per role and type; the budget test; a stopped node keeps its events pending.
 - **Validation Steps:** `bun test packages/daemon/src/events`.
-- **Notes:** After T242.
+- **Notes:** After T242. From T242 review: at daemon start, nodes with pending deliveries (after `recover()`) should be considered for wake/delivery rather than waiting for the next turn end. Review (sonnet) PASS. Daemon +182. "Stopped" is derived: archived, closed/landed, or `agent.status: idle` (never started or detached); `done`/`blocked` nodes are wakeable. Budget (`events.wake_budget_per_hour`, default 20) is in memory and resets on restart; over budget → blocked inbox item, events stay pending. `wakePending()` at start goes through the same gate.
 
 ### Ticket: T244 Event producers
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge a95ae22)
 - **Owner:** —
 - **Scope:** Emit the §15 types that exist so far: `human_line`, `answer`, `child_status`, `child_delivered`, `pr_review`, `ci_failed`, `pr_behind`, `pr_merged`, `pr_closed` (from T225), `main_changed` and `sync_conflict` (from T226), `overlap` (T227), `dependency_satisfied` (T228). Each has its one-line summary text as in §15. The `read_event` verb returns a payload.
 - **Acceptance Criteria:** One test per producer asserting the type, routing and summary; `read_event` over MCP.
 - **Validation Steps:** `bun test packages/daemon`; `bun run test:integration`.
-- **Notes:** After T241. It may split into two workers (PR-related and the rest) if large.
+- **Notes:** After T241. It may split into two workers (PR-related and the rest) if large. From T240 review: `pr_closed.login` and `child_status.progress` are optional in the schema but used by the summary templates — always supply or fall back. Keep payloads under the 4096-byte cap (trim file lists). Review (sonnet) PASS (edge-triggered, no double emission). Daemon +444. Record transitions via a `StreamService.update` onUpdated hook. `main_changed` carries one aggregate outcome per repo. Waiters get both `pr_merged` (T241 routes waits_on) and `dependency_satisfied`. `pr_closed.login` unknown (no closed_by); `pr_behind.files` empty.
 
 ### Ticket: T245 ∥ Activity feed per node
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge e112bfd)
 - **Owner:** —
 - **Scope:** Add a node Activity tab: every event routed to the node with its reason, delivery status and which session or digest carried it ("what woke it and why"). Add `agile tail --node <id> --events`. The repo view shows repo events.
 - **Acceptance Criteria:** e2e: a `main_changed` shows on the other node's Activity with "same repo".
 - **Validation Steps:** `bun run test:e2e`.
-- **Notes:** After T242.
+- **Notes:** After T242. Review (sonnet) PASS. Daemon +84. Activity tab (live), repo events in the repo view (fetched on open, not live), `agile tail --node <id> --events [--follow] [--json]` (reads files directly like the existing tail).
 
 ### Ticket: T246 PR babysitting
 - **Priority:** P0
-- **Status:** Todo
+- **Status:** Done (merge 1a2ea55)
 - **Owner:** —
 - **Scope:** The work node's agent looks after its PR (projects-design §4.1):
   - A babysit brief section, and wake on `pr_review`, `ci_failed` and `pr_behind`.
@@ -1165,12 +1165,23 @@ git status --short
   - With auto-merge on, T228's enable runs after each green push.
 - **Acceptance Criteria:** Fake GitHub + fake agent: a failing check wakes the agent and the scripted fix pushes; the check goes green; an approval with auto-merge on gets merged by the fake; the node shows merged with no human click.
 - **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/events`; `bun run test:integration`.
-- **Notes:** After T243 and T244. Moved here from Phase 8 because it needs events (see the build order note).
+- **Notes:** After T243 and T244. Moved here from Phase 8 because it needs events (see the build order note). Review (sonnet) PASS. Daemon +139. New agent verb `deliver`: worker-only, only with an open PR, updates that PR (never opens one, never merges, protected branches refused), enforced server-side. CI log excerpt from check-run output → `sessions/<id>/ci-*.log` (200 lines / 32 KB). Auto-merge is enabled at first delivery (T228), not per green push; GitHub still merges only when green and approved.
+
+### Ticket: T248 `agile tail --node --events` prints nothing
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** From T289 QA (Phase 11 branch): `agile tail --node <id> --events` (no `--follow`) printed nothing for a node that had events. It is the command Pete's T247 and T289 looks use. Find why (wrong file, a filter, routed events vs audit events, output buffering on exit) and fix; the command prints every routed event for the node with its reason and delivery status, and says so in one line when there are none.
+- **Acceptance Criteria:** A CLI e2e against a real daemon: emit routed events for a node, `tail --node --events` lists them; a node with none prints a one-line "no events" message.
+- **Validation Steps:** `bun test packages/cli`; `bun run test:integration`.
+- **Notes:** Fix on `claude/phase-9`, merge forward.
+- T248: QA had read the audit log, not the routed log; tail now says "no routed events"; sonnet review APPROVE; merge 2cf8415 into phase-9, forwarded to 10/11/12.
+
 
 ### Ticket: T247 Phase 9 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** In Review (QA ACCEPT 2026-09-24; Pete's look pending)
+- **Owner:** Pete
 - **Scope:** Black-box QA: routing across projects, digests, restart without loss, the wake budget, babysitting on the fake. Daemon line count. Pete runs a PR on agile-test-repo with auto-merge on, comments on it on GitHub, and watches the agent respond.
 - **Acceptance Criteria:** QA ACCEPT. Live: Pete's review comment reaches the agent as an event, the agent pushes a fix, and the PR auto-merges after Pete approves. The node's Activity tab shows each event.
 - **Validation Steps:** Pete, on his Mac:
@@ -1204,7 +1215,7 @@ agile node show $P --json | jq -r '.delivery_state.pr.review, .delivery_state.pr
 agile node show $P --json | jq -r '.delivery_state.status, .delivery_state.pr.auto_merge'
 ```
 
-- **Notes:** If GitHub says auto-merge is not allowed on agile-test-repo, turn on "Allow auto-merge" in the repo settings first. P19 says the node shows `unavailable` otherwise.
+- **Notes:** If GitHub says auto-merge is not allowed on agile-test-repo, turn on "Allow auto-merge" in the repo settings first. P19 says the node shows `unavailable` otherwise. QA (sonnet, black-box) ACCEPT on 8dc9c19: bun test 2101 pass / 1 load-sensitive e2e fail (the T161 test; root-cause fix in progress on claude/phase-7), integration green. Routing, restart-without-loss and the full babysit loop verified by hand against the fake GitHub; digests, wake budget and `read_event` covered by the suites only (no user-reachable way to select the fake agent). Daemon 23,772 lines (22,233 at Phase 8). Pete's look waits on T213 (Phase 7 fixes) merging forward.
 
 ### Phase 10 — Knowledge
 
@@ -1605,7 +1616,9 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
-- Phase 8 complete on `claude/phase-8` (2026-09-24): T220–T229 merged, T230 QA ACCEPT; awaiting Pete's look. Phase 9 proceeds on `claude/phase-9` cut from it.
+- Phase 9 complete on `claude/phase-9` (2026-09-24): T240–T246 merged, T247 QA ACCEPT; awaiting Pete's look. Phase 10 proceeds on `claude/phase-10`.
+- (Pete, 2026-09-24) P13 bullet 1 (leave a private repo out of a session's readable directories) is deferred until it becomes a need; the hook check (T229) stands alone.
+- Phase 8 complete on `claude/phase-8` (2026-09-24): T220–T229 merged, T230 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/5, base claude/phase-7). Phase 9 proceeds on `claude/phase-9` cut from it.
 - Phase 7 complete on `claude/phase-7` (2026-09-24, tip 3ab7109): T200–T211 merged, T212 QA ACCEPT; awaiting Pete's look (draft PR https://github.com/petestewart/agile-agents/pull/4). Phase 8 proceeds on `claude/phase-8` cut from it (Pete: don't wait).
 - (T229 merge) `.review-sonnet.md` had been committed by the T204 worker (on `claude/phase-7` too); untracked and `.gitignore` now lists the pipeline/review/QA scratch files.
 - mode: yolo (2026-09-24), projects stage. Phase branches stacked (D30), `claude/phase-7` first; tickets `T###-<slug>` off the phase branch, merged back `--no-ff`. DIRECT_MODE (no `gh`). Phase N+1 starts without waiting for Pete's review of phase N (Pete, 2026-09-24).

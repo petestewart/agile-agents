@@ -26,6 +26,7 @@ import {
   attachSession,
   checkStreamPr,
   closeStream,
+  getStreamActivity,
   getStreamDiff,
   getStreamPage,
   landStream,
@@ -37,7 +38,7 @@ import {
   waitOnStream,
 } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
-import type { LandOutcome, StreamDiff, StreamPagePayload } from '../lib/feed-types';
+import type { ActivityEntry, LandOutcome, StreamDiff, StreamPagePayload } from '../lib/feed-types';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
 import {
@@ -53,10 +54,11 @@ import { Card } from './Inbox';
 import { Markdown } from './Markdown';
 import { SessionPicker, sessionModelText } from './SessionPicker';
 
-type Tab = 'thread' | 'diff' | 'rules' | 'docs';
+type Tab = 'thread' | 'diff' | 'activity' | 'rules' | 'docs';
 const TABS: ReadonlyArray<{ tab: Tab; label: string }> = [
   { tab: 'thread', label: 'Thread' },
   { tab: 'diff', label: 'Diff' },
+  { tab: 'activity', label: 'Activity' },
   { tab: 'rules', label: 'Rules in scope' },
   { tab: 'docs', label: 'Docs' },
 ];
@@ -113,6 +115,51 @@ export function reposNamedIn(body: string, repos: readonly RepoRow[], current?: 
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** T245: what woke this node and why — every routed event, its reason, and what carried it. */
+function ActivityView({ id, tick }: { id: string; tick: unknown }): JSX.Element {
+  const [rows, setRows] = useState<ActivityEntry[] | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` (the pushed frame) is the re-read trigger.
+  useEffect(() => {
+    let live = true;
+    getStreamActivity(id)
+      .then((r) => live && setRows(r))
+      .catch((err: unknown) => live && setError(errorText(err)));
+    return () => {
+      live = false;
+    };
+  }, [id, tick]);
+  if (error) return <p className="cr-dim">{error}</p>;
+  if (!rows) return <p className="cr-dim">Loading…</p>;
+  if (rows.length === 0)
+    return (
+      <p className="cr-dim" data-testid="activity-empty">
+        No events routed here yet.
+      </p>
+    );
+  return (
+    <ul className="cr-docs" data-testid="activity">
+      {rows.map((row) => (
+        <li key={row.event.id} data-testid="activity-row" data-event={row.event.id}>
+          <span data-testid="activity-type">{row.event.type.replace(/_/g, ' ')}</span>
+          {row.event.repo ? <span className="cr-dim"> · {row.event.repo}</span> : null}
+          <span className="cr-dim"> · </span>
+          <span className="cr-dim" data-testid="activity-because">
+            {row.because.replace(/_/g, ' ')}
+          </span>
+          <span className="cr-dim" data-testid="activity-status">
+            {' '}
+            · {row.status}
+            {row.session ? ` in session ${row.session}` : ''}
+            {row.digest ? ` in digest ${row.digest}` : ''}
+          </span>
+          <span className="cr-dim"> · {row.event.at}</span>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function DiffView({ id }: { id: string }): JSX.Element {
@@ -922,6 +969,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               : 'This stream has no repo.'}
           </p>
         ))}
+
+      {tab === 'activity' && <ActivityView id={stream.id} tick={cockpit} />}
 
       {tab === 'rules' && (
         <ul className="cr-rules" data-testid="rules">

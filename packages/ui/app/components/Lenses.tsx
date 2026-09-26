@@ -7,6 +7,9 @@
  * Overlaps (T227) show per repo; norms are still a placeholder.
  */
 
+import type { RoutedEvent } from '@agile-agents/shared';
+import { useEffect, useState } from 'react';
+import { getRepoEvents } from '../lib/api';
 import type { CockpitOverlap, CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
 import { useShell } from '../lib/shell';
 import {
@@ -17,6 +20,34 @@ import {
   runningRows,
   streamDot,
 } from '../lib/streams';
+
+/** T245: the repo's recent events (main moved, PRs), newest first. */
+function RepoEvents({
+  repo,
+  titleOf,
+}: { repo: string; titleOf: (id: string) => string }): JSX.Element | null {
+  const [events, setEvents] = useState<RoutedEvent[]>([]);
+  useEffect(() => {
+    let live = true;
+    getRepoEvents(repo)
+      .then((e) => live && setEvents(e.slice(0, 10)))
+      .catch(() => live && setEvents([]));
+    return () => {
+      live = false;
+    };
+  }, [repo]);
+  if (events.length === 0) return null;
+  return (
+    <ul className="cr-lens-list" data-testid="repo-events">
+      {events.map((e) => (
+        <li key={e.id} className="cr-dim" data-testid="repo-event" data-event={e.id} title={e.at}>
+          {e.type.replace(/_/g, ' ')}
+          {e.subject ? ` · ${titleOf(e.subject)}` : ''}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function NodeLine({
   row,
@@ -92,6 +123,7 @@ export function RepoView({
                 ⚠ {titleOf(o.nodes[0])} and {titleOf(o.nodes[1])} both changed {o.files.join(', ')}
               </p>
             ))}
+          <RepoEvents repo={group.repo} titleOf={titleOf} />
           <p className="cr-lens-empty" data-testid="repo-norms">
             Norms: not yet.
           </p>

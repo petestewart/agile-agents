@@ -2,7 +2,8 @@
  * T225 (projects-design §18, §14.7): the PR poller. The node's open PR is
  * its status: review requested, changes requested, CI failing, approved,
  * merged or closed, written to `delivery_state.pr` and told on the thread
- * (routed events come in T244).
+ * (and, T244, emitted as routed events: `pr_review`, `ci_failed`,
+ * `pr_behind`, `pr_closed`; `pr_merged` comes from the record change).
  *
  * - Cadence: every 60 s per open PR, 15 s for a flagged (babysat) node, 5 min
  *   once a PR has not changed for an hour. `tick()` does whatever is due;
@@ -17,9 +18,12 @@
  *   when it moves, main is fetched (fast-forward only) and `onMainMoved` runs.
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { PullRequestState, RepoEntry, Stream } from '@agile-agents/shared';
 import { git, gitNetwork, gitWrite } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
+import { type EmitRouted, clipLine } from '../events/producers';
 import type { StreamService } from '../streams/service';
 import {
   type Conditional,
@@ -53,6 +57,10 @@ export interface PrPollerOptions {
   onMainMoved?: (repo: string, except?: string) => unknown;
   /** T228: after each tick (`DeliveryService.settle`: waits_on, merge-together, auto-merge). */
   afterTick?: () => unknown;
+  /** T244: routed events for what the poll saw. */
+  emit?: EmitRouted;
+  /** T246: the state home; a failing check's log excerpt goes to `sessions/<id>/`. */
+  home?: string;
   now?: () => Date;
 }
 
@@ -308,6 +316,7 @@ export class PrPoller {
     for (const body of lines) {
       await streams.appendThread('daemon', stream.id, { kind: 'event', body });
     }
+    await this.emitEvents(stream, known, next, reviews, newComments, memo);
     if (merged) {
       const m = this.mains.get(stream.repo as string);
       if (m) m.due = 0;
@@ -318,6 +327,113 @@ export class PrPoller {
         raised_by: 'daemon',
         text: `PR #${next.number} was closed without merging. Reopen it (deliver again), or close the node?`,
       });
+    }
+  }
+
+  /** T244: the routed events for one poll's changes (§15). */
+  private async emitEvents(
+    stream: Stream,
+    before: PullRequestState,
+    after: PullRequestState,
+    reviews: GitHubReview[],
+    comments: Array<{ id: number; user: string; body: string }>,
+    memo: PrMemo,
+  ): Promise<void> {
+    const emit = this.options.emit;
+    if (emit === undefined) return;
+    const base = {
+      subject: stream.id,
+      ...(stream.repo !== undefined ? { repo: stream.repo } : {}),
+      ...(stream.project !== undefined ? { project: stream.project } : {}),
+      by: 'daemon' as const,
+      ref: after.url,
+    };
+    const pr = after.number;
+    const fresh = reviews.filter((r) => r.id > (before.last_seen.review_id ?? 0));
+    const texts = comments.map((c) => `${c.user}: ${clipLine(c.body)}`);
+    const shown = texts.slice(0, 5);
+    const more = texts.length - shown.length;
+    const commentPart = { comments: shown, ...(more > 0 ? { more_comments: more } : {}) };
+    for (const [i, r] of fresh.entries()) {
+      await emit({
+        ...base,
+        type: 'pr_review',
+        payload: {
+          pr,
+          login: r.user,
+          state: r.state.toLowerCase(),
+          ...(i === 0 ? commentPart : { comments: [] }),
+        },
+      });
+    }
+    if (fresh.length === 0 && comments.length > 0) {
+      await emit({
+        ...base,
+        type: 'pr_review',
+        payload: { pr, login: comments[0]?.user ?? '', state: 'commented', ...commentPart },
+      });
+    }
+    if (after.checks === 'failing' && before.checks !== 'failing') {
+      const run = (memo.cache.checks ?? []).find(
+        (c) => c.status === 'completed' && FAILING.has(c.conclusion ?? ''),
+      );
+      const status = memo.cache.status?.statuses.find((s) => FAILING.has(s.state));
+      const log = this.writeCiLog(stream, pr, run?.name, run?.output, after.head);
+      await emit({
+        ...base,
+        ...(log !== undefined ? { ref: log } : {}),
+        type: 'ci_failed',
+        payload: {
+          pr,
+          check: clipLine(run?.name ?? status?.context ?? 'a check') || 'a check',
+          ...(after.head ? { sha: after.head } : {}),
+        },
+      });
+    }
+    if (
+      (after.mergeable === 'behind' || after.mergeable === 'conflicting') &&
+      after.mergeable !== before.mergeable
+    ) {
+      await emit({
+        ...base,
+        type: 'pr_behind',
+        payload: { pr, state: after.mergeable, files: [] },
+      });
+    }
+    if (after.state === 'closed' && before.state !== 'closed') {
+      await emit({ ...base, type: 'pr_closed', payload: { pr } });
+    }
+  }
+
+  /**
+   * T246: the failing check's output tail, written to the node's latest
+   * worker session dir (`sessions/<id>/ci-<pr>-<n>.log`); the path is the
+   * event's pointer. Nothing without a home, a session or any output.
+   */
+  private writeCiLog(
+    stream: Stream,
+    pr: number,
+    check: string | undefined,
+    output: string | undefined,
+    head: string,
+  ): string | undefined {
+    const home = this.options.home;
+    const session = [...stream.sessions].reverse().find((s) => s.role === 'worker');
+    if (home === undefined || session === undefined || output === undefined || output === '') {
+      return undefined;
+    }
+    const lines = output.split('\n');
+    const tail = lines.slice(-CI_LOG_LINES).join('\n').slice(-CI_LOG_BYTES);
+    const dir = join(home, 'sessions', session.id);
+    const path = join(dir, `ci-${pr}-${this.now().getTime()}.log`);
+    try {
+      mkdirSync(dir, { recursive: true });
+      const header = `# PR #${pr} ${check ?? 'check'} failed on ${head}${lines.length > CI_LOG_LINES ? ` (last ${CI_LOG_LINES} lines)` : ''}\n`;
+      writeFileSync(path, `${header}${tail}\n`);
+      return path;
+    } catch (err) {
+      console.error(`ci log for ${stream.id} not written:`, err);
+      return undefined;
     }
   }
 
@@ -406,6 +522,10 @@ export function reviewOf(reviews: GitHubReview[], awaiting: boolean): PullReques
   if (states.includes('APPROVED')) return 'approved';
   return awaiting ? 'review_requested' : 'none';
 }
+
+/** The CI log excerpt: the output's tail, capped (signal over volume). */
+const CI_LOG_LINES = 200;
+const CI_LOG_BYTES = 32_000;
 
 const FAILING = new Set(['failure', 'cancelled', 'timed_out', 'error', 'action_required']);
 

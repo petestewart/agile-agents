@@ -117,6 +117,7 @@ export async function startFakeGitHub(opts: FakeGitHubOptions = {}) {
 
   const pulls: FakePull[] = [];
   const checks = new Map<string, Map<string, CheckResult>>(); // sha -> name -> result
+  const outputs = new Map<string, string>(); // `${sha} ${name}` -> check-run output text
   const statuses = new Map<string, Map<string, StatusState>>(); // sha -> context -> state
   const requests: Array<{ method: string; path: string; status: number }> = [];
   let nextId = 1;
@@ -146,6 +147,7 @@ export async function startFakeGitHub(opts: FakeGitHubOptions = {}) {
         head_sha: s,
         status: result === 'pending' ? 'in_progress' : 'completed',
         conclusion: result === 'pending' ? null : result,
+        output: { title: name, summary: null, text: outputs.get(`${s} ${name}`) ?? null },
       }),
     );
   }
@@ -488,8 +490,10 @@ export async function startFakeGitHub(opts: FakeGitHubOptions = {}) {
     addIssueComment(n: number, c: { body: string; user?: string }) {
       pull(n).issueComments.push({ id: nextId++, user: c.user ?? 'reviewer', body: c.body });
     },
-    setCheck(ref: string, name: string, result: CheckResult) {
+    /** `output`: the check run's `output.text` (T246: the CI log excerpt). */
+    setCheck(ref: string, name: string, result: CheckResult, output?: string) {
       const s = commitOf(ref);
+      if (output !== undefined) outputs.set(`${s} ${name}`, output);
       if (!checks.has(s)) checks.set(s, new Map());
       checks.get(s)?.set(name, result);
       settleAutoMerge();
