@@ -4271,7 +4271,7 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         await page.locator(row).waitFor({ state: 'visible' });
         // T368: the event in words, its node by title, and who was told (by title too).
         expect(await page.locator(`${row} [data-testid="event-log-type"]`).textContent()).toBe(
-          'Human line',
+          'You wrote',
         );
         expect(await page.locator(`${row} [data-testid="event-log-node"]`).textContent()).toBe(
           'checkout',
@@ -5521,7 +5521,7 @@ describe('status cards on the parent page (Playwright e2e, T283)', () => {
         );
         await cockpit.streams.update('human', web.id, { title: 'web: show sale?' });
         await waitForAttr(page, card, 'data-state', 'question');
-        await waitForText(page, `${card} [data-testid="status-card-state"]`, 'question');
+        await waitForText(page, `${card} [data-testid="status-card-state"]`, 'Needs you');
         await waitForAttr(page, `${card} [data-testid="status-card-dot"]`, 'data-dot', 'amber');
         // …and a real block still reads "blocked", with no needs-you dot.
         await cards.refresh(

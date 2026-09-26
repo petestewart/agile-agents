@@ -1664,7 +1664,7 @@ test.skipIf(!RUN)(
       await checkText(
         'the Children cards read done',
         page.locator('[data-testid="child-cards"]'),
-        /ledger-lite part.*(done|merged|landed)/,
+        /ledger-lite part.*(Done|Merged)/,
       );
       const log = git(world.ledger, ['log', '--oneline', '-3']);
       check(

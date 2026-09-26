@@ -2144,11 +2144,21 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T387 ∥ A project's root page opens on an overview
 - **Priority:** P2
-- **Status:** In progress
+- **Status:** Done
 - **Owner:** worker
 - **Scope:** From the follow-ups' "not built": a project root opens on the root node's chat, so a project has no at-a-glance view of what its nodes are doing.
 - **Acceptance Criteria:** A project root has an **Overview** tab, first and default: counts by status (your move first), its nodes as rows by status with path, repo and age, its repos with their icons, and its recent events; the chat stays one tab away; each row opens its node.
 - **Validation Steps:** `bun test packages/ui`; a new control-room e2e; the whole control-room e2e and the walkthrough.
+- **Notes:** Branch T387-project-overview. `components/ProjectOverview.tsx`, `lib/overview.ts` (tested); only a real project root gets it (a project-less top-level node keeps its chat); the chips filter in place; Done folds; repos with what Merge does there; recent activity is the project's own events from the newest pages; a question on the root shows an "Open chat" banner. control-room 71/0, walkthrough 8.2 checks Shop's Overview.
+
+### Ticket: T390 Overview polish: the root's primary, child cards in words, "You wrote"
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From T387's report: Start agent was the filled button on a project root (the next step there is a node); the details panel's child cards showed the raw card state ("question", "done" for a closed node); a typed line read "Human line" in Events, Activity and the Overview; the design doc didn't name the Overview.
+- **Acceptance Criteria:** Start agent is a plain button on a project root; child cards read Working, Needs you, Blocked, Done, Idle, or Merged/Closed from the node itself; a typed line reads "You wrote"; `design/cockpit-ui.md` names the Overview, editing in place and notifications.
+- **Validation Steps:** `bun test packages/ui`; the status-cards and event-log e2e.
+- **Notes:** Branch T390-overview-polish.
 
 ### Ticket: T388 ∥ Opt-in browser notifications when something new needs you
 - **Priority:** P2
