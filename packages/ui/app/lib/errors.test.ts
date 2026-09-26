@@ -19,9 +19,9 @@ import {
 describe('isNetworkError', () => {
   test("a fetch that never reached the daemon, in each browser's words", () => {
     expect(isNetworkError(new TypeError('Failed to fetch'))).toBe(true);
-    expect(
-      isNetworkError(new TypeError('NetworkError when attempting to fetch resource.')),
-    ).toBe(true);
+    expect(isNetworkError(new TypeError('NetworkError when attempting to fetch resource.'))).toBe(
+      true,
+    );
     expect(isNetworkError(new TypeError('Load failed'))).toBe(true);
     expect(isNetworkError(new TypeError('fetch failed'))).toBe(true);
   });
@@ -56,7 +56,7 @@ describe('writeFailure', () => {
 });
 
 describe('stripRefusal', () => {
-  test('drops the daemon\'s lead-in, however many times it is there', () => {
+  test("drops the daemon's lead-in, however many times it is there", () => {
     expect(stripRefusal('merge refused: main moved')).toBe('main moved');
     expect(stripRefusal('Merge refused: merge refused: main moved')).toBe('main moved');
     expect(stripRefusal('land refused — dirty checkout')).toBe('dirty checkout');
@@ -95,8 +95,9 @@ describe('mergeRefusal', () => {
     );
     expect(r.fix).toBeUndefined();
     expect(r.text.startsWith('Main is checked out')).toBe(true);
-    expect(mergeRefusal('the branch add-csv has no commits beyond main — nothing to merge').fix)
-      .toBeUndefined();
+    expect(
+      mergeRefusal('the branch add-csv has no commits beyond main — nothing to merge').fix,
+    ).toBeUndefined();
   });
 
   test("a node branch reads as its name, not its id (T413's rule)", () => {

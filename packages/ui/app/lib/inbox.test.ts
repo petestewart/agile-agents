@@ -678,9 +678,7 @@ describe("T416: ⌘K's Needs me rows", () => {
         nothing_to_merge: true,
       }),
     ).toBe('Close: x');
-    expect(itemCommand(item({ kind: 'blocked', id: NODE, stream_path: ['x'] }))).toBe(
-      'Unblock: x',
-    );
+    expect(itemCommand(item({ kind: 'blocked', id: NODE, stream_path: ['x'] }))).toBe('Unblock: x');
     expect(
       itemCommand(item({ kind: 'gate', context: 'land: land a into main', stream_path: ['x'] })),
     ).toBe('Approve the merge: x');
