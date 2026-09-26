@@ -3858,8 +3858,9 @@ describe('Settings sections (Playwright e2e, T367)', () => {
  * T394: a notification shown through the service worker
  * (`registration.showNotification`) is recorded too (`via: 'worker'`, with
  * its `data`), and still really shown, so the worker can be clicked
- * (`clickLastNote`) and whether it is still open read back (`needsMeNotes`).
- * The page's own is `via: 'page'`.
+ * (`clickLastNote`). Its closes are recorded where the cockpit makes them
+ * — the page's `close()` on it, the worker's on a click — and a newer one
+ * under its tag replaces it (`needsMeNotes`). The page's own is `via: 'page'`.
  */
 function notifyStub(mode: 'real' | 'denied' | 'dismiss' | 'missing' = 'real'): string {
   return `(() => {
@@ -3897,6 +3898,13 @@ function notifyStub(mode: 'real' | 'denied' | 'dismiss' | 'missing' = 'real'): s
       }
     }
     window.Notification = Recorded;
+    // The page closes a worker's notification through the objects getNotifications() hands it.
+    window.__closedNotes = [];
+    const close = Real.prototype.close;
+    Real.prototype.close = function () {
+      if (this.data?.__note !== undefined) window.__closedNotes.push(this.data.__note);
+      return close.call(this);
+    };
     const show = ServiceWorkerRegistration.prototype.showNotification;
     let shownByWorker = 0;
     ServiceWorkerRegistration.prototype.showNotification = function (title, options = {}) {
@@ -3940,23 +3948,25 @@ interface RecordedNote {
 
 /**
  * T388: the Needs me notifications the page raised, oldest first. T394: one
- * the worker showed is closed once the browser no longer shows it (a click,
- * a close, or a newer one under its tag).
+ * the worker showed is closed once the page or the worker closed it, or a
+ * newer one under its tag replaced it.
  */
 async function needsMeNotes(page: Page): Promise<RecordedNote[]> {
-  return (await page.evaluate(`(async () => {
-    const registration = await navigator.serviceWorker?.getRegistration();
-    const open = registration ? await registration.getNotifications({ tag: 'agile-needs-me' }) : [];
-    const shown = new Set(open.map((n) => n.data?.__note));
-    return window.__notes
-      .filter((n) => n.tag === 'agile-needs-me')
-      .map((n) => ({
-        title: n.title,
-        body: n.body,
-        tag: n.tag,
-        closed: n.via === 'worker' ? !shown.has(n.id) : n.closed,
-      }));
-  })()`)) as RecordedNote[];
+  const worker = page.context().serviceWorkers()[0];
+  const inWorker = worker ? ((await worker.evaluate('self.__closedNotes ?? []')) as number[]) : [];
+  return (await page.evaluate(`((inWorker) => {
+    const closed = new Set([...window.__closedNotes, ...inWorker]);
+    const notes = window.__notes.filter((n) => n.tag === 'agile-needs-me');
+    return notes.map((n, i) => ({
+      title: n.title,
+      body: n.body,
+      tag: n.tag,
+      closed:
+        n.via === 'worker'
+          ? closed.has(n.id) || notes.slice(i + 1).some((later) => later.via === 'worker')
+          : n.closed,
+    }));
+  })(${JSON.stringify(inWorker)})`)) as RecordedNote[];
 }
 
 /** T394: how the last Needs me notification was shown: `worker` or `page`. */
@@ -3970,7 +3980,7 @@ async function lastNoteVia(page: Page): Promise<string | undefined> {
  * T388: clicks the last Needs me notification (what the OS does on a click).
  * T394: one the worker showed is clicked in the worker (`sw.js`'s
  * `notificationclick`), which counts its tries to bring the tab forward in
- * `self.__focused`.
+ * `self.__focused` and records what it closes in `self.__closedNotes`.
  */
 async function clickLastNote(page: Page): Promise<void> {
   if ((await lastNoteVia(page)) === 'worker') {
@@ -3982,6 +3992,12 @@ async function clickLastNote(page: Page): Promise<void> {
         WindowClient.prototype.focus = function () {
           self.__focused++;
           return focus.call(this);
+        };
+        self.__closedNotes = [];
+        const close = Notification.prototype.close;
+        Notification.prototype.close = function () {
+          if (this.data?.__note !== undefined) self.__closedNotes.push(this.data.__note);
+          return close.call(this);
         };
       }
       const [note] = await self.registration.getNotifications({ tag: 'agile-needs-me' });
