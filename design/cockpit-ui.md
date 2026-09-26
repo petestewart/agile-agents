@@ -217,6 +217,10 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
 - **Empty states** say what the place is for and give the one action that
   fills it.
 - **Destructive actions** confirm (`ConfirmDialog`) or offer Undo (toast).
+- **Reviewing a diff** (T393): a line's gutter (or its number, or `C` on a
+  focused line) opens a comment under it; comments collect in a review bar
+  ("3 comments on 2 files") whose Add to message puts one formatted review
+  in the node's composer and opens the chat. It never sends by itself.
 - **Editing in place**: a node's title (click it) and goal (Edit on the goal
   card) change where they are read; Enter or leaving saves, Esc cancels.
 - **Notifications** (Settings → General, per browser, off by default): one

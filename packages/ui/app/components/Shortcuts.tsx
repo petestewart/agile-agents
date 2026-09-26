@@ -64,6 +64,14 @@ function sections(mod: string): ReadonlyArray<{
       ],
     },
     {
+      title: 'Changes',
+      rows: [
+        { label: 'Move between lines of a file', keys: ['↑', '↓'] },
+        { label: 'Comment on the focused line', keys: ['C'] },
+        { label: 'Add the comment', keys: [['Ctrl', 'Enter']] },
+      ],
+    },
+    {
       title: 'Needs me',
       rows: [
         { label: 'Next or previous card', keys: ['J', 'K'] },

@@ -2199,11 +2199,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T393 ∥ Review the diff with the agent
 - **Priority:** P1
-- **Status:** In progress
+- **Status:** Done
 - **Owner:** worker
 - **Scope:** The Changes tab shows the diff, but feedback on it means retyping file names and lines in the chat.
 - **Acceptance Criteria:** A line's gutter offers Comment; comments collect in a review bar ("3 comments"); "Add to message" puts one formatted message (path:line, the line, the comment) in the node's composer and opens the chat; comments survive tab switches and clear when sent.
 - **Validation Steps:** `bun test packages/ui`; a control-room e2e; the whole control-room e2e and the walkthrough.
+- **Notes:** Branch T393-diff-review. `lib/review.ts` (store and `formatReview`, capped at the thread's 800 characters: quotes shorten, then drop); comments inline like GitHub's with Edit and Delete (Undo), outdated ones kept with the old line; keyboard: each file one Tab stop, ↑/↓ lines, `C` comments. `lib/markdown.ts` now keeps an indented line in its list item, continues an interrupted numbered list and reads double-backtick code spans. control-room 74/0, walkthrough green.
 
 ### Ticket: T394 ∥ Resilience and load: error boundaries, code-split views, service-worker notifications
 - **Priority:** P1
