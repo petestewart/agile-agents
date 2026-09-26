@@ -652,3 +652,21 @@ describe('proposedNext (T427)', () => {
     ).toBeUndefined();
   });
 });
+
+describe('a vendor that exits (T432)', () => {
+  test('non-zero is a failure with its reason and what to do; zero is a quiet end', () => {
+    const failed = systemLine(
+      'session ended: process exited (code 1): Invalid API key · Please run /login',
+    );
+    expect(failed.tone).toBe('warn');
+    expect(failed.text).toBe(
+      'The agent stopped with an error: Invalid API key · Please run /login. Check its vendor is installed and logged in, then send a message to start it again.',
+    );
+    expect(systemLine('session ended: process exited (code 2)').text).toContain('(exit code 2)');
+    expect(systemLine('session ended: process exited (code 0)')).toEqual({
+      icon: 'square',
+      text: 'The agent’s process ended',
+      tone: 'muted',
+    });
+  });
+});

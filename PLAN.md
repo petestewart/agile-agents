@@ -53,6 +53,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D40** (2026-09-26, to confirm): in the D17 order a model belongs to its vendor. A model named at a step counts only when that step runs the resolved vendor (its own vendor, else the vendor of the steps below it). A repo set to Gemini no longer inherits the home's Claude model: it gets Gemini's own default. Vendor and effort still resolve field by field. As built in T402.
 - **D41** (2026-09-26, Pete): a node created without a title gets one from a one-shot cheap LLM call (Haiku) through the user's own `claude` login, off the create path; the first-line title stands until it returns, and stays if the CLI is missing or the call fails. The daemon still holds no vendor credentials. As built in T414.
 - **D42** (2026-09-26, Pete): a conversation can be asked at any level (the Director, a project root, a coordinator, a work node) as its own node, and never reshapes the tree: a node's parts are its live children that are neither helpers nor conversations, and only parts make a node coordinating, wait for a plan or ask a coordinator first. A side conversation's status doesn't wake its parent; its conclusion goes up when the human sends it. It can grow into work in place. Widens D33 (design/projects-design.md §2). Built in T418–T422: the rule, Ask from anywhere, the parent's state in its brief, Send to parent, Turn into work.
+- **D43** (2026-09-26, to confirm): a vendor process that exits non-zero on its own (not a stop of the daemon's, not after its turn finished) crashed or refused (a login, a bad model): the node is `blocked`, its session `error`, and the thread line carries the vendor's last stderr line. Narrows cockpit-design §2.3's "exit ⇒ done", which let a first run with a logged-out vendor read as finished work ("Ready to merge", "Replied"). A clean exit (code 0) is still `done`. A vendor whose command isn't on the daemon's PATH is named before anything spawns. Built in T432.
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -2533,6 +2534,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** The Goal box is editable at once ("Drafting from the conversation…" as its placeholder, "…or write your own" as its hint). The draft fills it only if you haven't typed; otherwise the hint says a draft is ready, with **Use it instead**. Start waits only for a non-empty goal.
 - **Validation Steps:** control-room e2e `T422` (a held draft request: typing survives it, Use it instead swaps it in); a screenshot of both states against the real model.
 - **Notes:** Branch T431-draft-while-typing.
+
+### Ticket: T432 A vendor that fails says so (D43)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Probed the first run with a broken vendor. A vendor that exits on a login error ("Invalid API key · Please run /login", exit 1) left the node `done`, so it read as finished work ("Ready to merge", or "Replied" for a conversation), and the thread said only "process exited (code 1)"; the reason sat in the sessions strip. A vendor whose command isn't installed said "ACP initialize failed: ACP agent stdin unavailable".
+- **Acceptance Criteria:** A non-zero exit that isn't the daemon's own stop (`stop()`, a detach, a stop reason) or the end after a finished turn leaves the node `blocked` and its session `error`, starts no auto-review, and its thread line reads `session ended: process exited (code N): <the vendor's last stderr line>`; the chat shows it as a warning ("The agent stopped with an error: … Check its vendor is installed and logged in, then send a message to start it again."). A clean exit (code 0) and every stop of the daemon's stay as before. A vendor command missing from the daemon's PATH fails the start with "<Vendor> can't start: `<command>` is not on the daemon's PATH." (npx adds "install Node.js"), written on the thread as "could not start the agent: …".
+- **Validation Steps:** `bun test packages/daemon/src/attach/service.test.ts -t T432 packages/ui/app/lib/chat.test.ts`; full `bun test`. Tests that ended a session by killing its process from outside now end it through the daemon's `stop()`, as the daemon does.
+- **Notes:** Branch T432-vendor-failures. `AgentExitInfo.exitCode`; `missingVendorCommand` in `runner/session.ts`.
 
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0

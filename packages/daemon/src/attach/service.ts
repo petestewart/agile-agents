@@ -310,6 +310,8 @@ export class AttachService {
   private readonly stopReasons = new Map<string, string>();
   /** T341: sessions stopped because their turn finished with nothing open (the normal end). */
   private readonly turnFinished = new Set<string>();
+  /** T432: every session `stop()` ended: its exit code (a SIGTERM's) is no crash. */
+  private readonly stopping = new Set<string>();
 
   /** T243 (P11): wakes per node in the last hour, and wakes being started now. */
   private readonly wakeBudget: WakeBudget;
@@ -840,6 +842,7 @@ export class AttachService {
           role,
           findingsBefore,
           info.vendorError,
+          info.exitCode,
         ),
       ),
     );
@@ -1174,21 +1177,28 @@ export class AttachService {
     role: SessionRole,
     findingsBefore: number,
     vendorError?: string,
+    exitCode?: number,
   ): Promise<void> {
     const handles = this.handles(role);
     if (handles.get(streamId)?.sessionId === sessionId) handles.delete(streamId);
     const detached = this.detaching.delete(sessionId);
     const stopReason = this.stopReasons.get(sessionId);
     this.stopReasons.delete(sessionId);
+    const stoppedByUs = this.stopping.delete(sessionId);
     // T341: the daemon ended it after a finished turn; the kill's exit code says nothing.
-    const finishedTurn = this.turnFinished.delete(sessionId) && ok && vendorError === undefined;
+    const endedAfterTurn = this.turnFinished.delete(sessionId);
+    const finishedTurn = endedAfterTurn && ok && vendorError === undefined;
+    // T432 (D43): the vendor exited non-zero on its own (not a stop of ours, not after a
+    // finished turn): a crash or a refusal (a login, a bad model), never finished work.
+    const crashed =
+      ok && exitCode !== undefined && exitCode !== 0 && !endedAfterTurn && !stoppedByUs;
     // `stop()` already holds the promise it awaits; dropping it cannot lose a write.
     this.exitHandled.delete(sessionId);
     try {
       await this.setSessionStatus(
         streamId,
         sessionId,
-        ok || detached || stopReason !== undefined ? 'stopped' : 'error',
+        (ok && !crashed) || detached || stopReason !== undefined ? 'stopped' : 'error',
         detached
           ? undefined
           : stopReason !== undefined
@@ -1233,18 +1243,22 @@ export class AttachService {
         return;
       }
       await this.options.streams.update('daemon', streamId, {
-        agent: { status: ok ? 'done' : 'blocked' },
+        agent: { status: ok && !crashed ? 'done' : 'blocked' },
       });
       await this.options.streams.appendThread('daemon', streamId, {
         kind: 'event',
-        body: `session ended: ${finishedTurn ? 'its turn finished' : reason}`.slice(0, 800),
+        body: `session ended: ${
+          finishedTurn
+            ? 'its turn finished'
+            : (endedReason(reason, ok && !crashed, vendorError) ?? reason)
+        }`.slice(0, 800),
         ref: sessionId,
       });
     } catch {
       // The stream or home went away mid-session: nothing to record on.
       return;
     }
-    if (ok && role === 'worker') await this.maybeAutoReview(streamId);
+    if (ok && !crashed && role === 'worker') await this.maybeAutoReview(streamId);
   }
 
   /**
@@ -1311,6 +1325,8 @@ export class AttachService {
         if (options.detach === true) this.detaching.add(handle.sessionId);
         else if (options.reason !== undefined)
           this.stopReasons.set(handle.sessionId, options.reason);
+        // T432: ours, whatever its exit code says.
+        this.stopping.add(handle.sessionId);
         handle.stop();
         await handle.exited;
         // `agile detach` prints from the RPC result, which must already be on disk.
