@@ -520,6 +520,9 @@ async function newStream(title: string, goal: string, startLater: boolean): Prom
   if (startLater) await page.locator('[data-testid="new-stream-start"]').uncheck();
   await page.locator('[data-testid="new-stream-create"]').click();
   await page.locator('[data-testid="stream-title"]', { hasText: title }).waitFor();
+  // Its row in the frame, which the ⋯ menu's items depend on: a menu opened
+  // before it arrives grows under the pointer.
+  await streamPage().locator('[data-testid="node-role"]').waitFor();
 }
 
 /** T363: the rarer node actions live in the page header's ⋯ menu. */
@@ -2370,7 +2373,8 @@ test.skipIf(!RUN)(
       );
       await checkText(
         "the goal is now the epic's title, then From jira issue …",
-        page.locator('.cr-goal'),
+        // T419: a conversation's goal reads as its question, the chat's first message.
+        page.locator('[data-testid="chat-question"]'),
         /Tracker links in agile-test-repo.*From jira issue SHOP-10 \(http/,
       );
       await link.getByRole('button', { name: 'Import children' }).click();
@@ -2506,7 +2510,8 @@ test.skipIf(!RUN)(
       );
       await checkText(
         'its goal is kept',
-        page.locator('.cr-goal'),
+        // T419: a conversation's goal reads as its question, the chat's first message.
+        page.locator('[data-testid="chat-question"]'),
         /Note in TRACKER\.md how issues are linked\./,
       );
       const created = world.jira.issues.find((i) => i.title === 'Tracker follow-up');
