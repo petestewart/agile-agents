@@ -25,6 +25,7 @@ import type {
   CockpitStreamRow,
   StreamPagePayload,
 } from '../lib/feed-types';
+import { useShell } from '../lib/shell';
 import { ROLE_HINT, ROLE_LABEL } from '../lib/status';
 import { DOT_LABEL, cardDot, isLiveSession, sessionRows } from '../lib/streams';
 import { Icon } from './Icon';
@@ -153,6 +154,21 @@ const CARD_TONE: Record<CockpitStatusCard['state'], 'blue' | 'amber' | 'red' | '
   idle: 'gray',
 };
 
+/** A child's title; a click opens its page. (The card itself carries `data-node`.) */
+function ChildTitle({ id, titleOf }: { id: string; titleOf: (id: string) => string }): JSX.Element {
+  const { select } = useShell();
+  return (
+    <button
+      type="button"
+      className="cr-child-title"
+      title="Open its page"
+      onClick={() => select(id)}
+    >
+      {titleOf(id)}
+    </button>
+  );
+}
+
 /** T283 (§14.5): the children's status cards, on the parent's page. */
 export function ChildCards({
   cards,
@@ -178,7 +194,7 @@ export function ChildCards({
               data-node={card.node}
             >
               <div className="cr-child-top">
-                <NodeLink id={card.node} titleOf={titleOf} />
+                <ChildTitle id={card.node} titleOf={titleOf} />
               </div>
               <p className="cr-child-error" data-testid="status-card-error-text">
                 {card.error}
@@ -194,7 +210,7 @@ export function ChildCards({
             >
               <div className="cr-child-top">
                 <CardDot state={card.state} />
-                <NodeLink id={card.node} titleOf={titleOf} />
+                <ChildTitle id={card.node} titleOf={titleOf} />
                 <Badge tone={CARD_TONE[card.state]}>
                   <span data-testid="status-card-state">{card.state}</span>
                 </Badge>

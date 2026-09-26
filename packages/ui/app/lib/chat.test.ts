@@ -282,6 +282,9 @@ describe('the header', () => {
     expect(
       nodeTabs({ role: 'conversation', hasRepo: false, hasPlanItem: true, knowledge: 0, docs: 0 }),
     ).toContain('plan');
+    expect(
+      nodeTabs({ role: 'conversation', hasRepo: false, hasChildren: true, knowledge: 0, docs: 0 }),
+    ).toContain('plan');
   });
 
   test('the details panel: the stored choice, else open on a wide window', () => {

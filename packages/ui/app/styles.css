@@ -2134,7 +2134,6 @@ ul.cr-error {
   gap: 1px;
   flex: none;
   opacity: 0;
-  pointer-events: none;
   transition: opacity 0.12s;
 }
 .cr-msg:hover > .cr-msg-tools,
@@ -2142,7 +2141,6 @@ ul.cr-error {
 .cr-msg:focus-within > .cr-msg-tools,
 .cr-msg:focus-within > .cr-you > .cr-msg-tools {
   opacity: 1;
-  pointer-events: auto;
 }
 .cr-msg-tools-float {
   position: absolute;
@@ -2913,12 +2911,24 @@ button.cr-answering-q {
   min-width: 0;
   font-size: var(--text-md);
 }
-.cr-child-top .cr-ref {
+.cr-child-title {
   flex: 1;
   min-width: 0;
+  padding: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font: inherit;
+  font-weight: 500;
+  color: var(--text);
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.cr-child-title:hover {
+  color: var(--accent-fg);
+  text-decoration: underline;
 }
 .cr-child-doing {
   margin-top: 4px !important;

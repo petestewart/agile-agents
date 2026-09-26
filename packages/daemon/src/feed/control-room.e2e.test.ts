@@ -816,8 +816,10 @@ describe('cockpit shell (Playwright e2e)', () => {
         )) as number;
         expect(pageOverflow).toBeLessThanOrEqual(0);
 
-        await page.locator(`${card} [data-testid="answer-input"]`).fill('main');
-        await page.locator(`${card} [data-testid="answer-send"]`).click();
+        // T363: on a node's page the composer answers the open question.
+        await page.locator('[data-testid="composer-answering"]').waitFor();
+        await page.locator('[data-testid="composer-input"]').fill('main');
+        await page.locator('[data-testid="composer-send"]').click();
         await page.locator(card).waitFor({ state: 'detached' });
         // T360: the views live in the drawer at phone width.
         await page.locator('[data-testid="rail-toggle"]').click();
@@ -1462,8 +1464,9 @@ describe('stream page (Playwright e2e, T161)', () => {
         await page.locator('.cr-tabs [data-tab="thread"]').click();
 
         // ---- attach: the worker speaks onto the thread, live.
-        // T170: Attach opens the picker, prefilled with the D17 built-in.
-        await page.locator('[data-testid="attach"]').click();
+        // T363: Start agent is one click with the defaults; its chevron opens the
+        // picker (T170), prefilled with the D17 built-in.
+        await page.locator('[data-testid="attach-options"]').click();
         await page.locator('[data-testid="session-picker"][data-role="worker"]').waitFor();
         expect(await page.locator('[data-testid="picker-model"]').inputValue()).toBe(
           'claude-opus-5-5',
@@ -1535,9 +1538,12 @@ describe('stream page (Playwright e2e, T161)', () => {
         git(['add', 'parser.ts'], worktree);
         git(['commit', '-q', '-m', 'semicolon parser'], worktree);
 
-        // ---- answer, on the stream page.
-        await page.locator(`${card} [data-testid="answer-input"]`).fill('semicolon');
-        await page.locator(`${card} [data-testid="answer-send"]`).click();
+        // ---- answer, on the stream page: T363, the composer answers the open question.
+        await page
+          .locator('[data-testid="composer-answering"]', { hasText: 'two conventions' })
+          .waitFor();
+        await page.locator('[data-testid="composer-input"]').fill('semicolon');
+        await page.locator('[data-testid="composer-send"]').click();
         await page.locator(card).waitFor({ state: 'detached' });
         await page
           .locator('[data-testid="thread-entry"]', { hasText: 'continuing with semicolon' })
@@ -1546,7 +1552,9 @@ describe('stream page (Playwright e2e, T161)', () => {
           'the worker to finish',
           () => cockpit.streams.get(stream.id).agent.status === 'done',
         );
-        await page.locator('[data-testid="stream-status"]', { hasText: 'agent done' }).waitFor();
+        await page
+          .locator('[data-testid="stream-status"]', { hasText: 'Agent finished' })
+          .waitFor();
         await page.locator('[data-testid="thinking"]').waitFor({ state: 'detached' });
 
         // The diff tab: the worktree against main.
@@ -1559,7 +1567,8 @@ describe('stream page (Playwright e2e, T161)', () => {
         ).toBe(1);
         await page.locator('.cr-tabs [data-tab="thread"]').click();
 
-        // ---- findings: Review attaches a reviewer, which reports one.
+        // ---- findings: Review attaches a reviewer, which reports one (T363: from the ⋯ menu).
+        await page.locator('[data-testid="node-menu-trigger"]').click();
         await page.locator('[data-testid="review"]').click();
         await page.locator('[data-testid="session-picker"][data-role="reviewer"]').waitFor();
         await page.locator('[data-testid="picker-start"]').click();
@@ -1608,7 +1617,7 @@ describe('stream page (Playwright e2e, T161)', () => {
         await waitForAttr(page, '[data-testid="land-result"]', 'data-status', 'landed');
         expect(cockpit.streams.get(stream.id).human.status).toBe('landed');
         expect(existsSync(join(cockpit.repo, 'parser.ts'))).toBe(true);
-        await page.locator('[data-testid="stream-status"]', { hasText: 'you landed' }).waitFor();
+        await page.locator('[data-testid="stream-status"]', { hasText: 'Merged' }).waitFor();
         await waitForAttr(
           page,
           `[data-testid="stream-tree"] [data-stream="${stream.id}"] .cr-dot`,
@@ -1665,17 +1674,264 @@ describe('stream page (Playwright e2e, T161)', () => {
   );
 });
 
+// ---- T363: a node's page is a chat -----------------------------------------
+
+describe("a node's page is a chat (Playwright e2e, T363)", () => {
+  browserTest(
+    'a question sits at the end of the chat, above the composer, and the composer answers it',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const node = await cockpit.streams.create('human', { title: 'csv dialect', goal: 'g' });
+        await cockpit.streams.appendThread('human', node.id, {
+          kind: 'line',
+          body: 'CHAT-MARKER please look at the export files',
+        });
+        const session = ulid();
+        const first = await cockpit.questions.raise({
+          stream: node.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session,
+          text: 'comma or semicolon for the CSV dialect?',
+        });
+        const second = await cockpit.questions.raise({
+          stream: node.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session,
+          text: 'quote every field, or only when needed?',
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        const firstCard = `[data-testid="stream-needs"] [data-id="${first.id}"]`;
+        await page.locator(firstCard).waitFor({ state: 'visible' });
+        await page.locator(`[data-testid="stream-needs"] [data-id="${second.id}"]`).waitFor();
+
+        // The cards are at the end of the conversation, right above the composer.
+        const line = await page
+          .locator('[data-testid="thread-entry"]', { hasText: 'CHAT-MARKER' })
+          .boundingBox();
+        const card = await page.locator(firstCard).boundingBox();
+        const composer = await page.locator('[data-testid="composer-input"]').boundingBox();
+        expect(line && card ? card.y > line.y : false).toBe(true);
+        expect(card && composer ? card.y + card.height <= composer.y : false).toBe(true);
+        // Your line is a bubble on the right; nothing like the old "Needs you" block sits on top.
+        expect(
+          await page
+            .locator('[data-testid="thread-entry"][data-by="human"]', { hasText: 'CHAT-MARKER' })
+            .getAttribute('data-variant'),
+        ).toBe('you');
+
+        // The composer answers the oldest question by default, and says so.
+        const chip = page.locator('[data-testid="composer-answering"]');
+        await chip.waitFor();
+        expect(await chip.textContent()).toContain('comma or semicolon');
+        expect(await page.locator('[data-testid="composer-hint"]').textContent()).toContain(
+          'Answers the question',
+        );
+
+        // Pick the other question from the chip's menu, and answer it.
+        await chip.locator('button', { hasText: 'comma or semicolon' }).click();
+        await page
+          .locator('[data-testid="composer-answering-menu"] [role="menuitem"]', {
+            hasText: 'quote every field',
+          })
+          .click();
+        expect(await chip.textContent()).toContain('quote every field');
+        await page.locator('[data-testid="composer-input"]').fill('only when needed');
+        await page.locator('[data-testid="composer-input"]').press('Enter');
+        await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
+        expect(cockpit.delivered[0]?.question.id).toBe(second.id);
+        expect(cockpit.delivered[0]?.question.answer).toBe('only when needed');
+        await page
+          .locator(`[data-testid="stream-needs"] [data-id="${second.id}"]`)
+          .waitFor({ state: 'detached' });
+        // Your answer reads as a bubble tagged Answer.
+        await page
+          .locator('[data-testid="thread-entry"][data-kind="answer"][data-by="human"]', {
+            hasText: 'only when needed',
+          })
+          .waitFor();
+
+        // "Write a message instead": Send writes a plain line, and the question stays open.
+        await chip.waitFor();
+        expect(await chip.textContent()).toContain('comma or semicolon');
+        await page.locator('[data-testid="composer-answer-cancel"]').click();
+        await chip.waitFor({ state: 'detached' });
+        await page.locator('[data-testid="composer-answer-resume"]').waitFor();
+        await page.locator('[data-testid="composer-input"]').fill('a side note, not an answer');
+        await page.locator('[data-testid="composer-send"]').click();
+        await page
+          .locator('[data-testid="thread-entry"][data-kind="line"]', {
+            hasText: 'a side note, not an answer',
+          })
+          .waitFor();
+        expect(cockpit.delivered).toHaveLength(1);
+        await page.locator(firstCard).waitFor({ state: 'visible' });
+
+        // Back to answering: the last question, from the composer.
+        await page.locator('[data-testid="composer-answer-resume"]').click();
+        await page.locator('[data-testid="composer-input"]').fill('semicolon');
+        await page.locator('[data-testid="composer-send"]').click();
+        await waitUntil('the second answer', () => cockpit.delivered.length > 1);
+        expect(cockpit.delivered[1]?.question.id).toBe(first.id);
+        await page.locator(firstCard).waitFor({ state: 'detached' });
+        await page.locator('[data-testid="composer-answering"]').waitFor({ state: 'detached' });
+        await page.locator('[data-testid="stream-needs"]').waitFor({ state: 'hidden' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a message to a node whose agent never ran starts it with the defaults',
+    async () => {
+      const promptLog = join(tmpdir(), `agile-t363-prompts-${ulid()}.jsonl`);
+      const cockpit = await startStreamCockpit([
+        {
+          logFile: promptLog,
+          steps: [{ type: 'agent_text', text: 'STARTED-REPLY on it' }, { type: 'end_turn' }],
+        },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'why is export slow?',
+          goal: 'find out why the export is slow',
+          project: shop.id,
+        });
+        expect(cockpit.streams.get(node.id).sessions).toEqual([]);
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        await page.locator('[data-testid="node-status"]', { hasText: 'Not started' }).waitFor();
+        await page.locator('[data-testid="chat-empty"]').waitFor();
+        await waitForText(
+          page,
+          '[data-testid="composer-hint"]',
+          'Starts the agent with Claude Opus 5.5 · low.',
+        );
+        await page.locator('[data-testid="composer-input"]').fill('SEND-STARTS profile the export');
+        await page.locator('[data-testid="composer-send"]').click();
+
+        // The line is on the thread, an agent starts, and the line reaches it once.
+        await page
+          .locator('[data-testid="thread-entry"][data-by="human"]', { hasText: 'SEND-STARTS' })
+          .waitFor();
+        await page.locator('[data-testid="session"][data-role="worker"]').waitFor();
+        await page
+          .locator('[data-testid="thread-entry"][data-by="agent"]', { hasText: 'STARTED-REPLY' })
+          .waitFor();
+        const sessions = cockpit.streams.get(node.id).sessions;
+        expect(sessions).toHaveLength(1);
+        expect(sessions[0]).toMatchObject({ role: 'worker', model: 'claude-opus-5-5' });
+        await waitUntil('the prompt log', () => existsSync(promptLog));
+        const prompts = readFileSync(promptLog, 'utf8');
+        // One turn, its brief carrying the line (T361: not a second prompt with it).
+        expect(prompts).toContain('SEND-STARTS profile the export');
+        expect(prompts.split('\n').filter((l) => l.includes('"session/prompt"'))).toHaveLength(1);
+        // The empty state has made way for the conversation.
+        expect(await page.locator('[data-testid="chat-empty"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(promptLog, { force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'Start agent is one click; Delete node… confirms, goes to Needs me, and Undo brings it back',
+    async () => {
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'tool_call', toolCallId: 'w-1', title: 'read' }, { type: 'hang' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'throwaway',
+          goal: 'g',
+          repo: 'demo',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+
+        // One click: no picker, the defaults.
+        await page.locator('[data-testid="attach"]').click();
+        await page
+          .locator('[data-testid="session"][data-role="worker"][data-status="running"]')
+          .waitFor();
+        expect(await page.locator('[data-testid="session-picker"]').count()).toBe(0);
+        await page.locator('[data-testid="thinking"]').waitFor();
+        await page.locator('[data-testid="stop"]').waitFor();
+        await waitForText(
+          page,
+          '[data-testid="composer-hint"]',
+          'Queued — Claude reads it after its current step.',
+        );
+
+        // Delete node…: a confirmation, then the node leaves and Needs me opens.
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page.locator('[data-testid="stream-delete"]').click();
+        await page.locator('[data-testid="delete-node-confirm"]').click();
+        await page.locator('[data-testid="inbox"]').waitFor();
+        await waitUntil('the node archived', () => cockpit.streams.get(node.id).archived === true);
+        expect(cockpit.streams.get(node.id).sessions.every((s) => s.status !== 'running')).toBe(
+          true,
+        );
+        await page
+          .locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`)
+          .waitFor({ state: 'detached' });
+
+        // Undo restores it and reopens its page.
+        await page.locator('[data-testid="toast"]', { hasText: 'Deleted' }).waitFor();
+        await page.locator('[data-testid="toast-action"]', { hasText: 'Undo' }).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        await waitUntil(
+          'the node restored',
+          () => cockpit.streams.get(node.id).archived === undefined,
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('session defaults (Playwright e2e, T170)', () => {
   browserTest(
     'change the default in Settings, Attach, and the session strip shows the new model and effort',
     async () => {
-      const cockpit = await startStreamCockpit([{ steps: [{ type: 'end_turn' }] }]);
+      // The worker stays mid-turn, so the composer's lines below queue for it (no second start).
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'tool_call', toolCallId: 'w-1', title: 'read' }, { type: 'hang' }] },
+      ]);
       let page: Page | undefined;
       try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
         const stream = await cockpit.streams.create('human', {
           title: 'defaults',
           goal: 'g',
           repo: 'demo',
+          project: shop.id,
         });
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
@@ -1709,24 +1965,16 @@ describe('session defaults (Playwright e2e, T170)', () => {
 
         await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
         await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
-        // T164: Enter sends, Shift+Enter is a newline, an empty composer sends nothing.
-        const composer = page.locator('[data-testid="composer-input"]');
-        await composer.press('Enter');
-        await composer.fill('first line');
-        await composer.press('Shift+Enter');
-        await composer.type('second line');
-        expect(await composer.inputValue()).toBe('first line\nsecond line');
-        await composer.press('Enter');
-        await waitUntilAsync(
-          'the Enter-sent line on the thread',
-          async () => (await composer.inputValue()) === '',
+        // T363: the composer's model chip names what Send would start.
+        await page
+          .locator('[data-testid="composer-model"]', { hasText: 'Claude Sonnet 4.6 · high' })
+          .waitFor();
+        expect(await page.locator('[data-testid="composer-hint"]').textContent()).toBe(
+          'Starts the agent with Claude Sonnet 4.6 · high.',
         );
-        const said = cockpit.streams
-          .readThread(stream.id)
-          .entries.filter((e) => e.by === 'human' && e.kind === 'line');
-        expect(said.map((e) => e.body)).toEqual(['first line\nsecond line']);
 
-        await page.locator('[data-testid="attach"]').click();
+        // T363: Start agent's chevron opens the picker, prefilled with the new default.
+        await page.locator('[data-testid="attach-options"]').click();
         await page.locator('[data-testid="session-picker"]').waitFor();
         await waitUntilAsync(
           'the picker to prefill',
@@ -1745,6 +1993,24 @@ describe('session defaults (Playwright e2e, T170)', () => {
           model: 'claude-sonnet-4-6',
           effort: 'high',
         });
+
+        // T164: Enter sends, Shift+Enter is a newline, an empty composer sends nothing.
+        const composer = page.locator('[data-testid="composer-input"]');
+        await composer.press('Enter');
+        await composer.fill('first line');
+        await composer.press('Shift+Enter');
+        await composer.type('second line');
+        expect(await composer.inputValue()).toBe('first line\nsecond line');
+        await composer.press('Enter');
+        await waitUntilAsync(
+          'the Enter-sent line on the thread',
+          async () => (await composer.inputValue()) === '',
+        );
+        const said = cockpit.streams
+          .readThread(stream.id)
+          .entries.filter((e) => e.by === 'human' && e.kind === 'line');
+        expect(said.map((e) => e.body)).toEqual(['first line\nsecond line']);
+        expect(cockpit.streams.get(stream.id).sessions).toHaveLength(1);
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -1756,7 +2022,7 @@ describe('session defaults (Playwright e2e, T170)', () => {
 
 describe('stream page rough edges (Playwright e2e, T166)', () => {
   browserTest(
-    'Needs you shows "nothing waiting on you"; a branch merged by hand is marked landed; Close closes as human',
+    'nothing waits on you: no decision cards; a branch merged by hand is marked landed; Close closes as human',
     async () => {
       const cockpit = await startStreamCockpit([]);
       let page: Page | undefined;
@@ -1791,25 +2057,30 @@ describe('stream page rough edges (Playwright e2e, T166)', () => {
         await page.goto(`${cockpit.base}/`);
         await page.locator(`[data-testid="stream-tree"] [data-stream="${merged.id}"]`).click();
         await page.locator(`[data-testid="stream-page"][data-stream="${merged.id}"]`).waitFor();
-        await page.locator('[data-testid="stream-needs-empty"]').waitFor({ state: 'visible' });
-        expect(await page.locator('[data-testid="stream-needs"] h2').textContent()).toBe(
-          'Needs you',
-        );
+        // T363: with nothing waiting, the decision cards above the composer are simply absent.
+        await page.locator('[data-testid="stream-needs"]').waitFor({ state: 'hidden' });
+        expect(await page.locator('[data-testid="stream-needs"] .cr-card').count()).toBe(0);
         await waitForAttr(page, '[data-testid="land-before"]', 'data-ready', 'merged');
         expect(await page.locator('[data-testid="land-before"]').textContent()).toContain(
           'Already merged into main',
         );
         expect(await page.locator('[data-testid="stream-land"]').count()).toBe(0);
         await page.locator('[data-testid="stream-mark-landed"]').click();
-        await page.locator('[data-testid="stream-status"]', { hasText: 'you landed' }).waitFor();
+        await page.locator('[data-testid="stream-status"]', { hasText: 'Merged' }).waitFor();
         expect(cockpit.streams.get(merged.id).human.status).toBe('landed');
+        // T363: Close lives in the ⋯ menu, and a merged node has none.
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page.locator('[data-testid="node-menu"]').waitFor();
         expect(await page.locator('[data-testid="stream-close"]').count()).toBe(0);
+        await page.keyboard.press('Escape');
 
-        // Close, on another stream.
+        // Close, on another stream: from the ⋯ menu, confirmed.
         await page.locator(`[data-testid="stream-tree"] [data-stream="${other.id}"]`).click();
         await page.locator(`[data-testid="stream-page"][data-stream="${other.id}"]`).waitFor();
+        await page.locator('[data-testid="node-menu-trigger"]').click();
         await page.locator('[data-testid="stream-close"]').click();
-        await page.locator('[data-testid="stream-status"]', { hasText: 'you closed' }).waitFor();
+        await page.locator('[data-testid="close-node-confirm"]').click();
+        await page.locator('[data-testid="stream-status"]', { hasText: 'Closed' }).waitFor();
         expect(cockpit.streams.get(other.id).human.status).toBe('closed');
       } finally {
         await teardown([page]);
@@ -1980,7 +2251,16 @@ describe('delivery result tone and PR state (Playwright e2e, T338)', () => {
           goal: 'g',
           repo: 'demo',
         });
-        await cockpit.streams.update('daemon', fresh.id, { branch: 's-fresh' });
+        // T363: Merge shows when the branch has something to merge.
+        const freshTree = join(cockpit.repo, '.worktrees', 's-fresh');
+        git(['worktree', 'add', '-q', '-b', 's-fresh', freshTree, 'main'], cockpit.repo);
+        writeFileSync(join(freshTree, 'fresh.txt'), 'fresh\n');
+        git(['add', '-A'], freshTree);
+        git(['commit', '-q', '-m', 'fresh'], freshTree);
+        await cockpit.streams.update('daemon', fresh.id, {
+          branch: 's-fresh',
+          worktree: freshTree,
+        });
         page = await openPage();
         // The land call itself is the daemon's (T224); this pins how its PR outcome reads.
         await page.route(`**/api/streams/${fresh.id}/land`, (route) =>
@@ -2039,8 +2319,15 @@ describe('Merge wording and hold tone (Playwright e2e, T347)', () => {
           goal: 'g',
           repo: 'demo',
         });
+        // T363: Merge shows when the branch has something to merge.
+        const worktree = join(cockpit.repo, '.worktrees', 's-finished');
+        git(['worktree', 'add', '-q', '-b', 's-finished', worktree, 'main'], cockpit.repo);
+        writeFileSync(join(worktree, 'finished.txt'), 'finished\n');
+        git(['add', '-A'], worktree);
+        git(['commit', '-q', '-m', 'finished'], worktree);
         await cockpit.streams.update('daemon', stream.id, {
           branch: 's-finished',
+          worktree,
           agent: { status: 'done' },
         });
         page = await openPage();
@@ -2111,8 +2398,8 @@ describe('parents and land conflicts (Playwright e2e, T176)', () => {
         await page.goto(`${cockpit.base}/`);
         await page.locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`).click();
         await page.locator(`[data-testid="stream-page"][data-stream="${parent.id}"]`).waitFor();
+        // T363: Start agent is one click, with the defaults.
         await page.locator('[data-testid="attach"]').click();
-        await page.locator('[data-testid="picker-start"]').click();
         // D20: no parent-attach confirmation any more; the agent just starts,
         // as a coordinator (P20, T280).
         await page.locator('[data-testid="session"][data-role="coordinator"]').waitFor();
@@ -2437,7 +2724,7 @@ describe('the Knowledge screen (Playwright e2e, T266)', () => {
         await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
         await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
         const tab = page.locator('.cr-tabs [data-tab="rules"]');
-        expect(await tab.textContent()).toContain('Knowledge in scope');
+        expect(await tab.textContent()).toContain('Knowledge');
         await tab.click();
         await page.locator(`[data-testid="rule"][data-rule="${decision.id}"]`).waitFor();
       } finally {
@@ -3179,8 +3466,12 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
 
         const created = cockpit.streams.list().find((x) => x.title === 'import CSV');
         await waitForRunningWorker(page, cockpit, created?.id ?? '', traffic);
-        // The control reads Restart once a worker has run.
-        expect(await page.locator('[data-testid="attach"]').textContent()).toBe('Restart');
+        // T363: with its agent running the page offers Stop, and the ⋯ menu Restart agent.
+        expect(await page.locator('[data-testid="stop"]').textContent()).toBe('Stop');
+        expect(await page.locator('[data-testid="attach"]').count()).toBe(0);
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        expect(await page.locator('[data-testid="restart"]').textContent()).toBe('Restart agent');
+        await page.keyboard.press('Escape');
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -3239,8 +3530,8 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
         );
         await page.goto(`${cockpit.base}/`);
         await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
+        // T363: Start agent is one click, with the defaults.
         await page.locator('[data-testid="attach"]').click();
-        await page.locator('[data-testid="picker-start"]').click();
         await page
           .locator('[data-testid="session"][data-role="worker"][data-status="running"]')
           .waitFor();
@@ -3287,7 +3578,7 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
         const captured = cockpit.streams.list().find((s) => s.title === 'why is export slow?');
         await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
         expect(captured?.sessions).toEqual([]);
-        expect(await page.locator('[data-testid="attach"]').textContent()).toBe('Start');
+        expect(await page.locator('[data-testid="attach"]').textContent()).toBe('Start agent');
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -3323,6 +3614,8 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
         await page.locator(root).waitFor();
 
         // Conversation + demo: a work node with a branch, the same thread.
+        // T363: Add repository… is in the ⋯ menu and opens a dialog.
+        await page.locator('[data-testid="node-menu-trigger"]').click();
         await page.locator('[data-testid="add-repo"]').click();
         await page.locator('[data-testid="add-repo-select"]').selectOption('demo');
         await page.locator('[data-testid="add-repo-submit"]').click();
@@ -4177,7 +4470,11 @@ describe('tracker link field (Playwright e2e, T321)', () => {
         await page.goto(`${cockpit.base}/`);
         await page.locator(`[data-testid="stream-tree"] [data-stream="${plain.id}"]`).click();
         await page.locator('[data-testid="stream-title"]', { hasText: 'Draft' }).waitFor();
-        await page.locator('[data-testid="link-wait"]', { hasText: 'Waits on…' }).waitFor();
+        // T363: no tracker, so neither the ⋯ menu nor the details panel offers Tracker issue….
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page.locator('[data-testid="node-menu"]').waitFor();
+        expect(await page.locator('[data-testid="tracker-menu"]').count()).toBe(0);
+        await page.keyboard.press('Escape');
         expect(await page.locator('[data-testid="tracker-link-open"]').count()).toBe(0);
         expect(await page.locator('[data-testid="tracker-link-form"]').count()).toBe(0);
         expect(await page.getByRole('button', { name: 'Link', exact: true }).count()).toBe(0);

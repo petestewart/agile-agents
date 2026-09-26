@@ -325,7 +325,7 @@ export function sendIntent(input: SendIntentInput): SendIntent {
   if (!input.canStart) {
     return {
       action: 'say',
-      hint: 'Adds a note to the thread. Nothing runs here until the project has parts.',
+      hint: 'Adds a note to the thread. Start agent runs one here.',
       placeholder: 'Write a note…',
     };
   }
@@ -428,13 +428,20 @@ export type NodeTab = 'thread' | 'diff' | 'plan' | 'activity' | 'rules' | 'docs'
 export function nodeTabs(input: {
   role: 'project' | 'coordinating' | 'work' | 'conversation' | undefined;
   hasRepo: boolean;
+  /** Parts or tangents under it: a plan may split them. */
+  hasChildren?: boolean;
   hasPlanItem?: boolean;
   knowledge: number;
   docs: number;
 }): NodeTab[] {
   const tabs: NodeTab[] = ['thread'];
   if (input.hasRepo) tabs.push('diff');
-  if (input.role === 'coordinating' || input.role === 'project' || input.hasPlanItem) {
+  if (
+    input.role === 'coordinating' ||
+    input.role === 'project' ||
+    input.hasChildren ||
+    input.hasPlanItem
+  ) {
     tabs.push('plan');
   }
   tabs.push('activity');

@@ -393,8 +393,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     liveAgent !== undefined && (liveAgent.status === 'starting' || liveAgent.status === 'running');
   const thinking = isThinking(stream);
   const hasRun = stream.sessions.some((s) => isAgentRole(s.role));
-  // A bare project root has no agent to start until it has parts.
-  const canStart = !(role === 'project' && children.length === 0);
+  // T361: a line starts an agent anywhere but a bare project root (Start agent still runs one there).
+  const lineStarts = !(role === 'project' && children.length === 0);
   const waitingForPlan = row?.waiting_for_plan === true;
   // T174: human lines sent mid-turn, not yet delivered to the live worker.
   const queuedLines = new Set(live.flatMap((s) => s.queued ?? []));
@@ -416,7 +416,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     ...(answering !== undefined ? { answering } : {}),
     ...(liveAgent ? { live: { name: vendorLabel(liveAgent.vendor), working: agentWorking } } : {}),
     waitingForPlan,
-    canStart,
+    canStart: lineStarts,
     hasRun,
     ...(row?.stopped ? { stopped: true } : {}),
     ...(startWith ? { startWith } : {}),
@@ -426,13 +426,14 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     open,
     liveAgent: liveAgent !== undefined,
     anyLive: live.length > 0,
-    canStart: canStart && !waitingForPlan,
+    canStart: !waitingForPlan,
     mergeable,
     landReady: page.land?.ready === true,
   });
   const tabs = nodeTabs({
     role,
     hasRepo: stream.repo !== undefined,
+    hasChildren: children.length > 0,
     hasPlanItem: cards.some((c) => c.kind === 'plan_approve'),
     knowledge: page.rules.length,
     docs: page.docs.length,
@@ -578,7 +579,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       label: 'Choose the model and start…',
       icon: 'sliders',
       testid: 'attach-choose',
-      hidden: !open || live.length > 0 || !canStart || waitingForPlan,
+      hidden: !open || live.length > 0 || waitingForPlan,
       onSelect: () => setPicker('start'),
     },
     {
@@ -831,7 +832,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         <span className="cr-model-dot" aria-hidden="true" />
         {sessionLabel(liveAgent)}
       </span>
-    ) : startWith && open && canStart && !waitingForPlan ? (
+    ) : startWith && open && !waitingForPlan ? (
       <button
         type="button"
         className="cr-model-chip"
@@ -1041,7 +1042,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             busy={busy}
             canReview={liveReviewer === undefined}
             {...(stream.repo !== undefined ? { onReview: () => setPicker('reviewer') } : {})}
-            {...(open && canStart && !waitingForPlan
+            {...(open && !waitingForPlan
               ? { onChooseModel: () => setPicker(liveAgent ? 'restart' : 'start') }
               : {})}
           />
