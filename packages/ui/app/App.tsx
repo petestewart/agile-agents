@@ -81,10 +81,10 @@ export function App(): JSX.Element {
       <main className="cr-main">
         <MobileBar connected={connected} name={snapshot?.project?.name ?? 'agile'} />
         {lost && (
-          <div className="cr-offline" role="status" data-testid="offline-banner">
+          <output className="cr-offline" data-testid="offline-banner">
             <Icon name="alert-circle" size={14} />
             Lost the daemon — reconnecting. Is <code>agiled</code> running?
-          </div>
+          </output>
         )}
         {view === 'settings' ? (
           <Settings />
