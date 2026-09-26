@@ -834,6 +834,17 @@ describe('cockpit shell (Playwright e2e)', () => {
 
 // ---- T163: the rules screen (design/cockpit-design.md §5, §9) ----------
 
+/** T366: opens an item's side panel on the Knowledge screen (a click on its row); returns its selector. */
+async function openKnowledgeItem(page: Page, id: string): Promise<string> {
+  const detail = `[data-testid="rules-detail"][data-rule="${id}"]`;
+  await page.locator(`[data-testid="rules-row"][data-rule="${id}"]`).waitFor();
+  if ((await page.locator(detail).count()) === 0) {
+    await page.locator(`[data-testid="rules-row"][data-rule="${id}"] .cr-kn-row-main`).click();
+  }
+  await page.locator(detail).waitFor();
+  return detail;
+}
+
 describe('rules screen (Playwright e2e, T163)', () => {
   browserTest(
     'seeded proposals are one inbox card that opens the filtered list; bulk retire; an accepted rule reaches the stream page',
@@ -884,18 +895,28 @@ describe('rules screen (Playwright e2e, T163)', () => {
             return saved.status === 'retired' && saved.decided_by === 'human';
           }),
         );
-        // Filtered to proposed, the list is now empty.
+        // To review, filtered to that source, is now empty.
         await page.locator('[data-testid="rules-empty"]').waitFor();
 
-        // Clear the source filter and show every status: the lesson is
-        // there, and the retired three are too. Accept the lesson here.
+        // T366: clear the source filter: To review shows the lesson. Accept
+        // it from its row.
         await page.locator('[data-testid="rules-filter-source"] button').click();
-        await page.locator('[data-testid="rules-filter-status"]').selectOption('all');
-        await waitForCount(page, '[data-testid="rules-row"][data-status="retired"]', 3);
         const row = `[data-testid="rules-row"][data-rule="${lesson.id}"]`;
         await page.locator(`${row} [data-testid="rules-accept"]`).click();
-        await waitForAttr(page, row, 'data-status', 'accepted', POLL_DEADLINE_MS);
+        await waitUntil(
+          'the lesson to be accepted',
+          () => cockpit.store.getKnowledge(lesson.id).status === 'accepted',
+        );
         expect(cockpit.store.getKnowledge(lesson.id).decided_by).toBe('human');
+        // Every status on All: the lesson reads accepted, and the retired
+        // three fold under Retired until asked for.
+        await page.locator('[data-testid="rules-tab-all"]').click();
+        await waitForAttr(page, row, 'data-status', 'accepted', POLL_DEADLINE_MS);
+        expect(await page.locator('[data-testid="rules-row"][data-status="retired"]').count()).toBe(
+          0,
+        );
+        await page.locator('[data-testid="rules-show-retired"]').click();
+        await waitForCount(page, '[data-testid="rules-row"][data-status="retired"]', 3);
 
         // The inbox is empty again, and the rule is in the stream's rules tab.
         await page.locator('[data-view="inbox"]').click();
@@ -949,26 +970,31 @@ describe('rules screen (Playwright e2e, T163)', () => {
         await page.goto(`${cockpit.base}/?view=rules`);
         const row = `[data-testid="rules-row"][data-rule="${rule.id}"]`;
         await page.locator(row).waitFor();
+        // T366: the check, its examples and the actions live in the item's panel.
+        const detail = await openKnowledgeItem(page, rule.id);
         // A proposal is not evaluated: the button is there but disabled.
-        expect(await page.locator(`${row} [data-testid="rules-test"]`).isDisabled()).toBe(true);
+        expect(await page.locator(`${detail} [data-testid="rules-test"]`).isDisabled()).toBe(true);
 
-        await page.locator(`${row} [data-testid="rules-edit"]`).click();
+        await page.locator(`${detail} [data-testid="rules-edit"]`).click();
+        const editor = '[data-testid="rules-editor"]';
         await page
-          .locator(`${row} [data-testid="rules-edit-question"]`)
+          .locator(`${editor} [data-testid="rules-edit-question"]`)
           .fill('Does this action add a package to the project?');
         await page
-          .locator(`${row} [data-testid="rules-edit-criteria-true"]`)
+          .locator(`${editor} [data-testid="rules-edit-criteria-true"]`)
           .fill('a package manager adds a dependency');
         await page
-          .locator(`${row} [data-testid="rules-edit-criteria-false"]`)
+          .locator(`${editor} [data-testid="rules-edit-criteria-false"]`)
           .fill('no dependency changes');
-        await page.locator(`${row} [data-testid="rules-edit-add-example"]`).click();
+        await page.locator(`${editor} [data-testid="rules-edit-add-example"]`).click();
         await page
-          .locator(`${row} [data-testid="rules-edit-example"] input[aria-label="Example action"]`)
+          .locator(
+            `${editor} [data-testid="rules-edit-example"] input[aria-label="Example action"]`,
+          )
           .nth(2)
           .fill('npm install left-pad');
-        await page.locator(`${row} [data-testid="rules-edit-save"]`).click();
-        await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
+        await page.locator(`${editor} [data-testid="rules-edit-save"]`).click();
+        await page.locator(editor).waitFor({ state: 'detached' });
         const saved = cockpit.store.getKnowledge(rule.id);
         expect(classifierQuestion(saved)).toBe('Does this action add a package to the project?');
         expect(saved.check).toMatchObject({
@@ -980,16 +1006,17 @@ describe('rules screen (Playwright e2e, T163)', () => {
         expect(examplesOf(saved)).toHaveLength(3);
         await waitForText(
           page,
-          `${row} [data-testid="rules-question"]`,
-          'Q: Does this action add a package to the project?',
+          `${detail} [data-testid="rules-question"]`,
+          'Does this action add a package to the project?',
         );
 
-        await page.locator(`${row} [data-testid="rules-accept"]`).click();
+        await page.locator(`${detail} [data-testid="rules-accept"]`).click();
         await waitForAttr(page, row, 'data-status', 'accepted', POLL_DEADLINE_MS);
-        await page.locator(`${row} [data-testid="rules-test"]`).click();
-        await waitForCount(page, `${row} [data-testid="rules-eval"]`, 3);
+        await waitForText(page, `${detail} [data-testid="rules-status"]`, 'Accepted');
+        await page.locator(`${detail} [data-testid="rules-test"]`).click();
+        await waitForCount(page, `${detail} [data-testid="rules-eval"]`, 3);
         const bands = await page
-          .locator(`${row} [data-testid="rules-eval"]`)
+          .locator(`${detail} [data-testid="rules-eval"]`)
           .evaluateAll((els) =>
             els.map((el) => [el.getAttribute('data-band'), el.getAttribute('data-agree')]),
           );
@@ -998,8 +1025,8 @@ describe('rules screen (Playwright e2e, T163)', () => {
           ['allow', 'yes'],
           ['route', 'no'],
         ]);
-        expect(await page.locator(`${row} [data-testid="rules-evals"]`).textContent()).toContain(
-          '2/3 agree',
+        expect(await page.locator(`${detail} [data-testid="rules-evals"]`).textContent()).toContain(
+          '2 of 3 examples agree',
         );
         // The classifier was asked the edited question, with the criteria.
         const asked = classifier.calls.at(-1)?.questions[0];
@@ -1035,62 +1062,71 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
         });
         page = await openPage();
         await page.goto(`${cockpit.base}/?view=rules`);
-        const row = `[data-testid="rules-row"][data-rule="${rule.id}"]`;
-        await waitForText(
+        // T366: the panel says the pattern in words (the raw spelling is gone).
+        const detail = await openKnowledgeItem(page, rule.id);
+        await waitForAttr(
           page,
-          `${row} [data-testid="rules-pattern"]`,
-          'command_deny: "rm -rf", "git reset --hard"',
+          `${detail} [data-testid="rules-pattern"]`,
+          'title',
+          'Blocks commands matching "rm -rf", "git reset --hard"',
         );
 
         // Edit, change everything, Cancel: nothing is sent, the editor closes.
+        const editor = '[data-testid="rules-editor"]';
         const before = JSON.stringify(cockpit.store.getKnowledge(rule.id));
-        await page.locator(`${row} [data-testid="rules-edit"]`).click();
-        await page.locator(`${row} [data-testid="rules-edit-text"]`).fill('changed text');
+        await page.locator(`${detail} [data-testid="rules-edit"]`).click();
+        await page.locator(`${editor} [data-testid="rules-edit-text"]`).fill('changed text');
         await page
-          .locator(`${row} [data-testid="rules-edit-pattern-kind"]`)
+          .locator(`${editor} [data-testid="rules-edit-pattern-kind"]`)
           .selectOption('no_push');
-        await page.locator(`${row} [data-testid="rules-edit-cancel"]`).click();
-        await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
+        await page.locator(`${editor} [data-testid="rules-edit-cancel"]`).click();
+        await page.locator(editor).waitFor({ state: 'detached' });
         // Reopened, the draft is the saved rule again, not the discarded one.
-        await page.locator(`${row} [data-testid="rules-edit"]`).click();
-        expect(await page.locator(`${row} [data-testid="rules-edit-text"]`).inputValue()).toBe(
+        await page.locator(`${detail} [data-testid="rules-edit"]`).click();
+        expect(await page.locator(`${editor} [data-testid="rules-edit-text"]`).inputValue()).toBe(
           'never wipe the tree',
         );
-        await page.locator(`${row} [data-testid="rules-edit-text"]`).fill('changed by esc');
-        await page.locator(`${row} [data-testid="rules-edit-text"]`).press('Escape');
-        await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
+        await page.locator(`${editor} [data-testid="rules-edit-text"]`).fill('changed by esc');
+        await page.locator(`${editor} [data-testid="rules-edit-text"]`).press('Escape');
+        await page.locator(editor).waitFor({ state: 'detached' });
+        // Esc left the editor, not the item: its panel is still open.
+        await page.locator(detail).waitFor();
         expect(JSON.stringify(cockpit.store.getKnowledge(rule.id))).toBe(before);
 
         // Editing the pattern's arguments does save.
-        await page.locator(`${row} [data-testid="rules-edit"]`).click();
+        await page.locator(`${detail} [data-testid="rules-edit"]`).click();
         await page
-          .locator(`${row} [data-testid="rules-edit-pattern-args"]`)
+          .locator(`${editor} [data-testid="rules-edit-pattern-args"]`)
           .fill('rm -rf\ngit clean -fdx');
-        await page.locator(`${row} [data-testid="rules-edit-save"]`).click();
-        await page.locator(`${row} [data-testid="rules-editor"]`).waitFor({ state: 'detached' });
+        await page.locator(`${editor} [data-testid="rules-edit-save"]`).click();
+        await page.locator(editor).waitFor({ state: 'detached' });
         expect(patternOf(cockpit.store.getKnowledge(rule.id))).toEqual({
           kind: 'command_deny',
           args: { patterns: ['rm -rf', 'git clean -fdx'] },
         });
 
-        // New rule: a pattern on a ship item is refused in the form (§14.3: action only).
+        // Add knowledge: a pattern is an action check only (§14.3), so a
+        // ship item is never offered one; an action item is.
         await page.locator('[data-testid="rules-new"]').click();
         const form = '[data-testid="rules-new-form"]';
         await page.locator(`${form} [data-testid="rules-edit-text"]`).fill('keep secrets out');
-        await page.locator(`${form} [data-testid="rules-edit-enforcement"]`).selectOption('ship');
+        await page
+          .locator(`${form} [data-testid="rules-edit-enforcement"] [data-value="ship"]`)
+          .click();
+        expect(await page.locator(`${form} [data-testid="rules-edit-check-by"]`).count()).toBe(0);
+        expect(await page.locator(`${form} [data-testid="rules-edit-pattern-kind"]`).count()).toBe(
+          0,
+        );
+        await page
+          .locator(`${form} [data-testid="rules-edit-enforcement"] [data-value="action"]`)
+          .click();
+        await page
+          .locator(`${form} [data-testid="rules-edit-check-by"] [data-value="pattern"]`)
+          .click();
         await page
           .locator(`${form} [data-testid="rules-edit-pattern-kind"]`)
           .selectOption('path_deny');
         await page.locator(`${form} [data-testid="rules-edit-pattern-args"]`).fill('secrets/**');
-        await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
-        await waitUntilAsync('the form to refuse a pattern on a ship item', async () =>
-          page
-            ? ((await page.locator(`${form} [role="alert"]`).textContent()) ?? '').includes(
-                'a pattern check is an action check only',
-              )
-            : false,
-        );
-        await page.locator(`${form} [data-testid="rules-edit-enforcement"]`).selectOption('action');
         await page.locator(`${form} [data-testid="rules-edit-critical"]`).check();
         await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
         await page.locator(form).waitFor({ state: 'detached' });
@@ -1105,10 +1141,15 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
           kind: 'path_deny',
           args: { globs: ['secrets/**'] },
         });
-        await waitForText(
+        // The panel opens on the new item, where it now lives: To review.
+        await page
+          .locator(`[data-testid="rules-section-review"] [data-rule="${created?.id}"]`)
+          .waitFor();
+        await waitForAttr(
           page,
-          `[data-testid="rules-row"][data-rule="${created?.id}"] [data-testid="rules-pattern"]`,
-          'path_deny: "secrets/**"',
+          `[data-testid="rules-detail"][data-rule="${created?.id}"] [data-testid="rules-pattern"]`,
+          'title',
+          `Blocks writes outside the node's own worktree, and to paths matching "secrets/**"`,
         );
       } finally {
         await teardown([page]);
@@ -1146,10 +1187,11 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
           },
         });
         await cockpit.rules.accept(rule.id, 'human');
-        const testButton = `[data-testid="rules-row"][data-rule="${rule.id}"] [data-testid="rules-test"]`;
+        const testButton = `[data-testid="rules-detail"][data-rule="${rule.id}"] [data-testid="rules-test"]`;
 
         page = await openPage();
         await page.goto(`${cockpit.base}/?view=rules`);
+        await openKnowledgeItem(page, rule.id);
         await page.locator(testButton).waitFor();
         expect(await page.locator(testButton).isDisabled()).toBe(true);
 
@@ -1162,6 +1204,7 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
         expect(await page.content()).not.toContain(fakeKey);
 
         await page.locator('[data-view="rules"]').click();
+        await openKnowledgeItem(page, rule.id);
         await page.locator(testButton).waitFor();
         await waitUntilAsync('Test examples to be enabled', async () =>
           page ? !(await page.locator(testButton).isDisabled()) : false,
@@ -1172,6 +1215,7 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
         await page.locator('[data-testid="settings-key-remove"]').click();
         await waitForText(page, '[data-testid="settings-key-status"]', 'no key');
         await page.locator('[data-view="rules"]').click();
+        await openKnowledgeItem(page, rule.id);
         await page.locator(testButton).waitFor();
         await waitUntilAsync('Test examples to be disabled', async () =>
           page ? await page.locator(testButton).isDisabled() : false,
@@ -2255,6 +2299,13 @@ describe('rule hits on the stream (Playwright e2e, T169)', () => {
         expect(
           await page.locator(`[data-testid="rules-row"][data-rule="${other.id}"]`).count(),
         ).toBe(0);
+        // T366: and its panel is open on it: what it blocks, in words.
+        await waitForAttr(
+          page,
+          `[data-testid="rules-detail"][data-rule="${rule.id}"] [data-testid="rules-pattern"]`,
+          'title',
+          'Blocks commands matching "rm -rf"',
+        );
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -2414,13 +2465,16 @@ describe('the Knowledge screen (Playwright e2e, T266)', () => {
         await page.locator(card).waitFor({ state: 'visible' });
         expect(await page.locator(`${card} .kind`).textContent()).toContain('decision proposed');
 
-        // The Knowledge screen filters by kind and enforcement.
+        // The Knowledge screen separates by kind (T366: tabs) and filters by enforcement.
         await page.locator('[data-view="rules"]').click();
         await page.locator('[data-testid="rules-screen"] h1', { hasText: 'Knowledge' }).waitFor();
         await waitForCount(page, '[data-testid="rules-row"]', 2);
-        await page.locator('[data-testid="rules-filter-kind"]').selectOption('decision');
-        await waitForCount(page, '[data-testid="rules-row"]', 1);
+        await page.locator('[data-testid="rules-tab-decision"]').click();
         const row = `[data-testid="rules-row"][data-rule="${decision.id}"]`;
+        await page.locator(`[data-testid="rules-section-review"] ${row}`).waitFor();
+        await waitUntilAsync('the Decisions tab to show the decision alone', async () =>
+          page ? (await page.locator('[data-testid="rules-row"]').count()) === 1 : false,
+        );
         expect(await page.locator(`${row} [data-testid="rules-paths"]`).textContent()).toBe(
           'src/money/**',
         );
@@ -2800,7 +2854,7 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         });
         expect(cross.status).toBe(403);
 
-        // Knowledge → New rule: a Name, and the scope picked by name (no ids typed).
+        // Knowledge → Add knowledge: a Name, and the scope picked by name (no ids typed).
         await page.locator('[data-view="rules"]').click();
         await page.locator('[data-testid="rules-new"]').click();
         const form = '[data-testid="rules-new-form"]';
@@ -2820,7 +2874,7 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         await waitForText(
           page,
           `[data-testid="rules-row"][data-rule="${item?.id}"] [data-testid="rules-scope"]`,
-          'project:shop',
+          'Project shop',
         );
 
         // The event log: every routed event, subjects by title.

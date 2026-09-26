@@ -78,7 +78,7 @@ The cockpit is `http://127.0.0.1:4600/`.
 | **Repos** | Per repo: its delivery mode, the live work nodes on it across projects (ancestors greyed), overlaps, its norms, recent repo events |
 | **Running** | Nodes with a live agent |
 | **Dependencies** | Every "waits on" link, across projects |
-| **Knowledge** | Every knowledge item: filters, Accept/Retire, Edit, Test examples |
+| **Knowledge** | Every knowledge item, split into **To review**, **Rules**, **Standards**, **Architecture** and **Decisions** (retired items fold at the bottom); search and scope/enforcement filters; a click opens an item's side panel: Accept/Retire, Edit, Test examples |
 | **Director** | The Director's thread and composer, its **Drafts** (Create/Dismiss), its activity |
 | **Events** | Every routed event, newest first: what happened, to which node, and who it was routed to and why |
 | **Settings** | Who decides, the TypeSafe API key, Trackers (Jira, Linear), session defaults, repos (add, delivery, visibility) |
@@ -638,17 +638,22 @@ for some piece of work). Each item has a **scope**
 (`global`, `repo:<name>`, `project:<id>`, `subtree:<node>`, optionally
 narrowed to paths), and scopes stack. Each item also has an **enforcement**:
 
-| Enforcement | What happens |
+| Enforcement (as the screen says it) | What happens |
 |---|---|
-| tell | The item is in the agent's brief, and arrives as an event when accepted |
-| action | Checked before each command or edit (a pattern or the classifier); blocked with the item named |
-| ship | The classifier checks the whole diff before a merge or PR; a violation holds the delivery |
-| review | On the reviewer agent's checklist before shipping |
+| tell (**Guidance**) | The item is in the agent's brief, and arrives as an event when accepted |
+| action (**Checked on every action**) | Checked before each command or edit (a pattern or the classifier); blocked with the item named |
+| ship (**Checked before merge**) | The classifier checks the whole diff before a merge or PR; a violation holds the delivery |
+| review (**Reviewer checklist**) | On the reviewer agent's checklist before shipping |
 
-Every item starts `proposed`: you add one, an agent proposes one, or the
-lessons pass proposes one after a merge. Nothing applies until you accept it.
-Items live in the home, never in your repos. The **Knowledge** screen (top
-bar) lists them all, with filters for Status, Kind, Enforcement and Scope.
+A **rule** is an enforced item (action or ship), whatever its kind. Every
+item starts `proposed`: you add one, an agent proposes one, or the lessons
+pass proposes one after a merge. Nothing applies until you accept it. Items
+live in the home, never in your repos. The **Knowledge** screen (sidebar)
+says so under its title and splits them into tabs: **All**, **To review**
+(the proposals, with a count), **Rules**, **Standards**, **Architecture** and
+**Decisions**; retired items fold under **Retired** at the bottom of a list.
+Search, **Any scope** and **Any enforcement** narrow any tab. A click on a
+row opens the item's side panel.
 
 ### 6.1 The classifier key
 
@@ -665,31 +670,38 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
 
 ### 6.2 Add, accept and test a ship check
 
-- [ ] **Knowledge** → **New rule**. Fill in:
-      - Scope: `Repo: ledger-lite` (the picker lists repos, projects and
-        nodes by name)
-      - Name: `tests-with-src`
-      - Text: `Every change to a file under src/ comes with a test that exercises it`
-      - Enforcement: `ship`, Kind: `standard`
-      - Press **Add example** twice. First example:
-        `diff changes src/ledger.ts and adds no test`, **violates** ticked.
+- [ ] **Knowledge** → **Add knowledge**. The form opens in the side panel,
+      in three groups. Fill in:
+      - *What*: Kind **Standard**; What agents should know:
+        `Every change to a file under src/ comes with a test that exercises it`;
+        Name: `tests-with-src`
+      - *Where*: Applies to `Repo: ledger-lite` (the picker lists repos,
+        projects and nodes by name); leave Only these paths empty
+      - *How it's enforced*: **Checked before merge**. The classifier's
+        fields appear: leave Question and Yes/No means empty, press **Add
+        example** twice. First example:
+        `diff changes src/ledger.ts and adds no test`, **Violates** ticked.
         Second: `diff changes src/ledger.ts and test/ledger.test.ts`,
-        **violates** unticked.
-      - Leave Paths, Question, the Criteria and Pattern empty.
-- [ ] Press **Propose rule**. A new card appears with its name (`tests-with-src`),
-      `repo:ledger-lite`, `ship · classifier`, `standard`, `proposed`,
-      `from human`, and **Accept**, **Retire**, **Edit**, **Test examples**.
-      **Needs me** also has a `standard proposed` card for it.
-- [ ] Press **Accept** (on the card, or in **Needs me**). The card reads
-      `accepted`. **Repos** → ledger-lite now lists it under the repo's norms:
+        **Violates** unticked.
+- [ ] Press **Propose**. A new row appears under **To review** with its name
+      (`tests-with-src`), `Standard · Repo ledger-lite`, the badge
+      `Checked before merge`, and **Accept** / **Retire**. The side panel
+      shows it: `Proposed`, Source `Added by you`, the default question
+      `Does this action violate: Every change …?`, and **Accept**, **Retire**,
+      **Edit**, **Test examples**. **Needs me** also has a `standard proposed`
+      card for it.
+- [ ] Press **Accept** (on the row, or in **Needs me**). The row moves under
+      **Rules**; its panel reads `Accepted`. **Repos** → ledger-lite now lists
+      it under the repo's norms:
       `standard · tests-with-src (ship) fired 0, violated 0`.
-- [ ] Press **Test examples** (it is greyed out without a key; hover it to
-      see why). After a few seconds it reads `2/2 agree · asked: Does this action violate: …?`
-      and one row per example:
-      `agree diff changes src/ledger.ts and adds no test — expected deny, got deny (p 0.9…)`
-      and `… — expected allow, got allow (p 0.3…)`. A band of `route` is the
-      middle band, not a failure. An `error: …` row with a 529 means TypeSafe
-      was busy: press it again.
+- [ ] Open it again and press **Test examples** (it is greyed out without a
+      key, with "Set one in Settings" under it). After a few seconds the
+      examples are replaced by the results: `2 of 2 examples agree`,
+      `Asked: Does this action violate: …?`, and one row per example:
+      `Agrees diff changes src/ledger.ts and adds no test — expected Block, got Block (p 0.9…)`
+      and `… — expected Allow, got Allow (p 0.3…)`. **Ask you** is the
+      middle band, not a failure. An `an error: …` row with a 529 means
+      TypeSafe was busy: press it again.
 
 ### 6.3 A delivery held by the ship check, then fixed
 
@@ -738,10 +750,11 @@ cd ~
       rail icon is the conversation icon ○.
 - [ ] Wait for its first answer on the **Thread** tab. Its turn has ended,
       so its session ends too (`session ended: its turn finished`).
-- [ ] **Knowledge** → **New rule**: Scope `Project: Shop`, Text
-      `Amounts in exported JSON are integer cents, never floats`,
-      Enforcement `tell`, Kind `decision`, **Propose rule**. Then **Accept** it
-      (on its card, or on the `decision proposed` card in **Needs me**).
+- [ ] **Knowledge** → **Add knowledge**: Kind **Decision**, What agents
+      should know `Amounts in exported JSON are integer cents, never floats`,
+      Applies to `Project: Shop`, **Guidance**, **Propose**. Then **Accept**
+      it (on its row under **To review**, or on the `decision proposed` card
+      in **Needs me**).
 - [ ] Back on Cents check: accepting the decision woke it (a Shop
       conversation whose turn ended is woken by an accepted item, D36). Its
       **Thread** tab has `woken by knowledge accepted` and a new session;
