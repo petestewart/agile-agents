@@ -2132,6 +2132,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui`; control-room e2e "a click on the title renames the node; Edit on the goal…"; the whole control-room e2e (69/0) and the walkthrough.
 - **Notes:** Branch T385-edit-title-goal.
 
+### Ticket: T386 Model names in words in New node, the composer and the picker
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From T382: New node's "starts with" line still read `claude-opus-5-5 · claude · low effort`; the composer and the picker used `sessionLabel` where `agentLabel` names a vendor the model doesn't; `sessionModelText` was dead.
+- **Acceptance Criteria:** New node, the composer chip and the picker's "Default here" use `agentLabel`, with the raw ids on hover.
+- **Validation Steps:** `bun test packages/ui`; the New stream, T363 and session-defaults e2e.
+- **Notes:** Branch T386-model-labels.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
