@@ -486,7 +486,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
           <SessionDefaultsCard
             title="Global default"
             icon="sparkles"
-            description="Every node uses this unless its repository sets its own."
+            description="Every node uses this unless its project or repository sets its own."
             testid="settings-session-home"
             status={status}
             fields={status.home}
