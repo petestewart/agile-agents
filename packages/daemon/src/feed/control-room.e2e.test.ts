@@ -41,7 +41,7 @@ import {
   ulid,
   validateClassifierConfig,
 } from '@agile-agents/shared';
-import { type Browser, type Page, chromium } from 'playwright-core';
+import { type Browser, type Page, type Worker, chromium } from 'playwright-core';
 import { AttachService, VerbService } from '../attach';
 import { ClassifierKeyService, FakeClassifier } from '../classifier';
 import { AutonomyService } from '../coordination/autonomy';
@@ -270,6 +270,7 @@ function browserTest(name: string, body: () => Promise<void>, timeoutMs: number)
  */
 async function openPage(options?: {
   colorScheme?: 'dark' | 'light';
+  /** `page.route` never sees what the service worker fetches: block it where a test stubs the daemon. */
   serviceWorkers?: 'block';
   /** T388: permissions the page's context starts with (`['notifications']`). */
   permissions?: string[];
@@ -4140,7 +4141,10 @@ describe('Settings sections (Playwright e2e, T367)', () => {
           (page?.url() ?? '').includes('section=permissions'),
         );
         expect(await page.locator('[data-gate]').count()).toBe(3);
-        expect(await page.locator('[data-gate="land"]').textContent()).toContain('You');
+        // Who decides arrives with the policy (`GET /api/policy`): "…" until then.
+        await waitUntilAsync('the Merge gate to say who decides', async () =>
+          ((await page?.locator('[data-gate="land"]').textContent()) ?? '').includes('You'),
+        );
         // Back to General: its section needs no parameter.
         await page.locator('[data-testid="settings-nav-general"]').click();
         await waitUntilAsync(
@@ -4167,6 +4171,13 @@ describe('Settings sections (Playwright e2e, T367)', () => {
  * browser's own permission (the context's grant); `denied` and `dismiss`
  * play a blocked browser and a closed prompt; `missing` is a browser with
  * no Notification API at all.
+ *
+ * T394: a notification shown through the service worker
+ * (`registration.showNotification`) is recorded too (`via: 'worker'`, with
+ * its `data`), and still really shown, so the worker can be clicked
+ * (`clickLastNote`). Its closes are recorded where the cockpit makes them
+ * — the page's `close()` on it, the worker's on a click — and a newer one
+ * under its tag replaces it (`needsMeNotes`). The page's own is `via: 'page'`.
  */
 function notifyStub(mode: 'real' | 'denied' | 'dismiss' | 'missing' = 'real'): string {
   return `(() => {
@@ -4186,6 +4197,7 @@ function notifyStub(mode: 'real' | 'denied' | 'dismiss' | 'missing' = 'real'): s
         this.title = title;
         this.body = options.body ?? '';
         this.tag = options.tag ?? '';
+        this.via = 'page';
         this.closed = false;
         this.onclick = null;
         window.__notes.push(this);
@@ -4203,6 +4215,32 @@ function notifyStub(mode: 'real' | 'denied' | 'dismiss' | 'missing' = 'real'): s
       }
     }
     window.Notification = Recorded;
+    // The page closes a worker's notification through the objects getNotifications() hands it.
+    window.__closedNotes = [];
+    const close = Real.prototype.close;
+    Real.prototype.close = function () {
+      if (this.data?.__note !== undefined) window.__closedNotes.push(this.data.__note);
+      return close.call(this);
+    };
+    const show = ServiceWorkerRegistration.prototype.showNotification;
+    let shownByWorker = 0;
+    ServiceWorkerRegistration.prototype.showNotification = function (title, options = {}) {
+      const id = ++shownByWorker;
+      const note = {
+        title,
+        body: options.body ?? '',
+        tag: options.tag ?? '',
+        data: options.data,
+        via: 'worker',
+        id,
+      };
+      // Recorded once the browser shows it, so a recorded one is open until closed.
+      return show
+        .call(this, title, { ...options, data: { ...options.data, __note: id } })
+        .then(() => {
+          window.__notes.push(note);
+        });
+    };
     let away = false;
     Object.defineProperty(Document.prototype, 'visibilityState', {
       configurable: true,
@@ -4225,18 +4263,83 @@ interface RecordedNote {
   closed: boolean;
 }
 
-/** T388: the Needs me notifications the page raised, oldest first. */
+/**
+ * T388: the Needs me notifications the page raised, oldest first. T394: one
+ * the worker showed is closed once the page or the worker closed it, or a
+ * newer one under its tag replaced it.
+ */
 async function needsMeNotes(page: Page): Promise<RecordedNote[]> {
-  return (await page.evaluate(
-    `window.__notes.filter((n) => n.tag === 'agile-needs-me').map((n) => ({ title: n.title, body: n.body, tag: n.tag, closed: n.closed }))`,
-  )) as RecordedNote[];
+  const worker = page.context().serviceWorkers()[0];
+  const inWorker = worker ? ((await worker.evaluate('self.__closedNotes ?? []')) as number[]) : [];
+  return (await page.evaluate(`((inWorker) => {
+    const closed = new Set([...window.__closedNotes, ...inWorker]);
+    const notes = window.__notes.filter((n) => n.tag === 'agile-needs-me');
+    return notes.map((n, i) => ({
+      title: n.title,
+      body: n.body,
+      tag: n.tag,
+      closed:
+        n.via === 'worker'
+          ? closed.has(n.id) || notes.slice(i + 1).some((later) => later.via === 'worker')
+          : n.closed,
+    }));
+  })(${JSON.stringify(inWorker)})`)) as RecordedNote[];
 }
 
-/** T388: clicks the last Needs me notification (what the OS does on a click). */
+/** T394: how the last Needs me notification was shown: `worker` or `page`. */
+async function lastNoteVia(page: Page): Promise<string | undefined> {
+  return (await page.evaluate(
+    `window.__notes.filter((n) => n.tag === 'agile-needs-me').at(-1)?.via`,
+  )) as string | undefined;
+}
+
+/**
+ * T388: clicks the last Needs me notification (what the OS does on a click).
+ * T394: one the worker showed is clicked in the worker (`sw.js`'s
+ * `notificationclick`), which counts its tries to bring the tab forward in
+ * `self.__focused` and records what it closes in `self.__closedNotes`.
+ */
 async function clickLastNote(page: Page): Promise<void> {
+  if ((await lastNoteVia(page)) === 'worker') {
+    const worker = await pageWorker(page);
+    await worker.evaluate(`(async () => {
+      if (self.__focused === undefined) {
+        self.__focused = 0;
+        const focus = WindowClient.prototype.focus;
+        WindowClient.prototype.focus = function () {
+          self.__focused++;
+          return focus.call(this);
+        };
+        self.__closedNotes = [];
+        const close = Notification.prototype.close;
+        Notification.prototype.close = function () {
+          if (this.data?.__note !== undefined) self.__closedNotes.push(this.data.__note);
+          return close.call(this);
+        };
+      }
+      const [note] = await self.registration.getNotifications({ tag: 'agile-needs-me' });
+      self.dispatchEvent(new NotificationEvent('notificationclick', { notification: note }));
+    })()`);
+    return;
+  }
   await page.evaluate(
     `window.__notes.filter((n) => n.tag === 'agile-needs-me').at(-1).onclick(new Event('click'))`,
   );
+}
+
+/** T394: how often a click tried to bring the cockpit forward: the page's `window.focus`, and the worker's. */
+async function focusTries(page: Page): Promise<number> {
+  const inPage = (await page.evaluate('window.__focused')) as number;
+  const worker = page.context().serviceWorkers()[0];
+  const inWorker = worker ? ((await worker.evaluate('self.__focused ?? 0')) as number) : 0;
+  return inPage + inWorker;
+}
+
+/** T394: the page's active service worker (the cockpit registers it on load). */
+async function pageWorker(page: Page): Promise<Worker> {
+  await page.evaluate('navigator.serviceWorker.ready.then(() => true)');
+  const [worker] = page.context().serviceWorkers();
+  return worker ?? (await page.context().waitForEvent('serviceworker'));
 }
 
 describe('browser notifications (Playwright e2e, T388)', () => {
@@ -4258,6 +4361,8 @@ describe('browser notifications (Playwright e2e, T388)', () => {
         page = await openPage({ permissions: ['notifications'] });
         await page.addInitScript(notifyStub());
         await page.goto(`${cockpit.base}/?view=settings`);
+        // T394: with the service worker active, notifications go through it (as on a phone).
+        await pageWorker(page);
         const status = '[data-testid="settings-notify-status"]';
         const toggle = page.locator('[data-testid="settings-notify"]');
         // Off by default; on asks the browser, which (granted here) allows it.
@@ -4267,16 +4372,17 @@ describe('browser notifications (Playwright e2e, T388)', () => {
         await toggle.click();
         await waitForText(page, status, 'On');
         expect(await toggle.isChecked()).toBe(true);
-        // Send a test: one notification under its own tag.
+        // Send a test: one notification under its own tag, the way a real one goes.
         await page.locator('[data-testid="settings-notify-test"]').click();
         await page.locator('[data-testid="settings-notify-sent"]').waitFor();
-        expect((await page.evaluate('window.__notes.map((n) => n.tag)')) as string[]).toEqual([
-          'agile-test',
-        ]);
+        expect(
+          (await page.evaluate('window.__notes.map((n) => `${n.tag} via ${n.via}`)')) as string[],
+        ).toEqual(['agile-test via worker']);
         // Kept in this browser: a reload leaves it on.
         await page.reload();
         await waitForText(page, status, 'On');
         await waitForText(page, '[data-testid="inbox-badge"]', '1');
+        await pageWorker(page);
 
         // Visible and focused: a new question shows in the count, and nothing more.
         await raise(csv.id, 'Asked while you look: which encoding?');
@@ -4299,10 +4405,15 @@ describe('browser notifications (Playwright e2e, T388)', () => {
             closed: false,
           },
         ]);
-        // A click brings the window forward and opens the node.
+        // T394: shown by the worker, carrying the node a click opens.
+        expect(await lastNoteVia(page)).toBe('worker');
+        expect((await page.evaluate('window.__notes.at(-1).data')) as unknown).toEqual({
+          node: ledger.id,
+        });
+        // A click (in the worker) brings the window forward and opens the node.
         await clickLastNote(page);
         await page.locator(`[data-testid="stream-page"][data-stream="${ledger.id}"]`).waitFor();
-        expect((await page.evaluate('window.__focused')) as number).toBeGreaterThan(0);
+        expect(await focusTries(page)).toBeGreaterThan(0);
         expect((await needsMeNotes(page)).at(-1)?.closed).toBe(true);
         await page.evaluate('window.__setAway(false)');
 
@@ -4319,6 +4430,9 @@ describe('browser notifications (Playwright e2e, T388)', () => {
         const both = (await needsMeNotes(page)).at(-1);
         expect(both?.body).toContain('Question on Add CSV import');
         expect(both?.body).toContain('Question on Ledger export format');
+        expect((await page.evaluate('window.__notes.at(-1).data')) as unknown).toEqual({
+          view: 'inbox',
+        });
         await clickLastNote(page);
         await page.locator('[data-testid="inbox"]').waitFor();
         await page.evaluate('window.__setAway(false)');
@@ -4385,6 +4499,208 @@ describe('browser notifications (Playwright e2e, T388)', () => {
         expect(await missing.locator(toggle).isDisabled()).toBe(true);
       } finally {
         await teardown(pages);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T394: resilience -----------------------------------------------------------
+
+describe('resilience (Playwright e2e, T394)', () => {
+  browserTest(
+    'without a service worker, notifications fall back to the page’s own: the test, a new item while away, and a click that opens its node',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const ledger = await cockpit.streams.create('human', {
+          title: 'Ledger export format',
+          goal: 'g',
+        });
+        page = await openPage({ permissions: ['notifications'], serviceWorkers: 'block' });
+        await page.addInitScript(notifyStub());
+        await page.goto(`${cockpit.base}/?view=settings`);
+        const toggle = page.locator('[data-testid="settings-notify"]');
+        await toggle.click();
+        await waitForText(page, '[data-testid="settings-notify-status"]', 'On');
+        await page.locator('[data-testid="settings-notify-test"]').click();
+        await page.locator('[data-testid="settings-notify-sent"]').waitFor();
+        expect(
+          (await page.evaluate('window.__notes.map((n) => `${n.tag} via ${n.via}`)')) as string[],
+        ).toEqual(['agile-test via page']);
+
+        await page.evaluate('window.__setAway(true)');
+        await cockpit.questions.raise({
+          stream: ledger.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          text: 'Tabs or commas?',
+        });
+        await waitUntilAsync(
+          'a notification',
+          async () => page !== undefined && (await needsMeNotes(page)).length > 0,
+        );
+        expect(await lastNoteVia(page)).toBe('page');
+        expect((await needsMeNotes(page)).at(-1)?.title).toBe('Question on Ledger export format');
+        await clickLastNote(page);
+        await page.locator(`[data-testid="stream-page"][data-stream="${ledger.id}"]`).waitFor();
+        expect(await focusTries(page)).toBeGreaterThan(0);
+        expect((await needsMeNotes(page)).at(-1)?.closed).toBe(true);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a page that throws shows a card in words; the sidebar still works, navigating resets it, and Copy details and Try again work',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const ledger = await cockpit.streams.create('human', {
+          title: 'Ledger export format',
+          goal: 'g',
+        });
+        const csv = await cockpit.streams.create('human', { title: 'Add CSV import', goal: 'g' });
+        // The routes below stub the daemon; a worker's fetches would pass them by.
+        page = await openPage({
+          permissions: ['clipboard-read', 'clipboard-write'],
+          serviceWorkers: 'block',
+        });
+        // A page payload of the wrong shape (a daemon and a page from different
+        // builds): valid JSON, so it loads, and the node page throws rendering it.
+        const broken = `**/api/streams/${ledger.id}`;
+        await page.route(broken, (route) =>
+          route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
+        );
+        await page.goto(`${cockpit.base}/?node=${ledger.id}`);
+        const card = '[data-testid="error-boundary"]';
+        await page.locator(card).waitFor();
+        expect(await page.locator(card).getAttribute('data-area')).toBe('page');
+        expect(await page.locator(card).getAttribute('data-kind')).toBe('error');
+        expect(await page.locator('[data-testid="error-boundary-title"]').textContent()).toBe(
+          'Something went wrong on this page',
+        );
+        expect(
+          await page.locator('[data-testid="error-boundary-message"]').textContent(),
+        ).toContain('Cannot read properties of undefined');
+        expect(await page.locator(`${card} button`).allTextContents()).toEqual([
+          'Try again',
+          'Reload',
+          'Copy details',
+        ]);
+
+        // The sidebar still works: Needs me opens, and the card is gone.
+        await page.locator('[data-view="inbox"]').click();
+        await page.locator('[data-testid="inbox-empty"]').waitFor();
+        expect(await page.locator(card).count()).toBe(0);
+        // Another node opens as usual.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${csv.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${csv.id}"]`).waitFor();
+        expect(await page.locator(card).count()).toBe(0);
+
+        // Back on the broken one: Copy details has the message, the stack and where.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${ledger.id}"]`).click();
+        await page.locator(card).waitFor();
+        await page.locator('[data-testid="error-boundary-copy"]').click();
+        await waitForText(page, '[data-testid="error-boundary-copy"]', 'Copied');
+        const copied = (await page.evaluate('navigator.clipboard.readText()')) as string;
+        expect(copied).toStartWith('TypeError: Cannot read properties of undefined');
+        expect(copied).toContain(`node=${ledger.id}`);
+        expect(copied).toContain('Stack:');
+        expect(copied).toContain('Components:');
+
+        // Fixed behind the page: Try again shows it.
+        await page.unroute(broken);
+        await page.locator('[data-testid="error-boundary-retry"]').click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${ledger.id}"]`).waitFor();
+        expect(await page.locator(card).count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a node’s tab that throws keeps the header, the tabs and the other tabs working',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const ledger = await cockpit.streams.create('human', {
+          title: 'Ledger export format',
+          goal: 'g',
+        });
+        page = await openPage({ serviceWorkers: 'block' });
+        // One Activity row with no event in it: the tab throws rendering it.
+        await page.route(`**/api/streams/${ledger.id}/activity`, (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: '{"activity":[{}]}',
+          }),
+        );
+        await page.goto(`${cockpit.base}/?node=${ledger.id}`);
+        const node = `[data-testid="stream-page"][data-stream="${ledger.id}"]`;
+        await page.locator(`${node} [data-tab-body="thread"]`).waitFor();
+        await page.locator(`${node} .cr-node-tabs [data-tab="activity"]`).click();
+        const card = `${node} [data-testid="error-boundary"]`;
+        await page.locator(card).waitFor();
+        expect(await page.locator(card).getAttribute('data-area')).toBe('tab');
+        expect(await page.locator('[data-testid="error-boundary-title"]').textContent()).toBe(
+          'Something went wrong in this tab',
+        );
+        // The node's header is still there, and another tab resets it.
+        expect(await page.locator(`${node} .cr-node-tabs`).count()).toBe(1);
+        await page.locator(`${node} .cr-node-tabs [data-tab="thread"]`).click();
+        await page.locator(`${node} [data-tab-body="thread"]`).waitFor();
+        expect(await page.locator(card).count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a view whose code is gone after a rebuild says a new version is available, and Reload opens it',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        page = await openPage({ serviceWorkers: 'block' });
+        // Settings loads on demand; a rebuild deleted the chunk this page names.
+        const gone = '**/control-room/assets/Settings-*.js';
+        await page.route(gone, (route) => route.fulfill({ status: 404, body: 'not found' }));
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="inbox-empty"]').waitFor();
+        await page.locator('[data-view="settings"]').click();
+        const card = '[data-testid="error-boundary"][data-kind="update"]';
+        await page.locator(card).waitFor();
+        expect(await page.locator('[data-testid="error-boundary-title"]').textContent()).toBe(
+          'A new version of the cockpit is available',
+        );
+        expect(await page.locator('[data-testid="error-boundary-message"]').count()).toBe(0);
+        // The sidebar still works.
+        await page.locator('[data-view="inbox"]').click();
+        await page.locator('[data-testid="inbox-empty"]').waitFor();
+        expect(await page.locator(card).count()).toBe(0);
+
+        // The new build is there: Reload opens the view.
+        await page.unroute(gone);
+        await page.locator('[data-view="settings"]').click();
+        await page.locator('[data-testid="error-boundary-reload"]').click();
+        await page.locator('[data-testid="settings"]').waitFor();
+        expect(await page.locator('[data-testid="error-boundary"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
         await cockpit.stop();
       }
     },

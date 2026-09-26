@@ -284,3 +284,38 @@ export function notificationFor(
     tag: NOTIFY_TAG,
   };
 }
+
+// ---------------------------------------------------------------- clicks (T394)
+
+/**
+ * T394: what a click on a notification opens — a node, or Needs me. A
+ * service-worker notification carries it in its `data`; the worker hands
+ * it back to the cockpit's tab (`sw.js`), which opens it. Empty (the test
+ * from Settings) only brings the cockpit forward.
+ */
+export interface NotifyTarget {
+  node?: string;
+  view?: 'inbox';
+}
+
+/** The message `sw.js` posts to the cockpit's tab when a notification is clicked. */
+export const NOTIFY_CLICK = 'agile-notify-click';
+
+/** A Needs me notification opens its node, or Needs me when it counts several. */
+export function targetOf(content: Pick<NotificationContent, 'node'>): NotifyTarget {
+  return content.node !== undefined ? { node: content.node } : { view: 'inbox' };
+}
+
+/**
+ * The target in a message from the service worker, or `undefined` when the
+ * message is something else (or malformed): anything but a string node id
+ * or `view: 'inbox'` is dropped.
+ */
+export function clickTarget(message: unknown): NotifyTarget | undefined {
+  if (typeof message !== 'object' || message === null) return undefined;
+  const { type, node, view } = message as { type?: unknown; node?: unknown; view?: unknown };
+  if (type !== NOTIFY_CLICK) return undefined;
+  if (typeof node === 'string' && node !== '') return { node };
+  if (view === 'inbox') return { view: 'inbox' };
+  return {};
+}

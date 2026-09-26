@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { App } from './App';
+import { App, preloadView } from './App';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider } from './components/ui';
 import { FeedProvider } from './lib/feed-context';
 import { ShellProvider, parseShellUrl } from './lib/shell';
@@ -18,14 +19,25 @@ const initial = parseShellUrl(location.search);
 // T360: the viewer's theme choice (system, light, dark) before the first paint.
 applyTheme(readTheme());
 
-createRoot(container).render(
-  <StrictMode>
-    <FeedProvider>
-      <ShellProvider initial={initial}>
-        <ToastProvider>
-          <App />
-        </ToastProvider>
-      </ShellProvider>
-    </FeedProvider>
-  </StrictMode>,
-);
+// T394: the last resort. A view, a node's tab or an overlay that throws is
+// caught nearer (`App`, `StreamPage`); anything else still shows a card in
+// words with Reload, never a blank page.
+const render = (): void => {
+  createRoot(container).render(
+    <StrictMode>
+      <ErrorBoundary area="app">
+        <FeedProvider>
+          <ShellProvider initial={initial}>
+            <ToastProvider>
+              <App />
+            </ToastProvider>
+          </ShellProvider>
+        </FeedProvider>
+      </ErrorBoundary>
+    </StrictMode>,
+  );
+};
+
+// T394: a link straight to a view that loads on demand has its code before
+// the first frame (a failed download is said in words once rendered).
+preloadView(initial.view).then(render, render);
