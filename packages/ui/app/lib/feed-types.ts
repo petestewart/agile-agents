@@ -84,6 +84,8 @@ export interface CockpitStreamRow {
   pr_open?: true;
   /** T380: its agent finished with no commits beyond its target: nothing to merge. Absent from an older daemon. */
   nothing_to_merge?: true;
+  /** T410: a finished node's change, what Merge would bring: files, lines added and removed. */
+  diff_stat?: { files: number; added: number; removed: number };
   /** T395: its last change (ISO): creation, its agent's last status or its thread's last line. Absent from an older daemon. */
   updated_at?: string;
   /** T361: a work node or conversation whose agent never ran. Absent from an older daemon. */

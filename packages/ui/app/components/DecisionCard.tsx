@@ -42,6 +42,7 @@ import {
   branchName,
   cardTitle,
   cardTone,
+  diffStatParts,
   fold,
   fullText,
   gateView,
@@ -650,11 +651,18 @@ export function Card({
           >
             Merge
           </Button>
-          {open && !full && (
-            <Button size="sm" icon="file-diff" data-testid="view-changes" onClick={open}>
+          {open && !full && item.stream !== undefined && (
+            <Button
+              size="sm"
+              icon="file-diff"
+              data-testid="view-changes"
+              // T410: straight to the Changes tab, which is what it names.
+              onClick={() => select(item.stream, { tab: 'diff' })}
+            >
               View changes
             </Button>
           )}
+          {row?.diff_stat !== undefined && <DiffStatLine stat={row.diff_stat} />}
         </div>
       );
       break;
@@ -746,5 +754,21 @@ export function Card({
         </p>
       )}
     </article>
+  );
+}
+
+/** T410: "3 files · +120 −14", what Merge would bring. */
+function DiffStatLine({
+  stat,
+}: {
+  stat: { files: number; added: number; removed: number };
+}): JSX.Element {
+  const parts = diffStatParts(stat);
+  return (
+    <span className="cr-card-diffstat" data-testid="card-diffstat" title={parts.label}>
+      <span>{parts.files}</span>
+      <span className="cr-diffstat-added">{parts.added}</span>
+      <span className="cr-diffstat-removed">{parts.removed}</span>
+    </span>
   );
 }

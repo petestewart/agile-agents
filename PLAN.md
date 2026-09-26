@@ -2352,6 +2352,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui/app/lib/shell.test.ts`; control-room e2e `T348|T367|T394`.
 - **Notes:** Branch T409-shell-keeps-screen-params.
 
+### Ticket: T410 A Merge card says how much it merges; View changes opens the changes
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** A "Ready to merge" card gave no sense of the change's size, and its View changes button opened the node's chat, not its Changes tab.
+- **Acceptance Criteria:** The row carries `diff_stat` (files, lines added and removed) for a finished node with commits to merge, measured by the T380 check off the frame's path (`git diff --shortstat target...branch`: committed work only), with a re-push when it changes. The card shows "2 files +2 −1", with the words on hover. View changes opens the Changes tab.
+- **Validation Steps:** `bun test packages/daemon/src/delivery/service.test.ts packages/daemon/src/feed/merge-state.test.ts packages/ui/app/lib/inbox.test.ts`; control-room e2e `T347`.
+- **Notes:** Branch T410-merge-card-diff.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

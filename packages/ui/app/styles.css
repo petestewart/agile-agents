@@ -2449,6 +2449,23 @@ input[type="checkbox"].cr-switch:focus-visible {
   font-variant-numeric: tabular-nums;
   cursor: default;
 }
+/* T410: what Merge would bring, at the end of the actions row */
+.cr-card-diffstat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+.cr-diffstat-added {
+  color: var(--green-text);
+}
+.cr-diffstat-removed {
+  color: var(--red-text);
+}
 .cr-card-open {
   display: inline-flex;
   flex: none;

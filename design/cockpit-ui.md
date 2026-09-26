@@ -203,6 +203,8 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
   A finished node with nothing to merge (the row's `nothing_to_merge`) reads
   "Finished, no changes" and offers Close node instead of Merge, in Needs me
   and at the end of its own chat.
+  A Merge card says how much it merges ("2 files +2 −1", the row's
+  `diff_stat`), and its View changes opens the Changes tab (T410).
 - **Chat**: human lines right-aligned bubbles; agent lines as prose with the
   agent's name; daemon lines as one-line system rows (icon + muted text) that
   collapse when there are several in a row. A long message folds with "Show

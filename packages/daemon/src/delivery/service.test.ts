@@ -17,7 +17,13 @@ import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { DeliveryService, LandRefusedError, mainBranch, wireLandGateResolution } from './service';
+import {
+  DeliveryService,
+  LandRefusedError,
+  mainBranch,
+  parseShortstat,
+  wireLandGateResolution,
+} from './service';
 
 let home: string;
 let repo: string;
@@ -689,6 +695,35 @@ describe('T161: the stream page reads (preflight and diff)', () => {
     expect(dirty.ready).toBe(false);
     expect(dirty.reason).toMatch(/uncommitted changes/);
     expect(threadBodies(stream.id)).toEqual(before);
+  });
+
+  test('T410: diffStat is the size of what Merge brings: committed work only', async () => {
+    const work = branchWithWork('s-stat', 'a.txt', 'one\ntwo\n');
+    const stream = await makeStream(work);
+    // Uncommitted edits don't merge, so they don't count.
+    writeFileSync(join(work.worktree, 'b.txt'), 'uncommitted\n');
+    expect(landing.diffStat(stream.id)).toEqual({ files: 1, added: 2, removed: 0 });
+    const unattached = await makeStream({ title: 'never attached' });
+    expect(landing.diffStat(unattached.id)).toBeUndefined();
+  });
+
+  test('T410: a shortstat line in numbers', () => {
+    expect(parseShortstat(' 3 files changed, 120 insertions(+), 14 deletions(-)\n')).toEqual({
+      files: 3,
+      added: 120,
+      removed: 14,
+    });
+    expect(parseShortstat(' 1 file changed, 1 insertion(+)')).toEqual({
+      files: 1,
+      added: 1,
+      removed: 0,
+    });
+    expect(parseShortstat(' 1 file changed, 2 deletions(-)')).toEqual({
+      files: 1,
+      added: 0,
+      removed: 2,
+    });
+    expect(parseShortstat('')).toBeUndefined();
   });
 
   test('diff shows the worktree against the target, uncommitted edits included', async () => {
