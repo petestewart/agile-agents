@@ -478,6 +478,14 @@ const PATHS = {
       <path d="m17.5 15.5 2-2" />
     </>
   ),
+  // T365: the rail's Move to… and "Show only this project".
+  'corner-down-right': (
+    <>
+      <path d="m15 10 5 5-5 5" />
+      <path d="M4 4v7a4 4 0 0 0 4 4h12" />
+    </>
+  ),
+  filter: <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />,
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof PATHS;

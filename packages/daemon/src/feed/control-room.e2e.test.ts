@@ -487,6 +487,28 @@ async function waitUntil(what: string, check: () => boolean): Promise<void> {
   }
 }
 
+/** T365: New node's Parent is a searchable picker (`''` is the project's top level). */
+async function pickParent(page: Page, id: string): Promise<void> {
+  await page.locator('[data-testid="new-stream-parent"]').click();
+  await page.locator(`[data-testid="new-stream-parent-option"][data-node="${id}"]`).click();
+  await waitForAttr(page, '[data-testid="new-stream-parent"]', 'data-value', id);
+}
+
+/** T365: New node's Repository is a picker with each repo's host icon (`''` is none: a conversation). */
+async function pickRepo(page: Page, name: string): Promise<void> {
+  await page.locator('[data-testid="new-stream-repo"]').click();
+  await page.locator(`[data-testid="new-stream-repo-option"][data-repo="${name}"]`).click();
+  await waitForAttr(page, '[data-testid="new-stream-repo"]', 'data-value', name);
+}
+
+/** T365: an item of a rail row's ⋯ menu. */
+async function rowMenu(page: Page, id: string, item: string): Promise<void> {
+  await page
+    .locator(`[data-tree-node="${id}"] > .cr-tree-item [data-testid="tree-menu-trigger"]`)
+    .click();
+  await page.locator(`[data-testid="tree-menu"] [data-testid="${item}"]`).click();
+}
+
 /** T167: `waitUntil` for a condition that needs the page (an async read). */
 async function waitUntilAsync(what: string, check: () => Promise<boolean>): Promise<void> {
   const deadline = Date.now() + POLL_DEADLINE_MS;
@@ -655,7 +677,9 @@ describe('cockpit shell (Playwright e2e)', () => {
         await page.locator(leafRow).waitFor({ state: 'visible' });
         expect(await page.locator(`${leafRow} .title`).textContent()).toBe('parser');
         expect(
-          await page.locator(`[data-stream="${mid.id}"] + ul [data-stream="${leaf.id}"]`).count(),
+          await page
+            .locator(`[data-tree-node="${mid.id}"] > ul [data-stream="${leaf.id}"]`)
+            .count(),
         ).toBe(1);
         await waitForAttr(page, `${leafRow} .cr-dot`, 'data-dot', 'grey');
 
@@ -2669,10 +2693,13 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
 
         // T360: quick capture is gone; New node with a title alone does the same.
         await page.locator('[data-testid="new-stream-open"]').click();
+        // T365: nothing to ask: the only project is implied, and the agent starts by default.
+        expect(await page.locator('[data-testid="new-stream-project"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="new-stream-start"]').isChecked()).toBe(true);
         await page
           .locator('[data-testid="new-stream-title"]')
           .fill('why is the nightly export slow?');
-        await page.locator('[data-testid="new-stream-start-later"]').check();
+        await page.locator('[data-testid="new-stream-start"]').uncheck();
         await page.locator('[data-testid="new-stream-title"]').press('Enter');
 
         await page.locator('[data-testid="stream-page"]').waitFor({ state: 'visible' });
@@ -2721,7 +2748,8 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
         await page.keyboard.press('n');
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
         await page.locator('[data-testid="new-stream-title"]').fill('import CSV');
-        await page.locator('[data-testid="new-stream-parent"]').selectOption(parent.id);
+        await pickParent(page, parent.id);
+        await page.locator('[data-testid="new-stream-start"]').uncheck();
         await page.locator('[data-testid="new-stream-create"]').click();
 
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
@@ -2731,7 +2759,7 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
         expect(child?.title).toBe('import CSV');
         expect(child?.parent).toBe(parent.id);
         await page
-          .locator(`[data-stream="${parent.id}"] + ul [data-stream="${child?.id}"]`)
+          .locator(`[data-tree-node="${parent.id}"] > ul [data-stream="${child?.id}"]`)
           .waitFor({ state: 'visible' });
       } finally {
         await teardown([page]);
@@ -2759,19 +2787,22 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
         const row = tree.locator(`[data-stream="${epic.id}"]`);
         await row.waitFor({ state: 'visible' });
         const dialog = page.locator('[data-testid="new-stream"]');
-        const checked = page.locator('[data-testid="new-stream-parent"] option:checked');
+        // T365: Parent is a picker; the button names the choice and carries its id.
+        const picked = page.locator('[data-testid="new-stream-parent"]');
         for (let i = 0; i < 5; i++) {
           // The last opening had no parent (nothing open)…
           await page.locator('[data-view="inbox"]').click();
           await page.locator('[data-testid="new-stream-open"]').click();
-          expect(await checked.textContent()).toBe('— none —');
+          expect(await picked.getAttribute('data-value')).toBe('');
+          expect(await picked.textContent()).toBe('Top level of shop');
           await page.keyboard.press('Escape');
           await dialog.waitFor({ state: 'detached' });
           // …so this one, read at once, must already show the open node, not that stale "none".
           await row.locator('.title').first().click();
           await page.locator('[data-testid="stream-title"]', { hasText: 'Tracker epic' }).waitFor();
           await page.locator('[data-testid="new-stream-open"]').click();
-          expect(await checked.textContent()).toBe('Tracker epic');
+          expect(await picked.getAttribute('data-value')).toBe(epic.id);
+          expect(await picked.textContent()).toBe('Tracker epic');
           await page.keyboard.press('Escape');
           await dialog.waitFor({ state: 'detached' });
         }
@@ -2841,6 +2872,8 @@ describe('add a repo from Settings (Playwright e2e, T206)', () => {
         git(['add', '-A'], repo);
         git(['commit', '-q', '-m', 'init'], repo);
 
+        // T365: New node needs a project to file into.
+        await cockpit.projects.create({ name: 'shop' });
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-view="settings"]').click();
@@ -2876,9 +2909,15 @@ describe('add a repo from Settings (Playwright e2e, T206)', () => {
 
         await page.keyboard.press('n');
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
-        await page
-          .locator('[data-testid="new-stream-repo-names"] option[value="demo-project"]')
-          .waitFor({ state: 'attached' });
+        // T365: the Repository picker lists it, with its host's icon.
+        await page.locator('[data-testid="new-stream-repo"]').click();
+        const option = page.locator(
+          '[data-testid="new-stream-repo-option"][data-repo="demo-project"]',
+        );
+        await option.waitFor({ state: 'visible' });
+        expect(await option.locator('[data-testid="repo-icon"]').getAttribute('data-kind')).toBe(
+          'local',
+        );
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -3053,9 +3092,9 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
   );
 });
 
-describe('project tree and switcher (Playwright e2e, T208)', () => {
+describe('project tree and filter (Playwright e2e, T208, T365)', () => {
   browserTest(
-    "two projects: each one's nodes show only under it; quick capture lands in the selected one",
+    "two projects: each one's nodes show only under it; New project keeps All projects; Show only this project filters and the chip undoes it",
     async () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
@@ -3075,10 +3114,11 @@ describe('project tree and switcher (Playwright e2e, T208)', () => {
           await page.locator(`${tree} [data-stream="${shop.root}"]`).getAttribute('data-role'),
         ).toBe('project');
         await page
-          .locator(`[data-stream="${shop.root}"] + ul [data-stream="${shopNode.id}"]`)
+          .locator(`[data-tree-node="${shop.root}"] > ul [data-stream="${shopNode.id}"]`)
           .waitFor({ state: 'visible' });
 
-        // "New project" from the rail: the switcher moves to it.
+        // "New project" from the rail: T365: the rail stays on All projects (it never
+        // switches on its own) and the new project's root page opens.
         await page.locator('[data-testid="new-project-open"]').click();
         await page.locator('[data-testid="new-project-name"]').fill('docs');
         await page.locator('[data-testid="new-project-create"]').click();
@@ -3086,19 +3126,18 @@ describe('project tree and switcher (Playwright e2e, T208)', () => {
         await waitUntil('the project to exist', () => cockpit.projects.list().length === 2);
         const docs = cockpit.projects.list().find((p) => p.name === 'docs');
         if (!docs) throw new Error('docs project missing');
-        await waitUntilAsync(
-          'the switcher to select docs',
-          async () =>
-            (await page?.locator('[data-testid="project-switcher"]').inputValue()) === docs.id,
-        );
+        await page
+          .locator(`[data-testid="stream-page"][data-stream="${docs.root}"]`)
+          .waitFor({ state: 'visible' });
         await page.locator(`${tree} [data-stream="${docs.root}"]`).waitFor({ state: 'visible' });
-        expect(await page.locator(`${tree} [data-stream="${shopNode.id}"]`).count()).toBe(0);
-        expect(await page.locator(`${tree} [data-stream="${shop.root}"]`).count()).toBe(0);
+        expect(await page.locator(`${tree} [data-stream="${shopNode.id}"]`).count()).toBe(1);
+        expect(await page.locator('[data-testid="project-filter"]').count()).toBe(0);
+        expect(new URL(page.url()).searchParams.get('project')).toBeNull();
 
-        // New node files into the selected project (not the only/first one).
+        // New node from the docs root files into docs (not the only/first project).
         await page.locator('[data-testid="new-stream-open"]').click();
         await page.locator('[data-testid="new-stream-title"]').fill('write the guide');
-        await page.locator('[data-testid="new-stream-start-later"]').check();
+        await page.locator('[data-testid="new-stream-start"]').uncheck();
         await page.locator('[data-testid="new-stream-create"]').click();
         await waitUntil('the capture to exist', () =>
           cockpit.streams.list().some((s) => s.title === 'write the guide'),
@@ -3111,16 +3150,26 @@ describe('project tree and switcher (Playwright e2e, T208)', () => {
           await page.locator(`${tree} [data-stream="${docs.root}"]`).getAttribute('data-role'),
         ).toBe('project');
 
-        // Back to shop: only shop's nodes.
-        await page.locator('[data-testid="project-switcher"]').selectOption(shop.id);
-        await page.locator(`${tree} [data-stream="${shopNode.id}"]`).waitFor({ state: 'visible' });
-        expect(await page.locator(`${tree} [data-stream="${captured?.id}"]`).count()).toBe(0);
+        // Show only this project (shop's ⋯): only shop's nodes, and a chip says so.
+        await rowMenu(page, shop.root, 'tree-menu-only');
+        await page.locator('[data-testid="project-filter"]', { hasText: 'shop' }).waitFor();
+        await page
+          .locator(`${tree} [data-stream="${captured?.id}"]`)
+          .waitFor({ state: 'detached' });
+        expect(await page.locator(`${tree} [data-stream="${shopNode.id}"]`).count()).toBe(1);
         expect(await page.locator(`${tree} [data-stream="${docs.root}"]`).count()).toBe(0);
 
-        // "All" shows both projects' trees.
-        await page.locator('[data-testid="project-switcher"]').selectOption('');
+        // The chip switches to another project…
+        await page.locator('[data-testid="project-filter-switch"]').click();
+        await page.locator('[data-testid="project-filter-option"]', { hasText: /^docs$/ }).click();
         await page.locator(`${tree} [data-stream="${captured?.id}"]`).waitFor({ state: 'visible' });
-        expect(await page.locator(`${tree} [data-stream="${shopNode.id}"]`).count()).toBe(1);
+        expect(await page.locator(`${tree} [data-stream="${shopNode.id}"]`).count()).toBe(0);
+
+        // …and its × shows both projects' trees again.
+        await page.locator('[data-testid="project-filter-clear"]').click();
+        await page.locator(`${tree} [data-stream="${shopNode.id}"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(`${tree} [data-stream="${captured?.id}"]`).count()).toBe(1);
+        expect(await page.locator('[data-testid="project-filter"]').count()).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -3158,14 +3207,15 @@ describe('the open node and project filter live in the URL (Playwright e2e, T348
         await page.goto(`${cockpit.base}/`);
         const tree = '[data-testid="stream-tree"]';
         const pageOf = (id: string): string => `[data-testid="stream-page"][data-stream="${id}"]`;
-        const switcher = page.locator('[data-testid="project-switcher"]');
+        // T365: the filter is "Show only this project" in a project's ⋯, shown as a chip.
+        const chip = page.locator('[data-testid="project-filter"]');
 
         // Open one node, then another, and filter to shop.
         await page.locator(`${tree} [data-stream="${checkout.id}"]`).click();
         await page.locator(pageOf(checkout.id)).waitFor({ state: 'visible' });
         await page.locator(`${tree} [data-stream="${refunds.id}"]`).click();
         await page.locator(pageOf(refunds.id)).waitFor({ state: 'visible' });
-        await switcher.selectOption(shop.id);
+        await rowMenu(page, shop.root, 'tree-menu-only');
         await page.locator(`${tree} [data-stream="${guide.id}"]`).waitFor({ state: 'detached' });
         const search = new URL(page.url()).searchParams;
         expect(search.get('node')).toBe(refunds.id);
@@ -3174,10 +3224,7 @@ describe('the open node and project filter live in the URL (Playwright e2e, T348
         // Reload: the same node, the same filter.
         await page.reload();
         await page.locator(pageOf(refunds.id)).waitFor({ state: 'visible' });
-        await waitUntilAsync(
-          'the switcher to come back on shop',
-          async () => (await switcher.inputValue()) === shop.id,
-        );
+        await chip.filter({ hasText: 'shop' }).waitFor({ state: 'visible' });
         await page.locator(`${tree} [data-stream="${checkout.id}"]`).waitFor({ state: 'visible' });
         expect(await page.locator(`${tree} [data-stream="${guide.id}"]`).count()).toBe(0);
 
@@ -3198,7 +3245,7 @@ describe('the open node and project filter live in the URL (Playwright e2e, T348
         await page.goto(`${cockpit.base}/?node=01ARZ3NDEKTSV4RRFFQ69G5FAV&project=P-gone`);
         await page.locator('[data-testid="inbox-empty"]').waitFor({ state: 'visible' });
         await page.locator(`${tree} [data-stream="${guide.id}"]`).waitFor({ state: 'visible' });
-        expect(await switcher.inputValue()).toBe('');
+        expect(await chip.count()).toBe(0);
         expect(new URL(page.url()).search).toBe('');
         expect(await page.locator('[data-testid="stream-page"]').count()).toBe(0);
       } finally {
@@ -3233,7 +3280,7 @@ describe('collapsing the rail (Playwright e2e, T331)', () => {
         const tree = '[data-testid="stream-tree"]';
         const rowOf = (id: string): string => `${tree} [data-stream="${id}"]`;
         const caretOf = (id: string): string =>
-          `${tree} li:has(> [data-stream="${id}"]) > [data-testid="tree-caret"]`;
+          `${tree} [data-tree-node="${id}"] > .cr-tree-item > [data-testid="tree-caret"]`;
         await page.locator(rowOf(leaf.id)).waitFor({ state: 'visible' });
         // Only nodes with children carry a caret.
         expect(await page.locator(caretOf(leaf.id)).count()).toBe(0);
@@ -3318,14 +3365,14 @@ describe('move a node by dragging it in the rail (Playwright e2e, T333)', () => 
         const tree = '[data-testid="stream-tree"]';
         const row = (id: string) => page?.locator(`${tree} [data-stream="${id}"]`);
         await page
-          .locator(`[data-stream="${a.id}"] + ul [data-stream="${x.id}"]`)
+          .locator(`[data-tree-node="${a.id}"] > ul [data-stream="${x.id}"]`)
           .waitFor({ state: 'visible' });
         expect(await row(a.id)?.getAttribute('data-role')).toBe('coordinating');
         expect(await row(b.id)?.getAttribute('data-role')).toBe('conversation');
 
         await row(x.id)?.dragTo(page.locator(`${tree} [data-stream="${b.id}"]`));
         await page
-          .locator(`[data-stream="${b.id}"] + ul [data-stream="${x.id}"]`)
+          .locator(`[data-tree-node="${b.id}"] > ul [data-stream="${x.id}"]`)
           .waitFor({ state: 'visible' });
         await waitUntil('the move to land', () => cockpit.streams.get(x.id).parent === b.id);
         await waitUntilAsync(
@@ -3335,6 +3382,24 @@ describe('move a node by dragging it in the rail (Playwright e2e, T333)', () => 
             (await row(a.id)?.getAttribute('data-role')) === 'conversation',
         );
 
+        // T365: a drop the rail itself refuses says why: into its own subtree…
+        await row(b.id)?.dragTo(page.locator(`${tree} [data-stream="${x.id}"]`));
+        await page
+          .locator('[data-testid="toast"]', {
+            hasText: '“refunds” can’t move under a node inside itself.',
+          })
+          .waitFor({ state: 'visible' });
+        // …or into another project.
+        const blog = await cockpit.projects.create({ name: 'blog' });
+        await row(blog.root)?.waitFor({ state: 'visible' });
+        await row(a.id)?.dragTo(page.locator(`${tree} [data-stream="${blog.root}"]`));
+        await page
+          .locator('[data-testid="toast"]', { hasText: 'Nodes can’t move between projects.' })
+          .waitFor({ state: 'visible' });
+        expect(cockpit.streams.get(b.id).parent).toBe(shop.root);
+        expect(cockpit.streams.get(a.id).parent).toBe(shop.root);
+        expect(await page.locator('[data-testid="move-error"]').count()).toBe(0);
+
         // refunds' plan awaits approval: dropping on the project is refused, and nothing moves.
         await cockpit.plans.write(b.id, [{ child: x.id, owns: ['api/**'] }]);
         await row(x.id)?.dragTo(page.locator(`${tree} [data-stream="${shop.root}"]`));
@@ -3343,6 +3408,361 @@ describe('move a node by dragging it in the rail (Playwright e2e, T333)', () => 
           'awaiting approval',
         );
         expect(cockpit.streams.get(x.id).parent).toBe(b.id);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe("the rail's row menus, Deleted and New project (Playwright e2e, T365)", () => {
+  browserTest(
+    'Delete asks, archives the subtree, leaves its open page, and Undo brings it back',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const a = await cockpit.streams.create('human', {
+          title: 'checkout',
+          goal: 'g',
+          project: shop.id,
+        });
+        const b = await cockpit.streams.create('human', { title: 'cart', goal: 'g', parent: a.id });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${b.id}`);
+        await page
+          .locator(`[data-testid="stream-page"][data-stream="${b.id}"]`)
+          .waitFor({ state: 'visible' });
+        const tree = '[data-testid="stream-tree"]';
+
+        // A project root has no Delete.
+        await page
+          .locator(
+            `[data-tree-node="${shop.root}"] > .cr-tree-item [data-testid="tree-menu-trigger"]`,
+          )
+          .click();
+        await page
+          .locator('[data-testid="tree-menu"] [data-testid="tree-menu-settings"]')
+          .waitFor();
+        expect(await page.locator('[data-testid="tree-menu-delete"]').count()).toBe(0);
+        await page.keyboard.press('Escape');
+
+        await rowMenu(page, a.id, 'tree-menu-delete');
+        const dialog = page.locator('[data-testid="delete-dialog"]');
+        await dialog.waitFor({ state: 'visible' });
+        expect(await dialog.locator('h2').textContent()).toBe(
+          'Delete “checkout” and the node under it?',
+        );
+        expect(await dialog.textContent()).toContain('Branches and worktrees are kept');
+        // Cancel keeps everything.
+        await dialog.getByRole('button', { name: 'Cancel' }).click();
+        await dialog.waitFor({ state: 'detached' });
+        expect(cockpit.streams.get(a.id).archived).toBeUndefined();
+
+        await rowMenu(page, a.id, 'tree-menu-delete');
+        await page.locator('[data-testid="delete-dialog-confirm"]').click();
+        await page.locator(`${tree} [data-stream="${a.id}"]`).waitFor({ state: 'detached' });
+        expect(await page.locator(`${tree} [data-stream="${b.id}"]`).count()).toBe(0);
+        await waitUntil('both archived', () => cockpit.streams.get(b.id).archived === true);
+        // The open node went with it: back to Needs me.
+        await page.locator('[data-testid="stream-page"]').waitFor({ state: 'detached' });
+        expect(new URL(page.url()).searchParams.get('node')).toBeNull();
+
+        const toast = page.locator('[data-testid="toast"]', { hasText: 'Deleted “checkout”' });
+        await toast.waitFor({ state: 'visible' });
+        await toast.locator('[data-testid="toast-action"]').click();
+        await page.locator(`${tree} [data-stream="${a.id}"]`).waitFor({ state: 'visible' });
+        await page.locator(`${tree} [data-stream="${b.id}"]`).waitFor({ state: 'visible' });
+        expect(cockpit.streams.get(a.id).archived).toBeUndefined();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'Deleted (n) lists what Delete archived, and Restore brings it back',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const a = await cockpit.streams.create('human', {
+          title: 'refunds',
+          goal: 'g',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${a.id}"]`).waitFor();
+        // Nothing deleted: no section.
+        expect(await page.locator('[data-testid="deleted-nodes"]').count()).toBe(0);
+
+        await rowMenu(page, a.id, 'tree-menu-delete');
+        await page.locator('[data-testid="delete-dialog-confirm"]').click();
+        const toggle = page.locator('[data-testid="deleted-toggle"]');
+        await toggle.waitFor({ state: 'visible' });
+        expect(await toggle.textContent()).toBe('Deleted1');
+        // Folded by default.
+        expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+        await toggle.click();
+        const archived = page.locator(`[data-testid="archived-row"][data-stream="${a.id}"]`);
+        await archived.waitFor({ state: 'visible' });
+        expect(await archived.textContent()).toContain('refunds');
+
+        await archived.locator('[data-testid="archived-restore"]').click();
+        await page
+          .locator(`[data-testid="stream-tree"] [data-stream="${a.id}"]`)
+          .waitFor({ state: 'visible' });
+        await page.locator('[data-testid="deleted-nodes"]').waitFor({ state: 'detached' });
+        await page.locator('[data-testid="toast"]', { hasText: 'Restored “refunds”' }).waitFor();
+        expect(cockpit.streams.get(a.id).archived).toBeUndefined();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'Rename (the menu, or F2), Move to…, the row +, right-click, and the arrow keys',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const a = await cockpit.streams.create('human', {
+          title: 'prices',
+          goal: 'g',
+          project: shop.id,
+        });
+        const b = await cockpit.streams.create('human', {
+          title: 'refunds',
+          goal: 'g',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const tree = '[data-testid="stream-tree"]';
+        const row = (id: string) => page?.locator(`${tree} [data-stream="${id}"]`);
+        await row(a.id)?.waitFor({ state: 'visible' });
+
+        // Rename from the menu.
+        await rowMenu(page, a.id, 'tree-menu-rename');
+        const input = page.locator('[data-testid="rename-input"]');
+        expect(await input.inputValue()).toBe('prices');
+        await input.fill('pricing page');
+        await page.locator('[data-testid="rename-save"]').click();
+        await page.locator('[data-testid="rename-dialog"]').waitFor({ state: 'detached' });
+        await waitForText(page, `${tree} [data-stream="${a.id}"] .title`, 'pricing page');
+        expect(cockpit.streams.get(a.id)).toMatchObject({ title: 'pricing page', goal: 'g' });
+
+        // F2 on a focused row; Escape cancels.
+        await row(b.id)?.focus();
+        await page.keyboard.press('F2');
+        await page.locator('[data-testid="rename-dialog"]').waitFor({ state: 'visible' });
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="rename-dialog"]').waitFor({ state: 'detached' });
+
+        // Move to…: the valid parents only (not itself), then the tree re-nests.
+        await rowMenu(page, b.id, 'tree-menu-move');
+        const options = page.locator('[data-testid="move-target-option"]');
+        await options.first().waitFor({ state: 'visible' });
+        expect(
+          await options.evaluateAll((els) => els.map((el) => el.getAttribute('data-node'))),
+        ).toEqual([shop.root, a.id]);
+        // Its current parent is marked and can't be picked.
+        expect(
+          await page
+            .locator(`[data-testid="move-target-option"][data-node="${shop.root}"]`)
+            .isDisabled(),
+        ).toBe(true);
+        await page.locator(`[data-testid="move-target-option"][data-node="${a.id}"]`).click();
+        await page.locator('[data-testid="move-save"]').click();
+        await page
+          .locator(`[data-tree-node="${a.id}"] > ul [data-stream="${b.id}"]`)
+          .waitFor({ state: 'visible' });
+        expect(cockpit.streams.get(b.id).parent).toBe(a.id);
+
+        // The row's + opens New node under it.
+        await row(b.id)?.hover();
+        await page
+          .locator(`[data-tree-node="${b.id}"] > .cr-tree-item [data-testid="tree-add"]`)
+          .click();
+        await waitForAttr(page, '[data-testid="new-stream-parent"]', 'data-value', b.id);
+        expect(await page.locator('[data-testid="new-stream"]').textContent()).toContain('In shop');
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
+
+        // Right-click opens the same menu.
+        await row(a.id)?.click({ button: 'right' });
+        await page.locator('[data-testid="tree-menu"] [data-testid="tree-menu-rename"]').waitFor();
+        await page.keyboard.press('Escape');
+
+        // One tab stop; the arrows walk the rows, Left goes to the parent, Enter opens.
+        await row(shop.root)?.focus();
+        expect(await row(shop.root)?.getAttribute('tabindex')).toBe('0');
+        expect(await row(a.id)?.getAttribute('tabindex')).toBe('-1');
+        await page.keyboard.press('ArrowDown');
+        await page.keyboard.press('ArrowDown');
+        expect(
+          (await page.evaluate('document.activeElement?.dataset?.stream ?? null')) as string,
+        ).toBe(b.id);
+        await page.keyboard.press('ArrowLeft');
+        expect(
+          (await page.evaluate('document.activeElement?.dataset?.stream ?? null')) as string,
+        ).toBe(a.id);
+        await page.keyboard.press('Enter');
+        await page
+          .locator(`[data-testid="stream-page"][data-stream="${a.id}"]`)
+          .waitFor({ state: 'visible' });
+
+        // The open node is never hidden in a folded subtree: opening it unfolds its parents.
+        await page
+          .locator(`[data-tree-node="${a.id}"] > .cr-tree-item > [data-testid="tree-caret"]`)
+          .click();
+        await row(b.id)?.waitFor({ state: 'detached' });
+        await page.goto(`${cockpit.base}/?node=${b.id}`);
+        await row(b.id)?.waitFor({ state: 'visible' });
+        expect(await row(b.id)?.getAttribute('aria-current')).toBe('true');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'New project: repositories as a checklist with host icons; two chosen; All projects kept; its root opens',
+    async () => {
+      const cockpit = await startCockpit();
+      const scratch = mkdtempSync(join(tmpdir(), 'agile-new-project-e2e-'));
+      let page: Page | undefined;
+      try {
+        const api = join(scratch, 'api');
+        const web = join(scratch, 'web');
+        const docs = join(scratch, 'docs');
+        for (const dir of [api, web, docs]) {
+          mkdirSync(dir);
+          git(['init', '-q', '-b', 'main'], dir);
+        }
+        git(['remote', 'add', 'origin', 'https://github.com/acme/web.git'], web);
+        await cockpit.store.addRepo('api', { path: api });
+        await cockpit.store.addRepo('web', { path: web });
+        await cockpit.store.addRepo('docs', { path: docs });
+        const existing = await cockpit.projects.create({ name: 'blog' });
+        page = await openPage();
+        // Filtered to blog when New project opens: the new project must still show.
+        await page.goto(`${cockpit.base}/?project=${existing.id}`);
+        await page.locator('[data-testid="project-filter"]', { hasText: 'blog' }).waitFor();
+
+        await page.locator('[data-testid="new-project-open"]').click();
+        const list = page.locator('[data-testid="new-project-repos"]');
+        await list.locator('[data-testid="new-project-repo"][data-repo="web"]').waitFor();
+        // One row per repo, top to bottom, each with its host's icon and where it lives.
+        expect(
+          await list
+            .locator('[data-testid="new-project-repo"]')
+            .evaluateAll((els) => els.map((el) => el.getAttribute('data-repo'))),
+        ).toEqual(['api', 'docs', 'web']);
+        const webRow = list.locator('label', { has: page.locator('[data-repo="web"]') });
+        expect(await webRow.locator('[data-testid="repo-icon"]').getAttribute('data-kind')).toBe(
+          'github',
+        );
+        expect(await webRow.textContent()).toContain('GitHub · HTTPS');
+        const apiRow = list.locator('label', { has: page.locator('[data-repo="api"]') });
+        expect(await apiRow.locator('[data-testid="repo-icon"]').getAttribute('data-kind')).toBe(
+          'local',
+        );
+        expect(await apiRow.textContent()).toContain(api);
+        const boxes = await list.locator('[data-testid="new-project-repo"]').first().boundingBox();
+        const last = await list.locator('[data-testid="new-project-repo"]').last().boundingBox();
+        // Vertical: the rows stack, one above the other.
+        expect((last?.y ?? 0) > (boxes?.y ?? 0) + 20).toBe(true);
+        expect(Math.abs((last?.x ?? 0) - (boxes?.x ?? 0))).toBeLessThan(2);
+
+        await page.locator('[data-testid="new-project-name"]').fill('shop');
+        await list.locator('[data-testid="new-project-repo"][data-repo="api"]').check();
+        await list.locator('[data-testid="new-project-repo"][data-repo="web"]').check();
+        await page.locator('[data-testid="new-project-create"]').click();
+        await page.locator('[data-testid="new-project"]').waitFor({ state: 'detached' });
+        await waitUntil('the project to exist', () => cockpit.projects.list().length === 2);
+        const shop = cockpit.projects.list().find((p) => p.name === 'shop');
+        expect(shop?.repos).toEqual(['api', 'web']);
+        // Its root opens; the rail shows All projects (both roots), with no chip.
+        await page
+          .locator(`[data-testid="stream-page"][data-stream="${shop?.root}"]`)
+          .waitFor({ state: 'visible' });
+        await page.locator('[data-testid="project-filter"]').waitFor({ state: 'detached' });
+        await page
+          .locator(`[data-testid="stream-tree"] [data-stream="${existing.root}"]`)
+          .waitFor();
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${shop?.root}"]`).waitFor();
+        expect(new URL(page.url()).searchParams.get('project')).toBeNull();
+        await page.locator('[data-testid="toast"]', { hasText: 'Project shop created' }).waitFor();
+
+        // New node from its root lists its repos first.
+        await page.locator('[data-testid="new-stream-open"]').click();
+        await page.locator('[data-testid="new-stream-repo"]').click();
+        expect(
+          await page
+            .locator('[data-testid="new-stream-repo-option"]')
+            .evaluateAll((els) => els.map((el) => el.getAttribute('data-repo'))),
+        ).toEqual(['', 'api', 'web', 'docs']);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'the rail marks a node whose agent never ran, and the legend explains every dot',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        // No projects: the rail says what to do.
+        await page.locator('[data-testid="tree-empty"]').waitFor({ state: 'visible' });
+        await page.locator('[data-testid="tree-empty-new-project"]').click();
+        await page.locator('[data-testid="new-project"]').waitFor({ state: 'visible' });
+        await page.keyboard.press('Escape');
+
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const idle = await cockpit.streams.create('human', {
+          title: 'research pricing',
+          goal: 'g',
+          project: shop.id,
+        });
+        const row = page.locator(`[data-testid="stream-tree"] [data-stream="${idle.id}"]`);
+        await row.waitFor({ state: 'visible' });
+        expect(await row.getAttribute('data-status')).toBe('not_started');
+        expect(await row.locator('.cr-dot').getAttribute('aria-label')).toBe('Not started');
+        expect(await row.getAttribute('title')).toContain('Not started');
+
+        await page.locator('[data-testid="tree-legend-open"]').click();
+        const legend = page.locator('[data-testid="tree-legend"]');
+        await legend.locator('.cr-legend-body').waitFor({ state: 'visible' });
+        const text = (await legend.textContent()) ?? '';
+        for (const label of ['Needs you', 'Ready to merge', 'Working', 'Not started', 'Stopped']) {
+          expect(text).toContain(label);
+        }
+        expect(
+          await legend.locator('[data-status="not_started"] .cr-dot').getAttribute('data-status'),
+        ).toBe('not_started');
+        await page.keyboard.press('Escape');
+        await legend.waitFor({ state: 'detached' });
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -3375,15 +3795,74 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
         await page.locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`).click();
         await page.keyboard.press('n');
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
-        await page.locator('[data-testid="new-stream-title"]').fill('import CSV');
-        await page.locator('[data-testid="new-stream-repo"]').fill('demo');
-        await page.locator('[data-testid="new-stream-create"]').click();
+        // T365: the goal leads; its first line is the title.
+        await page
+          .locator('[data-testid="new-stream-goal"]')
+          .fill('import CSV\nBank exports, with a header row.');
+        expect(await page.locator('[data-testid="new-stream-title"]').inputValue()).toBe(
+          'import CSV',
+        );
+        await pickRepo(page, 'demo');
+        expect(await page.locator('[data-testid="new-stream"]').textContent()).toContain(
+          'Work: writes code on its own branch in demo',
+        );
+        // T365: the agent starts by default, and the dialog names the model it will use.
+        expect(await page.locator('[data-testid="new-stream-start"]').isChecked()).toBe(true);
+        await waitForText(
+          page,
+          '[data-testid="new-stream-model"]',
+          'claude-opus-5-5 · claude · low effortChange',
+        );
+        // Cmd/Ctrl+Enter in the goal creates it.
+        await page.locator('[data-testid="new-stream-goal"]').press('Control+Enter');
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
 
         const created = cockpit.streams.list().find((x) => x.title === 'import CSV');
+        expect(created?.goal).toBe('import CSV\nBank exports, with a header row.');
+        expect(created?.repo).toBe('demo');
         await waitForRunningWorker(page, cockpit, created?.id ?? '', traffic);
         // The control reads Restart once a worker has run.
         expect(await page.locator('[data-testid="attach"]').textContent()).toBe('Restart');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    "T365: New node's Change starts the agent with the picked effort",
+    async () => {
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'tool_call', toolCallId: 'w-1', title: 'read' }, { type: 'hang' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        page = await openPage();
+        const traffic = recordTraffic(page);
+        await page.goto(`${cockpit.base}/`);
+        // From the project's root page: a node at its top level.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+        await page.locator('[data-testid="new-stream-open"]').click();
+        await page.locator('[data-testid="new-stream-goal"]').fill('tidy the README');
+        await page.locator('[data-testid="new-stream-model-change"]').click();
+        await page.locator('[data-testid="new-stream-session-effort"]').selectOption('high');
+        await waitForText(
+          page,
+          '[data-testid="new-stream-model"]',
+          'claude-opus-5-5 · claude · high effort',
+        );
+        await page.locator('[data-testid="new-stream-create"]').click();
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
+        const created = cockpit.streams.list().find((x) => x.title === 'tidy the README');
+        await waitForRunningWorker(page, cockpit, created?.id ?? '', traffic);
+        const sessions = cockpit.streams.get(created?.id ?? '').sessions;
+        expect(sessions).toHaveLength(1);
+        expect(sessions[0]).toMatchObject({ role: 'worker', effort: 'high' });
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -3464,7 +3943,7 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
   );
 
   browserTest(
-    'New node with Start later files a node and starts no session',
+    'New node with its agent switched off files a node and starts no session',
     async () => {
       const cockpit = await startStreamCockpit([]);
       let page: Page | undefined;
@@ -3482,7 +3961,11 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
         await page.locator(`[data-testid="stream-tree"] [data-stream="${parent.id}"]`).click();
         await page.locator('[data-testid="new-stream-open"]').click();
         await page.locator('[data-testid="new-stream-title"]').fill('why is export slow?');
-        await page.locator('[data-testid="new-stream-start-later"]').check();
+        // T365: "Start the agent now" is on by default; off is the old Start later.
+        await page.locator('[data-testid="new-stream-start"]').uncheck();
+        expect(await page.locator('[data-testid="new-stream-model"]').textContent()).toContain(
+          'Start its agent from its page',
+        );
         await page.locator('[data-testid="new-stream-create"]').click();
         await waitUntil('the captured node', () =>
           cockpit.streams.list().some((s) => s.title === 'why is export slow?'),

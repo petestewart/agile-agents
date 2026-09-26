@@ -470,8 +470,35 @@ async function openView(label: string): Promise<void> {
   await nav(label).click();
 }
 
+/**
+ * T365: the rail shows every project; a project's ⋯ → Show only this project
+ * filters it, and the chip at the top switches or clears (All projects).
+ */
 async function pickProject(name: string): Promise<void> {
-  await page.locator('[data-testid="project-switcher"]').selectOption({ label: name });
+  const chip = page.locator('[data-testid="project-filter"]');
+  if (name === 'All projects') {
+    if ((await chip.count()) > 0)
+      await page.locator('[data-testid="project-filter-clear"]').click();
+    await chip.waitFor({ state: 'detached' });
+    return;
+  }
+  if ((await chip.count()) > 0) {
+    await page.locator('[data-testid="project-filter-switch"]').click();
+    await page
+      .locator('[data-testid="project-filter-option"]', { hasText: new RegExp(`^${name}$`) })
+      .click();
+  } else {
+    await rail()
+      .locator('.cr-tree-item', {
+        has: page.locator('.cr-tree-row[data-role="project"] .title', {
+          hasText: new RegExp(`^${name}$`),
+        }),
+      })
+      .locator('[data-testid="tree-menu-trigger"]')
+      .click();
+    await page.locator('[data-testid="tree-menu"] [data-testid="tree-menu-only"]').click();
+  }
+  await chip.filter({ hasText: name }).waitFor();
 }
 
 async function openNode(title: string): Promise<void> {
@@ -489,7 +516,8 @@ async function newStream(title: string, goal: string, startLater: boolean): Prom
   await page.locator('[data-testid="new-stream-open"]').click();
   await page.locator('[data-testid="new-stream-title"]').fill(title);
   await page.locator('[data-testid="new-stream-goal"]').fill(goal);
-  if (startLater) await page.locator('[data-testid="new-stream-start-later"]').check();
+  // T365: "Start the agent now" is on by default; off is the old Start later.
+  if (startLater) await page.locator('[data-testid="new-stream-start"]').uncheck();
   await page.locator('[data-testid="new-stream-create"]').click();
   await page.locator('[data-testid="stream-title"]', { hasText: title }).waitFor();
 }
@@ -1297,9 +1325,13 @@ test.skipIf(!RUN)(
         .locator('[data-testid="new-stream-goal"]')
         .fill('Add walkthrough-notes.md with a Blog and a Shop section.');
       const parent = page.locator('[data-testid="new-stream-parent"]');
-      const parentText = await parent.locator('option:checked').textContent();
-      check('Parent reads — none —', (parentText ?? '').includes('none'), parentText ?? '');
-      await page.locator('[data-testid="new-stream-start-later"]').check();
+      const parentText = await parent.textContent();
+      check(
+        'Parent reads Top level of Blog',
+        (await parent.getAttribute('data-value')) === '' && parentText === 'Top level of Blog',
+        parentText ?? '',
+      );
+      await page.locator('[data-testid="new-stream-start"]').uncheck();
       await page.locator('[data-testid="new-stream-create"]').click();
       await page
         .locator('[data-testid="stream-title"]', { hasText: 'Walkthrough notes' })
@@ -1354,10 +1386,8 @@ test.skipIf(!RUN)(
         .locator('[data-testid="stream-title"]', { hasText: 'Walkthrough notes' })
         .waitFor();
       await until(
-        'the reload keeps the project switcher on Blog',
-        async () =>
-          (await page.locator('[data-testid="project-switcher"] option:checked').textContent()) ===
-          'Blog',
+        'the reload keeps the project filter on Blog',
+        async () => (await textOf(page.locator('[data-testid="project-filter"]'))) === 'Only Blog',
       );
       await checkText(
         'Ready: stream/…-walkthrough-notes is 1 commit ahead of main.',
@@ -2385,9 +2415,7 @@ test.skipIf(!RUN)(
 
     await step('8.5', 'create an issue from a node', async () => {
       await page.locator('[data-testid="new-stream-open"]').click();
-      const parentText = await page
-        .locator('[data-testid="new-stream-parent"] option:checked')
-        .textContent();
+      const parentText = await page.locator('[data-testid="new-stream-parent"]').textContent();
       check(
         'the Parent defaults to the open node, Tracker epic',
         (parentText ?? '').includes('Tracker epic'),
@@ -2397,7 +2425,7 @@ test.skipIf(!RUN)(
       await page
         .locator('[data-testid="new-stream-goal"]')
         .fill('Note in TRACKER.md how issues are linked.');
-      await page.locator('[data-testid="new-stream-start-later"]').check();
+      await page.locator('[data-testid="new-stream-start"]').uncheck();
       await page.locator('[data-testid="new-stream-create"]').click();
       await page
         .locator('[data-testid="stream-title"]', { hasText: 'Tracker follow-up' })

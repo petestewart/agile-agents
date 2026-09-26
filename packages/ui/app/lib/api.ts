@@ -488,3 +488,11 @@ export function cloneRepo(input: {
 }): Promise<CloneRepoResult> {
   return post('/api/repos/clone', input) as Promise<CloneRepoResult>;
 }
+
+/** T365: the rail's Rename (and a goal edit): the same patch as `stream.update`, stamped human. */
+export function updateStream(
+  id: string,
+  patch: { title?: string; goal?: string },
+): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/update`, patch) as Promise<Stream>;
+}
