@@ -83,7 +83,7 @@ The cockpit is `http://127.0.0.1:4600/`.
 | **Director** | A chat with the Director, like a node's: its drafts wait on you at the end of the chat as cards (**Create**/**Dismiss**); the **Details** panel has its **Activity** and what it may do in each project |
 | **Events** | Every routed event, newest first, by day: what happened (and a line of detail), to which node, and who it was routed to and why; filter by type (**All** · **Messages** · **Merges and PRs** · **Coordination** · **Knowledge**), by repo, or search; **Show more** for older ones |
 | Anywhere | **Ctrl K** (**⌘K** on a Mac, or the search icon at the top of the sidebar) opens the command palette: find a node by part of its title or path, a project, a view or an action (New node, New project, switch theme, Keyboard shortcuts); ↑↓ and Enter. **?** lists every keyboard shortcut; **g** then a letter goes to a view (**g i** Needs me, **g k** Knowledge…) |
-| **Settings** | Sections on the left: **General** (theme: System, Light, Dark; the daemon), **Agents** (session defaults, global, per repo and per project, each card saying what a new agent there starts with, e.g. `Claude Opus 5.5 · low`), **Repositories** (**Add repository**: a folder, or a URL to clone; per repo its icon, delivery, auto-merge, visibility), **Classifier** (the TypeSafe API key), **Trackers** (Jira, Linear), **Permissions** (who decides) |
+| **Settings** | Sections on the left: **General** (theme: System, Light, Dark; **Notifications**: a switch, off by default and kept per browser, that asks the browser's permission and then tells you when something new needs you while the tab is in the background, with **Send a test**; the daemon), **Agents** (session defaults, global, per repo and per project, each card saying what a new agent there starts with, e.g. `Claude Opus 5.5 · low`), **Repositories** (**Add repository**: a folder, or a URL to clone; per repo its icon, delivery, auto-merge, visibility), **Classifier** (the TypeSafe API key), **Trackers** (Jira, Linear), **Permissions** (who decides) |
 | A node's page | A chat with its agent. The header: path, title (click it to rename), status, role, repo and branch, then **Start agent** (its chevron picks another model), **Stop** while it works (**⋯** → **Stop agent** while it waits on you), **Merge** when there is something to merge, the details toggle and **⋯** (**Review changes…**, **Restart agent**, **Waits on…**, **Add repository…**, **Tracker issue…**, **Copy branch name**, **Close node…**, **Delete node…**). Tabs **Chat**, **Changes**, **Plan**, **Activity**, **Knowledge**, **Docs**, only where they apply. The chat opens with the goal (**Edit** changes it; the agent reads the change). What needs you (questions, gates, plans, proposals) sits at the end of the chat, and the composer answers an open question. The **Details** panel: **Delivery** (Check now, Mark landed, Resolve), **Agent** (sessions), **Children**, **Waits on**, **Tracker** (**Link**, **Create issue**; then **Unlink**, **Import children**; only when the node's project has a tracker), **Coordinator autonomy** on a coordinating node or a project root (and, on a project root, **Director autonomy** and the project's tracker) |
 
 ### The CLI
@@ -972,6 +972,18 @@ child should be a small task an agent can do in agile-test-repo (for example
       **Decisions** or **Merges**; `j`/`k` move between cards and Enter opens
       one's node. The badge on **Needs me** counts them. With nothing
       waiting it reads `You’re all caught up`.
+- [ ] **Settings** → **General** → **Notifications**: turn on
+      `Tell me when something new needs me` and choose **Allow** in the
+      browser's prompt; the card reads `On`, and **Send a test** shows a
+      notification. Switch to another tab or app and raise a question (or let
+      an agent finish): one notification names it and its node
+      (`Question on …`, `Ready to merge: …`; several at once read
+      `3 new things need you`); a click brings the cockpit forward on that
+      node (on Needs me for several). Nothing comes while the cockpit tab is
+      in front, nor for what was already there when the page loaded. With
+      notifications blocked for the site the card reads `Blocked` and says how
+      to allow them; on a plain `http://` address other than localhost it
+      reads `Not available`.
 - [ ] The rail's dots say who must act: amber waiting on you, blue agent
       working, grey idle, green landed, red blocked (hover a row to read it;
       the **?** next to *Projects* explains every dot and icon). A node whose

@@ -2,8 +2,9 @@
  * Settings (T367, design/cockpit-ui.md): one screen, in sections, with a
  * sub-navigation on the left (a scrolling row of tabs on a phone):
  *
- *  - **General** — the theme (system, light, dark; per browser) and the
- *    daemon this cockpit talks to.
+ *  - **General** — the theme (system, light, dark; per browser), browser
+ *    notifications (T388; per browser, off by default) and the daemon this
+ *    cockpit talks to.
  *  - **Agents** — T170 (D17) session defaults: global (`config.yaml`) and per
  *    repo (`repos.yaml`). An empty field inherits the next step.
  *  - **Repositories** — `SettingsRepos.tsx`: every repo with its icon,
@@ -50,6 +51,14 @@ import { resolvedFor } from '../lib/defaults';
 import { useOptionalFeed } from '../lib/feed-context';
 import { useOptionalShell } from '../lib/shell';
 import { type ThemeChoice, readTheme, saveTheme } from '../lib/theme';
+import {
+  type NotifyAccess,
+  askNotifyAccess,
+  notifyAccess,
+  readNotifyOn,
+  saveNotifyOn,
+  sendTestNotification,
+} from '../lib/use-notify';
 import { Icon, type IconName } from './Icon';
 import { type SessionChoice, SessionFields } from './SessionPicker';
 import {
@@ -58,6 +67,7 @@ import {
   SetCard,
   SetRow,
   SetSection,
+  Switch,
   errorText,
   useSavedFlash,
 } from './SettingsCard';
@@ -230,7 +240,10 @@ function GeneralSection(): JSX.Element {
   );
 
   return (
-    <SetSection title="General" description="How the cockpit looks, and the daemon it talks to.">
+    <SetSection
+      title="General"
+      description="How the cockpit looks, how it tells you something needs you, and the daemon it talks to."
+    >
       <SetCard title="Appearance" icon="sun" testid="settings-appearance">
         <SetRow label="Theme" hint="Follow your system, or pick one. Kept in this browser.">
           <Segmented
@@ -253,6 +266,8 @@ function GeneralSection(): JSX.Element {
           />
         </SetRow>
       </SetCard>
+
+      <NotificationsCard />
 
       <SetCard
         title="Daemon"
@@ -313,6 +328,142 @@ function GeneralSection(): JSX.Element {
         </dl>
       </SetCard>
     </SetSection>
+  );
+}
+
+/** T388: why the switch can't turn on, in words; `undefined` when nothing stands in the way. */
+function notifyNote(
+  access: NotifyAccess,
+  dismissed: boolean,
+): { tone: 'amber' | 'gray'; text: ReactNode } | undefined {
+  switch (access) {
+    case 'unsupported':
+      return { tone: 'gray', text: 'This browser can’t show notifications.' };
+    case 'insecure':
+      return {
+        tone: 'gray',
+        text: (
+          <>
+            Browsers only show notifications for a secure address. Open the cockpit at{' '}
+            <code>localhost</code> or over https to use them.
+          </>
+        ),
+      };
+    case 'denied':
+      return {
+        tone: 'amber',
+        text: 'Your browser blocks notifications from the cockpit. To allow them, click the icon at the left of the address bar, set Notifications to Allow, then turn this on.',
+      };
+    default:
+      return dismissed
+        ? {
+            tone: 'gray',
+            text: 'The browser wasn’t given permission. Turn this on again and choose Allow.',
+          }
+        : undefined;
+  }
+}
+
+/**
+ * T388: the per-browser switch for notifications (`lib/use-notify.ts`).
+ * Turning it on asks the browser; a refusal, or a browser that can't,
+ * is said in words and the switch stays off.
+ */
+function NotificationsCard(): JSX.Element {
+  const [access, setAccess] = useState<NotifyAccess>(notifyAccess);
+  const [wanted, setWanted] = useState(readNotifyOn);
+  const [asking, setAsking] = useState(false);
+  /** The browser's prompt was closed without an answer. */
+  const [dismissed, setDismissed] = useState(false);
+  const [test, setTest] = useState<'sent' | 'failed' | undefined>();
+  const on = wanted && access === 'granted';
+  const available = access !== 'unsupported' && access !== 'insecure';
+  const note = notifyNote(access, dismissed);
+
+  // The permission can change behind the page (the browser's site settings): re-read it on the way back.
+  useEffect(() => {
+    const reread = (): void => setAccess(notifyAccess());
+    window.addEventListener('focus', reread);
+    document.addEventListener('visibilitychange', reread);
+    return () => {
+      window.removeEventListener('focus', reread);
+      document.removeEventListener('visibilitychange', reread);
+    };
+  }, []);
+
+  async function toggle(next: boolean): Promise<void> {
+    setDismissed(false);
+    setTest(undefined);
+    if (!next) {
+      saveNotifyOn(false);
+      setWanted(false);
+      return;
+    }
+    setAsking(true);
+    const result = await askNotifyAccess();
+    setAsking(false);
+    setAccess(result);
+    saveNotifyOn(result === 'granted');
+    setWanted(result === 'granted');
+    if (result === 'default') setDismissed(true);
+  }
+
+  const status = on
+    ? { tone: 'green' as const, text: 'On' }
+    : !available
+      ? { tone: 'gray' as const, text: 'Not available' }
+      : access === 'denied'
+        ? { tone: 'amber' as const, text: 'Blocked' }
+        : { tone: 'gray' as const, text: 'Off' };
+
+  return (
+    <SetCard
+      title="Notifications"
+      icon="bell"
+      description="A browser notification when a new question, plan, merge or action to allow arrives while you’re in another tab or app. A click takes you to it. Kept in this browser."
+      testid="settings-notifications"
+      status={
+        <Pill tone={status.tone}>
+          <span data-testid="settings-notify-status">{status.text}</span>
+        </Pill>
+      }
+    >
+      <div className="cr-set-notify">
+        <Switch
+          label="Tell me when something new needs me"
+          data-testid="settings-notify"
+          checked={on}
+          disabled={asking || !available}
+          onChange={(e) => void toggle(e.target.checked)}
+        />
+        {on ? (
+          <Button
+            size="sm"
+            icon="send"
+            data-testid="settings-notify-test"
+            onClick={() => setTest(sendTestNotification() ? 'sent' : 'failed')}
+          >
+            Send a test
+          </Button>
+        ) : null}
+      </div>
+      {note ? (
+        <p className="cr-set-note" data-tone={note.tone} data-testid="settings-notify-note">
+          <Icon name={note.tone === 'amber' ? 'alert-triangle' : 'info'} size={14} />
+          <span>{note.text}</span>
+        </p>
+      ) : null}
+      {on && test ? (
+        <output className="cr-set-note" data-tone="plain" data-testid="settings-notify-sent">
+          <Icon name={test === 'sent' ? 'check' : 'info'} size={14} />
+          <span>
+            {test === 'sent'
+              ? 'Sent. Nothing showed up? Check that your system lets this browser show notifications.'
+              : 'The browser didn’t show it.'}
+          </span>
+        </output>
+      ) : null}
+    </SetCard>
   );
 }
 

@@ -270,6 +270,8 @@ function browserTest(name: string, body: () => Promise<void>, timeoutMs: number)
 async function openPage(options?: {
   colorScheme?: 'dark' | 'light';
   serviceWorkers?: 'block';
+  /** T388: permissions the page's context starts with (`['notifications']`). */
+  permissions?: string[];
 }): Promise<Page> {
   const acquired = await acquireBrowserPage({
     label: 'control-room e2e',
@@ -3834,6 +3836,241 @@ describe('Settings sections (Playwright e2e, T367)', () => {
         expect(new URL(page.url()).searchParams.get('view')).toBe('settings');
       } finally {
         await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T388: browser notifications -----------------------------------------------
+
+/**
+ * T388: the page's Notification API, recorded (a headless browser shows
+ * none), and a switch for being away (another tab or app):
+ * `window.__setAway(true)` makes `visibilityState` "hidden" and `hasFocus()`
+ * false, and fires the events a real switch fires. `real` keeps the
+ * browser's own permission (the context's grant); `denied` and `dismiss`
+ * play a blocked browser and a closed prompt; `missing` is a browser with
+ * no Notification API at all.
+ */
+function notifyStub(mode: 'real' | 'denied' | 'dismiss' | 'missing' = 'real'): string {
+  return `(() => {
+    const mode = ${JSON.stringify(mode)};
+    if (mode === 'missing') {
+      delete window.Notification;
+      return;
+    }
+    const Real = window.Notification;
+    window.__notes = [];
+    window.__focused = 0;
+    window.focus = () => {
+      window.__focused++;
+    };
+    class Recorded {
+      constructor(title, options = {}) {
+        this.title = title;
+        this.body = options.body ?? '';
+        this.tag = options.tag ?? '';
+        this.closed = false;
+        this.onclick = null;
+        window.__notes.push(this);
+      }
+      close() {
+        this.closed = true;
+      }
+      static get permission() {
+        return mode === 'denied' ? 'denied' : mode === 'dismiss' ? 'default' : Real.permission;
+      }
+      static requestPermission() {
+        if (mode === 'denied') return Promise.resolve('denied');
+        if (mode === 'dismiss') return Promise.resolve('default');
+        return Real.requestPermission();
+      }
+    }
+    window.Notification = Recorded;
+    let away = false;
+    Object.defineProperty(Document.prototype, 'visibilityState', {
+      configurable: true,
+      get: () => (away ? 'hidden' : 'visible'),
+    });
+    Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get: () => away });
+    Document.prototype.hasFocus = () => !away;
+    window.__setAway = (next) => {
+      away = next;
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event(next ? 'blur' : 'focus'));
+    };
+  })();`;
+}
+
+interface RecordedNote {
+  title: string;
+  body: string;
+  tag: string;
+  closed: boolean;
+}
+
+/** T388: the Needs me notifications the page raised, oldest first. */
+async function needsMeNotes(page: Page): Promise<RecordedNote[]> {
+  return (await page.evaluate(
+    `window.__notes.filter((n) => n.tag === 'agile-needs-me').map((n) => ({ title: n.title, body: n.body, tag: n.tag, closed: n.closed }))`,
+  )) as RecordedNote[];
+}
+
+/** T388: clicks the last Needs me notification (what the OS does on a click). */
+async function clickLastNote(page: Page): Promise<void> {
+  await page.evaluate(
+    `window.__notes.filter((n) => n.tag === 'agile-needs-me').at(-1).onclick(new Event('click'))`,
+  );
+}
+
+describe('browser notifications (Playwright e2e, T388)', () => {
+  browserTest(
+    'turned on in Settings, a new item while away notifies with what and where and a click opens it; nothing at load or while visible; several become one',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const ledger = await cockpit.streams.create('human', {
+          title: 'Ledger export format',
+          goal: 'g',
+        });
+        const csv = await cockpit.streams.create('human', { title: 'Add CSV import', goal: 'g' });
+        const raise = (stream: string, text: string): Promise<Question> =>
+          cockpit.questions.raise({ stream, raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001', text });
+        await raise(ledger.id, 'Already waiting at load: tabs or commas?');
+
+        page = await openPage({ permissions: ['notifications'] });
+        await page.addInitScript(notifyStub());
+        await page.goto(`${cockpit.base}/?view=settings`);
+        const status = '[data-testid="settings-notify-status"]';
+        const toggle = page.locator('[data-testid="settings-notify"]');
+        // Off by default; on asks the browser, which (granted here) allows it.
+        await waitForText(page, status, 'Off');
+        expect(await toggle.isChecked()).toBe(false);
+        expect(await page.locator('[data-testid="settings-notify-test"]').count()).toBe(0);
+        await toggle.click();
+        await waitForText(page, status, 'On');
+        expect(await toggle.isChecked()).toBe(true);
+        // Send a test: one notification under its own tag.
+        await page.locator('[data-testid="settings-notify-test"]').click();
+        await page.locator('[data-testid="settings-notify-sent"]').waitFor();
+        expect((await page.evaluate('window.__notes.map((n) => n.tag)')) as string[]).toEqual([
+          'agile-test',
+        ]);
+        // Kept in this browser: a reload leaves it on.
+        await page.reload();
+        await waitForText(page, status, 'On');
+        await waitForText(page, '[data-testid="inbox-badge"]', '1');
+
+        // Visible and focused: a new question shows in the count, and nothing more.
+        await raise(csv.id, 'Asked while you look: which encoding?');
+        await waitForText(page, '[data-testid="inbox-badge"]', '2');
+        await page.waitForTimeout(300);
+        expect(await needsMeNotes(page)).toEqual([]);
+
+        // Away: the next one notifies, naming what and where, in words.
+        await page.evaluate('window.__setAway(true)');
+        await raise(ledger.id, 'Which **date format** should the export use?');
+        await waitUntilAsync(
+          'a notification',
+          async () => page !== undefined && (await needsMeNotes(page)).length > 0,
+        );
+        expect(await needsMeNotes(page)).toEqual([
+          {
+            title: 'Question on Ledger export format',
+            body: 'Which date format should the export use?',
+            tag: 'agile-needs-me',
+            closed: false,
+          },
+        ]);
+        // A click brings the window forward and opens the node.
+        await clickLastNote(page);
+        await page.locator(`[data-testid="stream-page"][data-stream="${ledger.id}"]`).waitFor();
+        expect((await page.evaluate('window.__focused')) as number).toBeGreaterThan(0);
+        expect((await needsMeNotes(page)).at(-1)?.closed).toBe(true);
+        await page.evaluate('window.__setAway(false)');
+
+        // Several while away: one notification that counts them; a click opens Needs me.
+        await page.evaluate('window.__setAway(true)');
+        await raise(csv.id, 'Which delimiter?');
+        await raise(ledger.id, 'Which currency?');
+        await waitUntilAsync(
+          'one notification for both',
+          async () =>
+            page !== undefined &&
+            (await needsMeNotes(page)).at(-1)?.title === '2 new things need you',
+        );
+        const both = (await needsMeNotes(page)).at(-1);
+        expect(both?.body).toContain('Question on Add CSV import');
+        expect(both?.body).toContain('Question on Ledger export format');
+        await clickLastNote(page);
+        await page.locator('[data-testid="inbox"]').waitFor();
+        await page.evaluate('window.__setAway(false)');
+
+        // What was there at load, and what came while visible, never notified.
+        const all = await needsMeNotes(page);
+        expect(all[0]?.title).toBe('Question on Ledger export format');
+        expect(all.length).toBeLessThanOrEqual(3);
+        const words = all.map((n) => `${n.title} ${n.body}`).join('\n');
+        expect(words).not.toContain('Already waiting');
+        expect(words).not.toContain('encoding');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a blocked browser, a closed prompt and a browser without notifications are said in words, and the switch stays off',
+    async () => {
+      const cockpit = await startCockpit();
+      const pages: Page[] = [];
+      try {
+        const open = async (mode: 'denied' | 'dismiss' | 'missing'): Promise<Page> => {
+          const page = await openPage();
+          pages.push(page);
+          await page.addInitScript(notifyStub(mode));
+          await page.goto(`${cockpit.base}/?view=settings`);
+          return page;
+        };
+        const status = '[data-testid="settings-notify-status"]';
+        const note = '[data-testid="settings-notify-note"]';
+        const toggle = '[data-testid="settings-notify"]';
+
+        // Blocked: how to allow it; turning it on leaves it off.
+        const denied = await open('denied');
+        await waitForText(denied, status, 'Blocked');
+        expect(await denied.locator(note).textContent()).toContain(
+          'Your browser blocks notifications from the cockpit',
+        );
+        await denied.locator(toggle).click();
+        await waitForText(denied, status, 'Blocked');
+        expect(await denied.locator(toggle).isChecked()).toBe(false);
+        expect(await denied.locator('[data-testid="settings-notify-test"]').count()).toBe(0);
+
+        // The prompt closed without an answer: say so, stay off.
+        const dismissed = await open('dismiss');
+        await waitForText(dismissed, status, 'Off');
+        expect(await dismissed.locator(note).count()).toBe(0);
+        await dismissed.locator(toggle).click();
+        await dismissed.locator(note).waitFor();
+        expect(await dismissed.locator(note).textContent()).toContain('wasn’t given permission');
+        expect(await dismissed.locator(toggle).isChecked()).toBe(false);
+        expect(
+          (await dismissed.evaluate('localStorage.getItem("agile.notify")')) as string | null,
+        ).toBe(null);
+
+        // No Notification API at all: not available, and the switch can't be turned on.
+        const missing = await open('missing');
+        await waitForText(missing, status, 'Not available');
+        expect(await missing.locator(note).textContent()).toContain('can’t show notifications');
+        expect(await missing.locator(toggle).isDisabled()).toBe(true);
+      } finally {
+        await teardown(pages);
         await cockpit.stop();
       }
     },

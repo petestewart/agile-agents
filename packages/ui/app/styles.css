@@ -6327,6 +6327,49 @@ button.cr-answering-q {
   background: var(--bg-hover);
 }
 
+/* General: notifications (T388) — the switch, Send a test, and why it can't turn on. */
+.cr-set-notify {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  min-height: 28px;
+}
+.cr-set-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.cr-set-note .cr-icon {
+  flex: none;
+  margin-top: 2px;
+}
+.cr-set-note[data-tone="amber"] {
+  color: var(--amber-text);
+  background: var(--amber-weak);
+  border-color: transparent;
+}
+.cr-set-note[data-tone="plain"] {
+  padding: 0;
+  background: none;
+  border: 0;
+}
+.cr-set-note[data-tone="plain"] [data-icon="check"] {
+  color: var(--green-text);
+}
+.cr-set-note code {
+  font-size: var(--text-xs);
+}
+
 /* Agents: SessionFields (vendor, model, effort) under labels, on one grid. */
 .cr-set-resolved {
   display: inline-flex;
