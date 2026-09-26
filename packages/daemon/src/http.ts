@@ -24,6 +24,7 @@ import {
   QuestionIdSchema,
   QuickDraftsInputSchema,
   SessionDefaultsPatchSchema,
+  type SessionVendor,
   type Stream,
   StreamAddRepoRequestSchema,
   StreamAttachRequestSchema,
@@ -196,6 +197,8 @@ export interface HttpServerOptions {
   cheapModel?: TitleRun;
   /** T434: a cheap model is there to switch (the `claude` command was found); Settings says so. */
   quickDraftsAvailable?: boolean;
+  /** T437: why a vendor can't start here (its command isn't on PATH); the model lists say so. */
+  vendorMissing?: (vendor: SessionVendor) => string | undefined;
   /** T340: `POST /api/streams/:id/pr-check`, the Delivery panel's Check now (`PrPoller.pollNow`). */
   prCheck?: (id: string) => Promise<Stream>;
   /** The stream page's sessions strip and composer. */
@@ -483,6 +486,8 @@ interface FeedContext {
   steps: StepIndex;
   /** T422 (D42): the cheap model call that drafts a goal from a conversation. */
   cheapModel?: TitleRun;
+  /** T437: why a vendor can't start here. */
+  vendorMissing?: (vendor: SessionVendor) => string | undefined;
   userHome?: string;
 }
 
@@ -502,6 +507,7 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     feed.mergeState ? (s) => feed.mergeState?.peekState(s) : undefined,
     feed.attach ? (session) => feed.attach?.contextFor(session) : undefined,
     feed.director ? () => feed.store.directorReplyAt() : undefined,
+    (id) => feed.store.answeredAt(id),
   );
 }
 
@@ -540,6 +546,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
       : {}),
     steps: new StepIndex(`${options.stateRoot}/log/events.jsonl`),
     ...(options.cheapModel ? { cheapModel: options.cheapModel } : {}),
+    ...(options.vendorMissing ? { vendorMissing: options.vendorMissing } : {}),
     userHome: options.userHome,
   };
 }
@@ -699,7 +706,7 @@ async function handleSessionSettingsRoute(
   if (req.method === 'GET' && repo === undefined) {
     if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
     try {
-      return jsonResponse(new SessionDefaultsService(feed.store).status());
+      return jsonResponse(new SessionDefaultsService(feed.store, feed.vendorMissing).status());
     } catch (err) {
       return errorResponse(500, messageOf(err));
     }
@@ -715,7 +722,7 @@ async function handleSessionSettingsRoute(
   }
   const input = SessionDefaultsPatchSchema.safeParse(body);
   if (!input.success) return errorResponse(400, formatZodError('session defaults', input.error));
-  const service = new SessionDefaultsService(feed.store);
+  const service = new SessionDefaultsService(feed.store, feed.vendorMissing);
   try {
     return jsonResponse(
       repo === undefined

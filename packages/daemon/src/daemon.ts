@@ -5,7 +5,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import type { spawnSession } from '@agile-agents/acp-client';
+import { ACP_PROVIDERS, type spawnSession } from '@agile-agents/acp-client';
 import { trackerStatus } from '@agile-agents/shared';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
@@ -51,7 +51,7 @@ import { type LockHandle, acquireLock } from './lock';
 import { ProjectService, buildProjectRpcMethods } from './projects';
 import { QuestionService, buildQuestionRpcMethods, wireQuestionSupersession } from './questions';
 import { type RpcServerHandle, startRpcServer } from './rpc';
-import { resolveCliBin } from './runner';
+import { missingVendorCommand, resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
 import {
@@ -747,6 +747,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(titleNamer ? { titleNamer } : {}),
     ...(titleRun ? { cheapModel: titleRun } : {}),
     quickDraftsAvailable: modelRun !== undefined,
+    // T437: the model lists mark a vendor whose command isn't on PATH.
+    vendorMissing: (vendor) => missingVendorCommand(ACP_PROVIDERS[vendor]),
     ...(prPoller ? { prCheck: (id: string) => prPoller.pollNow(id) } : {}),
     ...(attachService ? { attach: attachService } : {}),
     ...(routedEvents ? { events: routedEvents } : {}),

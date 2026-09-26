@@ -10164,3 +10164,7 @@ div.cr-lens-ev:hover {
   background: var(--accent);
   flex-shrink: 0;
 }
+/* T437: a vendor whose command isn't on the daemon's PATH: dimmed, still pickable. */
+.cr-mpick-row[data-missing="true"] .cr-mpick-name {
+  color: var(--text-faint);
+}

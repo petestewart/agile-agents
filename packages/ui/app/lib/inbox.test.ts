@@ -18,6 +18,7 @@ import {
   fold,
   gateView,
   groupNeedsMe,
+  isAgentFailure,
   isFirstRun,
   isLandGate,
   itemCommand,
@@ -693,5 +694,13 @@ describe("T416: ⌘K's Needs me rows", () => {
 
   test('a blocked agent is filed with the questions: a reply unblocks it', () => {
     expect(filterOf(item({ kind: 'blocked', id: NODE }))).toBe('questions');
+  });
+});
+
+describe('isAgentFailure (T437)', () => {
+  test("the daemon's failure notes, and nothing else", () => {
+    expect(isAgentFailure('The agent couldn’t start: Gemini CLI can’t start')).toBe(true);
+    expect(isAgentFailure('The agent stopped with an error: Invalid API key')).toBe(true);
+    expect(isAgentFailure('The agent is stuck and needs a hand.')).toBe(false);
   });
 });

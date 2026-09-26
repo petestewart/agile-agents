@@ -47,7 +47,7 @@ export function parseSeen(raw: string | null | undefined, now: string): SeenStat
 
 type ReplyRow = Pick<
   CockpitStreamRow,
-  'id' | 'role' | 'agent_status' | 'human_status' | 'updated_at'
+  'id' | 'role' | 'agent_status' | 'human_status' | 'updated_at' | 'answered_at'
 >;
 
 /**
@@ -56,11 +56,13 @@ type ReplyRow = Pick<
  * Merge card).
  */
 export function answersYou(row: ReplyRow): boolean {
+  // T437: only a turn that answered something you said (`answered_at`); one woken by
+  // new knowledge or an event is not a reply to you.
   return (
     row.human_status === 'open' &&
     row.agent_status === 'done' &&
     row.role !== 'work' &&
-    row.updated_at !== undefined
+    row.answered_at !== undefined
   );
 }
 
@@ -79,9 +81,9 @@ export function unreadReplies<R extends ReplyRow>(
   return rows
     .filter(
       (row) =>
-        row.id !== open && answersYou(row) && (row.updated_at as string) > readUpTo(seen, row.id),
+        row.id !== open && answersYou(row) && (row.answered_at as string) > readUpTo(seen, row.id),
     )
-    .sort((a, b) => ((b.updated_at as string) > (a.updated_at as string) ? 1 : -1));
+    .sort((a, b) => ((b.answered_at as string) > (a.answered_at as string) ? 1 : -1));
 }
 
 /** `id` read up to `at`. The same state when nothing changes; the oldest marks drop past `SEEN_MAX`. */
@@ -100,7 +102,8 @@ export function markSeen(seen: SeenState, id: string, at: string): SeenState {
 export function markAllSeen(seen: SeenState, rows: readonly ReplyRow[]): SeenState {
   let next = seen;
   for (const row of rows) {
-    if (row.updated_at !== undefined) next = markSeen(next, row.id, row.updated_at);
+    const at = row.updated_at ?? row.answered_at;
+    if (at !== undefined) next = markSeen(next, row.id, at);
   }
   return next;
 }

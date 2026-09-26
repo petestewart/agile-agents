@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   AGENT_LINE_MAX_CHARS,
+  HUMAN_LINE_MAX_CHARS,
   type Stream,
   StreamAttachRequestSchema,
   StreamSayInputSchema,
@@ -187,15 +188,29 @@ describe('ThreadEntrySchema', () => {
     ).toThrow(/agent:/);
   });
 
-  test('caps the body at the shared 800-char message cap', () => {
+  test("caps the body: 800 for the daemon's lines and events, HUMAN_LINE_MAX_CHARS for yours (T437)", () => {
     expect(THREAD_BODY_MAX_CHARS).toBe(800);
+    expect(() =>
+      validateThreadEntry({
+        ts: 'now',
+        by: 'daemon',
+        kind: 'line',
+        body: 'x'.repeat(THREAD_BODY_MAX_CHARS + 1),
+      }),
+    ).toThrow(/800/);
+    expect(
+      validateThreadEntry({ ts: 'now', by: 'human', kind: 'line', body: 'x'.repeat(3000) }).body,
+    ).toHaveLength(3000);
     expect(() =>
       validateThreadEntry({
         ts: 'now',
         by: 'human',
         kind: 'line',
-        body: 'x'.repeat(THREAD_BODY_MAX_CHARS + 1),
+        body: 'x'.repeat(HUMAN_LINE_MAX_CHARS + 1),
       }),
+    ).toThrow(/4000/);
+    expect(() =>
+      validateThreadEntry({ ts: 'now', by: 'human', kind: 'event', body: 'x'.repeat(801) }),
     ).toThrow(/800/);
   });
 
@@ -322,8 +337,9 @@ describe('T161 cockpit write bodies', () => {
     expect(StreamSayInputSchema.parse({ body: '  hi  ' }).body).toBe('hi');
     expect(StreamSayInputSchema.safeParse({ body: '   ' }).success).toBe(false);
     expect(
-      StreamSayInputSchema.safeParse({ body: 'x'.repeat(THREAD_BODY_MAX_CHARS + 1) }).success,
+      StreamSayInputSchema.safeParse({ body: 'x'.repeat(HUMAN_LINE_MAX_CHARS + 1) }).success,
     ).toBe(false);
+    expect(StreamSayInputSchema.safeParse({ body: 'x'.repeat(2000) }).success).toBe(true);
     expect(StreamSayInputSchema.safeParse({ body: 'hi', by: 'daemon' }).success).toBe(false);
   });
 
