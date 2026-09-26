@@ -240,6 +240,14 @@ export function ruleHitText(body: string): string {
 
 // ---------------------------------------------------------------- questions
 
+/**
+ * T376: the question a thread line is about — its `ref` is the question's
+ * record path (`questions/Q-….yaml`) — or `undefined`.
+ */
+export function questionIdOfRef(ref: string | undefined): string | undefined {
+  return ref?.match(/(?:^|\/)(Q-[0-9A-HJKMNP-TV-Z]{26})\.yaml$/)?.[1];
+}
+
 /** One line of a question for the composer's "Answering: …" chip. */
 export function oneLine(text: string, max = 90): string {
   const first = (text.split('\n').find((l) => l.trim() !== '') ?? '').trim().replace(/\s+/g, ' ');

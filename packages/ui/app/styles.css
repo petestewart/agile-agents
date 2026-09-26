@@ -4899,6 +4899,18 @@ button.cr-answering-q {
   width: 14em;
 }
 
+/* T376: a question whose card is open below reads once: its line folds to one. */
+.cr-msg[data-open-question="true"] .cr-msg-body .cr-md {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text-muted);
+}
+.cr-msg[data-open-question="true"] .cr-msg-tag .cr-icon {
+  margin-left: 2px;
+}
+
 /* T374: a node branch: the id part shrinks first, the slug stays whole. */
 .cr-branch {
   display: inline-flex;
