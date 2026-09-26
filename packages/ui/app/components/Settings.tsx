@@ -1,26 +1,21 @@
 /**
- * Settings (T043's view, cut to what the cockpit has left in T160): who
- * decides each of the three surviving gate kinds (§3.1), read from
- * `policy.yaml` through `GET /api/policy`.
+ * Settings (T367, design/cockpit-ui.md): one screen, in sections, with a
+ * sub-navigation on the left (a scrolling row of tabs on a phone):
  *
- * Read-only for now: T043's per-row "ask me / EM decides" switch chose
- * between the human and the EM delegate, and the EM was deleted in T122,
- * so the only owner left that a gate can actually reach is the human.
+ *  - **General** — the theme (system, light, dark; per browser) and the
+ *    daemon this cockpit talks to.
+ *  - **Agents** — T170 (D17) session defaults: global (`config.yaml`) and per
+ *    repo (`repos.yaml`). An empty field inherits the next step.
+ *  - **Repositories** — `SettingsRepos.tsx`: every repo with its icon,
+ *    delivery and visibility; Add repository (`AddRepo.tsx`).
+ *  - **Classifier** — T167: the TypeSafe API key, write-only (the daemon
+ *    never sends it back, only where it comes from).
+ *  - **Trackers** — T326: Jira's site and email, and a write-only token per
+ *    tracker.
+ *  - **Permissions** — who decides each gate kind (read-only: the human).
  *
- * T167: the classifier's "TypeSafe API key" — write-only. The daemon never
- * sends the key back; this shows only where it comes from (config.yaml, the
- * environment, or nowhere). Save writes it to config.yaml and it is live at
- * once; Remove deletes it from config.yaml (an env key still applies).
- *
- * T170 (D17): the session defaults — home-wide (`config.yaml`) and per repo
- * (`repos.yaml`). An empty field inherits the next step of the order, which
- * each control names; the next attach uses the saved values, no restart.
- *
- * T326 (D31): Trackers — Jira's base URL and email (not secret) and a
- * write-only token per tracker. Only whether a token is set comes back.
- *
- * T206: Repos — register a repo by path (its git toplevel), name and
- * protected branches, through the same RPC as `agile repo add`.
+ * The open section rides in the URL (`?view=settings&section=repos`), so a
+ * reload or a shared link reopens it.
  */
 
 import type {
@@ -34,309 +29,283 @@ import type {
   TrackerSettingsStatus,
 } from '@agile-agents/shared';
 import { GATE_KINDS } from '@agile-agents/shared';
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useId, useState } from 'react';
 import {
-  type RepoRow,
-  addRepo,
+  type DaemonHealth,
   getClassifierKey,
+  getHealth,
   getPolicy,
   getSessionDefaults,
   getTrackerSettings,
-  listRepos,
   removeClassifierKey,
   saveClassifierKey,
   saveHomeSessionDefaults,
   saveRepoSessionDefaults,
-  saveRepoSettings,
   saveTrackerSettings,
 } from '../lib/api';
+import { useOptionalFeed } from '../lib/feed-context';
+import { useOptionalShell } from '../lib/shell';
+import { type ThemeChoice, readTheme, saveTheme } from '../lib/theme';
+import { Icon, type IconName } from './Icon';
 import { type SessionChoice, SessionFields } from './SessionPicker';
+import {
+  FormError,
+  SavedNote,
+  SetCard,
+  SetRow,
+  SetSection,
+  errorText,
+  useSavedFlash,
+} from './SettingsCard';
+import { ReposSection } from './SettingsRepos';
+import {
+  Badge,
+  Button,
+  ConfirmDialog,
+  Field,
+  PageHeader,
+  RepoIcon,
+  Segmented,
+  Spinner,
+  useCopy,
+} from './ui';
 
-const GATE_TEXT: Record<(typeof GATE_KINDS)[number], { title: string; what: string }> = {
-  land: { title: 'Landing a stream', what: 'Merging a finished stream into its target branch.' },
-  rule_accept: {
-    title: 'A proposed rule',
-    what: 'A lesson from a finished stream, or a rule an agent proposed.',
-  },
-  classifier_review: {
-    title: 'A routed tool call',
-    what: 'The classifier was unsure about an action and routed it to you.',
-  },
-};
+// ---------------------------------------------------------------- sections and the URL
+
+const SECTIONS = [
+  { id: 'general', label: 'General', icon: 'sliders' },
+  { id: 'agents', label: 'Agents', icon: 'bot' },
+  { id: 'repos', label: 'Repositories', icon: 'folder-git' },
+  { id: 'classifier', label: 'Classifier', icon: 'shield-check' },
+  { id: 'trackers', label: 'Trackers', icon: 'ticket' },
+  { id: 'permissions', label: 'Permissions', icon: 'user' },
+] as const satisfies ReadonlyArray<{ id: string; label: string; icon: IconName }>;
+
+export type SettingsSection = (typeof SECTIONS)[number]['id'];
+
+function isSection(value: string | null): value is SettingsSection {
+  return SECTIONS.some((s) => s.id === value);
+}
+
+function sectionFromUrl(): SettingsSection {
+  const value = new URLSearchParams(window.location.search).get('section');
+  return isSection(value) ? value : 'general';
+}
+
+/**
+ * The section in `?section=` (General is no param). The shell (T348) owns
+ * the rest of the query and rewrites it when the view or project changes —
+ * after this screen's effects run — so the write waits a tick and re-runs
+ * when the project filter moves. Replaced, never pushed: a section is not
+ * a page of its own in the history.
+ */
+function useSectionInUrl(): [SettingsSection, (next: SettingsSection) => void] {
+  const [section, setSection] = useState<SettingsSection>(sectionFromUrl);
+  const project = useOptionalShell()?.project;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the shell's project write drops the param; write it back after.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('view') !== 'settings') return;
+      if (section === 'general') params.delete('section');
+      else params.set('section', section);
+      const query = params.toString();
+      const url = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
+      if (url !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
+        window.history.replaceState(window.history.state, '', url);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [section, project]);
+  useEffect(() => {
+    const onPop = (): void => setSection(sectionFromUrl());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  return [section, setSection];
+}
 
 export function Settings(): JSX.Element {
-  const [policy, setPolicy] = useState<Policy | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    getPolicy()
-      .then(setPolicy)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
-  }, []);
-
+  const [section, setSection] = useSectionInUrl();
   return (
-    <section className="cr-settings" data-testid="settings">
-      <h1>Settings</h1>
-      {error && <p className="cr-error">{error}</p>}
-      <ClassifierKey />
-      <Trackers />
-      <Repos />
-      <SessionDefaults />
-      <h2>Who decides</h2>
-      {GATE_KINDS.map((gate) => (
-        <div className="cr-gate-row" key={gate} data-gate={gate}>
-          <div>
-            <div>{GATE_TEXT[gate].title}</div>
-            <div className="what">{GATE_TEXT[gate].what}</div>
+    <div className="cr-settings" data-testid="settings" data-section={section}>
+      <div className="cr-set-wrap">
+        <PageHeader title="Settings" />
+        <div className="cr-set-layout">
+          <nav className="cr-set-nav" aria-label="Settings sections">
+            {SECTIONS.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                data-section={s.id}
+                data-testid={`settings-nav-${s.id}`}
+                aria-current={section === s.id ? 'page' : undefined}
+                onClick={() => setSection(s.id)}
+              >
+                <Icon name={s.icon} size={15} />
+                <span>{s.label}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="cr-set-body">
+            {section === 'general' ? (
+              <GeneralSection />
+            ) : section === 'agents' ? (
+              <AgentsSection onOpenRepos={() => setSection('repos')} />
+            ) : section === 'repos' ? (
+              <ReposSection />
+            ) : section === 'classifier' ? (
+              <ClassifierSection />
+            ) : section === 'trackers' ? (
+              <TrackersSection />
+            ) : (
+              <PermissionsSection />
+            )}
           </div>
-          <code>{policy ? (policy.gates[gate] ?? 'human') : '…'}</code>
         </div>
-      ))}
-    </section>
-  );
-}
-
-function keyText(status: ClassifierKeyStatus): string {
-  if (status.source === 'none') return 'no key';
-  const from = status.source === 'config' ? 'from config' : 'from environment';
-  const off = status.loaded ? '' : ' — provider is off';
-  return `key set (${from})${off}`;
-}
-
-function ClassifierKey(): JSX.Element {
-  const [status, setStatus] = useState<ClassifierKeyStatus | undefined>(undefined);
-  const [value, setValue] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    getClassifierKey()
-      .then(setStatus)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
-  }, []);
-
-  async function act(fn: () => Promise<ClassifierKeyStatus>): Promise<void> {
-    setBusy(true);
-    setError(undefined);
-    try {
-      setStatus(await fn());
-      setValue('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form
-      className="cr-gate-row"
-      data-testid="settings-classifier-key"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (value.trim().length > 0) void act(() => saveClassifierKey(value.trim()));
-      }}
-    >
-      <div>
-        <div>TypeSafe API key</div>
-        <div className="what">
-          The classifier&apos;s key (§6.2). Stored in config.yaml; never shown again.
-        </div>
-        <div className="what" data-testid="settings-key-status">
-          {status ? keyText(status) : '…'}
-          {status?.environment_also ? ' · an environment key is also set' : ''}
-        </div>
-        {error && (
-          <p className="cr-error" role="alert">
-            {error}
-          </p>
-        )}
       </div>
-      <div className="cr-actions">
-        <input
-          type="password"
-          autoComplete="off"
-          aria-label="TypeSafe API key"
-          data-testid="settings-key-input"
-          value={value}
-          placeholder={status?.source === 'none' ? 'paste a key' : 'replace the key'}
-          onChange={(e) => setValue(e.target.value)}
-        />
-        <button
-          type="submit"
-          className="cr-btn signal"
-          data-testid="settings-key-save"
-          disabled={busy || value.trim().length === 0}
-        >
-          Save
-        </button>
-        <button
-          type="button"
-          className="cr-btn"
-          data-testid="settings-key-remove"
-          disabled={busy || status?.source !== 'config'}
-          title={
-            status?.source === 'environment'
-              ? 'This key comes from TYPESAFE_API_KEY; unset it in the daemon environment'
-              : 'Delete the key from config.yaml'
-          }
-          onClick={() => void act(removeClassifierKey)}
-        >
-          Remove
-        </button>
-      </div>
-    </form>
-  );
-}
-
-function Trackers(): JSX.Element {
-  const [status, setStatus] = useState<TrackerSettingsStatus | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    getTrackerSettings()
-      .then(setStatus)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
-  }, []);
-
-  async function save(input: TrackerSettingsInput): Promise<boolean> {
-    setError(undefined);
-    try {
-      setStatus(await saveTrackerSettings(input));
-      return true;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      return false;
-    }
-  }
-
-  return (
-    <div data-testid="settings-trackers">
-      <h2>Trackers</h2>
-      {error && (
-        <p className="cr-error" role="alert">
-          {error}
-        </p>
-      )}
-      <TrackerRow system="jira" status={status} save={save} />
-      <TrackerRow system="linear" status={status} save={save} />
     </div>
   );
 }
 
-function TrackerRow({
-  system,
-  status,
-  save,
+/** A small status pill: a dot and a word. */
+function Pill({
+  tone,
+  children,
+  title,
 }: {
-  system: 'jira' | 'linear';
-  status: TrackerSettingsStatus | undefined;
-  save: (input: TrackerSettingsInput) => Promise<boolean>;
+  tone: 'green' | 'gray' | 'amber';
+  children: ReactNode;
+  title?: string;
 }): JSX.Element {
-  const jira = status?.jira;
-  const tokenSet = status ? status[system].token_set : undefined;
-  const [token, setToken] = useState('');
-  const [baseUrl, setBaseUrl] = useState<string | undefined>(undefined);
-  const [email, setEmail] = useState<string | undefined>(undefined);
-  const [busy, setBusy] = useState(false);
-  const shownBaseUrl = baseUrl ?? jira?.base_url ?? '';
-  const shownEmail = email ?? jira?.email ?? '';
-
-  async function act(input: TrackerSettingsInput): Promise<void> {
-    setBusy(true);
-    if (await save(input)) {
-      setToken('');
-      setBaseUrl(undefined);
-      setEmail(undefined);
-    }
-    setBusy(false);
-  }
-
-  function submit(): void {
-    const input: TrackerSettingsInput = { system };
-    if (system === 'jira') {
-      if (baseUrl !== undefined) input.base_url = baseUrl.trim() === '' ? null : baseUrl.trim();
-      if (email !== undefined) input.email = email.trim() === '' ? null : email.trim();
-    }
-    if (token.trim() !== '') input.token = token.trim();
-    void act(input);
-  }
-
-  const dirty = token.trim() !== '' || baseUrl !== undefined || email !== undefined;
-  const label = system === 'jira' ? 'Jira' : 'Linear';
   return (
-    <form
-      className="cr-gate-row"
-      data-testid={`settings-tracker-${system}`}
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (dirty) submit();
-      }}
-    >
-      <div>
-        <div>{label}</div>
-        <div className="what">
-          {system === 'jira'
-            ? 'Base URL, and an email for Jira Cloud (Basic auth); without one the token is a Bearer PAT.'
-            : 'A Linear API key.'}{' '}
-          Stored in config.yaml; never shown again.
-        </div>
-        <div className="what" data-testid={`settings-tracker-${system}-status`}>
-          {tokenSet === undefined ? '…' : tokenSet ? 'token set' : 'no token'}
-        </div>
-      </div>
-      <div className="cr-actions">
-        {system === 'jira' && (
-          <>
-            <input
-              type="url"
-              aria-label="Jira base URL"
-              data-testid="settings-tracker-jira-base-url"
-              value={shownBaseUrl}
-              placeholder="https://your-site.atlassian.net"
-              onChange={(e) => setBaseUrl(e.target.value)}
-            />
-            <input
-              type="email"
-              aria-label="Jira email"
-              data-testid="settings-tracker-jira-email"
-              value={shownEmail}
-              placeholder="email (optional)"
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </>
-        )}
-        <input
-          type="password"
-          autoComplete="off"
-          aria-label={`${label} token`}
-          data-testid={`settings-tracker-${system}-token`}
-          value={token}
-          placeholder={tokenSet ? 'replace the token' : 'paste a token'}
-          onChange={(e) => setToken(e.target.value)}
-        />
-        <button
-          type="submit"
-          className="cr-btn signal"
-          data-testid={`settings-tracker-${system}-save`}
-          disabled={busy || !dirty}
-        >
-          Set
-        </button>
-        <button
-          type="button"
-          className="cr-btn"
-          data-testid={`settings-tracker-${system}-clear`}
-          disabled={busy || !tokenSet}
-          title="Delete the token from config.yaml"
-          onClick={() => void act({ system, token: null })}
-        >
-          Clear
-        </button>
-      </div>
-    </form>
+    <span className="cr-set-pill" data-tone={tone} title={title}>
+      <span className="cr-set-pill-dot" aria-hidden="true" />
+      {children}
+    </span>
   );
 }
+
+// ---------------------------------------------------------------- General
+
+function formatUptime(seconds: number): string {
+  const min = Math.floor(seconds / 60);
+  if (min < 1) return 'under a minute';
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} h ${min % 60} min`;
+  const d = Math.floor(h / 24);
+  return `${d} d ${h % 24} h`;
+}
+
+function GeneralSection(): JSX.Element {
+  const [theme, setTheme] = useState<ThemeChoice>(readTheme);
+  const [health, setHealth] = useState<DaemonHealth | undefined>();
+  const [healthError, setHealthError] = useState<string | undefined>();
+  const connected = useOptionalFeed()?.connected ?? false;
+  const copy = useCopy();
+
+  useEffect(() => {
+    getHealth()
+      .then(setHealth)
+      .catch((err: unknown) => setHealthError(errorText(err)));
+  }, []);
+
+  const themeIcon = (icon: IconName, label: string): JSX.Element => (
+    <>
+      <Icon name={icon} size={14} />
+      {label}
+    </>
+  );
+
+  return (
+    <SetSection title="General" description="How the cockpit looks, and the daemon it talks to.">
+      <SetCard title="Appearance" icon="sun" testid="settings-appearance">
+        <SetRow label="Theme" hint="Follow your system, or pick one. Kept in this browser.">
+          <Segmented
+            label="Theme"
+            testid="settings-theme"
+            value={theme}
+            onChange={(next) => {
+              saveTheme(next);
+              setTheme(next);
+            }}
+            items={[
+              {
+                id: 'system',
+                label: themeIcon('monitor', 'System'),
+                testid: 'settings-theme-system',
+              },
+              { id: 'light', label: themeIcon('sun', 'Light'), testid: 'settings-theme-light' },
+              { id: 'dark', label: themeIcon('moon', 'Dark'), testid: 'settings-theme-dark' },
+            ]}
+          />
+        </SetRow>
+      </SetCard>
+
+      <SetCard
+        title="Daemon"
+        icon="terminal"
+        description={
+          <>
+            The background process that runs your agents and keeps all state. Start and stop it with{' '}
+            <code>agile daemon</code>.
+          </>
+        }
+        testid="settings-daemon"
+        status={
+          <Pill tone={connected ? 'green' : 'amber'}>
+            <span data-testid="settings-daemon-status">
+              {connected ? 'Connected' : 'Reconnecting…'}
+            </span>
+          </Pill>
+        }
+      >
+        <dl className="cr-set-facts">
+          <div>
+            <dt>Address</dt>
+            <dd>
+              <code>{window.location.host}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Version</dt>
+            <dd>{health ? health.version : healthError ? '—' : '…'}</dd>
+          </div>
+          <div>
+            <dt>Running for</dt>
+            <dd>{health ? formatUptime(health.uptime) : healthError ? '—' : '…'}</dd>
+          </div>
+          <div>
+            <dt>Home folder</dt>
+            <dd className="cr-set-facts-path">
+              {health ? (
+                <>
+                  <code title={health.stateRoot}>{health.stateRoot}</code>
+                  <button
+                    type="button"
+                    className="cr-set-copy"
+                    aria-label="Copy the home folder path"
+                    title="Copy"
+                    onClick={() => copy(health.stateRoot, 'Path copied')}
+                  >
+                    <Icon name="copy" size={13} />
+                  </button>
+                </>
+              ) : healthError ? (
+                '—'
+              ) : (
+                '…'
+              )}
+            </dd>
+          </div>
+        </dl>
+      </SetCard>
+    </SetSection>
+  );
+}
+
+// ---------------------------------------------------------------- Agents
 
 function toChoice(fields: SessionDefaultsFields): SessionChoice {
   return { vendor: fields.vendor ?? '', model: fields.model ?? '', effort: fields.effort ?? '' };
@@ -352,13 +321,18 @@ function toPatch(choice: SessionChoice): SessionDefaultsPatch {
   };
 }
 
-function resolvedText(resolved: ResolvedSessionDefaults): string {
-  return `${resolved.vendor} / ${resolved.model ?? `${resolved.vendor} default model`} / ${resolved.effort}`;
+function sameChoice(a: SessionChoice, b: SessionChoice): boolean {
+  return a.vendor === b.vendor && a.model.trim() === b.model.trim() && a.effort === b.effort;
 }
 
-function SessionDefaultsRow({
-  label,
-  what,
+function resolvedText(resolved: ResolvedSessionDefaults): string {
+  return `${resolved.vendor} · ${resolved.model ?? 'default model'} · ${resolved.effort} effort`;
+}
+
+function SessionDefaultsCard({
+  title,
+  icon,
+  description,
   testid,
   status,
   fields,
@@ -366,8 +340,9 @@ function SessionDefaultsRow({
   resolved,
   save,
 }: {
-  label: string;
-  what: string;
+  title: ReactNode;
+  icon?: IconName | ReactNode;
+  description?: string;
   testid: string;
   status: SessionDefaultsStatus;
   fields: SessionDefaultsFields;
@@ -377,81 +352,101 @@ function SessionDefaultsRow({
 }): JSX.Element {
   const [value, setValue] = useState<SessionChoice>(() => toChoice(fields));
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const { saved, markSaved, clear } = useSavedFlash();
+  const dirty = !sameChoice(value, toChoice(fields));
 
   return (
-    <form
-      className="cr-gate-row"
-      data-testid={testid}
-      onSubmit={(e) => {
-        e.preventDefault();
+    <SetCard
+      title={title}
+      icon={icon}
+      description={description}
+      testid={testid}
+      label={typeof title === 'string' ? title : undefined}
+      status={
+        <span className="cr-set-resolved" title="What a new agent here starts with">
+          <Icon name="bot" size={13} />
+          <span data-testid={`${testid}-resolved`}>{resolvedText(resolved)}</span>
+        </span>
+      }
+      onSubmit={() => {
+        if (busy || !dirty) return;
         setBusy(true);
         setError(undefined);
-        setSaved(false);
         save(toPatch(value))
-          .then(() => setSaved(true))
-          .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+          .then(markSaved)
+          .catch((err: unknown) => setError(errorText(err)))
           .finally(() => setBusy(false));
       }}
     >
-      <div>
-        <div>{label}</div>
-        <div className="what">{what}</div>
-        <div className="what" data-testid={`${testid}-resolved`}>
-          Resolves to {resolvedText(resolved)}
-          {saved ? ' · saved' : ''}
+      <div className="cr-set-sf">
+        <div className="cr-set-sf-labels" aria-hidden="true">
+          <span>Agent</span>
+          <span>Model</span>
+          <span>Effort</span>
         </div>
-        {error && (
-          <p className="cr-error" role="alert">
-            {error}
-          </p>
-        )}
-      </div>
-      <div className="cr-actions">
         <SessionFields
           status={status}
           value={value}
           onChange={(next) => {
             setValue(next);
-            setSaved(false);
+            clear();
           }}
           inherit={inherit}
           testid={`${testid}-field`}
         />
-        <button
-          type="submit"
-          className="cr-btn signal"
-          data-testid={`${testid}-save`}
-          disabled={busy}
-        >
-          Save
-        </button>
+        <div className="cr-set-sf-save">
+          {saved ? (
+            <SavedNote show testid={`${testid}-saved`} />
+          ) : (
+            <Button
+              type="submit"
+              variant={dirty ? 'primary' : 'secondary'}
+              busy={busy}
+              disabled={!dirty}
+              data-testid={`${testid}-save`}
+            >
+              Save
+            </Button>
+          )}
+        </div>
       </div>
-    </form>
+      <FormError error={error} />
+    </SetCard>
   );
 }
 
-function SessionDefaults(): JSX.Element {
-  const [status, setStatus] = useState<SessionDefaultsStatus | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
+function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Element {
+  const [status, setStatus] = useState<SessionDefaultsStatus | undefined>();
+  const [error, setError] = useState<string | undefined>();
+  const remotes = new Map(
+    (useOptionalFeed()?.cockpit?.repos ?? []).map((r) => [r.name, r.remote] as const),
+  );
 
   useEffect(() => {
     getSessionDefaults()
       .then(setStatus)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+      .catch((err: unknown) => setError(errorText(err)));
   }, []);
 
+  const repos = status ? Object.entries(status.repos) : [];
   return (
-    <>
-      <h2>Session defaults</h2>
-      {error && <p className="cr-error">{error}</p>}
-      {!status && !error && <p className="cr-dim">…</p>}
-      {status && (
+    <SetSection
+      title="Agents"
+      description="The agent, model and effort a node starts with. A node’s agent uses the repo’s default, else the global default. You can still pick another when you start one."
+    >
+      <FormError error={error} />
+      {!status && !error ? (
+        <p className="cr-set-muted">
+          <Spinner size={12} /> Loading…
+        </p>
+      ) : null}
+      {status ? (
         <>
-          <SessionDefaultsRow
-            label="Global default"
-            what="config.yaml — used for every stream unless its repo sets its own."
+          <SessionDefaultsCard
+            title="Global default"
+            icon="sparkles"
+            description="Every node uses this unless its repository sets its own."
             testid="settings-session-home"
             status={status}
             fields={status.home}
@@ -459,17 +454,23 @@ function SessionDefaults(): JSX.Element {
             resolved={status.resolved}
             save={async (patch) => setStatus(await saveHomeSessionDefaults(patch))}
           />
-          <h3 data-testid="settings-session-repos-heading">Per-repo defaults</h3>
-          {Object.keys(status.repos).length === 0 && (
-            <p className="cr-dim" data-testid="settings-session-repos-empty">
-              No repos registered yet.
+          <div className="cr-set-subhd" data-testid="settings-session-repos-heading">
+            <h3>Per repository</h3>
+            <p>Each overrides the global default for nodes in that repository.</p>
+          </div>
+          {repos.length === 0 ? (
+            <p className="cr-set-muted" data-testid="settings-session-repos-empty">
+              No repositories yet.{' '}
+              <button type="button" className="cr-link" onClick={onOpenRepos}>
+                Add one
+              </button>
             </p>
-          )}
-          {Object.entries(status.repos).map(([name, repo]) => (
-            <SessionDefaultsRow
+          ) : null}
+          {repos.map(([name, repo]) => (
+            <SessionDefaultsCard
               key={name}
-              label={name}
-              what="repos.yaml — overrides the global default for streams in this repo."
+              title={name}
+              icon={<RepoIcon remote={remotes.get(name)} size={16} />}
               testid={`settings-session-repo-${name}`}
               status={status}
               fields={repo}
@@ -479,198 +480,398 @@ function SessionDefaults(): JSX.Element {
             />
           ))}
         </>
-      )}
-    </>
+      ) : null}
+    </SetSection>
   );
 }
 
-/** T222 (§14.8): one repo, with its delivery mode, auto-merge and visibility. */
-function RepoRowView({
-  repo,
-  onSaved,
-}: {
-  repo: RepoRow;
-  onSaved: (repos: RepoRow[]) => void;
-}): JSX.Element {
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [busy, setBusy] = useState(false);
-  const [projectsRaw, setProjectsRaw] = useState(
-    repo.visibility.mode === 'private' ? repo.visibility.projects.join(', ') : '',
-  );
-  const id = `settings-repo-${repo.name}`;
-  const save = (patch: Parameters<typeof saveRepoSettings>[1]) => {
-    setBusy(true);
-    setError(undefined);
-    saveRepoSettings(repo.name, patch)
-      .then(onSaved)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setBusy(false));
-  };
-  const projects = projectsRaw
-    .split(',')
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0);
-  return (
-    <div className="cr-gate-row" data-testid={id} data-delivery={repo.delivery}>
-      <div>
-        <div>{repo.name}</div>
-        <div className="what">{repo.path}</div>
-        <div className="what">protected: {repo.protected_branches.join(', ') || '—'}</div>
-        {repo.github && (
-          <div className="what">
-            GitHub: {repo.github.owner}/{repo.github.repo}
-          </div>
-        )}
-        {error && (
-          <p className="cr-error" role="alert" data-testid={`${id}-error`}>
-            {error}
-          </p>
-        )}
-      </div>
-      <div className="cr-actions">
-        <code data-testid={`${id}-main`}>{repo.main_branch}</code>
-        <select
-          aria-label="Delivery"
-          data-testid={`${id}-delivery`}
-          value={repo.delivery}
-          disabled={busy}
-          onChange={(e) => save({ delivery: e.target.value as RepoRow['delivery'] })}
-        >
-          <option value="direct">direct</option>
-          <option value="pr">pr</option>
-        </select>
-        <label className="what">
-          <input
-            type="checkbox"
-            data-testid={`${id}-auto-merge`}
-            checked={repo.auto_merge}
-            disabled={busy || repo.delivery !== 'pr'}
-            onChange={(e) => save({ auto_merge: e.target.checked })}
-          />{' '}
-          auto-merge
-        </label>
-        <select
-          aria-label="Visibility"
-          data-testid={`${id}-visibility`}
-          value={repo.visibility.mode}
-          disabled={busy}
-          onChange={(e) =>
-            e.target.value === 'public'
-              ? save({ visibility: { mode: 'public' } })
-              : projects.length > 0
-                ? save({ visibility: { mode: 'private', projects } })
-                : setError('private needs at least one project id')
-          }
-        >
-          <option value="public">public</option>
-          <option value="private">private</option>
-        </select>
-        <input
-          data-testid={`${id}-projects`}
-          placeholder="P-… (private to)"
-          value={projectsRaw}
-          onChange={(e) => setProjectsRaw(e.target.value)}
-        />
-      </div>
-    </div>
-  );
+// ---------------------------------------------------------------- Classifier
+
+function keyStatusText(status: ClassifierKeyStatus): string {
+  if (status.source === 'none') return 'No key';
+  const from = status.source === 'environment' ? ' · from the environment' : '';
+  return `Key set${from}${status.loaded ? '' : ' · classifier off'}`;
 }
 
-function Repos(): JSX.Element {
-  const [repos, setRepos] = useState<RepoRow[] | undefined>(undefined);
-  const [name, setName] = useState('');
-  const [path, setPath] = useState('');
-  const [protectedRaw, setProtectedRaw] = useState('');
-  const [error, setError] = useState<string | undefined>(undefined);
+function ClassifierSection(): JSX.Element {
+  const inputId = useId();
+  const [status, setStatus] = useState<ClassifierKeyStatus | undefined>();
+  const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const { saved, markSaved, clear } = useSavedFlash();
 
   useEffect(() => {
-    listRepos()
-      .then(setRepos)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+    getClassifierKey()
+      .then(setStatus)
+      .catch((err: unknown) => setError(errorText(err)));
   }, []);
 
-  const trimmedPath = path.trim().replace(/\/+$/, '');
-  const derivedName = name.trim() || trimmedPath.split('/').pop() || '';
-  const branches = protectedRaw
-    .split(',')
-    .map((b) => b.trim())
-    .filter((b) => b.length > 0);
+  async function act(fn: () => Promise<ClassifierKeyStatus>, after?: () => void): Promise<void> {
+    setBusy(true);
+    setError(undefined);
+    clear();
+    try {
+      setStatus(await fn());
+      setValue('');
+      after?.();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+      setConfirm(false);
+    }
+  }
 
+  const set = status !== undefined && status.source !== 'none';
+  return (
+    <SetSection
+      title="Classifier"
+      description="Some rules are checked by a classifier: before an agent acts, TypeSafe reads the action and says whether it breaks the rule."
+    >
+      <SetCard
+        title="TypeSafe API key"
+        icon="key"
+        description="Without a key, classifier checks are off. The daemon keeps the key and never shows it again."
+        testid="settings-classifier-key"
+        status={
+          <Pill tone={set ? 'green' : 'gray'}>
+            <span data-testid="settings-key-status">{status ? keyStatusText(status) : '…'}</span>
+          </Pill>
+        }
+        onSubmit={() => {
+          if (value.trim().length > 0 && !busy)
+            void act(() => saveClassifierKey(value.trim()), markSaved);
+        }}
+        footer={
+          <>
+            <FormError error={error} />
+            <SavedNote show={saved} testid="settings-key-saved" />
+            {status?.source === 'config' ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                data-testid="settings-key-remove"
+                disabled={busy}
+                onClick={() => setConfirm(true)}
+              >
+                Remove key
+              </Button>
+            ) : null}
+            <Button
+              type="submit"
+              size="sm"
+              variant={value.trim() ? 'primary' : 'secondary'}
+              busy={busy}
+              disabled={value.trim().length === 0}
+              data-testid="settings-key-save"
+            >
+              {set ? 'Replace key' : 'Save key'}
+            </Button>
+          </>
+        }
+      >
+        <Field
+          label={set ? 'New key' : 'API key'}
+          htmlFor={inputId}
+          hint={
+            status?.source === 'environment'
+              ? 'This key comes from the TYPESAFE_API_KEY variable the daemon was started with. A key saved here replaces it.'
+              : status?.environment_also
+                ? 'An environment key is also set; the key saved here is the one used.'
+                : undefined
+          }
+        >
+          <input
+            id={inputId}
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            data-testid="settings-key-input"
+            value={value}
+            placeholder={set ? 'Paste a new key to replace it' : 'Paste a key'}
+            onChange={(e) => {
+              setValue(e.target.value);
+              clear();
+            }}
+          />
+        </Field>
+      </SetCard>
+      <ConfirmDialog
+        open={confirm}
+        title="Remove the TypeSafe key?"
+        confirmLabel="Remove key"
+        danger
+        busy={busy}
+        testid="settings-key-remove-dialog"
+        onCancel={() => setConfirm(false)}
+        onConfirm={() => void act(removeClassifierKey)}
+      >
+        <p className="cr-set-confirm">
+          {status?.environment_also
+            ? 'The key from the environment is used instead.'
+            : 'Classifier checks stop until you add a key again. The key is never shown, so you can’t copy it first.'}
+        </p>
+      </ConfirmDialog>
+    </SetSection>
+  );
+}
+
+// ---------------------------------------------------------------- Trackers
+
+function TrackerCard({
+  system,
+  status,
+  onStatus,
+}: {
+  system: 'jira' | 'linear';
+  status: TrackerSettingsStatus | undefined;
+  onStatus: (next: TrackerSettingsStatus) => void;
+}): JSX.Element {
+  const ids = useId();
+  const jira = status?.jira;
+  const tokenSet = status ? status[system].token_set : undefined;
+  const [token, setToken] = useState('');
+  const [baseUrl, setBaseUrl] = useState<string | undefined>();
+  const [email, setEmail] = useState<string | undefined>();
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const { saved, markSaved, clear } = useSavedFlash();
+  const shownBaseUrl = baseUrl ?? jira?.base_url ?? '';
+  const shownEmail = email ?? jira?.email ?? '';
+  const label = system === 'jira' ? 'Jira' : 'Linear';
+  const id = `settings-tracker-${system}`;
+
+  async function act(input: TrackerSettingsInput): Promise<void> {
+    setBusy(true);
+    setError(undefined);
+    clear();
+    try {
+      onStatus(await saveTrackerSettings(input));
+      setToken('');
+      setBaseUrl(undefined);
+      setEmail(undefined);
+      markSaved();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+      setConfirm(false);
+    }
+  }
+
+  function submit(): void {
+    const input: TrackerSettingsInput = { system };
+    if (system === 'jira') {
+      if (baseUrl !== undefined) input.base_url = baseUrl.trim() === '' ? null : baseUrl.trim();
+      if (email !== undefined) input.email = email.trim() === '' ? null : email.trim();
+    }
+    if (token.trim() !== '') input.token = token.trim();
+    void act(input);
+  }
+
+  const dirty = token.trim() !== '' || baseUrl !== undefined || email !== undefined;
   return (
     <>
-      <h2>Repos</h2>
-      {repos?.length === 0 && (
-        <p className="cr-dim" data-testid="settings-repos-empty">
-          No repos registered yet.
-        </p>
-      )}
-      {repos?.map((repo) => (
-        <RepoRowView key={repo.name} repo={repo} onSaved={setRepos} />
-      ))}
-      <form
-        className="cr-gate-row"
-        data-testid="settings-repo-add"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!trimmedPath || !derivedName || busy) return;
-          setBusy(true);
-          setError(undefined);
-          addRepo({
-            name: derivedName,
-            path: trimmedPath,
-            ...(branches.length > 0 ? { protected_branches: branches } : {}),
-          })
-            .then((next) => {
-              setRepos(next);
-              setName('');
-              setPath('');
-              setProtectedRaw('');
-            })
-            .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-            .finally(() => setBusy(false));
+      <SetCard
+        title={label}
+        icon="ticket"
+        testid={id}
+        description={
+          system === 'jira'
+            ? 'Jira Cloud: your site, your Atlassian email and an API token. Server or Data Center: leave the email empty and use a personal access token.'
+            : 'A personal API key, from Linear → Settings → Security & access.'
+        }
+        status={
+          <Pill tone={tokenSet ? 'green' : 'gray'}>
+            <span data-testid={`${id}-status`}>
+              {tokenSet === undefined ? '…' : tokenSet ? 'Token set' : 'No token'}
+            </span>
+          </Pill>
+        }
+        onSubmit={() => {
+          if (dirty && !busy) submit();
         }}
+        footer={
+          <>
+            <FormError error={error} />
+            <SavedNote show={saved} testid={`${id}-saved`} />
+            {tokenSet ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                data-testid={`${id}-clear`}
+                disabled={busy}
+                onClick={() => setConfirm(true)}
+              >
+                Remove token
+              </Button>
+            ) : null}
+            <Button
+              type="submit"
+              size="sm"
+              variant={dirty ? 'primary' : 'secondary'}
+              busy={busy}
+              disabled={!dirty}
+              data-testid={`${id}-save`}
+            >
+              Save
+            </Button>
+          </>
+        }
       >
-        <div>
-          <div>Add a repo</div>
-          <div className="what">
-            The path to the repo's toplevel; the name defaults to its folder.
+        {system === 'jira' ? (
+          <div className="cr-set-grid2">
+            <Field label="Site URL" htmlFor={`${ids}-url`}>
+              <input
+                id={`${ids}-url`}
+                type="url"
+                data-testid="settings-tracker-jira-base-url"
+                value={shownBaseUrl}
+                placeholder="https://your-site.atlassian.net"
+                spellCheck={false}
+                onChange={(e) => {
+                  setBaseUrl(e.target.value);
+                  clear();
+                }}
+              />
+            </Field>
+            <Field label="Email" htmlFor={`${ids}-email`} hint="Jira Cloud only.">
+              <input
+                id={`${ids}-email`}
+                type="email"
+                data-testid="settings-tracker-jira-email"
+                value={shownEmail}
+                placeholder="you@example.com"
+                spellCheck={false}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  clear();
+                }}
+              />
+            </Field>
           </div>
-          {error && (
-            <p className="cr-error" role="alert" data-testid="settings-repo-add-error">
-              {error}
-            </p>
-          )}
-        </div>
-        <div className="cr-actions">
+        ) : null}
+        <Field label={system === 'jira' ? 'API token' : 'API key'} htmlFor={`${ids}-token`}>
           <input
-            data-testid="settings-repo-add-path"
-            placeholder="/path/to/repo"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
+            id={`${ids}-token`}
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            data-testid={`${id}-token`}
+            value={token}
+            placeholder={tokenSet ? 'Paste a new token to replace it' : 'Paste a token'}
+            onChange={(e) => {
+              setToken(e.target.value);
+              clear();
+            }}
           />
-          <input
-            data-testid="settings-repo-add-name"
-            placeholder={derivedName || 'name'}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <input
-            data-testid="settings-repo-add-protected"
-            placeholder="main, master"
-            value={protectedRaw}
-            onChange={(e) => setProtectedRaw(e.target.value)}
-          />
-          <button
-            type="submit"
-            className="cr-btn signal"
-            data-testid="settings-repo-add-save"
-            disabled={busy}
-          >
-            Add
-          </button>
-        </div>
-      </form>
+        </Field>
+      </SetCard>
+      <ConfirmDialog
+        open={confirm}
+        title={`Remove the ${label} token?`}
+        confirmLabel="Remove token"
+        danger
+        busy={busy}
+        testid={`${id}-clear-dialog`}
+        onCancel={() => setConfirm(false)}
+        onConfirm={() => void act({ system, token: null })}
+      >
+        <p className="cr-set-confirm">
+          Linking nodes to {label} issues stops working until you add a token again.
+        </p>
+      </ConfirmDialog>
     </>
+  );
+}
+
+function TrackersSection(): JSX.Element {
+  const [status, setStatus] = useState<TrackerSettingsStatus | undefined>();
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    getTrackerSettings()
+      .then(setStatus)
+      .catch((err: unknown) => setError(errorText(err)));
+  }, []);
+
+  return (
+    <SetSection
+      title="Trackers"
+      description="Link nodes to issues in Jira or Linear: an issue’s text becomes the node’s goal, and its status can follow the node. Tokens are kept by the daemon and never shown again."
+      testid="settings-trackers"
+    >
+      <FormError error={error} />
+      <TrackerCard system="jira" status={status} onStatus={setStatus} />
+      <TrackerCard system="linear" status={status} onStatus={setStatus} />
+    </SetSection>
+  );
+}
+
+// ---------------------------------------------------------------- Permissions
+
+const GATE_TEXT: Record<
+  (typeof GATE_KINDS)[number],
+  { title: string; what: string; icon: IconName }
+> = {
+  land: {
+    title: 'Merging a node',
+    what: 'Finished work goes into its main branch (or its pull request is opened) only when you press Merge.',
+    icon: 'git-merge',
+  },
+  rule_accept: {
+    title: 'Accepting knowledge',
+    what: 'A lesson from a finished node, or a rule an agent proposed, applies only once you accept it.',
+    icon: 'book-open',
+  },
+  classifier_review: {
+    title: 'An action the classifier was unsure of',
+    what: 'When the classifier can’t tell whether an agent’s action breaks a rule, it asks you.',
+    icon: 'shield-check',
+  },
+};
+
+function PermissionsSection(): JSX.Element {
+  const [policy, setPolicy] = useState<Policy | undefined>();
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    getPolicy()
+      .then(setPolicy)
+      .catch((err: unknown) => setError(errorText(err)));
+  }, []);
+
+  return (
+    <SetSection
+      title="Permissions"
+      description="Who decides when an agent reaches one of these. Each one waits for you in Needs me."
+      testid="settings-permissions"
+    >
+      <FormError error={error} />
+      <div className="cr-set-card">
+        <ul className="cr-set-gates">
+          {GATE_KINDS.map((gate) => {
+            const owner = policy ? (policy.gates[gate] ?? 'human') : undefined;
+            return (
+              <li key={gate} className="cr-set-gate" data-gate={gate}>
+                <span className="cr-set-card-icon">
+                  <Icon name={GATE_TEXT[gate].icon} size={16} />
+                </span>
+                <div className="cr-set-gate-text">
+                  <div className="cr-set-gate-title">{GATE_TEXT[gate].title}</div>
+                  <div className="cr-set-gate-what">{GATE_TEXT[gate].what}</div>
+                </div>
+                <Badge tone={owner === 'human' ? 'accent' : 'neutral'} icon="user">
+                  {owner === undefined ? '…' : owner === 'human' ? 'You' : owner}
+                </Badge>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </SetSection>
   );
 }

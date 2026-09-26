@@ -488,3 +488,17 @@ export function cloneRepo(input: {
 }): Promise<CloneRepoResult> {
   return post('/api/repos/clone', input) as Promise<CloneRepoResult>;
 }
+
+/** T367: `GET /health` — Settings → General's daemon facts. */
+export interface DaemonHealth {
+  version: string;
+  /** The daemon's home folder. */
+  stateRoot: string;
+  pid: number;
+  /** Seconds. */
+  uptime: number;
+}
+
+export function getHealth(): Promise<DaemonHealth> {
+  return get('/health');
+}
