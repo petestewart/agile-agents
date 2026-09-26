@@ -1879,12 +1879,12 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T354 Walkthrough step 7.3 under parallel load
 - **Priority:** P3
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** Seen once with three walkthroughs in parallel: step 7.3's Director thread lacked "Started Changelog in ledger-lite". Root-cause (product race vs. test reading early) and fix at the cause.
 - **Acceptance Criteria:** 5 parallel-load walkthroughs, 0 failures at 7.3.
 - **Validation Steps:** `bun run build && bun run test:walkthrough`.
-- **Notes:** From T353.
+- **Notes:** From T353. Branch T354-walkthrough-73, merge 0f8a630. Root cause: the fake agent polls for `turn-N.txt` and can read it after creation but before the write, so the reply is lost (a Director "Started …" line at 7.3); proved with a standalone test under CPU load (12/3000 empty reads with a plain write, 0/3000 with rename). Fix: the walkthrough writes each reply aside and renames it in; test-only, no product change. 6/6 walkthroughs passed under 3-parallel load; full suite 2580 pass. Manager-reviewed (4-line diff).
 
 ### Ticket: T347 Cockpit wording and small UI (D36: D1, D5, D6, D7, D9, D11, D12)
 - **Priority:** P1
