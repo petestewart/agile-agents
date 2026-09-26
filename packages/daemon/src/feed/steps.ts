@@ -40,8 +40,8 @@ export interface StepPage {
 
 /** How many steps one read returns. */
 export const STEPS_LIMIT = 300;
-/** How many steps the index keeps per node. */
-export const STEPS_KEPT = 500;
+/** How many steps the index keeps per node (it trims in batches, so up to a quarter more). */
+export const STEPS_KEPT = STEPS_LIMIT;
 /** The read size while catching up on the log. */
 const CHUNK_BYTES = 4 * 1024 * 1024;
 /** Every `tool_call` event line has this (the event's own `kind`, as `JSON.stringify` writes it). */

@@ -628,11 +628,11 @@ export function useSteps(node: string | undefined): {
         pending.push(update);
         return;
       }
-      setState((prev) =>
-        prev?.node === node
-          ? { ...prev, steps: applyStep(prev.steps, update) }
-          : { node, steps: applyStep([], update), partial: false },
-      );
+      setState((prev) => {
+        if (prev?.node !== node) return { node, steps: applyStep([], update), partial: false };
+        const steps = applyStep(prev.steps, update);
+        return steps === prev.steps ? prev : { ...prev, steps };
+      });
     });
     getStreamSteps(node)
       .then((page) => {
@@ -643,10 +643,15 @@ export function useSteps(node: string | undefined): {
       })
       .catch(() => {
         if (!alive) return;
-        // Without the read, the live events still show what happens from now on.
-        const steps = stepsFromPage({ steps: [], total: 0 }, pending);
+        // No read (the daemon is restarting): keep what is shown, with what came live.
+        const missed = pending ?? [];
         pending = undefined;
-        setState({ node, steps, partial: true });
+        setState((prev) => {
+          const kept = prev?.node === node;
+          let steps = kept ? prev.steps : [];
+          for (const update of missed) steps = applyStep(steps, update);
+          return { node, steps, partial: kept ? prev.partial : true };
+        });
       });
     return () => {
       alive = false;

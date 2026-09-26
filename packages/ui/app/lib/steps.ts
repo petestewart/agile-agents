@@ -264,10 +264,6 @@ const KINDS: Record<string, KindInfo> = {
   other: { icon: 'zap', empty: 'Use a tool' },
 };
 
-export function stepIcon(kind: string): IconName {
-  return (KINDS[kind] ?? (KINDS.other as KindInfo)).icon;
-}
-
 /** A piece of a step's title: `code` pieces (a command, a path) read in monospace. */
 export interface TitlePart {
   text: string;
