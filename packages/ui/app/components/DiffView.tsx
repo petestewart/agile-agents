@@ -81,6 +81,12 @@ function focusRow(path: string, key: string): void {
   file?.querySelector<HTMLElement>(`[data-key="${key}"]`)?.focus();
 }
 
+/** Focus is somewhere on purpose: not the page itself (where it falls when the box closes). */
+function focusMovedOn(): boolean {
+  const active = document.activeElement;
+  return active !== null && active !== document.body && active.isConnected;
+}
+
 /** The comment box: a new comment under its line, or an edit in place of the comment. */
 function CommentBox({
   draft,
@@ -102,8 +108,12 @@ function CommentBox({
     el.setSelectionRange(el.value.length, el.value.length);
   }, []);
   const back = (): void => {
-    // The keyboard goes back to the line it came from.
-    requestAnimationFrame(() => focusRow(draft.path, draft.end));
+    // The keyboard goes back to the line it came from, unless it has moved on
+    // since (T415: a frame later, it once took focus back from another line).
+    requestAnimationFrame(() => {
+      if (focusMovedOn()) return;
+      focusRow(draft.path, draft.end);
+    });
   };
   return (
     <form

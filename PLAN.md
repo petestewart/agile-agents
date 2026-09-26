@@ -2380,6 +2380,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui packages/daemon/src/feed/merge-state.test.ts packages/daemon/src/delivery/service.test.ts`; control-room e2e `T412`, and the merge/waits e2e.
 - **Notes:** Branch T412-one-merge-verdict.
 
+### Ticket: T415 A saved diff comment doesn't take the keyboard back
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** CI failed about half the time on the T393 e2e ("2 comments on 1 file"): after Add, the comment box returned focus to its line a frame later, and on a slow runner that frame came after the next line had focus, so C opened the next comment on the previous file.
+- **Acceptance Criteria:** Focus returns to the commented line only when nothing else has it (it fell to the page when the box closed).
+- **Validation Steps:** control-room e2e `T393` now holds frames and lets them go after the next line has focus: it fails on the old code with CI's message and passes with the fix.
+- **Notes:** Branch T415-diff-focus-race.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
