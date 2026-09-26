@@ -1888,12 +1888,12 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T349 A "question" state on Children cards (D36: D3)
 - **Priority:** P2
-- **Status:** In Progress
-- **Owner:** opus:worker-T349
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** A child waiting on the human shows "question" (not "blocked") on its parent's Children card. Schema: add the state to the card status enum (.strict()); older homes still load.
 - **Acceptance Criteria:** Tests: a child with an open question renders "question"; a real block still "blocked".
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/coordination packages/ui`.
-- **Notes:** —
+- **Notes:** Branch T349-question-card-state, merge 3286bbd. CardState gains "question" (amber dot); open gates also read "question"; refreshQuestionCards rewrites stored stale "blocked" cards after migrateHome (idempotent). An older daemon refuses a stored "question" card. Review+QA (sonnet): APPROVE/PASS.
 
 ### Ticket: T350 Collapse ended sessions in the session list (D36: D4)
 - **Priority:** P2
