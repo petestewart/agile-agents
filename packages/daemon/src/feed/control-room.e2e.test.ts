@@ -21,6 +21,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -550,6 +551,8 @@ async function startCockpit(
     githubAuth?: () => Promise<boolean>;
     /** T321: the Link field's service, over a local fake tracker. */
     trackerLinks?: (streams: StreamService) => TrackerLinks;
+    /** T367: the home folder the folder picker and clone see (`~`), instead of the real one. */
+    userHome?: string;
   } = {},
 ): Promise<Cockpit> {
   const home = mkdtempSync(join(tmpdir(), 'agile-cockpit-e2e-'));
@@ -620,6 +623,7 @@ async function startCockpit(
     // T222: the pr refusal's auth seam; never a real `gh`.
     ...(extra.githubAuth ? { githubAuth: extra.githubAuth } : {}),
     ...(extra.trackerLinks ? { trackerLinks: extra.trackerLinks(streams) } : {}),
+    ...(extra.userHome !== undefined ? { userHome: extra.userHome } : {}),
     feedPollIntervalMs: 50,
   });
   return {
@@ -1362,10 +1366,12 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
         expect(await page.locator(testButton).isDisabled()).toBe(true);
 
         await page.locator('[data-view="settings"]').click();
-        await waitForText(page, '[data-testid="settings-key-status"]', 'no key');
+        // T367: Settings is in sections; the key is under Classifier.
+        await page.locator('[data-testid="settings-nav-classifier"]').click();
+        await waitForText(page, '[data-testid="settings-key-status"]', 'No key');
         await page.locator('[data-testid="settings-key-input"]').fill(fakeKey);
         await page.locator('[data-testid="settings-key-save"]').click();
-        await waitForText(page, '[data-testid="settings-key-status"]', 'key set (from config)');
+        await waitForText(page, '[data-testid="settings-key-status"]', 'Key set');
         expect(await page.locator('[data-testid="settings-key-input"]').inputValue()).toBe('');
         expect(await page.content()).not.toContain(fakeKey);
 
@@ -1377,9 +1383,12 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
         );
 
         await page.locator('[data-view="settings"]').click();
-        await waitForText(page, '[data-testid="settings-key-status"]', 'key set (from config)');
+        await page.locator('[data-testid="settings-nav-classifier"]').click();
+        await waitForText(page, '[data-testid="settings-key-status"]', 'Key set');
+        // Removing a key you can't see again asks first.
         await page.locator('[data-testid="settings-key-remove"]').click();
-        await waitForText(page, '[data-testid="settings-key-status"]', 'no key');
+        await page.locator('[data-testid="settings-key-remove-dialog-confirm"]').click();
+        await waitForText(page, '[data-testid="settings-key-status"]', 'No key');
         await page.locator('[data-view="rules"]').click();
         await openKnowledgeItem(page, rule.id);
         await page.locator(testButton).waitFor();
@@ -1405,23 +1414,25 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
       let page: Page | undefined;
       try {
         page = await openPage();
-        await page.goto(`${cockpit.base}/?view=settings`);
-        await waitForText(page, '[data-testid="settings-tracker-jira-status"]', 'no token');
+        // T367: the section rides in the URL.
+        await page.goto(`${cockpit.base}/?view=settings&section=trackers`);
+        await waitForText(page, '[data-testid="settings-tracker-jira-status"]', 'No token');
         await page
           .locator('[data-testid="settings-tracker-jira-base-url"]')
           .fill('https://shop.atlassian.net');
         await page.locator('[data-testid="settings-tracker-jira-email"]').fill('p@example.com');
         await page.locator('[data-testid="settings-tracker-jira-token"]').fill(token);
         await page.locator('[data-testid="settings-tracker-jira-save"]').click();
-        await waitForText(page, '[data-testid="settings-tracker-jira-status"]', 'token set');
+        await waitForText(page, '[data-testid="settings-tracker-jira-status"]', 'Token set');
         expect(await page.locator('[data-testid="settings-tracker-jira-token"]').inputValue()).toBe(
           '',
         );
         expect(await page.content()).not.toContain(token);
 
-        // A reload reads the status back from the daemon: still "set", still no token.
+        // A reload reads the status back from the daemon: still "set", still no token
+        // (and the URL brings back the Trackers section).
         await page.reload();
-        await waitForText(page, '[data-testid="settings-tracker-jira-status"]', 'token set');
+        await waitForText(page, '[data-testid="settings-tracker-jira-status"]', 'Token set');
         expect(
           await page.locator('[data-testid="settings-tracker-jira-base-url"]').inputValue(),
         ).toBe('https://shop.atlassian.net');
@@ -1429,7 +1440,8 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
         expect(readFileSync(join(cockpit.home, 'config.yaml'), 'utf8')).toContain(token);
 
         await page.locator('[data-testid="settings-tracker-jira-clear"]').click();
-        await waitForText(page, '[data-testid="settings-tracker-jira-status"]', 'no token');
+        await page.locator('[data-testid="settings-tracker-jira-clear-dialog-confirm"]').click();
+        await waitForText(page, '[data-testid="settings-tracker-jira-status"]', 'No token');
         expect(readFileSync(join(cockpit.home, 'config.yaml'), 'utf8')).not.toContain(token);
         expect(readFileSync(join(cockpit.home, 'log', 'events.jsonl'), 'utf8')).not.toContain(
           token,
@@ -1897,29 +1909,27 @@ describe('session defaults (Playwright e2e, T170)', () => {
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-view="settings"]').click();
+        await page.locator('[data-testid="settings-nav-agents"]').click();
         const home = (suffix: string) => `[data-testid="settings-session-home${suffix}"]`;
         const contains = async (selector: string, text: string) =>
           waitUntilAsync(`${selector} to contain ${text}`, async () =>
             ((await page?.locator(selector).first().textContent()) ?? '').includes(text),
           );
-        // T164: a Global default row, then Per-repo defaults, one row per repo.
+        // T164: a Global default card, then Per repository, one card per repo (T367).
         await contains(home(''), 'Global default');
-        await contains('[data-testid="settings-session-repos-heading"]', 'Per-repo defaults');
-        await contains('[data-testid="settings-session-repo-demo"]', 'demo');
+        await contains('[data-testid="settings-session-repos-heading"]', 'Per repository');
         await contains(
-          '[data-testid="settings-session-repo-demo"]',
+          '[data-testid="settings-session-repos-heading"]',
           'overrides the global default',
         );
-        await contains('[data-testid="settings-session-repo-demo-resolved"]', 'Resolves to');
-        await waitForText(page, home('-resolved'), 'Resolves to claude / claude-opus-5-5 / low');
+        await contains('[data-testid="settings-session-repo-demo"]', 'demo');
+        await contains('[data-testid="settings-session-repo-demo-resolved"]', 'claude');
+        await waitForText(page, home('-resolved'), 'claude · claude-opus-5-5 · low effort');
         await page.locator(home('-field-model')).fill('claude-sonnet-4-6');
         await page.locator(home('-field-effort')).selectOption('high');
         await page.locator(home('-save')).click();
-        await waitForText(
-          page,
-          home('-resolved'),
-          'Resolves to claude / claude-sonnet-4-6 / high · saved',
-        );
+        await waitForText(page, home('-resolved'), 'claude · claude-sonnet-4-6 · high effort');
+        await waitForText(page, home('-saved'), 'Saved');
         expect(readFileSync(join(cockpit.home, 'config.yaml'), 'utf8')).toContain(
           'default_model: claude-sonnet-4-6',
         );
@@ -2855,9 +2865,9 @@ describe('new stream and quick capture (Playwright e2e, T162)', () => {
   );
 });
 
-describe('add a repo from Settings (Playwright e2e, T206)', () => {
+describe('add a repo from Settings (Playwright e2e, T206, T367)', () => {
   browserTest(
-    'fixtures/demo-project registers from Settings and shows in the New stream repo picker; a bad path shows the one-line error',
+    'fixtures/demo-project registers from Settings and shows in the New stream repo picker; a folder that is not a repo says so',
     async () => {
       const cockpit = await startCockpit();
       const fixture = join(import.meta.dir, '..', '..', '..', '..', 'fixtures', 'demo-project');
@@ -2871,37 +2881,66 @@ describe('add a repo from Settings (Playwright e2e, T206)', () => {
         git(['config', 'user.name', 'Test'], repo);
         git(['add', '-A'], repo);
         git(['commit', '-q', '-m', 'init'], repo);
+        // Looks like a repo to the folder picker (a `.git` entry), but git says no.
+        const fake = join(scratch, 'fake');
+        mkdirSync(fake);
+        writeFileSync(join(fake, '.git'), '');
 
         // T365: New node needs a project to file into.
         await cockpit.projects.create({ name: 'shop' });
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-view="settings"]').click();
+        await page.locator('[data-testid="settings-nav-repos"]').click();
         await page.locator('[data-testid="settings-repos-empty"]').waitFor({ state: 'visible' });
+        await page.locator('[data-testid="settings-repo-add"]').click();
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'visible' });
+        const path = page.locator('[data-testid="settings-repo-add-path"]');
+        const status = '[data-testid="add-repo-status"]';
+        const add = page.locator('[data-testid="settings-repo-add-save"]');
 
-        // A path inside a repo but not its toplevel is refused with the daemon's line.
-        await page.locator('[data-testid="settings-repo-add-path"]').fill(join(repo, 'src'));
-        await page.locator('[data-testid="settings-repo-add-save"]').click();
+        // A folder inside a repo is not one; the dialog says so and offers the repo.
+        await path.fill(join(repo, 'src'));
         await waitForText(
           page,
-          '[data-testid="settings-repo-add-error"]',
-          `state.repo_add: ${join(repo, 'src')} is not the repo's toplevel (that is ${repo})`,
+          status,
+          'This folder isn’t a git repository. It’s inside demo-project, which is. Use demo-project',
         );
+        expect(await add.isDisabled()).toBe(true);
         const missing = join(scratch, 'nope');
-        await page.locator('[data-testid="settings-repo-add-path"]').fill(missing);
-        await page.locator('[data-testid="settings-repo-add-save"]').click();
+        await path.fill(missing);
+        await waitForText(page, status, 'No folder named “nope” here.');
+        expect(await add.isDisabled()).toBe(true);
+        await path.fill(join(scratch, 'no-such-dir', 'x'));
+        await waitForText(page, status, `No such folder: ${join(scratch, 'no-such-dir')}`);
+
+        // The daemon's own refusal shows inline, without its RPC prefix.
+        await path.fill(fake);
+        await waitForText(page, status, 'fake is a git repository.');
+        await add.click();
         await waitForText(
           page,
           '[data-testid="settings-repo-add-error"]',
-          `state.repo_add: ${missing} does not exist`,
+          `${fake} is not a git repository`,
         );
         expect(cockpit.store.getRepos()).toEqual({});
 
-        await page.locator('[data-testid="settings-repo-add-path"]').fill(repo);
-        await page.locator('[data-testid="settings-repo-add-protected"]').fill('master, release');
-        await page.locator('[data-testid="settings-repo-add-save"]').click();
-        await waitForText(page, '[data-testid="settings-repo-demo-project-main"]', 'master');
+        await path.fill(join(repo, 'src'));
+        await page.locator('[data-testid="add-repo-use-parent"]').click();
+        await waitForText(page, status, 'demo-project is a git repository.');
+        expect(await page.locator('[data-testid="settings-repo-add-name"]').inputValue()).toBe(
+          'demo-project',
+        );
         expect(await page.locator('[data-testid="settings-repo-add-error"]').count()).toBe(0);
+        await page.locator('[data-testid="settings-repo-add-protected"]').fill('master, release');
+        await add.click();
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'detached' });
+        await waitForText(page, '[data-testid="settings-repo-demo-project-main"]', 'master');
+        await page
+          .locator(
+            '[data-testid="settings-repo-demo-project"] [data-testid="repo-icon"][data-kind="local"]',
+          )
+          .waitFor({ state: 'visible' });
         expect(cockpit.store.getRepos()['demo-project']?.protected_branches).toEqual([
           'master',
           'release',
@@ -2926,6 +2965,298 @@ describe('add a repo from Settings (Playwright e2e, T206)', () => {
     },
     TEST_BUDGET_MS,
   );
+
+  browserTest(
+    'T367: add a repo by browsing to it, and find it again from the keyboard',
+    async () => {
+      const scratch = mkdtempSync(join(tmpdir(), 'agile-repo-browse-e2e-'));
+      const userHome = join(scratch, 'home');
+      const shop = join(userHome, 'Projects', 'shop');
+      mkdirSync(join(userHome, 'Projects', 'notes'), { recursive: true });
+      mkdirSync(shop, { recursive: true });
+      git(['init', '-q', '-b', 'main'], shop);
+      git(
+        [
+          '-c',
+          'user.email=t@example.com',
+          '-c',
+          'user.name=T',
+          'commit',
+          '-q',
+          '--allow-empty',
+          '-m',
+          'init',
+        ],
+        shop,
+      );
+      const cockpit = await startCockpit({ userHome });
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=repos`);
+        await page.locator('[data-testid="settings-repo-add"]').click();
+        const browser = '[data-testid="add-repo-browser"]';
+        const dir = (name: string) =>
+          `${browser} [data-testid="add-repo-dir"][data-name="${name}"]`;
+        // It opens on home; a folder opens with a double-click.
+        await page.locator(`${browser}[data-path="${userHome}"]`).waitFor({ state: 'visible' });
+        await page.locator(dir('Projects')).dblclick();
+        await page
+          .locator(`${browser}[data-path="${join(userHome, 'Projects')}"]`)
+          .waitFor({ state: 'visible' });
+        // Repositories are marked; other folders are there but greyed.
+        expect(await page.locator(dir('shop')).getAttribute('data-git')).toBe('true');
+        expect(await page.locator(dir('notes')).getAttribute('data-git')).toBe('false');
+        expect(await page.locator('[data-testid="settings-repo-add-path"]').inputValue()).toBe(
+          '~/Projects/',
+        );
+        await page.locator(dir('shop')).click();
+        await waitForText(page, '[data-testid="add-repo-status"]', 'shop is a git repository.');
+        expect(await page.locator('[data-testid="settings-repo-add-name"]').inputValue()).toBe(
+          'shop',
+        );
+        await page.locator('[data-testid="settings-repo-add-save"]').click();
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'detached' });
+        const row = '[data-testid="settings-repo-shop"]';
+        await page.locator(`${row} [data-testid="repo-icon"][data-kind="local"]`).waitFor();
+        await waitForText(page, '[data-testid="settings-repo-shop-kind"]', 'Local only');
+        await waitForText(page, '[data-testid="settings-repo-shop-path"]', '~/Projects/shop');
+        expect(cockpit.store.getRepos().shop?.path).toBe(realpathSync(shop));
+
+        // The path field autocompletes: Tab completes, the arrows choose, Enter opens.
+        await page.locator('[data-testid="settings-repo-add"]').click();
+        const path = page.locator('[data-testid="settings-repo-add-path"]');
+        await path.fill('~/Pro');
+        // The matches for `Pro` are in (the list is not loading), then Tab completes.
+        const settled = `${browser}:not([data-loading])`;
+        await page
+          .locator(`${settled} [data-testid="add-repo-dir"][data-name="Projects"]`)
+          .waitFor();
+        await path.press('Tab');
+        await page
+          .locator(`${browser}[data-path="${join(userHome, 'Projects')}"]`)
+          .waitFor({ state: 'visible' });
+        expect(await path.inputValue()).toBe('~/Projects/');
+        await path.press('ArrowDown');
+        await path.press('ArrowDown');
+        await path.press('Enter');
+        await page.locator(`${browser}[data-path="${shop}"]`).waitFor({ state: 'visible' });
+        await waitForText(page, '[data-testid="add-repo-status"]', 'Already added as shop.');
+        expect(await page.locator('[data-testid="settings-repo-add-save"]').isDisabled()).toBe(
+          true,
+        );
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'detached' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'T367: clone from a local bare repo, and see it listed with its icon',
+    async () => {
+      const scratch = mkdtempSync(join(tmpdir(), 'agile-repo-clone-e2e-'));
+      const userHome = join(scratch, 'home');
+      mkdirSync(join(userHome, 'Projects'), { recursive: true });
+      const work = join(scratch, 'work');
+      mkdirSync(work);
+      git(['init', '-q', '-b', 'main'], work);
+      writeFileSync(join(work, 'README.md'), '# ledger\n');
+      git(['add', '-A'], work);
+      git(
+        ['-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-q', '-m', 'init'],
+        work,
+      );
+      const bare = join(scratch, 'remote', 'ledger.git');
+      mkdirSync(join(scratch, 'remote'));
+      git(['clone', '-q', '--bare', work, bare], scratch);
+      const cockpit = await startCockpit({ userHome });
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=repos`);
+        await page.locator('[data-testid="settings-repo-add"]').click();
+        await page.locator('[data-testid="add-repo-mode-clone"]').click();
+        await page.locator('[data-testid="add-repo-clone-url"]').fill(bare);
+        // The preview reads the URL the way the daemon will: a repo on this machine, "ledger".
+        const preview = '[data-testid="add-repo-clone-preview"]';
+        await page.locator(`${preview}[data-protocol="file"]`).waitFor({ state: 'visible' });
+        expect(await page.locator(preview).textContent()).toContain('ledger');
+        expect(await page.locator('[data-testid="add-repo-clone-name"]').inputValue()).toBe(
+          'ledger',
+        );
+        // With nothing registered, it clones into ~/Projects.
+        await waitForText(
+          page,
+          '[data-testid="add-repo-clone-target"]',
+          'Creates ~/Projects/ledger',
+        );
+        await page.locator('[data-testid="add-repo-clone-submit"]').click();
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'detached' });
+        const row = '[data-testid="settings-repo-ledger"]';
+        await page.locator(row).waitFor({ state: 'visible' });
+        // Its origin is the bare repo: a remote, reached as a file path.
+        await page
+          .locator(`${row} [data-testid="repo-icon"][data-kind="other"][data-protocol="file"]`)
+          .waitFor({ state: 'visible' });
+        await waitForText(page, '[data-testid="settings-repo-ledger-path"]', '~/Projects/ledger');
+        const cloned = join(userHome, 'Projects', 'ledger');
+        expect(cockpit.store.getRepos().ledger?.path).toBe(realpathSync(cloned));
+        expect(readFileSync(join(cloned, 'README.md'), 'utf8')).toBe('# ledger\n');
+        await page
+          .locator('[data-testid="toast"]', { hasText: 'Cloned and added ledger' })
+          .waitFor();
+
+        // Again: the name is taken now, so the dialog says so before git runs.
+        await page.locator('[data-testid="settings-repo-add"]').click();
+        await page.locator('[data-testid="add-repo-mode-clone"]').click();
+        await page.locator('[data-testid="add-repo-clone-url"]').fill(bare);
+        await waitForText(
+          page,
+          '[data-testid="add-repo-clone-target"]',
+          'A repository named ledger is already registered. Pick another name.',
+        );
+        expect(await page.locator('[data-testid="add-repo-clone-submit"]').isDisabled()).toBe(true);
+        // Under another name, into a folder that is already there: the daemon refuses, readably.
+        await page.locator('[data-testid="add-repo-clone-name"]').fill('ledger-copy');
+        await waitForText(
+          page,
+          '[data-testid="add-repo-clone-target"]',
+          'Creates ~/Projects/ledger-copy',
+        );
+        mkdirSync(join(userHome, 'Projects', 'ledger-copy', 'taken'), { recursive: true });
+        await page.locator('[data-testid="add-repo-clone-submit"]').click();
+        const error = page.locator('[data-testid="add-repo-clone-error"]');
+        await error.waitFor({ state: 'visible' });
+        expect(await error.textContent()).toContain('already exists and is not empty');
+        expect(await error.textContent()).toContain('Pick another name or destination folder.');
+        expect(cockpit.store.getRepos()['ledger-copy']).toBeUndefined();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'T367: a URL typed or pasted into the folder field switches to cloning',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=repos`);
+        await page.locator('[data-testid="settings-repo-add"]').click();
+        const mode = (m: string) =>
+          `[data-testid="add-repo-mode"] [data-value="${m}"][aria-checked="true"]`;
+        await page.locator(mode('local')).waitFor();
+        await page
+          .locator('[data-testid="settings-repo-add-path"]')
+          .fill('git@github.com:acme/api.git');
+        await page.locator(mode('clone')).waitFor();
+        await page.locator('[data-testid="add-repo-switched"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="add-repo-clone-url"]').inputValue()).toBe(
+          'git@github.com:acme/api.git',
+        );
+        const preview = '[data-testid="add-repo-clone-preview"]';
+        await page.locator(`${preview}[data-kind="github"][data-protocol="ssh"]`).waitFor();
+        expect(await page.locator(`${preview} .cr-ar-preview-text`).textContent()).toBe(
+          'acme/apiGitHub · SSH',
+        );
+        // The URL field has the focus: typing goes on in it.
+        expect(
+          (await page.evaluate('document.activeElement?.dataset?.testid ?? null')) as string,
+        ).toBe('add-repo-clone-url');
+
+        // Back to a folder; a pasted GitHub owner/repo switches too.
+        await page.locator('[data-testid="add-repo-mode-local"]').click();
+        await page.locator(mode('local')).waitFor();
+        // A real paste event (the daemon's tsconfig has no DOM types: reach them through globalThis).
+        await page.locator('[data-testid="settings-repo-add-path"]').evaluate((el: unknown) => {
+          const g = globalThis as unknown as {
+            DataTransfer: new () => { setData(type: string, value: string): void };
+            ClipboardEvent: new (type: string, init: Record<string, unknown>) => unknown;
+          };
+          const data = new g.DataTransfer();
+          data.setData('text/plain', 'acme/shop');
+          const paste = new g.ClipboardEvent('paste', {
+            clipboardData: data,
+            bubbles: true,
+            cancelable: true,
+          });
+          (el as { dispatchEvent(event: unknown): boolean }).dispatchEvent(paste);
+        });
+        await page.locator(mode('clone')).waitFor();
+        expect(await page.locator('[data-testid="add-repo-clone-url"]').inputValue()).toBe(
+          'acme/shop',
+        );
+        await page.locator(`${preview}[data-kind="github"][data-protocol="https"]`).waitFor();
+        // Not a URL at all: said under the field, and nothing to clone.
+        await page.locator('[data-testid="add-repo-clone-url"]').fill('ftp://example.com/x');
+        await page.locator(preview).waitFor({ state: 'detached' });
+        expect(await page.locator('[data-testid="add-repo-clone-submit"]').isDisabled()).toBe(true);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Settings sections (Playwright e2e, T367)', () => {
+  browserTest(
+    'General picks the theme and names the daemon; the section is in the URL; Permissions says who decides',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings`);
+        await page.locator('[data-testid="settings"][data-section="general"]').waitFor();
+        await waitForText(page, '[data-testid="settings-daemon-status"]', 'Connected');
+        const theme = async () =>
+          (await page?.evaluate('document.documentElement.getAttribute("data-theme")')) as
+            | string
+            | null;
+        await page.locator('[data-testid="settings-theme-dark"]').click();
+        expect(await theme()).toBe('dark');
+        // A per-browser choice: it survives a reload.
+        await page.reload();
+        await page
+          .locator('[data-testid="settings-theme-dark"][aria-checked="true"]')
+          .waitFor({ state: 'visible' });
+        expect(await theme()).toBe('dark');
+        await page.locator('[data-testid="settings-theme-system"]').click();
+        expect(await theme()).toBe(null);
+
+        await page.locator('[data-testid="settings-nav-permissions"]').click();
+        await page.locator('[data-testid="settings"][data-section="permissions"]').waitFor();
+        await waitUntilAsync('the URL to name the section', async () =>
+          (page?.url() ?? '').includes('section=permissions'),
+        );
+        expect(await page.locator('[data-gate]').count()).toBe(3);
+        expect(await page.locator('[data-gate="land"]').textContent()).toContain('You');
+        // Back to General: its section needs no parameter.
+        await page.locator('[data-testid="settings-nav-general"]').click();
+        await waitUntilAsync(
+          'the section parameter to go',
+          async () => !(page?.url() ?? '').includes('section='),
+        );
+        expect(new URL(page.url()).searchParams.get('view')).toBe('settings');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
 });
 
 // ---- T222: repo delivery settings --------------------------------------------
@@ -2946,19 +3277,33 @@ describe('repo delivery settings (Playwright e2e, T222)', () => {
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-view="settings"]').click();
+        await page.locator('[data-testid="settings-nav-repos"]').click();
         const row = '[data-testid="settings-repo-api"]';
         await page.locator(`${row}[data-delivery="direct"]`).waitFor({ state: 'visible' });
+        // T367: the row says where the repo lives: GitHub, with its owner/name. (Not the
+        // protocol: a git `insteadOf` in the environment may turn the SSH URL into https.)
+        await page
+          .locator(`${row} [data-testid="repo-icon"][data-kind="github"]`)
+          .waitFor({ state: 'visible' });
+        await waitUntilAsync('the row to name GitHub and acme/api', async () =>
+          /^GitHub( · (SSH|HTTPS))? · acme\/api$/.test(
+            (await page?.locator('[data-testid="settings-repo-api-kind"]').textContent()) ?? '',
+          ),
+        );
+        // Auto-merge is a pull-request setting: not offered for direct delivery.
+        expect(await page.locator('[data-testid="settings-repo-api-auto-merge"]').count()).toBe(0);
 
-        await page.locator('[data-testid="settings-repo-api-delivery"]').selectOption('pr');
+        const pr = '[data-testid="settings-repo-api-delivery"] [data-value="pr"]';
+        await page.locator(pr).click();
         await waitForText(
           page,
           '[data-testid="settings-repo-api-error"]',
-          'state.repo_set: pr delivery needs GitHub auth — run `gh auth login` (see `agile daemon status`)',
+          'pr delivery needs GitHub auth — run `gh auth login` (see `agile daemon status`)',
         );
         expect(cockpit.store.getRepos().api?.delivery).toBe('direct');
 
         authed = true;
-        await page.locator('[data-testid="settings-repo-api-delivery"]').selectOption('pr');
+        await page.locator(pr).click();
         await page.locator(`${row}[data-delivery="pr"]`).waitFor({ state: 'visible' });
         // Controlled by the saved row, so it flips only after the POST: click, then wait.
         await page.locator('[data-testid="settings-repo-api-auto-merge"]').click();
@@ -2971,7 +3316,9 @@ describe('repo delivery settings (Playwright e2e, T222)', () => {
           github: { owner: 'acme', repo: 'api' },
         });
 
-        await page.locator('[data-testid="settings-repo-api-delivery"]').selectOption('direct');
+        await page
+          .locator('[data-testid="settings-repo-api-delivery"] [data-value="direct"]')
+          .click();
         await page.locator(`${row}[data-delivery="direct"]`).waitFor({ state: 'visible' });
         expect(cockpit.store.getRepos().api?.delivery).toBe('direct');
       } finally {
