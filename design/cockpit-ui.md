@@ -274,6 +274,12 @@ The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
 - **Ids stay out of primary text**: a branch reads as its slug
   (`add-csv-import`), the full name on hover and in Copy; worktree paths sit
   behind a Copy button (T413).
+- **Ask** (T419, D42): `a` anywhere opens one box aimed at the open node (the
+  Director elsewhere); its picker re-aims it. About a node it makes a
+  conversation under that node, in its own thread, so the node's work goes on
+  undisturbed; about the Director it is a line in the Director's thread. A
+  conversation's chat opens with its question as your message, never a Goal
+  card.
 - **Notifications** (Settings → General, per browser, off by default): one
   browser notification at a time for what is new in Needs me while the tab is
   away; a click opens it. Never for what was there at load. They go through

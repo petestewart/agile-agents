@@ -132,6 +132,13 @@ export interface ShellValue {
   newProjectOpen: boolean;
   setNewProjectOpen(open: boolean): void;
   /**
+   * T419 (D42): the Ask box, and what it asks about: a node's id, or
+   * `'director'`; `undefined` when closed.
+   */
+  askAbout: string | undefined;
+  /** Opens Ask about `target` (default: the open node, else the Director); `null` closes it. */
+  openAsk(target?: string | null): void;
+  /**
    * T208: the rail's project filter; `undefined` is "All". T365: only the
    * human sets it (a project's "Show only this project", the chip's ×, a
    * `&project=` link); nothing switches it on its own.
@@ -173,6 +180,7 @@ export function ShellProvider({
   const [newStreamOpen, setNewStreamOpen] = useState(false);
   const [newStreamPreset, setNewStreamPreset] = useState<NewStreamPreset | undefined>(undefined);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [askAbout, setAskAbout] = useState<string | undefined>(undefined);
   const [project, setProject] = useState<string | undefined>(initial.project);
   const [rulesFilter, setRulesFilter] = useState<RulesFilter>(DEFAULT_RULES_FILTER);
   // T348: ids read from the URL (on load, or on back/forward) are checked
@@ -282,6 +290,17 @@ export function ShellProvider({
       },
       newProjectOpen,
       setNewProjectOpen,
+      askAbout,
+      openAsk: (target?: string | null) => {
+        if (target === null) {
+          setAskAbout(undefined);
+          return;
+        }
+        setAskAbout(
+          target ?? (view === 'stream' && selected !== undefined ? selected : 'director'),
+        );
+        setRailOpen(false);
+      },
       project,
       setProject,
       missingNode,
@@ -296,6 +315,7 @@ export function ShellProvider({
       newStreamOpen,
       newStreamPreset,
       newProjectOpen,
+      askAbout,
       rulesFilter,
       project,
     ],

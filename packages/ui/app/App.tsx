@@ -18,6 +18,7 @@
  */
 
 import { Suspense, useEffect } from 'react';
+import { Ask } from './components/Ask';
 import { CommandPalette } from './components/CommandPalette';
 import { ErrorBoundary, PageLoading, lazyNamed } from './components/ErrorBoundary';
 import { Inbox } from './components/Inbox';
@@ -225,6 +226,9 @@ export function App(): JSX.Element {
       </main>
       <ErrorBoundary area="overlay" resetKey={place}>
         <NewStream rows={rows} projects={projects} />
+      </ErrorBoundary>
+      <ErrorBoundary area="overlay" resetKey={place}>
+        <Ask rows={rows} projects={projects} />
       </ErrorBoundary>
       <ErrorBoundary area="overlay" resetKey={place}>
         <CommandPalette rows={rows} projects={projects} />

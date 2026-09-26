@@ -9600,6 +9600,27 @@ div.cr-lens-ev:hover {
   }
 }
 
+/* ==== Ask (T419) ==== */
+.cr-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.cr-ask-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.cr-ask-input {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  font: inherit;
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
 /* ==== Error boundary ==== */
 /* T394: what a view, a node's tab or the whole app shows after a throw, in words. */
 .cr-boundary {

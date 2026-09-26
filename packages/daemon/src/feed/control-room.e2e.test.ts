@@ -2218,10 +2218,12 @@ describe('rename and re-goal a node in place (Playwright e2e, T385)', () => {
         const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
           name: 'shop',
         });
+        // A work node (D42: a conversation's goal is its first message, edited in Details).
         const node = await cockpit.streams.create('human', {
           title: 'csv thing',
           goal: 'import CSV',
           project: shop.id,
+          repo: 'demo',
         });
         page = await openPage();
         await page.goto(`${cockpit.base}/?node=${node.id}`);
@@ -5298,6 +5300,110 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         await teardown([page]);
         await cockpit.stop();
         rmSync(repo, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Ask from anywhere (Playwright e2e, T419, D42)', () => {
+  browserTest(
+    'a on a work node asks about it in a new conversation under it, and the node stays work; its ⋯ menu opens Ask too',
+    async () => {
+      const cockpit = await startStreamCockpit([{ steps: [{ type: 'end_turn' }] }]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const work = await cockpit.streams.create('human', {
+          title: 'Add CSV import',
+          goal: 'import CSV files into the ledger',
+          project: shop.id,
+          repo: 'demo',
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${work.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${work.id}"]`).waitFor();
+
+        // `a`: the box opens aimed at the open node.
+        await page.keyboard.press('a');
+        await page.locator('[data-testid="ask"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="ask-target"]').getAttribute('data-value')).toBe(
+          work.id,
+        );
+        const question = 'Why does the importer read the whole file into memory?';
+        await page.locator('[data-testid="ask-input"]').fill(question);
+        await page.locator('[data-testid="ask-input"]').press('Enter');
+        await page.locator('[data-testid="ask"]').waitFor({ state: 'detached' });
+
+        // A conversation under the node, open on its chat, the question as your first message.
+        await waitUntil('the conversation to exist', () =>
+          cockpit.streams.list().some((s) => s.parent === work.id),
+        );
+        const asked = cockpit.streams.list().find((s) => s.parent === work.id);
+        expect(asked?.goal).toBe(question);
+        expect(asked?.repo).toBeUndefined();
+        await page.locator(`[data-testid="stream-page"][data-stream="${asked?.id}"]`).waitFor();
+        const bubble = page.locator(
+          '[data-testid="chat-question"] [data-variant="you"] .cr-bubble',
+        );
+        await bubble.waitFor();
+        expect(await bubble.textContent()).toContain(question);
+        expect(await page.locator('[data-testid="goal-card"]').count()).toBe(0);
+        // The node it is about is still work (D42), in the tree too.
+        await page
+          .locator(`[data-testid="stream-tree"] [data-stream="${work.id}"][data-role="work"]`)
+          .waitFor();
+        await page
+          .locator(
+            `[data-testid="stream-tree"] [data-stream="${asked?.id}"][data-role="conversation"]`,
+          )
+          .waitFor();
+
+        // The node's ⋯ menu opens it too.
+        await page.goto(`${cockpit.base}/?node=${work.id}`);
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page.locator('[data-testid="ask-about"]').click();
+        await page.locator('[data-testid="ask"]').waitFor({ state: 'visible' });
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="ask"]').waitFor({ state: 'detached' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'from Needs me, Ask is about the Director: the line goes to its thread',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="inbox"]').waitFor();
+        await page.keyboard.press('a');
+        await page.locator('[data-testid="ask"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="ask-target"]').getAttribute('data-value')).toBe(
+          'director',
+        );
+        await page.locator('[data-testid="ask-input"]').fill('What needs me today?');
+        await page.locator('[data-testid="ask-send"]').click();
+        await page.locator('[data-testid="director-page"]').waitFor();
+        await page
+          .locator('[data-testid="director-thread"] [data-testid="thread-entry"]', {
+            hasText: 'What needs me today?',
+          })
+          .waitFor();
+        expect(cockpit.events.pendingFor('director').map((p) => p.event.type)).toEqual([
+          'director_request',
+        ]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
       }
     },
     TEST_BUDGET_MS,

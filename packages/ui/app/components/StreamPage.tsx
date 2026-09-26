@@ -335,7 +335,7 @@ function GoalCard({
 
 export function StreamPage({ id }: { id: string }): JSX.Element {
   const { cockpit, refresh, offline } = useFeed();
-  const { openRules, select, openOn } = useShell();
+  const { openRules, select, openOn, openAsk } = useShell();
   const toast = useToast();
   const copy = useCopy();
   const [page, setPage] = useState<StreamPagePayload | undefined>(undefined);
@@ -805,6 +805,14 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
 
   const menu: MenuItem[] = [
     {
+      // T419 (D42): a question about this node, in its own thread.
+      label: 'Ask about this…',
+      icon: 'message-square',
+      testid: 'ask-about',
+      title: 'A conversation under this node, in its own thread (A)',
+      onSelect: () => openAsk(stream.id),
+    },
+    {
       label: 'Choose the model and start…',
       icon: 'sliders',
       testid: 'attach-choose',
@@ -1156,7 +1164,10 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         refresh();
       }
     : undefined;
-  const goalCard = showGoalCard({ goal: stream.goal, title: stream.title, projectRoot });
+  // T419 (D42): a conversation shows its goal as your first message, so it never has the card.
+  const goalCard =
+    role !== 'conversation' &&
+    showGoalCard({ goal: stream.goal, title: stream.title, projectRoot });
 
   const emptyChat = !conversation && !thinking && cards.length === 0;
   // The open questions whose own line the chat shows (an older one may be above the loaded lines).
@@ -1180,7 +1191,17 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         resetKey={stream.id}
         label="Conversation"
       >
-        {goalCard && <GoalCard goal={stream.goal} {...(saveGoal ? { onSave: saveGoal } : {})} />}
+        {role === 'conversation' && stream.goal.trim() !== '' ? (
+          // T419 (D42): a conversation's goal is the question you asked: your first message.
+          <MessageList
+            entries={[{ ts: stream.created_at, by: 'human', kind: 'line', body: stream.goal }]}
+            authorOf={(by) => chatAuthor(by, stream.sessions)}
+            testid="chat-question"
+            label="Your question"
+          />
+        ) : (
+          goalCard && <GoalCard goal={stream.goal} {...(saveGoal ? { onSave: saveGoal } : {})} />
+        )}
         {page.thread_total > page.thread.length && (
           <p className="cr-chat-older">
             Showing the newest {page.thread.length} of {page.thread_total} lines.

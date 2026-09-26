@@ -93,7 +93,9 @@ function useCardKeys(list: React.RefObject<HTMLElement>, open: (id: string) => v
         const index = choiceIndexOfKey(event.key, choices.length);
         const choice = index !== undefined ? choices[index] : undefined;
         if (choice && !choice.disabled) {
+          // T419's `a` (Ask) listens on the window: on a focused question, A is its choice.
           event.preventDefault();
+          event.stopPropagation();
           choice.click();
         }
       }
