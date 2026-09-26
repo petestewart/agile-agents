@@ -15,9 +15,10 @@
  * goal chain reach them as ancestors'. A session live on the node is
  * stopped before the reshape and restarted after it, so it runs in the
  * right place: in the new worktree (work) or the session dir as the
- * coordinator (coordinating, D20). A split node that was started gets its
- * coordinator even when nothing was live, unless the human stopped it
- * (T336). With a coordinator, the parts wait for its plan (§9.1: the plan
+ * coordinator (coordinating, D20). A split node (or a conversation with
+ * tangents given a repo, T346) that was started gets its coordinator even
+ * when nothing was live, unless the human stopped it (T336). With a
+ * coordinator, the parts wait for its plan, even a single part (§9.1: the plan
  * comes before work): `PlanService.approve` starts each part the approved
  * plan gives paths to. With none, they start their worker like any new
  * work node (T204, T213) unless the node was never started (made with
@@ -114,10 +115,13 @@ export class RepoInPlaceService {
     // T204's start rule for new parts: `start` isn't stored, so a node that
     // never had a worker is the `--no-start` one.
     const started = wasLive || node.sessions.some((s) => isAgentRole(s.role));
+    // The node ends up coordinating parts: a split work node, or a
+    // conversation with tangents whose repo goes to a new part (D33, T346).
+    const split = !inPlace && !switching;
     // T336: a split hands the node's sessions to the moved part, which left
     // a node that was started but not live with no agent at all: no
     // coordinator to plan the parts. It gets one, unless the human stopped it.
-    const coordinates = role !== 'conversation' && !switching && started && !stoppedByHuman(node);
+    const coordinates = split && started && !stoppedByHuman(node);
     // Stop first, so the exit path writes onto the records before they move.
     await this.sessions.stop(
       node.id,
@@ -158,8 +162,9 @@ export class RepoInPlaceService {
     }
 
     const open = parts.filter((p) => this.streams.get(p.id).human.status !== 'closed');
-    // T336: a coordinator plans the parts before they work; the approval starts them.
-    const waitForPlan = role !== 'conversation' && !switching && (wasLive || coordinates);
+    // T336: a coordinator plans the parts before they work; the approval starts
+    // them. One part waits too (T346): the plan gives it its paths (§9.1).
+    const waitForPlan = split && (wasLive || coordinates);
     if (waitForPlan && open.length > 0) {
       await this.event(
         node.id,
