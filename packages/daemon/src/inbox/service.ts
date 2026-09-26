@@ -298,7 +298,13 @@ export class InboxService {
     if (stream.agent.status !== 'blocked' && stream.agent.status !== 'done') return undefined;
     // T336: a coordinating node or a project root has no branch of its own;
     // its coordinator finishing a turn is nothing to land.
-    if (stream.agent.status === 'done' && (hasParts(stream.id, byId) || isProjectRoot(stream))) {
+    // T437: a work node that gained a part (a conversation turned into work under it)
+    // keeps its own branch, and its Merge card with it.
+    const ownBranch = stream.repo !== undefined && stream.branch !== undefined;
+    if (
+      stream.agent.status === 'done' &&
+      ((hasParts(stream.id, byId) && !ownBranch) || isProjectRoot(stream))
+    ) {
       return undefined;
     }
     // T341: nor is a node whose PR is open: it merges on GitHub, and the page has no Merge.

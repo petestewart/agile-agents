@@ -30,6 +30,7 @@ import {
   type Policy,
   type Question,
   type Stream,
+  ulid,
 } from '@agile-agents/shared';
 import { DeliveryService } from '../delivery/service';
 import { makeEmitter } from '../events/producers';
@@ -49,7 +50,14 @@ import { RepoInPlaceService } from '../streams/repo-in-place';
 import { StreamService } from '../streams/service';
 import { buildAttachRpcMethods } from './rpc';
 import { sayPrompt } from './service';
-import { AttachService, DAEMON_SHUTDOWN_REASON, StreamBusyError, endedReason } from './service';
+import {
+  AttachService,
+  CRASHED_PREFIX,
+  DAEMON_SHUTDOWN_REASON,
+  FAILED_START_PREFIX,
+  StreamBusyError,
+  endedReason,
+} from './service';
 import { VerbService } from './verbs';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
@@ -315,7 +323,67 @@ describe('T432 (D43): a vendor that exits with an error on its own', () => {
     await expect(attachService.attach(stream.id)).rejects.toThrow(
       "Claude Code can't start: `definitely-not-a-vendor-xyz` is not on the daemon's PATH.",
     );
+    // T437: nothing was recorded as starting; the node is stuck with the reason, never "Working".
+    const after = streams.get(stream.id);
+    expect(after.sessions).toEqual([]);
+    expect(after.agent.status).toBe('blocked');
+    expect(after.agent.progress).toBe(
+      `${FAILED_START_PREFIX}Claude Code can't start: \`definitely-not-a-vendor-xyz\` is not on the daemon's PATH.`,
+    );
   });
+
+  test('T437: a spawn that throws after the session was recorded ends it as error, the node blocked', async () => {
+    attachService = new AttachService({
+      store,
+      streams,
+      home,
+      provider: () => fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS),
+      questions: { listOpen: () => questions.listOpen() },
+      gates: { list: () => gates.list() },
+      spawn: () => {
+        throw new Error('the sandbox refused');
+      },
+    });
+    const stream = await makeStream();
+    await expect(attachService.attach(stream.id)).rejects.toThrow('the sandbox refused');
+    const after = streams.get(stream.id);
+    expect(after.sessions.map((s) => [s.status, s.ended_reason])).toEqual([
+      ['error', 'the sandbox refused'],
+    ]);
+    expect(after.agent.status).toBe('blocked');
+    expect(after.agent.progress).toBe(`${FAILED_START_PREFIX}the sandbox refused`);
+  });
+
+  test('T437: Stop ends a session recorded as live with no process behind it', async () => {
+    const stream = await makeStream();
+    const orphan = ulid();
+    await store.updateStream('daemon', stream.id, (before) => ({
+      ...before,
+      agent: { ...before.agent, status: 'working' },
+      sessions: [{ id: orphan, vendor: 'claude', model: 'm', role: 'worker', status: 'starting' }],
+    }));
+    expect(await attachService.stop(stream.id, undefined, { detach: true })).toEqual([orphan]);
+    const after = streams.get(stream.id);
+    expect(after.sessions[0]?.status).toBe('stopped');
+    expect(after.agent.status).toBe('idle');
+  });
+
+  test('T437: a crash leaves its reason as the progress line; the next start clears it', async () => {
+    attachService = buildAttachService({
+      ...ACP_PROVIDERS.claude,
+      command: 'sh',
+      args: ['-c', 'echo "Invalid API key" >&2; exit 1'],
+    });
+    const stream = await makeStream();
+    const { handle } = await attachService.attach(stream.id);
+    await handle.exited;
+    await waitFor(() => streams.get(stream.id).agent.status === 'blocked');
+    expect(streams.get(stream.id).agent.progress).toBe(`${CRASHED_PREFIX}Invalid API key`);
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    await attachService.attach(stream.id);
+    expect(streams.get(stream.id).agent.progress).toBeUndefined();
+    await attachService.stopAll();
+  }, 20_000);
 
   test('missingVendorCommand: npx names Node; a path or a found command is left alone', () => {
     const none = () => null;

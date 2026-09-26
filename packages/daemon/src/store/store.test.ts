@@ -356,6 +356,32 @@ describe('directorReplyAt (T433)', () => {
   });
 });
 
+describe('answeredAt (T437)', () => {
+  test("an agent line answers your line (or the node's question); a woken turn does not", async () => {
+    const { StreamService } = await import('../streams');
+    const store = StateStore.open(stateRoot);
+    const streams = new StreamService(store);
+    const node = await streams.create('human', { title: 'n', goal: 'why?' });
+    const session = '01J0000000000000000000000A';
+    const agent = (body: string) =>
+      streams.appendThread('agent', node.id, { kind: 'line', body }, session);
+    // The question is asked at creation: the first reply answers it.
+    const first = await agent('because');
+    await agent('and more');
+    expect(store.answeredAt(node.id)).toBe(first.ts);
+    // Woken by knowledge: a turn nobody asked for is no answer.
+    await Bun.sleep(5);
+    await agent('noted the new decision');
+    expect(store.answeredAt(node.id)).toBe(first.ts);
+    // Your line, then its reply.
+    await streams.appendThread('human', node.id, { kind: 'line', body: 'and then?' });
+    const second = await agent('then this');
+    expect(store.answeredAt(node.id)).toBe(second.ts);
+    // A fresh process reads the same from the thread.
+    expect(StateStore.open(stateRoot).answeredAt(node.id)).toBe(second.ts);
+  });
+});
+
 describe('threadUpdatedAt (T395)', () => {
   test("a thread's last line time, from this process's append, else the file's mtime", async () => {
     const { StreamService } = await import('../streams');
