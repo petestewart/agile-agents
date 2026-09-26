@@ -96,12 +96,26 @@ export interface ShellValue {
   /** T162: the "New stream" dialog — opened by the top bar's button or `n`. */
   newStreamOpen: boolean;
   setNewStreamOpen(open: boolean): void;
+  /** T365: where New node starts when a row's `+` opened it (a parent, or a project's top level). */
+  newStreamPreset: NewStreamPreset | undefined;
+  /** T365: opens New node, under `preset` when given (a row's `+`, a project's menu). */
+  openNewStream(preset?: NewStreamPreset): void;
   /** T360: the "New project" dialog — from the sidebar, or Needs me's first-run steps. */
   newProjectOpen: boolean;
   setNewProjectOpen(open: boolean): void;
-  /** T208: the rail's project switcher; `undefined` is "All". New nodes file into it. */
+  /**
+   * T208: the rail's project filter; `undefined` is "All". T365: only the
+   * human sets it (a project's "Show only this project", the chip's ×, a
+   * `&project=` link); nothing switches it on its own.
+   */
   project: string | undefined;
   setProject(id: string | undefined): void;
+}
+
+/** T365: New node's starting point from a row's `+` or a project's menu. */
+export interface NewStreamPreset {
+  parent?: string;
+  project?: string;
 }
 
 const ShellContext = createContext<ShellValue | undefined>(undefined);
@@ -114,6 +128,7 @@ export function ShellProvider({
   const [selected, setSelected] = useState<string | undefined>(initial.node);
   const [railOpen, setRailOpen] = useState(false);
   const [newStreamOpen, setNewStreamOpen] = useState(false);
+  const [newStreamPreset, setNewStreamPreset] = useState<NewStreamPreset | undefined>(undefined);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [project, setProject] = useState<string | undefined>(initial.project);
   const [rulesFilter, setRulesFilter] = useState<RulesFilter>(DEFAULT_RULES_FILTER);
@@ -197,13 +212,33 @@ export function ShellProvider({
         setSelected(undefined);
       },
       newStreamOpen,
-      setNewStreamOpen,
+      setNewStreamOpen: (open: boolean) => {
+        setNewStreamPreset(undefined);
+        setNewStreamOpen(open);
+        // The dialog, not the phone drawer behind it.
+        if (open) setRailOpen(false);
+      },
+      newStreamPreset,
+      openNewStream: (preset?: NewStreamPreset) => {
+        setNewStreamPreset(preset);
+        setNewStreamOpen(true);
+        setRailOpen(false);
+      },
       newProjectOpen,
       setNewProjectOpen,
       project,
       setProject,
     }),
-    [view, selected, railOpen, newStreamOpen, newProjectOpen, rulesFilter, project],
+    [
+      view,
+      selected,
+      railOpen,
+      newStreamOpen,
+      newStreamPreset,
+      newProjectOpen,
+      rulesFilter,
+      project,
+    ],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;

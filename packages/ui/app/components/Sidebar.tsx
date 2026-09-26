@@ -8,6 +8,9 @@
  * The view buttons keep `data-view` (the e2e suites click them by it), and
  * the Needs me count keeps `data-testid="inbox-badge"`. T162's quick
  * capture is gone: New node is the one way to make a node.
+ *
+ * T365: below the tree, "Deleted (n)" (folded) restores what Delete
+ * archived.
  */
 
 import { useState } from 'react';
@@ -15,7 +18,7 @@ import type { CockpitProjectRow, CockpitStreamRow, FeedSnapshot } from '../lib/f
 import { type ShellView, useShell } from '../lib/shell';
 import { openCommandPalette } from './CommandPalette';
 import { Icon, type IconName } from './Icon';
-import { StreamTree } from './StreamTree';
+import { DeletedNodes, StreamTree } from './StreamTree';
 import { Button, IconButton, Kbd } from './ui';
 
 interface NavItem {
@@ -214,6 +217,7 @@ export function Sidebar({
           {viewsOpen && VIEWS.map((item) => <NavButton key={item.view} item={item} />)}
         </nav>
         <StreamTree rows={rows} projects={projects} />
+        <DeletedNodes projects={projects} />
       </div>
       <div className="cr-sb-bottom">
         <nav aria-label="Settings">

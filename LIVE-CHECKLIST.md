@@ -49,7 +49,8 @@ it: does it have children, and does it have a repo. That gives four
 | work | none (helpers aside) | exactly one, with a branch and a worktree | writes code, then delivers it |
 | coordinating | yes | none of its own; its children's | plans, splits work, writes contracts, tracks children |
 
-You don't have to restructure the tree to change where work happens. **+ Repo** on a conversation turns
+You don't have to restructure the tree to change where work happens. **+ Repo** (the page's
+**⋯** → **Add repository…**) on a conversation turns
 it into work on that repo. + Repo on a work node turns it into a coordinating
 node with one **part** (a work child) per repo. The thread stays where it is.
 
@@ -73,16 +74,16 @@ The cockpit is `http://127.0.0.1:4600/`.
 
 | Place | What it holds |
 |---|---|
-| Sidebar | **New node (n)**; the views below (**Needs me** with its count, **Director**, **Knowledge**, and under *Views* **Running**, **Repos**, **Dependencies**, **Events**); *Projects*: **+** (new project), the project switcher (**All projects**, Shop, Blog), a filter, and the tree with a status dot and a role icon per node and a ⚠ mark on overlapping nodes; **Settings** at the bottom. Below 900px wide it is a drawer behind the ☰ button |
-| **Needs me** | The inbox, grouped by node: questions (answer inline), gates (Approve/Deny), knowledge proposals (Accept/Retire), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (**Merge**) |
+| Sidebar | **New node (n)**; the views below (**Needs me** with its count, **Director**, **Knowledge**, and under *Views* **Running**, **Repos**, **Dependencies**, **Events**); *Projects*: **?** (what the dots and icons mean), **+** (new project), a filter, and every project's tree with a status dot and a role icon per node and a ⚠ mark on overlapping nodes. On hover a row shows **+** (a new node under it) and **⋯** (Open, New child node, Rename, Move to, Copy node id, Delete; right-click opens it too); a project's **⋯** has **Show only this project**, undone with the chip's **×**. **Deleted (n)** below the tree restores deleted nodes; **Settings** at the bottom. Below 900px wide it is a drawer behind the ☰ button |
+| **Needs me** | The inbox, grouped by project, then node, oldest first, with a filter (**All** · **Questions** · **Decisions** · **Merges**): questions (a button per choice, or type and **Answer**), actions to allow (**Allow**/**Deny**, **Add a note**), knowledge proposals (**Accept**/**Retire**), plans (**Approve plan**), coordinator and Director proposals (**Apply**/**Dismiss**), finished work (**Merge**, **View changes**). `j`/`k` move between cards; Enter opens a card's node |
 | **Repos** | Per repo: its delivery mode, the live work nodes on it across projects (ancestors greyed), overlaps, its norms, recent repo events |
 | **Running** | Nodes with a live agent |
 | **Dependencies** | Every "waits on" link, across projects |
 | **Knowledge** | Every knowledge item, split into **To review**, **Rules**, **Standards**, **Architecture** and **Decisions** (retired items fold at the bottom); search and scope/enforcement filters; a click opens an item's side panel: Accept/Retire, Edit, Test examples |
 | **Director** | The Director's thread and composer, its **Drafts** (Create/Dismiss), its activity |
 | **Events** | Every routed event, newest first: what happened, to which node, and who it was routed to and why |
-| **Settings** | Who decides, the TypeSafe API key, Trackers (Jira, Linear), session defaults, repos (add, delivery, visibility) |
-| A node's page | Title, role, "Needs you", sessions with **Start/Restart**, **Review**, **Stop**, **Close**, **Waits on…**, **+ Repo**; **Tracker issue…** (**Link**, **Create issue**; then **Unlink**, **Import children**), only when the node's project has a tracker; **Coordinator autonomy** on a coordinating node or a project root (and, on a project root, **Director autonomy** and the project's tracker); the **Delivery** panel (**Merge**, Resolve); children's status cards; tabs **Thread**, **Diff**, **Activity**, **Plan**, **Knowledge in scope**, **Docs** |
+| **Settings** | Sections on the left: **General** (theme: System, Light, Dark; the daemon), **Agents** (session defaults, global and per repo), **Repositories** (**Add repository**: a folder, or a URL to clone; per repo its icon, delivery, auto-merge, visibility), **Classifier** (the TypeSafe API key), **Trackers** (Jira, Linear), **Permissions** (who decides) |
+| A node's page | A chat with its agent. The header: path, title, status, role, repo and branch, then **Start agent** (its chevron picks another model), **Stop** while it works, **Merge** when there is something to merge, the details toggle and **⋯** (**Review changes…**, **Restart agent**, **Waits on…**, **Add repository…**, **Tracker issue…**, **Copy branch name**, **Close node…**, **Delete node…**). Tabs **Chat**, **Changes**, **Plan**, **Activity**, **Knowledge**, **Docs**, only where they apply. What needs you (questions, gates, plans, proposals) sits at the end of the chat, and the composer answers an open question. The **Details** panel: **Delivery** (Check now, Mark landed, Resolve), **Agent** (sessions), **Children**, **Waits on**, **Tracker** (**Link**, **Create issue**; then **Unlink**, **Import children**; only when the node's project has a tracker), **Coordinator autonomy** on a coordinating node or a project root (and, on a project root, **Director autonomy** and the project's tracker) |
 
 ### The CLI
 
@@ -189,7 +190,9 @@ agile knowledge list
       `session default: claude/claude-opus-5-5 · low`.
 - [ ] `knowledge list` shows the three built-in items: `no_push_protected`
       and `path_deny` (accepted, `action:pattern!`) and `no_push` (retired).
-- [ ] Open the cockpit: `open http://127.0.0.1:4600/`. **Needs me** is empty.
+- [ ] Open the cockpit: `open http://127.0.0.1:4600/`. Nothing waits on you
+      yet, so **Needs me** shows three setup steps, each with its state and a
+      button: **Add repository** (opens Settings), **New project**, **New node**.
 
 ## 2. Projects and repos
 
@@ -271,9 +274,21 @@ agile repo list
       `pr delivery needs GitHub auth — run gh auth login`.
 - [ ] `repo list` shows both, `protected=main,master`, ledger-lite
       `delivery=direct`, agile-test-repo `delivery=pr auto_merge=on`.
-- [ ] Cockpit → **Settings** → Repos shows the same, with a Delivery and a
-      Visibility picker per repo. **Private** visibility limits reading a
-      repo to the projects you list; leave both public.
+- [ ] Cockpit → **Settings** → **Repositories** shows the same: each repo
+      with its icon (a drive for a local-only repo, the GitHub mark for
+      agile-test-repo, with a small key when its remote is SSH), its path,
+      `GitHub · … · petestewart/agile-test-repo`, its main branch, and
+      **Direct** / **Pull request** (agile-test-repo on **Pull request** with
+      **Auto-merge once checks pass** on), **Public** / **Private** and the
+      protected branches. **Private** limits a repo to the projects you tick
+      (by name); leave both public.
+- [ ] (Optional, instead of `repo add`.) **Add repository** there opens a
+      dialog: type a path (it autocompletes; **Tab** completes, the arrows
+      choose, **Enter** opens a folder) or browse to the folder (git
+      repositories are marked `git`), check the name, **Add repository**.
+      Pasting a URL (`git@github.com:owner/repo.git`, `https://…`,
+      `owner/repo`) switches to **Clone from URL**, which clones it into the
+      folder it shows and adds it.
 
 ### 2.3 Two projects
 
@@ -295,8 +310,9 @@ agile node list
 - [ ] `project show` prints the name, root, repos,
       `autonomy    coordinator=advise director=advise` and `tracker     -`.
 - [ ] `node list` shows the two roots, Shop and Blog.
-- [ ] Cockpit: the rail's switcher offers **All projects**, Shop and Blog;
-      picking Shop hides Blog's nodes.
+- [ ] Cockpit: the rail shows both projects, Shop and Blog. Shop's **⋯** →
+      **Show only this project** hides Blog's nodes (a chip reads
+      `Only Shop`); the chip's **×** shows both again.
 
 ## 3. **[vendor]** A conversation becomes a coordinating node
 
@@ -343,8 +359,8 @@ agile node show $C
 
 ### 3.3 + Repo twice
 
-Press **+ Repo** on the node's page and pick ledger-lite, then agile-test-repo,
-or paste:
+On the node's page open **⋯** → **Add repository…** and pick ledger-lite, then
+agile-test-repo, or paste:
 
 ```zsh
 SHOP=$(agile project list --json | jq -r '.[] | select(.name=="Shop") | .id')
@@ -379,15 +395,16 @@ From here on, every step is done in the cockpit unless it is marked
 **CLI only:** (the cockpit has no control for it yet; the list is in
 "Not in the cockpit yet" at the end). Keep `http://127.0.0.1:4600/` open.
 
-- [ ] In the rail, click **Ledger export**. On the **Thread** tab, type in the
-      composer (`Write on the stream…`):
+- [ ] In the rail, click **Ledger export**. On the **Chat** tab, type in the
+      composer (`Message Claude…`, or `Tell the agent what to do…` when its
+      agent is not running; the line under the box says what Send does):
       `Go ahead. Write the plan and a contract for the JSON shape of one ledger entry, then let the parts work from them.`
       and press **Send** (or Enter). Your line appears on the thread at once.
 - [ ] Within a few minutes the coordinator writes a **plan** (which part owns
       which paths) and a **contract** (the JSON shape both parts rely on).
-      **Needs me** gets a badge, and shows a `plan to approve` card under
-      Ledger export whose text names the owners and the contracts. The same
-      card sits under **Needs you** on the Ledger export page.
+      **Needs me** gets a badge, and shows a `Plan to approve` card under
+      Ledger export listing the parts (who owns which paths) and the contracts. The same
+      card sits at the end of the Ledger export chat, right above the composer.
 - [ ] On the Ledger export page, open the **Plan** tab. It reads
       `Plan v1 · draft` with an **Approve** button, one line per part
       (`<part>: <paths>`), and each contract as `Contract: <title> v1`, then
@@ -400,12 +417,15 @@ From here on, every step is done in the cockpit unless it is marked
 - [ ] While the parts work, the Ledger export page shows a **Children**
       section: one status card per part (its state, what it is doing, the
       files it touched). If a part wants to change the contract, the
-      coordinator (at advise) puts a `coordinator proposal` card in **Needs
+      coordinator (at advise) puts a `Coordinator proposal` card in **Needs
       me** with **Apply** and **Dismiss**, and the change shows as one row in
       the coordinator's **Activity** tab.
-- [ ] Questions from any agent appear in **Needs me** as `question` cards.
-      Type in `Answer in your own words…` and press **Answer**. The answer
-      goes to the asking session as you wrote it.
+- [ ] Questions from any agent appear in **Needs me** as `Question` cards.
+      When the agent offered choices, each is a button: one click answers
+      with that choice (it reads `Sending…`, then the card leaves). Otherwise
+      type in `Answer in your own words…` and press **Answer**. The answer
+      goes to the asking session as you wrote it. On the node's page the same
+      card shows the choices, and the composer below it takes a typed answer.
 
 ## 4. **[vendor]** Delivery: a pull request that looks after itself
 
@@ -421,11 +441,11 @@ If the coordinator already proposed this link, press **Apply** on its card in
 - [ ] Open the **ledger-lite part** (under Ledger export in the rail). Its
       thread has no `… read it by id` line: that pointer is for its agent
       only. Its page has no **Tracker issue…** (Shop has no tracker until
-      8.2) and no **Coordinator autonomy** (a work node). Press
-      **Waits on…** in the row of buttons under the sessions, pick
-      `agile-test-repo part` in the list that opens, and press **Wait on**.
-- [ ] The page lists `waits on agile-test-repo part` with an **Unlink**
-      button.
+      8.2) and no **Coordinator autonomy** (a work node). Open the page's
+      **⋯** menu, choose **Waits on…**, pick `agile-test-repo part` in the
+      list that opens, and press **Wait on**.
+- [ ] The details panel's **Waits on** section lists
+      `waits on agile-test-repo part` with an **Unlink** button.
 - [ ] **Dependencies** (sidebar) shows
       `ledger-lite part waits on agile-test-repo part`. Click either name to
       open that node.
@@ -433,14 +453,14 @@ If the coordinator already proposed this link, press **Apply** on its card in
 ### 4.2 Open the pull request
 
 - [ ] Open the **agile-test-repo part** and wait until the line under its
-      title reads `agent done` (its rail dot also turns amber, "waiting on
-      you"). **Needs me** has a `ready to merge` card for it with a **Merge**
-      button (the same word as the Delivery panel). The **Diff** tab shows
-      what it changed against main.
-- [ ] The first delivery is yours. In the **Delivery** panel the line reads
+      title reads `Agent finished` (its status reads `Ready to merge` and its
+      rail dot turns amber, "waiting on you"). **Needs me** has a
+      `Ready to merge` card for it with a **Merge** button (the same word as
+      the page's). The **Changes** tab shows what it changed against main.
+- [ ] The first delivery is yours. In the details panel's **Delivery** section the line reads
       `Ready: stream/… is N commits ahead of main.` and
       `Ship check rules: …` (or `No diff-stage rules in scope.`). Press
-      **Merge**.
+      **Merge** at the top of the page.
 - [ ] The ship checks run first, then the branch is pushed and a PR opens.
       The panel shows `pushed stream/… to origin; opened PR #N into main: https://github.com/petestewart/agile-test-repo/pull/N`
       and `Delivery: pr · pr open`; the panel's status line reads
@@ -465,7 +485,7 @@ If the coordinator already proposed this link, press **Apply** on its card in
       (`delivered to the worker session`, with `in a digest` when several
       events went in one turn, or `pending`). **Check now** on the Delivery
       panel polls at once.
-- [ ] On the **Thread** tab the agent reads the failing check, adds a
+- [ ] On the **Chat** tab the agent reads the failing check, adds a
       CHANGELOG.md line, addresses your comment, commits and pushes (its
       `deliver` verb updates the PR). The check goes green.
 - [ ] With the check green and nothing pending, GitHub auto-merges the PR.
@@ -488,12 +508,12 @@ their parents and the repo view show it, and you (or a coordinator) settle it
 with a "waits on" link. When one merges, main moves, and every other live
 node on the repo is **synced** (main merged in, never rebased).
 
-This step needs no agent. You create the nodes with **Start later** ticked,
+This step needs no agent. You create the nodes with **Start the agent now** switched off,
 and play their agents by committing in their worktrees by hand. The
 terminal blocks here are only those commits and a look at the repo. Each
 commit is chained with `&&`, so nothing is written if the `cd` fails. A node's worktree is
 `<repo>/.worktrees/<node-id>-<slug>`, so the blocks find it by its slug. (The
-**Diff** tab shows the full path too.)
+**Changes** tab shows the full path too.)
 
 After a hand-made commit, the Delivery panel may still say there is nothing
 to land for up to a minute (touched files are recomputed every 60 seconds).
@@ -505,21 +525,23 @@ address bar, so a reload comes back to the same node under the same project.
 
 A Blog node adds `walkthrough-notes.md` to ledger-lite and merges directly.
 
-- [ ] In the rail's project switcher pick **Blog**, then click
+- [ ] In the rail, Blog's **⋯** → **Show only this project**, then click
       **Needs me** so no node is selected (a new node's parent defaults
       to the open node).
-- [ ] Press **New node** in the sidebar (or the `n` key). Title
-      `Walkthrough notes`, Goal
-      `Add walkthrough-notes.md with a Blog and a Shop section.`, Parent
-      `— none —`, Repo empty, tick **Start later**, press **Create**. The
-      node's page opens: `No sessions yet.`, and the rail shows it under Blog
-      with the conversation icon ○.
-- [ ] Press **+ Repo**, pick `ledger-lite`, press **Add**. The thread adds
+- [ ] Press **New node** in the sidebar (or the `n` key). It reads `In Blog`.
+      **What should the agent do?**
+      `Add walkthrough-notes.md with a Blog and a Shop section.`, Title
+      `Walkthrough notes`, Parent `Top level of Blog`, Repository
+      `No repository`, switch **Start the agent now** off, press
+      **Create node**. The node's page opens reading `Not started` (its
+      **Agent** section says `No sessions yet.`), and the rail shows it under
+      Blog with the conversation icon ○.
+- [ ] Open **⋯** → **Add repository…**, pick `ledger-lite`, press **Add**. The thread adds
       `repo added: ledger-lite; now a work node on stream/…-walkthrough-notes`,
       the line under the title ends with that branch, the rail icon becomes
       the work icon ●, and no agent starts (it never had one). (Leave the
-      form's Repo field empty: a repo typed there is only used when an agent
-      starts, and no branch is cut until then.)
+      form's Repository at `No repository`: a repository picked there is only
+      used when an agent starts, and no branch is cut until then.)
 - [ ] Commit the file in its worktree:
 
 ```zsh
@@ -546,13 +568,14 @@ cd ~
 
 ### 5.2 Two projects touch the same file
 
-- [ ] Switch the rail to **Shop**, click **Needs me**, and create
-      `Shop note` as in 5.1: **New node**, Title `Shop note`, Goal
-      `Fill in the Shop section of walkthrough-notes.md.`, tick **Start later**,
-      **Create**, then **+ Repo** → `ledger-lite` → **Add**.
+- [ ] Switch the rail to **Shop** (the `Only Blog` chip's ▾ → Shop), click
+      **Needs me**, and create `Shop note` as in 5.1: **New node**, Title
+      `Shop note`, Goal `Fill in the Shop section of walkthrough-notes.md.`,
+      switch **Start the agent now** off, **Create node**, then **⋯** →
+      **Add repository…** → `ledger-lite` → **Add**.
 - [ ] Switch the rail to **Blog**, click **Needs me**, and create
       `Blog note` the same way (Goal
-      `Fill in the Blog section of walkthrough-notes.md.`), with **+ Repo** →
+      `Fill in the Blog section of walkthrough-notes.md.`), with **Add repository…** →
       `ledger-lite` → **Add**.
 - [ ] Make one commit in each:
 
@@ -567,19 +590,19 @@ cd ~
 Touched files are recomputed after every agent edit and commit, and every 60
 seconds. Wait a minute, then:
 
-- [ ] Switch the rail to **All projects**. Shop note and Blog note carry the
+- [ ] Show all projects (the chip's **×**). Shop note and Blog note carry the
       ⚠ overlap mark, and so do their project roots, Shop and Blog.
 - [ ] **Repos** (sidebar) shows, under `ledger-lite (direct)`, both live nodes
       with their project greyed (`Shop › Shop note`, `Blog › Blog note`) and
       `⚠ Shop note and Blog note both changed walkthrough-notes.md`.
-- [ ] Open Shop note: its **Diff** tab shows the one-line change and the
+- [ ] Open Shop note: its **Changes** tab shows the one-line change and the
       worktree path, and its **Activity** tab has
       `overlap · ledger-lite · party · pending`. (`pending` means no session
       is attached to take it; a live agent gets it at once.)
 
 ### 5.3 Settle it with "waits on"; sync; merge
 
-- [ ] On Shop note's page press **Waits on…**, pick `Blog note`, press **Wait on**.
+- [ ] On Shop note's page open **⋯** → **Waits on…**, pick `Blog note`, press **Wait on**.
       The page lists `waits on Blog note`, and **Dependencies** shows
       `Shop note waits on Blog note`.
 - [ ] Press **Merge** on Shop note. It is held: the panel shows
@@ -613,7 +636,7 @@ changes, is synced at the end of its turn.)
 - [ ] Open the ledger-lite part (under Ledger export). Its **Activity** tab
       has `main changed · ledger-lite · same repo` rows, and its thread shows
       `synced main into stream/…`.
-- [ ] When the line under its title reads `agent done`, press **Merge**. Its
+- [ ] When the line under its title reads `Agent finished`, press **Merge**. Its
       wait is satisfied, the ship checks pass, and it lands on ledger-lite's
       main in one click: `Merged.` The coordinator's **Activity** tab gets a
       second `child delivered` row, and its **Children** cards read done.
@@ -659,14 +682,14 @@ row opens the item's side panel.
 
 Ship and classifier action checks need the TypeSafe key. Use **one** of these:
 
-- **Settings (preferred):** **Settings** → "TypeSafe API key" → paste the key
-  into `paste a key` → **Save**. It takes effect at once, and the field is
-  never filled back in.
+- **Settings (preferred):** **Settings** → **Classifier** → "TypeSafe API
+  key" → paste the key into `Paste a key` → **Save key**. It takes effect at
+  once, and the field is never filled back in.
 - **Environment:** `TYPESAFE_API_KEY` exported in the shell that runs
   `agile daemon start`.
 
-- [ ] Under "TypeSafe API key" the status reads `key set (from config)` (or
-      `key set (from environment)`). `no key` means neither is set.
+- [ ] Next to "TypeSafe API key" the status reads `Key set` (or
+      `Key set · from the environment`). `No key` means neither is set.
 
 ### 6.2 Add, accept and test a ship check
 
@@ -688,8 +711,9 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
       `Checked before merge`, and **Accept** / **Retire**. The side panel
       shows it: `Proposed`, Source `Added by you`, the default question
       `Does this action violate: Every change …?`, and **Accept**, **Retire**,
-      **Edit**, **Test examples**. **Needs me** also has a `standard proposed`
-      card for it.
+      **Edit**, **Test examples**. **Needs me** also has a `Standard proposed`
+      card for it, saying where it applies (`Applies to the ledger-lite
+      repo`) with **Open in Knowledge**.
 - [ ] Press **Accept** (on the row, or in **Needs me**). The row moves under
       **Rules**; its panel reads `Accepted`. **Repos** → ledger-lite now lists
       it under the repo's norms:
@@ -707,10 +731,10 @@ Ship and classifier action checks need the TypeSafe key. Use **one** of these:
 
 Again no agent: you play it.
 
-- [ ] Rail → **Blog** → **Needs me** → **New node**: Title
+- [ ] Rail → only **Blog** → **Needs me** → **New node**: Title
       `Ledger count`, Goal `Add a count function in src/ledger-count.ts.`,
-      tick **Start later**, **Create**. Then **+ Repo** → `ledger-lite` →
-      **Add**.
+      switch **Start the agent now** off, **Create node**. Then **⋯** → **Add repository…** →
+      `ledger-lite` → **Add**.
 - [ ] Commit the function with no test:
 
 ```zsh
@@ -742,27 +766,29 @@ cd ~
 
 ### 6.4 **[vendor]** A decision reaches a node as an event
 
-- [ ] Rail → **Shop** → **Needs me** → **New node**: Title
+- [ ] Rail → only **Shop** → **Needs me** → **New node**: Title
       `Cents check`, Goal
       `Read ledger-lite and tell me how it stores amounts. Then wait: I may send you a decision about this.`,
-      leave **Start later** unticked, **Create**. A session appears in its
+      leave **Start the agent now** on (it names the model it will use:
+      `claude-opus-5-5 · claude · low effort` unless Settings says
+      otherwise), **Create node**. A session appears in its
       session list (`claude/… · low · starting`, then `running`), and the
       rail icon is the conversation icon ○.
-- [ ] Wait for its first answer on the **Thread** tab. Its turn has ended,
-      so its session ends too (`session ended: its turn finished`).
+- [ ] Wait for its first answer on the **Chat** tab. Its turn has ended,
+      so its session ends too (`Turn finished`).
 - [ ] **Knowledge** → **Add knowledge**: Kind **Decision**, What agents
       should know `Amounts in exported JSON are integer cents, never floats`,
       Applies to `Project: Shop`, **Guidance**, **Propose**. Then **Accept**
-      it (on its row under **To review**, or on the `decision proposed` card
+      it (on its row under **To review**, or on the `Decision proposed` card
       in **Needs me**).
 - [ ] Back on Cents check: accepting the decision woke it (a Shop
       conversation whose turn ended is woken by an accepted item, D36). Its
-      **Thread** tab has `woken by knowledge accepted` and a new session;
+      **Chat** tab has `woken by knowledge accepted` and a new session;
       its **Activity** row reads
       `knowledge accepted · … · delivered to the worker session`, and its
       reply reacts to it ("new decision in scope: …"). A Blog node never
       gets it.
-- [ ] Its **Knowledge in scope** tab lists the global items and the new
+- [ ] Its **Knowledge** tab lists the global items and the new
       decision (`K-… · project:Shop · decision · tell`), and nothing scoped
       to Blog.
 
@@ -820,9 +846,9 @@ agile project show $BLOG
 - [ ] On **Director**, send `Go ahead with the changelog: start it now.`
 - [ ] The Director starts the changelog node's agent itself, with no card,
       and posts what it did on its thread. **Running** lists the node, and
-      the node's page reads `agent working` (or `agent done` later).
+      the node's page reads `Agent working` (or `Agent finished` later).
 - [ ] Send `Merge the changelog when it is done.` The Director refuses:
-      merging is yours. When the node reads `agent done`, press **Merge** on
+      merging is yours. When the node reads `Agent finished`, press **Merge** on
       its page.
 
 ## 8. Trackers: Jira or Linear
@@ -838,15 +864,15 @@ project. The app never closes an issue or edits its text.
 
 In Jira, create an API token (Atlassian account → Security → API tokens).
 
-- [ ] **Settings** → **Trackers** → the **Jira** row. Fill in the base URL
-      (`https://your-site.atlassian.net`: **change it** to your Jira site),
-      the email (**change it** to your Atlassian email), paste the token into
-      `paste a token`, and press **Set**.
-- [ ] The row reads `token set`; the token field empties and is never filled
-      back in. **Clear** removes the token.
+- [ ] **Settings** → **Trackers** → the **Jira** card. Fill in the **Site
+      URL** (`https://your-site.atlassian.net`: **change it** to your Jira
+      site), the **Email** (**change it** to your Atlassian email), paste the
+      token into `Paste a token`, and press **Save**.
+- [ ] The card reads `Token set`; the token field empties and is never
+      filled back in. **Remove token** removes it (after asking).
 
-Using Linear instead: paste a personal API key in the **Linear** row and press
-**Set**, then use `linear` wherever 8.2 says `jira`.
+Using Linear instead: paste a personal API key in the **Linear** card and
+press **Save**, then use `linear` wherever 8.2 says `jira`.
 
 ### 8.2 The project's tracker settings
 
@@ -876,9 +902,9 @@ You need one **epic** in Jira with at least one child issue, and its first
 child should be a small task an agent can do in agile-test-repo (for example
 "Add TRACKER.md with one line saying this repo is linked to Jira").
 
-- [ ] Rail → **Shop** → **Needs me** → **New node**: Title
-      `Tracker epic`, Goal `Placeholder until linked`, tick **Start later**,
-      **Create**.
+- [ ] Rail → only **Shop** → **Needs me** → **New node**: Title
+      `Tracker epic`, Goal `Placeholder until linked`, switch
+      **Start the agent now** off, **Create node**.
 - [ ] On its page press **Tracker issue…** (it shows because Shop has a
       tracker since 8.2), type the epic's key in the **Issue key** field
       (placeholder `SHOP-11`; **change it** to your epic's key, such as
@@ -896,15 +922,16 @@ child should be a small task an agent can do in agile-test-repo (for example
 ### 8.4 **[vendor]** Work on a linked issue; status push; roll-up in the PR
 
 - [ ] Open the first imported child (its page reads `Linked to <child key> (jira)`).
-      Press **+ Repo** → `agile-test-repo` → **Add**, then **Start** → keep the
-      defaults in the picker (vendor `claude`, the default model, effort
-      `low`) → **Start**.
+      Open **⋯** → **Add repository…** → `agile-test-repo` → **Add**, then press
+      **Start agent**: one click starts it with the defaults (the composer's
+      chip names them: `Claude Opus 5.5 · low`; the chevron beside
+      **Start agent** picks another model).
 - [ ] A `worker` session appears in its session list and starts work in the
       new worktree. In Jira the child issue moves to **In Progress**.
 - [ ] Edit the child issue's description in Jira. Within five minutes the
       child's **Activity** tab has an `external changed` row and the agent is
       told.
-- [ ] When the page reads `agent done`, press **Merge**. The PR body's
+- [ ] When the page reads `Agent finished`, press **Merge**. The PR body's
       `Issues:` line links the child issue. In Jira the issue moves to
       **In Review** and gains a link to the PR.
 - [ ] The `changelog` check from 2.1 fails first, and the agent fixes it as
@@ -916,9 +943,10 @@ child should be a small task an agent can do in agile-test-repo (for example
 ### 8.5 **[vendor]** Create an issue from a node
 
 - [ ] Open **Tracker epic** and press **New node** (the Parent defaults to
-      the open node, Tracker epic). Title `Tracker follow-up`, Goal
-      `Note in TRACKER.md how issues are linked.`, tick **Start later**,
-      **Create**.
+      the open node, Tracker epic; its **+** in the rail does the same).
+      Title `Tracker follow-up`, Goal
+      `Note in TRACKER.md how issues are linked.`, switch
+      **Start the agent now** off, **Create node**.
 - [ ] On Tracker follow-up's page press **Tracker issue…**, leave the
       **Issue key** field empty and press **Create issue**. A new issue is created in the epic's Jira project, as a
       child of the epic, from the node's title and goal. The node reads
@@ -931,15 +959,26 @@ child should be a small task an agent can do in agile-test-repo (for example
 
 ### 9.1 What is going on
 
-- [ ] **Needs me** is everything waiting on you, grouped by node, each card
-      with its kind (`question`, `decision`, `plan to approve`,
-      `coordinator proposal`, `… proposed`, `ready to merge`) and how long it
-      has waited. A long card has **Show all**; **Open stream** opens its
-      node. The badge on **Needs me** counts them.
+- [ ] **Needs me** is everything waiting on you, grouped by project, then
+      node, oldest first. Each card says what it is (`Question`,
+      `Allow this action?`, `Approve this merge?`, `Plan to approve`,
+      `Coordinator proposal`, `… proposed`, `Ready to merge`, `Blocked`,
+      `Waiting for the plan`) and how long it has waited (hover for the
+      time). A long card has **Show more**; **Open** (or the node's name above
+      it) opens its node. The filter narrows it to **Questions**,
+      **Decisions** or **Merges**; `j`/`k` move between cards and Enter opens
+      one's node. The badge on **Needs me** counts them. With nothing
+      waiting it reads `You’re all caught up`.
 - [ ] The rail's dots say who must act: amber waiting on you, blue agent
-      working, grey idle, green landed, red blocked (hover a row to read it).
+      working, grey idle, green landed, red blocked (hover a row to read it;
+      the **?** next to *Projects* explains every dot and icon). A node whose
+      agent never ran has a dashed ring and a faded title.
       The filter box (`Filter nodes…`, or the `/` key) narrows the tree
       by title. **Running** lists the nodes with a live agent.
+- [ ] A node you no longer need: its **⋯** → **Delete…** → **Delete**. It
+      and the nodes under it leave the rail and their agents stop (branches
+      and worktrees stay). **Undo** in the toast, or **Deleted (n)** below the
+      tree → **Restore**, brings them back. A project's root has no Delete.
 - [ ] A node's **Activity** tab is what woke it and why: one row per routed
       event with its type, `[repo]`, why it was routed (self, ancestor,
       waits on, same repo, party, sibling), the delivery status
@@ -968,18 +1007,18 @@ agile daemon status
       `agiled is not running`, and the cockpit's sidebar shows
       `reconnecting…` instead of `live`. After `start` it reconnects with every
       node, thread and event intact. Stopping the daemon stops every agent
-      session: open a node that was mid-work and press **Restart** →
-      **Start**.
+      session: open a node that was mid-work and press **Restart agent** (or
+      just send it a message: that starts it again).
 
 ### 9.3 Where things live
 
 - Why a session ended: the node page's session list shows it after the
-  session's status (`— <reason>`) when it was not a normal end; a normal
-  end is `session ended: its turn finished` on the thread. Two or more
+  session's status when it was not a normal end; a normal end is
+  `Turn finished` on the thread. Two or more
   ended sessions fold into one `N earlier sessions` row: click it to show
   them. Live sessions are always shown.
-- A node's worktree and branch: the line under its title (branch) and the
-  **Diff** tab (worktree path). Worktrees are
+- A node's worktree and branch: the line under its title (branch; a click
+  copies it) and the **Changes** tab (worktree path). Worktrees are
   `<repo>/.worktrees/<node-id>-<slug>` on `stream/…` branches.
 - Daemon log: `tail -50 ~/.agile-walkthrough/log/agiled.log`
 - Event log: `~/.agile-walkthrough/log/events.jsonl`

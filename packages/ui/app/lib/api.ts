@@ -488,3 +488,33 @@ export function cloneRepo(input: {
 }): Promise<CloneRepoResult> {
   return post('/api/repos/clone', input) as Promise<CloneRepoResult>;
 }
+
+/** T365: the rail's Rename (and a goal edit): the same patch as `stream.update`, stamped human. */
+export function updateStream(
+  id: string,
+  patch: { title?: string; goal?: string },
+): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/update`, patch) as Promise<Stream>;
+}
+
+/** T367: `GET /health` — Settings → General's daemon facts. */
+export interface DaemonHealth {
+  version: string;
+  /** The daemon's home folder. */
+  stateRoot: string;
+  pid: number;
+  /** Seconds. */
+  uptime: number;
+}
+
+export function getHealth(): Promise<DaemonHealth> {
+  return get('/health');
+}
+
+/** T372: rename a project or change its repos (registered names only). */
+export function updateProject(
+  id: string,
+  patch: { name?: string; repos?: string[] },
+): Promise<Project> {
+  return post(`/api/projects/${encodeURIComponent(id)}`, patch) as Promise<Project>;
+}

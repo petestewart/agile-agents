@@ -29,6 +29,7 @@ import {
   StreamCreateInputSchema,
   StreamMoveRequestSchema,
   StreamSayInputSchema,
+  StreamUpdateRequestSchema,
   StreamWaitRequestSchema,
   UlidSchema,
   formatZodError,
@@ -765,7 +766,7 @@ async function handlePlanRoute(
  *
  *   POST /api/proposals/:id/apply|dismiss  the human decides a coordinator's proposal card
  *   POST /api/streams/:id/autonomy         `{autonomy: level|null}`: the node's override
- *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null}`: the project's levels and (T338) tracker settings
+ *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null, name?, repos?}`: the project's levels, (T338) tracker settings and (T372) name and repos
  */
 async function handleAutonomyRoute(
   req: Request,
@@ -797,10 +798,13 @@ async function handleAutonomyRoute(
     }
     if (!feed?.projects) return errorResponse(503, 'projects not available');
     const body = await readJsonBody(req);
+    // T372: the cockpit also renames a project and changes its repos.
     return jsonResponse(
       await feed.projects.update(decodeURIComponent(project?.[1] ?? ''), {
         autonomy: body.autonomy,
         ...(body.tracker !== undefined ? { tracker: body.tracker } : {}),
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.repos !== undefined ? { repos: body.repos } : {}),
       }),
     );
   } catch (err) {
@@ -1113,6 +1117,7 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
  *   POST /api/streams/:id/wait         Link (T228, P8): `{on, remove?}` a `waits_on` edge
  *   POST /api/streams/:id/move         Move (T333, D34): `{parent}` a node or a project id
+ *   POST /api/streams/:id/update       Rename (T365): `{title?, goal?}`, as `stream.update`
  *   POST /api/streams/:id/archive      Delete (T361): stops the subtree's sessions, archives it
  *                                      → `{node, archived: [ids], stopped: [session ids]}`
  *   POST /api/streams/:id/unarchive    Restore (T361): the node and what its delete archived
@@ -1129,7 +1134,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|archive|unarchive))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -1213,6 +1218,12 @@ async function handleStreamRoute(
       const input = StreamMoveRequestSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('move', input.error));
       return jsonResponse(await feed.streams.move(id, input.data.parent));
+    }
+    if (action === 'update') {
+      // T365: the same `StreamService.update` as the RPC's `stream.update`, title and goal only.
+      const input = StreamUpdateRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('update', input.error));
+      return jsonResponse(await feed.streams.update('human', id, input.data));
     }
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);

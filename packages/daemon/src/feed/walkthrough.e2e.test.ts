@@ -470,8 +470,35 @@ async function openView(label: string): Promise<void> {
   await nav(label).click();
 }
 
+/**
+ * T365: the rail shows every project; a project's ⋯ → Show only this project
+ * filters it, and the chip at the top switches or clears (All projects).
+ */
 async function pickProject(name: string): Promise<void> {
-  await page.locator('[data-testid="project-switcher"]').selectOption({ label: name });
+  const chip = page.locator('[data-testid="project-filter"]');
+  if (name === 'All projects') {
+    if ((await chip.count()) > 0)
+      await page.locator('[data-testid="project-filter-clear"]').click();
+    await chip.waitFor({ state: 'detached' });
+    return;
+  }
+  if ((await chip.count()) > 0) {
+    await page.locator('[data-testid="project-filter-switch"]').click();
+    await page
+      .locator('[data-testid="project-filter-option"]', { hasText: new RegExp(`^${name}$`) })
+      .click();
+  } else {
+    await rail()
+      .locator('.cr-tree-item', {
+        has: page.locator('.cr-tree-row[data-role="project"] .title', {
+          hasText: new RegExp(`^${name}$`),
+        }),
+      })
+      .locator('[data-testid="tree-menu-trigger"]')
+      .click();
+    await page.locator('[data-testid="tree-menu"] [data-testid="tree-menu-only"]').click();
+  }
+  await chip.filter({ hasText: name }).waitFor();
 }
 
 async function openNode(title: string): Promise<void> {
@@ -489,13 +516,21 @@ async function newStream(title: string, goal: string, startLater: boolean): Prom
   await page.locator('[data-testid="new-stream-open"]').click();
   await page.locator('[data-testid="new-stream-title"]').fill(title);
   await page.locator('[data-testid="new-stream-goal"]').fill(goal);
-  if (startLater) await page.locator('[data-testid="new-stream-start-later"]').check();
+  // T365: "Start the agent now" is on by default; off is the old Start later.
+  if (startLater) await page.locator('[data-testid="new-stream-start"]').uncheck();
   await page.locator('[data-testid="new-stream-create"]').click();
   await page.locator('[data-testid="stream-title"]', { hasText: title }).waitFor();
 }
 
+/** T363: the rarer node actions live in the page header's ⋯ menu. */
+async function nodeMenu(): Promise<void> {
+  await streamPage().locator('[data-testid="node-menu-trigger"]').click();
+  await page.locator('[data-testid="node-menu"]').waitFor();
+}
+
 async function addRepo(repo: string): Promise<void> {
-  await streamPage().getByRole('button', { name: '+ Repo' }).click();
+  await nodeMenu();
+  await page.locator('[data-testid="add-repo"]').click();
   await page.locator('[data-testid="add-repo-select"]').selectOption(repo);
   await page.locator('[data-testid="add-repo-submit"]').click();
   await page.locator('[data-testid="add-repo-form"]').waitFor({ state: 'detached' });
@@ -718,14 +753,21 @@ test.skipIf(!RUN)(
     });
 
     // ---------------------------------------------------------- 3.4
-    await step('3.4a', 'send the coordinator a line from the Thread tab', async () => {
+    await step('3.4a', 'send the coordinator a line from the Chat tab', async () => {
       await openNode('Ledger export');
       await check3_4Rail();
       const composer = page.locator('[data-testid="composer-input"]');
+      // T363: the placeholder speaks to the agent; the line under the box says what Send does.
       check(
-        'composer placeholder "Write on the stream…"',
-        ((await composer.getAttribute('placeholder')) ?? '').startsWith('Write on the stream'),
+        'composer placeholder "Message Claude…" or "Tell the agent what to do…"',
+        /^(Message |Tell the agent)/.test((await composer.getAttribute('placeholder')) ?? ''),
         (await composer.getAttribute('placeholder')) ?? '',
+      );
+      await checkText(
+        'the hint says what Send does',
+        page.locator('[data-testid="composer-hint"]'),
+        /^(Sends it to|Queued|Wakes the agent|Starts the agent)/,
+        5_000,
       );
       const plan = claim(C, 'coordinator', async (session) => {
         const parts = world.daemon.streamService?.list().filter((s) => s.parent === C) ?? [];
@@ -772,7 +814,7 @@ test.skipIf(!RUN)(
         await checkText(
           'the plan card sits under Needs you',
           card.locator('.kind'),
-          'plan to approve',
+          'Plan to approve',
         );
         await checkText('the card names the owners', card, /ledger-lite part/);
         await checkText('the card names the contract', card, /Ledger entry JSON/);
@@ -799,7 +841,7 @@ test.skipIf(!RUN)(
         await checkText(
           'Needs me: plan to approve card',
           inboxCard.locator('.kind'),
-          'plan to approve',
+          'Plan to approve',
         );
         await checkText(
           'the card is grouped under Ledger export',
@@ -903,7 +945,7 @@ test.skipIf(!RUN)(
     await step('3.4e', 'a question card, answered inline', async () => {
       await openView('Needs me');
       const q = page.locator('[data-testid="inbox"] .cr-card[data-kind="question"]');
-      await checkText('a question card', q.locator('.kind'), 'question');
+      await checkText('a question card', q.locator('.kind'), 'Question');
       await checkText('the question text', q, /pretty JSON or one line/);
       const input = q.locator('[data-testid="answer-input"]');
       check(
@@ -967,7 +1009,7 @@ test.skipIf(!RUN)(
     await step('3.4f', 'a coordinator proposal: Apply, and one Activity row', async () => {
       await openView('Needs me');
       const card = page.locator('[data-testid="inbox"] .cr-card[data-kind="proposal"]');
-      await checkText('a coordinator proposal card', card.locator('.kind'), 'coordinator proposal');
+      await checkText('a coordinator proposal card', card.locator('.kind'), 'Coordinator proposal');
       check(
         'the card has Apply',
         (await card.getByRole('button', { name: 'Apply' }).count()) === 1,
@@ -1015,12 +1057,14 @@ test.skipIf(!RUN)(
           page.locator('[data-testid="thread"]'),
           /read it by id/,
         );
+        // T363: Waits on… is in the ⋯ menu.
+        await nodeMenu();
         await checkText(
-          'the button reads Waits on…',
-          streamPage().locator('[data-testid="link-wait"]'),
+          'the menu item reads Waits on…',
+          page.locator('[data-testid="link-wait"]'),
           'Waits on…',
         );
-        await streamPage().locator('[data-testid="link-wait"]').click();
+        await page.locator('[data-testid="link-wait"]').click();
         await page
           .locator('[data-testid="link-wait-select"]')
           .selectOption({ label: 'agile-test-repo part' });
@@ -1075,7 +1119,7 @@ test.skipIf(!RUN)(
       const doneCard = page.locator('[data-testid="inbox"] .cr-group', {
         hasText: 'agile-test-repo part',
       });
-      await checkText('its Needs me card reads ready to merge', doneCard, /ready to merge/);
+      await checkText('its Needs me card reads Ready to merge', doneCard, /Ready to merge/);
       await checkText(
         'with a Merge button',
         doneCard.locator('[data-kind="done"] [data-testid="land"]'),
@@ -1083,13 +1127,13 @@ test.skipIf(!RUN)(
       );
       await openNode('agile-test-repo part');
       await checkText(
-        'the line under its title reads agent done',
+        'the line under its title reads Agent finished',
         page.locator('[data-testid="stream-status"]'),
-        /agent done/,
+        /Agent finished/,
       );
       const dot = await railRow('agile-test-repo part').locator('.cr-dot').getAttribute('data-dot');
       check('its rail dot is amber (waiting on you)', dot === 'amber', dot ?? '');
-      await tab('Diff').click();
+      await tab('Changes').click();
       await checkText(
         'the Diff tab shows the change against main',
         page.locator('[data-testid="diff"]'),
@@ -1136,7 +1180,7 @@ test.skipIf(!RUN)(
         prLines === 1,
         `${prLines} lines name the PR: ${await textOf(page.locator('[data-testid="land-panel"]'))}`,
       );
-      await tab('Thread').click();
+      await tab('Chat').click();
       await checkText(
         'the thread adds the PR line',
         page.locator('[data-testid="thread"]'),
@@ -1264,7 +1308,7 @@ test.skipIf(!RUN)(
         page.locator('[data-testid="waits-on"]'),
         /waits on agile-test-repo part · satisfied/,
       );
-      await tab('Thread').click();
+      await tab('Chat').click();
       await checkText(
         'its thread says waits on … satisfied',
         page.locator('[data-testid="thread"]'),
@@ -1297,9 +1341,13 @@ test.skipIf(!RUN)(
         .locator('[data-testid="new-stream-goal"]')
         .fill('Add walkthrough-notes.md with a Blog and a Shop section.');
       const parent = page.locator('[data-testid="new-stream-parent"]');
-      const parentText = await parent.locator('option:checked').textContent();
-      check('Parent reads — none —', (parentText ?? '').includes('none'), parentText ?? '');
-      await page.locator('[data-testid="new-stream-start-later"]').check();
+      const parentText = await parent.textContent();
+      check(
+        'Parent reads Top level of Blog',
+        (await parent.getAttribute('data-value')) === '' && parentText === 'Top level of Blog',
+        parentText ?? '',
+      );
+      await page.locator('[data-testid="new-stream-start"]').uncheck();
       await page.locator('[data-testid="new-stream-create"]').click();
       await page
         .locator('[data-testid="stream-title"]', { hasText: 'Walkthrough notes' })
@@ -1354,10 +1402,8 @@ test.skipIf(!RUN)(
         .locator('[data-testid="stream-title"]', { hasText: 'Walkthrough notes' })
         .waitFor();
       await until(
-        'the reload keeps the project switcher on Blog',
-        async () =>
-          (await page.locator('[data-testid="project-switcher"] option:checked').textContent()) ===
-          'Blog',
+        'the reload keeps the project filter on Blog',
+        async () => (await textOf(page.locator('[data-testid="project-filter"]'))) === 'Only Blog',
       );
       await checkText(
         'Ready: stream/…-walkthrough-notes is 1 commit ahead of main.',
@@ -1468,7 +1514,7 @@ test.skipIf(!RUN)(
 
     await step('5.2c', 'Shop note: Diff and the overlap row on Activity', async () => {
       await openNode('Shop note');
-      await tab('Diff').click();
+      await tab('Changes').click();
       await checkText(
         'the Diff tab shows the one-line change and the worktree path',
         page.locator('[data-testid="diff"]'),
@@ -1484,7 +1530,8 @@ test.skipIf(!RUN)(
 
     // ---------------------------------------------------------- 5.3
     await step('5.3a', 'Shop note waits on Blog note; its Merge is held', async () => {
-      await streamPage().locator('[data-testid="link-wait"]').click();
+      await nodeMenu();
+      await page.locator('[data-testid="link-wait"]').click();
       await page.locator('[data-testid="link-wait-select"]').selectOption({ label: 'Blog note' });
       await page.getByRole('button', { name: 'Wait on' }).click();
       await checkText(
@@ -1503,7 +1550,7 @@ test.skipIf(!RUN)(
         page.locator('[data-testid="land-panel"]'),
         /waits on [0-9A-Z]{26}/,
       );
-      await tab('Thread').click();
+      await tab('Chat').click();
       await checkText(
         'so does the thread',
         page.locator('[data-testid="thread"]'),
@@ -1592,16 +1639,16 @@ test.skipIf(!RUN)(
         page.locator('[data-testid="activity"]'),
         /main changed · ledger-lite · same repo/,
       );
-      await tab('Thread').click();
+      await tab('Chat').click();
       await checkText(
         'its thread shows synced main into stream/…',
         page.locator('[data-testid="thread"]'),
         /synced main into stream\//,
       );
       await checkText(
-        'the line under its title reads agent done',
+        'the line under its title reads Agent finished',
         page.locator('[data-testid="stream-status"]'),
-        /agent done/,
+        /Agent finished/,
       );
       await page.locator('[data-testid="stream-land"]').click();
       await checkText('Merged.', page.locator('[data-testid="land-before"]'), 'Merged.');
@@ -1633,25 +1680,26 @@ test.skipIf(!RUN)(
     });
 
     // ---------------------------------------------------------- 6.1
-    await step('6.1', 'Settings: the TypeSafe key', async () => {
+    await step('6.1', 'Settings → Classifier: the TypeSafe key', async () => {
       await openView('Settings');
+      await page.locator('[data-testid="settings-nav-classifier"]').click();
       await checkText(
-        'no key before',
+        'No key before',
         page.locator('[data-testid="settings-key-status"]'),
-        /no key/,
+        /^No key$/,
       );
       const input = page.locator('[data-testid="settings-key-input"]');
       check(
-        'the key field reads paste a key',
-        (await input.getAttribute('placeholder')) === 'paste a key',
+        'the key field reads Paste a key',
+        (await input.getAttribute('placeholder')) === 'Paste a key',
         (await input.getAttribute('placeholder')) ?? '',
       );
       await input.fill('ts_walkthrough_fake_key');
       await page.locator('[data-testid="settings-key-save"]').click();
       await checkText(
-        'the status reads key set (from config)',
+        'the status reads Key set',
         page.locator('[data-testid="settings-key-status"]'),
-        /key set \(from config\)/,
+        /^Key set$/,
       );
       check(
         'the field is never filled back in',
@@ -1738,7 +1786,7 @@ test.skipIf(!RUN)(
       await checkText(
         'Needs me has a standard proposed card',
         page.locator('[data-testid="inbox"] .cr-card[data-kind="rule_accept"] .kind'),
-        'standard proposed',
+        'Standard proposed',
       );
     });
 
@@ -1917,7 +1965,7 @@ test.skipIf(!RUN)(
       const card = page.locator('[data-testid="inbox"] .cr-card[data-kind="rule_accept"]', {
         hasText: 'integer cents',
       });
-      await checkText('a decision proposed card', card.locator('.kind'), 'decision proposed');
+      await checkText('a Decision proposed card', card.locator('.kind'), 'Decision proposed');
       // Its first turn ended with nothing open, so its session ended (T137);
       // accepting the decision wakes it with the decision (D36 D10, T351).
       const reacted = claim(cents, 'worker', async (_session, prompt) => {
@@ -1940,7 +1988,7 @@ test.skipIf(!RUN)(
         page.locator('[data-testid="activity"]'),
         /knowledge accepted · \S+ · delivered to the worker session/,
       );
-      await tab('Thread').click();
+      await tab('Chat').click();
       await checkText(
         'the agent reacts on the thread',
         page.locator('[data-testid="thread"]'),
@@ -1960,14 +2008,14 @@ test.skipIf(!RUN)(
         /ready to (merge|land)/i,
       );
       await openNode('Cents check');
-      await tab('Knowledge in scope').click();
+      await tab('Knowledge').click();
       await checkText(
-        'Knowledge in scope lists the new decision',
+        'the Knowledge tab lists the new decision',
         page.locator('[data-testid="rules"]'),
         /decision · tell/,
       );
       await checkNotText(
-        'Knowledge in scope shows the project by name, not P-…',
+        'the Knowledge tab shows the project by name, not P-…',
         page.locator('[data-testid="rules"]'),
         /project:P-/,
       );
@@ -2153,9 +2201,9 @@ test.skipIf(!RUN)(
       await refused;
       await openNode('Changelog in ledger-lite');
       await checkText(
-        'the node reads agent done',
+        'the node reads Agent finished',
         page.locator('[data-testid="stream-status"]'),
-        /agent done/,
+        /Agent finished/,
       );
       await page.locator('[data-testid="stream-land"]').click();
       await checkText('Merged.', page.locator('[data-testid="land-before"]'), 'Merged.');
@@ -2164,26 +2212,27 @@ test.skipIf(!RUN)(
     // ---------------------------------------------------------- 8
     await step('8.1', 'Settings → Trackers → Jira', async () => {
       await openView('Settings');
+      await page.locator('[data-testid="settings-nav-trackers"]').click();
       const row = page.locator('[data-testid="settings-tracker-jira"]');
       await row.locator('[data-testid="settings-tracker-jira-base-url"]').fill(world.jira.baseUrl);
       await row.locator('[data-testid="settings-tracker-jira-email"]').fill(world.jira.email);
       const token = row.locator('[data-testid="settings-tracker-jira-token"]');
       check(
-        'the token field reads paste a token',
-        (await token.getAttribute('placeholder')) === 'paste a token',
+        'the token field reads Paste a token',
+        (await token.getAttribute('placeholder')) === 'Paste a token',
         (await token.getAttribute('placeholder')) ?? '',
       );
       await token.fill(world.jira.token);
-      await row.getByRole('button', { name: 'Set' }).click();
+      await row.getByRole('button', { name: 'Save', exact: true }).click();
       await checkText(
-        'the row reads token set',
+        'the card reads Token set',
         row.locator('[data-testid="settings-tracker-jira-status"]'),
-        'token set',
+        'Token set',
       );
       check('the token field empties', (await token.inputValue()) === '', await token.inputValue());
       check(
-        'Clear is offered',
-        (await row.getByRole('button', { name: 'Clear' }).isEnabled()) === true,
+        'Remove token is offered',
+        (await row.getByRole('button', { name: 'Remove token' }).isEnabled()) === true,
         await textOf(row),
       );
     });
@@ -2322,10 +2371,13 @@ test.skipIf(!RUN)(
         await turnGate.wait();
         return 'TRACKER.md added.';
       });
-      await streamPage().getByRole('button', { name: 'Start' }).click();
-      const picker = page.locator('[data-testid="session-picker"]');
-      await checkText('the picker defaults: vendor claude, effort low', picker, /claude.*low/);
-      await page.locator('[data-testid="picker-start"]').click();
+      // T363: Start agent is one click; the composer's chip names what it runs.
+      await checkText(
+        'the default it starts with: Claude … · low',
+        page.locator('[data-testid="composer-model"]'),
+        /^Claude .* · low$/,
+      );
+      await streamPage().getByRole('button', { name: 'Start agent', exact: true }).click();
       await checkText(
         'a worker session appears',
         page.locator('[data-testid="session"][data-role="worker"]'),
@@ -2338,9 +2390,9 @@ test.skipIf(!RUN)(
       turnGate.open();
       await worked;
       await checkText(
-        'the page reads agent done',
+        'the page reads Agent finished',
         page.locator('[data-testid="stream-status"]'),
-        /agent done/,
+        /Agent finished/,
       );
       await page.locator('[data-testid="stream-land"]').click();
       await checkText('a PR opens', page.locator('[data-testid="land-result"]'), /opened PR #\d+/);
@@ -2386,9 +2438,7 @@ test.skipIf(!RUN)(
 
     await step('8.5', 'create an issue from a node', async () => {
       await page.locator('[data-testid="new-stream-open"]').click();
-      const parentText = await page
-        .locator('[data-testid="new-stream-parent"] option:checked')
-        .textContent();
+      const parentText = await page.locator('[data-testid="new-stream-parent"]').textContent();
       check(
         'the Parent defaults to the open node, Tracker epic',
         (parentText ?? '').includes('Tracker epic'),
@@ -2398,7 +2448,7 @@ test.skipIf(!RUN)(
       await page
         .locator('[data-testid="new-stream-goal"]')
         .fill('Note in TRACKER.md how issues are linked.');
-      await page.locator('[data-testid="new-stream-start-later"]').check();
+      await page.locator('[data-testid="new-stream-start"]').uncheck();
       await page.locator('[data-testid="new-stream-create"]').click();
       await page
         .locator('[data-testid="stream-title"]', { hasText: 'Tracker follow-up' })

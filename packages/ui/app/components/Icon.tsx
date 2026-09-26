@@ -41,6 +41,12 @@ const PATHS = {
       <path d="M12 19V5" />
     </>
   ),
+  'arrow-down': (
+    <>
+      <path d="M12 5v14" />
+      <path d="m19 12-7 7-7-7" />
+    </>
+  ),
   'arrow-right': (
     <>
       <path d="M5 12h14" />
@@ -111,6 +117,13 @@ const PATHS = {
       <path d="M20 4v7a4 4 0 0 1-4 4H4" />
     </>
   ),
+  download: (
+    <>
+      <path d="M12 15V3" />
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="m7 10 5 5 5-5" />
+    </>
+  ),
   'external-link': (
     <>
       <path d="M15 3h6v6" />
@@ -158,6 +171,9 @@ const PATHS = {
       <path d="M14 13h3" />
       <path d="M7 13h3" />
     </>
+  ),
+  'folder-open': (
+    <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
   ),
   'folder-up': (
     <>
@@ -227,6 +243,12 @@ const PATHS = {
       <circle cx="12" cy="12" r="10" />
       <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
       <path d="M12 17h.01" />
+    </>
+  ),
+  home: (
+    <>
+      <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+      <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
     </>
   ),
   inbox: (
@@ -478,6 +500,14 @@ const PATHS = {
       <path d="m17.5 15.5 2-2" />
     </>
   ),
+  // T365: the rail's Move to… and "Show only this project".
+  'corner-down-right': (
+    <>
+      <path d="m15 10 5 5-5 5" />
+      <path d="M4 4v7a4 4 0 0 0 4 4h12" />
+    </>
+  ),
+  filter: <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />,
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof PATHS;
