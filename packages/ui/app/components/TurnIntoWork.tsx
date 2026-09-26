@@ -59,7 +59,7 @@ export function TurnIntoWorkDialog({
       value: '',
       text: 'No repository',
       icon: <Icon name="search" size={14} />,
-      sub: 'Research: the goal is what it finds out',
+      sub: 'Research, no branch',
       pinned: true,
       attrs: { 'data-repo': '' },
     },
