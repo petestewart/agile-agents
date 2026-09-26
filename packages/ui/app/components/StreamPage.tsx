@@ -56,6 +56,7 @@ import {
   openQuestions,
   sendIntent,
   vendorLabel,
+  workingAs,
 } from '../lib/chat';
 import { resolvedFor } from '../lib/defaults';
 import { useFeed } from '../lib/feed-context';
@@ -1006,7 +1007,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           openQuestions={new Set(questions.map((q) => q.id))}
           steps={steps.before}
         />
-        {thinking && <Thinking name={name} steps={steps.current} />}
+        {thinking && <Thinking {...workingAs(stream.sessions)} steps={steps.current} />}
         {!thinking && steps.current.length > 0 && (
           <div className="cr-steps-tail">
             <StepsFold steps={steps.current} />

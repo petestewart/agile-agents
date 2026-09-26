@@ -36,8 +36,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 
 - The live steps block could also name the step in progress or how long the
   turn has run (a node's and the Director's alike).
-- While a reviewer runs, the live steps block shows under the worker's name
-  (`isThinking` counts a reviewer; pre-existing).
 
 ## P3 — cleanup, hardening, decisions
 

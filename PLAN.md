@@ -2260,6 +2260,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T399`; control-room e2e `T399` (the fold before a reply, and a step pushed after it).
 - **Notes:** Branch T399-director-steps.
 
+### Ticket: T400 A running reviewer is named in the live block
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: while only a reviewer ran, the chat's live block said "Claude is working" under the idle worker's name.
+- **Acceptance Criteria:** With the worker idle and a reviewer running, the block reads "<reviewer's vendor> is reviewing"; with the worker running it still names the worker.
+- **Validation Steps:** `bun test packages/ui/app/lib/chat.test.ts`.
+- **Notes:** Branch T400-reviewer-working.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

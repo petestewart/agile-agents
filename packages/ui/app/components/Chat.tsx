@@ -558,9 +558,12 @@ export function StepsFold({ steps }: { steps: readonly AgentStep[] }): JSX.Eleme
  */
 export function Thinking({
   name,
+  doing = 'working',
   steps = [],
 }: {
   name: string;
+  /** T400: "reviewing" while only a reviewer runs. */
+  doing?: 'working' | 'reviewing';
   steps?: readonly AgentStep[];
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
@@ -572,7 +575,9 @@ export function Thinking({
         <span className="cr-avatar" aria-hidden="true">
           <Icon name="sparkles" size={13} />
         </span>
-        <span className="cr-thinking-text">{name} is working</span>
+        <span className="cr-thinking-text">
+          {name} is {doing}
+        </span>
         <span className="cr-dots" aria-hidden="true">
           <span />
           <span />

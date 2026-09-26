@@ -30,6 +30,7 @@ import {
   sessionLabel,
   systemLine,
   vendorLabel,
+  workingAs,
 } from './chat';
 
 const SESSION = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
@@ -104,6 +105,20 @@ describe('names', () => {
     expect(chatAuthor('agent:01ARZ3NDEKTSV4RRFFQ69G5FAW', sessions)).toEqual({ name: 'Agent' });
     expect(agentName([session({ role: 'reviewer', vendor: 'gemini' }), session()])).toBe('Claude');
     expect(agentName([])).toBe('The agent');
+  });
+
+  test('T400: the live block names a running reviewer when the worker is idle', () => {
+    const idle = session({ status: 'idle' });
+    const reviewer = session({ role: 'reviewer', vendor: 'codex', status: 'running' });
+    expect(workingAs([idle, reviewer])).toEqual({ name: 'Codex', doing: 'reviewing' });
+    // Both running: the node's own agent.
+    expect(workingAs([session(), reviewer])).toEqual({ name: 'Claude', doing: 'working' });
+    expect(workingAs([session()])).toEqual({ name: 'Claude', doing: 'working' });
+    // A stopped reviewer is not the one working.
+    expect(workingAs([idle, { ...reviewer, status: 'stopped' }])).toEqual({
+      name: 'Claude',
+      doing: 'working',
+    });
   });
 });
 
