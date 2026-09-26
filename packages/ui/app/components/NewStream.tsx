@@ -236,6 +236,7 @@ function NewStreamForm({
             <Button
               variant="primary"
               icon="plus"
+              data-autofocus
               onClick={() => {
                 close();
                 setNewProjectOpen(true);
@@ -421,7 +422,7 @@ function NewStreamForm({
               </select>
             </Field>
           )}
-          <Field label="Parent" hint="Optional. It nests under this node.">
+          <Field label="Parent" hint="Optional. Nest it under another node in this project.">
             <PickerField
               testid="new-stream-parent"
               label="Parent"

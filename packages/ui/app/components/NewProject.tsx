@@ -135,10 +135,7 @@ export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
           </div>
         ) : (
           <div className="cr-checklist-empty" data-testid="new-project-repos">
-            <p>
-              No repositories yet. A project can start without one (conversations need none) and you
-              can add them later.
-            </p>
+            <p>No repositories yet. A project can start without one: conversations need none.</p>
             <button
               type="button"
               className="cr-link"
@@ -149,9 +146,11 @@ export function NewProject({ onClose }: { onClose(): void }): JSX.Element {
             </button>
           </div>
         )}
-        <div className="cr-field-hint">
-          The repositories its nodes work in. New nodes offer these first.
-        </div>
+        {repos.length > 0 ? (
+          <div className="cr-field-hint">
+            The repositories its nodes work in. New nodes offer these first.
+          </div>
+        ) : null}
       </fieldset>
       {error && (
         <p className="cr-error" role="alert" data-testid="new-project-error">
