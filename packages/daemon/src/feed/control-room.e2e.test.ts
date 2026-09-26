@@ -3901,15 +3901,20 @@ function notifyStub(mode: 'real' | 'denied' | 'dismiss' | 'missing' = 'real'): s
     let shownByWorker = 0;
     ServiceWorkerRegistration.prototype.showNotification = function (title, options = {}) {
       const id = ++shownByWorker;
-      window.__notes.push({
+      const note = {
         title,
         body: options.body ?? '',
         tag: options.tag ?? '',
         data: options.data,
         via: 'worker',
         id,
-      });
-      return show.call(this, title, { ...options, data: { ...options.data, __note: id } });
+      };
+      // Recorded once the browser shows it, so a recorded one is open until closed.
+      return show
+        .call(this, title, { ...options, data: { ...options.data, __note: id } })
+        .then(() => {
+          window.__notes.push(note);
+        });
     };
     let away = false;
     Object.defineProperty(Document.prototype, 'visibilityState', {

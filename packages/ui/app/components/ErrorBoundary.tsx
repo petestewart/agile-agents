@@ -16,12 +16,13 @@
 
 import {
   Component,
+  type ComponentProps,
   type ComponentType,
   type ErrorInfo,
-  type LazyExoticComponent,
   type PropsWithChildren,
   type ReactNode,
   Suspense,
+  createElement,
   lazy,
   useEffect,
   useRef,
@@ -280,21 +281,40 @@ function OverlayFailed({
 
 // ---------------------------------------------------------------- lazy views
 
+// biome-ignore lint/suspicious/noExplicitAny: the props are the component's own, as React's `lazy` types them.
+type AnyComponent = ComponentType<any>;
+
+/** A view that loads on demand; `preload()` fetches its code ahead of the first render. */
+export type LazyView<C extends AnyComponent> = ((props: ComponentProps<C>) => JSX.Element) & {
+  preload(): Promise<unknown>;
+};
+
 /**
  * A lazily loaded named export: `lazyNamed(() => import('./Settings'), 'Settings')`.
- * The chunk downloads the first time the component renders (or when
- * `load` is called early to warm it); a failed download is caught by the
- * nearest `ErrorBoundary` as a new version to reload.
+ * The chunk downloads the first time the view renders, or earlier through
+ * `preload()` (the warm-up, a deep link). Once its code is here a view
+ * mounts at once, with no fallback frame; a failed download is caught by
+ * the nearest `ErrorBoundary` as a new version to reload.
  */
 export function lazyNamed<K extends string, M extends Record<K, AnyComponent>>(
   load: () => Promise<M>,
   name: K,
-): LazyExoticComponent<M[K]> {
-  return lazy(async () => ({ default: (await load())[name] }));
+): LazyView<M[K]> {
+  let ready: M[K] | undefined;
+  const preload = (): Promise<M[K]> =>
+    load().then((module) => {
+      const view = module[name];
+      ready = view;
+      return view;
+    });
+  const Lazy = lazy(async () => ({ default: await preload() }));
+  function View(props: ComponentProps<M[K]>): JSX.Element {
+    // Decided once per mount: switching between the two would remount the view and lose its state.
+    const [direct] = useState(() => ready);
+    return createElement(direct ?? Lazy, props);
+  }
+  return Object.assign(View, { preload });
 }
-
-// biome-ignore lint/suspicious/noExplicitAny: the props are the component's own, as React's `lazy` types them.
-type AnyComponent = ComponentType<any>;
 
 // ---------------------------------------------------------------- lazy fallbacks
 

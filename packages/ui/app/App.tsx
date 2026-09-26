@@ -30,33 +30,46 @@ import { useFeed } from './lib/feed-context';
 import { type ShellView, useShell } from './lib/shell';
 import { useNeedsMeNotifications } from './lib/use-notify';
 
-// T394: loaded on demand; each `load*` is also called early to warm the chunk.
-const loadSettings = () => import('./components/Settings');
-const loadRules = () => import('./components/Rules');
+// T394: loaded on demand (`preload()` fetches one ahead: the warm-up, a deep link).
 const loadLenses = () => import('./components/Lenses');
-const loadDirector = () => import('./components/Director');
-const loadNewProject = () => import('./components/NewProject');
-const Settings = lazyNamed(loadSettings, 'Settings');
-const Rules = lazyNamed(loadRules, 'Rules');
+const Settings = lazyNamed(() => import('./components/Settings'), 'Settings');
+const Rules = lazyNamed(() => import('./components/Rules'), 'Rules');
 const RepoView = lazyNamed(loadLenses, 'RepoView');
 const RunningLens = lazyNamed(loadLenses, 'RunningLens');
 const DependenciesLens = lazyNamed(loadLenses, 'DependenciesLens');
 const EventLog = lazyNamed(loadLenses, 'EventLog');
-const DirectorPage = lazyNamed(loadDirector, 'DirectorPage');
-const NewProject = lazyNamed(loadNewProject, 'NewProject');
+const DirectorPage = lazyNamed(() => import('./components/Director'), 'DirectorPage');
+const NewProject = lazyNamed(() => import('./components/NewProject'), 'NewProject');
+
+const LAZY_VIEWS: Partial<Record<ShellView, { preload(): Promise<unknown> }>> = {
+  settings: Settings,
+  rules: Rules,
+  repos: RepoView,
+  running: RunningLens,
+  deps: DependenciesLens,
+  events: EventLog,
+  director: DirectorPage,
+};
+
+/**
+ * T394: fetches a view's code when it loads on demand (nothing to do for
+ * Needs me or a node). `main.tsx` waits for it on a deep link, so the view
+ * is there in the first frame and reads its own part of the URL (Settings'
+ * `section`) before the shell rewrites the query.
+ */
+export function preloadView(view: ShellView): Promise<unknown> {
+  return LAZY_VIEWS[view]?.preload() ?? Promise.resolve();
+}
 
 /**
  * Every chunk the first screen doesn't need, fetched once the page is idle
  * so a later click opens at once (and an open page keeps working after a
  * rebuild replaces the files). The node page's Changes and Overview tabs
- * load on demand too (`StreamPage`).
+ * load on demand too (`StreamPage`); this only fetches their code.
  */
 const WARM: ReadonlyArray<() => Promise<unknown>> = [
-  loadSettings,
-  loadRules,
-  loadLenses,
-  loadDirector,
-  loadNewProject,
+  ...Object.values(LAZY_VIEWS).map((view) => () => view.preload()),
+  () => NewProject.preload(),
   () => import('./components/DiffView'),
   () => import('./components/ProjectOverview'),
 ];
