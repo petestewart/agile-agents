@@ -5410,6 +5410,72 @@ describe('Ask from anywhere (Playwright e2e, T419, D42)', () => {
   );
 });
 
+describe('Send to parent (Playwright e2e, T421, D42)', () => {
+  browserTest(
+    'a reply in a conversation goes up to the node it is about as your line; the conversation says so',
+    async () => {
+      const reply = 'Stream it: the files reach 2 GB.';
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'agent_text', text: reply }, { type: 'end_turn' }] },
+        { steps: [{ type: 'end_turn' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const work = await cockpit.streams.create('human', {
+          title: 'Add CSV import',
+          goal: 'import CSV files',
+          project: shop.id,
+          repo: 'demo',
+        });
+        const side = await cockpit.streams.create('human', {
+          title: 'Why buffer the file?',
+          goal: 'why does the importer read the whole file?',
+          parent: work.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${side.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${side.id}"]`).waitFor();
+        await page.locator('[data-testid="attach"]').click();
+        const answer = page.locator('[data-testid="thread-entry"][data-by="agent"]', {
+          hasText: reply,
+        });
+        await answer.waitFor();
+
+        // The reply's hover action opens the box with its words; Send puts them on the parent.
+        await answer.hover();
+        await answer.locator('[data-testid="send-up-line"]').click();
+        await page.locator('[data-testid="send-up"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="send-up-input"]').inputValue()).toBe(reply);
+        await page.locator('[data-testid="send-up-send"]').click();
+        await page.locator('[data-testid="send-up"]').waitFor({ state: 'detached' });
+        await waitUntil('the line on the parent', () =>
+          cockpit.streams
+            .readThread(work.id)
+            .entries.some(
+              (e) =>
+                e.by === 'human' &&
+                e.body === `From the conversation “Why buffer the file?”:\n\n${reply}`,
+            ),
+        );
+        await page
+          .locator('[data-testid="thread-entry"]', { hasText: 'Sent to Add CSV import' })
+          .waitFor();
+        // The node it is about is still work, not a coordinator.
+        expect(cockpit.streams.get(work.id).sessions.every((s) => s.role !== 'coordinator')).toBe(
+          true,
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('the sidebar keeps Needs me in sight (Playwright e2e, audit r5 #4)', () => {
   browserTest(
     'opening a node far down a long tree scrolls the tree, not Needs me and its count',

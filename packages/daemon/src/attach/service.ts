@@ -63,7 +63,7 @@ import { settingsFileName } from '../hook/settings';
 import type { RuleStatsOutcome } from '../knowledge/service';
 import { repoScriptChecks } from '../permissions/command';
 import { nodeReadScope } from '../permissions/policy-tables';
-import type { BriefDoc } from '../runner/brief';
+import type { AboutParent, BriefDoc } from '../runner/brief';
 import { buildBrief } from '../runner/brief';
 import type { CliInvocation } from '../runner/cli-bin';
 import { type AgentSessionHandle, type ContextUsage, startAgentSession } from '../runner/session';
@@ -127,11 +127,10 @@ function agentFor(
   stream: Stream,
   all: readonly Stream[],
 ): { children: Stream[]; shape: NodeRole; role: 'worker' | 'coordinator' } {
-  const children = liveChildrenOf(stream.id, all);
-  const shape = nodeRole(stream, children, all);
-  // D42: a root coordinates its parts; conversations under it are not parts.
-  const coordinates =
-    shape === 'coordinating' || (shape === 'project' && partsOf(stream.id, all).length > 0);
+  const shape = nodeRole(stream, liveChildrenOf(stream.id, all), all);
+  // D42: a coordinator's children are its parts; conversations under it are not.
+  const children = partsOf(stream.id, all);
+  const coordinates = shape === 'coordinating' || (shape === 'project' && children.length > 0);
   return { children, shape, role: coordinates ? 'coordinator' : 'worker' };
 }
 
@@ -627,7 +626,8 @@ export class AttachService {
     // coordinator: no worktree, the session dir, every write denied.
     // A project root counts once it has children: a bare root is still a
     // single stream a worker runs on (the pre-projects shape).
-    const { children, role: agentRole } = agentFor(stream, streams.list());
+    const all = streams.list();
+    const { children, shape, role: agentRole } = agentFor(stream, all);
     const coordinates = agentRole === 'coordinator';
     const requested: SessionRole = options.role ?? 'worker';
     const role: SessionRole = requested === 'worker' && coordinates ? 'coordinator' : requested;
@@ -756,6 +756,8 @@ export class AttachService {
           }
         : {}),
       ...childPlanOf(this.options.plans, stream, role),
+      // T420 (D42): a conversation is told its question is the human's, and about its parent.
+      ...(shape === 'conversation' ? { conversation: this.aboutParent(stream, all) } : {}),
     });
     // The lessons material rides after the brief, never inside it (the
     // brief's own ceiling protects its parts; the caller caps the appendix).
@@ -1337,6 +1339,32 @@ export class AttachService {
   /** T411: a live session's context window, as its vendor last reported it. */
   contextFor(sessionId: string): ContextUsage | undefined {
     return this.liveHandleBySession(sessionId)?.contextUsage();
+  }
+
+  /** T420 (D42): the parent a conversation was asked under, as it stands, for its brief. */
+  private aboutParent(stream: Stream, all: readonly Stream[]): { about?: AboutParent } {
+    const { store, streams } = this.options;
+    if (stream.parent === undefined) return {};
+    const parent = all.find((s) => s.id === stream.parent);
+    if (parent === undefined) return {};
+    let card: AboutParent['card'];
+    try {
+      card = store.getCard(parent.id);
+    } catch (err) {
+      card = { error: err instanceof Error ? err.message : String(err) };
+    }
+    const parts = partsOf(parent.id, all);
+    const plan = this.options.plans?.get(parent.id);
+    return {
+      about: {
+        node: parent,
+        role: nodeRole(parent, liveChildrenOf(parent.id, all), all),
+        ...(card !== undefined ? { card } : {}),
+        thread: streams.readThread(parent.id, { limit: 60 }).entries,
+        ...(parts.length > 0 ? { parts } : {}),
+        ...(plan !== undefined ? { plan } : {}),
+      },
+    };
   }
 
   private liveHandleBySession(sessionId: string): AgentSessionHandle | undefined {

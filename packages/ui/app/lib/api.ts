@@ -540,6 +540,13 @@ export function updateProject(
   return post(`/api/projects/${encodeURIComponent(id)}`, patch) as Promise<Project>;
 }
 
+/** T421 (D42): a conversation's conclusion, sent up to the node above it as your line there. */
+export function sendUp(id: string, body: string): Promise<{ parent: string }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/send-up`, { body }) as Promise<{
+    parent: string;
+  }>;
+}
+
 /** T392: a node's agent steps (its tool calls), newest first; the chat follows live events after. */
 export function getStreamSteps(id: string): Promise<StepPage> {
   return get(`/api/streams/${encodeURIComponent(id)}/steps`);
