@@ -65,6 +65,11 @@ export interface BuildBriefInput {
   };
   /** T281: this child's part of its parent's approved plan. */
   plan?: ChildPlanView;
+  /**
+   * T420 (D42): the node is a conversation. Its goal is the human's question,
+   * and it is told about the node it sits under (its parent's state).
+   */
+  conversation?: { about?: AboutParent };
   /** T339: the repo's own check commands (repos.yaml `checks`, else package.json scripts). */
   checks?: readonly string[];
   /** T330 (§4.4): the registered repos it may read (a work node: the others than its own). */
@@ -77,6 +82,84 @@ export interface BuildBriefInput {
   ceiling?: number;
   /** Test seam: where the role files live. */
   briefsDir?: string;
+}
+
+/** T420 (D42): what a conversation is told about the node it was asked under. */
+export interface AboutParent {
+  node: Stream;
+  /** "work", "coordinating", "project" or "conversation". */
+  role: string;
+  /** Its latest status card, or why it can't be read. */
+  card?: StatusCard | { error: string };
+  /** Its thread, oldest first; the newest lines are shown. */
+  thread: readonly ThreadEntry[];
+  /** Its parts (a coordinator's or a root's), with their state. */
+  parts?: readonly Stream[];
+  plan?: Plan;
+}
+
+/** How many of the parent's newest lines a conversation reads. */
+export const ABOUT_THREAD_LINES = 12;
+/** A parent's line is quoted up to this many characters. */
+const ABOUT_LINE_CHARS = 400;
+
+const clipText = (text: string, max: number): string => {
+  const one = text.replace(/\s+/g, ' ').trim();
+  return one.length > max ? `${one.slice(0, max - 1)}…` : one;
+};
+
+/**
+ * T420 (D42): the node this conversation was asked under, as it stands: its
+ * goal, state, card, branch and worktree (to read, never to change), its
+ * parts and plan, and its newest lines. The conversation answers here; what
+ * it concludes reaches the parent only when the human sends it.
+ */
+export function aboutSection(about: AboutParent): string {
+  const p = about.node;
+  const lines: string[] = [
+    `You were asked about **${p.title}** (\`${p.id}\`, a ${about.role} node). It carries on its own work in its own thread: read what you need, never change its files or its thread. Answer here; when your conclusion should reach it, the human sends it up.`,
+    '',
+    `- Goal: ${clipText(p.goal, 600)}`,
+    `- State: agent ${p.agent.status}, human ${p.human.status}${p.agent.progress ? `; last progress: ${clipText(p.agent.progress, 300)}` : ''}`,
+  ];
+  if (p.repo !== undefined) {
+    lines.push(
+      `- Repo: ${p.repo}${p.branch ? `, branch \`${p.branch}\`` : ''}${p.worktree ? `, worktree \`${p.worktree}\` (read it; don't edit)` : ''}`,
+    );
+  }
+  const card = about.card;
+  if (card !== undefined) {
+    lines.push(
+      'error' in card
+        ? `- Its status card can't be read: ${card.error}`
+        : `- Its status card: ${card.state}${card.doing ? ` — ${clipText(card.doing, 300)}` : ''}${card.files.length > 0 ? `; files: ${card.files.slice(0, 12).join(', ')}` : ''}`,
+    );
+  }
+  if (about.parts !== undefined && about.parts.length > 0) {
+    lines.push(
+      '- Its parts:',
+      ...about.parts.map(
+        (c) =>
+          `  - ${c.title} (\`${c.id}\`): agent ${c.agent.status}, human ${c.human.status}${c.agent.progress ? ` — ${clipText(c.agent.progress, 160)}` : ''}`,
+      ),
+    );
+  }
+  if (about.plan !== undefined) {
+    lines.push(
+      `- Its plan: v${about.plan.version}, ${about.plan.status}; ${about.plan.owners.map((o) => `${about.parts?.find((c) => c.id === o.child)?.title ?? o.child} owns ${o.owns.join(', ') || 'nothing'}`).join('; ') || 'no owners'}`,
+    );
+  }
+  const recent = about.thread
+    .filter((e) => e.kind === 'line' || e.kind === 'question')
+    .slice(-ABOUT_THREAD_LINES);
+  if (recent.length > 0) {
+    lines.push(
+      '',
+      'Its newest lines:',
+      ...recent.map((e) => `- **${e.by}**: ${clipText(e.body, ABOUT_LINE_CHARS)}`),
+    );
+  }
+  return section('What you were asked about', lines.join('\n'));
 }
 
 /** The role's Markdown file, or an empty string when there is none on disk. */
@@ -289,7 +372,18 @@ function assemble(
   const roleBrief = readRoleBrief(role, input.briefsDir);
   if (roleBrief.length > 0) parts.push(roleBrief);
 
-  parts.push(section('Stream', `**${stream.title}**\n\n${stream.goal}`));
+  if (input.conversation !== undefined) {
+    // T420 (D42): a conversation's goal is the human's question.
+    parts.push(
+      section(
+        'Conversation',
+        `**${stream.title}**\n\nThe human asked:\n\n${stream.goal.replace(/^/gm, '> ')}`,
+      ),
+    );
+    if (input.conversation.about !== undefined) parts.push(aboutSection(input.conversation.about));
+  } else {
+    parts.push(section('Stream', `**${stream.title}**\n\n${stream.goal}`));
+  }
 
   if (ancestors.length > 0) {
     parts.push(

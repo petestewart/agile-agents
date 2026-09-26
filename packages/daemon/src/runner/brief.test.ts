@@ -5,6 +5,7 @@ import {
   BRIEF_CHAR_CEILING,
   BRIEF_THREAD_ENTRIES,
   NAMES_HINT,
+  aboutSection,
   buildBrief,
   coordinatorSection,
   readRoleBrief,
@@ -489,5 +490,94 @@ describe('buildBrief — a long agent line is quoted, not pasted (T330)', () => 
     expect(brief).not.toContain('TAIL-MARKER');
     const without = buildBrief({ ...input, thread: [] });
     expect(brief.length - without.length).toBeLessThan(1000);
+  });
+});
+
+describe('T420 (D42): a conversation is told what it was asked about', () => {
+  const parent = makeStream({
+    title: 'Add CSV import',
+    goal: 'import CSV files into the ledger',
+    repo: 'ledger',
+    branch: 'stream/01X-add-csv-import',
+    worktree: '/repos/ledger/.worktrees/01X-add-csv-import',
+    agent: { status: 'working', updated_at: '2026-09-21T00:00:00Z', progress: 'parsing quotes' },
+  });
+
+  test('its goal is the human’s question; its parent’s state follows', () => {
+    const stream = makeStream({
+      parent: parent.id,
+      title: 'Why buffer the file?',
+      goal: 'Why does the importer read\nthe whole file?',
+    });
+    const brief = buildBrief({
+      role: 'worker',
+      stream,
+      ancestors: [parent],
+      thread: [],
+      docs: [],
+      rules: [],
+      conversation: {
+        about: {
+          node: parent,
+          role: 'work',
+          card: {
+            doing: 'streaming rows',
+            state: 'working',
+            files: ['src/import.ts'],
+            relies_on: [],
+          } as never,
+          thread: [
+            { ts: '2026-09-21T00:00:00Z', by: 'human', kind: 'line', body: 'use the csv crate' },
+            { ts: '2026-09-21T00:01:00Z', by: 'daemon', kind: 'event', body: 'noise' },
+            {
+              ts: '2026-09-21T00:02:00Z',
+              by: 'agent:S',
+              kind: 'line',
+              body: 'reading it whole for now',
+            },
+          ],
+        },
+      },
+    });
+    expect(brief).toContain('## Conversation');
+    expect(brief).not.toContain('## Stream');
+    expect(brief).toContain('The human asked:\n\n> Why does the importer read\n> the whole file?');
+    expect(brief).toContain('## What you were asked about');
+    expect(brief).toContain('**Add CSV import**');
+    expect(brief).toContain('agent working, human open; last progress: parsing quotes');
+    expect(brief).toContain('worktree `/repos/ledger/.worktrees/01X-add-csv-import` (read it; don');
+    expect(brief).toContain('Its status card: working — streaming rows; files: src/import.ts');
+    expect(brief).toContain('- **agent:S**: reading it whole for now');
+    expect(brief).not.toContain('noise');
+  });
+
+  test('a coordinator parent shows its parts and its plan by title; a work node stays a Stream', () => {
+    const lead = makeStream({ title: 'Sale prices', goal: 'show sale prices' });
+    const api = makeStream({ parent: lead.id, title: 'api part', repo: 'api' });
+    const out = aboutSection({
+      node: lead,
+      role: 'coordinating',
+      thread: [],
+      parts: [api],
+      plan: {
+        node: lead.id,
+        version: 2,
+        status: 'approved',
+        owners: [{ child: api.id, owns: ['prices.ts'] }],
+        contracts: [],
+      } as never,
+    });
+    expect(out).toContain(`- api part (\`${api.id}\`): agent idle, human open`);
+    expect(out).toContain('Its plan: v2, approved; api part owns prices.ts');
+    const work = buildBrief({
+      role: 'worker',
+      stream: api,
+      ancestors: [lead],
+      thread: [],
+      docs: [],
+      rules: [],
+    });
+    expect(work).toContain('## Stream');
+    expect(work).not.toContain('What you were asked about');
   });
 });
