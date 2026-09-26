@@ -1489,10 +1489,11 @@ test.skipIf(!RUN)(
       );
       await openView('Repos');
       const group = page.locator('[data-testid="repo-view"] .cr-group[data-repo="ledger-lite"]');
+      await checkText('the repo heading reads ledger-lite', group.locator('h2'), 'ledger-lite');
       await checkText(
-        'the repo heading reads ledger-lite (direct)',
-        group.locator('h2'),
-        'ledger-lite (direct)',
+        'its delivery reads Merges directly',
+        group.locator('[data-testid="repo-delivery"]'),
+        'Merges directly',
       );
       await checkText(
         'Shop › Shop note is listed',
@@ -1505,9 +1506,9 @@ test.skipIf(!RUN)(
         /Blog › Blog note/,
       );
       await checkText(
-        '⚠ Shop note and Blog note both changed walkthrough-notes.md',
+        'Shop note and Blog note both changed walkthrough-notes.md',
         group.locator('[data-testid="repo-overlap"]'),
-        /⚠ (Shop note and Blog note|Blog note and Shop note) both changed walkthrough-notes\.md/,
+        /(Shop note and Blog note|Blog note and Shop note) both changed walkthrough-notes\.md/,
       );
     });
 
@@ -1617,10 +1618,10 @@ test.skipIf(!RUN)(
       const events = page.locator(
         '[data-testid="repo-view"] .cr-group[data-repo="ledger-lite"] [data-testid="repo-events"]',
       );
-      await checkText('Repos shows main changed under ledger-lite', events, /main changed/);
-      // T347 (D36 D5): ledger-lite merges direct, so its merges read "merged", not "pr merged".
-      await checkText('Repos shows merged under ledger-lite', events, /(?<!pr )merged · /);
-      await checkNotText('a direct merge is not called a PR merge', events, /pr merged/);
+      await checkText('Repos shows Main changed under ledger-lite', events, /Main changed/);
+      // T347 (D36 D5): ledger-lite merges direct, so its merges read "Merged", not "PR merged".
+      await checkText('Repos shows Merged under ledger-lite', events, /(?<!PR )Merged · /);
+      await checkNotText('a direct merge is not called a PR merge', events, /PR merged/i);
       await checkText(
         'the events are labelled',
         page.locator('[data-testid="repo-view"] .cr-group[data-repo="ledger-lite"] .cr-lens-sub'),
@@ -1809,11 +1810,11 @@ test.skipIf(!RUN)(
       );
       await openView('Repos');
       await checkText(
-        'standard · tests-with-src (ship) fired 0, violated 0',
+        'tests-with-src · Standard · Checked before merge · Not fired yet',
         page.locator(
           '[data-testid="repo-view"] .cr-group[data-repo="ledger-lite"] [data-testid="repo-norm"]',
         ),
-        /standard · tests-with-src \(ship\) fired 0, violated 0/,
+        /tests-with-src .*Standard Checked before merge Not fired yet/,
       );
       await openView('Knowledge');
       await card.locator('.cr-kn-row-main').click();
@@ -2025,9 +2026,9 @@ test.skipIf(!RUN)(
     await step('7.1', 'the Director: what needs me today?', async () => {
       await openView('Director');
       await checkText(
-        'No session yet: a line below starts one.',
+        'Not started — your first message starts it.',
         page.locator('[data-testid="director-session"]'),
-        'No session yet: a line below starts one.',
+        'Not started — your first message starts it.',
       );
       const answered = claimDirector(async (_session, prompt) => {
         check(
@@ -2037,9 +2038,9 @@ test.skipIf(!RUN)(
         );
         // While its turn is open: a finished turn ends the session.
         await checkText(
-          'the line becomes claude/… · live',
+          'the line becomes <model> · Working',
           page.locator('[data-testid="director-session"]'),
-          /^claude\/\S+ · live$/,
+          /^\S.* · (Working|Ready)$/,
         );
         return 'From the snapshot: nothing is waiting in your inbox. No node is stuck, there are no overlaps, and no open waits.';
       });
@@ -2057,19 +2058,26 @@ test.skipIf(!RUN)(
         /From the snapshot/,
       );
       await checkText(
-        'Activity lists a director request row',
+        'Activity (the details panel) lists a Director request row',
         page.locator('[data-testid="director-activity"]'),
-        /director request/,
+        /Director request/,
+      );
+      check(
+        'your lines are bubbles on the right, as in a node chat',
+        (await page
+          .locator('[data-testid="director-thread"] [data-by="human"][data-variant="you"]')
+          .count()) > 0,
+        await textOf(page.locator('[data-testid="director-thread"]')),
       );
       await checkText(
-        'your lines read as "you", as on a node thread',
-        page.locator('[data-testid="director-thread"] [data-by="human"] .who').first(),
-        /^you$/,
+        'its replies are signed Director',
+        page.locator('[data-testid="director-thread"] .cr-msg-name'),
+        /Director/,
         2_000,
       );
       await checkNotText(
         'the thread names who spoke, not raw ids',
-        page.locator('[data-testid="director-thread"] .who'),
+        page.locator('[data-testid="director-thread"] .cr-msg-name'),
         /[0-9A-Z]{26}/,
       );
     });

@@ -16,6 +16,7 @@
 import { useState } from 'react';
 import type { CockpitProjectRow, CockpitStreamRow, FeedSnapshot } from '../lib/feed-types';
 import { type ShellView, useShell } from '../lib/shell';
+import { openCommandPalette, paletteKeyLabel } from './CommandPalette';
 import { Icon, type IconName } from './Icon';
 import { DeletedNodes, StreamTree } from './StreamTree';
 import { Button, IconButton, Kbd } from './ui';
@@ -139,6 +140,8 @@ export function MobileBar({ connected, name }: { connected: boolean; name: strin
       />
       <Brand name={name} />
       <Connection connected={connected} />
+      {/* T368: no ⌘K on a phone: the palette is one tap away. */}
+      <IconButton icon="search" label="Search" onClick={openCommandPalette} />
       <IconButton icon="plus" label="New node" onClick={() => setNewStreamOpen(true)} />
     </div>
   );
@@ -176,6 +179,14 @@ export function Sidebar({
       <div className="cr-sb-top">
         <Brand name={snapshot?.project?.name ?? 'agile'} />
         <Connection connected={connected} />
+        {/* T368: the command palette (⌘K / Ctrl K). */}
+        <IconButton
+          icon="search"
+          size="sm"
+          label={`Search (${paletteKeyLabel()})`}
+          data-testid="palette-open"
+          onClick={openCommandPalette}
+        />
       </div>
       <div className="cr-sb-new">
         <Button
