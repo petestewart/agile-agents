@@ -65,7 +65,7 @@ import { appendToDraft, roomAfter, useReview } from '../lib/review';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
 import type { StatusInput } from '../lib/status';
-import { groupSteps } from '../lib/steps';
+import { groupSteps, turnStartedAt } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
 import { ChatScroll, MessageList, StepsFold, Thinking, useSteps } from './Chat';
 import { Composer, type ComposerHandle } from './Composer';
@@ -1011,7 +1011,13 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           openQuestions={new Set(questions.map((q) => q.id))}
           steps={steps.before}
         />
-        {thinking && <Thinking {...workingAs(stream.sessions)} steps={steps.current} />}
+        {thinking && (
+          <Thinking
+            {...workingAs(stream.sessions)}
+            steps={steps.current}
+            since={turnStartedAt(page.thread, steps.current)}
+          />
+        )}
         {!thinking && steps.current.length > 0 && (
           <div className="cr-steps-tail">
             <StepsFold steps={steps.current} />

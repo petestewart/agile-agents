@@ -390,3 +390,37 @@ export function stepView(step: Pick<AgentStep, 'kind' | 'title'>): StepView {
     full: full.length > 600 ? `${full.slice(0, 599)}…` : full,
   };
 }
+
+// ---------------------------------------------------------------- the running turn's clock
+
+/**
+ * T405: when the running turn began, for "working · 1m 12s": your line that
+ * woke it (the first you sent after the agent's last reply), else its first
+ * step. `undefined` when neither is known (a wake with no step yet).
+ */
+export function turnStartedAt(
+  entries: readonly Anchorable[],
+  current: readonly Pick<AgentStep, 'ts'>[],
+): string | undefined {
+  let woke: string | undefined;
+  for (const entry of entries) {
+    const variant = chatVariant(entry);
+    if (variant === 'agent') woke = undefined;
+    else if (variant === 'you' && woke === undefined) woke = entry.ts;
+  }
+  const first = current.reduce<string | undefined>(
+    (min, step) => (min === undefined || step.ts < min ? step.ts : min),
+    undefined,
+  );
+  if (woke === undefined) return first;
+  return first === undefined || woke < first ? woke : first;
+}
+
+/** T405: how long, in words a glance reads: "8s", "1m 12s", "1h 3m". */
+export function elapsedText(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}

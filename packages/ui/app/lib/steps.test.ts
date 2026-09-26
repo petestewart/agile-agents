@@ -4,6 +4,7 @@ import {
   type AgentStep,
   STEP_TITLE_MAX,
   applyStep,
+  elapsedText,
   groupSteps,
   liveWindow,
   stepState,
@@ -11,6 +12,7 @@ import {
   stepView,
   stepsFromPage,
   stepsSummary,
+  turnStartedAt,
 } from './steps';
 
 const NODE = '01ARZ3NDEKTSV4RRFFQ69GE001';
@@ -335,5 +337,31 @@ describe('how steps read', () => {
     expect(text(stepView({ kind: 'other', title: 'mcp__agile__ask_human' }))).toBe(
       'ask human · agile',
     );
+  });
+});
+
+describe('T405: the running turn’s clock', () => {
+  const you = (s: number) => ({ ts: at(s), by: 'human', kind: 'line' as const, body: 'go' });
+  const agent = (s: number) => ({ ts: at(s), by: 'agent:S-1', kind: 'line' as const, body: 'ok' });
+  const system = (s: number) => ({ ts: at(s), by: 'daemon', kind: 'event' as const, body: 'x' });
+
+  test('from your first line after its last reply, or its first step, whichever came first', () => {
+    // You wrote twice mid-turn: the first line woke it.
+    expect(turnStartedAt([you(1), agent(2), you(5), system(6), you(8)], [step('a', 9)])).toBe(
+      at(5),
+    );
+    // Woken without a line of yours (an event): its first step.
+    expect(turnStartedAt([you(1), agent(2)], [step('b', 12), step('a', 10)])).toBe(at(10));
+    // A step before your line (the turn was already running).
+    expect(turnStartedAt([agent(2), you(9)], [step('a', 4)])).toBe(at(4));
+    expect(turnStartedAt([agent(2)], [])).toBeUndefined();
+    expect(turnStartedAt([], [])).toBeUndefined();
+  });
+
+  test('in words a glance reads', () => {
+    expect(elapsedText(-5)).toBe('0s');
+    expect(elapsedText(8_400)).toBe('8s');
+    expect(elapsedText(72_000)).toBe('1m 12s');
+    expect(elapsedText(3_780_000)).toBe('1h 3m');
   });
 });

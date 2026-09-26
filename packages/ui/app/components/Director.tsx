@@ -36,7 +36,7 @@ import { useFeed } from '../lib/feed-context';
 import { eventDetail, eventTitle } from '../lib/lenses';
 import { useShell } from '../lib/shell';
 import { ago } from '../lib/status';
-import { groupSteps } from '../lib/steps';
+import { groupSteps, turnStartedAt } from '../lib/steps';
 import { activityDelivery, eventTime } from '../lib/streams';
 import { ChatScroll, MessageList, StepsFold, Thinking, useSteps } from './Chat';
 import { Composer, type ComposerHandle } from './Composer';
@@ -446,7 +446,13 @@ export function DirectorPage(): JSX.Element {
                 label="Conversation with the Director"
                 steps={steps.before}
               />
-              {state.working && <Thinking name="Director" steps={steps.current} />}
+              {state.working && (
+                <Thinking
+                  name="Director"
+                  steps={steps.current}
+                  since={turnStartedAt(thread, steps.current)}
+                />
+              )}
               {!state.working && steps.current.length > 0 && (
                 <div className="cr-steps-tail">
                   <StepsFold steps={steps.current} />

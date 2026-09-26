@@ -2307,6 +2307,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/feed/snapshot.test.ts packages/daemon/src/http.test.ts` (the log is read once across two connects); feed e2e.
 - **Notes:** Branch T404-snapshot-ring.
 
+### Ticket: T405 The live block says how long the turn has run
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: while an agent works, nothing said for how long, so a stuck turn looked like a busy one.
+- **Acceptance Criteria:** "Claude is working · 1m 12s" on a node and on the Director, from your line that woke the turn or its first step, whichever came first; it ticks each second without re-rendering the chat; the timer sits outside the live region, so a screen reader isn't read every second.
+- **Validation Steps:** `bun test packages/ui/app/lib/steps.test.ts`; control-room e2e `T392`.
+- **Notes:** Branch T405-turn-timer.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

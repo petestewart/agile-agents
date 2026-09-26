@@ -3681,6 +3681,13 @@ input[type="checkbox"].cr-switch:focus-visible {
 .cr-dots span:nth-child(3) {
   animation-delay: 0.4s;
 }
+/* T405: how long the turn has run, after the dots */
+.cr-thinking-time {
+  margin-left: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
 @keyframes cr-blink {
   0%,
   80%,
