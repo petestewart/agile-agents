@@ -16,6 +16,7 @@ import { DirectorPage } from './components/Director';
 import { Icon } from './components/Icon';
 import { Inbox } from './components/Inbox';
 import { DependenciesLens, EventLog, RepoView, RunningLens } from './components/Lenses';
+import { NewProject } from './components/NewProject';
 import { NewStream } from './components/NewStream';
 import { Rules } from './components/Rules';
 import { Settings } from './components/Settings';
@@ -53,7 +54,7 @@ function useLostConnection(connected: boolean): boolean {
 
 export function App(): JSX.Element {
   const { snapshot, connected, cockpit, refresh } = useFeed();
-  const { view, selected, railOpen, toggleRail } = useShell();
+  const { view, selected, railOpen, toggleRail, newProjectOpen, setNewProjectOpen } = useShell();
   const rows = cockpit?.streams ?? [];
   const items = cockpit?.inbox ?? [];
   const projects = cockpit?.projects ?? [];
@@ -107,6 +108,7 @@ export function App(): JSX.Element {
         )}
       </main>
       <NewStream rows={rows} projects={projects} />
+      {newProjectOpen && <NewProject onClose={() => setNewProjectOpen(false)} />}
     </div>
   );
 }
