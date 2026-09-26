@@ -2142,6 +2142,22 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui`; the New stream, T363 and session-defaults e2e.
 - **Notes:** Branch T386-model-labels.
 
+### Ticket: T387 ∥ A project's root page opens on an overview
+- **Priority:** P2
+- **Status:** In progress
+- **Owner:** worker
+- **Scope:** From the follow-ups' "not built": a project root opens on the root node's chat, so a project has no at-a-glance view of what its nodes are doing.
+- **Acceptance Criteria:** A project root has an **Overview** tab, first and default: counts by status (your move first), its nodes as rows by status with path, repo and age, its repos with their icons, and its recent events; the chat stays one tab away; each row opens its node.
+- **Validation Steps:** `bun test packages/ui`; a new control-room e2e; the whole control-room e2e and the walkthrough.
+
+### Ticket: T388 ∥ Opt-in browser notifications when something new needs you
+- **Priority:** P2
+- **Status:** In progress
+- **Owner:** worker
+- **Scope:** From the follow-ups' "not built": the cockpit is a tab you keep open all day, but nothing tells you when a new question, gate or merge arrives while you are elsewhere.
+- **Acceptance Criteria:** Settings → General has a Notifications switch (per browser, off by default, asks the browser's permission on turning on, says when the browser blocks it); with it on and the tab hidden, a new Needs me item raises one notification naming what and where, a click focuses the tab on that node; nothing for items already there at load, nothing while the tab is visible; the title's `(n)` count stays.
+- **Validation Steps:** `bun test packages/ui` (the pure "which items are new" logic); a control-room e2e with a granted permission.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
