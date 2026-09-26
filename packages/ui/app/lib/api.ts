@@ -258,6 +258,8 @@ export interface DirectorPayload {
     session?: { id: string; status: string; vendor: string; model: string };
   };
   thread: ThreadEntry[];
+  /** T399: every line the thread has (the page holds the newest 500). */
+  thread_total?: number;
   live: boolean;
   activity: ActivityEntry[];
   /** T301: the Director's held changes; Create/Apply goes through `decideProposal`. */
@@ -541,4 +543,9 @@ export function updateProject(
 /** T392: a node's agent steps (its tool calls), newest first; the chat follows live events after. */
 export function getStreamSteps(id: string): Promise<StepPage> {
   return get(`/api/streams/${encodeURIComponent(id)}/steps`);
+}
+
+/** T399: the Director's agent steps, the same shape as a node's. */
+export function getDirectorSteps(): Promise<StepPage> {
+  return get('/api/director/steps');
 }

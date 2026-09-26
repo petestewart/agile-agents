@@ -45,6 +45,7 @@ import { useFeed } from '../lib/feed-context';
 import {
   type AgentStep,
   STEP_STATE_LABEL,
+  type StepPage,
   type StepState,
   type StepUpdate,
   applyStep,
@@ -606,8 +607,14 @@ export function Thinking({
  * A node's steps, oldest first: the daemon's read, then every live
  * `tool_call` event for the node folded in. Read again when the socket
  * reconnects (events may have been missed while it was down).
+ *
+ * `read` fetches the first page (T399: the Director reads its own route). It
+ * must be stable, such as a module-level function: a new one reads again.
  */
-export function useSteps(node: string | undefined): {
+export function useSteps(
+  node: string | undefined,
+  read: (node: string) => Promise<StepPage> = getStreamSteps,
+): {
   steps: AgentStep[];
   /** The daemon has more steps than it sent (the oldest turn's count may be short). */
   partial: boolean;
@@ -634,7 +641,7 @@ export function useSteps(node: string | undefined): {
         return steps === prev.steps ? prev : { ...prev, steps };
       });
     });
-    getStreamSteps(node)
+    read(node)
       .then((page) => {
         if (!alive) return;
         const steps = stepsFromPage(page, pending);
@@ -657,7 +664,7 @@ export function useSteps(node: string | undefined): {
       alive = false;
       off();
     };
-  }, [node, onEvent, connected]);
+  }, [node, read, onEvent, connected]);
 
   return state?.node === node && state !== undefined
     ? { steps: state.steps, partial: state.partial }

@@ -2251,6 +2251,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/streams/rpc.test.ts`; CLI `stream.e2e` and `daemon.e2e`.
 - **Notes:** Branch T398-archive-stops-agents. Whether the CLI archive should take the subtree like the cockpit's Delete stays open.
 
+### Ticket: T399 The Director's chat shows its steps
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: the Director's tool calls were indexed (T392) under its own id but its page never showed them.
+- **Acceptance Criteria:** `GET /api/director/steps` returns the Director's steps, as a node's route does (503 without a Director); `/api/director` says how long the thread is (`thread_total`), so a cut thread keeps its oldest reply's steps out. The Director page folds each reply's steps before it, shows the running turn's live under "Director is working", and folds steps after the last reply at the end. `useSteps` takes the read to use.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T399`; control-room e2e `T399` (the fold before a reply, and a step pushed after it).
+- **Notes:** Branch T399-director-steps.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done

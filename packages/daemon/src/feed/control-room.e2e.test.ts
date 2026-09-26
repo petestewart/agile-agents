@@ -67,6 +67,7 @@ import { ProjectService } from '../projects';
 import { QuestionService } from '../questions';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { StateStore } from '../store';
+import { buildEvent } from '../store/events';
 import { type MoveCoordination, RepoInPlaceService, StreamService } from '../streams';
 import {
   BROWSER_ATTEMPTS,
@@ -6910,6 +6911,83 @@ describe('the Director page (Playwright e2e, T300)', () => {
         expect(cockpit.events.pendingFor('director').map((p) => p.event.type)).toEqual([
           'director_request',
         ]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    "T399: the Director's steps fold before its reply; a newer one shows after it",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const at = Date.now() - 60_000;
+        const toolCall = (data: Record<string, unknown>) =>
+          cockpit.store.appendEvent(
+            buildEvent('tool_call', { agent: 'S-DIR', data: { stream: 'director', ...data } }),
+          );
+        await cockpit.store.appendDirectorThread({
+          ts: new Date(at).toISOString(),
+          by: 'human',
+          kind: 'line',
+          body: 'What is stuck?',
+        });
+        await toolCall({
+          toolCallId: 'list-1',
+          kind: 'read',
+          title: 'List the projects',
+          status: 'completed',
+        });
+        await toolCall({ toolCallId: 'grep-1', kind: 'search', title: 'Find blocked nodes' });
+        await toolCall({ toolCallId: 'grep-1', status: 'failed' });
+        // The reply comes after its steps (a later millisecond).
+        await Bun.sleep(5);
+        await cockpit.store.appendDirectorThread({
+          ts: new Date().toISOString(),
+          by: 'director',
+          kind: 'line',
+          body: 'One node in shop is blocked.',
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-view="director"]').click();
+        await page.locator('[data-testid="director-page"]').waitFor();
+
+        const reply = page.locator('[data-testid="director-thread"] [data-testid="thread-entry"]', {
+          hasText: 'One node in shop is blocked.',
+        });
+        const toggle = reply.locator('[data-testid="steps-fold"] [data-testid="steps-toggle"]');
+        await waitUntilAsync(
+          "the Director's folded steps",
+          async () =>
+            (await toggle.count()) === 1 &&
+            (await toggle.textContent()) === 'Worked through 2 steps · 1 failed',
+        );
+        await toggle.click();
+        expect(
+          await reply
+            .locator('[data-testid="step"]')
+            .evaluateAll((els) => els.map((el) => el.getAttribute('data-status'))),
+        ).toEqual(['done', 'failed']);
+
+        // A step after the last reply (the socket brings it): folded at the end.
+        await Bun.sleep(5);
+        await toolCall({
+          toolCallId: 'read-2',
+          kind: 'read',
+          title: 'Read the plan',
+          status: 'completed',
+        });
+        const tail = page.locator('.cr-steps-tail [data-testid="steps-toggle"]');
+        await waitUntilAsync(
+          'the steps after the reply',
+          async () =>
+            (await tail.count()) === 1 && (await tail.textContent()) === 'Worked through 1 step',
+        );
       } finally {
         await teardown([page]);
         await cockpit.stop();

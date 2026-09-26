@@ -34,10 +34,8 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 - A Needs me card for a question on a project root opens the root on its
   Overview (a banner there says "Open chat"): one click more than a node's.
 
-- The Director's chat doesn't show its steps yet: its tool calls are indexed
-  under its owner id; it needs a `GET /api/director/steps` (or `StepIndex`)
-  and `useSteps` in `Director.tsx`. The live block could also name the step
-  in progress or how long the turn has run.
+- The live steps block could also name the step in progress or how long the
+  turn has run (a node's and the Director's alike).
 - While a reviewer runs, the live steps block shows under the worker's name
   (`isThinking` counts a reviewer; pre-existing).
 
