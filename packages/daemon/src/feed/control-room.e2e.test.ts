@@ -2163,6 +2163,75 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
   );
 });
 
+describe('rename and re-goal a node in place (Playwright e2e, T385)', () => {
+  browserTest(
+    'a click on the title renames the node; Edit on the goal changes it and says so in the chat',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'csv thing',
+          goal: 'import CSV',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+
+        // Esc leaves it as it was; Enter saves.
+        await page.locator('[data-testid="stream-title"] button').click();
+        await page.locator('[data-testid="title-input"]').fill('never mind');
+        await page.locator('[data-testid="title-input"]').press('Escape');
+        await waitForText(page, '[data-testid="stream-title"]', 'csv thing');
+        await page.locator('[data-testid="stream-title"] button').click();
+        await page.locator('[data-testid="title-input"]').fill('Import CSV files');
+        await page.locator('[data-testid="title-input"]').press('Enter');
+        await waitUntil(
+          'the title saved',
+          () => cockpit.streams.get(node.id).title === 'Import CSV files',
+        );
+        await waitForText(page, '[data-testid="stream-title"]', 'Import CSV files');
+        await page
+          .locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`, {
+            hasText: 'Import CSV files',
+          })
+          .waitFor();
+
+        await page.locator('[data-testid="goal-edit"]').click();
+        await page
+          .locator('[data-testid="goal-input"]')
+          .fill('Import CSV and TSV, with a header row.');
+        await page.locator('[data-testid="goal-save"]').click();
+        await page.locator('[data-testid="goal-input"]').waitFor({ state: 'detached' });
+        expect(cockpit.streams.get(node.id).goal).toBe('Import CSV and TSV, with a header row.');
+        await page
+          .locator('[data-testid="goal-card"]', { hasText: 'Import CSV and TSV' })
+          .waitFor();
+        // The agent reads it on its thread; the chat shows it as a system row.
+        await page
+          .locator('[data-testid="stream-page"]', {
+            hasText: 'Goal changed: Import CSV and TSV, with a header row.',
+          })
+          .waitFor();
+        const events = cockpit.streams
+          .readThread(node.id)
+          .entries.filter((e) => e.kind === 'event' && e.body.startsWith('goal changed'));
+        expect(events.map((e) => [e.by, e.body])).toEqual([
+          ['human', 'goal changed: Import CSV and TSV, with a header row.'],
+        ]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('session defaults (Playwright e2e, T170)', () => {
   browserTest(
     'change the default in Settings, Attach, and the session strip shows the new model and effort',

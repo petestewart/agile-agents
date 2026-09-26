@@ -223,6 +223,14 @@ function errorResponse(status: number, message: string): Response {
   return jsonResponse({ error: message }, status);
 }
 
+/** T385: a "goal changed" thread line carries the new goal on one line, clipped. */
+const GOAL_LINE_MAX = 400;
+
+function clip(text: string, max: number): string {
+  const one = text.replace(/\s+/g, ' ').trim();
+  return one.length > max ? `${one.slice(0, max - 1).trimEnd()}…` : one;
+}
+
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -1258,7 +1266,16 @@ async function handleStreamRoute(
       // T365: the same `StreamService.update` as the RPC's `stream.update`, title and goal only.
       const input = StreamUpdateRequestSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('update', input.error));
-      return jsonResponse(await feed.streams.update('human', id, input.data));
+      const before = feed.streams.get(id);
+      const updated = await feed.streams.update('human', id, input.data);
+      // T385: a new goal is news for the agent: its next turn reads it on the thread.
+      if (input.data.goal !== undefined && input.data.goal.trim() !== before.goal.trim()) {
+        await feed.streams.appendThread('human', id, {
+          kind: 'event',
+          body: `goal changed: ${clip(updated.goal, GOAL_LINE_MAX)}`,
+        });
+      }
+      return jsonResponse(updated);
     }
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);

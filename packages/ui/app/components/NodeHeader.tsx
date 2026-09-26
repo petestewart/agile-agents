@@ -7,7 +7,7 @@
  * when there is something to merge — then the details toggle and ⋯.
  */
 
-import type { ReactNode } from 'react';
+import { type ReactNode, useState } from 'react';
 import type { HeaderActions } from '../lib/chat';
 import type { CockpitStreamRow } from '../lib/feed-types';
 import { ROLE_HINT, ROLE_LABEL, type StatusInput } from '../lib/status';
@@ -50,8 +50,77 @@ export interface NodeHeaderProps {
   detailsOpen: boolean;
   onToggleDetails: () => void;
   menu: ReadonlyArray<MenuItem>;
+  /** T385: renames the node in place (a click on the title); absent where it can't be. */
+  onRename?: (title: string) => Promise<void>;
   /** Under the title row: the action error, a banner. */
   children?: ReactNode;
+}
+
+/** T385: the title, or an input while you rename it (Enter or leaving saves, Esc cancels). */
+function Title({
+  title,
+  onRename,
+}: {
+  title: string;
+  onRename?: (title: string) => Promise<void>;
+}): JSX.Element {
+  const [draft, setDraft] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const commit = (): void => {
+    const next = (draft ?? '').trim();
+    setDraft(undefined);
+    if (!onRename || next === '' || next === title) return;
+    onRename(next).catch((err: unknown) =>
+      setError(err instanceof Error ? err.message : String(err)),
+    );
+  };
+  if (draft !== undefined) {
+    return (
+      <input
+        className="cr-node-title cr-node-title-input"
+        data-testid="title-input"
+        aria-label="Title"
+        value={draft}
+        // biome-ignore lint/a11y/noAutofocus: the user just asked to rename it.
+        autoFocus
+        onFocus={(e) => e.currentTarget.select()}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit();
+          } else if (e.key === 'Escape') {
+            e.stopPropagation();
+            setDraft(undefined);
+          }
+        }}
+      />
+    );
+  }
+  return (
+    <h1
+      className="cr-node-title"
+      data-testid="stream-title"
+      data-editable={onRename ? 'true' : undefined}
+      title={error ?? (onRename ? `${title} — click to rename` : title)}
+    >
+      {onRename ? (
+        <button
+          type="button"
+          className="cr-node-title-btn"
+          onClick={() => {
+            setError(undefined);
+            setDraft(title);
+          }}
+        >
+          {title}
+        </button>
+      ) : (
+        title
+      )}
+    </h1>
+  );
 }
 
 export function NodeHeader(props: NodeHeaderProps): JSX.Element {
@@ -76,9 +145,7 @@ export function NodeHeader(props: NodeHeaderProps): JSX.Element {
             ))}
           </nav>
           <div className="cr-node-title-row">
-            <h1 className="cr-node-title" data-testid="stream-title" title={props.title}>
-              {props.title}
-            </h1>
+            <Title title={props.title} {...(props.onRename ? { onRename: props.onRename } : {})} />
             <StatusPill row={props.status} testid="node-status" />
             {props.role && (
               <span
