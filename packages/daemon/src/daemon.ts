@@ -648,6 +648,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
                   ? {
                       create: (principal, input, opts) =>
                         attachService.createNode(principal, input, opts),
+                      stopSessions: (id: string) =>
+                        attachService.stop(id, undefined, { detach: true }),
                       ...(repoInPlace ? { repoInPlace } : {}),
                       reply: {
                         say: (id: string, body: string) => attachService.say(id, body),

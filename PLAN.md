@@ -2240,6 +2240,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/store/clone.test.ts` (the timeout test fails on the old code: the "ssh" ran on).
 - **Notes:** Branch T397-clone-group-kill.
 
+### Ticket: T398 `agile stream archive` stops the node's agent first
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: the RPC `stream.archive` (`agile stream archive`) hid a node without stopping its sessions, so an agent could run on a node nobody sees; the cockpit's Delete stops them.
+- **Acceptance Criteria:** `stream.archive` stops the node's live sessions (detached) before archiving it; an unknown node stops nothing. What it archives is unchanged (the node, not its subtree, as before).
+- **Validation Steps:** `bun test packages/daemon/src/streams/rpc.test.ts`; CLI `stream.e2e` and `daemon.e2e`.
+- **Notes:** Branch T398-archive-stops-agents. Whether the CLI archive should take the subtree like the cockpit's Delete stays open.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
