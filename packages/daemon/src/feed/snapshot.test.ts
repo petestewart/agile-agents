@@ -76,6 +76,22 @@ test('open questions ride on the snapshot and count towards Needs-you', async ()
   expect(snapshot.status.needs_you).toBe(1);
 });
 
+test("T389: a deleted node's question and gate leave Needs-you with it", async () => {
+  const stream = await newStream();
+  await questions.raise({ stream: stream.id, raised_by: 'human', text: 'which branch?' });
+  await gates.request('land', {
+    policy: store.getPolicy(),
+    stream: stream.id,
+    summary: 'land the branch',
+  });
+  expect(buildSnapshot(store, gates, undefined, questions).status.needs_you).toBe(2);
+  await streams.archive('human', stream.id);
+  const snapshot = buildSnapshot(store, gates, undefined, questions);
+  expect(snapshot.questions).toEqual([]);
+  expect(snapshot.hil).toEqual([]);
+  expect(snapshot.status.needs_you).toBe(0);
+});
+
 test('the project block names the repo root the daemon was given', () => {
   const snapshot = buildSnapshot(store, gates, undefined, undefined, repo);
   expect(snapshot.project).toEqual({ name: basename(repo), path: repo });

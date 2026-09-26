@@ -279,12 +279,6 @@ export async function getStreamActivity(id: string): Promise<ActivityEntry[]> {
   return out.activity;
 }
 
-/** T245: the repo view's events. */
-export async function getRepoEvents(repo: string): Promise<RoutedEvent[]> {
-  const out = await get<{ events: RoutedEvent[] }>(`/api/repos/${encodeURIComponent(repo)}/events`);
-  return out.events;
-}
-
 /** T265: the repo's accepted standards and architecture. */
 export async function getRepoKnowledge(repo: string): Promise<Rule[]> {
   const res = await get<{ knowledge: Rule[] }>(`/api/repos/${encodeURIComponent(repo)}/knowledge`);

@@ -28,9 +28,9 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 
 ## P3 — cleanup, hardening, decisions
 
-- `GET /api/repos/:name/events` still caps at 200 unpaged, and `getRepoEvents`
-  (`lib/api.ts`) has no caller since T383: remove both or point them at
-  `/api/events?repo=`.
+- `GET /api/repos/:name/events` (T245) still caps at 200 unpaged; nothing in
+  the cockpit calls it since T383 (T389 removed `getRepoEvents`). Page it like
+  `/api/events` or retire it.
 - Live views refresh on the audit log's tailer; an event emitted without an
   audit line shows only on the next push. The events service's `onEmitted`
   could push the frame itself. (`http.ts`, the tailer)
@@ -40,8 +40,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   folder browser and clone only). A global check in `isSameOriginRequest`
   closes it but would also refuse a tunnel (D15's phone use), which needs
   auth anyway: Pete to decide.
-- Repo names are not validated: `__proto__` is lost when zod parses the
-  record. (`POST /api/repos`, clone)
 - `resolveMainBranch` runs git synchronously per repo on every
   `GET /api/repos`.
 - A clone that times out kills git but can leave its ssh child running (git
@@ -49,12 +47,8 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 - A line sent with `start` appears in the first prompt twice (the brief's
   "Thread so far" and "What woke you"); by design for every wake (T336), a
   few tokens, invisible to the user.
-- `say {start}` would start a part waiting for its coordinator's plan (the
-  cockpit never sends it there); refuse it in the daemon too.
 - A wake and a manual attach can both pass the "no live agent" check and
   start two agents (pre-existing race).
-- `buildSnapshot` counts archived nodes' questions and gates in
-  `status.needs_you` (not read by the UI today).
 - RPC `stream.archive` archives one node without stopping its sessions; the
   HTTP route archives the subtree and stops them. CLI `test-support.ts` isn't
   wired to `onTreeChanged`.

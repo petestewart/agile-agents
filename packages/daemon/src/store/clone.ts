@@ -14,7 +14,13 @@
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { RepoCloneInputSchema, type ReposConfig, formatZodError } from '@agile-agents/shared';
+import {
+  REPO_NAME_RULE,
+  RepoCloneInputSchema,
+  RepoNameSchema,
+  type ReposConfig,
+  formatZodError,
+} from '@agile-agents/shared';
 import { networkGitEnv } from '../delivery/git';
 import { DirListError, expandHome, resolveAbsolutePath } from './browse-dirs';
 import { parseRemoteUrl, redactUserinfo } from './remote-url';
@@ -253,6 +259,10 @@ export async function cloneRepo(
   const source = resolveCloneSource(input.url, home);
   const repos = store.getRepos();
   const name = input.name ?? source.name;
+  // T389: checked before git runs, so a name the registry would refuse leaves no folder behind.
+  if (!RepoNameSchema.safeParse(name).success) {
+    throw new CloneError(`"${name}" can't be a repo's name: ${REPO_NAME_RULE}; give it a name`);
+  }
   if (Object.hasOwn(repos, name)) {
     throw new CloneError(`a repo named ${name} is already registered (${repos[name]?.path})`, 409);
   }

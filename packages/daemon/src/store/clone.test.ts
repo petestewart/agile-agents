@@ -231,6 +231,18 @@ describe('cloneRepo (T362)', () => {
     );
     expect(relative.status).toBe(400);
     expect(relative.message).toContain('must be absolute');
+
+    // T389: a name the registry can't keep, given or taken from the URL.
+    const badName = await refusal(
+      cloneRepo(store, { url: source, dest: join(scratch, 'y'), name: '__proto__' }, { home }),
+    );
+    expect(badName.status).toBe(400);
+    const spaced = bareRepo('two words');
+    const derived = await refusal(
+      cloneRepo(store, { url: spaced, dest: join(scratch, 'z') }, { home }),
+    );
+    expect(derived.message).toContain("can't be a repo's name");
+    expect(existsSync(join(scratch, 'z'))).toBe(false);
   });
 
   test("a failing clone is a 400 quoting git's stderr, and leaves nothing behind", async () => {

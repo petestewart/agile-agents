@@ -199,8 +199,11 @@ export interface AttachServiceOptions {
   /** The open questions, for the turn-end rule. */
   questions?: OpenQuestionsSource;
   rules?: BriefRulesSource;
-  /** T281: plans and contracts for the coordinator's and each child's brief. */
-  plans?: Pick<PlanService, 'get' | 'childView'>;
+  /**
+   * T281: plans and contracts for the coordinator's and each child's brief.
+   * T389: `waitingForPlan` keeps `say {start}` off a part its plan hasn't started.
+   */
+  plans?: Pick<PlanService, 'get' | 'childView'> & Partial<Pick<PlanService, 'waitingForPlan'>>;
   contracts?: Pick<ContractService, 'forNode'>;
   /** The gates, for the same rule. */
   gates?: OpenGatesSource;
@@ -1016,7 +1019,14 @@ export class AttachService {
         [this.options.streams.get(streamId)],
       );
       // T361: still held, so no wake races it and no digest repeats the line.
-      if (handle === undefined && options.start === true) started = await this.startFor(streamId);
+      // T389: a part waiting for its coordinator's plan starts with the plan, not a line.
+      if (
+        handle === undefined &&
+        options.start === true &&
+        this.options.plans?.waitingForPlan?.(this.options.streams.get(streamId)) !== true
+      ) {
+        started = await this.startFor(streamId);
+      }
     } finally {
       release();
     }

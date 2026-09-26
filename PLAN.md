@@ -2158,6 +2158,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** Settings → General has a Notifications switch (per browser, off by default, asks the browser's permission on turning on, says when the browser blocks it); with it on and the tab hidden, a new Needs me item raises one notification naming what and where, a click focuses the tab on that node; nothing for items already there at load, nothing while the tab is visible; the title's `(n)` count stays.
 - **Validation Steps:** `bun test packages/ui` (the pure "which items are new" logic); a control-room e2e with a granted permission.
 
+### Ticket: T389 P3 hardening: repo names, a waiting part's line, deleted nodes' asks
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups doc: repo names were not validated (`__proto__` is lost when the registry parses); `say {start}` would start a part waiting for its coordinator's plan; the snapshot counted a deleted node's questions and gates in `needs_you`; `getRepoEvents` was dead.
+- **Acceptance Criteria:** `state.repo_add` and clone refuse a name that isn't letters, digits, `.`, `_`, `-` (starting with a letter or digit) in words, clone before git runs; `say {start}` leaves a waiting part to its plan (the line stays pending); the snapshot leaves archived nodes' asks out.
+- **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/feed/snapshot.test.ts`; `bun test packages/daemon/src/attach/service.test.ts -t T389`.
+- **Notes:** Branch T389-p3-hardening. `RepoNameSchema`/`REPO_NAME_RULE` in `packages/shared/src/repos.ts`.
+
 ### Ticket: T369 Phase 15 QA
 - **Priority:** P0
 - **Status:** Done
