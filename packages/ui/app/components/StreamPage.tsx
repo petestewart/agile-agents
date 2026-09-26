@@ -1513,7 +1513,16 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             label: TAB_LABEL[t],
             ...(t === 'rules' ? { count: page.rules.length } : {}),
             ...(t === 'docs' ? { count: page.docs.length } : {}),
-            ...(t === 'diff' && reviewCount > 0 ? { count: reviewCount } : {}),
+            // T426: the count on Changes is your review comments, not its files: it says so.
+            ...(t === 'diff' && reviewCount > 0
+              ? {
+                  count: reviewCount,
+                  countOf: {
+                    icon: 'message-square' as const,
+                    title: `${reviewCount} review ${reviewCount === 1 ? 'comment' : 'comments'} not sent yet`,
+                  },
+                }
+              : {}),
           }))}
           value={shownTab}
           onChange={setTab}

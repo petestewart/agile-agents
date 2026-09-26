@@ -299,6 +299,8 @@ export interface TabItem<T extends string> {
   id: T;
   label: ReactNode;
   count?: number;
+  /** T426: what the count counts, as a glyph before it and in its tooltip (review comments on Changes). */
+  countOf?: { icon: IconName; title: string };
   icon?: IconName;
   testid?: string;
 }
@@ -330,7 +332,17 @@ export function Tabs<T extends string>({
         >
           {item.icon ? <Icon name={item.icon} size={14} /> : null}
           {item.label}
-          {item.count !== undefined ? <span className="cr-tab-count">{item.count}</span> : null}
+          {item.count !== undefined ? (
+            <span
+              className="cr-tab-count"
+              {...(item.countOf
+                ? { title: item.countOf.title, 'aria-label': item.countOf.title }
+                : {})}
+            >
+              {item.countOf ? <Icon name={item.countOf.icon} size={11} /> : null}
+              {item.count}
+            </span>
+          ) : null}
         </button>
       ))}
     </nav>

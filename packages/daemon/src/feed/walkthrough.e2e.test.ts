@@ -1773,7 +1773,8 @@ test.skipIf(!RUN)(
         .locator('input[aria-label="Example action"]')
         .fill('diff changes src/ledger.ts and test/ledger.test.ts');
       await examples.nth(1).locator('input[type="checkbox"]').uncheck();
-      await form.getByRole('button', { name: 'Propose', exact: true }).click();
+      // T426: Add would apply it at once; the checklist proposes it, then accepts it.
+      await form.getByRole('button', { name: 'Save as proposal', exact: true }).click();
       const card = page.locator('[data-testid="rules-row"][data-status="proposed"]', {
         hasText: 'Every change to a file under src/',
       });
@@ -1997,7 +1998,8 @@ test.skipIf(!RUN)(
         .fill('Amounts in exported JSON are integer cents, never floats');
       await form.locator('[data-testid="rules-edit-enforcement"] [data-value="tell"]').click();
       await form.locator('[data-testid="rules-edit-kind"] [data-value="decision"]').click();
-      await form.getByRole('button', { name: 'Propose', exact: true }).click();
+      // T426: Add would apply it at once; the checklist proposes it, then accepts it.
+      await form.getByRole('button', { name: 'Save as proposal', exact: true }).click();
       await openView('Needs me');
       const card = page.locator('[data-testid="inbox"] .cr-card[data-kind="rule_accept"]', {
         hasText: 'integer cents',

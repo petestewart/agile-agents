@@ -882,6 +882,9 @@ legend {
   background: var(--accent);
 }
 .cr-tab-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   font-size: var(--text-xs);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
@@ -2204,12 +2207,18 @@ input[type="checkbox"].cr-switch:focus-visible {
   font: inherit;
   text-align: left;
   color: var(--accent-fg);
-  background: none;
+  /* T426: pinned to the list's bottom edge, so a long list never hides it. */
+  box-shadow: 0 -1px 0 var(--border);
+  position: sticky;
+  bottom: 0;
+  flex-shrink: 0;
+  background: var(--bg-panel);
   border: 0;
   cursor: pointer;
 }
 .cr-check-add:hover {
-  background: var(--bg-hover);
+  /* Opaque: rows scroll under it. */
+  background: linear-gradient(var(--bg-hover), var(--bg-hover)), var(--bg-panel);
 }
 .cr-checklist-empty {
   padding: 12px;

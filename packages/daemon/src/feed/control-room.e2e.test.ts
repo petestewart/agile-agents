@@ -1333,7 +1333,8 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
           .selectOption('path_deny');
         await page.locator(`${form} [data-testid="rules-edit-pattern-args"]`).fill('secrets/**');
         await page.locator(`${form} [data-testid="rules-edit-critical"]`).check();
-        await page.locator(`${form} [data-testid="rules-edit-save"]`).click();
+        // T426: Save as proposal keeps it for review (Add would apply it at once).
+        await page.locator(`${form} [data-testid="rules-edit-propose"]`).click();
         await page.locator(form).waitFor({ state: 'detached' });
         await waitUntil('the new rule to be stored', () =>
           cockpit.store.listKnowledge().some((r) => r.text === 'keep secrets out'),
@@ -3108,12 +3109,18 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
         expect(
           await file('src/import.ts').locator('[data-testid="diff-comment-input"]').count(),
         ).toBe(0);
-        await readmeInput.fill('Say which delimiter.');
-        await p.keyboard.press('Control+Enter');
-        await p
-          .locator('[data-testid="diff-comment"]', { hasText: 'Say which delimiter.' })
-          .waitFor();
+        // T426: Shift+Enter is a new line, Enter adds (as in the composer).
+        await readmeInput.fill('Say which');
+        await p.keyboard.press('Shift+Enter');
+        await p.keyboard.type('delimiter.');
+        expect(await readmeInput.inputValue()).toBe('Say which\ndelimiter.');
+        await p.keyboard.press('Enter');
+        await p.locator('[data-testid="diff-comment"]', { hasText: 'delimiter.' }).waitFor();
         await waitForText(p, '[data-testid="review-count"]', '2 comments on 2 files');
+        // The count on the tab says what it counts.
+        expect(await p.locator('[data-tab="diff"] .cr-tab-count').getAttribute('title')).toBe(
+          '2 review comments not sent yet',
+        );
 
         // Esc drops a comment being written; nothing is added.
         await splitLine.hover();
@@ -3138,7 +3145,9 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
           '',
           '1. `README.md:3`',
           '   `Imports CSV files.`',
-          '   Say which delimiter.',
+          // A comment's own lines keep the item's indent.
+          '   Say which',
+          '   delimiter.',
           '2. `src/import.ts:2`',
           '   `const rows = text.split(",");`',
           '   Quoted fields can hold commas.',
@@ -3159,8 +3168,9 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
         });
         await line.waitFor();
         expect(await line.locator('ol > li').count()).toBe(2);
-        expect(await line.locator('ol > li').first().textContent()).toBe(
-          'README.md:3Imports CSV files.Say which delimiter.',
+        // The comment's second line reads as a second line, under the quote.
+        expect(await line.locator('ol > li').first().innerText()).toMatch(
+          /README\.md:3\s+Imports CSV files\.\s+Say which\ndelimiter\./,
         );
         expect(await line.locator('code', { hasText: 'src/import.ts:2' }).count()).toBe(1);
         await p
@@ -3170,7 +3180,7 @@ describe('review the diff with the agent (Playwright e2e, T393)', () => {
           "the review in the agent's prompt",
           () =>
             existsSync(promptLog) &&
-            readFileSync(promptLog, 'utf8').includes('Say which delimiter.'),
+            /Say which\\n {3}delimiter\./.test(readFileSync(promptLog, 'utf8')),
         );
 
         // The Changes tab starts clean; Discard asks before dropping a review.
@@ -4091,6 +4101,10 @@ describe('add a repo from Settings (Playwright e2e, T206, T367)', () => {
         expect(await option.locator('[data-testid="repo-icon"]').getAttribute('data-kind')).toBe(
           'local',
         );
+        // T426: a short list (no search box) still takes typing: "demo", Enter picks it.
+        await page.keyboard.type('demo');
+        await page.keyboard.press('Enter');
+        await waitForAttr(page, '[data-testid="new-stream-repo"]', 'data-value', 'demo-project');
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -4249,6 +4263,21 @@ describe('add a repo from Settings (Playwright e2e, T206, T367)', () => {
         await waitUntil('the project with its repo', () =>
           cockpit.projects.list().some((p) => p.name === 'Writing' && p.repos.includes('blog')),
         );
+
+        // T426: a taken name (ignoring case) says so under Name as you type; Create waits.
+        await page.locator('[data-testid="new-project-open"]').click();
+        await page.locator('[data-testid="new-project-name"]').fill('writing');
+        await waitForText(
+          page,
+          '[data-testid="new-project"] .cr-field-error',
+          'A project named “Writing” already exists.',
+        );
+        expect(await page.locator('[data-testid="new-project-create"]').isDisabled()).toBe(true);
+        await page.locator('[data-testid="new-project-name"]').fill('Writing 2');
+        await page.locator('[data-testid="new-project"] .cr-field-error').waitFor({
+          state: 'detached',
+        });
+        expect(await page.locator('[data-testid="new-project-create"]').isDisabled()).toBe(false);
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -5254,6 +5283,13 @@ describe('cockpit gaps (Playwright e2e, T338)', () => {
         );
         const item = cockpit.store.listKnowledge().find((r) => r.name === 'money-in-cents');
         expect(item?.scope).toEqual({ kind: 'project', project: shop.id });
+        // T426: yours, so Add applies it at once.
+        await waitUntil(
+          'it to be accepted',
+          () =>
+            cockpit.store.listKnowledge().find((r) => r.name === 'money-in-cents')?.status ===
+            'accepted',
+        );
         // The list names the scope's project, not its id.
         await waitForText(
           page,
