@@ -84,7 +84,8 @@ Roles keep their design names but are explained where shown: **Conversation**
 - A project's root node opens on an **Overview** tab (T387): counts by status
   (your move first, each a filter), its nodes grouped by status, its repos and
   its recent activity; the root's chat is the next tab. Other nodes open on
-  their chat.
+  their chat. A Needs me card opens its node on the chat, root or not, since
+  that's where the card is (T403).
 
 ## 4. Tokens
 

@@ -301,13 +301,14 @@ function GoalCard({
 
 export function StreamPage({ id }: { id: string }): JSX.Element {
   const { cockpit, refresh } = useFeed();
-  const { openRules, select } = useShell();
+  const { openRules, select, openOn } = useShell();
   const toast = useToast();
   const copy = useCopy();
   const [page, setPage] = useState<StreamPagePayload | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
   // `undefined` is the node's own first tab (T387: a project root's Overview, else the chat).
-  const [tab, setTab] = useState<NodeTab | undefined>(undefined);
+  // T403: a Needs me card asks for the chat (`openOn`).
+  const [tab, setTab] = useState<NodeTab | undefined>(openOn?.id === id ? openOn.tab : undefined);
   const [draft, setDraft] = useState('');
   const drafts = useRef(new Map<string, string>());
   const [busy, setBusy] = useState(false);
@@ -372,7 +373,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     drafts.current.set(lastId.current, draft);
     lastId.current = id;
     setDraft(drafts.current.get(id) ?? '');
-    setTab(undefined);
+    setTab(openOn?.id === id ? openOn.tab : undefined);
     setActionError(undefined);
     setPicker(undefined);
     setModal(undefined);

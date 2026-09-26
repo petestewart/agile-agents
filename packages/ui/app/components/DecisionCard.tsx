@@ -187,7 +187,8 @@ export function Card({
   const noChanges = item.kind === 'done' && row?.nothing_to_merge === true;
   const tone: CardTone = noChanges ? 'amber' : cardTone(item);
   const nodeTitle = item.stream !== undefined ? (row?.title ?? item.stream_path.at(-1)) : undefined;
-  const open = item.stream !== undefined ? () => select(item.stream) : undefined;
+  // T403: on the chat, where the card sits at the end (a project root opens on its Overview otherwise).
+  const open = item.stream !== undefined ? () => select(item.stream, { tab: 'thread' }) : undefined;
 
   /** The card's main text: whole on the node page or once expanded; clipped to a line in the list. */
   const shown = (whole: string): { text: string; foldable: boolean } => {
