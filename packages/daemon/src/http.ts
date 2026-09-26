@@ -116,6 +116,9 @@ const INSTALLABLE_FILES: Record<string, string> = {
   '/icons/apple-touch-icon.png': 'image/png',
 };
 
+/** T394: the cache policy for the cockpit's content-hashed build assets. */
+const IMMUTABLE = 'public, max-age=31536000, immutable';
+
 /**
  * The configured port is taken: one actionable line (the address, how to
  * find the holder, how to pick another port) instead of Bun's bare
@@ -1455,8 +1458,12 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           if (!(await file.exists())) return new Response('not found', { status: 404 });
           // Vite rewrites index.html's manifest/icon links onto this prefix.
           const type = INSTALLABLE_FILES[`/${rel}`];
-          return type
-            ? new Response(file, { headers: { 'content-type': type } })
+          if (type) return new Response(file, { headers: { 'content-type': type } });
+          // T394: Vite's chunks are named by their content hash, so a name
+          // never changes what it serves: cached for good, a reload fetches
+          // only what a rebuild changed (the page itself is `no-cache`).
+          return rel.startsWith('assets/')
+            ? new Response(file, { headers: { 'cache-control': IMMUTABLE } })
             : new Response(file);
         }
 

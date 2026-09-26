@@ -8730,6 +8730,112 @@ div.cr-lens-ev:hover {
   }
 }
 
+/* ==== Error boundary ==== */
+/* T394: what a view, a node's tab or the whole app shows after a throw, in words. */
+.cr-boundary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 72px 32px 48px;
+}
+.cr-boundary[data-area="tab"] {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding-top: 48px;
+}
+.cr-boundary[data-area="app"] {
+  align-items: center;
+  min-height: 100vh;
+  box-sizing: border-box;
+  background: var(--bg);
+}
+.cr-boundary-card {
+  width: 100%;
+  max-width: 480px;
+  padding: 22px 24px 20px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+.cr-boundary-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 14px;
+  border-radius: 10px;
+  color: var(--amber-text);
+  background: var(--amber-weak);
+}
+.cr-boundary[data-kind="update"] .cr-boundary-icon {
+  color: var(--accent-fg);
+  background: var(--accent-weak);
+}
+.cr-boundary-title {
+  font-size: 15px;
+  line-height: 1.35;
+  color: var(--text);
+}
+.cr-boundary-body {
+  margin: 6px 0 0;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+.cr-boundary-msg {
+  margin: 14px 0 0;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+}
+.cr-boundary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+/* Copy details sits apart from the two ways forward. */
+.cr-boundary-actions .cr-btn[data-variant="ghost"] {
+  margin-left: auto;
+}
+
+/* A view or a tab that loads on demand: the header's space, then a small spinner if it's slow. */
+.cr-lazy .cr-page-title {
+  min-height: calc(var(--text-xl) * 1.3);
+  color: var(--text-faint);
+}
+.cr-lazy-text {
+  font-size: var(--text-md);
+  font-weight: 400;
+}
+.cr-lazy-pane {
+  display: flex;
+  justify-content: center;
+  padding-top: 48px;
+  color: var(--text-faint);
+}
+
+@media (max-width: 600px) {
+  .cr-boundary {
+    padding: 32px 16px;
+  }
+  .cr-boundary-card {
+    padding: 18px 16px 16px;
+  }
+  .cr-boundary-actions .cr-btn[data-variant="ghost"] {
+    margin-left: 0;
+  }
+}
+
 /* ==== Responsive ==== */
 @media (max-width: 900px) {
   .cr-root {

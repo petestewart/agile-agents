@@ -441,7 +441,9 @@ function NotificationsCard(): JSX.Element {
             size="sm"
             icon="send"
             data-testid="settings-notify-test"
-            onClick={() => setTest(sendTestNotification() ? 'sent' : 'failed')}
+            onClick={() =>
+              void sendTestNotification().then((sent) => setTest(sent ? 'sent' : 'failed'))
+            }
           >
             Send a test
           </Button>

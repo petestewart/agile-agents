@@ -2,8 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import type { InboxItem } from '@agile-agents/shared';
 import {
   BODY_MAX_CHARS,
+  NOTIFY_CLICK,
   NOTIFY_TAG,
   TITLE_MAX_CHARS,
+  clickTarget,
   clip,
   diffInbox,
   itemHeadline,
@@ -12,6 +14,7 @@ import {
   notificationFor,
   plainLine,
   stillWaiting,
+  targetOf,
 } from './notify';
 
 const NODE = '01ARZ3NDEKTSV4RRFFQ69G5FA1';
@@ -355,5 +358,32 @@ describe('notificationFor (T388): one notification', () => {
     );
     expect(many?.body.endsWith('and 2 more')).toBe(true);
     expect(many?.body.length).toBeLessThanOrEqual(BODY_MAX_CHARS);
+  });
+});
+
+describe('what a click opens (T394)', () => {
+  test('a Needs me notification opens its node, or Needs me for several', () => {
+    expect(targetOf({ node: NODE_B })).toEqual({ node: NODE_B });
+    expect(targetOf({})).toEqual({ view: 'inbox' });
+  });
+
+  test("the service worker's message: a node, Needs me, or nothing to open", () => {
+    expect(clickTarget({ type: NOTIFY_CLICK, node: NODE_B })).toEqual({ node: NODE_B });
+    expect(clickTarget({ type: NOTIFY_CLICK, view: 'inbox' })).toEqual({ view: 'inbox' });
+    // The test from Settings: only brings the cockpit forward.
+    expect(clickTarget({ type: NOTIFY_CLICK })).toEqual({});
+    // A node wins over a view; junk in either is dropped.
+    expect(clickTarget({ type: NOTIFY_CLICK, node: NODE_B, view: 'inbox' })).toEqual({
+      node: NODE_B,
+    });
+    expect(clickTarget({ type: NOTIFY_CLICK, node: 7, view: 'settings' })).toEqual({});
+    expect(clickTarget({ type: NOTIFY_CLICK, node: '' })).toEqual({});
+  });
+
+  test('anything else from the worker is not a click', () => {
+    expect(clickTarget(undefined)).toBeUndefined();
+    expect(clickTarget(null)).toBeUndefined();
+    expect(clickTarget('agile-notify-click')).toBeUndefined();
+    expect(clickTarget({ type: 'something-else', node: NODE_B })).toBeUndefined();
   });
 });

@@ -67,7 +67,7 @@ import { isLiveSession, isThinking } from '../lib/streams';
 import { ChatScroll, MessageList, Thinking } from './Chat';
 import { Composer, type ComposerHandle } from './Composer';
 import { DeliveryPanel, isMergeable, outcomeTone, useDelivery } from './Delivery';
-import { DiffView } from './DiffView';
+import { TabBoundary, lazyNamed } from './ErrorBoundary';
 import { Icon } from './Icon';
 import { Card } from './Inbox';
 import { Markdown } from './Markdown';
@@ -84,7 +84,6 @@ import {
 } from './NodeDetails';
 import { type Crumb, NodeHeader } from './NodeHeader';
 import { ActivityView, DocsView, KnowledgeView, PlanView } from './NodeViews';
-import { ProjectOverview } from './ProjectOverview';
 import { SessionPicker } from './SessionPicker';
 import {
   Button,
@@ -99,6 +98,10 @@ import {
   useCopy,
   useToast,
 } from './ui';
+
+// T394: loaded on demand; a throw in any tab stays in that tab (`TabBoundary`).
+const DiffView = lazyNamed(() => import('./DiffView'), 'DiffView');
+const ProjectOverview = lazyNamed(() => import('./ProjectOverview'), 'ProjectOverview');
 
 // The Director (and older imports) read these from here.
 export { THREAD_COLLAPSE_LINES, ThreadBody, isLongThreadBody } from './Chat';
@@ -1149,7 +1152,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           label="Stream views"
           className="cr-node-tabs"
         />
-        <div className="cr-node-body" data-tab={shownTab}>
+        <TabBoundary tab={shownTab} node={stream.id}>
           {shownTab === 'thread' ? (
             chat
           ) : shownTab === 'overview' && stream.project !== undefined ? (
@@ -1197,7 +1200,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               </div>
             </div>
           )}
-        </div>
+        </TabBoundary>
       </div>
 
       {detailsOpen && (
