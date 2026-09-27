@@ -44,6 +44,9 @@ import { Button, EmptyState, IconButton, Kbd, PageHeader, Segmented, Spinner } f
 
 export { Card } from './DecisionCard';
 
+/** T449: how far (px) a pointer may drift and still be "where the last click landed". */
+const SAME_SPOT_PX = 6;
+
 const FILTERS: ReadonlyArray<{ id: NeedsMeFilter; label: string }> = [
   { id: 'all', label: 'All' },
   { id: 'questions', label: 'Questions' },
@@ -133,7 +136,9 @@ const DECIDED_WAIT_MS = 10_000;
  *    `DECIDED_LINGER_MS` after the frame drops it, in place and at its
  *    height, as its outcome ("Merged into main").
  *  - For `LIST_SETTLE_MS` after any card leaves, a pointer's click on the
- *    list is ignored: whatever is under it just moved there. Keys still work.
+ *    list where the last one landed is ignored: whatever is under it just
+ *    moved there (T449: a click elsewhere is meant and goes through). Keys
+ *    still work.
  *  - When the card that had focus leaves, the one that took its place gets it.
  */
 function useSteadyList(
@@ -148,6 +153,7 @@ function useSteadyList(
 } {
   const [decided, setDecided] = useState<ReadonlyMap<string, Decided>>(new Map());
   const guardUntil = useRef(0);
+  const lastClick = useRef<{ x: number; y: number } | undefined>(undefined);
   const lastFocus = useRef<{ id: string; index: number } | undefined>(undefined);
   const shownIds = useRef<readonly string[]>([]);
 
@@ -225,7 +231,18 @@ function useSteadyList(
     onActing,
     guard: (event) => {
       // `detail` is 0 for a click made by a key (Enter, Space, a card's A/B): never guarded.
-      if (event.detail > 0 && performance.now() < guardUntil.current) {
+      if (event.detail === 0) return;
+      // T449: only a click where the last one landed (the pointer hasn't moved: a double-click,
+      // or a second click while the first was slow) hits whatever just slid under it. A click
+      // aimed somewhere else is meant, and goes through.
+      const at = { x: event.clientX, y: event.clientY };
+      const last = lastClick.current;
+      lastClick.current = at;
+      const still =
+        last !== undefined &&
+        Math.abs(at.x - last.x) <= SAME_SPOT_PX &&
+        Math.abs(at.y - last.y) <= SAME_SPOT_PX;
+      if (still && performance.now() < guardUntil.current) {
         event.preventDefault();
         event.stopPropagation();
       }

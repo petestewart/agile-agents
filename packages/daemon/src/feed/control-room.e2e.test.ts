@@ -10455,7 +10455,11 @@ describe('flow and focus (Playwright e2e, T445)', () => {
         page.on('request', (r) => {
           if (r.method() === 'POST' && r.url().endsWith('/land')) lands.push(r.url());
         });
-        // The moment the decided card leaves, a pointer click lands on the list: it does nothing.
+        // The moment the decided card leaves, a second click where the first landed (the pointer
+        // hasn't moved: a double-click) does nothing. T449: a click elsewhere would go through.
+        const box = await page.locator(`${first} [data-testid="land"]`).boundingBox();
+        const x = (box?.x ?? 0) + (box?.width ?? 0) / 2;
+        const y = (box?.y ?? 0) + (box?.height ?? 0) / 2;
         await page.evaluate(`(() => {
           window.__t445 = 'armed';
           let seen = false;
@@ -10468,13 +10472,21 @@ describe('flow and focus (Playwright e2e, T445)', () => {
             obs.disconnect();
             document
               .querySelector('.cr-card[data-id="${b}"] [data-testid="land"]')
-              ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+              ?.dispatchEvent(
+                new MouseEvent('click', {
+                  bubbles: true,
+                  cancelable: true,
+                  detail: 1,
+                  clientX: ${x},
+                  clientY: ${y},
+                }),
+              );
             window.__t445 = 'clicked';
           });
           obs.observe(document.body, { subtree: true, childList: true });
         })()`);
 
-        await page.locator(`${first} [data-testid="land"]`).click();
+        await page.mouse.click(x, y);
         const outcome = page.locator(`[data-testid="card-outcome"][data-id="${a}"]`);
         await outcome.waitFor({ state: 'visible' });
         expect(await outcome.textContent()).toContain('Merged into main');
