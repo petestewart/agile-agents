@@ -2797,6 +2797,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `permissions/decide.test.ts` cases for each spelling above (they allow on the old code); full `bun test`.
 - **Notes:** Branch T459-classifier-holes. `cmd.inputRedirectTargets` (fused `<f`, `0<f` or spaced; not heredocs, `<(`, `<>`, `<&`) is read-checked for the engineer and through `scopedReads` for the coordinator and reviewer. `xargs` is still stripped so the never-without-human and push checks see the command, but `cmd.runsUnderXargs` holds an engineer's atom for the human and denies a reviewer's or coordinator's. A write path whose pattern can climb (`patternClimbs`, shared with T457's read check) is denied; `cp src/*.ts out/` and `touch src/{a,b}.ts` stay allowed. Tests: `decide.test.ts` T459 block (6 of 9 fail on the old code). Full `bun test` 3376/0, lint and typecheck clean.
 
+### Ticket: T457b CI: a dangling symlink read as the dir it sits in
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** CI failed on 245d0beb: T457's "no spelling reaches the home or a credential under Trusted" allowed `<dir>/link-ssh/id_rsa` on the runner, whose home has no `~/.ssh`. `realpathNearestExisting` walked up from a symlink whose target doesn't exist and judged the path by the dir the link sits in. The same gap let a write through a dangling link inside the worktree that points outside pass the containment check.
+- **Acceptance Criteria:** A dangling symlink is followed by its text (up to 40 links), for reads and writes alike.
+- **Validation Steps:** Reproduced with `HOME` set to a dir without `.ssh` (the T457 test fails there on the old code, passes now); `decide.test.ts` "T457b: a dangling symlink is followed by its text" fails on the old resolver; full `bun test` 3377/0.
+- **Notes:** Branch T457b-dangling-symlinks.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done
