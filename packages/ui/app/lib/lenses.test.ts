@@ -501,6 +501,10 @@ describe('T446: autonomy_applied in words, with Undo while nothing started', () 
 
   test('who, then what they did; the summary under it', () => {
     expect(eventTitle(applied({}))).toBe('Coordinator added a part');
+    // No repo: a node (a conversation), as the thread line says.
+    expect(eventTitle(applied({ summary: 'Research time zones' }))).toBe(
+      'Coordinator added a node',
+    );
     expect(eventDetail(applied({}))).toBe('Add an RSS field (web)');
     expect(appliedTitle({ principal: 'director', action: 'create_tree' })).toBe(
       'Director created a node and its parts',

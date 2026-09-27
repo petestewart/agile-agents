@@ -9233,9 +9233,10 @@ describe('what the agents did on their own (Playwright e2e, T446)', () => {
           hasText: 'Coordinator added a part',
         });
         await activity.waitFor();
-        expect(await activity.locator('[data-testid="applied-node"]').textContent()).toBe(
-          'Add an RSS field',
-        );
+        // Its line names the part already, so its link reads Open.
+        const link = activity.locator('[data-testid="applied-node"]');
+        expect(await link.textContent()).toBe('Open');
+        expect(await link.getAttribute('title')).toBe('Open Add an RSS field');
         expect(await activity.locator('[data-testid="activity-status"]').textContent()).toBe(
           'For the record',
         );

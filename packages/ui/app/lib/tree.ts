@@ -333,6 +333,24 @@ export const LEGEND_NOTE: Record<LegendKey, string> = {
   closed: 'Closed without merging',
 };
 
+/**
+ * T446 (audit r7 #18): a part's title as the rail shows it under its node.
+ * A split names a part "<node> · <repo>"; the node is the row just above,
+ * so the rail shows the repo (`shown`) and keeps the rest (`lead`) for
+ * screen readers, a find in the page and the tooltip. Any other title is
+ * shown whole.
+ */
+export function railTitle(
+  title: string,
+  parentTitle: string | undefined,
+): { lead?: string; shown: string } {
+  const lead = parentTitle === undefined ? undefined : `${parentTitle} · `;
+  if (lead === undefined || !title.startsWith(lead) || title.length === lead.length) {
+    return { shown: title };
+  }
+  return { lead, shown: title.slice(lead.length) };
+}
+
 /** T424: the legend's marks: the overlap button, and that rows drag. */
 export const OVERLAP_NOTE = 'Overlaps another node; click to open it';
 export const DRAG_NOTE = 'Drag a row to move it (or ⋯ → Move to…)';

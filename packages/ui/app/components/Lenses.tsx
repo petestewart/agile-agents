@@ -1021,6 +1021,9 @@ export function AppliedChange({ event }: { event: RoutedEvent }): JSX.Element | 
       setBusy(false);
     }
   };
+  // One node its line already names ("Add an RSS field (web)") opens with "Open", not its name again.
+  const summary = typeof event.payload.summary === 'string' ? event.payload.summary : '';
+  const named = nodes.length === 1 && summary.startsWith(titleOf(nodes[0] as string) ?? '\u0000');
   return (
     <span className="cr-applied" data-testid="applied-change">
       {nodes.map((id) => {
@@ -1032,9 +1035,10 @@ export function AppliedChange({ event }: { event: RoutedEvent }): JSX.Element | 
             className="cr-lens-link cr-applied-node"
             data-testid="applied-node"
             data-node={id}
+            title={`Open ${title}`}
             onClick={() => open(id)}
           >
-            {title}
+            {named ? 'Open' : title}
           </button>
         ) : (
           <span key={id} className="cr-faint cr-applied-node" data-testid="applied-node-gone">

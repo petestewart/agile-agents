@@ -9359,6 +9359,11 @@ div.cr-lens-ev:hover {
   min-width: 0;
   font-size: var(--text-sm);
 }
+.cr-applied-node + .cr-applied-node::before {
+  content: "·";
+  margin-right: 10px;
+  color: var(--text-faint);
+}
 .cr-applied-node {
   max-width: 100%;
   overflow: hidden;

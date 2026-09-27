@@ -290,6 +290,21 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   agent's name; daemon lines as one-line system rows (icon + muted text) that
   collapse when there are several in a row. A long message folds with "Show
   more". Hover actions on a message: Copy, Branch off (conversations).
+  T446 (audit r7 #6): what a coordinator or the Director did on its own — a
+  change it applied, a proposal it made, a node it created — is a system row
+  with its own icon (a bot, the Director's sparkles), never its chat message,
+  in words: "Added a part: **Add an RSS field** (web)", "Linked web to wait
+  on api", "Approved a routine change to Key file (v2)", "Created
+  **Newsletter signup** in Blog with 2 parts"; the node it made is bold and
+  opens it. What you applied says "you" ("You added a part: …", "You
+  approved plan v1"). A part's contract proposal is a row in words too
+  ("… proposes a change to Key file: …. Why: …"), and lines meant for the
+  agent (the `plan_write` instruction) are `agent_only`. "Node created" reads
+  the same whoever created it. T446 (#17): a coordinator's routine wake (not
+  your line or answer) folds into its reply — "Woke for a merge · 01:14" in
+  the reply's header, without the "Coordinator started" and "Agent finished
+  its turn" rows; a wake whose turn wrote no reply is one muted row, "Woke
+  for a merge · nothing new".
 - **Composer**: rounded box, auto-growing textarea (1–10 lines), a model chip
   (with how full the live agent's context is, T411),
   a hint of what sending will do ("Starts the agent", "Queued until the
@@ -394,6 +409,23 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
 - **A node's Activity** reuses the Events rows (icon, title, the event's
   words, relative time) with the routing reason as a small chip ("a part of it
   changed"); its Knowledge tab reuses the Knowledge list row (T413).
+- **What the agents did on their own** (T446, audit r7 #7): an
+  `autonomy_applied` event reads "Coordinator added a part · Add an RSS
+  field (web)" (the Director's, "Director created a node and its parts";
+  yours from a proposal, "You approved a contract change") in Events, the
+  node's Activity and the Director's Activity. Under it, a link per node it
+  created, and **Undo** — delete them, as Delete does, with Restore in the
+  toast — while every one is open and none has started. It is a record:
+  "For the record", never sent to an agent.
+- **Two nodes, one name** (T446, #18): a split names its parts "<node> ·
+  <repo>" ("Rotate the API keys · api"). Where two open nodes still share a
+  title — an overlap mark, an Events row, a Ready to merge card's
+  "Overlaps …" — the title carries its project ("Shop › …") or, in one
+  project, its parent (`lib/names.ts` `distinctTitle`).
+- **A held proposal's card** (T446, #6) says the level it is held at and what
+  Apply does: "Shop is at Advise: nothing changes until you apply. Apply
+  creates the node and starts it." The level opens the project, where it is
+  set.
 - **Ids stay out of primary text**: a branch reads as its slug
   (`add-csv-import`), the full name on hover and in Copy; worktree paths sit
   behind a Copy button (T413).

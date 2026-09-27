@@ -234,6 +234,10 @@ const APPLIED_WHO: Record<string, string> = {
 export function appliedTitle(payload: Record<string, unknown>): string {
   const who = APPLIED_WHO[String(payload.principal)] ?? 'An agent';
   const action = String(payload.action ?? '');
+  // A child with no repo is a node (a conversation), not a part: its summary names no "(repo)".
+  if (action === 'add_child' && !/\(\S+\)$/.test(String(payload.summary ?? ''))) {
+    return `${who} added a node`;
+  }
   return `${who} ${APPLIED_VERB[action] ?? action.replace(/_/g, ' ')}`;
 }
 
