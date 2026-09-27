@@ -2764,12 +2764,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T456 Retry a failed vendor, then fall back to another (D43 follow-up)
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** worker (manager reviews)
 - **Scope:** Pete, 2026-09-27. Today a vendor that exits non-zero on its own blocks the node at once (D43, T432); nothing is retried. Add, behind a setting (home, project, repo): retry the same vendor once for a crash (not for a missing command or a login refusal), then start the next installed vendor on a fallback list (`fallback: [gemini, codex]`) on the same node, thread and worktree. The node stays working; its thread says "Claude failed (<reason>); switched to Gemini"; Events records it; the model label follows. Blocked (D43) only when the list is spent. The new agent is told the last one stopped mid-turn (check `git status`). Only what the daemon holds carries over (thread, worktree, plan, brief); the failed vendor's own session context does not.
 - **Acceptance Criteria:** The setting in `packages/shared` and Settings; the fallback skips a vendor that isn't installed and, unless allowed, one without pre-tool hooks (a lower enforcement floor); a per-node cap on switches; the parent is told only when the list is spent (a switch is not a status change).
 - **Validation Steps:** Fake-agent tests: crash → retry → fallback → working; login refusal → no retry, fallback; list spent → blocked as D43; the cap.
-- **Notes:** D43 stays the end state once retries and fallbacks are spent.
+- **Notes:** Branch T456-vendor-fallback (worker; manager reviewed, fixed a key shown in the Settings text). `vendor_failure` {retry (default on), fallback [], allow_hookless} at home, repo and project (resolved project → repo → home; Settings → Agents → If the agent fails covers the home; repo and project through the API). No retry for a login or model refusal in the vendor's last stderr line or exit 126/127 (`attach/fallback.ts`); hooked vendors are Claude and Pi. A record-only `agent_restarted` event (Events, Activity; the parent isn't told). Cap 3 restarts per node per hour. Deferred: a failed prompt or transport error (not a crash) still blocks without a retry; a switch doesn't change the node's default vendor, so its next start uses the default again. Gate on the merged tree: lint, typecheck clean, `bun test` 3335/0. D43 stays the end state once retries and fallbacks are spent.
 
 ### Ticket: T457 Permission posture: Trusted or Ask (D45 follow-up)
 - **Priority:** P2
