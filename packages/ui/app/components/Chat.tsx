@@ -43,7 +43,7 @@ import {
   ruleHitText,
   systemLine,
 } from '../lib/chat';
-import { useFeed } from '../lib/feed-context';
+import { useFeed, useOptionalFeed } from '../lib/feed-context';
 import {
   type AgentStep,
   STEP_STATE_LABEL,
@@ -295,10 +295,13 @@ export function MessageList<E extends ChatEntry>({
   label = 'Conversation',
 }: MessageListProps<E>): JSX.Element {
   const rows = chatRows(entries);
+  // T446: a system row links the node it made when the cockpit knows it.
+  const streams = useOptionalFeed()?.cockpit?.streams;
+  const known = (id: string): boolean => streams?.some((r) => r.id === id) === true;
   return (
     <ol className="cr-msgs" data-testid={testid} aria-label={label}>
       {rows.flatMap((row) => {
-        const { entry, index, variant, continued, day } = row;
+        const { entry, index, variant, continued, day, wake } = row;
         const key = `${entry.ts}:${index}`;
         const out: JSX.Element[] = [];
         if (day) {
@@ -343,7 +346,8 @@ export function MessageList<E extends ChatEntry>({
           return out;
         }
         if (variant === 'system') {
-          const line = systemLine(entry.body);
+          const line =
+            row.system ?? systemLine(entry.body, { by: entry.by, ref: entry.ref, known });
           out.push(
             <li
               key={key}
@@ -352,6 +356,9 @@ export function MessageList<E extends ChatEntry>({
               data-testid="thread-entry"
               data-kind={entry.kind}
               data-by={byAttr(entry.by)}
+              data-actor={
+                entry.by === 'coordinator' || entry.by === 'director' ? entry.by : undefined
+              }
               {...entryAttrs?.(entry, index)}
             >
               <div
@@ -438,6 +445,16 @@ export function MessageList<E extends ChatEntry>({
                 <Avatar author={author} />
                 <span className="cr-msg-name">{author.name}</span>
                 {author.role && <span className="cr-msg-role">{author.role}</span>}
+                {wake && (
+                  // T446 (audit r7 #17): the routine wake this reply answers, folded into it.
+                  <span
+                    className="cr-msg-wake"
+                    data-testid="chat-wake"
+                    title={new Date(wake.ts).toLocaleString()}
+                  >
+                    {wake.text} · {clockTime(wake.ts)}
+                  </span>
+                )}
               </div>
             )}
             {tools(true)}

@@ -579,9 +579,10 @@ describe('T344: a "waiting for the plan" card when no coordinator will write one
     expect(started).toEqual([api.id, web.id]);
     expect(started).not.toContain(docs.id);
     expect(cards()).toEqual([]);
-    expect(streams.readThread(node.id).entries.at(-1)?.body).toBe(
-      'started without a plan by human: api: add salePrice, web: show salePrice',
-    );
+    // T446: yours, in words.
+    const last = streams.readThread(node.id).entries.at(-1);
+    expect(last?.body).toBe('You started api: add salePrice, web: show salePrice without a plan');
+    expect(last?.by).toBe('human');
     // Nothing is left to start.
     expect(await plans.startWaitingParts(node.id)).toEqual([]);
   });

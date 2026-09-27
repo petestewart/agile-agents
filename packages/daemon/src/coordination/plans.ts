@@ -75,6 +75,11 @@ function approvedOwners(plan: Plan | undefined): Set<string> {
   return new Set((plan?.approved?.owners ?? []).map((o) => o.child));
 }
 
+/** "1 part", "2 parts". */
+function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`;
+}
+
 function planPath(node: string): string {
   const parsed = UlidSchema.safeParse(node);
   if (!parsed.success) throw new Error(`invalid plan node: ${node}`);
@@ -141,9 +146,12 @@ export class PlanService {
       updated_at: this.now(),
     });
     const saved = await store.putEntity(planPath(node), validatePlan, plan);
+    // T446 (audit r7 #6): in words, not "(2 children, 0 contracts)".
     await streams.appendThread('daemon', node, {
       kind: 'event',
-      body: `plan drafted (${owners.length} ${owners.length === 1 ? 'child' : 'children'}, ${ids.length} ${ids.length === 1 ? 'contract' : 'contracts'}); waiting for approval`,
+      body: `Plan drafted for ${count(owners.length, 'part')}${
+        ids.length > 0 ? ` and ${count(ids.length, 'contract')}` : ''
+      }; waiting for approval`,
       ref: planPath(node),
     });
     return saved;
@@ -166,9 +174,10 @@ export class PlanService {
       updated_at: this.now(),
     });
     const saved = await this.options.store.putEntity(planPath(node), validatePlan, plan);
-    await this.options.streams.appendThread('daemon', node, {
+    // T446 (audit r7 #6): who approved it writes the line: "You approved plan v1".
+    await this.options.streams.appendThread(by, node, {
       kind: 'event',
-      body: `plan v${saved.version} approved by ${by}`,
+      body: `${by === 'human' ? 'You approved' : 'Approved'} plan v${saved.version}`,
       ref: planPath(node),
     });
     const contracts = saved.contracts.map((id) => this.options.contracts.find(id));
@@ -177,7 +186,7 @@ export class PlanService {
       // T338: each part reads its share on its own thread too.
       await this.options.streams.appendThread('daemon', owner.child, {
         kind: 'event',
-        body: `plan v${saved.version} approved: you own ${owner.owns.join(', ') || 'no paths'}`.slice(
+        body: `Plan v${saved.version} approved: this part owns ${owner.owns.join(', ') || 'no paths'}`.slice(
           0,
           800,
         ),
@@ -261,12 +270,9 @@ export class PlanService {
     this.options.streams.get(node);
     const parts = this.waitingParts(node);
     if (parts.length === 0) return [];
-    await this.options.streams.appendThread('daemon', node, {
+    await this.options.streams.appendThread('human', node, {
       kind: 'event',
-      body: `started without a plan by human: ${parts.map((p) => p.title).join(', ')}`.slice(
-        0,
-        800,
-      ),
+      body: `You started ${parts.map((p) => p.title).join(', ')} without a plan`.slice(0, 800),
     });
     const started: string[] = [];
     for (const part of parts) {

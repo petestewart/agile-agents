@@ -182,9 +182,14 @@ describe('T205 + Repo in place', () => {
           .every((e) => e.agent_only === undefined),
       ).toBe(true);
     }
+    // T446 (audit r7 #6): the tool is named on the agent's line; your thread reads in words.
+    const lines = streams.readThread(node.id, { limit: 50 }).entries;
     expect(
-      bodies(node.id).some((b) => b.includes('wait for the plan: write it with plan_write')),
+      lines.find((e) => e.body.includes('wait for the plan: write it with plan_write'))?.agent_only,
     ).toBe(true);
+    expect(
+      lines.find((e) => e.body.startsWith('The api and web parts wait for the plan'))?.agent_only,
+    ).toBeUndefined();
     // The deliberate stops say why, not an exit code.
     const stops = bodies(node.id).filter((b) => b.startsWith('worker stopped: '));
     expect(stops).toEqual([
@@ -266,7 +271,8 @@ describe('T205 + Repo in place', () => {
     expect(after.branch).toBeUndefined();
     expect(after.worktree).toBeUndefined();
     const [apiPart, webPart] = parts;
-    expect(apiPart?.title).toBe('api part');
+    // T446 (audit r7 #18): a part is named for its node, then its repo.
+    expect(apiPart?.title).toBe(`${node.title} · api`);
     expect(apiPart?.parent).toBe(node.id);
     expect(apiPart?.branch).toBe(work.branch);
     expect(apiPart?.worktree).toBe(wt);
@@ -275,7 +281,7 @@ describe('T205 + Repo in place', () => {
     expect(apiPart?.sessions.map((s) => s.id).slice(0, sessionIds.length)).toEqual(sessionIds);
     expect(apiPart?.sessions.at(-1)?.worktree).toBe(wt);
     expect(roleOf(apiPart?.id ?? '')).toBe('work');
-    expect(webPart?.title).toBe('web part');
+    expect(webPart?.title).toBe(`${node.title} · web`);
     expect(webPart?.repo).toBe('web');
     expect(roleOf(webPart?.id ?? '')).toBe('work');
     // The thread pointer, and the chat carries on at the node as the coordinator.
@@ -351,7 +357,7 @@ describe('T205 + Repo in place', () => {
 
     const { parts } = await reshape.addRepo(node.id, 'docs');
 
-    expect(parts.map((p) => p.title)).toEqual(['docs part']);
+    expect(parts.map((p) => p.title)).toEqual([`${node.title} · docs`]);
     expect(liveChildrenOf(node.id, streams.list())).toHaveLength(3);
   }, 30_000);
 

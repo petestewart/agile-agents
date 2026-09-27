@@ -21,7 +21,7 @@ import { ago } from '../lib/status';
 import { activityDelivery, eventTime } from '../lib/streams';
 import { Icon } from './Icon';
 import { KnowledgeRow } from './KnowledgeList';
-import { EventGlyph } from './Lenses';
+import { AppliedChange, EventGlyph } from './Lenses';
 import { Markdown } from './Markdown';
 import { NodeLink } from './NodeDetails';
 import { Button, EmptyState } from './ui';
@@ -258,6 +258,7 @@ export function ActivityView({
                           {detail}
                         </span>
                       )}
+                      <AppliedChange event={event} />
                     </div>
                   </div>
                   <div

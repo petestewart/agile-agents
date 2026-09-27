@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type RoutedEventType, type Stream, ulid } from '@agile-agents/shared';
+import { DIRECTOR_NODE, type RoutedEventType, type Stream, ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { type RouteInput, routeAndEmit, routeEvent } from './router';
@@ -188,5 +188,67 @@ describe('routeAndEmit (T241)', () => {
     expect(e.routing.map((r) => r.node)).toEqual([posts.id, blog.id]);
     expect(events.pendingFor(blog.id)).toEqual([]);
     expect(events.pendingFor(posts.id).map((p) => p.event.id)).toEqual([e.id]);
+  });
+});
+
+describe('T446: autonomy_applied, a record', () => {
+  let home: string;
+  let root: string;
+  let events: RoutedEventService;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'agile-router-'));
+    root = runInit(home).stateRoot;
+    events = new RoutedEventService(StateStore.open(root));
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  const applied = {
+    type: 'autonomy_applied' as const,
+    subject: sale.id,
+    payload: {
+      principal: 'coordinator' as const,
+      level: 'organise' as const,
+      action: 'add_child' as const,
+      summary: 'Add an RSS field (web)',
+      nodes: [webPart.id],
+    },
+    by: 'daemon' as const,
+  };
+
+  test('the node and its ancestors; the Director only when marked', () => {
+    expect(route({ type: 'autonomy_applied', subject: sale.id })).toEqual([
+      ['Show sale prices', 'self'],
+      ['Shop', 'ancestor'],
+    ]);
+    const withDirector = routeEvent(
+      { type: 'autonomy_applied', subject: sale.id, director: true },
+      tree,
+    );
+    expect(withDirector.routing.at(-1)).toEqual({ node: DIRECTOR_NODE, because: 'self' });
+  });
+
+  test('recorded, never pending: no digest and no wake; a closed recipient still has it', async () => {
+    const closed = tree.map((s) =>
+      s.id === shop.id ? ({ ...s, human: { status: 'closed' } } as Stream) : s,
+    );
+    const e = await routeAndEmit(events, { ...applied, director: true }, closed);
+    for (const node of [sale.id, shop.id, DIRECTOR_NODE]) {
+      expect(events.pendingFor(node)).toEqual([]);
+      expect(events.activityFor(node).map((a) => [a.event.id, a.status])).toEqual([
+        [e.id, 'recorded'],
+      ]);
+    }
+  });
+
+  test('recover re-adds a lost delivery as recorded, not pending', async () => {
+    const e = await routeAndEmit(events, applied, tree);
+    rmSync(join(root, 'events', 'queue', `${shop.id}.jsonl`));
+    const after = new RoutedEventService(StateStore.open(root));
+    expect(after.activityFor(shop.id)).toEqual([]);
+    expect(await after.recover()).toBe(1);
+    expect(after.pendingFor(shop.id)).toEqual([]);
+    expect(after.activityFor(shop.id).map((a) => [a.event.id, a.status])).toEqual([
+      [e.id, 'recorded'],
+    ]);
   });
 });

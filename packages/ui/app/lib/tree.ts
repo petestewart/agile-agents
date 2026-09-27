@@ -7,6 +7,7 @@
  */
 
 import type { CockpitProjectRow, CockpitStreamRow } from './feed-types';
+import { distinctTitle } from './names';
 import type { NodeStatusKey, StatusInput } from './status';
 import { type StreamTreeNode, buildStreamTree } from './streams';
 
@@ -397,8 +398,8 @@ export function overlapMark(
   rows: readonly Row[],
   folded: boolean,
 ): OverlapMark | undefined {
-  const titleOf = (node: string): string =>
-    rows.find((r) => r.id === node)?.title ?? 'another node';
+  // T446 (audit r7 #18): with the project (or parent) in front when two nodes share the title.
+  const titleOf = (node: string): string => distinctTitle(node, rows) ?? 'another node';
   const targets: OverlapTarget[] = [];
   const lines: string[] = [];
   const add = (target: string, files: readonly string[], line: string): void => {

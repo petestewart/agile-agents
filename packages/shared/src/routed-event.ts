@@ -12,7 +12,8 @@
 import { z } from 'zod';
 import { DIRECTOR_NODE } from './director';
 import { ULID_PATTERN, UlidSchema } from './ids';
-import { ProjectIdSchema } from './project';
+import { AutonomyProposalIdSchema, CoordinatorActionSchema } from './plan';
+import { AutonomySchema, ProjectIdSchema } from './project';
 
 export const ROUTED_EVENT_STRING_MAX = 800;
 export const ROUTED_EVENT_PAYLOAD_MAX = 4096;
@@ -100,6 +101,8 @@ export const ROUTED_EVENT_PAYLOADS = {
   }),
   contract_proposal: z.object({
     contract: NonEmpty,
+    /** T446: the proposal to decide (`decide_contract`); absent in events written before it. */
+    proposal: NonEmpty.optional(),
     children: z.array(UlidSchema).min(1).max(LIST_MAX),
     body: NonEmpty,
     reason: Str,
@@ -141,6 +144,21 @@ export const ROUTED_EVENT_PAYLOADS = {
    * `summary` is the tangent agent's own words, capped: data, not instructions.
    */
   tangent_summary: z.object({ child: UlidSchema, title: Str, summary: NonEmpty }),
+  /**
+   * T446 (audit r7 #7): a structural change a coordinator or the Director
+   * applied on its own at its autonomy level, or a human applied from a
+   * held proposal. `summary` is what changed, in words, without who did it
+   * ("Add an RSS field for scheduled posts (web)"); `nodes` are the nodes it
+   * created, for links and Undo. A record, not news: see `RECORD_ONLY_EVENT_TYPES`.
+   */
+  autonomy_applied: z.object({
+    principal: z.enum(['coordinator', 'director', 'human']),
+    level: AutonomySchema,
+    action: CoordinatorActionSchema,
+    summary: NonEmpty,
+    nodes: z.array(UlidSchema).max(LIST_MAX),
+    proposal: AutonomyProposalIdSchema.optional(),
+  }),
   /** T262: the ship check held delivery; the findings go back to the worker. */
   ship_findings: z.object({
     source: z.enum(['classifier', 'reviewer']),
@@ -157,6 +175,15 @@ export const RoutedEventTypeSchema = z.enum(
 export type RoutedEventPayload<T extends RoutedEventType> = z.infer<
   (typeof ROUTED_EVENT_PAYLOADS)[T]
 >;
+
+/**
+ * T446: types that are recorded, never delivered: their deliveries are
+ * written `recorded` rather than `pending`, so no digest carries them and no
+ * wake starts for them; they show in Events and each recipient's Activity.
+ */
+export const RECORD_ONLY_EVENT_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEventType>([
+  'autonomy_applied',
+]);
 
 const RoutedEventBaseSchema = z
   .object({
@@ -210,7 +237,14 @@ export function validateRoutedEvent(raw: unknown): RoutedEvent {
   return RoutedEventSchema.parse(raw);
 }
 
-export const EVENT_DELIVERY_STATUSES = ['pending', 'delivered', 'superseded', 'expired'] as const;
+/** T446: `recorded` is a record-only event's (`RECORD_ONLY_EVENT_TYPES`): never pending, never sent. */
+export const EVENT_DELIVERY_STATUSES = [
+  'pending',
+  'delivered',
+  'superseded',
+  'expired',
+  'recorded',
+] as const;
 export const EventDeliveryStatusSchema = z.enum(EVENT_DELIVERY_STATUSES);
 export type EventDeliveryStatus = z.infer<typeof EventDeliveryStatusSchema>;
 

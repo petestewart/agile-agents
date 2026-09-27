@@ -3891,6 +3891,16 @@ input[type="checkbox"].cr-switch:focus-visible {
 .cr-sys[data-tone="danger"] .cr-sys-icon {
   color: var(--red);
 }
+/* T446 (audit r7 #6): a change a coordinator or the Director made itself: its own icon, tinted */
+.cr-msg[data-actor] .cr-sys-icon {
+  color: var(--accent-fg);
+}
+/* T446 (audit r7 #17): the routine wake a coordinator's reply answers */
+.cr-msg-wake {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
 .cr-sys-lead {
   display: block;
   font-weight: 600;
@@ -9336,6 +9346,22 @@ div.cr-lens-ev:hover {
   overflow: hidden;
   font-size: var(--text-sm);
   color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* T446 (audit r7 #7): the nodes an applied change made, and its Undo */
+.cr-applied {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  margin-top: 2px;
+  min-width: 0;
+  font-size: var(--text-sm);
+}
+.cr-applied-node {
+  max-width: 100%;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
