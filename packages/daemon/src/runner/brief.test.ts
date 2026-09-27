@@ -5,11 +5,15 @@ import {
   BRIEF_CHAR_CEILING,
   BRIEF_THREAD_ENTRIES,
   NAMES_HINT,
+  WIP_MAX_NODES,
+  WIP_SECTION_CHARS,
   aboutSection,
   buildBrief,
   coordinatorSection,
+  openWorkFor,
   readRoleBrief,
   readableReposSection,
+  workInProgressSection,
 } from './brief';
 
 /**
@@ -612,5 +616,130 @@ describe('T420 (D42): a conversation is told what it was asked about', () => {
     });
     expect(work).toContain('## Stream');
     expect(work).not.toContain('What you were asked about');
+  });
+});
+
+describe('T458: a conversation knows the work in progress', () => {
+  const P = 'P-01J0000000000000000000000A';
+  const NOW = Date.parse('2026-09-27T12:00:00Z');
+  const work = (title: string, over: Partial<Stream> = {}): Stream =>
+    makeStream({
+      title,
+      project: P,
+      repo: 'web',
+      branch: `stream/${title.toLowerCase().replace(/ /g, '-')}`,
+      worktree: `/repos/web/.worktrees/${title.toLowerCase().replace(/ /g, '-')}`,
+      ...over,
+    });
+
+  test('lists the project’s other open work nodes it can read, and nothing else', () => {
+    const root = makeStream({ title: 'Shop', project: P });
+    const lead = makeStream({ title: 'Sale prices', project: P, parent: root.id });
+    const part = work('api part', { parent: lead.id, repo: 'api' });
+    const asked = work('Export CSV', { parent: root.id });
+    const sibling = work('Import CSV', { parent: root.id });
+    const self = makeStream({ title: 'Anyone on export?', project: P, parent: asked.id });
+    const other = [
+      work('Closed one', { parent: root.id, human: { status: 'closed' } }),
+      work('Landed one', { parent: root.id, human: { status: 'landed' } }),
+      work('Archived one', { parent: root.id, archived: true }),
+      work('Merged one', {
+        parent: root.id,
+        delivery_state: { status: 'merged' } as never,
+      }),
+      work('Elsewhere', { project: 'P-01J0000000000000000000000B' }),
+      work('Private one', { parent: root.id, repo: 'secret' }),
+      makeStream({ title: 'Another question', project: P, parent: root.id }),
+    ];
+    const all = [root, lead, part, asked, sibling, self, ...other];
+    const open = openWorkFor(self, all, new Set(['web', 'api']));
+    // The coordinator is not work; its part is. The node asked about is in "What you were asked about".
+    expect(open.map((s) => s.title).sort()).toEqual(['Import CSV', 'api part']);
+    expect(openWorkFor({ ...self, project: undefined }, all, new Set(['web', 'api']))).toEqual([]);
+  });
+
+  test('each node: title, id, repo, branch, worktree, both statuses, latest line and age; newest first', () => {
+    const older = work('Import CSV', {
+      agent: {
+        status: 'working',
+        updated_at: '2026-09-27T09:00:00Z',
+        progress: `parsing quotes ${'x'.repeat(400)}`,
+      },
+    });
+    const newer = work('Export CSV', {
+      agent: { status: 'idle', updated_at: '2026-09-27T08:00:00Z', progress: 'old line' },
+    });
+    const unstarted = work('Search', { branch: undefined, worktree: undefined });
+    const out = workInProgressSection(
+      [
+        { node: older },
+        {
+          node: newer,
+          threadAt: '2026-09-27T11:55:00Z',
+          card: {
+            doing: 'streaming rows',
+            state: 'working',
+            files: [],
+            updated_at: '2026-09-27T11:00:00Z',
+          } as never,
+        },
+        { node: unstarted },
+      ],
+      NOW,
+    );
+    expect(out).toContain('## Work in progress');
+    expect(out).toContain('Read these worktrees to answer questions about ongoing work');
+    expect(out).toContain('never change their files or their threads');
+    expect(out).toContain(
+      `- **Export CSV** (\`${newer.id}\`): repo web, branch \`stream/export-csv\`, worktree \`/repos/web/.worktrees/export-csv\`; agent idle, human open; changed 5m ago\n  - Latest: streaming rows`,
+    );
+    expect(out).toContain('agent working, human open; changed 3h ago\n  - Latest: parsing quotes');
+    // The latest line is clipped; a node with no branch says so.
+    expect(out).not.toContain('x'.repeat(200));
+    expect(out).toContain(
+      `- **Search** (\`${unstarted.id}\`): repo web, no branch yet; agent idle`,
+    );
+    expect(out.indexOf('Export CSV')).toBeLessThan(out.indexOf('Import CSV'));
+    expect(out.indexOf('Import CSV')).toBeLessThan(out.indexOf('**Search**'));
+  });
+
+  test('at most WIP_MAX_NODES nodes and WIP_SECTION_CHARS characters, then "and N more"', () => {
+    const many = Array.from({ length: WIP_MAX_NODES + 5 }, (_, i) => ({
+      node: work(`Node ${i}`),
+    }));
+    const byCount = workInProgressSection(many, NOW);
+    expect(byCount.match(/^- \*\*/gm)?.length).toBe(WIP_MAX_NODES);
+    expect(byCount).toContain('- and 5 more not listed');
+
+    const long = Array.from({ length: WIP_MAX_NODES }, (_, i) => ({
+      node: work(`Long ${i} ${'t'.repeat(200)}`, {
+        agent: { status: 'working', updated_at: '2026-09-27T00:00:00Z', progress: 'p'.repeat(500) },
+      }),
+    }));
+    const byChars = workInProgressSection(long, NOW);
+    expect(byChars.length).toBeLessThanOrEqual(WIP_SECTION_CHARS + 40);
+    const shown = byChars.match(/^- \*\*/gm)?.length ?? 0;
+    expect(shown).toBeLessThan(WIP_MAX_NODES);
+    expect(byChars).toContain(`- and ${WIP_MAX_NODES - shown} more not listed`);
+  });
+
+  test('buildBrief: a conversation with a project gets the section; without one, none', () => {
+    const base = { role: 'worker' as const, ancestors: [], thread: [], docs: [], rules: [] };
+    const self = makeStream({ title: 'Anyone on export?', project: P });
+    const sibling = work('Import CSV');
+    const withWork = buildBrief({
+      ...base,
+      stream: self,
+      conversation: { work: [{ node: sibling }] },
+    });
+    expect(withWork).toContain('## Work in progress');
+    expect(withWork).toContain(`**Import CSV** (\`${sibling.id}\`)`);
+    const empty = buildBrief({ ...base, stream: self, conversation: { work: [] } });
+    expect(empty).toContain('## Work in progress');
+    expect(empty).toContain('None right now.');
+    const bare = buildBrief({ ...base, stream: self, conversation: {} });
+    expect(bare).not.toContain('Work in progress');
+    const worker = buildBrief({ ...base, stream: sibling });
+    expect(worker).not.toContain('Work in progress');
   });
 });

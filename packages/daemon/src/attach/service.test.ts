@@ -1258,6 +1258,67 @@ describe('T420 (D42): a conversation under a node is told about it', () => {
   }, 20_000);
 });
 
+describe('T458: a conversation knows the work in progress', () => {
+  test('its brief lists a sibling work node with its branch and worktree, not a hidden one', async () => {
+    const secret = mkdtempSync(join(tmpdir(), 'agile-attach-secret-'));
+    try {
+      await store.putRepos({
+        demo: { path: repo, protected_branches: ['main'] },
+        secret: {
+          path: secret,
+          protected_branches: ['main'],
+          visibility: { mode: 'private', projects: ['P-01ARZ3NDEKTSV4RRFFQ69G5FAV'] },
+        },
+      });
+      const project = await new ProjectService(store, streams).create({
+        name: 'Shop',
+        repos: ['demo'],
+      });
+      const sibling = await streams.create('human', {
+        title: 'Export CSV',
+        goal: 'stream the export',
+        project: project.id,
+        parent: project.root,
+        repo: 'demo',
+      });
+      const worktree = join(repo, '.worktrees', `${sibling.id}-export-csv`);
+      await streams.update('daemon', sibling.id, {
+        branch: `stream/${sibling.id}-export-csv`,
+        worktree,
+        agent: { status: 'working', progress: 'streaming rows to the writer' },
+      });
+      await streams.create('human', {
+        title: 'Hidden work',
+        goal: 'g',
+        project: project.id,
+        parent: project.root,
+        repo: 'secret',
+      });
+      const side = await streams.create('human', {
+        title: 'Anyone on export?',
+        goal: 'is anyone touching the export code?',
+        project: project.id,
+        parent: project.root,
+      });
+      const { session } = await attachService.attach(side.id);
+      const path = join(home, 'sessions', session.id, 'brief.md');
+      await waitFor(() => existsSync(path));
+      const brief = readFileSync(path, 'utf8');
+      expect(brief).toContain('## Work in progress');
+      expect(brief).toContain(
+        `- **Export CSV** (\`${sibling.id}\`): repo demo, branch \`stream/${sibling.id}-export-csv\`, worktree \`${worktree}\`; agent working, human open; changed just now`,
+      );
+      expect(brief).toContain('  - Latest: streaming rows to the writer');
+      // The node on a repo it can't read is left out (T420's parts list names it, no paths).
+      const wip = brief.slice(brief.indexOf('## Work in progress'));
+      expect(wip.slice(0, wip.indexOf('\n## ', 3))).not.toContain('Hidden work');
+      expect(brief).not.toContain(secret);
+    } finally {
+      rmSync(secret, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
 describe("the brief carries the repo's own check commands (T339)", () => {
   async function briefFor(): Promise<string> {
     const stream = await makeStream('demo');

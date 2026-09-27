@@ -24,6 +24,7 @@ import type {
 import { quoteThreadBody } from '@agile-agents/shared';
 import type { ChildPlanView } from '../coordination/plans';
 import { knowledgeInScope } from '../knowledge/service';
+import { isLiveWorkNode } from '../sync/overlap';
 
 /** One Markdown file per role. */
 export const BRIEFS_DIR = join(import.meta.dir, '..', '..', 'briefs');
@@ -68,9 +69,10 @@ export interface BuildBriefInput {
   plan?: ChildPlanView;
   /**
    * T420 (D42): the node is a conversation. Its goal is the human's question,
-   * and it is told about the node it sits under (its parent's state).
+   * and it is told about the node it sits under (its parent's state). T458:
+   * `work`, its project's open work it can read (absent without a project).
    */
-  conversation?: { about?: AboutParent };
+  conversation?: { about?: AboutParent; work?: readonly WipNode[] };
   /** T339: the repo's own check commands (repos.yaml `checks`, else package.json scripts). */
   checks?: readonly string[];
   /** T330 (§4.4): the registered repos it may read (a work node: the others than its own). */
@@ -163,6 +165,103 @@ export function aboutSection(about: AboutParent): string {
     );
   }
   return section('What you were asked about', lines.join('\n'));
+}
+
+/** T458: one open work node a conversation may read, with what was looked up for it. */
+export interface WipNode {
+  node: Stream;
+  /** Its status card, when one can be read. */
+  card?: StatusCard;
+  /** When its thread last changed (`StateStore.threadUpdatedAt`). */
+  threadAt?: string;
+}
+
+/** T458: "Work in progress" lists at most this many nodes, in at most this many characters. */
+export const WIP_MAX_NODES = 15;
+export const WIP_SECTION_CHARS = 6_000;
+const WIP_LATEST_CHARS = 160;
+
+/**
+ * T458: the project's open work a conversation can read: live work nodes
+ * (not archived, closed, landed or merged; a coordinator's parts included)
+ * on a repo its read scope sees (`readable`, the same rule as its "Repos you
+ * can read"), other than itself and the node it was asked about. No project,
+ * none.
+ */
+export function openWorkFor(
+  conversation: Stream,
+  all: readonly Stream[],
+  readable: ReadonlySet<string>,
+): Stream[] {
+  if (conversation.project === undefined) return [];
+  return all.filter(
+    (s) =>
+      s.project === conversation.project &&
+      s.id !== conversation.id &&
+      s.id !== conversation.parent &&
+      s.repo !== undefined &&
+      readable.has(s.repo) &&
+      isLiveWorkNode(s, all),
+  );
+}
+
+const latestOf = (first: string, ...rest: Array<string | undefined>): string =>
+  rest.reduce<string>((at, t) => (t !== undefined && t > at ? t : at), first);
+
+/** "just now", "5m ago", "2h ago", "3d ago", else the date. */
+function agoText(iso: string, now: number): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso;
+  const m = Math.round(Math.max(0, now - t) / 60_000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 36) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  return d < 60 ? `${d}d ago` : `on ${iso.slice(0, 10)}`;
+}
+
+/**
+ * T458: the project's other open work, newest change first: where each
+ * node's code is (to read, never to change) and what it is doing. Capped at
+ * `WIP_MAX_NODES` nodes and `WIP_SECTION_CHARS`; the rest are counted.
+ */
+export function workInProgressSection(work: readonly WipNode[], now = Date.now()): string {
+  const lead =
+    'Other open work in this project, most recently changed first. Read these worktrees to answer questions about ongoing work; never change their files or their threads. Answer here; a change happens only when the human sends your conclusion up or turns this conversation into work.';
+  if (work.length === 0) {
+    return section('Work in progress', `${lead}\n\nNone right now.`);
+  }
+  const rows = work
+    .map(({ node, card, threadAt }) => ({
+      node,
+      card,
+      at: latestOf(node.created_at, node.agent.updated_at, threadAt, card?.updated_at),
+    }))
+    .sort((a, b) => (a.at === b.at ? a.node.id.localeCompare(b.node.id) : a.at > b.at ? -1 : 1));
+  const blocks = rows.map(({ node: n, card, at }) => {
+    const doing = card?.doing ?? '';
+    const latest =
+      doing !== '' &&
+      (n.agent.progress === undefined || (card?.updated_at ?? '') >= n.agent.updated_at)
+        ? doing
+        : (n.agent.progress ?? '');
+    return [
+      `- **${clipText(n.title, 120)}** (\`${n.id}\`): repo ${n.repo}${n.branch ? `, branch \`${n.branch}\`` : ', no branch yet'}${n.worktree ? `, worktree \`${n.worktree}\`` : ''}; agent ${n.agent.status}, human ${n.human.status}; changed ${agoText(at, now)}`,
+      ...(latest !== '' ? [`  - Latest: ${clipText(latest, WIP_LATEST_CHARS)}`] : []),
+    ].join('\n');
+  });
+  const shown: string[] = [];
+  let used = lead.length;
+  for (const block of blocks) {
+    // Room is kept for the "and N more" line.
+    if (shown.length === WIP_MAX_NODES || used + block.length + 40 > WIP_SECTION_CHARS) break;
+    shown.push(block);
+    used += block.length + 1;
+  }
+  const more = blocks.length - shown.length;
+  if (more > 0) shown.push(`- and ${more} more not listed`);
+  return section('Work in progress', `${lead}\n\n${shown.join('\n')}`);
 }
 
 /** The role's Markdown file, or an empty string when there is none on disk. */
@@ -448,6 +547,10 @@ function assemble(
 
   if (input.readableRepos !== undefined) {
     parts.push(readableReposSection(input.readableRepos, input.inWorktree, input.readPosture));
+  }
+
+  if (input.conversation?.work !== undefined) {
+    parts.push(workInProgressSection(input.conversation.work));
   }
 
   parts.push(section('Knowledge in scope', `${renderRules(rules)}\n\n${LOOKUP_HINT}`));
