@@ -1179,6 +1179,10 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           const action = proposalLineAction(entry, {
             repos: repos.map((r) => r.name),
             current: stream.repo,
+            // T455: once added, a split node holds the repo in a part; the button goes.
+            partRepos: children.flatMap((c) =>
+              c.repo !== undefined && c.human_status !== 'closed' ? [c.repo] : [],
+            ),
             projectRoot,
             cards: cards.map((c) => c.id),
             hasPlan: tabs.includes('plan'),

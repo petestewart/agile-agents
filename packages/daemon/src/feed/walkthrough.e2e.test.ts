@@ -2856,6 +2856,63 @@ test.skipIf(!RUN)(
       );
     });
 
+    await step(
+      '10.4',
+      'an agent proposes a repo; Add turns the conversation into work',
+      async () => {
+        const question =
+          'Does the agile-test-repo README name ledger-lite? If it should, propose adding the repo.';
+        const why = 'the README line about ledger-lite goes there';
+        await openNode('Shop');
+        // The conversation is found by its goal (the question), whatever title it is given.
+        const replied = (async () => {
+          const deadline = Date.now() + WAIT_MS;
+          let id: string | undefined;
+          while (id === undefined) {
+            id = world.daemon.streamService?.list().find((s) => s.goal === question)?.id;
+            if (id === undefined) {
+              if (Date.now() > deadline) throw new Error('no conversation for the question');
+              await Bun.sleep(20);
+            }
+          }
+          await claim(id, 'worker', async (session) => {
+            await world.daemon.verbService?.proposeRepo({ session, repo: 'agile-test-repo', why });
+            return 'It should: one line naming the ledger-lite it needs. I proposed adding agile-test-repo.';
+          });
+        })();
+        await page.locator('[data-testid="stream-title"]').click({ trial: true });
+        await page.keyboard.press('a');
+        await page.locator('[data-testid="ask-input"]').fill(question);
+        await page.locator('[data-testid="ask-input"]').press('Enter');
+        await replied;
+        const convo = world.daemon.streamService?.list().find((s) => s.goal === question);
+        await page.locator(`[data-testid="stream-page"][data-stream="${convo?.id}"]`).waitFor();
+        await checkText(
+          'the proposal reads in words',
+          page.locator('[data-testid="thread-entry"][data-kind="proposal"]'),
+          `Proposes adding agile-test-repo: ${why}`,
+        );
+        const add = page.locator('[data-testid="proposal-add-repo"]', {
+          hasText: 'Add agile-test-repo',
+        });
+        await add.waitFor();
+        check(
+          'proposing changed nothing: still a conversation',
+          world.daemon.streamService?.get(convo?.id ?? '').repo === undefined,
+          String(world.daemon.streamService?.get(convo?.id ?? '').repo),
+        );
+        await add.click();
+        await page.locator('[data-testid="node-role"][data-role="work"]').waitFor();
+        await page.locator('[data-testid="proposal-add-repo"]').waitFor({ state: 'detached' });
+        const node = world.daemon.streamService?.get(convo?.id ?? '');
+        check(
+          'the same node is work on its own branch of agile-test-repo',
+          node?.repo === 'agile-test-repo' && node.branch?.startsWith('stream/') === true,
+          JSON.stringify({ repo: node?.repo, branch: node?.branch }),
+        );
+      },
+    );
+
     writeReport();
     expect(findings).toEqual([]);
   },

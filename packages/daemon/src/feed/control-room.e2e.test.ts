@@ -7558,6 +7558,86 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
   );
 });
 
+describe('an agent proposes a repo (Playwright e2e, T455)', () => {
+  browserTest(
+    "a conversation's propose_repo line shows Add <repo>; clicking it makes the node work on that repo, and the button goes",
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'Sale prices',
+          goal: 'can we show sale prices?',
+          project: shop.id,
+        });
+        // The conversation's agent, as `runner/session.ts` registers it.
+        const session = ulid();
+        await cockpit.store.putAgent(session as AgentId, {
+          vendor: 'claude',
+          model: 'test-model',
+          stream: node.id,
+          last_seen: new Date().toISOString(),
+          role: 'worker',
+        });
+        await cockpit.verbs.proposeRepo({
+          session,
+          repo: 'demo',
+          why: 'the price badge is rendered there',
+        });
+        // Proposing changes nothing by itself.
+        expect(cockpit.streams.get(node.id).repo).toBeUndefined();
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        const root = `[data-testid="stream-page"][data-stream="${node.id}"]`;
+        await page.locator(root).waitFor();
+        const line = page.locator(`${root} [data-testid="thread-entry"][data-kind="proposal"]`);
+        await line.waitFor();
+        expect(await line.locator('.cr-msg-body').textContent()).toContain(
+          'Proposes adding demo: the price badge is rendered there',
+        );
+        expect(await line.locator('.cr-msg-body strong').textContent()).toBe('demo');
+        const add = line.locator('[data-testid="proposal-add-repo"]');
+        expect(await add.textContent()).toBe('Add demo');
+        await add.click();
+        // T205: the conversation becomes a work node on demo in place, the same thread.
+        await page.locator('[data-testid="node-branch"][data-branch^="stream/"]').waitFor();
+        const after = cockpit.streams.get(node.id);
+        expect(after.repo).toBe('demo');
+        expect(after.branch).toMatch(/^stream\//);
+        expect(cockpit.streams.list().filter((s) => s.parent === node.id)).toEqual([]);
+        await line.waitFor();
+        await page.locator('[data-testid="proposal-add-repo"]').waitFor({ state: 'detached' });
+
+        // Now a work node, its agent proposes web: Add web splits it into two parts, and the
+        // button goes once web is a part (the node itself has no repo any more).
+        await cockpit.verbs.proposeRepo({ session, repo: 'web', why: 'the badge component' });
+        await page
+          .locator(`${root} [data-testid="proposal-add-repo"]`, { hasText: 'Add web' })
+          .click();
+        await waitUntil(
+          'two parts',
+          () => cockpit.streams.list().filter((s) => s.parent === node.id).length === 2,
+        );
+        await page
+          .locator(
+            `[data-testid="stream-tree"] [data-stream="${node.id}"][data-role="coordinating"]`,
+          )
+          .waitFor();
+        await page.locator('[data-testid="proposal-add-repo"]').waitFor({ state: 'detached' });
+        expect(cockpit.streams.get(node.id).repo).toBeUndefined();
+        expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('waiting for the plan (Playwright e2e, T344)', () => {
   browserTest(
     'parts wait on a stopped coordinator: a card with Wake coordinator and Start parts anyway',
