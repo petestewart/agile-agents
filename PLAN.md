@@ -2652,6 +2652,24 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/coordination/autonomy.test.ts -t T443 packages/daemon/src/director/tools.test.ts packages/daemon/src/attach/service.test.ts -t T361`; full `bun test`, control-room e2e, walkthrough.
 - **Notes:** Branch T443-autonomy-starts. The UI half of "tell the user" (the Apply card's words, a Needs me item for anything left unstarted) is T446's and T445's.
 
+### Ticket: T444 Sessions a dead daemon left running end at start (audit r7 #16)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** After a daemon died mid-turn (not a clean stop), its nodes read "Working" for good on restart, Running listed them, Delivery said "still has a live agent", and a line to them only queued; only Stop cleared it (T437's orphan clean-up ran inside `stop()` alone).
+- **Acceptance Criteria:** `AttachService.endOrphansAtStart()` runs at daemon start, before `wakePending()`: every `starting`/`running` session on record ends `stopped` with `stopped: the daemon restarted during this turn` (the daemon's prefix, so the node isn't "stopped by the human" and its next event wakes it), the node goes `idle`, and its thread says `session ended: the daemon restarted during this turn`.
+- **Validation Steps:** `bun test packages/daemon/src/attach/service.test.ts -t T444 packages/daemon/src/daemon.test.ts -t T444` (the daemon test fails with the call removed).
+- **Notes:** Branch T444-orphans-at-start.
+
+### Ticket: T448 First-run nits (audit r7 #24, #25)
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Adding a repository left an untracked `.agile-daemon-cache/` in it; `agile init` said nothing about what comes next.
+- **Acceptance Criteria:** The cache writes its own `.gitignore` (`*`) once, so `git status` never lists it and nothing of the operator's is edited. `agile init` ends with "Next: `agile daemon start`, then open the cockpit it prints (http://127.0.0.1:4600/ by default)." README says what sits beside your code.
+- **Validation Steps:** `bun test packages/daemon/src/subprocess-env.test.ts packages/cli`.
+- **Notes:** Branch T448-first-run-nits.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done
