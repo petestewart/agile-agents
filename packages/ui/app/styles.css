@@ -8203,6 +8203,26 @@ div.cr-ov-ev:hover {
   font-size: var(--text-sm);
   font-weight: 500;
 }
+
+/* T456: "If the agent fails" → Then try: an ordered list of agents. */
+.cr-set-order {
+  margin: 0;
+  padding: 0 0 0 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+.cr-set-order > li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cr-set-order-btns {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+}
 .cr-set-sf-labels > span:nth-child(1) {
   grid-area: lv;
 }

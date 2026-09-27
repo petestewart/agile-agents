@@ -6,7 +6,7 @@
  */
 
 import type { RoutedEvent, RoutedEventType, RoutingEntry } from '@agile-agents/shared';
-import { agentLabel, dayLabel, sessionIdText } from './chat';
+import { agentLabel, dayLabel, sessionIdText, vendorLabel } from './chat';
 import type { CockpitRepoRow, CockpitStreamRow } from './feed-types';
 import { overviewCounts } from './overview';
 import {
@@ -178,6 +178,7 @@ export const EVENT_FAMILY: Record<RoutedEventType, EventFamily> = {
   plan_changed: 'coordination',
   external_changed: 'coordination',
   autonomy_applied: 'coordination',
+  agent_restarted: 'coordination',
   knowledge_accepted: 'knowledge',
 };
 
@@ -199,8 +200,19 @@ export function eventFamily(type: string): EventFamily {
  */
 export function eventTitle(event: Pick<RoutedEvent, 'type' | 'payload'>): string {
   if (event.type === 'autonomy_applied') return appliedTitle(event.payload);
+  if (event.type === 'agent_restarted') return restartedTitle(event.payload);
   const words = eventLabel(event).replace(/\b(pr|ci)\b/g, (w) => w.toUpperCase());
   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * T456: a crashed agent the daemon started again: "Started Claude again",
+ * or "Switched from Claude to Gemini".
+ */
+export function restartedTitle(payload: Record<string, unknown>): string {
+  const from = vendorLabel(String(payload.from ?? ''));
+  if (payload.action === 'retry') return `Started ${from} again`;
+  return `Switched from ${from} to ${vendorLabel(String(payload.to ?? ''))}`;
 }
 
 // ---------------------------------------------------------------- what the agents did (T446)
@@ -445,6 +457,8 @@ export function eventDetail(
         return str(p, 'summary');
       case 'autonomy_applied':
         return str(p, 'summary');
+      case 'agent_restarted':
+        return `${vendorLabel(str(p, 'from') ?? '')} failed: ${str(p, 'reason') ?? 'no reason given'}`;
       case 'external_changed':
         return [str(p, 'key'), str(p, 'summary')].filter(Boolean).join(': ');
       case 'ship_findings': {

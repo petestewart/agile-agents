@@ -392,6 +392,9 @@ export function summarize(
             : 'The coordinator';
       return `${who} applied ${String(p.action).replace(/_/g, ' ')} (${String(p.level)}): ${String(p.summary)}.`;
     }
+    case 'agent_restarted':
+      // T456: a record; read by `read_event`, never delivered (RECORD_ONLY_EVENT_TYPES).
+      return `The agent (${String(p.from)}) failed (${String(p.reason)}); ${p.action === 'retry' ? 'started it again' : `switched to ${String(p.to)}`}.`;
     case 'sibling_ask':
       if (node === p.sibling) {
         return `${name(event.subject)} asks you (${event.id}): ${String(p.question)}. Answer with \`reply_sibling\`.`;

@@ -34,11 +34,13 @@ function fields(
   vendor?: string,
   model?: string,
   effort?: RepoEntry['effort'],
+  vendor_failure?: RepoEntry['vendor_failure'],
 ): SessionDefaultsFields {
   return {
     ...(vendor !== undefined ? { vendor } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
+    ...(vendor_failure !== undefined ? { vendor_failure } : {}),
   };
 }
 
@@ -54,13 +56,18 @@ export class SessionDefaultsService {
     const repos: SessionDefaultsStatus['repos'] = {};
     for (const [name, entry] of Object.entries(this.store.getRepos())) {
       repos[name] = {
-        ...fields(entry.vendor, entry.model, entry.effort),
+        ...fields(entry.vendor, entry.model, entry.effort, entry.vendor_failure),
         resolved: resolveSessionDefaults({ repo: entry, home }),
       };
     }
     return {
       builtin: { ...BUILTIN_SESSION_DEFAULTS },
-      home: fields(home.default_vendor, home.default_model, home.default_effort),
+      home: fields(
+        home.default_vendor,
+        home.default_model,
+        home.default_effort,
+        home.vendor_failure,
+      ),
       resolved: resolveSessionDefaults({ home }),
       repos,
       vendors: SESSION_VENDORS,

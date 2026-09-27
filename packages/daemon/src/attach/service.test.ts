@@ -30,6 +30,7 @@ import {
   type Policy,
   type Question,
   type Stream,
+  type VendorFailureSettings,
   ulid,
 } from '@agile-agents/shared';
 import { DeliveryService } from '../delivery/service';
@@ -424,6 +425,272 @@ describe('T432 (D43): a vendor that exits with an error on its own', () => {
     ).toBeUndefined();
     expect(missingVendorCommand({ label: 'X', command: 'x' }, () => '/usr/bin/x')).toBeUndefined();
   });
+});
+
+describe('T456: a crashed agent is retried, then another vendor takes over', () => {
+  const PANIC = 'panic: worker thread died';
+  /** Crashes at every start, saying `line` on stderr. */
+  const crashing = (vendor: AcpProviderConfig, line = PANIC): AcpProviderConfig => ({
+    ...vendor,
+    command: 'sh',
+    args: ['-c', `echo "${line}" >&2; exit 1`],
+    envOverrides: {},
+  });
+  /** Crashes at its first start only; after that it runs `script`. */
+  const crashingOnce = (vendor: AcpProviderConfig, script: FakeAgentScript): AcpProviderConfig => {
+    const marker = join(scratch, `crash-once-${ulid()}`);
+    writeFileSync(marker, '');
+    return {
+      ...fakeProviderFor(vendor, script),
+      command: 'sh',
+      args: [
+        '-c',
+        `if [ -e "${marker}" ]; then rm "${marker}"; echo "${PANIC}" >&2; exit 1; fi; exec bun "${FAKE_AGENT_PATH}"`,
+      ],
+    };
+  };
+  const hangs = (vendor: AcpProviderConfig) => fakeProviderFor(vendor, SPEAKS_THEN_HANGS);
+  let events: RoutedEventService;
+  function build(
+    byVendor: Record<string, AcpProviderConfig>,
+    extra: Partial<ConstructorParameters<typeof AttachService>[0]> = {},
+  ): AttachService {
+    events = new RoutedEventService(store);
+    return new AttachService({
+      ...extra,
+      store,
+      streams,
+      home,
+      events,
+      provider: (vendor, base) => byVendor[vendor] ?? base,
+      questions: { listOpen: () => questions.listOpen() },
+      gates: { list: () => gates.list() },
+    });
+  }
+  const setFailure = (vendor_failure: VendorFailureSettings) =>
+    store.setHomeSessionDefaults({ vendor_failure });
+  const agents = (id: string) =>
+    streams
+      .get(id)
+      .sessions.filter((s) => s.role === 'worker')
+      .map((s) => [s.vendor, s.status]);
+  const restarts = (id: string) =>
+    events.activityFor(id).filter((a) => a.event.type === 'agent_restarted');
+  const briefOf = (id: string, at: number) =>
+    readFileSync(
+      join(home, 'sessions', streams.get(id).sessions[at]?.id ?? '', 'brief.md'),
+      'utf8',
+    );
+
+  test('a crash: the same vendor and model once more, in the same worktree; the node keeps working', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    attachService = build({ claude: crashingOnce(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS) });
+    const stream = await makeStream('demo');
+    const { session: first } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes('looking at the parser now'));
+
+    const [a, b] = streams.get(stream.id).sessions;
+    expect(a).toMatchObject({ id: first.id, vendor: 'claude', status: 'error' });
+    expect(b).toMatchObject({
+      vendor: 'claude',
+      model: first.model,
+      effort: first.effort,
+      status: 'running',
+      worktree: first.worktree,
+    });
+    expect(streams.get(stream.id).agent.status).toBe('working');
+    expect(threadBodies(stream.id)).toContain(`Claude Code failed (${PANIC}); retrying once`);
+    // Not D43's end: the chat shows no "stopped with an error" warning.
+    expect(threadBodies(stream.id).some((line) => line.startsWith('session ended'))).toBe(false);
+    const brief = briefOf(stream.id, 1);
+    expect(brief).toContain(
+      `The previous agent on this node (Claude Code) stopped mid-turn: ${PANIC}.`,
+    );
+    expect(brief).toContain('`git status`');
+    // A record in Events and the node's Activity; it wakes nobody.
+    const [restart] = restarts(stream.id);
+    expect(restart?.status).toBe('recorded');
+    expect(restart?.event.payload).toMatchObject({
+      action: 'retry',
+      from: 'claude',
+      to: 'claude',
+      reason: PANIC,
+    });
+  }, 30_000);
+
+  test('the retry crashes too: the next vendor on the list takes over, with its own model', async () => {
+    await setFailure({ fallback: ['gemini'], allow_hookless: true });
+    attachService = build({
+      claude: crashing(ACP_PROVIDERS.claude),
+      gemini: hangs(ACP_PROVIDERS.gemini),
+    });
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes('looking at the parser now'));
+
+    expect(agents(stream.id)).toEqual([
+      ['claude', 'error'],
+      ['claude', 'error'],
+      ['gemini', 'running'],
+    ]);
+    // D40: a model belongs to its vendor; Gemini gets its own default, not the Claude one.
+    expect(streams.get(stream.id).sessions[2]?.model).toBe('default');
+    expect(streams.get(stream.id).agent.status).toBe('working');
+    const lines = threadBodies(stream.id);
+    expect(lines).toContain(`Claude Code failed (${PANIC}); retrying once`);
+    expect(lines).toContain(`Claude Code failed (${PANIC}); switched to Gemini CLI`);
+    expect(briefOf(stream.id, 2)).toContain('You take its place.');
+    expect(restarts(stream.id).map((r) => [r.event.payload.action, r.event.payload.to])).toEqual([
+      ['switch', 'gemini'],
+      ['retry', 'claude'],
+    ]);
+  }, 30_000);
+
+  test('a login refusal is not retried: straight to the fallback', async () => {
+    const refusal = 'Invalid API key · Please run /login';
+    await setFailure({ fallback: ['gemini'], allow_hookless: true });
+    attachService = build({
+      claude: crashing(ACP_PROVIDERS.claude, refusal),
+      gemini: hangs(ACP_PROVIDERS.gemini),
+    });
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes('looking at the parser now'));
+    expect(agents(stream.id)).toEqual([
+      ['claude', 'error'],
+      ['gemini', 'running'],
+    ]);
+    expect(threadBodies(stream.id)).toContain(
+      `Claude Code failed (${refusal}); switched to Gemini CLI`,
+    );
+    expect(threadBodies(stream.id).some((line) => line.endsWith('retrying once'))).toBe(false);
+  }, 30_000);
+
+  test('a fallback not installed is skipped, and one without hooks unless allowed', async () => {
+    const byVendor = {
+      claude: crashing(ACP_PROVIDERS.claude),
+      cursor: { ...ACP_PROVIDERS.cursor, command: 'definitely-not-a-vendor-xyz' },
+      gemini: hangs(ACP_PROVIDERS.gemini),
+    };
+    // Claude has hooks; Gemini doesn't, and Cursor isn't installed: nothing to switch to.
+    await setFailure({ retry: false, fallback: ['cursor', 'gemini'] });
+    attachService = build(byVendor);
+    const held = await makeStream();
+    await attachService.attach(held.id);
+    await waitFor(() => streams.get(held.id).agent.status === 'blocked');
+    expect(agents(held.id)).toEqual([['claude', 'error']]);
+    expect(threadBodies(held.id)).toContain(`session ended: process exited (code 1): ${PANIC}`);
+
+    await setFailure({ retry: false, fallback: ['cursor', 'gemini'], allow_hookless: true });
+    const allowed = await makeStream();
+    await attachService.attach(allowed.id);
+    await waitFor(() => threadBodies(allowed.id).includes('looking at the parser now'));
+    expect(agents(allowed.id)).toEqual([
+      ['claude', 'error'],
+      ['gemini', 'running'],
+    ]);
+  }, 30_000);
+
+  test('the list spent: blocked as D43, the thread says why', async () => {
+    await setFailure({ fallback: ['gemini'], allow_hookless: true });
+    attachService = build({
+      claude: crashing(ACP_PROVIDERS.claude),
+      gemini: crashing(ACP_PROVIDERS.gemini, 'gemini exploded'),
+    });
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).agent.status === 'blocked');
+    expect(agents(stream.id)).toEqual([
+      ['claude', 'error'],
+      ['claude', 'error'],
+      ['gemini', 'error'],
+    ]);
+    const lines = threadBodies(stream.id);
+    expect(lines).toContain('Gemini CLI failed (gemini exploded); no other agent to switch to');
+    expect(lines).toContain('session ended: process exited (code 1): gemini exploded');
+    expect(streams.get(stream.id).agent.progress).toBe(`${CRASHED_PREFIX}gemini exploded`);
+  }, 30_000);
+
+  test('at most three restarts per node an hour', async () => {
+    let now = 1_000_000;
+    attachService = build({ claude: crashing(ACP_PROVIDERS.claude) }, { wakeClock: () => now });
+    const stream = await makeStream();
+    const blockedWith = (n: number) => () =>
+      agents(stream.id).length === n && streams.get(stream.id).agent.status === 'blocked';
+    // Each start crashes, is retried once, crashes again and blocks (D43).
+    for (let i = 1; i <= 3; i++) {
+      await attachService.attach(stream.id);
+      await waitFor(blockedWith(2 * i));
+    }
+    const capped = `Claude Code failed (${PANIC}); not restarted: 3 restarts in the last hour`;
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes(capped));
+    await waitFor(blockedWith(7));
+    // An hour on, a crash is retried again.
+    now += 3_600_000;
+    await attachService.attach(stream.id);
+    await waitFor(blockedWith(9));
+  }, 60_000);
+
+  test('a finished turn, a stop and a reviewer never trigger it', async () => {
+    attachService = build({ claude: fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS) });
+    const finished = await makeStream();
+    await attachService.attach(finished.id);
+    await waitFor(() => streams.get(finished.id).agent.status === 'done');
+    expect(agents(finished.id)).toHaveLength(1);
+
+    attachService = build({ claude: hangs(ACP_PROVIDERS.claude) });
+    for (const options of [{ detach: true }, { reason: 'role changed to work' }]) {
+      const stopped = await makeStream();
+      await attachService.attach(stopped.id);
+      await waitFor(() => threadBodies(stopped.id).includes('looking at the parser now'));
+      await attachService.stop(stopped.id, 'worker', options);
+      expect(streams.get(stopped.id).agent.status).toBe('idle');
+      expect(agents(stopped.id)).toHaveLength(1);
+    }
+
+    attachService = build({ claude: crashing(ACP_PROVIDERS.claude) });
+    const reviewed = await makeStream();
+    await attachService.attach(reviewed.id, { role: 'reviewer' });
+    await waitFor(() => threadBodies(reviewed.id).some((b) => b.startsWith('review finished')));
+    expect(streams.get(reviewed.id).sessions.map((s) => [s.role, s.status])).toEqual([
+      ['reviewer', 'error'],
+    ]);
+    expect(threadBodies(reviewed.id).some((b) => b.includes('retrying once'))).toBe(false);
+  }, 60_000);
+
+  test('the settings resolve project, then repo, then home', async () => {
+    // Home: retry, no list. Repo: Gemini, hookless allowed. Project: no retry.
+    await setFailure({ retry: true, fallback: [] });
+    await store.putRepos({
+      demo: {
+        path: repo,
+        protected_branches: ['main'],
+        vendor_failure: { fallback: ['gemini'], allow_hookless: true },
+      },
+    });
+    const projects = new ProjectService(store, streams);
+    const project = await projects.create({ name: 'Shop', repos: ['demo'] });
+    await projects.update(project.id, { vendor_failure: { retry: false } });
+    // Claude would come back fine on a retry: its absence is the project's doing.
+    attachService = build({
+      claude: crashingOnce(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS),
+      gemini: hangs(ACP_PROVIDERS.gemini),
+    });
+    const node = await attachService.createNode('human', {
+      title: 'CSV parser',
+      goal: 'g',
+      project: project.id,
+      repo: 'demo',
+    });
+    await waitFor(() => threadBodies(node.id).includes('looking at the parser now'));
+    expect(agents(node.id)).toEqual([
+      ['claude', 'error'],
+      ['gemini', 'running'],
+    ]);
+    const [restart] = restarts(node.id);
+    expect(restart?.event).toMatchObject({ project: project.id, repo: 'demo' });
+  }, 30_000);
 });
 
 describe('T370: the daemon stopping mid-work', () => {

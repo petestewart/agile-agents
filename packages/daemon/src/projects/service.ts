@@ -73,7 +73,7 @@ export class ProjectService {
       const next: Project = { ...before, autonomy: { ...before.autonomy, ...patch.autonomy } };
       if (patch.name !== undefined) next.name = patch.name;
       if (patch.repos !== undefined) next.repos = [...new Set(patch.repos)];
-      for (const key of ['session', 'delivery', 'tracker'] as const) {
+      for (const key of ['session', 'vendor_failure', 'delivery', 'tracker'] as const) {
         const value = patch[key];
         if (value === null) delete next[key];
         else if (value !== undefined) (next as Record<string, unknown>)[key] = value;

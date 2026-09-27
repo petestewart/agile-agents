@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { ULID_PATTERN, UlidSchema, formatZodError } from './ids';
+import { VendorFailureSchema } from './session-defaults';
 
 export const PROJECT_ID_PATTERN = new RegExp(`^P-${ULID_PATTERN.source.slice(1, -1)}$`);
 export const ProjectIdSchema = z.string().regex(PROJECT_ID_PATTERN, 'must look like P-<ulid>');
@@ -69,6 +70,8 @@ export const ProjectSchema = z
     /** Names from `repos.yaml` this project uses. */
     repos: z.array(z.string().min(1)).default([]),
     session: ProjectSessionDefaultsSchema.optional(),
+    /** T456: retry and fall back on a crashed agent (project step; `VendorFailureSchema`). */
+    vendor_failure: VendorFailureSchema.optional(),
     delivery: DeliveryOverrideSchema.optional(),
     autonomy: z
       .object({
@@ -104,6 +107,7 @@ export const ProjectUpdateInputSchema = z
     name: ProjectNameSchema.optional(),
     repos: z.array(z.string().min(1)).optional(),
     session: ProjectSessionDefaultsSchema.nullable().optional(),
+    vendor_failure: VendorFailureSchema.nullable().optional(),
     delivery: DeliveryOverrideSchema.nullable().optional(),
     autonomy: z
       .object({

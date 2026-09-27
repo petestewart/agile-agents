@@ -17,7 +17,11 @@
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AcpProviderConfig, spawnSession } from '@agile-agents/acp-client';
+import {
+  type AcpProviderConfig,
+  resolveAcpProvider,
+  type spawnSession,
+} from '@agile-agents/acp-client';
 import {
   DIRECTOR_NODE,
   type HilRequest,
@@ -29,6 +33,7 @@ import {
   type SessionRef,
   type SessionRole,
   type SessionStatus,
+  type SessionVendor,
   type StatusCard,
   type Stream,
   type StreamPrincipal,
@@ -37,6 +42,7 @@ import {
   liveChildrenOf,
   nodeRole,
   partsOf,
+  resolveVendorFailure,
   ulid,
   validateStreamCreateInput,
 } from '@agile-agents/shared';
@@ -74,6 +80,7 @@ import { createWorktree, slugify } from '../runner/worktrees';
 import type { StateStore } from '../store';
 import { assertRepoHasCommits, buildEvent } from '../store';
 import type { StreamService } from '../streams/service';
+import { CRASH_RESTARTS_PER_HOUR, crashHandover, fallbackVendors, retryWontHelp } from './fallback';
 import { type AttachFlags, effortIgnoredLine, resolveSessionSettings } from './resolve';
 
 /** A live session already exists in this role (one worker and one reviewer at most). RPC: -32602. */
@@ -270,6 +277,15 @@ function projectSession(store: StateStore, id: string) {
   }
 }
 
+/** T456: the project step of the crash settings; absent when unreadable. */
+function projectVendorFailure(store: StateStore, id: string) {
+  try {
+    return store.getProject(id).vendor_failure;
+  } catch {
+    return undefined;
+  }
+}
+
 /** T281: the coordinator's own plan, as a spreadable field. */
 function planOf(plans: AttachServiceOptions['plans'], node: string): { plan?: Plan } {
   const plan = plans?.get(node);
@@ -337,10 +353,21 @@ export class AttachService {
   private readonly overBudget = new Set<string>();
   /** T361: nodes whose agent is being restarted in a new role. */
   private readonly roleRestarts = new Set<string>();
+  /**
+   * T456: per node, the failure its agent is being recovered from: whether
+   * the retry is spent and which vendors were tried. It ends when an agent
+   * there finishes a turn, or the node's agent ends any other way.
+   */
+  private readonly crashes = new Map<string, { retried: boolean; tried: Set<string> }>();
+  /** T456: restarts after a crash per node in the last hour (`CRASH_RESTARTS_PER_HOUR`). */
+  private readonly crashBudget: WakeBudget;
+  /** T456: `stopAll()` ran (the daemon is shutting down): no crash is recovered. */
+  private closing = false;
 
   constructor(private readonly options: AttachServiceOptions) {
     this.events = options.events ?? new RoutedEventService(options.store);
     this.wakeBudget = new WakeBudget(options.wakeClock);
+    this.crashBudget = new WakeBudget(options.wakeClock);
     this.delivery = new SessionDelivery({
       wake: (node, pending) => {
         if (node === DIRECTOR_NODE) return options.director?.()?.wake(pending);
@@ -995,6 +1022,8 @@ export class AttachService {
   ): Promise<void> {
     const handle = this.handles(role).get(streamId);
     if (handle === undefined || handle.sessionId !== sessionId) return;
+    // T456: an agent that finishes a turn works; a later crash is a new failure.
+    if (isAgentRole(role)) this.crashes.delete(streamId);
     // T174: a prompt queued behind this turn (a human line, an answer) is
     // never dropped by letting the session go here; it runs as its own
     // turn, and that turn's end decides again.
@@ -1242,6 +1271,8 @@ export class AttachService {
       ok && exitCode !== undefined && exitCode !== 0 && !endedAfterTurn && !stoppedByUs;
     // `stop()` already holds the promise it awaits; dropping it cannot lose a write.
     this.exitHandled.delete(sessionId);
+    // T456: any end but a crash ends the failure being recovered from.
+    if (isAgentRole(role) && !crashed) this.crashes.delete(streamId);
     try {
       await this.setSessionStatus(
         streamId,
@@ -1290,6 +1321,11 @@ export class AttachService {
         });
         return;
       }
+      // T456: a crashed agent is started again, or another vendor in its place, while
+      // the settings and the cap allow. The node stays working; D43 is the end state.
+      if (crashed && isAgentRole(role)) {
+        if (await this.recoverCrash(streamId, sessionId, vendorError, exitCode)) return;
+      }
       await this.options.streams.update('daemon', streamId, {
         agent: {
           status: ok && !crashed ? 'done' : 'blocked',
@@ -1318,6 +1354,149 @@ export class AttachService {
       return;
     }
     if (ok && !crashed && role === 'worker') await this.maybeAutoReview(streamId);
+  }
+
+  /**
+   * T456 (D43 follow-up): a node whose agent crashed, per its
+   * `vendor_failure` settings (project, then repo, then home). First the
+   * same vendor, model and effort once more (`retry`), unless the failure
+   * is one a retry can't fix (`retryWontHelp`); then the next vendor on
+   * `fallback` that is installed and, unless `allow_hookless`, has pre-tool
+   * hooks when the crashed one had them, with that vendor's own default
+   * model (D40). Each starts on the same node, worktree and thread, its
+   * brief saying the last agent stopped mid-turn (`crashHandover`), and is
+   * recorded as an `agent_restarted` event. At most `CRASH_RESTARTS_PER_HOUR`
+   * per node. True when an agent started (the node stays working and the
+   * parent is not told); false when D43's block follows.
+   */
+  private async recoverCrash(
+    streamId: string,
+    sessionId: string,
+    vendorError: string | undefined,
+    exitCode: number | undefined,
+  ): Promise<boolean> {
+    const { streams } = this.options;
+    const stream = streams.get(streamId);
+    const crashed = stream.sessions.find((s) => s.id === sessionId);
+    if (this.closing || !isOpen(stream) || crashed === undefined) return false;
+    const policy = this.vendorFailureFor(stream);
+    const episode = this.crashes.get(streamId) ?? { retried: false, tried: new Set<string>() };
+    this.crashes.set(streamId, episode);
+    const attempted = episode.tried.size > 0;
+    episode.tried.add(crashed.vendor);
+    const reason = vendorError ?? `exit code ${exitCode}`;
+    const retry =
+      policy.retry && !episode.retried && retryWontHelp(vendorError, exitCode) === undefined;
+    const next = [
+      ...(retry ? [{ vendor: crashed.vendor, retry: true }] : []),
+      ...fallbackVendors(policy, crashed.vendor, episode.tried, (v) => this.installed(v)).map(
+        (vendor) => ({ vendor: vendor as string, retry: false }),
+      ),
+    ];
+    let failed = { label: this.vendorLabel(crashed.vendor), reason };
+    const note = (body: string) =>
+      streams.appendThread('daemon', streamId, {
+        kind: 'event',
+        body: body.slice(0, 800),
+        ref: sessionId,
+      });
+    if (next.length > 0 && !this.crashBudget.take(streamId, CRASH_RESTARTS_PER_HOUR)) {
+      await note(
+        `${failed.label} failed (${reason}); not restarted: ${CRASH_RESTARTS_PER_HOUR} restarts in the last hour`,
+      );
+      this.crashes.delete(streamId);
+      return false;
+    }
+    // Held so no wake starts an agent in the gap; pending events go to the new one.
+    const release = this.delivery.hold(streamId);
+    try {
+      for (const attempt of next) {
+        if (attempt.retry) episode.retried = true;
+        episode.tried.add(attempt.vendor);
+        const to = this.vendorLabel(attempt.vendor);
+        await note(
+          `${failed.label} failed (${failed.reason}); ${attempt.retry ? 'retrying once' : `switched to ${to}`}`,
+        );
+        try {
+          const { session } = await this.attach(streamId, {
+            vendor: attempt.vendor,
+            ...(attempt.retry ? { model: crashed.model } : {}),
+            ...(attempt.retry && crashed.effort !== undefined ? { effort: crashed.effort } : {}),
+            briefAppendix: crashHandover({
+              failed: this.vendorLabel(crashed.vendor),
+              reason,
+              retry: attempt.retry,
+              inWorktree: crashed.worktree !== undefined,
+            }),
+            wake: this.events.pendingFor(streamId).map((p) => p.event),
+          });
+          const after = streams.get(streamId);
+          await routeAndEmit(
+            this.events,
+            {
+              type: 'agent_restarted',
+              subject: streamId,
+              ...(after.project !== undefined ? { project: after.project } : {}),
+              ...(after.repo !== undefined ? { repo: after.repo } : {}),
+              payload: {
+                action: attempt.retry ? 'retry' : 'switch',
+                from: crashed.vendor,
+                to: attempt.vendor,
+                model: cap(session.model),
+                reason: cap(reason),
+              },
+              ref: session.id,
+              by: 'daemon',
+            },
+            [after],
+          ).catch((err) => console.error('agent_restarted not recorded:', err));
+          return true;
+        } catch (err) {
+          // Someone started an agent here meanwhile: nothing to recover.
+          if (err instanceof StreamBusyError) return true;
+          failed = { label: to, reason: err instanceof Error ? err.message : String(err) };
+        }
+      }
+    } finally {
+      release();
+    }
+    if (attempted || next.length > 0) {
+      await note(`${failed.label} failed (${failed.reason}); no other agent to switch to`);
+    }
+    this.crashes.delete(streamId);
+    return false;
+  }
+
+  /** T456: a node's crash settings, field by field: project, repo, home, built-in. */
+  private vendorFailureFor(stream: Stream) {
+    const { store } = this.options;
+    return resolveVendorFailure(
+      stream.project === undefined ? undefined : projectVendorFailure(store, stream.project),
+      stream.repo === undefined ? undefined : store.getRepos()[stream.repo]?.vendor_failure,
+      readHomeConfigFile(this.options.home).vendor_failure,
+    );
+  }
+
+  /** T456: the provider a vendor runs as here (the test seam's transport, else the registry's). */
+  private providerFor(vendor: string): AcpProviderConfig {
+    const base = resolveAcpProvider(vendor);
+    return this.options.provider ? this.options.provider(vendor, base) : base;
+  }
+
+  private vendorLabel(vendor: string): string {
+    try {
+      return this.providerFor(vendor).label;
+    } catch {
+      return vendor;
+    }
+  }
+
+  /** T456: attach's own not-installed check (T437), asked before a fallback is tried. */
+  private installed(vendor: SessionVendor): boolean {
+    return (
+      this.options.spawn !== undefined ||
+      missingVendorCommand(this.providerFor(vendor)) === undefined
+    );
   }
 
   /**
@@ -1469,6 +1648,7 @@ export class AttachService {
    * "stopped by the human", so its next event wakes it again.
    */
   async stopAll(): Promise<void> {
+    this.closing = true;
     await Promise.all(
       [...this.live.entries()].flatMap(([role, handles]) =>
         [...handles.keys()].map((streamId) =>

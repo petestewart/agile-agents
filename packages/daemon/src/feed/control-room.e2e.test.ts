@@ -2667,6 +2667,54 @@ describe('session defaults (Playwright e2e, T170)', () => {
   );
 
   browserTest(
+    'T456: If the agent fails — retry, the agents to try in order, and hookless — each saves',
+    async () => {
+      const cockpit = await startStreamCockpit([{ steps: [{ type: 'hang' }] }]);
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=agents`);
+        const card = (suffix: string) => `[data-testid="settings-vendor-failure${suffix}"]`;
+        const contains = async (selector: string, text: string) =>
+          waitUntilAsync(`${selector} to contain ${text}`, async () =>
+            ((await page?.locator(selector).first().textContent()) ?? '').includes(text),
+          );
+        await contains(card(''), 'If the agent fails');
+        await waitForText(page, card('-none'), 'No other agent');
+        const config = () => cockpit.store.getHomeConfig().vendor_failure;
+        const saved = async (want: unknown) =>
+          waitUntilAsync(`vendor_failure to be ${JSON.stringify(want)}`, async () =>
+            Bun.deepEquals(config(), want),
+          );
+        // Retry once is on by default; off saves at once.
+        expect(await page.locator(card('-retry')).isChecked()).toBe(true);
+        await page.locator(card('-retry')).uncheck();
+        await saved({ retry: false });
+        await waitForText(page, card('-saved'), 'Saved');
+        // Then try: added in order, moved up, each a save; a vendor with no hooks says so.
+        await page.locator(card('-add')).selectOption('gemini');
+        await contains(card('-item-gemini'), 'No hooks');
+        await page.locator(card('-add')).selectOption('pi');
+        await saved({ retry: false, fallback: ['gemini', 'pi'] });
+        expect(await page.locator(card('-item-pi')).textContent()).not.toContain('No hooks');
+        await page.locator(card('-up-pi')).click();
+        await saved({ retry: false, fallback: ['pi', 'gemini'] });
+        await page.locator(card('-remove-gemini')).click();
+        await saved({ retry: false, fallback: ['pi'] });
+        await page.locator(card('-hookless')).check();
+        await saved({ retry: false, fallback: ['pi'], allow_hookless: true });
+        expect(readFileSync(join(cockpit.home, 'config.yaml'), 'utf8')).toContain(
+          'vendor_failure:',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
     "T379: a project's own defaults in Settings are what its nodes start with",
     async () => {
       const cockpit = await startStreamCockpit([{ steps: [{ type: 'hang' }] }]);

@@ -161,6 +161,20 @@ export const ROUTED_EVENT_PAYLOADS = {
     nodes: z.array(UlidSchema).max(LIST_MAX),
     proposal: AutonomyProposalIdSchema.optional(),
   }),
+  /**
+   * T456 (D43 follow-up): a node's agent crashed and the daemon started
+   * another on the same node: the same vendor again (`retry`) or the next
+   * on the fallback list (`switch`). `from`/`to` are vendor ids, `model` the
+   * new session's; `reason` is the failure in the vendor's words. A record,
+   * not news: see `RECORD_ONLY_EVENT_TYPES`.
+   */
+  agent_restarted: z.object({
+    action: z.enum(['retry', 'switch']),
+    from: NonEmpty,
+    to: NonEmpty,
+    model: Str.optional(),
+    reason: Str,
+  }),
   /** T262: the ship check held delivery; the findings go back to the worker. */
   ship_findings: z.object({
     source: z.enum(['classifier', 'reviewer']),
@@ -185,6 +199,7 @@ export type RoutedEventPayload<T extends RoutedEventType> = z.infer<
  */
 export const RECORD_ONLY_EVENT_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEventType>([
   'autonomy_applied',
+  'agent_restarted',
 ]);
 
 const RoutedEventBaseSchema = z

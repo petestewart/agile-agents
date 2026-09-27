@@ -68,14 +68,76 @@ export const KNOWN_MODEL_IDS: Readonly<Record<SessionVendor, readonly string[]>>
 export const SESSION_MODEL_MAX_CHARS = 200;
 
 /**
+ * T456: vendors whose tool calls pass the daemon's pre-tool check (Claude's
+ * `PreToolUse` hook, Pi's `agile` extension; design/spike-findings.md §B,
+ * §C4). The others are gated by ACP permission (or a sandbox) only, a lower
+ * enforcement floor (T229's visibility advisory reads the same list).
+ */
+export const HOOKED_VENDORS: readonly SessionVendor[] = ['claude', 'pi'];
+
+/** T456: whether `vendor` has pre-tool hooks. */
+export function vendorHasHooks(vendor: string): boolean {
+  return (HOOKED_VENDORS as readonly string[]).includes(vendor);
+}
+
+/**
+ * T456 (D43 follow-up): what happens when a node's agent crashes (its
+ * vendor exits non-zero on its own). `vendor_failure:` in the home
+ * `config.yaml`, a repo's entry in `repos.yaml` and a project record; each
+ * field resolves project, then repo, then home, then the built-in
+ * (`BUILTIN_VENDOR_FAILURE`).
+ *
+ * - `retry`: start the same vendor and model again, once (not for a login
+ *   or model refusal, which a retry can't fix);
+ * - `fallback`: then the next of these vendors that is installed;
+ * - `allow_hookless`: a vendor with pre-tool hooks may fall back to one
+ *   without (`HOOKED_VENDORS`). Off, it never lowers the enforcement floor.
+ */
+export const VendorFailureSchema = z
+  .object({
+    retry: z.boolean().optional(),
+    fallback: z.array(SessionVendorSchema).max(SESSION_VENDORS.length).optional(),
+    allow_hookless: z.boolean().optional(),
+  })
+  .strict();
+export type VendorFailureSettings = z.infer<typeof VendorFailureSchema>;
+
+export interface ResolvedVendorFailure {
+  retry: boolean;
+  fallback: SessionVendor[];
+  allow_hookless: boolean;
+}
+
+export const BUILTIN_VENDOR_FAILURE: Readonly<ResolvedVendorFailure> = Object.freeze({
+  retry: true,
+  fallback: [],
+  allow_hookless: false,
+});
+
+/** T456: field by field, the first step that says (most specific first), else the built-in. */
+export function resolveVendorFailure(
+  ...steps: ReadonlyArray<VendorFailureSettings | undefined>
+): ResolvedVendorFailure {
+  const pick = <K extends keyof VendorFailureSettings>(key: K) =>
+    steps.find((step) => step?.[key] !== undefined)?.[key];
+  return {
+    retry: pick('retry') ?? BUILTIN_VENDOR_FAILURE.retry,
+    fallback: [...new Set(pick('fallback') ?? BUILTIN_VENDOR_FAILURE.fallback)],
+    allow_hookless: pick('allow_hookless') ?? BUILTIN_VENDOR_FAILURE.allow_hookless,
+  };
+}
+
+/**
  * A Settings write: absent = unchanged, `null` = remove (fall through to
- * the next step of the order), a value = set.
+ * the next step of the order), a value = set. T456: `vendor_failure` is
+ * replaced whole.
  */
 export const SessionDefaultsPatchSchema = z
   .object({
     vendor: SessionVendorSchema.nullable().optional(),
     model: z.string().trim().min(1).max(SESSION_MODEL_MAX_CHARS).nullable().optional(),
     effort: EffortSchema.nullable().optional(),
+    vendor_failure: VendorFailureSchema.nullable().optional(),
   })
   .strict();
 export type SessionDefaultsPatch = z.infer<typeof SessionDefaultsPatchSchema>;
@@ -85,6 +147,8 @@ export interface SessionDefaultsFields {
   vendor?: string;
   model?: string;
   effort?: Effort;
+  /** T456: what it says about a crashed agent. */
+  vendor_failure?: VendorFailureSettings;
 }
 
 export interface ResolvedSessionDefaults {

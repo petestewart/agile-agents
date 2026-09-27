@@ -488,6 +488,28 @@ describe('the event log a page at a time (T383)', () => {
   });
 });
 
+describe('T456: agent_restarted in words', () => {
+  test('what the daemon started in its place, and why', () => {
+    const switched = event('E1', 'agent_restarted', {
+      action: 'switch',
+      from: 'claude',
+      to: 'gemini',
+      model: 'default',
+      reason: 'panic: worker thread died',
+    });
+    expect(eventTitle(switched)).toBe('Switched from Claude to Gemini');
+    expect(eventDetail(switched)).toBe('Claude failed: panic: worker thread died');
+    const retried = event('E2', 'agent_restarted', {
+      action: 'retry',
+      from: 'claude',
+      to: 'claude',
+      reason: 'x',
+    });
+    expect(eventTitle(retried)).toBe('Started Claude again');
+    expect(EVENT_FAMILY.agent_restarted).toBe('coordination');
+  });
+});
+
 describe('T446: autonomy_applied in words, with Undo while nothing started', () => {
   const applied = (payload: Record<string, unknown>) =>
     event('E1', 'autonomy_applied', {

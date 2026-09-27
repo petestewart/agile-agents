@@ -20,6 +20,7 @@ import {
   type RoutedEvent,
   type SessionDefaultsStatus,
   type Stream,
+  type VendorFailureSettings,
   classifierQuestion,
   examplesOf,
   patternOf,
@@ -617,6 +618,38 @@ describe('T160 cockpit routes', () => {
     const cleared = await post('/api/settings/session', { model: null, effort: null });
     expect(((await cleared.json()) as SessionDefaultsStatus).resolved).toEqual(before.builtin);
     expect(store.getHomeConfig().default_model).toBeUndefined();
+  });
+
+  test('T456: the crash settings are written whole, home and repo, and read back', async () => {
+    const post = (path: string, body: unknown) =>
+      fetch(url(path), { method: 'POST', body: JSON.stringify(body) });
+    const block: VendorFailureSettings = {
+      retry: false,
+      fallback: ['gemini', 'cursor'],
+      allow_hookless: true,
+    };
+    expect(
+      (await post('/api/settings/session', { vendor_failure: { fallback: ['hal'] } })).status,
+    ).toBe(400);
+    const saved = (await (
+      await post('/api/settings/session', { vendor_failure: block })
+    ).json()) as SessionDefaultsStatus;
+    expect(saved.home.vendor_failure).toEqual(block);
+    expect(store.getHomeConfig().vendor_failure).toEqual(block);
+    // A partial block replaces the whole one.
+    await post('/api/settings/session', { vendor_failure: { retry: true } });
+    expect(store.getHomeConfig().vendor_failure).toEqual({ retry: true });
+
+    await store.addRepo('demo', { path: '/tmp/demo-t456' });
+    const repo = (await (
+      await post('/api/settings/session/repos/demo', { vendor_failure: { fallback: [] } })
+    ).json()) as SessionDefaultsStatus;
+    expect(repo.repos.demo?.vendor_failure).toEqual({ fallback: [] });
+    // `null` (or an empty block) removes it: back to the next step.
+    await post('/api/settings/session', { vendor_failure: null });
+    await post('/api/settings/session/repos/demo', { vendor_failure: {} });
+    expect(store.getHomeConfig().vendor_failure).toBeUndefined();
+    expect(store.getRepos().demo?.vendor_failure).toBeUndefined();
   });
 
   test('POST /api/streams/:id/land without a landing service is 503', async () => {

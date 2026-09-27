@@ -74,6 +74,9 @@ export const ROUTES: Record<RoutedEventType, readonly Rule[]> = {
   // T446: the node that changed and every ancestor (the Director's feed when it
   // acted: `RouteInput.director`). Record-only: nobody is woken or sent it.
   autonomy_applied: ['self', 'ancestors'],
+  // T456: the node's own record (Events, its Activity). A switch is not a status
+  // change, so the parent is not told; a spent list blocks it (child_status).
+  agent_restarted: ['self'],
 };
 
 /** Types whose parties also bring their own ancestors (overlap: "both nodes, their ancestors"). */

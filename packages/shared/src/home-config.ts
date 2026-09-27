@@ -16,6 +16,7 @@
 import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { formatZodError } from './ids';
+import { VendorFailureSchema } from './session-defaults';
 
 /** Built-in default HTTP port for the cockpit/API when `config.yaml` names none. */
 export const DEFAULT_DAEMON_PORT = 4600;
@@ -228,6 +229,8 @@ export const HomeConfigSchema = z
     default_vendor: z.string().min(1).optional(),
     default_model: z.string().min(1).optional(),
     default_effort: EffortSchema.optional(),
+    /** T456: retry and fall back on a crashed agent (home step; `VendorFailureSchema`). */
+    vendor_failure: VendorFailureSchema.optional(),
     /**
      * T150 (§6.2, **D5**): the classifier tier. Optional rather than
      * defaulted, so `HomeConfig` stays the shape of the *file* and every
