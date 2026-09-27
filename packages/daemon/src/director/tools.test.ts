@@ -16,6 +16,8 @@ import {
 } from '@agile-agents/shared';
 import { VerbService } from '../attach/verbs';
 import { type ActOutcome, AutonomyService, allowed } from '../coordination/autonomy';
+import { GateService } from '../gates/service';
+import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
 import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
@@ -141,6 +143,17 @@ describe('the Director verbs', () => {
     expect(out.proposal.summary).not.toContain(project.id);
     expect(streams.list().some((s) => s.title === 'Show sale prices')).toBe(false);
     expect(store.readDirectorThread().at(-1)).toMatchObject({ by: 'director', kind: 'proposal' });
+    // T443 (audit r7 #8): the draft waits in Needs me too, on the project's root.
+    const inbox = new InboxService({
+      streams,
+      questions: new QuestionService(store, streams, { deliver: async () => {} }),
+      gates: new GateService(store),
+      proposals: autonomy,
+    });
+    expect(inbox.list().find((i) => i.kind === 'proposal')).toMatchObject({
+      id: out.proposal.id,
+      stream: project.root,
+    });
 
     await autonomy.apply(out.proposal.id);
     const node = streams.list().find((s) => s.title === 'Show sale prices');
@@ -168,10 +181,21 @@ describe('the Director verbs', () => {
     expect(child.applied).toBe(true);
     expect(childrenOf(node.id).map((s) => s.title)).toEqual(['docs']);
 
+    // T443: what it creates runs: the tree's node (its parts wait for its plan) and the new node.
+    const sale = streams.list().find((s) => s.title === 'Show sale prices');
+    const docs = childrenOf(node.id)[0];
+    expect(started).toEqual([sale?.id ?? '', docs?.id ?? '']);
+    for (const part of childrenOf(sale?.id ?? '')) {
+      expect(
+        streams
+          .readThread(part.id)
+          .entries.some((e) => e.body.startsWith('waiting for the plan: ')),
+      ).toBe(true);
+    }
     expect(
       ((await verbs.startNode({ session: director, node: node.id })) as ActOutcome).applied,
     ).toBe(true);
-    expect(started).toEqual([node.id]);
+    expect(started.at(-1)).toBe(node.id);
 
     const link = (await verbs.addWaitsOn({
       session: director,
@@ -221,9 +245,16 @@ describe('the Director verbs', () => {
     await expect(verbs.draftTree({ ...draft(project.id), session: worker })).rejects.toThrow(
       'only the Director',
     );
+    // T443: a coordinator starts its own children only.
     await expect(verbs.startNode({ session: worker, node: node.id })).rejects.toThrow(
-      'only the Director',
+      'is not a child of this node',
     );
+    const child = await streams.create('human', { title: 'docs', goal: 'g', parent: node.id });
+    // Its own child: gated by the coordinator's level (Shop's is Advise), so a proposal.
+    const held = (await verbs.startNode({ session: worker, node: child.id })) as ActOutcome;
+    expect(held.applied).toBe(false);
+    if (!held.applied)
+      expect(held.proposal.change).toEqual({ action: 'start_node', node: child.id });
   });
 
   test('a malformed draft is refused before anything is held', async () => {

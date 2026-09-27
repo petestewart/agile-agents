@@ -2643,6 +2643,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/hook` (decide: T442 allow/deny tables; pattern-rules: the hook service end to end); each new test fails with its half of the change reverted.
 - **Notes:** Branch T442-conversation-git-reads. The bug exists from Phase 7's T336, but conversations as D42 has them (research at any level) are Phase 14's, so it is fixed here; the other session watching PRs #4–#11 had it noted as open.
 
+### Ticket: T443 Autonomy spawns running work (audit r7 #1, #4, #8)
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Audit round 7: no path from a coordinator ended with a running child. `add_child` created nodes idle ("starting stays the human's call"), Apply at Advise too; the Director's `create_tree`/`create_node` made idle trees; coordinators had no `start_node`; a project root ran a worker until it had a part, so "plan this and split it" couldn't add one (`add_child`: only a coordinator can); the Director's drafts for new nodes never reached Needs me. §12 says Organise creates nodes and starts agents.
+- **Acceptance Criteria:** A node an applied change creates (a coordinator's `add_child` at Organise/Run, Apply at Advise, the Director's `create_node`) starts its agent off the caller's path (`AutonomyService.run`; `settled()` for tests); a part (it has a repo) under a node whose plan waits for the operator (a draft, or parts waiting) gets the `WAITING_FOR_PLAN` line instead and starts on approval; a conversation child always starts. `create_tree` starts its node's coordinator and its parts wait for that plan (the worked example). `start_node`/`restart_node` take a coordinator for its own children, gated like `add_child`; `start_node` on a running node is `{already: true}`. A project's root (a project, no repo) runs a coordinator from the start and a line to it starts it; a parentless node with its own repo stays a worker. A Director draft that makes nodes sits in Needs me on the node it goes under (or the project's root). Briefs and verb descriptions say so.
+- **Validation Steps:** `bun test packages/daemon/src/coordination/autonomy.test.ts -t T443 packages/daemon/src/director/tools.test.ts packages/daemon/src/attach/service.test.ts -t T361`; full `bun test`, control-room e2e, walkthrough.
+- **Notes:** Branch T443-autonomy-starts. The UI half of "tell the user" (the Apply card's words, a Needs me item for anything left unstarted) is T446's and T445's.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done

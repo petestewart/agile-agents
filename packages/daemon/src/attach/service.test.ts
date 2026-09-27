@@ -2362,7 +2362,7 @@ describe('T361: a message starts a node with no live agent', () => {
     expect(streams.get(stream.id).sessions).toHaveLength(1);
   }, 30_000);
 
-  test('a coordinating node gets its coordinator; a closed node and a bare project root start nothing', async () => {
+  test('a coordinating node gets its coordinator; a closed node starts nothing; a bare project root its coordinator', async () => {
     attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     const project = await new ProjectService(store, streams).create({ name: 'Shop' });
@@ -2391,13 +2391,18 @@ describe('T361: a message starts a node with no live agent', () => {
       start: false,
     });
     await streams.close('human', closed.id);
+    const said = await attachService.say(closed.id, 'hello?', { start: true });
+    expect(said.started).toBeUndefined();
+    expect(said.prompted).toBeUndefined();
+    expect(streams.get(closed.id).sessions).toEqual([]);
+    // T443 (audit r7 #4): a bare project root coordinates from the start, so "plan this and split
+    // it" reaches a coordinator that can add parts.
     const bare = await new ProjectService(store, streams).create({ name: 'Blog' });
-    for (const id of [closed.id, bare.root]) {
-      const said = await attachService.say(id, 'hello?', { start: true });
-      expect(said.started).toBeUndefined();
-      expect(said.prompted).toBeUndefined();
-      expect(streams.get(id).sessions).toEqual([]);
-    }
+    const planned = await attachService.say(bare.root, 'Plan the blog and split it.', {
+      start: true,
+    });
+    expect(planned.started).toBe(true);
+    expect(streams.get(bare.root).sessions.map((s) => s.role)).toEqual(['coordinator']);
   }, 30_000);
 
   test('T389: a part waiting for its plan is not started by a line; the line waits for it', async () => {

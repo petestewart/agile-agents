@@ -124,9 +124,10 @@ function liveAgent(stream: Stream): SessionRef | undefined {
 
 /**
  * P20 (T280): the agent a node runs as it stands now: a coordinator on a
- * coordinating node, or on a project root once it has children (a bare
- * root is still a single stream a worker runs on, the pre-projects shape);
- * a worker otherwise.
+ * coordinating node, or on a project root (T443: from the start, so "plan
+ * this and split it" works before there is a part; a parentless node with a
+ * repo of its own is still a single stream a worker runs on, the
+ * pre-projects shape); a worker otherwise.
  */
 function agentFor(
   stream: Stream,
@@ -135,7 +136,9 @@ function agentFor(
   const shape = nodeRole(stream, liveChildrenOf(stream.id, all), all);
   // D42: a coordinator's children are its parts; conversations under it are not.
   const children = partsOf(stream.id, all);
-  const coordinates = shape === 'coordinating' || (shape === 'project' && children.length > 0);
+  const projectRoot = stream.project !== undefined && stream.repo === undefined;
+  const coordinates =
+    shape === 'coordinating' || (shape === 'project' && (children.length > 0 || projectRoot));
   return { children, shape, role: coordinates ? 'coordinator' : 'worker' };
 }
 
@@ -631,8 +634,8 @@ export class AttachService {
     const stream = streams.get(streamId);
     // P20 (T280): the agent of a coordinating node or a project root is a
     // coordinator: no worktree, the session dir, every write denied.
-    // A project root counts once it has children: a bare root is still a
-    // single stream a worker runs on (the pre-projects shape).
+    // T443: a project's root coordinates from the start; a parentless node
+    // with a repo of its own is still a single stream a worker runs on.
     const all = streams.list();
     const { children, shape, role: agentRole } = agentFor(stream, all);
     const coordinates = agentRole === 'coordinator';
@@ -1132,7 +1135,8 @@ export class AttachService {
    * the node would have: a worker on a work node or a conversation, the
    * coordinator on a coordinating node or a project root with parts. Its
    * pending events, the line among them, are handed over in the brief.
-   * Not on a closed, landed or deleted node, nor a bare project root. A
+   * Not on a closed, landed or deleted node, nor a parentless single stream
+   * (T443: a project's root starts its coordinator, parts or not). A
    * failed start is a thread line; the line stays pending.
    * T423: `flags` (the composer's model chip) name the vendor, model and
    * effort, as attach's flags do; the defaults fill the rest.

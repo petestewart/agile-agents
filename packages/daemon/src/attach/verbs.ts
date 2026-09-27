@@ -658,11 +658,18 @@ export class VerbService {
 
   async startNode(input: unknown): Promise<unknown> {
     const { session, node } = validateVerbInput('start_node', input);
+    // T443: a coordinator starts its own children too, gated like `add_child`.
+    if (!this.isDirector(session)) {
+      return this.gated(session, 'start_node', { action: 'start_node', node });
+    }
     return this.directorGated(session, 'start_node', { action: 'start_node', node });
   }
 
   async restartNode(input: unknown): Promise<unknown> {
     const { session, node } = validateVerbInput('restart_node', input);
+    if (!this.isDirector(session)) {
+      return this.gated(session, 'restart_node', { action: 'restart_node', node });
+    }
     return this.directorGated(session, 'restart_node', { action: 'restart_node', node });
   }
 
