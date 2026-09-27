@@ -7514,6 +7514,12 @@ describe('waiting for the plan (Playwright e2e, T344)', () => {
         expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
           'Sale prices · demo, Sale prices · web wait for the plan',
         );
+        // T450: the card is your move, so the coordinator's row reads Needs you.
+        await page
+          .locator(
+            `[data-testid="stream-tree"] [data-stream="${node.id}"][data-status="needs_you"]`,
+          )
+          .waitFor({ state: 'attached' });
 
         // Wake coordinator: the node's coordinator runs, and the card goes while it does.
         await page.locator(`${card} [data-testid="plan-wake"]`).click();
