@@ -2697,6 +2697,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** Gate on the merged tree (with T445, T447): `bun test` 3309/0, walkthrough 0 findings.
 - **Notes:** Branch T446-agent-actions. Merging with T447 needed: rail titles (a part's short name, else T447's middle truncation), MessageList (T447's window plus T446's links), both new chat.test blocks, the checklist paragraph, and the parts line reading a part by its short name ("waiting for ledger-lite"). Follow-ups: the Director's Events rows use the bot glyph; a node-level autonomy override isn't in the frame, so its card can show the project's level.
 
+### Ticket: T449 CI: the Needs me click guard dropped deliberate clicks
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** CI failed on 2b2b4ed7: "waiting for the plan (T344)" clicked Start parts anyway and the card never left. T445 ignored every pointer click on the Needs me list for 400 ms after a card left; under load the test's click came right after the woken card finished lingering, and was dropped with no sign. A person clicking a different card quickly would lose that click too.
+- **Acceptance Criteria:** Only a click within 6 px of the previous one (a double-click, or a second click while the first was slow) is dropped in the settle window; a click aimed elsewhere goes through. Keys are never guarded.
+- **Validation Steps:** control-room e2e "T449: a click aimed elsewhere…" fails on the old guard and passes now; T445's "…never slides under the pointer" (its second click now at the first one's spot) still passes and fails with the guard removed; full `bun test` 3310/0.
+- **Notes:** Branch T449-steady-list-guard.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done
