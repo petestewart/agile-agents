@@ -932,9 +932,13 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       label: 'Ask an agent to review…',
       icon: 'eye',
       testid: 'review',
-      title: 'A read-only reviewer agent reads the diff and reports findings',
-      hidden: !hasCommits,
-      disabled: busy || liveReviewer !== undefined,
+      title: hasCommits
+        ? 'A read-only reviewer agent reads the diff and reports findings'
+        : 'Nothing to review yet: the branch has no commits',
+      // T438: shown from the first render once there is a branch, and disabled until its commits
+      // are known, so the menu never grows under the pointer while the page's merge check loads.
+      hidden: stream.repo === undefined || stream.branch === undefined,
+      disabled: busy || liveReviewer !== undefined || !hasCommits,
       onSelect: () => setPicker('reviewer'),
     },
     {
