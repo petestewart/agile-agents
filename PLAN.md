@@ -2679,6 +2679,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** Worker gate on the merged tree: `bun test` 3258/0, control-room 110/0, walkthrough 0 findings.
 - **Notes:** Branch T445-flow-focus.
 
+### Ticket: T447 Honest coordinator status, and scale (audit r7)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker (manager reviewed and merged)
+- **Scope:** Audit round 7: #2 (a coordinating node read "Done" while its parts worked; every turn told its parent "done"), #9 (a grey dot for Needs you from a plan or proposal), #15 (60 ms per keystroke on a 324-row thread), #19 (the Overview didn't scale past a few dozen nodes), #20 (the rail cut alike titles to the same text).
+- **Acceptance Criteria:** A coordinating node or a root with parts reads as the most urgent of its own and its open parts' states (Needs you > Blocked > Ready to merge > Working > … ), Done only when every part is merged or closed, with "2 of 4 merged · waiting for web part" in its header and Children cards; the Delivery panel reads the node's own status. A coordinator's own `child_status: done` goes up only when its subtree is finished. The dot follows the status (Needs you amber). The composer owns its draft and the chat renders the newest 80 rows with Show earlier (typing 40 chars on 324 rows: ~2.5 s → ~0.3 s). The Overview groups by top-level node, folds finished branches (all past 30 nodes), and filters (`/`); Recent activity uses the Events words. Rail titles truncate in the middle, keeping their last words.
+- **Validation Steps:** Gate on the merged tree (with T445): `bun test` 3277/0, control-room green, walkthrough 0 findings.
+- **Notes:** Branch T447-status-scale. Merging it with T445 needed a manual resolution of both appending tests at the end of control-room.e2e.test.ts (first attempt dropped T447's edits to T387; caught by the gate, fixed). Follow-up: the "waiting for the plan" item doesn't set `pending_decision`, so its part reads Waiting rather than Needs you.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done
