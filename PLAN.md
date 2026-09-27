@@ -2746,21 +2746,21 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T454 Jev decides whether accepted knowledge wakes a conversation (D44 follow-up)
 - **Priority:** P3
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** worker (manager reviews)
 - **Scope:** Behind a config setting (off by default: T453's narrow rule), ask Jev, per conversation in an accepted item's scope, whether to wake it now. The state: the item (kind, text, scope), the conversation's question, its last reply (capped), when it last changed, and whether a newer conversation covers the same ground. The questions: does this decision change the answer given or settle something it left open; is the conversation still current (not moved on from, not covered by a newer one, not too old, not treated as finished). Pete also raised a later step: Jev reviewing threads on its own (e.g. after X minutes idle) to flag stale or settled conversations.
 - **Acceptance Criteria:** A `wake_on_knowledge: jev` style setting (Settings and config.yaml). On yes, the conversation wakes as the source does; on no, or Jev unavailable, it waits for its next message. Offline tests use `FakeClassifier`; a real Jev check via `agile rules test` or equivalent.
 - **Validation Steps:** Unit tests with `FakeClassifier` for yes / no / unavailable; the setting off keeps T453's behaviour.
-- **Notes:** Pete, 2026-09-27: build it, gated behind a config setting in the UI (off by default: T453's narrow rule). Jev calls are cheap (Pete); conversation text goes through the existing scrubber.
+- **Notes:** Pete, 2026-09-27: build it, gated behind a config setting in the UI (off by default: T453's narrow rule). Jev calls are cheap (Pete); conversation text goes through the existing scrubber. Branch T454-jev-knowledge-wake (worker; manager reviewed). `knowledge_wake: source | jev` in config.yaml, default `source` (T453). Settings → Classifier → Accepted decisions: "Let Jev decide which conversations hear an accepted decision", disabled with the reason until a TypeSafe key is loaded. With it on, a conversation that didn't propose the item is asked about once per (event, node), off the wake path (`events/knowledge-wake.ts`): state = the item, the conversation's question, last reply, age, status and newer conversations in the project; Nouls `relevant` and `stale` (asked as "stale" because real Jev scored "still current" in the route band for a current conversation). Wakes when relevant is a confident yes and stale a confident no; unsure, unavailable or no key leaves the item for the next message. At most 5 Jev wakes per item; in memory. Real Jev runs: an open related conversation wakes (0.97 / 0.29); one covered by a newer conversation or 30 days old doesn't (stale 0.80); an unrelated one doesn't (0.03). Deferred: `agile daemon status` doesn't show the setting; Jev reviewing idle threads by itself (Pete's later idea).
 
 ### Ticket: T455 Agents propose adding a repo to their node (D45)
 - **Priority:** P3
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** worker (manager reviews)
 - **Scope:** T445 left the `repo:<name>` proposal ref with no writer. A conversation's or worker's agent gets a verb to propose a repo for its node (name and why); it writes a `proposal` line with `ref: repo:<name>`, which shows **Add <repo>** in the cockpit. Clicking it runs Add repository in place (T205).
 - **Acceptance Criteria:** The verb, validated in `packages/shared` like the others; refused for an unknown repo, the node's own repo, or a project root; the line reads in words; the button is the only way it changes anything.
 - **Validation Steps:** Verb unit tests; a control-room e2e from the agent's proposal line to the reshaped node.
-- **Notes:** Pete agreed (a), 2026-09-27.
+- **Notes:** Pete agreed (a), 2026-09-27. Branch T455-propose-repo (worker; manager reviewed). `propose_repo {session, repo, why}` for a conversation's or work node's worker writes one `proposal` line (`Proposes adding **web**: …`, ref `repo:web`); the chat's **Add web** runs Add repository in place. Refused for the Director, coordinators, reviewers, closed/merged/archived/helper nodes, roots, coordinating nodes, the node's own repo, a repo it can't read (same words as an unregistered one) and a duplicate. The button also hides once a split node has a part on that repo. LIVE-CHECKLIST §10.4 and a walkthrough step. Gate on the merged tree (T454 + T455 + T458): lint, typecheck clean, `bun test` 3411/0, walkthrough 43 steps, 0 findings.
 
 ### Ticket: T456 Retry a failed vendor, then fall back to another (D43 follow-up)
 - **Priority:** P2
