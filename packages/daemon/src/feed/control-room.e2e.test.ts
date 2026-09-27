@@ -8729,23 +8729,30 @@ describe('project overview (Playwright e2e, T387)', () => {
           await page.locator(`${tabs}[data-tab="overview"]`).getAttribute('aria-current'),
         ).toBe('page');
 
-        // T424: the root's agent never ran: it reads Not started, as its Details say.
+        // T424: the root's agent never ran, as its Details say. T447 (audit r7 #2): a root with
+        // parts reads as its most urgent part (Add salePrice is ready), and says so in words.
         expect(
           await page
             .locator('[data-testid="stream-page"] [data-testid="node-status"]')
             .getAttribute('data-status'),
-        ).toBe('not_started');
+        ).toBe('ready');
         expect(
           await page
             .locator('[data-testid="stream-page"] [data-testid="stream-status"]')
             .textContent(),
         ).toContain('Agent not started');
         expect(
+          await page
+            .locator('[data-testid="stream-page"] [data-testid="node-parts"]')
+            .textContent(),
+        ).toBe('1 of 3 merged · Add salePrice is ready to merge');
+        expect(
           await page.locator(`${tree} [data-stream="${shop.root}"]`).getAttribute('data-status'),
-        ).toBe('not_started');
+        ).toBe('ready');
 
-        // The counts, your move first: T424, one status each, with that status's own dot and word
-        // (the coordinating "Show sale prices" never ran, so it is Not started, not Idle).
+        // The counts, your move first: T424, one status each, with that status's own dot and word.
+        // T447: the coordinating "Show sale prices" reads as its working part, so it is not
+        // counted again (the part is).
         const counts = `${overview} [data-testid="overview-count"]`;
         await waitForCount(page, counts, 6);
         const chips = await page
@@ -8762,12 +8769,13 @@ describe('project overview (Playwright e2e, T387)', () => {
           ['needs_you', 'you', '1 needs you', 'needs_you'],
           ['ready', 'you', '1 ready to merge', 'ready'],
           ['working', 'in_progress', '1 working', 'working'],
-          ['not_started', 'not_running', '2 not started', 'not_started'],
+          ['not_started', 'not_running', '1 not started', 'not_started'],
           ['merged', 'finished', '1 merged', 'merged'],
           ['closed', 'finished', '1 closed', 'closed'],
         ]);
 
         // The nodes: your move, in progress, not running; merged and closed folded under Finished.
+        // T447: by top-level node, Show sale prices heading its part.
         const rows = `${overview} [data-testid="overview-node"]`;
         const shown = (): Promise<Array<string | null>> =>
           page
@@ -8776,15 +8784,19 @@ describe('project overview (Playwright e2e, T387)', () => {
           Promise.resolve([]);
         const showing = (what: string, ids: string[]): Promise<void> =>
           waitUntilAsync(what, async () => (await shown()).join() === ids.join());
-        expect((await shown()).slice(0, 3)).toEqual([asks.id, ready.id, working.id]);
-        expect(new Set((await shown()).slice(3))).toEqual(new Set([feature.id, fresh.id]));
+        expect(await shown()).toEqual([asks.id, ready.id, feature.id, working.id, fresh.id]);
         const row = (id: string): string => `${rows}[data-stream="${id}"]`;
         expect(await page.locator(`${row(ready.id)} .cr-status-pill`).textContent()).toBe(
           'Ready to merge',
         );
         expect(
           await page.locator(`${row(working.id)} [data-testid="overview-node-path"]`).textContent(),
-        ).toBe('Show sale prices › Show the sale badge');
+        ).toBe('Show the sale badge');
+        expect(
+          await page
+            .locator(`${row(feature.id)} [data-testid="overview-branch-summary"]`)
+            .textContent(),
+        ).toBe('1 working');
         expect(
           await page
             .locator(`${row(working.id)} [data-testid="overview-node-agent"]`)
@@ -8796,8 +8808,8 @@ describe('project overview (Playwright e2e, T387)', () => {
         await page.locator(row(closed.id)).waitFor({ state: 'visible' });
         expect((await shown()).slice(5)).toEqual([merged.id, closed.id]);
 
-        // T424 (finding 16): the counts are the list's groups — each group holds exactly its
-        // counts' statuses, as many rows of each as the count says, and its heading adds them up.
+        // T424 (finding 16): the groups in order, each heading adding up its rows. T447: a
+        // branch sits in the group its top-level node reads as, its nodes under it.
         const groups = await page
           .locator(`${overview} [data-testid="overview-group"]`)
           .evaluateAll((els) =>
@@ -8809,20 +8821,13 @@ describe('project overview (Playwright e2e, T387)', () => {
               ),
             })),
           );
-        expect(groups.map((g) => g.group)).toEqual([
-          'you',
-          'in_progress',
-          'not_running',
-          'finished',
+        expect(groups.map((g) => [g.group, g.statuses])).toEqual([
+          ['you', ['needs_you', 'ready']],
+          ['in_progress', ['working', 'working']],
+          ['not_running', ['not_started']],
+          ['finished', ['merged', 'closed']],
         ]);
-        for (const g of groups) {
-          const mine = chips.filter((c) => c[1] === g.group);
-          const tally = mine.map((c) => `${c[0]}:${Number.parseInt(String(c[2]), 10)}`);
-          expect(
-            [...new Set(g.statuses)].map((s) => `${s}:${g.statuses.filter((x) => x === s).length}`),
-          ).toEqual(tally);
-          expect(Number(g.n)).toBe(g.statuses.length);
-        }
+        for (const g of groups) expect(Number(g.n)).toBe(g.statuses.length);
 
         // A count filters the list to exactly its rows; again (or Show all) shows everything.
         for (const [status, , text] of chips) {
