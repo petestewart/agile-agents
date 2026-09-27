@@ -10,6 +10,7 @@
  */
 
 import type {
+  Autonomy,
   Event,
   EventDeliveryStatus,
   HilRequest,
@@ -81,6 +82,8 @@ export interface CockpitStreamRow {
   visibility_advisory?: true;
   /** T437: a decision of yours about this node waits in Needs me (a plan, a gate, a proposal). */
   pending_decision?: true;
+  /** T452: its own coordinator autonomy, overriding its project's (absent: it inherits). */
+  autonomy?: Autonomy;
   /** T437: when its agent last answered a line of yours (or its question). Absent from an older daemon. */
   answered_at?: string;
   /** T336: a part not yet started because its coordinator's plan is not approved. */

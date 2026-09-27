@@ -1001,14 +1001,16 @@ export function Card({
       // T446 (audit r7 #6): the level it is held at (a link to where it is set) and what Apply does.
       const project = cockpit?.projects.find((pr) => pr.id === row?.project);
       const principal = p.principal ?? 'coordinator';
+      // T452: a coordinator's own level, where the node sets one, is the level it is held at.
+      const own = principal === 'coordinator' ? row?.autonomy : undefined;
       const words = proposalCardWords({
         principal,
         summary: p.summary,
-        where: project?.name,
+        where: own !== undefined ? row?.title : project?.name,
         level:
           project === undefined || /^Create the project |in a new project, /.test(p.summary)
             ? undefined
-            : (project.autonomy?.[principal] ?? 'advise'),
+            : (own ?? project.autonomy?.[principal] ?? 'advise'),
       });
       body = (
         <>
@@ -1022,8 +1024,10 @@ export function Card({
                     type="button"
                     className="cr-link"
                     data-testid="proposal-level-link"
-                    title={`Change it on ${project.name}`}
-                    onClick={() => select(project.root)}
+                    title={`Change it on ${own !== undefined && row !== undefined ? row.title : project.name}`}
+                    onClick={() =>
+                      select(own !== undefined && row !== undefined ? row.id : project.root)
+                    }
                   >
                     {words.level}
                   </button>

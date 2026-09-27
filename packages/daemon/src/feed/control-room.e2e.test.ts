@@ -8604,6 +8604,25 @@ describe('coordinator autonomy (Playwright e2e, T282)', () => {
           await new Promise((r) => setTimeout(r, 50));
         }
         expect(cockpit.autonomy.levelFor(node.id)).toBe('organise');
+        // T452: a card held on the node reads the node's own level, and links to it.
+        const held = await cockpit.autonomy.act(node.id, 'coordinator', 'agent:test', {
+          action: 'restart_node',
+          node: api.id,
+        });
+        expect(held.applied).toBe(false);
+        const heldId = held.applied ? '' : held.proposal.id;
+        const heldCard = `[data-testid="inbox"] [data-kind="proposal"][data-id="${heldId}"]`;
+        await page.locator('[data-view="inbox"]').click();
+        await page.locator(`${heldCard} [data-testid="proposal-level"]`).waitFor();
+        expect(await page.locator(`${heldCard} [data-testid="proposal-level"]`).textContent()).toBe(
+          'Show sale prices is at Organise: restarting stuck work still comes to you. Apply restarts its agent.',
+        );
+        await page.locator(`${heldCard} [data-testid="proposal-level-link"]`).click();
+        await page
+          .locator('[data-testid="stream-title"]', { hasText: 'Show sale prices' })
+          .waitFor();
+        expect(await page.locator('[data-testid="autonomy-select"]').inputValue()).toBe('organise');
+        await cockpit.autonomy.dismiss(heldId);
 
         // T347 (D36 D6): a work node has no coordinator, so no picker; the root has one.
         await page.locator(`[data-testid="stream-tree"] [data-stream="${api.id}"]`).click();

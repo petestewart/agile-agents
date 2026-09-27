@@ -2724,6 +2724,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** control-room e2e T446 (a coordinator's row: bot) and T301 (your Create: user; the Director's own create_node at Organise: sparkles); full `bun test` 3311/0; lint and typecheck clean.
 - **Notes:** Branch T451-applied-glyph.
 
+### Ticket: T452 A proposal card reads its node's own autonomy
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T446's follow-up: the cockpit row didn't carry a node's autonomy override, so a coordinator's held proposal on a node set to Organise said "Shop is at Advise" and linked to the project root, while the daemon held it at the node's own level.
+- **Acceptance Criteria:** A row carries `autonomy` when its node overrides the project's coordinator level. A coordinator's proposal card names that node and its level, and the link opens the node (where the level is set). A Director's card, and a node that inherits, read as before.
+- **Validation Steps:** snapshot test "T452: a node's own autonomy"; control-room e2e "coordinator autonomy (T282)" (after the node's override to Organise, a held restart reads "Show sale prices is at Organise: …" and its link opens the node with Organise selected); full `bun test` 3312/0; lint and typecheck clean.
+- **Notes:** Branch T452-node-autonomy-row.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done
