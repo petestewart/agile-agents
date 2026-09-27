@@ -19,11 +19,14 @@
  * - `recover()`: run once at startup. A crash between the log append and
  *   the queue append leaves an event with no delivery; this re-adds its
  *   `pending` lines, so nothing routed is dropped.
+ * - T446: a record-only type's (`RECORD_ONLY_EVENT_TYPES`) deliveries are
+ *   written `recorded`: on the recipients' Activity, never pending.
  */
 
 import {
   type Delivery,
   type EventDeliveryStatus,
+  RECORD_ONLY_EVENT_TYPES,
   type RoutedEvent,
   type RoutedEventId,
   type RoutedEventType,
@@ -112,11 +115,9 @@ export class RoutedEventService {
 
   async emit(input: EmitInput): Promise<RoutedEvent> {
     const event = { ...input, id: `E-${ulid()}`, at: this.now().toISOString() };
-    const deliveries = input.routing.map((r) => ({
-      event: event.id,
-      node: r.node,
-      status: 'pending',
-    }));
+    // T446: a record-only event is on each recipient's Activity, never in its queue's pending.
+    const status = RECORD_ONLY_EVENT_TYPES.has(input.type) ? 'recorded' : 'pending';
+    const deliveries = input.routing.map((r) => ({ event: event.id, node: r.node, status }));
     const stored = await this.store.appendRoutedEvent(event, deliveries);
     // A first read of the index after the append already holds it.
     const log = this.index();
@@ -262,7 +263,7 @@ export class RoutedEventService {
 
   /** Re-adds `pending` for any routed node whose queue never got the event. Returns how many. */
   async recover(): Promise<number> {
-    const missing: { event: string; node: string; status: 'pending' }[] = [];
+    const missing: { event: string; node: string; status: 'pending' | 'recorded' }[] = [];
     const seen = new Map<string, Set<string>>();
     for (const event of this.index().list) {
       for (const { node } of event.routing) {
@@ -271,7 +272,10 @@ export class RoutedEventService {
           ids = new Set(this.store.readDeliveries(node).map((d) => d.event));
           seen.set(node, ids);
         }
-        if (!ids.has(event.id)) missing.push({ event: event.id, node, status: 'pending' });
+        if (!ids.has(event.id)) {
+          const status = RECORD_ONLY_EVENT_TYPES.has(event.type) ? 'recorded' : 'pending';
+          missing.push({ event: event.id, node, status });
+        }
       }
     }
     if (missing.length > 0) await this.store.appendDeliveries(missing);

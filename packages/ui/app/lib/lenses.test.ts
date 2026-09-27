@@ -10,6 +10,8 @@ import {
   type LogView,
   ROUTE_REASON,
   appendOlder,
+  appliedNodes,
+  appliedTitle,
   childStatusPhrase,
   clip,
   deliveryHint,
@@ -32,6 +34,7 @@ import {
   runningSummary,
   sortNewestFirst,
   sortRunning,
+  undoTargets,
 } from './lenses';
 import { eventLabel } from './streams';
 
@@ -482,5 +485,52 @@ describe('the event log a page at a time (T383)', () => {
     expect(matches(event('E1', 'human_line', { body: 'hi there' }))).toBe(true);
     expect(matches(event('E2', 'human_line', { body: 'bye' }))).toBe(false);
     expect(matches(event('E3', 'pr_merged', { repo: 'hi' }, { repo: 'hi' }))).toBe(false);
+  });
+});
+
+describe('T446: autonomy_applied in words, with Undo while nothing started', () => {
+  const applied = (payload: Record<string, unknown>) =>
+    event('E1', 'autonomy_applied', {
+      principal: 'coordinator',
+      level: 'organise',
+      action: 'add_child',
+      summary: 'Add an RSS field (web)',
+      nodes: ['N1'],
+      ...payload,
+    });
+
+  test('who, then what they did; the summary under it', () => {
+    expect(eventTitle(applied({}))).toBe('Coordinator added a part');
+    // No repo: a node (a conversation), as the thread line says.
+    expect(eventTitle(applied({ summary: 'Research time zones' }))).toBe(
+      'Coordinator added a node',
+    );
+    expect(eventDetail(applied({}))).toBe('Add an RSS field (web)');
+    expect(appliedTitle({ principal: 'director', action: 'create_tree' })).toBe(
+      'Director created a node and its parts',
+    );
+    expect(appliedTitle({ principal: 'human', action: 'approve_contract' })).toBe(
+      'You approved a contract change',
+    );
+    expect(EVENT_FAMILY.autonomy_applied).toBe('coordination');
+    expect(appliedNodes(event('E2', 'human_line', { body: 'x', nodes: ['N1'] }))).toEqual([]);
+  });
+
+  test('Undo deletes each subtree top, only while every node made is open and never started', () => {
+    const tree = applied({ nodes: ['N1', 'N2', 'N3'] });
+    const rows = [
+      row('N1', { never_started: true, parent: 'R' }),
+      row('N2', { never_started: true, parent: 'N1' }),
+      row('N3', { never_started: true, parent: 'N1' }),
+    ];
+    expect(undoTargets(tree, rows)).toEqual(['N1']);
+    expect(undoTargets(tree, [rows[0] as CockpitStreamRow, rows[1] as CockpitStreamRow])).toBe(
+      undefined,
+    );
+    const started = rows.map((r) => (r.id === 'N3' ? { ...r, never_started: undefined } : r));
+    expect(undoTargets(tree, started)).toBeUndefined();
+    expect(undoTargets(applied({ nodes: [] }), rows)).toBeUndefined();
+    const merged = rows.map((r) => (r.id === 'N2' ? { ...r, human_status: 'landed' as const } : r));
+    expect(undoTargets(tree, merged)).toBeUndefined();
   });
 });

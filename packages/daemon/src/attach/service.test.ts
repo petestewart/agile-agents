@@ -1576,7 +1576,11 @@ describe('T243: the wake policy (P11)', () => {
 
     await reshape.addRepo(node.id, 'ledger-lite');
     const { parts } = await reshape.addRepo(node.id, 'agile-test-repo');
-    expect(parts.map((p) => p.title)).toEqual(['ledger-lite part', 'agile-test-repo part']);
+    // T446 (audit r7 #18): a part is named for its node, then its repo.
+    expect(parts.map((p) => p.title)).toEqual([
+      `${node.title} · ledger-lite`,
+      `${node.title} · agile-test-repo`,
+    ]);
     // T336: the coordinator starts, though nothing was live; the parts wait for its plan.
     for (const part of parts) expect(attachService.handleFor(part.id)).toBeUndefined();
     expect(streams.get(parts[1]?.id as string).sessions).toHaveLength(0);

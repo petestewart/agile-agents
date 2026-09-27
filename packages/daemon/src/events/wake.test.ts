@@ -30,11 +30,13 @@ const WORK: RoutedEventType[] = [
 const CONVERSATION: RoutedEventType[] = ['human_line', 'answer', 'knowledge_accepted'];
 
 describe('wakesRole (P11 table)', () => {
+  // T446: a record (`autonomy_applied`) wakes nobody, a coordinator included.
+  const record = (t: RoutedEventType) => t === 'autonomy_applied';
   const expected: Record<NodeRole, (t: RoutedEventType) => boolean> = {
-    coordinating: () => true,
+    coordinating: (t) => !record(t),
     work: (t) => WORK.includes(t),
     conversation: (t) => CONVERSATION.includes(t),
-    project: () => true,
+    project: (t) => !record(t),
   };
   for (const role of Object.keys(expected) as NodeRole[]) {
     for (const type of ROUTED_EVENT_TYPES) {

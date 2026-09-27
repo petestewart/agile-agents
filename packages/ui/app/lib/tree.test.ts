@@ -18,6 +18,7 @@ import {
   overlapMark,
   pickHighlight,
   projectOutline,
+  railTitle,
   searchOutline,
   splitRepos,
   subtreeIds,
@@ -431,6 +432,28 @@ describe('T424: the overlap mark', () => {
       overlapMark('a1x', [{ nodes: ['a1x', 'gone'], files: ['x.ts'] }], rows, false)?.text,
     ).toBe('Overlaps another node on x.ts');
     expect(overlapMark('a1x', [], rows, false)).toBeUndefined();
+  });
+});
+
+describe('T446: two nodes, one name', () => {
+  test('a part reads as its repo under its node; any other title whole', () => {
+    expect(railTitle('Rotate the API keys · api', 'Rotate the API keys')).toEqual({
+      lead: 'Rotate the API keys · ',
+      shown: 'api',
+    });
+    expect(railTitle('api: add salePrice', 'Sale prices')).toEqual({ shown: 'api: add salePrice' });
+    expect(railTitle('Shop', undefined)).toEqual({ shown: 'Shop' });
+  });
+
+  test('an overlap mark names the project when two projects have the title', () => {
+    const rows = [
+      row('S', { title: 'Shop', role: 'project', project: 'P1' }),
+      row('O', { title: 'Ops', role: 'project', project: 'P2' }),
+      row('a', { title: 'api part', parent: 'S', project: 'P1' }),
+      row('b', { title: 'api part', parent: 'O', project: 'P2' }),
+    ];
+    const mark = overlapMark('a', [{ nodes: ['a', 'b'], files: ['keys.ts'] }], rows, false);
+    expect(mark?.text).toBe('Overlaps Ops › api part on keys.ts');
   });
 });
 

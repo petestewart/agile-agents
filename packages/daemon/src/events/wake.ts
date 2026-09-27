@@ -15,12 +15,15 @@
  * - A project root is woken like a coordinating node once it has had a
  *   coordinator (P20, T280); before that it has no agent and never wakes.
  * - A node the human stopped is never woken; its events stay pending.
+ * - T446: a record-only type (`autonomy_applied`) wakes nobody; its
+ *   deliveries are `recorded`, never pending, so it cannot reach here anyway.
  * - A wake budget (default 20 per node per hour) stops event loops: past
  *   it the node goes to the inbox and its events stay pending.
  */
 
 import {
   type NodeRole,
+  RECORD_ONLY_EVENT_TYPES,
   type RoutedEventType,
   type Stream,
   isAgentRole,
@@ -56,6 +59,8 @@ export const KNOWLEDGE_WAKE_FANOUT = 5;
 
 /** P11's table: does an event of `type` wake a node of `role` with no live session? */
 export function wakesRole(role: NodeRole, type: RoutedEventType): boolean {
+  // T446: a record (`autonomy_applied`) wakes nobody, not even a coordinator.
+  if (RECORD_ONLY_EVENT_TYPES.has(type)) return false;
   switch (role) {
     case 'coordinating':
       return true;

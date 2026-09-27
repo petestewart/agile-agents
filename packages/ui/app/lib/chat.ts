@@ -274,7 +274,16 @@ export function chatVariant(
   if (ruleHitOf(entry) !== undefined) return 'rule_hit';
   if (entry.by === 'human') return entry.kind === 'event' ? 'system' : 'you';
   if (entry.by === 'daemon') {
-    return entry.kind === 'event' || entry.kind === 'line' ? 'system' : 'agent';
+    // T446 (audit r7 #6): a daemon proposal (a part's contract proposal) is a row, not a message.
+    return entry.kind === 'event' || entry.kind === 'line' || entry.kind === 'proposal'
+      ? 'system'
+      : 'agent';
+  }
+  // T446 (audit r7 #6): what a coordinator or the Director did on its own (a
+  // change it applied, a proposal it made, a node it created) is a system row
+  // with its own icon, not its chat message.
+  if (entry.by === 'coordinator' || entry.by === 'director') {
+    return entry.kind === 'event' || entry.kind === 'proposal' ? 'system' : 'agent';
   }
   return 'agent';
 }
@@ -288,6 +297,13 @@ export interface ChatRow<E> {
   continued: boolean;
   /** Set on the first row of each calendar day (local time): the divider's label. */
   day?: string;
+  /**
+   * T446 (audit r7 #17): the routine wake this reply answers, for its header
+   * ("Woke for a merge" at `ts`); the wake's own rows are folded away.
+   */
+  wake?: { text: string; ts: string };
+  /** T446: a system row's words when the fold rewrote them ("Woke for a merge · nothing new"). */
+  system?: SystemLine;
 }
 
 /** "Today", "Yesterday", or "Mon, Sep 21" (with the year when it is not this year). */
@@ -342,23 +358,101 @@ export function withQuestion<E extends Pick<ThreadEntry, 'by' | 'kind' | 'body'>
   };
 }
 
+type FoldEntry = Pick<ThreadEntry, 'ts' | 'by' | 'kind' | 'body' | 'ref' | 'agent_only'>;
+
+/** T446: what `foldWakes` does to a thread: rows to hide, replies to head, rows to reword. */
+export interface WakeFolds {
+  hidden: Set<number>;
+  wakes: Map<number, { text: string; ts: string }>;
+  system: Map<number, SystemLine>;
+}
+
+/** How far after a "woken by" line its coordinator's "attached" line may sit. */
+const WAKE_ATTACH_WITHIN = 4;
+
+/**
+ * T446 (audit r7 #17): a coordinator's routine wake — woken by events, not
+ * by your line or answer — folds into its reply: the "woken by", "Coordinator
+ * started" and "Agent finished its turn" rows go, and the reply's header
+ * says "Woke for a merge". A turn with no reply is one muted row, "Woke for
+ * a merge · nothing new". A turn still running, or one that ended badly,
+ * keeps its rows.
+ */
+export function foldWakes(entries: readonly FoldEntry[]): WakeFolds {
+  const folds: WakeFolds = { hidden: new Set(), wakes: new Map(), system: new Map() };
+  const daemonEvent = (e: FoldEntry | undefined): e is FoldEntry =>
+    e !== undefined && e.by === 'daemon' && e.kind === 'event';
+  entries.forEach((entry, i) => {
+    if (!daemonEvent(entry)) return;
+    const woken = /^woken by (.+)$/s.exec(entry.body);
+    if (!woken) return;
+    const types = (woken[1] ?? '').split(',').map((t) => t.trim());
+    if (types.includes('human line') || types.includes('answer')) return;
+    let at = -1;
+    for (let j = i + 1; j < entries.length && j <= i + WAKE_ATTACH_WITHIN; j++) {
+      const e = entries[j];
+      if (!daemonEvent(e)) break;
+      if (/^coordinator attached: /.test(e.body)) {
+        at = j;
+        break;
+      }
+    }
+    const session = entries[at]?.ref;
+    if (at < 0 || session === undefined) return;
+    let end = -1;
+    const replies: number[] = [];
+    for (let k = at + 1; k < entries.length; k++) {
+      const e = entries[k] as FoldEntry;
+      if (daemonEvent(e) && e.ref === session && /^session ended: /.test(e.body)) {
+        end = k;
+        break;
+      }
+      if (e.by === `agent:${session}` && chatVariant(e) === 'agent') replies.push(k);
+    }
+    const ended = end >= 0 && entries[end]?.body === 'session ended: its turn finished';
+    if (!ended) return;
+    const text = `Woke for ${listWords(types.map((t) => WAKE_WORD[t] ?? t))}`;
+    folds.hidden.add(at);
+    folds.hidden.add(end);
+    const first = replies[0];
+    if (first !== undefined) {
+      folds.hidden.add(i);
+      folds.wakes.set(first, { text, ts: entry.ts });
+    } else {
+      folds.system.set(i, { icon: 'check', text: `${text} · nothing new`, tone: 'muted' });
+    }
+  });
+  return folds;
+}
+
 /** The thread as chat rows: hidden lines dropped, same-author runs marked, day breaks labelled. */
 export function chatRows<
   E extends Pick<ThreadEntry, 'ts' | 'by' | 'kind' | 'body' | 'ref' | 'agent_only'>,
 >(entries: readonly E[], now: number = Date.now()): ChatRow<E>[] {
   const rows: ChatRow<E>[] = [];
+  const folds = foldWakes(entries);
   let lastDay: string | undefined;
   let lastAuthor: string | undefined;
   entries.forEach((entry, index) => {
     const variant = chatVariant(entry);
-    if (variant === undefined) return;
+    if (variant === undefined || folds.hidden.has(index)) return;
     const key = dayKey(entry.ts);
     const day = key !== lastDay && key !== '' ? dayLabel(entry.ts, now) : undefined;
     if (key !== '') lastDay = key;
     const message = variant === 'you' || variant === 'agent';
-    const continued = message && day === undefined && lastAuthor === entry.by;
+    const wake = folds.wakes.get(index);
+    const continued = message && day === undefined && lastAuthor === entry.by && !wake;
     lastAuthor = message ? entry.by : undefined;
-    rows.push({ entry, index, variant, continued, ...(day ? { day } : {}) });
+    const system = folds.system.get(index);
+    rows.push({
+      entry,
+      index,
+      variant,
+      continued,
+      ...(day ? { day } : {}),
+      ...(wake ? { wake } : {}),
+      ...(system ? { system } : {}),
+    });
   });
   return rows;
 }
@@ -494,9 +588,95 @@ export function agentFailed(
  * finishing its turn, waking, a sync, a wait that is over), and with ids
  * and full branch names left out (`tidyIds`).
  */
-export function systemLine(body: string): SystemLine {
+/** T446: who wrote a system row, and the node its line points to. */
+export interface SystemLineMeta {
+  /** The thread line's author: `coordinator` and `director` rows get their own icon. */
+  by?: string;
+  /** The line's `ref`: a node id links the title it names. */
+  ref?: string;
+  /** Whether the cockpit knows node `id` (so its link opens something). */
+  known?: (id: string) => boolean;
+}
+
+const NODE_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** T446: the icon of a change a coordinator or the Director made itself. */
+function actorIcon(by: string | undefined): IconName | undefined {
+  if (by === 'coordinator') return 'bot';
+  if (by === 'director') return 'sparkles';
+  return undefined;
+}
+
+/**
+ * T446 (audit r7 #6): a line the daemon wrote before T446 in its own terms,
+ * as it reads now: "coordinator (organise) applied: …", "plan v1 approved by
+ * human", "plan drafted (2 children, 0 contracts)…", "1 child(ren) propose
+ * (CP-…)". A line written since reads in words already.
+ */
+function olderWording(body: string): string {
+  const applied = /^(?:coordinator|director) \((?:advise|organise|run)\) applied: (.+)$/s.exec(
+    body,
+  );
+  if (applied) return `Applied: ${applied[1]}`;
+  const decided = /^(applied|dismissed): (.+)$/s.exec(body);
+  if (decided) return `You ${decided[1]}: ${decided[2]}`;
+  const approved = /^plan v(\d+) approved by (human|coordinator|director)$/.exec(body);
+  if (approved) {
+    return approved[2] === 'human'
+      ? `You approved plan v${approved[1]}`
+      : `The ${approved[2] === 'director' ? 'Director' : 'coordinator'} approved plan v${approved[1]}`;
+  }
+  const own = /^plan v(\d+) approved: you own (.+)$/s.exec(body);
+  if (own) return `Plan v${own[1]} approved: this part owns ${own[2]}`;
+  const drafted =
+    /^plan drafted \((\d+) child(?:ren)?, (\d+) contracts?\); waiting for approval$/.exec(body);
+  if (drafted) {
+    const [, n = '0', c = '0'] = drafted;
+    const part = `${n} part${n === '1' ? '' : 's'}`;
+    const contracts = c === '0' ? '' : ` and ${c} contract${c === '1' ? '' : 's'}`;
+    return `Plan drafted for ${part}${contracts}; waiting for approval`;
+  }
+  const waits = /^(.+?) (waits?) for the plan: write it with plan_write .*$/s.exec(body);
+  if (waits) return `${waits[1]} ${waits[2]} for the plan; each starts once the plan is approved`;
+  const proposed =
+    /^contract (.+?): (\d+) child\(ren\) propose \([^)]*\): ([\s\S]+?)\.* Reason: ([\s\S]*)$/.exec(
+      body,
+    );
+  if (proposed) {
+    const [, title, n, text, why] = proposed;
+    const who = n === '1' ? 'A part proposes' : `${n} parts propose`;
+    return `${who} a change to ${title}: ${text}${why ? `. Why: ${why}` : ''}`;
+  }
+  return body;
+}
+
+export function systemLine(body: string, meta: SystemLineMeta = {}): SystemLine {
   const created = /^stream created: (.+)$/s.exec(body);
+  // T446 (audit r7 #6): whoever wrote it (you, the daemon, a coordinator, the Director).
   if (created) return { icon: 'plus', text: 'Node created', tone: 'muted' };
+  const actor = actorIcon(meta.by);
+  const words = olderWording(body);
+  // T446: "Added a part: "X" (web)", "You created "X" in Shop…": the title, bold, links its node.
+  const made =
+    /^((?:You )?(?:[Aa]dded a (?:part|node):|[Cc]reated|[Ss]tarted|[Rr]estarted)) "(.+?)"(.*)$/s.exec(
+      words,
+    );
+  if (made) {
+    const [, lead = '', title = '', rest = ''] = made;
+    const ref = meta.ref;
+    const link = ref !== undefined && NODE_ID.test(ref) && meta.known?.(ref) === true;
+    return {
+      icon: actor ?? (meta.by === 'human' ? 'check-circle' : 'plus'),
+      text: `${lead} **${link ? ref : title}**${tidyIds(rest)}`,
+      tone: 'muted',
+    };
+  }
+  if (actor !== undefined) return { icon: actor, text: tidyIds(words), tone: 'muted' };
+  // T446: a part's contract proposal (its card decides it).
+  if (/^.+? (?:proposes|propose) a change to /s.test(words)) {
+    return { icon: 'file-text', text: tidyIds(words), tone: 'muted' };
+  }
+  if (words !== body) return { icon: systemIcon(body), text: tidyIds(words), tone: 'muted' };
   const attached = /^(\w+) attached: ([^/\s]+)\/(\S+) effort=(\S+)/.exec(body);
   if (attached) {
     const [, role = '', vendor = '', model, effort] = attached;

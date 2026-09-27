@@ -31,10 +31,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   type EventPage,
   type RepoRow,
+  archiveStream,
   getEvents,
   getRepoKnowledge,
   listRepos,
   stopSessions,
+  unarchiveStream,
   waitOnStream,
 } from '../lib/api';
 import { clockTime } from '../lib/chat';
@@ -47,6 +49,7 @@ import {
   type LogView,
   ROUTE_REASON,
   appendOlder,
+  appliedNodes,
   deliveryHint,
   deliveryWords,
   dependencyGroups,
@@ -66,8 +69,9 @@ import {
   runningSummary,
   sortNewestFirst,
   sortRunning,
+  undoTargets,
 } from '../lib/lenses';
-import { namesOf } from '../lib/names';
+import { distinctTitle, namesOf } from '../lib/names';
 import { lastChange } from '../lib/overview';
 import { KIND_LABEL, statsWords } from '../lib/rules';
 import { useShell } from '../lib/shell';
@@ -96,10 +100,14 @@ const message = (err: unknown): string => (err instanceof Error ? err.message : 
 function useTitleOf(): (id: string) => string {
   const { cockpit } = useFeed();
   const names = useMemo(() => namesOf(cockpit), [cockpit]);
+  const rows = cockpit?.streams;
   return useCallback(
     (id: string) =>
-      id === DIRECTOR_NODE ? 'Director' : (names.get(id)?.title ?? 'a deleted node'),
-    [names],
+      id === DIRECTOR_NODE
+        ? 'Director'
+        : // T446 (audit r7 #18): the project or parent in front when two nodes share a title.
+          (distinctTitle(id, rows ?? []) ?? names.get(id)?.title ?? 'a deleted node'),
+    [names, rows],
   );
 }
 
@@ -935,6 +943,8 @@ const EVENT_ICON: Partial<Record<RoutedEventType, IconName>> = {
   plan_changed: 'list',
   external_changed: 'ticket',
   knowledge_accepted: 'book-open',
+  // T446: what a coordinator, the Director or you applied: a change to the tree.
+  autonomy_applied: 'bot',
 };
 
 const FAMILY_ICON: Record<EventFamily, IconName> = {
@@ -962,6 +972,102 @@ export function EventGlyph({ type }: { type: RoutedEventType }): JSX.Element {
   return (
     <span className="cr-lens-ev-glyph" data-tone={EVENT_TONE[type]} aria-hidden="true">
       <Icon name={EVENT_ICON[type] ?? FAMILY_ICON[eventFamily(type)]} size={13} />
+    </span>
+  );
+}
+
+/**
+ * T446 (audit r7 #7): under an applied change (Events, Activity, the
+ * Director's feed), a link per node it created, and Undo — delete them, as
+ * the rail's Delete does — while none of them has started. A toast offers
+ * them back. Nothing for a change that created no node.
+ */
+export function AppliedChange({ event }: { event: RoutedEvent }): JSX.Element | null {
+  const { cockpit } = useFeed();
+  const open = useOpenNode();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const nodes = appliedNodes(event);
+  if (nodes.length === 0) return null;
+  const rows = cockpit?.streams ?? [];
+  const targets = undoTargets(event, rows);
+  const titleOf = (id: string): string | undefined => rows.find((r) => r.id === id)?.title;
+  const undo = async (): Promise<void> => {
+    if (targets === undefined || busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      for (const id of targets) await archiveStream(id);
+      const first = titleOf(nodes[0] as string) ?? 'the node';
+      toast({
+        title: nodes.length === 1 ? `Removed “${first}”` : `Removed “${first}” and its parts`,
+        tone: 'success',
+        duration: 8000,
+        action: {
+          label: 'Restore',
+          onClick: () => {
+            Promise.all(targets.map((id) => unarchiveStream(id)))
+              .then(() => toast({ title: `Restored “${first}”`, tone: 'success', duration: 3000 }))
+              .catch((err: unknown) =>
+                toast({ title: 'Could not restore it', body: message(err), tone: 'error' }),
+              );
+          },
+        },
+      });
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  // One node its line already names ("Add an RSS field (web)") opens with "Open", not its name again.
+  const summary = typeof event.payload.summary === 'string' ? event.payload.summary : '';
+  const named = nodes.length === 1 && summary.startsWith(titleOf(nodes[0] as string) ?? '\u0000');
+  return (
+    <span className="cr-applied" data-testid="applied-change">
+      {nodes.map((id) => {
+        const title = titleOf(id);
+        return title !== undefined ? (
+          <button
+            key={id}
+            type="button"
+            className="cr-lens-link cr-applied-node"
+            data-testid="applied-node"
+            data-node={id}
+            title={`Open ${title}`}
+            onClick={() => open(id)}
+          >
+            {named ? 'Open' : title}
+          </button>
+        ) : (
+          <span key={id} className="cr-faint cr-applied-node" data-testid="applied-node-gone">
+            a deleted node
+          </span>
+        );
+      })}
+      {targets !== undefined && (
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="undo"
+          data-testid="applied-undo"
+          busy={busy}
+          title={
+            targets.length === 1 && nodes.length === 1
+              ? 'Delete the node it made; it hasn’t started'
+              : 'Delete the nodes it made; none has started'
+          }
+          onClick={() => void undo()}
+        >
+          Undo
+        </Button>
+      )}
+      {error !== undefined && (
+        <span className="cr-error" role="alert">
+          {error}
+        </span>
+      )}
     </span>
   );
 }
@@ -995,6 +1101,7 @@ function EventRow({
             {eventTitle(event)}
           </span>
           {detail !== undefined && <span className="cr-lens-log-detail">{detail}</span>}
+          <AppliedChange event={event} />
         </div>
       </div>
       <div className="cr-lens-log-node" data-empty={event.subject === undefined || undefined}>

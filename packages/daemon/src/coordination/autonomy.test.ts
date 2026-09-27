@@ -13,11 +13,14 @@ import {
   type AgentId,
   type Autonomy,
   COORDINATOR_ACTIONS,
+  DIRECTOR_NODE,
   HUMAN_ONLY_ACTIONS,
   type Stream,
   ulid,
 } from '@agile-agents/shared';
 import { VerbService } from '../attach/verbs';
+import { makeEmitter } from '../events/producers';
+import { RoutedEventService } from '../events/service';
 import { GateService } from '../gates/service';
 import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
@@ -31,6 +34,7 @@ import {
   ProposalClosedError,
   StaleProposalError,
   allowed,
+  describeChange,
 } from './autonomy';
 import { ContractService } from './contracts';
 import { PlanService } from './plans';
@@ -164,7 +168,9 @@ describe('coordinator verbs through the gate', () => {
     await verbs.setOwner({ session: coordinator, child: api.id, owns: ['prices.ts'] });
     expect(plans.get(node.id)?.owners).toEqual([{ child: api.id, owns: ['prices.ts'] }]);
     const lines = streams.readThread(node.id).entries.map((e) => e.body);
-    expect(lines).toContain('coordinator (organise) applied: web waits on api');
+    // T446 (audit r7 #6): the coordinator's own rows, in words.
+    expect(lines).toContain('Linked web to wait on api');
+    expect(lines).toContain('Set api to own prices.ts');
     expect(inbox.list().some((i) => i.kind === 'proposal')).toBe(false);
   });
 
@@ -262,6 +268,176 @@ describe('coordinator verbs through the gate', () => {
     expect(streams.get(web.id).waits_on).toBeUndefined();
     expect(autonomy.get(id).status).toBe('open');
     expect(node.id).toBeDefined();
+  });
+});
+
+describe('T446: what an agent did on its own, in words and on the record', () => {
+  let events: RoutedEventService;
+  let recorded: AutonomyService;
+
+  beforeEach(() => {
+    events = new RoutedEventService(store);
+    recorded = new AutonomyService({
+      store,
+      streams,
+      plans,
+      contracts,
+      projects,
+      emit: makeEmitter(events, streams),
+    });
+  });
+
+  const applied = () => events.recent().filter((e) => e.type === 'autonomy_applied');
+
+  test('describeChange reads as a proposal in words', () => {
+    const title = (id: string) => (id === 'W' ? 'web' : id === 'A' ? 'api' : id);
+    expect(
+      describeChange(
+        { action: 'add_child', title: 'Document sale prices', goal: 'Add a page', repo: 'docs' },
+        title,
+      ),
+    ).toBe('Add a part "Document sale prices" on docs: Add a page');
+    expect(describeChange({ action: 'add_waits_on', child: 'W', on: 'A' }, title)).toBe(
+      'Make web wait on api',
+    );
+    expect(
+      describeChange(
+        {
+          action: 'approve_contract',
+          contract: 'C',
+          title: 'Key file',
+          body: 'Keys live in /etc/keys.',
+          parties: [],
+          routine: true,
+          reason: 'additive',
+        },
+        title,
+      ),
+    ).toBe('Approve a routine change to Key file: Keys live in /etc/keys. Why: additive');
+  });
+
+  test('Organise: add_child is a coordinator row linked to the part, and a record that wakes nobody', async () => {
+    const { project, node, coordinator } = await shop('organise');
+    const root = project.root;
+    const verbsHere = new VerbService({
+      store,
+      streams,
+      questions: new QuestionService(store, streams, { deliver: async () => {} }),
+      plans,
+      contracts,
+      autonomy: recorded,
+    });
+    const out = (await verbsHere.addChild({
+      session: coordinator,
+      title: 'Add an RSS field',
+      goal: 'scheduled posts in the feed',
+    })) as ActOutcome;
+    expect(out.applied).toBe(true);
+    const made = streams.list().find((s) => s.title === 'Add an RSS field') as Stream;
+    const line = streams.readThread(node.id).entries.find((e) => e.body.startsWith('Added a node'));
+    expect(line).toMatchObject({
+      by: 'coordinator',
+      kind: 'event',
+      body: 'Added a node: "Add an RSS field"',
+      ref: made.id,
+    });
+    const [event] = applied();
+    expect(event?.subject).toBe(node.id);
+    expect(event?.by).toBe(`agent:${coordinator}`);
+    expect(event?.payload).toEqual({
+      principal: 'coordinator',
+      level: 'organise',
+      action: 'add_child',
+      summary: 'Add an RSS field',
+      nodes: [made.id],
+    });
+    // The node, its ancestors (the project root); not the Director.
+    expect(event?.routing).toEqual([
+      { node: node.id, because: 'self' },
+      { node: root, because: 'ancestor' },
+    ]);
+    // A record: on the Activity, never pending, so no digest or wake carries it.
+    expect(events.pendingFor(node.id)).toEqual([]);
+    expect(events.activityFor(node.id)[0]).toMatchObject({ status: 'recorded' });
+  });
+
+  test('Apply as the human: "You added a part", a record with the proposal', async () => {
+    const { node } = await shop();
+    const out = await recorded.act(node.id, 'coordinator', 'director', {
+      action: 'add_child',
+      title: 'Document sale prices',
+      goal: 'Add a page',
+    });
+    expect(out.applied).toBe(false);
+    const proposal = out.applied ? undefined : out.proposal;
+    expect(proposal?.summary).toBe('Add a node "Document sale prices": Add a page');
+    await recorded.apply(proposal?.id ?? '');
+    const made = streams.list().find((s) => s.title === 'Document sale prices') as Stream;
+    const last = streams.readThread(node.id).entries.at(-1);
+    expect(last).toMatchObject({
+      by: 'human',
+      body: 'You added a node: "Document sale prices"',
+      ref: made.id,
+    });
+    const [event] = applied();
+    expect(event?.by).toBe('human');
+    expect(event?.payload).toMatchObject({
+      principal: 'human',
+      level: 'advise',
+      nodes: [made.id],
+      proposal: proposal?.id,
+    });
+    expect(event?.routing.some((r) => r.node === DIRECTOR_NODE)).toBe(false);
+  });
+
+  test('Dismiss reads "You dismissed", and records nothing', async () => {
+    const { node, api, web } = await shop();
+    const out = await recorded.act(node.id, 'coordinator', 'director', {
+      action: 'add_waits_on',
+      child: web.id,
+      on: api.id,
+    });
+    const id = out.applied ? '' : out.proposal.id;
+    await recorded.dismiss(id);
+    expect(streams.readThread(node.id).entries.at(-1)?.body).toBe(
+      'You dismissed: Make web wait on api',
+    );
+    expect(applied()).toEqual([]);
+  });
+
+  test("the Director's create_tree: its own row, on the Director's feed and the tree's", async () => {
+    const project = await projects.create({ name: 'Blog' });
+    await projects.update(project.id, { autonomy: { director: 'organise' } });
+    const out = await recorded.act(DIRECTOR_NODE, 'director', 'director', {
+      action: 'create_tree',
+      tree: {
+        project: project.id,
+        title: 'Newsletter signup',
+        goal: 'a signup form',
+        parts: [
+          { title: 'Form', goal: 'the form' },
+          { title: 'List', goal: 'the list', after: [0] },
+        ],
+      },
+    });
+    expect(out.applied).toBe(true);
+    const node = streams.list().find((s) => s.title === 'Newsletter signup') as Stream;
+    const line = store.readDirectorThread().at(-1);
+    expect(line).toMatchObject({
+      by: 'director',
+      kind: 'event',
+      body: 'Created "Newsletter signup" in Blog with 2 parts',
+      ref: node.id,
+    });
+    const [event] = applied();
+    expect(event?.subject).toBe(node.id);
+    expect(event?.by).toBe('director');
+    expect(event?.payload.summary).toBe('Newsletter signup in Blog with 2 parts');
+    expect((event?.payload.nodes as string[])[0]).toBe(node.id);
+    expect(event?.payload.nodes).toHaveLength(3);
+    expect(event?.routing).toContainEqual({ node: DIRECTOR_NODE, because: 'self' });
+    expect(events.pendingFor(DIRECTOR_NODE)).toEqual([]);
+    expect(events.activityFor(DIRECTOR_NODE)[0]?.status).toBe('recorded');
   });
 });
 

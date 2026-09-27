@@ -192,9 +192,9 @@ describe('coordinator first (T338)', () => {
     // Not auto-answered for you: the question that went to the operator stays open.
     expect(questions.get(own.id as never).status).toBe('open');
     const thread = streams.readThread(s.api.id).entries.map((e) => e.body);
-    expect(thread).toContain('plan v1 approved: you own prices.ts');
+    expect(thread).toContain('Plan v1 approved: this part owns prices.ts');
     expect(streams.readThread(s.web.id).entries.map((e) => e.body)).toContain(
-      'plan v1 approved: you own shop.html',
+      'Plan v1 approved: this part owns shop.html',
     );
   });
 });

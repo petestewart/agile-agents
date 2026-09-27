@@ -341,7 +341,11 @@ export function withParts<R extends PartRow>(rows: readonly R[]): R[] {
           leadRank = URGENCY[key];
           // A coordinating part that reads as one of its own parts names that one: the node to open.
           const deeper = statusFromPart(part) ? part.parts?.lead : undefined;
-          parts.lead = deeper ?? { id: child.id, title: child.title, key };
+          // T446's part names ("<node> · <repo>") read as just the repo under their node.
+          const short = child.title.startsWith(`${row.title} · `)
+            ? child.title.slice(row.title.length + 3)
+            : child.title;
+          parts.lead = deeper ?? { id: child.id, title: short || child.title, key };
         }
       }
     }

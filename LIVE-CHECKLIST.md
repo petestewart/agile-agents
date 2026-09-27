@@ -381,15 +381,17 @@ agile node list --parent $C
 - [ ] The first `add-repo` prints `… on stream/…-ledger-export`, and the role
       is `work` with that branch. The node now has a worktree at
       `~/Projects/ledger-lite/.worktrees/…-ledger-export`.
-- [ ] The second prints two parts, `ledger-lite part` and
-      `agile-test-repo part`, and the role is `coordinating`. The ledger-lite
-      part keeps the branch and any commits.
+- [ ] The second prints two parts, `Ledger export · ledger-lite` and
+      `Ledger export · agile-test-repo` (a part is named for its node, then
+      its repo), and the role is `coordinating`. The ledger-lite part keeps
+      the branch and any commits.
 - [ ] `node list --parent` shows both parts with role `work`. The
       coordinator keeps the chat; the parts wait for its plan and start when
       you approve it in 3.4. The thread gains
       `repo added: …; now a work node on …`,
-      `repo added: agile-test-repo; now coordinating ledger-lite part, agile-test-repo part`
-      and `ledger-lite part, agile-test-repo part wait for the plan: …`.
+      `repo added: agile-test-repo; now coordinating its ledger-lite and agile-test-repo parts`
+      and `The ledger-lite and agile-test-repo parts wait for the plan; each starts once the plan is approved`
+      (the `plan_write` instruction is its agent's line, not on your thread).
 - [ ] Cockpit: the rail shows Ledger export with the coordinating icon and
       its two parts under it, each marked `waiting for the plan` on a line
       under its title (the title is not cut off). **Running**
@@ -414,24 +416,45 @@ From here on, every step is done in the cockpit unless it is marked
 - [ ] On the Ledger export page, open the **Plan** tab. It reads
       `Plan v1 · draft` with an **Approve** button, one line per part
       (`<part>: <paths>`), and each contract as `Contract: <title> v1`, then
-      `Parties: ledger-lite part, agile-test-repo part` (by name), then its body.
+      `Parties: Ledger export · ledger-lite, Ledger export · agile-test-repo`
+      (by name), then its body.
 - [ ] Press **Approve plan** on the card (or **Approve** on the Plan tab).
       The tab reads `Plan v1 · approved by human`, and in **Needs me** the
       card stays a moment in its place as `Plan approved`, then leaves (the
-      next card never moves under the pointer). Click the ledger-lite part in the rail and open its
-      **Activity** tab: it has a `Plan changed` row. Each part's brief now
-      carries its owned paths and the contract.
+      next card never moves under the pointer). The chat reads
+      `You approved plan v1`. Click the ledger-lite part in the rail: its
+      chat reads `Plan v1 approved: this part owns …`, and its **Activity**
+      tab has a `Plan changed` row. Each part's brief now carries its owned
+      paths and the contract.
 - [ ] While the parts work, the Ledger export page shows a **Children**
       section: one row per part, its status in the words the rail uses, and
       under it what its agent last reported (what it is doing, the files it
       touched). Ledger export itself reads as its most urgent part (`Working`
       while they work, `Ready to merge` once one finishes), never `Done`
       while a part is open, and the line under its title says so in words
-      (`0 of 2 merged · waiting for ledger-lite part`). It reads `Done` only
-      once both parts are merged or closed. If a part wants to change the contract, the
-      coordinator (at advise) puts a `Coordinator proposal` card in **Needs
-      me** with **Apply** and **Dismiss**, and the change shows as one row in
-      the coordinator's **Activity** tab.
+      (`0 of 2 merged · waiting for ledger-lite`). It reads `Done` only
+      once both parts are merged or closed. If a part wants to change the contract, the chat shows it as
+      a row in words (`Ledger export · ledger-lite proposes a change to
+      Ledger entry JSON: …. Why: …`, no id), and the coordinator (at advise)
+      puts a `Coordinator proposal` card in **Needs me** with **Apply** and
+      **Dismiss**. Under the change the card says the level and what Apply
+      does (`Shop is at Advise: nothing changes until you apply. Apply
+      approves the change and tells the parts.`; **Advise** opens Shop,
+      where the level is set). The change shows as one row in the
+      coordinator's **Activity** tab. After **Apply** the chat reads
+      `You approved a change to Ledger entry JSON (v2)`, and the Activity tab
+      gains a `You approved a contract change` row (`For the record`: a
+      record, which wakes no agent).
+- [ ] What a coordinator does on its own (at Organise or Run) reads as a
+      row with its own icon, never as its chat message: `Added a part:
+      **<title>** (<repo>)` (the title opens the part), `Linked … to wait
+      on …`, `Approved a routine change to … (v2)`. Each is also an
+      **Events** and **Activity** row (`Coordinator added a part`) with a
+      link per node it made and **Undo** (deletes them) while none has
+      started. A coordinator's routine wake folds into its reply (`Woke for
+      a merge · 01:14` in the reply's header, no `Coordinator started` or
+      `Agent finished its turn` rows); a wake with no reply is one muted row,
+      `Woke for a merge · nothing new`.
 - [ ] Questions from any agent appear in **Needs me** as `Question` cards.
       When the agent offered choices, each is a button: one click answers
       with that choice (it reads `Sending…`, then the card leaves). Otherwise
@@ -450,21 +473,21 @@ merged, so it **waits on** the other part.
 If the coordinator already proposed this link, press **Apply** on its card in
 **Needs me** instead, and skip to the checks.
 
-- [ ] Open the **ledger-lite part** (under Ledger export in the rail). Its
+- [ ] Open **Ledger export · ledger-lite** (under Ledger export in the rail). Its
       thread has no `… read it by id` line: that pointer is for its agent
       only. Its page has no **Tracker issue…** (Shop has no tracker until
       8.2) and no **Autonomy** (a work node). Open the page's
-      **⋯** menu, choose **Waits on…**, pick `agile-test-repo part` in the
+      **⋯** menu, choose **Waits on…**, pick `Ledger export · agile-test-repo` in the
       list that opens, and press **Wait on**.
 - [ ] The details panel's **Waits on** section lists
-      `waits on agile-test-repo part` with an **Unlink** button.
-- [ ] **Dependencies** (sidebar) shows `ledger-lite part` with
-      `waits on agile-test-repo part` under it, and that part's status. Click
+      `waits on Ledger export · agile-test-repo` with an **Unlink** button.
+- [ ] **Dependencies** (sidebar) shows `Ledger export · ledger-lite` with
+      `waits on Ledger export · agile-test-repo` under it, and that part's status. Click
       either name to open that node.
 
 ### 4.2 Open the pull request
 
-- [ ] Open the **agile-test-repo part** and wait until the line under its
+- [ ] Open **Ledger export · agile-test-repo** and wait until the line under its
       title reads `Agent finished` (its status reads `Ready to merge` and its
       rail dot turns amber, "waiting on you"). **Needs me** has a
       `Ready to merge` card for it with a **Merge** button (the same word as
@@ -474,7 +497,7 @@ If the coordinator already proposed this link, press **Apply** on its card in
       name; the whole `stream/…` name is its tooltip) and, when some apply,
       `Checked before merge: …`. Press
       **Merge** at the top of the page. The first Merge in this browser asks
-      `Open a pull request for “agile-test-repo part” into main?` (on a
+      `Open a pull request for “Ledger export · agile-test-repo” into main?` (on a
       direct repo, `Merge “…” into main (N files)?`): tick **Don’t ask again**
       and press **Open pull request**; every later Merge is one click. A merge
       the daemon refuses says why under the header's **Merge**
@@ -510,8 +533,8 @@ If the coordinator already proposed this link, press **Apply** on its card in
 - [ ] With the check green and nothing pending, GitHub auto-merges the PR.
       Within about a minute the part's Delivery panel reads
       `Pull request · merged`.
-- [ ] Open the **ledger-lite part**: the wait reads
-      `agile-test-repo part merged, so this no longer waits on it`, and its
+- [ ] Open **Ledger export · ledger-lite**: the wait reads
+      `Ledger export · agile-test-repo merged, so this no longer waits on it`, and its
       thread says the same. The coordinator's **Activity** tab has a
       `Child delivered` row.
 - [ ] Sync after merge is per repo: when main moves, every other live work

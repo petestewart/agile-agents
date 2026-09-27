@@ -458,9 +458,10 @@ describe('agile node add-repo (T205)', () => {
         repo: string;
         role: string;
       }>;
+      // T446 (audit r7 #18): a part is named for its node, then its repo.
       expect(parts.map((p) => `${p.title}  ${p.repo}  ${p.role}`)).toEqual([
-        'ledger-lite part  ledger-lite  work',
-        'agile-test-repo part  agile-test-repo  work',
+        'Balance summary · ledger-lite  ledger-lite  work',
+        'Balance summary · agile-test-repo  agile-test-repo  work',
       ]);
       const status = Bun.spawnSync(['git', 'status', '--short'], { cwd: ledger });
       expect(new TextDecoder().decode(status.stdout).trim()).toBe('');

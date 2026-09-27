@@ -7,6 +7,7 @@
  */
 
 import type { CockpitProjectRow, CockpitStreamRow } from './feed-types';
+import { distinctTitle } from './names';
 import type { NodeStatusKey, StatusInput } from './status';
 import { type StreamTreeNode, buildStreamTree } from './streams';
 
@@ -389,6 +390,24 @@ export const LEGEND_NOTE: Record<LegendKey, string> = {
   closed: 'Closed without merging',
 };
 
+/**
+ * T446 (audit r7 #18): a part's title as the rail shows it under its node.
+ * A split names a part "<node> · <repo>"; the node is the row just above,
+ * so the rail shows the repo (`shown`) and keeps the rest (`lead`) for
+ * screen readers, a find in the page and the tooltip. Any other title is
+ * shown whole.
+ */
+export function railTitle(
+  title: string,
+  parentTitle: string | undefined,
+): { lead?: string; shown: string } {
+  const lead = parentTitle === undefined ? undefined : `${parentTitle} · `;
+  if (lead === undefined || !title.startsWith(lead) || title.length === lead.length) {
+    return { shown: title };
+  }
+  return { lead, shown: title.slice(lead.length) };
+}
+
 /** T424: the legend's marks: the overlap button, and that rows drag. */
 export const OVERLAP_NOTE = 'Overlaps another node; click to open it';
 export const DRAG_NOTE = 'Drag a row to move it (or ⋯ → Move to…)';
@@ -454,8 +473,8 @@ export function overlapMark(
   rows: readonly Row[],
   folded: boolean,
 ): OverlapMark | undefined {
-  const titleOf = (node: string): string =>
-    rows.find((r) => r.id === node)?.title ?? 'another node';
+  // T446 (audit r7 #18): with the project (or parent) in front when two nodes share the title.
+  const titleOf = (node: string): string => distinctTitle(node, rows) ?? 'another node';
   const targets: OverlapTarget[] = [];
   const lines: string[] = [];
   const add = (target: string, files: readonly string[], line: string): void => {

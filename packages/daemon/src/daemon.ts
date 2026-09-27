@@ -240,6 +240,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(planService ? { plans: planService } : {}),
           ...(contractService ? { contracts: contractService } : {}),
           ...(projectService ? { projects: projectService } : {}),
+          ...(emitRouted ? { emit: emitRouted } : {}),
         })
       : undefined;
   // Attach and questions know about each other: the turn-end rule asks

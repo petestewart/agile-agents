@@ -20,7 +20,7 @@ import { QuestionService } from '../questions/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { type ActOutcome, AutonomyService } from './autonomy';
-import { ContractService } from './contracts';
+import { ContractService, proposalLine } from './contracts';
 import { PlanService } from './plans';
 
 let home: string;
@@ -123,8 +123,25 @@ describe('propose_contract', () => {
     expect(contracts.get(s.contract.id).proposals?.map((p) => p.id)).toEqual([proposal.id]);
     const event = emitted.find((e) => e.type === 'contract_proposal');
     expect(event?.subject).toBe(s.node.id);
-    expect(event?.payload).toMatchObject({ contract: s.contract.id, children: [s.api.id] });
-    expect(streams.readThread(s.node.id).entries.some((e) => e.kind === 'proposal')).toBe(true);
+    expect(event?.payload).toMatchObject({
+      contract: s.contract.id,
+      proposal: proposal.id,
+      children: [s.api.id],
+    });
+    // T446 (audit r7 #6): the line reads in words: the part by name, no id, no "child(ren)".
+    const line = streams.readThread(s.node.id).entries.find((e) => e.kind === 'proposal');
+    expect(line?.body).toBe(
+      `${s.api.title} proposes a change to ${s.contract.title}: ${SALE_ENDS}. Why: the sale badge needs an end date`,
+    );
+  });
+
+  test('T446: the line never doubles a full stop, and names every signer', () => {
+    expect(proposalLine(['api', 'web'], 'Key file', 'Keys live in /etc/keys.', 'additive')).toBe(
+      'api and web propose a change to Key file: Keys live in /etc/keys. Why: additive',
+    );
+    expect(proposalLine(['api'], 'Key file', 'Keys move.', '')).toBe(
+      'api proposes a change to Key file: Keys move',
+    );
   });
 
   test('a co-signer who never agreed is refused; a stranger or a non-party is refused', async () => {
@@ -180,6 +197,11 @@ describe('decide_contract', () => {
     expect(outcome.applied).toBe(true);
     const after = contracts.get(s.contract.id);
     expect(after.version).toBe(2);
+    // T446 (audit r7 #6): the coordinator's own row, in words, with the new version.
+    expect(streams.readThread(s.node.id).entries.at(-1)).toMatchObject({
+      by: 'coordinator',
+      body: `Approved a routine change to ${s.contract.title} (v2)`,
+    });
     expect(after.body).toBe(SALE_ENDS);
     expect(after.proposals ?? []).toEqual([]);
     const changed = emitted.find((e) => e.type === 'contract_changed');

@@ -53,6 +53,7 @@ import type {
 import { useShell } from '../lib/shell';
 import { ROLE_HINT, ROLE_LABEL, partsSummary } from '../lib/status';
 import { childEntries, isLiveSession, sessionRows, worktreeName } from '../lib/streams';
+import { railTitle } from '../lib/tree';
 import { Icon } from './Icon';
 import { Linked } from './Markdown';
 import { Button, ConfirmDialog, IconButton, RepoIcon, StatusPill, useCopy } from './ui';
@@ -188,12 +189,21 @@ export function SessionList({ sessions }: { sessions: readonly SessionRef[] }): 
 
 // ---------------------------------------------------------------- Children
 
-/** A child's title; a click opens its page. (Its row carries `data-node`.) */
-function ChildTitle({ id, title }: { id: string; title: string }): JSX.Element {
+/**
+ * A child's title; a click opens its page. (Its row carries `data-node`.)
+ * T446 (audit r7 #18): a part "<node> · <repo>" under its node reads as its repo.
+ */
+function ChildTitle({
+  id,
+  title,
+  parentTitle,
+}: { id: string; title: string; parentTitle?: string }): JSX.Element {
   const { select } = useShell();
+  const { lead, shown } = railTitle(title, parentTitle);
   return (
     <button type="button" className="cr-child-title" title={title} onClick={() => select(id)}>
-      {title}
+      {lead !== undefined && <span className="cr-lens-sr">{lead}</span>}
+      {shown}
     </button>
   );
 }
@@ -231,7 +241,11 @@ export function ChildCards({
             data-state={card?.state}
           >
             <div className="cr-child-top">
-              <ChildTitle id={row.id} title={row.title} />
+              <ChildTitle
+                id={row.id}
+                title={row.title}
+                parentTitle={rows.find((r) => r.id === parent)?.title}
+              />
               <StatusPill row={row} testid="status-card-state" />
             </div>
             {partsSummary(row.parts) !== undefined && (

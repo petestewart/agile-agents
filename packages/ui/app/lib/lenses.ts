@@ -177,6 +177,7 @@ export const EVENT_FAMILY: Record<RoutedEventType, EventFamily> = {
   dependency_satisfied: 'coordination',
   plan_changed: 'coordination',
   external_changed: 'coordination',
+  autonomy_applied: 'coordination',
   knowledge_accepted: 'knowledge',
 };
 
@@ -197,8 +198,77 @@ export function eventFamily(type: string): EventFamily {
  * capitalised, with PR and CI in capitals — "PR merged", "Main changed".
  */
 export function eventTitle(event: Pick<RoutedEvent, 'type' | 'payload'>): string {
+  if (event.type === 'autonomy_applied') return appliedTitle(event.payload);
   const words = eventLabel(event).replace(/\b(pr|ci)\b/g, (w) => w.toUpperCase());
   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+// ---------------------------------------------------------------- what the agents did (T446)
+
+/** T446: a structural change in words, after who made it ("Coordinator added a part"). */
+const APPLIED_VERB: Record<string, string> = {
+  add_child: 'added a part',
+  add_waits_on: 'linked two nodes',
+  set_owner: 'set who owns what',
+  approve_contract: 'approved a contract change',
+  create_tree: 'created a node and its parts',
+  create_project: 'created a project',
+  create_node: 'created a node',
+  start_node: 'started a node',
+  restart_node: 'restarted a node',
+  reorder: 'reordered parts',
+  merge_siblings: 'merged parts',
+};
+
+const APPLIED_WHO: Record<string, string> = {
+  coordinator: 'Coordinator',
+  director: 'Director',
+  human: 'You',
+};
+
+/**
+ * T446 (audit r7 #7): an `autonomy_applied` event's title: who, then what
+ * they did — "Coordinator added a part", "Director created a node and its
+ * parts", "You approved a contract change" (a proposal you applied).
+ */
+export function appliedTitle(payload: Record<string, unknown>): string {
+  const who = APPLIED_WHO[String(payload.principal)] ?? 'An agent';
+  const action = String(payload.action ?? '');
+  // A child with no repo is a node (a conversation), not a part: its summary names no "(repo)".
+  if (action === 'add_child' && !/\(\S+\)$/.test(String(payload.summary ?? ''))) {
+    return `${who} added a node`;
+  }
+  return `${who} ${APPLIED_VERB[action] ?? action.replace(/_/g, ' ')}`;
+}
+
+/** T446: the nodes an applied change created (its links and its Undo). */
+export function appliedNodes(event: Pick<RoutedEvent, 'type' | 'payload'>): string[] {
+  return event.type === 'autonomy_applied' ? list(event.payload, 'nodes') : [];
+}
+
+/** T446: what Undo needs of a created node's row. */
+export type UndoRow = Pick<CockpitStreamRow, 'id' | 'parent' | 'never_started' | 'human_status'>;
+
+/**
+ * T446: the nodes Undo deletes (each subtree's top: a part goes with its
+ * node), or `undefined` when there is nothing to undo — no node was made,
+ * one is gone already, or one has started (its agent ran, or it is closed
+ * or merged). `rows` are the frame's open nodes.
+ */
+export function undoTargets(
+  event: Pick<RoutedEvent, 'type' | 'payload'>,
+  rows: readonly UndoRow[],
+): string[] | undefined {
+  const nodes = appliedNodes(event);
+  if (nodes.length === 0) return undefined;
+  const made = new Set(nodes);
+  const found = nodes.map((id) => rows.find((r) => r.id === id));
+  if (found.some((r) => r === undefined || r.never_started !== true || r.human_status !== 'open')) {
+    return undefined;
+  }
+  return (found as UndoRow[])
+    .filter((r) => r.parent === undefined || !made.has(r.parent))
+    .map((r) => r.id);
 }
 
 /** Why an event went to a node, in words (a chip) and one sentence (its tooltip). */
@@ -372,6 +442,8 @@ export function eventDetail(
         return `${title} ${str(p, 'outcome') === 'closed' ? 'closed' : 'merged'}; nothing waits on it now`;
       }
       case 'plan_changed':
+        return str(p, 'summary');
+      case 'autonomy_applied':
         return str(p, 'summary');
       case 'external_changed':
         return [str(p, 'key'), str(p, 'summary')].filter(Boolean).join(': ');

@@ -42,7 +42,7 @@ import { activityDelivery, eventTime } from '../lib/streams';
 import { ChatScroll, MessageList, StepsFold, Thinking, useSteps } from './Chat';
 import { Composer, type ComposerHandle } from './Composer';
 import { Icon } from './Icon';
-import { EventGlyph } from './Lenses';
+import { AppliedChange, EventGlyph } from './Lenses';
 import { Markdown } from './Markdown';
 import { DetailSection } from './NodeDetails';
 import { Button, EmptyState, IconButton, PageHeader, useToast } from './ui';
@@ -250,6 +250,7 @@ function ActivitySection({
                 <div className="cr-timeline-main">
                   <span className="cr-timeline-type">{eventTitle(row.event)}</span>
                   {detail !== undefined && <span className="cr-dir-act-detail">{detail}</span>}
+                  <AppliedChange event={row.event} />
                   <span className="cr-dir-act-status">{activityDelivery(row, [], 'Director')}</span>
                 </div>
                 <time className="cr-timeline-time" dateTime={row.event.at}>

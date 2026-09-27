@@ -64,6 +64,7 @@ import {
   legendRow,
   moveTargets,
   overlapMark,
+  railTitle,
   subtreeIds,
 } from '../lib/tree';
 import { useUnreadReplies } from '../lib/use-unread';
@@ -395,7 +396,7 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
           </span>
           {/* T347 (D36 D11): the plan badge sits on its own line, so the title keeps the width. */}
           <span className="cr-tree-label">
-            <RowTitle title={row.title} />
+            <RailTitle row={row} rows={ctx.allRows} />
             {row.waiting_for_plan && (
               <span className="cr-waiting" data-testid="waiting-for-plan">
                 waiting for the plan
@@ -482,6 +483,26 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
  * T424: the overlap mark: a button that opens the node the tooltip names, or
  * with several, a small menu of them.
  */
+/** T446 (audit r7 #18): "<node> · <repo>" under its node reads as the repo; the rest stays for readers. */
+function RailTitle({
+  row,
+  rows,
+}: {
+  row: CockpitStreamRow;
+  rows: readonly CockpitStreamRow[];
+}): JSX.Element {
+  const parent = row.parent === undefined ? undefined : rows.find((r) => r.id === row.parent);
+  const { lead, shown } = railTitle(row.title, parent?.title);
+  // T447: any other title keeps its distinct end (middle truncation).
+  if (lead === undefined) return <RowTitle title={row.title} />;
+  return (
+    <span className="title">
+      <span className="cr-lens-sr">{lead}</span>
+      {shown}
+    </span>
+  );
+}
+
 function OverlapButton({
   mark,
   tabbable,

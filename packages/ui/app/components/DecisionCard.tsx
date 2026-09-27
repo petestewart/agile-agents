@@ -45,6 +45,7 @@ import {
   startWaitingParts,
   stopSessions,
 } from '../lib/api';
+import { proposalCardWords } from '../lib/autonomy';
 import { parseDiff, tidyIds } from '../lib/chat';
 import { draftOf, setDraftOf } from '../lib/drafts';
 import {
@@ -83,6 +84,7 @@ import {
   statusText,
   waitingText,
 } from '../lib/inbox';
+import { distinctTitle } from '../lib/names';
 import {
   appendToDraft,
   clearComments,
@@ -592,10 +594,9 @@ export function Card({
   const overlap =
     item.kind === 'done' && row?.overlap === true && item.stream !== undefined
       ? overlapText(
-          overlapTitles(
-            item.stream,
-            cockpit?.overlaps ?? [],
-            (id) => cockpit?.streams.find((r) => r.id === id)?.title,
+          overlapTitles(item.stream, cockpit?.overlaps ?? [], (id) =>
+            // T446 (audit r7 #18): the project or parent in front when two nodes share a title.
+            distinctTitle(id, cockpit?.streams ?? []),
           ),
         )
       : undefined;
@@ -997,13 +998,41 @@ export function Card({
       const p = proposalOf(item);
       const main = shown(p.summary);
       foldable = main.foldable;
+      // T446 (audit r7 #6): the level it is held at (a link to where it is set) and what Apply does.
+      const project = cockpit?.projects.find((pr) => pr.id === row?.project);
+      const principal = p.principal ?? 'coordinator';
+      const words = proposalCardWords({
+        principal,
+        summary: p.summary,
+        where: project?.name,
+        level:
+          project === undefined || /^Create the project |in a new project, /.test(p.summary)
+            ? undefined
+            : (project.autonomy?.[principal] ?? 'advise'),
+      });
       body = (
         <>
           <Markdown className="context" text={main.text} testId="inbox-context" />
-          <p className="cr-card-meta">
+          <p className="cr-card-meta" data-testid="proposal-level">
             <span>
-              {p.principal === 'director' ? 'The Director' : 'Its coordinator'} asks first at this
-              autonomy level.
+              {words.level !== '' && project !== undefined ? (
+                <>
+                  {words.where}{' '}
+                  <button
+                    type="button"
+                    className="cr-link"
+                    data-testid="proposal-level-link"
+                    title={`Change it on ${project.name}`}
+                    onClick={() => select(project.root)}
+                  >
+                    {words.level}
+                  </button>
+                  {words.why}{' '}
+                </>
+              ) : (
+                `${words.why} `
+              )}
+              {words.apply}
             </span>
           </p>
         </>

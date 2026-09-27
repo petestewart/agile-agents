@@ -150,7 +150,12 @@ describe('chat rows', () => {
     expect(chatVariant(entry({ kind: 'event', body: 'stream created: x' }))).toBe('system');
     expect(chatVariant(entry({ by: 'daemon', kind: 'event' }))).toBe('system');
     expect(chatVariant(entry({ by: `agent:${SESSION}` }))).toBe('agent');
-    expect(chatVariant(entry({ by: 'daemon', kind: 'proposal' }))).toBe('agent');
+    // T446 (audit r7 #6): a daemon proposal (a contract proposal) is a row, not a message.
+    expect(chatVariant(entry({ by: 'daemon', kind: 'proposal' }))).toBe('system');
+    // T446: what a coordinator or the Director did itself is a row too; its words stay a message.
+    expect(chatVariant(entry({ by: 'coordinator', kind: 'event' }))).toBe('system');
+    expect(chatVariant(entry({ by: 'director', kind: 'proposal' }))).toBe('system');
+    expect(chatVariant(entry({ by: 'director', kind: 'line' }))).toBe('agent');
     expect(chatVariant(entry({ by: 'daemon', kind: 'event', agent_only: true }))).toBeUndefined();
     expect(
       chatVariant(
@@ -854,6 +859,158 @@ describe('why a session ended, in Details (T438)', () => {
     expect(
       endedReasonText({ status: 'error', ended_reason: 'transport error: pipe closed' }),
     ).toEqual({ text: 'Transport error: pipe closed', tone: 'error' });
+  });
+});
+
+describe('T446: what an agent did on its own, as rows', () => {
+  const NODE = '01ARZ3NDEKTSV4RRFFQ69G5FAW';
+  const known = (id: string) => id === NODE;
+
+  test('an applied change is a row with its actor’s icon, the title bold and linked', () => {
+    expect(
+      systemLine('Added a part: "Add an RSS field" (web)', { by: 'coordinator', ref: NODE, known }),
+    ).toEqual({ icon: 'bot', text: `Added a part: **${NODE}** (web)`, tone: 'muted' });
+    // A node the cockpit no longer knows keeps its title, unlinked.
+    expect(
+      systemLine('Added a part: "Add an RSS field" (web)', {
+        by: 'coordinator',
+        ref: NODE,
+        known: () => false,
+      }).text,
+    ).toBe('Added a part: **Add an RSS field** (web)');
+    expect(
+      systemLine('Created "Newsletter signup" in Blog with 2 parts', {
+        by: 'director',
+        ref: NODE,
+        known,
+      }),
+    ).toEqual({
+      icon: 'sparkles',
+      text: `Created **${NODE}** in Blog with 2 parts`,
+      tone: 'muted',
+    });
+    expect(systemLine('You added a node: "Docs"', { by: 'human', ref: NODE, known }).text).toBe(
+      `You added a node: **${NODE}**`,
+    );
+    expect(systemLine('Linked web to wait on api', { by: 'coordinator' })).toEqual({
+      icon: 'bot',
+      text: 'Linked web to wait on api',
+      tone: 'muted',
+    });
+  });
+
+  test('"stream created:" is "Node created" whoever wrote it', () => {
+    for (const by of ['human', 'daemon', 'coordinator', 'director']) {
+      expect(systemLine('stream created: Gift cards', { by }).text).toBe('Node created');
+    }
+  });
+
+  test('lines written before T446 read in words', () => {
+    expect(
+      systemLine('coordinator (organise) applied: web waits on api', { by: 'coordinator' }),
+    ).toMatchObject({ icon: 'bot', text: 'Applied: web waits on api' });
+    expect(systemLine('plan v1 approved by human').text).toBe('You approved plan v1');
+    expect(systemLine('plan drafted (2 children, 0 contracts); waiting for approval').text).toBe(
+      'Plan drafted for 2 parts; waiting for approval',
+    );
+    expect(
+      systemLine(
+        'api part, web part wait for the plan: write it with plan_write (who owns which paths); each part starts once the plan is approved',
+      ).text,
+    ).toBe('api part, web part wait for the plan; each starts once the plan is approved');
+    expect(
+      systemLine(
+        'contract Key file: 1 child(ren) propose (CP-01ARZ3NDEKTSV4RRFFQ69G5FAV): keys move.. Reason: additive',
+      ).text,
+    ).toBe('A part proposes a change to Key file: keys move. Why: additive');
+  });
+
+  test('a contract proposal is a row', () => {
+    const line = entry({
+      by: 'daemon',
+      kind: 'proposal',
+      body: 'api proposes a change to Key file: keys move. Why: additive',
+    });
+    expect(chatVariant(line)).toBe('system');
+    expect(systemLine(line.body).icon).toBe('file-text');
+  });
+});
+
+describe('T446: a coordinator’s routine wake folds into its reply', () => {
+  const COORD = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
+  const agent = `agent:${COORD}`;
+  const wake = (types: string, at: string) =>
+    entry({ by: 'daemon', kind: 'event', body: `woken by ${types}`, ts: at });
+  const attached = (at: string) =>
+    entry({
+      by: 'daemon',
+      kind: 'event',
+      body: 'coordinator attached: claude/claude-opus-5-5 effort=low',
+      ref: COORD,
+      ts: at,
+    });
+  const ended = (at: string, why = 'its turn finished') =>
+    entry({ by: 'daemon', kind: 'event', body: `session ended: ${why}`, ref: COORD, ts: at });
+
+  test('woken, started, the reply, finished: one reply headed "Woke for a merge"', () => {
+    const rows = chatRows([
+      wake('pr merged', '2026-09-26T01:14:00'),
+      attached('2026-09-26T01:14:01'),
+      entry({ by: agent, body: 'api merged; web goes next.', ts: '2026-09-26T01:14:30' }),
+      ended('2026-09-26T01:14:40'),
+    ]);
+    expect(rows.map((r) => r.index)).toEqual([2]);
+    expect(rows[0]?.wake).toEqual({ text: 'Woke for a merge', ts: '2026-09-26T01:14:00' });
+    expect(rows[0]?.continued).toBe(false);
+  });
+
+  test('a turn with no reply is one muted row', () => {
+    const rows = chatRows([
+      wake('child status, overlap', '2026-09-26T01:14:00'),
+      attached('2026-09-26T01:14:01'),
+      ended('2026-09-26T01:14:40'),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.system).toEqual({
+      icon: 'check',
+      text: 'Woke for news from a part and overlapping changes · nothing new',
+      tone: 'muted',
+    });
+  });
+
+  test('your line’s wake, a running turn and a failed one keep their rows', () => {
+    const yours = chatRows([
+      wake('human line', '2026-09-26T01:14:00'),
+      attached('2026-09-26T01:14:01'),
+      ended('2026-09-26T01:14:40'),
+    ]);
+    expect(yours).toHaveLength(3);
+    const running = chatRows([
+      wake('pr merged', '2026-09-26T01:14:00'),
+      attached('2026-09-26T01:14:01'),
+    ]);
+    expect(running).toHaveLength(2);
+    const failed = chatRows([
+      wake('pr merged', '2026-09-26T01:14:00'),
+      attached('2026-09-26T01:14:01'),
+      ended('2026-09-26T01:14:40', 'process exited (code 1)'),
+    ]);
+    expect(failed).toHaveLength(3);
+  });
+
+  test('a worker’s wake is not folded', () => {
+    const rows = chatRows([
+      wake('ci failed', '2026-09-26T01:14:00'),
+      entry({
+        by: 'daemon',
+        kind: 'event',
+        body: 'worker attached: claude/claude-opus-5-5 effort=low',
+        ref: COORD,
+        ts: '2026-09-26T01:14:01',
+      }),
+      ended('2026-09-26T01:14:40'),
+    ]);
+    expect(rows).toHaveLength(3);
   });
 });
 

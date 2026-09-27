@@ -283,6 +283,9 @@ export function activityDelivery(
       return 'Replaced by a newer event';
     case 'expired':
       return `Expired before ${who} saw it`;
+    // T446: a record (a change applied on its own): on the Activity, never sent to an agent.
+    case 'recorded':
+      return 'For the record';
     default:
       return entry.status.replace(/_/g, ' ');
   }

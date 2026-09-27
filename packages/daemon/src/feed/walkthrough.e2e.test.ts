@@ -773,8 +773,9 @@ test.skipIf(!RUN)(
       );
       const second = await agileOk(['node', 'add-repo', C, 'agile-test-repo']);
       check(
-        'second add-repo names ledger-lite part and agile-test-repo part',
-        second.includes('ledger-lite part') && second.includes('agile-test-repo part'),
+        'second add-repo names Ledger export · ledger-lite and Ledger export · agile-test-repo',
+        second.includes('Ledger export · ledger-lite') &&
+          second.includes('Ledger export · agile-test-repo'),
         second,
       );
       await settle();
@@ -844,7 +845,7 @@ test.skipIf(!RUN)(
           card.locator('.kind'),
           'Plan to approve',
         );
-        await checkText('the card names the owners', card, /ledger-lite part/);
+        await checkText('the card names the owners', card, /Ledger export · ledger-lite/);
         await checkText('the card names the contract', card, /Ledger entry JSON/);
         await tab('Plan').click();
         await checkText(
@@ -855,13 +856,13 @@ test.skipIf(!RUN)(
         await checkText(
           'one line per part (<part>: <paths>)',
           page.locator('[data-testid="plan-owners"]'),
-          /ledger-lite part: src\/\*\*, test\/\*\*.*agile-test-repo part: schema\/\*\*/,
+          /Ledger export · ledger-lite: src\/\*\*, test\/\*\*.*Ledger export · agile-test-repo: schema\/\*\*/,
         );
         await checkText(
           // LIVE-CHECKLIST 3.4 quotes `<title> · v1 · parties 2`; the tab names the parties (T338).
           'each contract as Contract: <title> v1, Parties: <names>, then its body',
           page.locator('[data-testid="contract"]'),
-          /Contract: Ledger entry JSON v1\s*Parties: ledger-lite part, agile-test-repo part\s*One entry/,
+          /Contract: Ledger entry JSON v1\s*Parties: Ledger export · ledger-lite, Ledger export · agile-test-repo\s*One entry/,
           2_000,
         );
         await openView('Needs me');
@@ -885,8 +886,8 @@ test.skipIf(!RUN)(
     let L = '';
     let S = '';
     await step('3.4c', 'Approve plan; the parts start with their paths', async () => {
-      L = nodeId('ledger-lite part');
-      S = nodeId('agile-test-repo part');
+      L = nodeId('Ledger export · ledger-lite');
+      S = nodeId('Ledger export · agile-test-repo');
       // Both parts start on approval. The schema part writes the schema and
       // finishes; the ledger-lite part asks a question first.
       const schema = claim(S, 'worker', async (session, prompt) => {
@@ -901,7 +902,7 @@ test.skipIf(!RUN)(
           prompt.slice(0, 400),
         );
         commitFile(
-          worktreeOf('agile-test-repo part'),
+          worktreeOf('Ledger export · agile-test-repo'),
           'schema/ledger-entry.schema.json',
           `${JSON.stringify(
             {
@@ -945,7 +946,7 @@ test.skipIf(!RUN)(
         page.locator('[data-testid="plan-status"]'),
         /Plan v1 · approved by human/,
       );
-      await openNode('ledger-lite part');
+      await openNode('Ledger export · ledger-lite');
       await tab('Activity').click();
       await checkText(
         'the part has a plan changed row',
@@ -957,11 +958,15 @@ test.skipIf(!RUN)(
     await step('3.4d', 'the Children cards while the parts work', async () => {
       await openNode('Ledger export');
       const cards = page.locator('[data-testid="child-cards"]');
-      await checkText('a Children card for the ledger-lite part', cards, /ledger-lite part/);
       await checkText(
-        'a Children card for the agile-test-repo part',
+        'a Children card for the Ledger export · ledger-lite',
         cards,
-        /agile-test-repo part/,
+        /Ledger export · ledger-lite/,
+      );
+      await checkText(
+        'a Children card for the Ledger export · agile-test-repo',
+        cards,
+        /Ledger export · agile-test-repo/,
       );
       await checkText(
         'the schema part card lists the file it touched',
@@ -992,7 +997,7 @@ test.skipIf(!RUN)(
           prompt.includes('One line, please.'),
           prompt.slice(0, 400),
         );
-        const wt = worktreeOf('ledger-lite part');
+        const wt = worktreeOf('Ledger export · ledger-lite');
         commitFile(
           wt,
           'src/export.ts',
@@ -1059,6 +1064,18 @@ test.skipIf(!RUN)(
       await card.getByRole('button', { name: 'Apply' }).click();
       await card.waitFor({ state: 'detached' });
       await openNode('Ledger export');
+      // T446 (audit r7 #6, #7): what you applied reads as your own row, and is on the record.
+      await checkText(
+        'the thread says you approved the change',
+        page.locator('[data-testid="thread"]'),
+        /You approved a change to Ledger entry JSON \(v2\)/,
+      );
+      await tab('Activity').click();
+      await checkText(
+        'the Activity tab records it: You approved a contract change',
+        page.locator('[data-testid="activity"]'),
+        /You approved a contract change/,
+      );
       await tab('Plan').click();
       await checkText(
         'the contract is at v2 after Apply',
@@ -1073,12 +1090,12 @@ test.skipIf(!RUN)(
       '4.1',
       'the ledger-lite part waits on the agile-test-repo part (Waits on…)',
       async () => {
-        await openNode('ledger-lite part');
+        await openNode('Ledger export · ledger-lite');
         // T347 (D36 D12): the split's "read it by id" pointer is for the agent, not your thread.
         await checkText(
           "the part's thread shows its plan line",
           page.locator('[data-testid="thread"]'),
-          /plan v\d+ approved: you own/,
+          /Plan v\d+ approved: this part owns/,
         );
         await checkNotText(
           "the part's thread has no agent-only line",
@@ -1095,7 +1112,7 @@ test.skipIf(!RUN)(
         await page.locator('[data-testid="link-wait"]').click();
         await page
           .locator('[data-testid="link-wait-select"]')
-          .selectOption({ label: 'agile-test-repo part' });
+          .selectOption({ label: 'Ledger export · agile-test-repo' });
         await page.getByRole('button', { name: 'Wait on' }).click();
         // T347 (D36 D1, D6): Shop has no tracker yet (8.2), so no tracker field; a work
         // node has no coordinator, so no Coordinator autonomy picker.
@@ -1110,9 +1127,9 @@ test.skipIf(!RUN)(
           await textOf(streamPage()),
         );
         await checkText(
-          'the page lists Waits on agile-test-repo part',
+          'the page lists Waits on Ledger export · agile-test-repo',
           page.locator('[data-testid="waits-on"]'),
-          /Waits on agile-test-repo part/,
+          /Waits on Ledger export · agile-test-repo/,
         );
         check(
           'with an Unlink button',
@@ -1127,13 +1144,13 @@ test.skipIf(!RUN)(
         await checkText(
           'Dependencies shows the link',
           edge,
-          /ledger-lite part waits on agile-test-repo part/,
+          /Ledger export · ledger-lite waits on Ledger export · agile-test-repo/,
         );
-        await edge.getByRole('button', { name: 'agile-test-repo part' }).click();
+        await edge.getByRole('button', { name: 'Ledger export · agile-test-repo' }).click();
         await checkText(
           'clicking a name opens that node',
           page.locator('[data-testid="stream-title"]'),
-          'agile-test-repo part',
+          'Ledger export · agile-test-repo',
           5_000,
         );
       },
@@ -1145,7 +1162,7 @@ test.skipIf(!RUN)(
       // T347 (D36 D7): the Needs me card for finished work says Merge, as the Delivery panel does.
       await openView('Needs me');
       const doneCard = page.locator('[data-testid="inbox"] .cr-group', {
-        hasText: 'agile-test-repo part',
+        hasText: 'Ledger export · agile-test-repo',
       });
       await checkText('its Needs me card reads Ready to merge', doneCard, /Ready to merge/);
       await checkText(
@@ -1153,13 +1170,15 @@ test.skipIf(!RUN)(
         doneCard.locator('[data-kind="done"] [data-testid="land"]'),
         /^Merge$/,
       );
-      await openNode('agile-test-repo part');
+      await openNode('Ledger export · agile-test-repo');
       await checkText(
         'the line under its title reads Agent finished',
         page.locator('[data-testid="stream-status"]'),
         /Agent finished/,
       );
-      const dot = await railRow('agile-test-repo part').locator('.cr-dot').getAttribute('data-dot');
+      const dot = await railRow('Ledger export · agile-test-repo')
+        .locator('.cr-dot')
+        .getAttribute('data-dot');
       check('its rail dot is amber (waiting on you)', dot === 'amber', dot ?? '');
       await tab('Changes').click();
       await checkText(
@@ -1194,9 +1213,9 @@ test.skipIf(!RUN)(
       // T416: the first Merge in a browser asks what it will do; "Don't ask again" makes every
       // later Merge one click (the rest of this walkthrough's merges).
       await checkText(
-        'the first Merge asks: Open a pull request for “agile-test-repo part” into main?',
+        'the first Merge asks: Open a pull request for “Ledger export · agile-test-repo” into main?',
         page.locator('[data-testid="merge-confirm"] h2'),
-        /^Open a pull request for “agile-test-repo part” into main/,
+        /^Open a pull request for “Ledger export · agile-test-repo” into main/,
       );
       await page.locator('[data-testid="merge-confirm-never"]').check();
       await page.locator('[data-testid="merge-confirm-confirm"]').click();
@@ -1247,17 +1266,20 @@ test.skipIf(!RUN)(
       await until(
         'with its PR open (auto-merge on), its dot is not amber',
         async () =>
-          (await railRow('agile-test-repo part').locator('.cr-dot').getAttribute('data-dot')) !==
-          'amber',
+          (await railRow('Ledger export · agile-test-repo')
+            .locator('.cr-dot')
+            .getAttribute('data-dot')) !== 'amber',
         10_000,
       );
       await openView('Needs me');
       await checkNotText(
         'with its PR open, the part is not "ready to merge" (it merges on GitHub)',
-        page.locator('[data-testid="inbox"] .cr-group', { hasText: 'agile-test-repo part' }),
+        page.locator('[data-testid="inbox"] .cr-group', {
+          hasText: 'Ledger export · agile-test-repo',
+        }),
         /ready to (merge|land)/i,
       );
-      await openNode('agile-test-repo part');
+      await openNode('Ledger export · agile-test-repo');
       const pull = world.gh.pulls.find((p) => p.number === prNumber);
       check(
         'the PR body carries the goal',
@@ -1288,7 +1310,7 @@ test.skipIf(!RUN)(
           prompt.slice(0, 600),
         );
         check('the agent is told the check failed', /changelog/.test(prompt), prompt.slice(0, 600));
-        const wt = worktreeOf('agile-test-repo part');
+        const wt = worktreeOf('Ledger export · agile-test-repo');
         commitFile(
           wt,
           'CHANGELOG.md',
@@ -1339,7 +1361,7 @@ test.skipIf(!RUN)(
       world.gh.setCheck(pull?.head ?? '', 'changelog', 'success');
       // The fake merges on auto-merge once approved and green.
       world.gh.addReview(prNumber, { state: 'APPROVED', user: 'teammate' });
-      await openNode('agile-test-repo part');
+      await openNode('Ledger export · agile-test-repo');
       const checkNow = page.locator('[data-testid="stream-pr-check"]');
       // A nudge only: the poller may merge first and take the button away between the
       // count and the click (T353); the Delivery check below waits for the merge either way.
@@ -1349,11 +1371,11 @@ test.skipIf(!RUN)(
         page.locator('[data-testid="delivery-state"]'),
         /Pull request · merged/,
       );
-      await openNode('ledger-lite part');
+      await openNode('Ledger export · ledger-lite');
       await checkText(
-        'the wait reads agile-test-repo part merged, so this no longer waits on it',
+        'the wait reads Ledger export · agile-test-repo merged, so this no longer waits on it',
         page.locator('[data-testid="waits-on"]'),
-        /agile-test-repo part merged, so this no longer waits on it/,
+        /Ledger export · agile-test-repo merged, so this no longer waits on it/,
       );
       await tab('Chat').click();
       await checkText(
@@ -1379,9 +1401,9 @@ test.skipIf(!RUN)(
         coordDot ?? '',
       );
       await checkText(
-        'its header says so in words: 1 of 2 merged · ledger-lite part is ready to merge',
+        'its header says so in words: 1 of 2 merged · ledger-lite is ready to merge',
         page.locator('[data-testid="node-parts"]'),
-        /1 of 2 merged · ledger-lite part is ready to merge/,
+        /1 of 2 merged · ledger-lite is ready to merge/,
       );
     });
 
@@ -1724,7 +1746,7 @@ test.skipIf(!RUN)(
 
     // ---------------------------------------------------------- 5.4
     await step('5.4', 'back to the ledger-lite part: synced, then Merge', async () => {
-      await openNode('ledger-lite part');
+      await openNode('Ledger export · ledger-lite');
       await tab('Activity').click();
       await checkText(
         'Main changed · ledger-lite · same repo rows',
@@ -1756,7 +1778,7 @@ test.skipIf(!RUN)(
       await checkText(
         'the Children cards read done',
         page.locator('[data-testid="child-cards"]'),
-        /ledger-lite part.*(Done|Merged)/,
+        /Ledger export · ledger-lite.*(Done|Merged)/,
       );
       const log = git(world.ledger, ['log', '--oneline', '-3']);
       check(
@@ -2878,11 +2900,11 @@ async function check3_4Rail(): Promise<void> {
   await checkText(
     'its two parts under it in the rail',
     rail(),
-    /ledger-lite part.*agile-test-repo part|agile-test-repo part.*ledger-lite part/,
+    /Ledger export · ledger-lite.*Ledger export · agile-test-repo|Ledger export · agile-test-repo.*Ledger export · ledger-lite/,
     5_000,
   );
   // T347 (D36 D11): "waiting for the plan" sits under the part's title, which is not cut off.
-  for (const part of ['ledger-lite part', 'agile-test-repo part']) {
+  for (const part of ['Ledger export · ledger-lite', 'Ledger export · agile-test-repo']) {
     const partRow = railRow(part);
     await checkText(
       `${part} is marked waiting for the plan`,

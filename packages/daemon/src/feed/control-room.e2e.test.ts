@@ -35,6 +35,7 @@ import {
   type KnowledgeItem as Rule,
   SEND_UP_MAX_CHARS,
   START_ON_GOAL,
+  type Stream,
   classifierQuestion,
   examplesOf,
   liveChildrenOf,
@@ -637,7 +638,15 @@ async function startCockpit(
   const contracts = new ContractService({ store, streams });
   const plans = new PlanService({ store, streams, contracts });
   late.move = planMoveCoordination(plans, contracts);
-  const autonomy = new AutonomyService({ store, streams, plans, contracts });
+  const events = new RoutedEventService(store);
+  // T446: an applied change is recorded as an `autonomy_applied` event, as the daemon wires it.
+  const autonomy = new AutonomyService({
+    store,
+    streams,
+    plans,
+    contracts,
+    emit: makeEmitter(events, streams),
+  });
   const inbox = new InboxService({
     streams,
     questions,
@@ -648,7 +657,6 @@ async function startCockpit(
     proposals: autonomy,
   });
   const projects = new ProjectService(store, streams);
-  const events = new RoutedEventService(store);
   // T300: no delivery wired, so a line to the Director stays pending (no session).
   const director = new DirectorService({ store, streams, events, home });
   const http = startHttpServer({
@@ -7387,7 +7395,11 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
         for (const part of parts) {
           await page.locator(`[data-testid="stream-tree"] [data-stream="${part.id}"]`).waitFor();
         }
-        expect(parts.map((p) => p.title).sort()).toEqual(['demo part', 'web part']);
+        // T446 (audit r7 #18): a part is named for its node, then its repo.
+        expect(parts.map((p) => p.title).sort()).toEqual([
+          'Sale prices · demo',
+          'Sale prices · web',
+        ]);
         await page
           .locator(
             `[data-testid="stream-tree"] [data-stream="${node.id}"][data-role="coordinating"]`,
@@ -7472,7 +7484,7 @@ describe('waiting for the plan (Playwright e2e, T344)', () => {
         for (const repo of ['demo', 'web']) {
           parts.push(
             await cockpit.streams.create('human', {
-              title: `${repo} part`,
+              title: `Sale prices · ${repo}`,
               goal: 'g',
               project: shop.id,
               parent: node.id,
@@ -7500,7 +7512,7 @@ describe('waiting for the plan (Playwright e2e, T344)', () => {
         await page.locator(card).waitFor({ state: 'visible' });
         expect(await page.locator(`${card} .kind`).textContent()).toContain('Waiting for the plan');
         expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
-          'demo part, web part wait for the plan',
+          'Sale prices · demo, Sale prices · web wait for the plan',
         );
 
         // Wake coordinator: the node's coordinator runs, and the card goes while it does.
@@ -8557,12 +8569,26 @@ describe('coordinator autonomy (Playwright e2e, T282)', () => {
         const card = `[data-kind="proposal"][data-id="${id}"]`;
         await page.locator(`${card} [data-testid="proposal-apply"]`).waitFor({ state: 'visible' });
         expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
-          'web: show salePrice waits on api: add salePrice',
+          'Make web: show salePrice wait on api: add salePrice',
         );
+        // T446 (audit r7 #6): the card names the level (a link to where it is set) and what Apply does.
+        expect(await page.locator(`${card} [data-testid="proposal-level"]`).textContent()).toBe(
+          'Shop is at Advise: nothing changes until you apply. Apply makes it wait.',
+        );
+        expect(
+          await page.locator(`${card} [data-testid="proposal-level-link"]`).textContent(),
+        ).toBe('Advise');
         await page.locator(`${card} [data-testid="proposal-apply"]`).click();
         await page.locator(card).waitFor({ state: 'detached' });
         expect(cockpit.streams.get(web.id).waits_on?.map((w) => w.node)).toEqual([api.id]);
         expect(cockpit.autonomy.get(id).status).toBe('applied');
+        // T446: what you applied reads as yours on the node's chat.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        await page
+          .locator('[data-testid="thread"] [data-variant="system"]', {
+            hasText: 'You linked web: show salePrice to wait on api: add salePrice',
+          })
+          .waitFor();
 
         // The node's picker: override the project's Advise with Organise.
         await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
@@ -9122,6 +9148,204 @@ describe('the Director page (Playwright e2e, T300)', () => {
           async () =>
             (await tail.count()) === 1 && (await tail.textContent()) === 'Worked through 1 step',
         );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('what the agents did on their own (Playwright e2e, T446)', () => {
+  browserTest(
+    "a coordinator's change is a linked row; Events and Activity record it; Undo removes what it made",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const blog = await cockpit.projects.create({ name: 'Blog' });
+        await cockpit.projects.update(blog.id, { autonomy: { coordinator: 'organise' } });
+        await cockpit.store.putRepos({ web: { path: cockpit.home } });
+        const node = await cockpit.streams.create('human', {
+          title: 'Schedule posts',
+          goal: 'g',
+          project: blog.id,
+        });
+        await cockpit.streams.create('human', {
+          title: 'Schedule posts · web',
+          goal: 'g',
+          project: blog.id,
+          parent: node.id,
+          repo: 'web',
+        });
+        const out = await cockpit.autonomy.act(node.id, 'coordinator', 'agent:test', {
+          action: 'add_child',
+          title: 'Add an RSS field',
+          goal: 'scheduled posts in the feed',
+          repo: 'web',
+        });
+        expect(out.applied).toBe(true);
+        const made = cockpit.streams.list().find((s) => s.title === 'Add an RSS field') as Stream;
+
+        // #17: a routine wake folds into its reply; a wake with no reply is one muted row.
+        const coord = ulid();
+        await cockpit.store.updateStream('daemon', node.id, (before) => ({
+          ...before,
+          sessions: [
+            { id: coord, vendor: 'claude', model: 'm', role: 'coordinator', status: 'stopped' },
+          ],
+        }));
+        const daemonLine = (body: string, ref?: string) =>
+          cockpit.streams.appendThread('daemon', node.id, {
+            kind: 'event',
+            body,
+            ...(ref !== undefined ? { ref } : {}),
+          });
+        for (const reply of ['The web part merged; nothing else waits.', undefined]) {
+          await daemonLine('woken by pr merged');
+          await daemonLine('coordinator attached: claude/m effort=low', coord);
+          if (reply !== undefined) {
+            await cockpit.streams.appendThread(
+              'agent',
+              node.id,
+              { kind: 'line', body: reply },
+              coord,
+            );
+          }
+          await daemonLine('session ended: its turn finished', coord);
+        }
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        const thread = page.locator('[data-testid="thread"]');
+        // #6: its own row (not its chat message), the part it made bold and linked.
+        const added = thread.locator('[data-actor="coordinator"]', { hasText: 'Added a part' });
+        await added.waitFor();
+        expect((await added.textContent())?.replace(/\d\d:\d\d.*$/, '')).toBe(
+          'Added a part: Add an RSS field (web)',
+        );
+        expect(await added.locator('a.cr-ref').getAttribute('data-node')).toBe(made.id);
+        expect(await thread.locator('[data-variant="agent"]').count()).toBe(1);
+        await waitUntilAsync('the reply names its wake', async () =>
+          /^Woke for a merge · /.test(
+            (await page?.locator('[data-testid="chat-wake"]').textContent()) ?? '',
+          ),
+        );
+        expect(await thread.textContent()).not.toContain('Coordinator started');
+        expect(await thread.textContent()).not.toContain('Agent finished its turn');
+        await thread
+          .locator('[data-variant="system"]', { hasText: 'Woke for a merge · nothing new' })
+          .waitFor();
+        await added.locator('a.cr-ref').click();
+        await page
+          .locator('[data-testid="stream-title"]', { hasText: 'Add an RSS field' })
+          .waitFor();
+
+        // #7: the node's Activity records it, with a link and Undo while nothing started.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        await page
+          .locator('[data-testid="stream-page"] .cr-node-tabs [data-tab="activity"]')
+          .click();
+        const activity = page.locator('[data-testid="activity-row"]', {
+          hasText: 'Coordinator added a part',
+        });
+        await activity.waitFor();
+        // Its line names the part already, so its link reads Open.
+        const link = activity.locator('[data-testid="applied-node"]');
+        expect(await link.textContent()).toBe('Open');
+        expect(await link.getAttribute('title')).toBe('Open Add an RSS field');
+        expect(await activity.locator('[data-testid="activity-status"]').textContent()).toBe(
+          'For the record',
+        );
+        await activity.locator('[data-testid="applied-undo"]').waitFor();
+
+        // Events has it too; Undo there deletes the part it made.
+        await page.locator('[data-view="events"]').click();
+        const logRow = page.locator('[data-testid="event-log-row"][data-type="autonomy_applied"]');
+        await logRow.waitFor();
+        expect(await logRow.locator('[data-testid="event-log-type"]').textContent()).toBe(
+          'Coordinator added a part',
+        );
+        expect(await logRow.textContent()).toContain('Add an RSS field (web)');
+        await logRow.locator('[data-testid="applied-undo"]').click();
+        await waitUntil(
+          'the part is deleted',
+          () => cockpit.streams.get(made.id).archived === true,
+        );
+        await logRow.locator('[data-testid="applied-undo"]').waitFor({ state: 'detached' });
+        await logRow.locator('[data-testid="applied-node-gone"]').waitFor();
+        // Nobody was woken or told: the record is never pending.
+        expect(cockpit.events.pendingFor(node.id)).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    "a started part has no Undo; a part's contract proposal is a row in words",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const ops = await cockpit.projects.create({ name: 'Ops' });
+        await cockpit.projects.update(ops.id, { autonomy: { coordinator: 'organise' } });
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
+        const node = await cockpit.streams.create('human', {
+          title: 'Rotate the API keys',
+          goal: 'g',
+          project: ops.id,
+        });
+        const part = await cockpit.streams.create('human', {
+          title: 'Rotate the API keys · api',
+          goal: 'g',
+          project: ops.id,
+          parent: node.id,
+          repo: 'api',
+        });
+        await cockpit.autonomy.act(node.id, 'coordinator', 'agent:test', {
+          action: 'add_child',
+          title: 'Audit old keys',
+          goal: 'list them',
+          repo: 'api',
+        });
+        const made = cockpit.streams.list().find((s) => s.title === 'Audit old keys') as Stream;
+        // It ran: a worker session, so nothing to undo.
+        await cockpit.store.updateStream('daemon', made.id, (before) => ({
+          ...before,
+          sessions: [
+            { id: ulid(), vendor: 'claude', model: 'm', role: 'worker', status: 'stopped' },
+          ],
+        }));
+        const contract = await cockpit.contracts.write(
+          node.id,
+          { title: 'Key file', body: 'Keys live in one file.', parties: [part.id] },
+          'human',
+        );
+        await cockpit.contracts.propose(contract.id, [part.id], {
+          body: 'Keys live in /etc/keys/api.json.',
+          reason: 'the rotation job reads one path',
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+        const proposal = page.locator('[data-testid="thread"] [data-kind="proposal"]');
+        await proposal.waitFor();
+        expect(await proposal.getAttribute('data-variant')).toBe('system');
+        expect(await proposal.textContent()).toContain(
+          'Rotate the API keys · api proposes a change to Key file: Keys live in /etc/keys/api.json. Why: the rotation job reads one path',
+        );
+        expect(await proposal.textContent()).not.toContain('CP-');
+
+        await page.locator('[data-view="events"]').click();
+        const logRow = page.locator('[data-testid="event-log-row"][data-type="autonomy_applied"]');
+        await logRow.locator('[data-testid="applied-node"]').waitFor();
+        expect(await logRow.locator('[data-testid="applied-undo"]').count()).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
