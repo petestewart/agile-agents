@@ -551,6 +551,19 @@ export function setQuickDrafts(on: boolean): Promise<QuickDrafts> {
   return post('/api/settings/quick-drafts', { on }) as Promise<QuickDrafts>;
 }
 
+/** T454: Settings' "Let Jev decide" switch for accepted decisions (`knowledge_wake: jev`). */
+export interface KnowledgeWake {
+  on: boolean;
+}
+
+export function getKnowledgeWake(): Promise<KnowledgeWake> {
+  return get<KnowledgeWake>('/api/settings/knowledge-wake');
+}
+
+export function setKnowledgeWake(on: boolean): Promise<KnowledgeWake> {
+  return post('/api/settings/knowledge-wake', { on }) as Promise<KnowledgeWake>;
+}
+
 /** T457: the home's permission posture (a project may override it). */
 export interface PermissionsSetting {
   posture: PermissionPosture;

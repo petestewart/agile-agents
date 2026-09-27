@@ -56,12 +56,15 @@ import {
   SessionDelivery,
   type WakeDelivery,
 } from '../events/delivery';
+import type { KnowledgeWakeJudge } from '../events/knowledge-wake';
 import { routeAndEmit } from '../events/router';
 import { RoutedEventService } from '../events/service';
 import {
   DAEMON_STOP_PREFIX,
   DEFAULT_WAKE_BUDGET_PER_HOUR,
+  type PendingForWake,
   WakeBudget,
+  notItsKnowledge,
   wakeVerdict,
 } from '../events/wake';
 import { type RouteBandGates, acpReadRouter } from '../hook/route-band';
@@ -249,6 +252,8 @@ export interface AttachServiceOptions {
   wakeClock?: () => number;
   /** T300 (P16): the Director, which takes the `director` queue's delivery and wakes. */
   director?: () => DirectorEndpoint | undefined;
+  /** T454: Jev's say on waking a conversation for an item it did not propose (`knowledge_wake: jev`). */
+  knowledgeWake?: Pick<KnowledgeWakeJudge, 'approvedFor' | 'consider'>;
 }
 
 /** What delivery needs of the Director (`director/service.ts`). */
@@ -442,7 +447,14 @@ export class AttachService {
     if (liveAgent(stream) !== undefined) return;
     const all = streams.list();
     const role = nodeRole(stream, liveChildrenOf(stream.id, all), all);
-    if (wakeVerdict(stream, role, pending) !== 'wake') return;
+    const judge = this.options.knowledgeWake;
+    const heard = (e: PendingForWake) => judge?.approvedFor(node, e) === true;
+    const verdict = wakeVerdict(stream, role, pending, heard);
+    if (verdict === 'no_trigger' && role === 'conversation') {
+      // T454: asked off this path; a yes looks at the node again.
+      judge?.consider(stream, pending, () => this.delivery.notify(node));
+    }
+    if (verdict !== 'wake') return;
     const limit =
       readHomeConfigFile(this.options.home).events?.wake_budget_per_hour ??
       DEFAULT_WAKE_BUDGET_PER_HOUR;
@@ -465,10 +477,11 @@ export class AttachService {
       await streams.appendThread('daemon', node, {
         kind: 'event',
         // T341: event types read as words on the thread, as on the Activity tab.
-        body: `woken by ${[...new Set(pending.map((e) => e.type.replace(/_/g, ' ')))].join(', ')}`.slice(
-          0,
-          800,
-        ),
+        body: `woken by ${[...new Set(pending.map((e) => e.type.replace(/_/g, ' ')))].join(', ')}${
+          pending.some((e) => notItsKnowledge(stream, role, e) && heard(e))
+            ? ' (Jev judged the decision relevant)'
+            : ''
+        }`.slice(0, 800),
       });
       // T336: the first prompt carries the events, so the agent never has to ask for them.
       await this.attach(node, { wake: pending });

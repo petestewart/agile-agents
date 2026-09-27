@@ -27,6 +27,7 @@ import {
   KnowledgeIdSchema,
   type KnowledgeItem,
   type KnowledgePrincipal,
+  type KnowledgeWakeMode,
   type LegacyRule,
   LegacyRuleIdSchema,
   type PermissionPosture,
@@ -629,6 +630,27 @@ export class StateStore {
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { quick_drafts: on },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T454: who accepted knowledge wakes (`source`, the default, removes the key). */
+  async setKnowledgeWake(
+    mode: KnowledgeWakeMode,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (mode === 'source') Reflect.deleteProperty(raw, 'knowledge_wake');
+      else raw.knowledge_wake = mode;
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { knowledge_wake: mode },
       });
       return { result: validated, event };
     });

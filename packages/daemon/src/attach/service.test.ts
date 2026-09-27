@@ -32,8 +32,11 @@ import {
   type Stream,
   type VendorFailureSettings,
   ulid,
+  validateClassifierConfig,
 } from '@agile-agents/shared';
+import { ClassifierUnavailableError, FakeClassifier } from '../classifier';
 import { DeliveryService } from '../delivery/service';
+import { KnowledgeWakeJudge } from '../events/knowledge-wake';
 import { makeEmitter } from '../events/producers';
 import { RoutedEventService } from '../events/service';
 import { stoppedByHuman } from '../events/wake';
@@ -2090,6 +2093,145 @@ describe('T351, T453: accepting a decision wakes the conversation it came from (
     const statuses = store.readDeliveries(node.id).map((d) => d.status);
     expect(statuses).toEqual(['pending', 'delivered']);
     expect(threadBodies(node.id)).not.toContain('woken by knowledge accepted');
+  }, 30_000);
+});
+
+describe('T454: with knowledge_wake on, Jev decides which other conversations wake', () => {
+  const prompts = (log: string) =>
+    (existsSync(log) ? readFileSync(log, 'utf8') : '')
+      .split('\n')
+      .filter((l) => l.includes('"session/prompt"'));
+  const TEXT = 'Amounts in exported JSON are integer cents, never floats';
+  /** Jev's two values: "is the decision relevant?" and "is the conversation stale?". */
+  const jevSays = (relevant: number, stale: number) =>
+    new FakeClassifier((_state, qs) =>
+      qs.map((q) => ({ id: q.id, probability: q.id === 'relevant' ? relevant : stale })),
+    );
+
+  async function setUp(
+    script: FakeAgentScript,
+    classifier: FakeClassifier,
+    { settle = true }: { settle?: boolean } = {},
+  ) {
+    await store.setKnowledgeWake('jev');
+    const events = new RoutedEventService(store);
+    const logs: string[] = [];
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, script), {
+      deliveryDelayMs: 5,
+      events,
+      knowledgeWake: new KnowledgeWakeJudge({
+        store,
+        streams: () => streams.list(),
+        home,
+        classifier,
+        config: validateClassifierConfig({ api_key: 'fake-t454-key' }),
+        log: (line) => logs.push(line),
+      }),
+    });
+    const knowledge = new KnowledgeService({
+      store,
+      streams,
+      statsFlushMs: 0,
+      emitRouted: makeEmitter(events, streams),
+    });
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Cents check',
+      goal: 'How should exported amounts be stored?',
+      project: project.id,
+    });
+    const accept = async (from?: string) => {
+      const item = await knowledge.create(from !== undefined ? 'agent' : 'human', {
+        text: TEXT,
+        kind: 'decision',
+        enforcement: 'tell',
+        scope: { kind: 'project', project: project.id },
+        ...(from !== undefined ? { source: { by: 'agent', node: from } } : {}),
+      });
+      await knowledge.accept(item.id, 'human');
+    };
+    if (settle) {
+      // Its first turn ends and its session stops: a finished conversation.
+      await waitFor(() => streams.get(node.id).agent.status === 'done');
+      await waitFor(() => attachService.handleFor(node.id) === undefined);
+    } else {
+      await waitFor(() => threadBodies(node.id).some((b) => b.includes('looking at the parser')));
+    }
+    return { node, accept, logs };
+  }
+
+  test('relevant and current: the other conversation wakes once and gets the item', async () => {
+    const log = join(scratch, 'jev-yes.jsonl');
+    const jev = jevSays(0.95, 0.1);
+    const { node, accept, logs } = await setUp({ ...SPEAKS, logFile: log }, jev);
+    await accept();
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
+    await waitFor(() => prompts(log).some((p) => p.includes('integer cents')));
+    expect(threadBodies(node.id)).toContain(
+      'woken by knowledge accepted (Jev judged the decision relevant)',
+    );
+    // Asked once, about both questions, with the item and the conversation in the state.
+    expect(jev.calls).toHaveLength(1);
+    expect(jev.calls[0]?.questions.map((q) => q.id)).toEqual(['relevant', 'stale']);
+    expect(jev.calls[0]?.state).toContain(TEXT);
+    expect(jev.calls[0]?.state).toContain('How should exported amounts be stored?');
+    expect(jev.calls[0]?.state).toContain('looking at the parser now');
+    expect(jev.calls[0]?.state).toContain('the project Shop');
+    // The log names ids and values, never the conversation's text.
+    expect(logs.some((l) => l.includes('waking'))).toBe(true);
+    expect(logs.join('\n')).not.toContain('looking at the parser');
+    await Bun.sleep(150);
+    expect(streams.get(node.id).sessions).toHaveLength(2);
+  }, 30_000);
+
+  test('relevant but stale: not woken, the item stays pending for the next message', async () => {
+    const log = join(scratch, 'jev-stale.jsonl');
+    const jev = jevSays(0.95, 0.9);
+    const { node, accept, logs } = await setUp({ ...SPEAKS, logFile: log }, jev);
+    await accept();
+    await waitFor(() => jev.calls.length === 1);
+    await waitFor(() => logs.some((l) => l.includes('not woken')));
+    await Bun.sleep(150);
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+    // Your next line brings it, and Jev is not asked again.
+    await attachService.say(node.id, 'Does that change your answer?');
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    await waitFor(() => prompts(log).some((p) => p.includes('integer cents')));
+    expect(jev.calls).toHaveLength(1);
+  }, 30_000);
+
+  test('the classifier unavailable: not woken', async () => {
+    const jev = new FakeClassifier([], {
+      throws: new ClassifierUnavailableError('timeout', 'classifier call timed out'),
+    });
+    const { node, accept, logs } = await setUp(SPEAKS, jev);
+    await accept();
+    await waitFor(() => logs.some((l) => l.includes('classifier unavailable (timeout)')));
+    await Bun.sleep(150);
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+  }, 30_000);
+
+  test('the conversation that proposed it wakes without asking Jev', async () => {
+    const jev = jevSays(0.05, 0.95);
+    const { node, accept } = await setUp(SPEAKS, jev);
+    await accept(node.id);
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    expect(threadBodies(node.id)).toContain('woken by knowledge accepted');
+    expect(jev.calls).toHaveLength(0);
+  }, 30_000);
+
+  test('a conversation the human stopped is never asked', async () => {
+    const jev = jevSays(0.95, 0.05);
+    const { node, accept } = await setUp(SPEAKS_THEN_HANGS, jev, { settle: false });
+    await attachService.stop(node.id, 'worker', { detach: true });
+    await accept();
+    await Bun.sleep(200);
+    expect(jev.calls).toHaveLength(0);
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
   }, 30_000);
 });
 
