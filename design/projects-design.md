@@ -167,6 +167,8 @@ Example: both api nodes edit `prices.ts`. Both nodes, their parents and the api 
 
 By default any agent may read any registered repo, so a conversation in Shop can answer questions about Blog's code. A repo can be set **private**, which limits reading to the projects you list. An agent can only ever change code in its own node's repo.
 
+**Beyond the registered repos (T457).** The daemon decides every read outside a node's own worktree by a **permission posture**, set for the home in `config.yaml` (`permissions: trusted | ask`) and overridden per project (the project record's `permissions`); the node's project decides, and the default is Ask. Under **Ask** an agent reads the repos above plus its project's "Always" dirs (the project's `read_roots`); a read anywhere else is a Needs me card, "Cents check wants to read ~/code/other", with Allow once (that call, once), Always for this project (the dir read, or its parent for a file, joins `read_roots`; never `/`, the home dir or above it) and Deny. Under **Trusted** it reads any path on disk without asking. Under both, the agile home, other projects' private repos and a named list of credential locations (`CREDENTIAL_PATHS` in `permissions/policy-tables.ts`) are never read, checked after symlinks and `..` resolve; writes stay in the node's own worktree; the never-without-human list, the pattern rules and the classifier are unchanged. The hook and the ACP responder apply the posture through one decision function (`readVerdict`), and the brief lists the project's own repos first and says which posture applies.
+
 ## 5. Knowledge
 
 What agents need to know comes in three kinds. "Rule" is no longer a kind of knowledge. It now means how strongly an item is enforced (§6).

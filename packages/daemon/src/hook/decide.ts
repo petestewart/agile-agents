@@ -169,12 +169,17 @@ function builtInReadVerdict(
   const paths = [input.file_path, input.path, input.notebook_path].filter(
     (v): v is string => typeof v === 'string' && v.length > 0,
   );
-  const verdict = readPathsVerdict(paths, {
-    worktreePath: ctx.worktreePath,
-    ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
-    ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
-    ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
-  });
+  const verdict = readPathsVerdict(
+    paths,
+    {
+      worktreePath: ctx.worktreePath,
+      ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
+      ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
+      ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
+    },
+    // T457: Grep reads every file under its path.
+    { walks: payload.tool_name === 'Grep' },
+  );
   if (verdict.action === 'deny') return { decision: 'deny', reason: verdict.reason };
   if (verdict.action === 'hil') {
     return {

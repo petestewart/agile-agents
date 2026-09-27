@@ -900,10 +900,31 @@ export function benignPathArgs(tokens: string[]): string[] {
   return tokens.slice(1).filter((t) => !isFlagToken(t) && !isTestBracketClose(t, head));
 }
 
-/** `grep`/`rg` path arguments: the first non-flag token is the pattern, the rest are paths. */
+/**
+ * T457: the pattern comes from a flag (`-e`/`-f` in any bundle or fused
+ * spelling, `--regexp`, `--file`), or there is none (`rg --files`): then no
+ * positional token is the pattern. Lowercase `e`/`f` only (`-E`, `-F` are
+ * grep's syntax switches).
+ */
+function grepPatternFromFlag(tokens: string[]): boolean {
+  return tokens
+    .slice(1)
+    .some(
+      (t) =>
+        t === '--files' ||
+        /^--(regexp|file)(=|$)/.test(t) ||
+        (/^-[^-]/.test(t) && /[ef]/.test(t.slice(1).split('=')[0] ?? '')),
+    );
+}
+
+/**
+ * `grep`/`rg` path arguments: the first non-flag token is the pattern, the
+ * rest are paths. T457: when the pattern comes from a flag, every non-flag
+ * token is taken as a path (a pattern checked as a path is at worst refused).
+ */
 export function grepPathArgs(tokens: string[]): string[] {
   const rest = tokens.slice(1).filter((t) => !isFlagToken(t));
-  return rest.slice(1);
+  return grepPatternFromFlag(tokens) ? rest : rest.slice(1);
 }
 
 /**
