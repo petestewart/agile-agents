@@ -258,8 +258,10 @@ function patternRuleVerdict(
     protectedBranches: ctx.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
     upstream: ctx.upstreamBranch ?? (() => undefined),
     head: ctx.headBranch ?? (() => undefined),
-    // T336: only a coordinator's read-only git -C may reach a repo it can read.
-    ...(permissionRoleFor(ctx.role) === 'coordinator'
+    // T336: only a coordinator's read-only git -C may reach a repo it can read. T442: and a
+    // conversation's (a worker on a node with no repo of its own: it has no worktree to read).
+    ...(permissionRoleFor(ctx.role) === 'coordinator' ||
+    (ctx.role === 'worker' && ctx.noOwnRepo === true)
       ? {
           coordinatorReads: {
             ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),

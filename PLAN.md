@@ -2634,6 +2634,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T441`; control-room e2e T422; the walkthrough's 10.3.
 - **Notes:** Branch T441-keep-the-question.
 
+### Ticket: T442 A conversation reads the repos it's asked about (read-only git -C)
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete, running LIVE-CHECKLIST 3.2 ("Plan this with me before any code… Explain how you would split it"), saw the conversation's agent denied reading the repos: T336 lets only a coordinator's read-only `git -C` leave the worktree, and a conversation's agent is a worker on a node with no repo, so it has no worktree to read from and every `git -C <repo> log` was a worktree escape. D42 says a conversation answers, researches and explains.
+- **Acceptance Criteria:** A worker on a node with no repo of its own (`noOwnRepo` on the hook context, set by the hook service; never for the Director) gets the coordinator's read-only `git -C` (T336's allowlist: diff, log, show, status; no config, no pager, no output), only into dirs its read scope allows (not hidden, unregistered or the agile home). Writes stay denied. A worker on a node with a repo, and a reviewer, keep T336's rule.
+- **Validation Steps:** `bun test packages/daemon/src/hook` (decide: T442 allow/deny tables; pattern-rules: the hook service end to end); each new test fails with its half of the change reverted.
+- **Notes:** Branch T442-conversation-git-reads. The bug exists from Phase 7's T336, but conversations as D42 has them (research at any level) are Phase 14's, so it is fixed here; the other session watching PRs #4–#11 had it noted as open.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done

@@ -50,6 +50,12 @@ export interface HookDecisionContext {
    */
   readRoots?: readonly string[];
   hiddenRoots?: readonly string[];
+  /**
+   * T442 (D42): the session's node has no repo of its own (a conversation:
+   * it answers, researches, explains). Its worker reads other repos with a
+   * read-only `git -C`, within `readRoots`, as a coordinator does (T336).
+   */
+  noOwnRepo?: true;
 }
 
 /** Raw Claude `PreToolUse` stdin payload (spike-findings.md §B). */
