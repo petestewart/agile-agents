@@ -1011,6 +1011,9 @@ describe('T446: a coordinator’s routine wake folds into its reply', () => {
       ended('2026-09-26T01:14:40'),
     ]);
     expect(rows).toHaveLength(3);
+  });
+});
+
 describe('windowRows (T447, audit r7 #15)', () => {
   const line = (i: number, by = 'human'): ThreadEntry => ({
     ts: `2026-09-2${i < 50 ? 5 : 6}T10:${String(i % 60).padStart(2, '0')}:00.000Z`,
