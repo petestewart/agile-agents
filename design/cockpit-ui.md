@@ -38,7 +38,8 @@ is running?**
    nodes, what waits on you, nodes, projects, views, actions; T416), `?` the shortcut list, `n` new node,
    `/` filter the tree, `g` then `i`/`d`/`k`/`r`/`e`/`s` jumps to Needs me,
    Director, Knowledge, Running, Events, Settings; `j`/`k` in Needs me, and
-   A/B (or 1/2) on a focused question card (T416);
+   A/B (or 1/2) on a focused question card (T416); T445: on a node's page
+   `j`/`k` (not while typing) open the next or previous node the tree shows;
    `Esc` closes any overlay, Enter sends, Shift+Enter is a newline (New
    node's goal excepted: §7 "Submit keys"). The `?` list (`Shortcuts.tsx`)
    names only keys that work.
@@ -178,7 +179,10 @@ Use these; don't re-invent a button or a menu in a screen.
 - `Dialog` renders in a portal on `document.body` and stops its submit from
   bubbling, so a dialog may open from inside another dialog's form (New
   project → Add repository). Single-key shortcuts (`isShortcut`) are off
-  while any dialog is open.
+  while any dialog is open. It gives focus back to what had it when it
+  opened (a ⋯ menu's trigger, a button); T445: where that is gone, the
+  screen puts focus somewhere that goes on from there (§7 "Focus after an
+  action").
 
 Screen-level building blocks built on these (reuse them rather than copy):
 
@@ -323,6 +327,13 @@ keeps a hollow dot's ring (stopped, waiting).
   choice, as its keycaps say; Answer is secondary until text is typed, then
   primary. While the daemon is away, every card action is off and says
   "Reconnecting to the daemon…".
+  T445 (audit r7 #5): the list holds still under the pointer. A card
+  decided in Needs me stays in its place, at its height, for a moment
+  (~1.5 s) after it leaves, collapsed to its outcome ("Merged into main",
+  "Applied", "Plan approved", "Answered"); then it goes, and for ~400 ms a
+  pointer's click on the list is ignored (keys still work), so a second
+  click never merges or applies the card that moved under it
+  (`lib/inbox.ts` `cardOutcome`, `withDecided`).
 - **Chat**: human lines right-aligned bubbles; agent lines as prose with the
   agent's name; daemon lines as one-line system rows (icon + muted text) that
   collapse when there are several in a row. A long message folds with "Show
@@ -394,7 +405,19 @@ keeps a hollow dot's ring (stopped, waiting).
   column (in the flow, never over a page's controls), and write buttons off
   with "Reconnecting to the daemon…".
 - **Empty states** say what the place is for and give the one action that
-  fills it.
+  fills it. T445: the Plan tab's "No plan yet" has **Start the coordinator**
+  (one never started, a project's root included) or **Ask it to plan** (one
+  that ran: a message asking for the plan, which starts it again) while
+  nothing runs there; a project's root with no agent running says, in its composer,
+  "Write to the project — or press A to ask it a question", with **Ask the
+  project a question** in the empty chat.
+- **Focus after an action** (T445, audit r7 #13): the keyboard never loses
+  its place to `<body>`. When the focused card leaves Needs me, the card that
+  took its place has the focus (a card keeps the focus itself while its
+  action runs); New node opens the new node with its composer focused (as
+  Ask does, `lib/ask.ts` `focusComposerOn`); adding a repository from Needs
+  me's first step puts the focus on the next step (Create a project), and
+  from Settings on Add repository.
 - **Destructive actions** confirm (`ConfirmDialog`) or offer Undo (toast).
   Merge asks the first time ("Merge “<node>” into main (2 files)?", with
   "Don’t ask again" remembered per browser), then is one click: a merge
@@ -500,6 +523,30 @@ keeps a hollow dot's ring (stopped, waiting).
   hint says "<node> will coordinate it; its agent restarts as a
   coordinator". Coordinators (Organise/Run) and the Director create nodes
   themselves; a worker proposes.
+  T445 (audit r7 #3): a proposal line's words are never read for a
+  repository's name. Only a line whose `ref` proposes one (`repo:<name>`,
+  `@agile-agents/shared` `repoProposalRef`) offers **Add <repo>** (+ Repo
+  in place), and never on a project's root. A coordinator's proposal
+  (`ref: proposals/AP-…`) offers **Decide below**, which takes you to its
+  card (Apply / Dismiss) above the composer; a contract proposal offers **See
+  the plan**.
+- **New node's defaults** (T445, audit r7 #11, #12): in a project with one
+  repository it starts on that repository, with **Just talk instead** (no
+  repository, a conversation) one click away; a proposal's repository still
+  wins. The Title is the goal's first line, cut before a clause (a comma,
+  " that ", " with ", " which ") when it must be cut, and never inside a
+  quote (`lib/tree.ts` `titleFromGoal`); its hint promises a written title
+  only when quick drafts are on and available ("Left as is, a short title
+  is written for you once it's made."), else "The goal's first line — edit
+  it if you like.". The branch's slug is cut at a word.
+- **A node's ⋯ menu** (T445, audit r7 #22, #23) has the rail row's
+  **Rename…** and **Move to…** (so ⌘K's "This node" has them), and
+  **Add repository…** picks with the searchable repository picker (the
+  project's first); on a coordinating node it says "Adds a part on <repo>,
+  under this node, which coordinates it."
+- **Adding a repository** (T445, audit r7 #10) opens its dialog where you
+  are: from Needs me's first step (then back on Needs me with Create a
+  project as the next step) and from ⌘K's **Add repository…**.
 - **Turn into work** (T422, D42): an open conversation's ⋯ menu (T435: and
   its header once it has replied). One box: the goal (drafted from the talk by
   the cheap model, else its last reply, else its question; the hint says

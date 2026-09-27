@@ -7,7 +7,7 @@
  * as it changes. "Add repository" opens `AddRepoDialog`.
  */
 
-import { type PropsWithChildren, useEffect, useState } from 'react';
+import { type PropsWithChildren, useEffect, useRef, useState } from 'react';
 import { type RepoRow, listDirs, listRepos, saveRepoSettings } from '../lib/api';
 import { useOptionalFeed } from '../lib/feed-context';
 import type { CockpitProjectRow } from '../lib/feed-types';
@@ -302,6 +302,14 @@ export function ReposSection(): JSX.Element {
   const [home, setHome] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [adding, setAdding] = useState(false);
+  // T445 (audit r7 #13): after an add, focus goes to Add repository (the empty state's is gone).
+  const focusAdd = useRef(false);
+  const addRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!focusAdd.current || !repos || repos.length === 0) return;
+    focusAdd.current = false;
+    addRef.current?.focus();
+  }, [repos]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-read when the frame's repo names change.
   useEffect(() => {
@@ -326,6 +334,7 @@ export function ReposSection(): JSX.Element {
 
   const addButton = (
     <Button
+      ref={addRef}
       variant="primary"
       icon="plus"
       data-testid="settings-repo-add"
@@ -378,6 +387,7 @@ export function ReposSection(): JSX.Element {
         open={adding}
         onClose={() => setAdding(false)}
         onAdded={(_name, next) => {
+          focusAdd.current = true;
           setRepos(next);
           feed?.refresh();
         }}

@@ -183,6 +183,25 @@ export const ThreadEntrySchema = z
 export type ThreadEntry = z.infer<typeof ThreadEntrySchema>;
 
 /**
+ * T445 (audit r7 #3): the `ref` of a `proposal` line that proposes adding a
+ * repository to its node (projects-design §7's + Repo): `repo:<name>`. The
+ * cockpit offers "Add <name>" on such a line and on no other; the repo is
+ * never guessed from the line's words.
+ */
+export const REPO_PROPOSAL_REF_PREFIX = 'repo:';
+
+export function repoProposalRef(repo: string): string {
+  return `${REPO_PROPOSAL_REF_PREFIX}${repo}`;
+}
+
+/** The repository a `proposal` line's `ref` proposes, or `undefined` when it proposes none. */
+export function repoOfProposalRef(ref: string | undefined): string | undefined {
+  if (ref === undefined || !ref.startsWith(REPO_PROPOSAL_REF_PREFIX)) return undefined;
+  const name = ref.slice(REPO_PROPOSAL_REF_PREFIX.length).trim();
+  return name === '' ? undefined : name;
+}
+
+/**
  * Finding severities. Deliberately the same four words (and the same
  * spelling, `blocker` not `blocking`) as the repo's existing
  * `FINDING_SEVERITIES`, so a severity means one thing everywhere.

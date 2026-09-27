@@ -30,7 +30,6 @@ import {
 } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  type RepoRow,
   addRepoToStream,
   answerQuestion,
   archiveStream,
@@ -39,7 +38,6 @@ import {
   createStream,
   getSessionDefaults,
   getStreamPage,
-  listRepos,
   resolveConflict,
   sayOnStream,
   stopSessions,
@@ -87,13 +85,14 @@ import {
 } from '../lib/errors';
 import { useFeed } from '../lib/feed-context';
 import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
+import { proposalLineAction } from '../lib/inbox';
 import { appendToDraft, roomAfter, useReview } from '../lib/review';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
 import { type StatusInput, ownStatusKey, partsSummary } from '../lib/status';
 import { groupSteps, turnStartedAt } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
-import { titleFromGoal } from '../lib/tree';
+import { splitRepos, titleFromGoal } from '../lib/tree';
 import { ChatScroll, ContextMeter, MessageList, StepsFold, Thinking, useSteps } from './Chat';
 import { type NodeCommands, useNodeCommands } from './CommandPalette';
 import { type ComposerHandle, DraftComposer } from './Composer';
@@ -103,6 +102,7 @@ import { TabBoundary, lazyNamed } from './ErrorBoundary';
 import { Icon, type IconName } from './Icon';
 import { Card } from './Inbox';
 import { Markdown } from './Markdown';
+import { useRepoList } from './NewStream';
 import {
   AboutSection,
   AgentSection,
@@ -115,8 +115,10 @@ import {
   WaitsOnSection,
 } from './NodeDetails';
 import { type Crumb, NodeHeader } from './NodeHeader';
+import { type PickOption, PickerField } from './Pickers';
 import { SendUpDialog } from './SendUp';
 import { ModelChip, SessionPicker } from './SessionPicker';
+import { MoveDialog, RenameDialog } from './StreamTree';
 import { TurnIntoWorkDialog } from './TurnIntoWork';
 import {
   Button,
@@ -127,7 +129,9 @@ import {
   IconButton,
   Menu,
   type MenuItem,
+  RepoIcon,
   Tabs,
+  repoKindLabel,
   useCopy,
   useToast,
 } from './ui';
@@ -152,16 +156,6 @@ function needsYou(items: readonly InboxItem[], stream: string, noChanges = false
     (item) =>
       item.stream === stream && item.kind !== 'blocked' && (item.kind !== 'done' || noChanges),
   );
-}
-
-/** T205: the registered repos a proposal names, so its card can offer "Add <repo>" (§7). */
-export function reposNamedIn(body: string, repos: readonly RepoRow[], current?: string): string[] {
-  return repos
-    .map((r) => r.name)
-    .filter((name) => name !== current)
-    .filter((name) =>
-      new RegExp(`(^|[^\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\w-]|$)`).test(body),
-    );
 }
 
 function errorText(err: unknown): string {
@@ -214,8 +208,18 @@ function useDetailsOpen(): [boolean, (open: boolean) => void] {
   return [open, set];
 }
 
+/** T445 (audit r7 #21): the Plan tab's "Ask it to plan", as your message to the node. */
+const PLAN_REQUEST =
+  'Please write the plan: split the work into parts, say which paths each part owns, and the contracts between them.';
+
+/**
+ * T445 (audit r7 #26): a project root's composer with no agent running. It
+ * holds whether a line there adds a note or starts the root's agent.
+ */
+const ROOT_PLACEHOLDER = 'Write to the project — or press A to ask it a question';
+
 type Picker = 'start' | 'reviewer' | 'resolve';
-type Modal = 'repo' | 'wait' | 'close' | 'delete';
+type Modal = 'repo' | 'wait' | 'close' | 'delete' | 'rename' | 'move';
 
 function PageSkeleton(): JSX.Element {
   return (
@@ -378,7 +382,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   useNodeCommands(useCallback(() => commands.current, []));
   const [picker, setPicker] = useState<Picker | undefined>(undefined);
   const [modal, setModal] = useState<Modal | undefined>(undefined);
-  const [repos, setRepos] = useState<RepoRow[]>([]);
+  // T445 (audit r7 #23): every repository, with its kind, for Add repository…'s picker.
+  const repos = useRepoList();
   const [repoChoice, setRepoChoice] = useState('');
   const [linkChoice, setLinkChoice] = useState('');
   // T332 (D33): "Branch off" — the thread line (0-based, whole thread) and the tangent's question.
@@ -427,12 +432,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   useEffect(() => {
     load();
   }, [load, cockpit]);
-
-  useEffect(() => {
-    listRepos()
-      .then(setRepos)
-      .catch(() => setRepos([]));
-  }, []);
 
   // T435 (#20): Ask just opened this conversation: its composer takes focus once it shows.
   const shownId = page?.stream.id;
@@ -682,7 +681,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const waits = stream.waits_on ?? [];
   const linkOptions = rows.filter((r) => r.id !== stream.id && !waits.some((w) => w.node === r.id));
   const chosenLink = linkChoice || linkOptions[0]?.id || '';
-  const repoOptions = repos.map((r) => r.name).filter((n) => n !== stream.repo);
+  // T445 (audit r7 #23): the project's repositories first, as New node lists them.
+  const { inProject: projectRepos, others: otherRepos } = splitRepos(
+    repos.filter((r) => r.name !== stream.repo),
+    project?.repos,
+  );
+  const repoOptions = [...projectRepos, ...otherRepos].map((r) => r.name);
   const chosenRepo = repoChoice || repoOptions[0] || '';
   // T332 (D33): only a conversation branches off; its tangents are conversations too.
   const canBranch = open && role === 'conversation';
@@ -727,6 +731,21 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       setTangentQuestion('');
       select(created.id);
     });
+
+  /** T445: scrolls to one of this node's decision cards and puts focus on its first action. */
+  function showCard(id: string): void {
+    const card = document.querySelector<HTMLElement>(
+      `[data-testid="stream-needs"] .cr-card[data-id="${CSS.escape(id)}"]`,
+    );
+    if (!card) return;
+    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    card.querySelector<HTMLButtonElement>('.cr-card-ft button:not(:disabled)')?.focus({
+      preventScroll: true,
+    });
+    // A moment's ring, so the eye finds it too (a focus a click moved shows none).
+    card.dataset.flash = 'true';
+    setTimeout(() => delete card.dataset.flash, 1200);
+  }
 
   function addRepo(repo: string, switching = false): void {
     void act(
@@ -968,7 +987,10 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       label: 'Add repository…',
       icon: 'folder-git',
       testid: 'add-repo',
-      title: 'Work on a repo here: a conversation becomes a work node, a second repo splits it',
+      title:
+        role === 'coordinating'
+          ? 'Add a part on another repository'
+          : 'Work on a repo here: a conversation becomes a work node, a second repo splits it',
       hidden: !open || stream.parent === undefined,
       disabled: busy || repoOptions.length === 0,
       onSelect: () => setModal('repo'),
@@ -982,6 +1004,24 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         setDetailsOpen(true);
         setTrackerOpen(true);
       },
+    },
+    'separator',
+    {
+      // T445 (audit r7 #22): the rail row's Rename and Move to…, here and in ⌘K's "This node".
+      label: 'Rename…',
+      icon: 'pencil',
+      testid: 'menu-rename',
+      hidden: !open || projectRoot,
+      disabled: busy || row === undefined,
+      onSelect: () => setModal('rename'),
+    },
+    {
+      label: 'Move to…',
+      icon: 'corner-down-right',
+      testid: 'menu-move',
+      hidden: projectRoot,
+      disabled: busy || row === undefined,
+      onSelect: () => setModal('move'),
     },
     'separator',
     {
@@ -1132,24 +1172,53 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             </div>
           ) : null;
         })()}
-      {entry.kind === 'proposal' &&
-        open &&
-        reposNamedIn(entry.body, repos, stream.repo).length > 0 && (
-          <div className="cr-msg-extra">
-            {reposNamedIn(entry.body, repos, stream.repo).map((repoName) => (
-              <Button
-                key={repoName}
-                size="sm"
-                icon="plus"
-                data-testid="proposal-add-repo"
-                disabled={busy}
-                onClick={() => addRepo(repoName)}
-              >
-                Add {repoName}
-              </Button>
-            ))}
-          </div>
-        )}
+      {open &&
+        (() => {
+          // T445 (audit r7 #3): only a line that proposes a repo (its `ref`) offers + Repo; an
+          // autonomy proposal points to its card below, a contract proposal to the plan.
+          const action = proposalLineAction(entry, {
+            repos: repos.map((r) => r.name),
+            current: stream.repo,
+            projectRoot,
+            cards: cards.map((c) => c.id),
+            hasPlan: tabs.includes('plan'),
+          });
+          if (action === undefined) return null;
+          return (
+            <div className="cr-msg-extra">
+              {action.kind === 'add_repo' ? (
+                <Button
+                  size="sm"
+                  icon="plus"
+                  data-testid="proposal-add-repo"
+                  disabled={busy}
+                  onClick={() => addRepo(action.repo)}
+                >
+                  Add {action.repo}
+                </Button>
+              ) : action.kind === 'decide' ? (
+                <Button
+                  size="sm"
+                  icon="arrow-down"
+                  data-testid="proposal-decide"
+                  title="Apply or dismiss it on its card, above the composer"
+                  onClick={() => showCard(action.card)}
+                >
+                  Decide below
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  icon="list"
+                  data-testid="proposal-see-plan"
+                  onClick={() => setTab('plan')}
+                >
+                  See the plan
+                </Button>
+              )}
+            </div>
+          );
+        })()}
       {canBranch && branching === threadBase + i && (
         <form
           className="cr-branch-form"
@@ -1322,6 +1391,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     role !== 'conversation' &&
     showGoalCard({ goal: stream.goal, title: stream.title, projectRoot });
 
+  // T445 (audit r7 #26): a project's root with no agent: Ask (A) is how to question the project.
+  const askFirst = projectRoot && open && liveAgent === undefined && intent.action !== 'answer';
   // T438 (audit r6 #4): under a failure's warning, "Tell the agent what to do" would contradict it.
   const emptyChat = !conversation && !thinking && cards.length === 0 && !agentFailed(page.thread);
   // The open questions whose own line the chat shows (an older one may be above the loaded lines).
@@ -1414,6 +1485,18 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                   ? `Your message ${hasRun ? 'wakes' : 'starts'} it with ${startWith ?? 'the default model'}.${goalCard ? ' The goal above is its brief.' : ''}`
                   : intent.hint}
             </p>
+            {askFirst && (
+              // T445 (audit r7 #26): a question about the project goes in its own thread.
+              <Button
+                size="sm"
+                icon="message-square"
+                data-testid="chat-empty-ask"
+                title="A conversation under the project, in its own thread (A)"
+                onClick={() => openAsk(stream.id)}
+              >
+                Ask the project a question
+              </Button>
+            )}
           </div>
         )}
         <section
@@ -1468,7 +1551,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             {...(agentWorking && open ? { onStop: stop } : {})}
             busy={sending}
             disabled={intent.action === 'none'}
-            placeholder={intent.placeholder}
+            placeholder={askFirst ? ROOT_PLACEHOLDER : intent.placeholder}
             hint={intent.hint}
             above={answeringChip}
             chip={
@@ -1515,6 +1598,20 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       </div>
     </div>
   );
+
+  // T445 (audit r7 #21): the Plan tab's empty state gets the plan written. A coordinator never
+  // started (a project's root is one, T443) starts, its brief asking for the plan; one that ran
+  // is asked for it.
+  const planStart =
+    open && liveAgent === undefined && !waitingForPlan && (role === 'coordinating' || isRoot)
+      ? !hasRun
+        ? { label: 'Start the coordinator', busy, onStart: start }
+        : {
+            label: 'Ask it to plan',
+            busy,
+            onStart: () => void act(() => sayOnStream(stream.id, PLAN_REQUEST, { start: true })),
+          }
+      : undefined;
 
   // ---------------------------------------------------------------- the page
   return (
@@ -1744,7 +1841,14 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                   <ActivityView id={stream.id} tick={cockpit} sessions={stream.sessions} />
                 )}
                 {shownTab === 'plan' && (
-                  <PlanView id={stream.id} tick={cockpit} onChanged={refresh} titleOf={titleOf} />
+                  <PlanView
+                    id={stream.id}
+                    tick={cockpit}
+                    onChanged={refresh}
+                    titleOf={titleOf}
+                    running={liveAgent !== undefined}
+                    {...(planStart ? { start: planStart } : {})}
+                  />
                 )}
                 {shownTab === 'rules' && <KnowledgeView rules={page.rules} />}
                 {shownTab === 'docs' && <DocsView docs={page.docs} />}
@@ -1951,6 +2055,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                 </>
               )}
             </>
+          ) : role === 'coordinating' ? (
+            // T445 (audit r7 #23): a coordinating node gains a part; it isn't split again.
+            <span data-testid="add-repo-part">
+              Adds a part on {chosenRepo || 'the repository you pick'}, under this node, which
+              coordinates it.
+            </span>
           ) : (
             'A second repo splits this node: each repo gets a part, and this node coordinates them.'
           )
@@ -1981,21 +2091,74 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           </>
         }
       >
-        <Field label="Repository" htmlFor="add-repo-select">
-          <select
-            id="add-repo-select"
-            data-testid="add-repo-select"
+        <Field label="Repository">
+          {/* T445 (audit r7 #23): the searchable picker every other repository choice uses. */}
+          <PickerField
+            testid="add-repo-select"
+            label="Repository"
             value={chosenRepo}
-            onChange={(e) => setRepoChoice(e.target.value)}
-          >
-            {repoOptions.map((repoName) => (
-              <option key={repoName} value={repoName}>
-                {repoName}
-              </option>
-            ))}
-          </select>
+            display={
+              chosenRepo ? (
+                <>
+                  <RepoIcon remote={repos.find((r) => r.name === chosenRepo)?.remote} size={14} />
+                  <span className="cr-pickfield-text">{chosenRepo}</span>
+                  <span className="cr-pickfield-sub">
+                    {repoKindLabel(repos.find((r) => r.name === chosenRepo)?.remote)}
+                  </span>
+                </>
+              ) : (
+                <span className="cr-pickfield-text">Pick a repository</span>
+              )
+            }
+            options={[
+              ...projectRepos.map(
+                (r): PickOption => ({
+                  value: r.name,
+                  text: r.name,
+                  icon: <RepoIcon remote={r.remote} size={14} />,
+                  sub: repoKindLabel(r.remote),
+                  group: `In ${project?.name ?? 'this project'}`,
+                  attrs: { 'data-repo': r.name },
+                }),
+              ),
+              ...otherRepos.map(
+                (r): PickOption => ({
+                  value: r.name,
+                  text: r.name,
+                  icon: <RepoIcon remote={r.remote} size={14} />,
+                  sub: repoKindLabel(r.remote),
+                  group: projectRepos.length > 0 ? 'Other repositories' : 'Repositories',
+                  attrs: { 'data-repo': r.name },
+                }),
+              ),
+            ]}
+            placeholder="Search repositories…"
+            search={repoOptions.length > 6}
+            onPick={setRepoChoice}
+          />
         </Field>
       </Dialog>
+      {modal === 'rename' && row !== undefined && (
+        // T445 (audit r7 #22): the rail's own dialogs, from the header's ⋯ menu and ⌘K.
+        <RenameDialog
+          row={row}
+          onClose={() => {
+            setModal(undefined);
+            load();
+          }}
+        />
+      )}
+      {modal === 'move' && row !== undefined && (
+        <MoveDialog
+          row={row}
+          rows={rows}
+          projectName={project?.name}
+          onClose={() => {
+            setModal(undefined);
+            load();
+          }}
+        />
+      )}
 
       <ConfirmDialog
         open={modal === 'close'}

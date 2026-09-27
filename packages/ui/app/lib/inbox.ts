@@ -7,7 +7,7 @@
  * `bun test` covers it; `components/Inbox.tsx` only renders.
  */
 
-import { type InboxItem, inboxContext } from '@agile-agents/shared';
+import { type InboxItem, inboxContext, repoOfProposalRef } from '@agile-agents/shared';
 import type { CockpitFrame, CockpitProjectRow, CockpitStreamRow } from './feed-types';
 
 // ---------------------------------------------------------------- kinds
@@ -858,4 +858,109 @@ export function replyPreview(
  */
 export function isAgentFailure(text: string): boolean {
   return /^The agent (couldn’t start|stopped with an error): /.test(text.trim());
+}
+
+// ---------------------------------------------------------------- T445: proposal lines
+
+/**
+ * T445 (audit r7 #3): what a `proposal` line in a node's chat offers. Only a
+ * line whose `ref` proposes a repository (`repo:<name>`, T205's + Repo)
+ * offers "Add <repo>" — a registered repo, not the node's own, and never on
+ * a project's root (its repositories are its settings). An autonomy
+ * proposal (`proposals/AP-….yaml`) points to its decision card while that
+ * is open; a contract proposal (`contracts/C-….yaml`) to the plan. The words
+ * of a line are never read for a repo's name.
+ */
+export type ProposalLineAction =
+  | { kind: 'add_repo'; repo: string }
+  | { kind: 'decide'; card: string }
+  | { kind: 'plan' };
+
+export function proposalLineAction(
+  entry: { kind: string; ref?: string | undefined },
+  input: {
+    /** The registered repositories' names. */
+    repos: readonly string[];
+    /** The node's own repository. */
+    current?: string | undefined;
+    projectRoot: boolean;
+    /** The ids of this node's open decision cards. */
+    cards: readonly string[];
+    /** The node has a Plan tab. */
+    hasPlan?: boolean;
+  },
+): ProposalLineAction | undefined {
+  if (entry.kind !== 'proposal' || entry.ref === undefined) return undefined;
+  const repo = repoOfProposalRef(entry.ref);
+  if (repo !== undefined) {
+    if (input.projectRoot || repo === input.current || !input.repos.includes(repo)) {
+      return undefined;
+    }
+    return { kind: 'add_repo', repo };
+  }
+  const autonomy = /^proposals\/(AP-[0-9A-Z]+)\.yaml$/.exec(entry.ref);
+  if (autonomy) {
+    const card = autonomy[1] as string;
+    return input.cards.includes(card) ? { kind: 'decide', card } : undefined;
+  }
+  if (/^contracts\/C-[0-9A-Z]+\.yaml$/.test(entry.ref) && input.hasPlan === true) {
+    return { kind: 'plan' };
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------- T445: a decided card
+
+/**
+ * T445 (audit r7 #5): what a card decided in place reads while it stays a
+ * moment, collapsed, before the list closes over it ("Merged into main").
+ * `key` is the card's action (`DecisionCard`'s `act` keys).
+ */
+export function cardOutcome(
+  item: Pick<InboxItem, 'kind' | 'context'>,
+  key: string,
+  target = 'main',
+): string {
+  if (key === 'merge') return `Merged into ${target}`;
+  if (key.startsWith('choice') || key === 'answer') return 'Answered';
+  const land = item.kind === 'gate' && isLandGate(item);
+  const words: Record<string, string> = {
+    approve: item.kind === 'plan_approve' ? 'Plan approved' : land ? 'Merging' : 'Allowed',
+    deny: land ? 'Held' : 'Denied',
+    note: 'Note sent',
+    accept: 'Accepted',
+    retire: 'Retired',
+    apply: 'Applied',
+    dismiss: 'Dismissed',
+    wake: 'Coordinator started',
+    start: 'Parts started',
+    mark: 'Marked as merged',
+    close: 'Closed',
+    reply: 'Sent',
+  };
+  return words[key] ?? 'Done';
+}
+
+/** How long a decided card stays, collapsed to its outcome, once it has left the list. */
+export const DECIDED_LINGER_MS = 1500;
+/** How long after a card leaves the list a click on it is ignored (what was under it moved). */
+export const LIST_SETTLE_MS = 400;
+
+/**
+ * The list Needs me shows: `items`, plus each card decided here that has
+ * left them within `DECIDED_LINGER_MS` (`gone` holds when each left), in
+ * the place it had — the grouping sorts them back where they were.
+ */
+export function withDecided(
+  items: readonly InboxItem[],
+  decided: ReadonlyMap<string, { item: InboxItem; gone?: number }>,
+  now: number,
+): InboxItem[] {
+  const ids = new Set(items.map((i) => i.id));
+  const staying = [...decided.values()]
+    .filter(
+      (d) => !ids.has(d.item.id) && (d.gone === undefined || now - d.gone < DECIDED_LINGER_MS),
+    )
+    .map((d) => d.item);
+  return staying.length === 0 ? [...items] : [...items, ...staying];
 }

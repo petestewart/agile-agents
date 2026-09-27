@@ -686,6 +686,7 @@ export function StreamTree({
     select,
     selected,
     openNewStream,
+    view,
   } = useShell();
   const toast = useToast();
   const copy = useCopy();
@@ -864,6 +865,33 @@ export function StreamTree({
     e.preventDefault();
   };
 
+  // T445 (audit r7 #14): on a node's page, j/k (not while typing) open the next or previous row
+  // the tree shows. Needs me's j/k walk its cards; a row's own keys walk focus in the rail.
+  const orderNow = useRef(order);
+  orderNow.current = order;
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || view !== 'stream') return;
+      const down = isShortcut(event, 'j');
+      if (!down && !isShortcut(event, 'k')) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.('.cr-rail, [role="menu"], [role="listbox"]')) return;
+      const ids = orderNow.current;
+      const at = selected !== undefined ? ids.indexOf(selected) : -1;
+      const next = at < 0 ? (down ? ids[0] : ids[ids.length - 1]) : ids[down ? at + 1 : at - 1];
+      if (next === undefined) return;
+      event.preventDefault();
+      select(next);
+      requestAnimationFrame(() =>
+        sectionRef.current
+          ?.querySelector<HTMLElement>(`.cr-tree-row[data-stream="${CSS.escape(next)}"]`)
+          ?.scrollIntoView?.({ block: 'nearest' }),
+      );
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [view, selected, select]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (!isShortcut(event, '/')) return;
@@ -1034,7 +1062,7 @@ export function StreamTree({
 
 // ---------------------------------------------------------------- dialogs
 
-function RenameDialog({
+export function RenameDialog({
   row,
   onClose,
 }: { row: CockpitStreamRow; onClose: () => void }): JSX.Element {
@@ -1097,7 +1125,7 @@ function RenameDialog({
   );
 }
 
-function MoveDialog({
+export function MoveDialog({
   row,
   rows,
   projectName,

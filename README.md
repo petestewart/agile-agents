@@ -53,9 +53,9 @@ agile daemon start    # starts agiled in the background
 
 Open **http://127.0.0.1:4600/**. With nothing set up yet, Needs me walks you through three steps:
 
-1. **Add a repository.** Browse to a git repository on this machine, or paste a GitHub, SSH or HTTPS URL to clone one.
+1. **Add a repository.** Browse to a git repository on this machine, or paste a GitHub, SSH or HTTPS URL to clone one. The dialog opens right there, and afterwards step 2 is next (`⌘K` → Add repository… adds more later).
 2. **Create a project** and tick the repositories it uses.
-3. **Start a node.** Press `N`, write what you want done, and pick a repository (or none, for a conversation). The agent starts at once. Leave the title empty and a short one is written for you (one quick Claude Haiku call through your `claude` login).
+3. **Start a node.** Press `N` and write what you want done. In a project with one repository, the node starts on it (**Just talk instead** makes it a conversation). The agent starts at once, and its composer has the focus. The title is the goal's first line, cut before a clause; with quick drafts on, a title you leave as it is gets rewritten by one quick Claude Haiku call through your `claude` login.
 
 `agile daemon status` says whether the daemon is running, where its home is, and which model a new session will use.
 
@@ -68,7 +68,7 @@ Open **http://127.0.0.1:4600/**. With nothing set up yet, Needs me walks you thr
 | `⌘K` / `Ctrl K` | Search and run anything: nodes, views, this node's actions, what needs you |
 | `?` | Every shortcut |
 | `G` then `I` / `D` / `K` / `R` / `E` / `S` | Needs me, Director, Knowledge, Running, Events, Settings |
-| `J` / `K` | Next or previous card in Needs me, or node in the tree |
+| `J` / `K` | Next or previous card in Needs me; on a node's page, open the next or previous node in the tree |
 | `A` / `B`, `1` / `2` | Pick a choice on a focused question |
 | `Enter` / `Shift+Enter` | Send / new line, in the composer and in a diff comment |
 | `Esc` | Close a dialog, menu or panel |

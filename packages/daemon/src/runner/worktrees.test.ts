@@ -40,6 +40,15 @@ describe('slugify', () => {
     expect(slugify('A'.repeat(60)).length).toBeLessThanOrEqual(40);
     expect(slugify('!!!')).toBe('stream');
   });
+  test('T445: a cut ends at a word, never mid-word', () => {
+    expect(slugify('Add a greet() function to src/index.ts that returns "hello')).toBe(
+      'add-a-greet-function-to-src-index-ts',
+    );
+    // Cut right at a word's end: kept whole.
+    expect(slugify(`${'a'.repeat(40)} b`)).toBe('a'.repeat(40));
+    // One word past the cap is cut at the cap.
+    expect(slugify('x'.repeat(50))).toBe('x'.repeat(40));
+  });
 });
 
 describe('branchLabel (T371)', () => {

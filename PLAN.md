@@ -2670,6 +2670,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/subprocess-env.test.ts packages/cli`.
 - **Notes:** Branch T448-first-run-nits.
 
+### Ticket: T445 Flow and focus (audit r7)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker (manager reviewed)
+- **Scope:** Audit round 7's flow findings: #3 (any repo name in a proposal line grew an "Add <repo>" button that reshaped the node), #5 (after Merge the next card's Merge slid under the pointer), #13 (focus fell to `<body>` after actions), #14 (j/k did nothing outside the rail), #10 (the welcome's Add repository opened Settings → General), #11 (a title "written for you" that wasn't; titles and branches cut mid-word), #12 (New node defaulted to No repository in a one-repo project), #21 (the Plan tab's empty state had no action), #22 (no keyboard path to Rename/Move), #23 (a native select for Add repository…), #26 (a bare root's composer "adds a note").
+- **Acceptance Criteria:** "Add <repo>" only on a proposal line whose ref is `repo:<name>` (`repoProposalRef` in shared; nothing writes one yet), never on a root; an autonomy proposal line offers **Decide below**, a contract proposal **See the plan**. A decided Needs me card stays ~1.5 s collapsed to its outcome, and pointer clicks on the list are ignored ~400 ms after one leaves. Focus goes to the next card, the new node's composer, New project after a first repo; dialogs restore focus. Global j/k on a node page walk the tree. The welcome opens Add repository in place and then offers step 2; ⌘K has Add repository…. The Title hint follows quick drafts; `titleFromGoal` cuts at a clause and drops an unbalanced quote; `slugify` cuts at a word. A one-repo project's New node starts on that repo (**Just talk instead**). The Plan tab offers Start the coordinator / Ask it to plan. The header ⋯ has Rename… and Move to…. Add repository… uses the picker and says "Adds a part on <repo>" on a coordinating node. A root's composer points to Ask.
+- **Validation Steps:** Worker gate on the merged tree: `bun test` 3258/0, control-room 110/0, walkthrough 0 findings.
+- **Notes:** Branch T445-flow-focus.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done
