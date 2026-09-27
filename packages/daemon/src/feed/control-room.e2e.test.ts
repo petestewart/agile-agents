@@ -10455,7 +10455,11 @@ describe('flow and focus (Playwright e2e, T445)', () => {
         page.on('request', (r) => {
           if (r.method() === 'POST' && r.url().endsWith('/land')) lands.push(r.url());
         });
-        // The moment the decided card leaves, a pointer click lands on the list: it does nothing.
+        // The moment the decided card leaves, a second click where the first landed (the pointer
+        // hasn't moved: a double-click) does nothing. T449: a click elsewhere would go through.
+        const box = await page.locator(`${first} [data-testid="land"]`).boundingBox();
+        const x = (box?.x ?? 0) + (box?.width ?? 0) / 2;
+        const y = (box?.y ?? 0) + (box?.height ?? 0) / 2;
         await page.evaluate(`(() => {
           window.__t445 = 'armed';
           let seen = false;
@@ -10468,13 +10472,21 @@ describe('flow and focus (Playwright e2e, T445)', () => {
             obs.disconnect();
             document
               .querySelector('.cr-card[data-id="${b}"] [data-testid="land"]')
-              ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+              ?.dispatchEvent(
+                new MouseEvent('click', {
+                  bubbles: true,
+                  cancelable: true,
+                  detail: 1,
+                  clientX: ${x},
+                  clientY: ${y},
+                }),
+              );
             window.__t445 = 'clicked';
           });
           obs.observe(document.body, { subtree: true, childList: true });
         })()`);
 
-        await page.locator(`${first} [data-testid="land"]`).click();
+        await page.mouse.click(x, y);
         const outcome = page.locator(`[data-testid="card-outcome"][data-id="${a}"]`);
         await outcome.waitFor({ state: 'visible' });
         expect(await outcome.textContent()).toContain('Merged into main');
@@ -10497,6 +10509,58 @@ describe('flow and focus (Playwright e2e, T445)', () => {
           'focus on the next card',
           async () => (await focusOf(page as Page)) === b,
         );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'T449: a click aimed elsewhere right after a card leaves is meant: it goes through',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const a = await finishedNode(cockpit, 'Api part', 's-api');
+        const b = await finishedNode(cockpit, 'Web part', 's-web');
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.evaluate(`localStorage.setItem('agile.merge.ask', 'never')`);
+        await page.reload();
+        const first = `[data-testid="inbox"] .cr-card[data-id="${a}"]`;
+        await page.locator(`${first} [data-testid="land"]`).waitFor({ state: 'visible' });
+        const box = await page.locator(`${first} [data-testid="land"]`).boundingBox();
+        const x = (box?.x ?? 0) + (box?.width ?? 0) / 2;
+        const y = (box?.y ?? 0) + (box?.height ?? 0) / 2;
+        // The moment the merged card leaves, click the next card's View changes (another spot).
+        await page.evaluate(`(() => {
+          let seen = false;
+          const obs = new MutationObserver(() => {
+            if (document.querySelector('[data-testid="card-outcome"][data-id="${a}"]')) {
+              seen = true;
+              return;
+            }
+            if (!seen) return;
+            obs.disconnect();
+            const view = document.querySelector('.cr-card[data-id="${b}"] [data-testid="view-changes"]');
+            const r = view?.getBoundingClientRect();
+            view?.dispatchEvent(
+              new MouseEvent('click', {
+                bubbles: true,
+                cancelable: true,
+                detail: 1,
+                clientX: (r?.x ?? 0) + (r?.width ?? 0) / 2,
+                clientY: (r?.y ?? 0) + (r?.height ?? 0) / 2,
+              }),
+            );
+          });
+          obs.observe(document.body, { subtree: true, childList: true });
+        })()`);
+        await page.mouse.click(x, y);
+        // It went through: the next node opens on its Changes tab.
+        await page.locator(`[data-testid="stream-page"][data-stream="${b}"]`).waitFor();
       } finally {
         await teardown([page]);
         await cockpit.stop();
