@@ -1,9 +1,17 @@
 import { describe, expect, test } from 'bun:test';
+import { validateHomeConfig } from './home-config';
+import { validateProjectUpdateInput } from './project';
+import { validateRepoEntry } from './repos';
 import {
   BUILTIN_SESSION_DEFAULTS,
+  SESSION_VENDORS,
   SessionDefaultsPatchSchema,
+  VendorFailureSchema,
+  type VendorFailureSettings,
   formatSessionDefaults,
   resolveSessionDefaults,
+  resolveVendorFailure,
+  vendorHasHooks,
 } from './session-defaults';
 
 describe('T170 session defaults (D17)', () => {
@@ -93,5 +101,45 @@ describe('T402 (D40): a model belongs to its vendor', () => {
         repo: { vendor: 'codex', model: 'gpt-9' },
       }),
     ).toEqual({ vendor: 'claude', model: 'claude-opus-5-5', effort: 'low' });
+  });
+});
+
+describe('T456: what happens when an agent crashes (vendor_failure)', () => {
+  test('field by field: project, then repo, then home, then the built-in', () => {
+    expect(resolveVendorFailure()).toEqual({ retry: true, fallback: [], allow_hookless: false });
+    const home = { retry: true, fallback: ['gemini' as const], allow_hookless: true };
+    const repo = { fallback: ['cursor' as const, 'cursor' as const] };
+    const project = { retry: false };
+    expect(resolveVendorFailure(project, repo, home)).toEqual({
+      retry: false,
+      // A vendor named twice is tried once.
+      fallback: ['cursor'],
+      allow_hookless: true,
+    });
+    expect(resolveVendorFailure(undefined, undefined, home)).toEqual(home);
+    // An empty list is a setting: nothing to fall back to, whatever the home says.
+    expect(resolveVendorFailure({ fallback: [] }, undefined, home).fallback).toEqual([]);
+  });
+
+  test('strict, known vendors only, in the home, a repo, a project and a Settings write', () => {
+    expect(VendorFailureSchema.safeParse({ retry: true, extra: 1 }).success).toBe(false);
+    expect(VendorFailureSchema.safeParse({ fallback: ['hal9000'] }).success).toBe(false);
+    const block: VendorFailureSettings = {
+      retry: false,
+      fallback: ['gemini', 'codex'],
+      allow_hookless: true,
+    };
+    expect(validateHomeConfig({ vendor_failure: block }).vendor_failure).toEqual(block);
+    expect(validateRepoEntry({ path: '/r', vendor_failure: block }).vendor_failure).toEqual(block);
+    expect(SessionDefaultsPatchSchema.parse({ vendor_failure: null })).toEqual({
+      vendor_failure: null,
+    });
+    expect(
+      validateProjectUpdateInput({ vendor_failure: { fallback: ['cursor'] } }).vendor_failure,
+    ).toEqual({ fallback: ['cursor'] });
+  });
+
+  test('Claude and Pi have pre-tool hooks; the others do not', () => {
+    expect(SESSION_VENDORS.filter(vendorHasHooks)).toEqual(['claude', 'pi']);
   });
 });

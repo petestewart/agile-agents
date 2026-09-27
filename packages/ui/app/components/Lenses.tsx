@@ -945,6 +945,8 @@ const EVENT_ICON: Partial<Record<RoutedEventType, IconName>> = {
   knowledge_accepted: 'book-open',
   // T446: what a coordinator, the Director or you applied: a change to the tree.
   autonomy_applied: 'bot',
+  // T456: a crashed agent started again, or another vendor in its place.
+  agent_restarted: 'refresh',
 };
 
 const FAMILY_ICON: Record<EventFamily, IconName> = {
@@ -961,6 +963,7 @@ const EVENT_TONE: Partial<Record<RoutedEventType, 'red' | 'amber' | 'purple' | '
   pr_closed: 'red',
   pr_behind: 'amber',
   ship_findings: 'amber',
+  agent_restarted: 'amber',
   pr_merged: 'purple',
   child_delivered: 'purple',
   dependency_satisfied: 'green',

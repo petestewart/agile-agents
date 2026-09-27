@@ -1376,12 +1376,17 @@ function applyDefaultsPatch(
     if (value === null) Reflect.deleteProperty(raw, keys[field]);
     else raw[keys[field]] = value;
   }
+  // T456: the crash settings are one block, replaced whole; empty is removed.
+  const failure = patch.vendor_failure;
+  if (failure === null || (failure !== undefined && Object.keys(failure).length === 0)) {
+    Reflect.deleteProperty(raw, 'vendor_failure');
+  } else if (failure !== undefined) raw.vendor_failure = failure;
 }
 
 /** The event's record of what changed — `null` for a cleared field. */
-function sessionDefaultsEventData(patch: SessionDefaultsPatch): Record<string, string | null> {
-  const data: Record<string, string | null> = {};
-  for (const field of ['vendor', 'model', 'effort'] as const) {
+function sessionDefaultsEventData(patch: SessionDefaultsPatch): Record<string, unknown> {
+  const data: Record<string, unknown> = {};
+  for (const field of ['vendor', 'model', 'effort', 'vendor_failure'] as const) {
     const value = patch[field];
     if (value !== undefined) data[field] = value;
   }

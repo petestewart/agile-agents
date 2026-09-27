@@ -26,6 +26,7 @@ import {
   liveChildrenOf,
   nodeRole,
   validateEvent,
+  vendorHasHooks,
 } from '@agile-agents/shared';
 import { stoppedByHuman } from '../events/wake';
 import type { GateService } from '../gates';
@@ -210,13 +211,8 @@ export interface CockpitLiveAgent {
   context?: { used: number; size: number };
 }
 
-/** Vendors whose tool calls pass the `agile hook` path check (Claude's hook, Pi's extension). */
-const HOOKED_VENDORS = new Set(['claude', 'pi']);
-
 function visibilityAdvisory(s: Stream, repos: ReposConfig): boolean {
-  const hookless = s.sessions.some(
-    (x) => LIVE_SESSION.has(x.status) && !HOOKED_VENDORS.has(x.vendor),
-  );
+  const hookless = s.sessions.some((x) => LIVE_SESSION.has(x.status) && !vendorHasHooks(x.vendor));
   return hookless && Object.keys(repos).some((name) => !canReadRepo(repos, name, s.project));
 }
 

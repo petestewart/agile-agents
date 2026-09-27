@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { formatZodError } from './ids';
 import { type DeliveryOverride, ProjectIdSchema } from './project';
+import { VendorFailureSchema } from './session-defaults';
 
 /** D8: pushing to (or merging into) these is prohibited by default. */
 export const DEFAULT_PROTECTED_BRANCHES = ['main', 'master'] as const;
@@ -35,6 +36,8 @@ export const RepoEntrySchema = z
     model: z.string().min(1).optional(),
     /** Default effort for those sessions (T130, D12). */
     effort: EffortSchema.optional(),
+    /** T456: retry and fall back on a crashed agent (repo step; `VendorFailureSchema`). */
+    vendor_failure: VendorFailureSchema.optional(),
     /**
      * T131 (cockpit design §4.2, "Optional per repo: auto-review when
      * `agent.status` becomes `done`"): when true, a worker session that
