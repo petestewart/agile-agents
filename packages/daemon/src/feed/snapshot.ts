@@ -397,8 +397,17 @@ function answeredRow(at: string | undefined): { answered_at?: string } {
   return at !== undefined ? { answered_at: at } : {};
 }
 
-/** T437: the Needs me kinds that make a node your move (questions and blocks already do, through its status). */
-const DECISION_KINDS: ReadonlySet<string> = new Set(['gate', 'plan_approve', 'proposal']);
+/**
+ * T437: the Needs me kinds that make a node your move (questions and blocks
+ * already do, through its status). T450: a plan its parts wait for with no
+ * coordinator to write it is yours too (wake it, or start the parts).
+ */
+const DECISION_KINDS: ReadonlySet<string> = new Set([
+  'gate',
+  'plan_approve',
+  'plan_waiting',
+  'proposal',
+]);
 
 /**
  * T361: `never_started` for an open node that has never had a worker or

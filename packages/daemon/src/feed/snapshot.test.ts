@@ -243,6 +243,24 @@ describe('T437: a decision of yours marks its node', () => {
     expect(rows.get(planned.id)?.pending_decision).toBe(true);
     expect(rows.get(finished.id)?.pending_decision).toBeUndefined();
   });
+
+  test('T450: a plan its parts wait for, with no coordinator running, flags the coordinator', async () => {
+    const coordinator = await streams.create('human', { title: 'Sale prices', goal: 'g' });
+    const inbox = {
+      list: () => [
+        {
+          kind: 'plan_waiting',
+          id: coordinator.id,
+          stream: coordinator.id,
+          stream_path: ['x'],
+          ts: new Date().toISOString(),
+          context: 'c',
+        },
+      ],
+    } as unknown as Parameters<typeof buildCockpitFrame>[1];
+    const row = buildCockpitFrame(streams, inbox).streams.find((r) => r.id === coordinator.id);
+    expect(row?.pending_decision).toBe(true);
+  });
 });
 
 describe('T382: the live agent a row names', () => {

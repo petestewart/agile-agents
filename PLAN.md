@@ -2706,6 +2706,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** control-room e2e "T449: a click aimed elsewhere…" fails on the old guard and passes now; T445's "…never slides under the pointer" (its second click now at the first one's spot) still passes and fails with the guard removed; full `bun test` 3310/0.
 - **Notes:** Branch T449-steady-list-guard. T449b (branch T449b-events-words-race): the next CI run (fac4e8d8) failed T436's "#15 #18" test, which read an Events row's words once, before the first cockpit frame brought the node's row ("finished" instead of "is ready to merge"); it now waits for the words, in Events and in Activity.
 
+### Ticket: T450 A plan waiting with no coordinator reads Needs you
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T447's follow-up: the "Waiting for the plan" card (parts wait for a plan and no coordinator is running to write it) is your move, but it didn't set the row's `pending_decision` (T437), so the coordinator and its rolled-up status read Waiting, with no amber dot.
+- **Acceptance Criteria:** `plan_waiting` is one of the snapshot's decision kinds: the coordinator's row carries `pending_decision` while the card is up, and reads Needs you in the rail.
+- **Validation Steps:** snapshot test "T450: a plan its parts wait for…" (fails without the kind); control-room e2e "waiting for the plan (T344)" checks the rail row reads Needs you; full `bun test` 3311/0; lint and typecheck clean.
+- **Notes:** Branch T450-plan-waiting-needs-you.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done
