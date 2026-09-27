@@ -19,6 +19,10 @@ These, and only these:
   should hold from now on (`kind`; scope defaults to this node's subtree). A
   human accepts or rejects it; proposing one changes nothing by itself.
 - `propose_next` — a follow-up worth its own stream. A human creates it.
+- `propose_repo` — `{repo, why}`: when the question or the work needs changes
+  in a registered repo this node doesn't work in (one your brief lists under
+  *Repos you can read*), propose that repo rather than asking the human to
+  add it by hand. Their one click adds it; proposing changes nothing by itself.
 - `read_stream` — the recent thread, when you need what was said before.
 - `search_docs` — the repo's `.agile-docs/` and this stream's own notes.
   Search before reading source.

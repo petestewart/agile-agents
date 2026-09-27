@@ -7,18 +7,22 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type AgentId,
+  DIRECTOR_NODE,
   type QuestionId,
+  type SessionRole,
   type Stream,
   type ThreadEntry,
+  repoProposalRef,
   ulid,
 } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { KnowledgeService } from '../knowledge/service';
+import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
@@ -201,6 +205,236 @@ describe('propose_knowledge', () => {
     await expect(verbs.proposeKnowledge({ session: ulid(), text: 'x' })).rejects.toThrow(
       UnknownSessionError,
     );
+  });
+});
+
+describe('propose_repo (T455)', () => {
+  /** A repo with one commit, so a work node can be made on it. */
+  function gitRepo(name: string): string {
+    const path = join(home, 'src', name);
+    mkdirSync(path, { recursive: true });
+    const run = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: path });
+    run('init', '-q', '-b', 'main');
+    writeFileSync(join(path, 'README.md'), `# ${name}\n`);
+    run('add', '-A');
+    run('-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-q', '-m', 'init');
+    return path;
+  }
+
+  async function registerAs(node: string, role: SessionRole = 'worker'): Promise<string> {
+    const session = ulid();
+    await store.putAgent(session as AgentId, {
+      vendor: 'claude',
+      model: 'sonnet',
+      stream: node,
+      last_seen: new Date().toISOString(),
+      role,
+    });
+    return session;
+  }
+
+  /** Shop (with api and web public, vault private to another project) and a conversation in it. */
+  async function shop() {
+    await store.addRepo('api', { path: gitRepo('api') });
+    await store.addRepo('web', { path: gitRepo('web') });
+    const projects = new ProjectService(store, streams);
+    const other = await projects.create({ name: 'Other' });
+    await store.addRepo('vault', {
+      path: gitRepo('vault'),
+      visibility: { mode: 'private', projects: [other.id] },
+    });
+    const project = await projects.create({ name: 'Shop' });
+    const convo = await streams.create('human', {
+      title: 'Sale prices',
+      goal: 'can we show sale prices?',
+      project: project.id,
+    });
+    return { project, convo, session: await registerAs(convo.id) };
+  }
+
+  const proposals = (node: string) =>
+    store.readThread(node).filter((e) => e.kind === 'proposal' && e.ref?.startsWith('repo:'));
+
+  test("a conversation's agent writes one proposal line naming the repo, in words; nothing is reshaped", async () => {
+    const { convo, session } = await shop();
+    const entry = await verbs.proposeRepo({
+      session,
+      repo: 'web',
+      why: 'the price badge is rendered in the web app',
+    });
+    expect(entry.kind).toBe('proposal');
+    expect(entry.by).toBe(`agent:${session}`);
+    expect(entry.ref).toBe(repoProposalRef('web'));
+    expect(entry.body).toBe('Proposes adding **web**: the price badge is rendered in the web app');
+    expect(proposals(convo.id)).toHaveLength(1);
+    // Only the human's Add click reshapes: the node is still a repo-less conversation.
+    const after = streams.get(convo.id);
+    expect(after.repo).toBeUndefined();
+    expect(after.branch).toBeUndefined();
+    expect(after.worktree).toBeUndefined();
+    expect(streams.list().filter((s) => s.parent === convo.id)).toEqual([]);
+  });
+
+  test("a work node's worker proposes a second repo; its own repo is refused", async () => {
+    const { project } = await shop();
+    const work = await streams.create('human', {
+      title: 'Price badge',
+      goal: 'show the sale price',
+      project: project.id,
+      repo: 'api',
+    });
+    const session = await registerAs(work.id);
+    await expect(verbs.proposeRepo({ session, repo: 'api', why: 'x' })).rejects.toThrow(
+      'this node already works in api',
+    );
+    const entry = await verbs.proposeRepo({ session, repo: 'web', why: 'the badge is in web' });
+    expect(entry.ref).toBe('repo:web');
+    expect(streams.get(work.id).repo).toBe('api');
+  });
+
+  test('the same repo twice on one node is refused; another repo is not', async () => {
+    const { convo, session } = await shop();
+    await verbs.proposeRepo({ session, repo: 'web', why: 'the badge' });
+    await expect(verbs.proposeRepo({ session, repo: 'web', why: 'again' })).rejects.toThrow(
+      'you already proposed web on this node',
+    );
+    // A second agent on the node (a restart) doesn't get round it either.
+    const next = await registerAs(convo.id);
+    await expect(verbs.proposeRepo({ session: next, repo: 'web', why: 'x' })).rejects.toThrow(
+      'already proposed',
+    );
+    await verbs.proposeRepo({ session, repo: 'api', why: 'the price field' });
+    expect(proposals(convo.id).map((e) => e.ref)).toEqual(['repo:web', 'repo:api']);
+  });
+
+  test('an unregistered repo and one the project cannot read are refused alike, naming only readable ones', async () => {
+    const { convo, session } = await shop();
+    let unknown = '';
+    let hidden = '';
+    await verbs.proposeRepo({ session, repo: 'nope', why: 'x' }).catch((err: Error) => {
+      unknown = err.message;
+    });
+    await verbs.proposeRepo({ session, repo: 'vault', why: 'x' }).catch((err: Error) => {
+      hidden = err.message;
+    });
+    expect(unknown).toBe(
+      'propose_repo: no registered repo named nope that this node can read; it can read api, web',
+    );
+    expect(hidden).toBe(unknown.replace('nope', 'vault'));
+    expect(hidden).not.toContain('private');
+    // A name that is an Object property is not a repo.
+    await expect(verbs.proposeRepo({ session, repo: 'constructor', why: 'x' })).rejects.toThrow(
+      'no registered repo named constructor',
+    );
+    expect(proposals(convo.id)).toEqual([]);
+  });
+
+  test('a project root, a coordinating node, a closed, merged or archived node are refused', async () => {
+    const { project, convo } = await shop();
+    const root = await registerAs(project.root);
+    await expect(verbs.proposeRepo({ session: root, repo: 'web', why: 'x' })).rejects.toThrow(
+      "this is a project's root",
+    );
+
+    const coordinating = await streams.create('human', {
+      title: 'Checkout',
+      goal: 'split',
+      project: project.id,
+    });
+    await streams.create('human', {
+      title: 'api part',
+      goal: 'g',
+      parent: coordinating.id,
+      repo: 'api',
+    });
+    const stale = await registerAs(coordinating.id);
+    await expect(verbs.proposeRepo({ session: stale, repo: 'web', why: 'x' })).rejects.toThrow(
+      'this node coordinates parts',
+    );
+
+    const closing = await registerAs(convo.id);
+    await streams.close('human', convo.id, 'done');
+    await expect(verbs.proposeRepo({ session: closing, repo: 'web', why: 'x' })).rejects.toThrow(
+      'this node is closed',
+    );
+
+    const merged = await streams.create('human', { title: 'M', goal: 'g', project: project.id });
+    const mergedSession = await registerAs(merged.id);
+    await store.updateStream('daemon', merged.id, (before) => ({
+      ...before,
+      human: { ...before.human, status: 'landed' },
+    }));
+    await expect(
+      verbs.proposeRepo({ session: mergedSession, repo: 'web', why: 'x' }),
+    ).rejects.toThrow('this node is merged');
+
+    const archived = await streams.create('human', { title: 'A', goal: 'g', project: project.id });
+    const archivedSession = await registerAs(archived.id);
+    await streams.archive('human', archived.id);
+    await expect(
+      verbs.proposeRepo({ session: archivedSession, repo: 'web', why: 'x' }),
+    ).rejects.toThrow('this node is closed');
+    for (const node of [project.root, coordinating.id, convo.id, merged.id, archived.id]) {
+      expect(proposals(node)).toEqual([]);
+    }
+  });
+
+  test('a reviewer, a coordinator, a lessons session and the Director are refused', async () => {
+    const { convo } = await shop();
+    for (const role of ['reviewer', 'lessons'] as const) {
+      const session = await registerAs(convo.id, role);
+      await expect(verbs.proposeRepo({ session, repo: 'web', why: 'x' })).rejects.toThrow(
+        `a ${role} session cannot propose a repo`,
+      );
+    }
+    const coordinator = await registerAs(convo.id, 'coordinator');
+    await expect(
+      verbs.proposeRepo({ session: coordinator, repo: 'web', why: 'x' }),
+    ).rejects.toThrow('a coordinator adds a part on another repo with add_child');
+
+    const director = ulid();
+    await store.putAgent(director as AgentId, {
+      vendor: 'claude',
+      model: 'sonnet',
+      last_seen: new Date().toISOString(),
+      role: 'coordinator',
+    });
+    await store.putDirector({
+      thread: DIRECTOR_NODE,
+      created_at: new Date().toISOString(),
+      session: {
+        id: director,
+        vendor: 'claude',
+        model: 'sonnet',
+        role: 'coordinator',
+        status: 'running',
+      },
+    });
+    await expect(verbs.proposeRepo({ session: director, repo: 'web', why: 'x' })).rejects.toThrow(
+      'the Director has no node',
+    );
+    await expect(verbs.proposeRepo({ session: ulid(), repo: 'web', why: 'x' })).rejects.toThrow(
+      UnknownSessionError,
+    );
+    expect(proposals(convo.id)).toEqual([]);
+  });
+
+  test("the worker's brief (a conversation's and a work node's) tells of it; the reviewer's and coordinator's don't", () => {
+    const brief = (role: string) =>
+      readFileSync(join(import.meta.dir, '..', '..', 'briefs', `${role}.md`), 'utf8');
+    expect(brief('worker')).toContain('`propose_repo`');
+    expect(brief('reviewer')).not.toContain('propose_repo');
+    expect(brief('coordinator')).not.toContain('propose_repo');
+  });
+
+  test('the why is a capped body, and the line stays within the thread cap', async () => {
+    const { session } = await shop();
+    await expect(verbs.proposeRepo({ session, repo: 'web', why: 'x'.repeat(801) })).rejects.toThrow(
+      'propose_repo',
+    );
+    const entry = await verbs.proposeRepo({ session, repo: 'web', why: 'x'.repeat(800) });
+    expect(entry.body.length).toBe(800);
+    expect(entry.body.startsWith('Proposes adding **web**: xxx')).toBe(true);
   });
 });
 

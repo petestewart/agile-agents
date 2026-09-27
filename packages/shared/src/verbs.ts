@@ -39,6 +39,7 @@ import {
 } from './plan';
 import { ProjectIdSchema, ProjectNameSchema } from './project';
 import { QuestionChoicesSchema, QuestionIdSchema } from './question';
+import { RepoNameSchema } from './repos';
 import { RoutedEventIdSchema } from './routed-event';
 import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
@@ -95,6 +96,16 @@ export const ProposeNextInputSchema = z
   .object({ session: Session, title: z.string().min(1), goal: Body })
   .strict();
 export type ProposeNextInput = z.infer<typeof ProposeNextInputSchema>;
+
+/**
+ * T455 (D45, projects-design §7): a conversation's or a work node's agent
+ * proposes adding a registered repo to its node. It only writes a proposal
+ * line (`ref: repo:<name>`); the human's **Add <repo>** click reshapes.
+ */
+export const ProposeRepoInputSchema = z
+  .object({ session: Session, repo: RepoNameSchema, why: Body })
+  .strict();
+export type ProposeRepoInput = z.infer<typeof ProposeRepoInputSchema>;
 
 export const ReadStreamInputSchema = z
   .object({ session: Session, limit: z.number().int().positive().max(500).optional() })
@@ -299,6 +310,7 @@ export const AGENT_VERBS = [
   'create_node',
   'start_node',
   'restart_node',
+  'propose_repo',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -331,6 +343,7 @@ export const AGENT_VERB_SCHEMAS = {
   create_node: CreateNodeInputSchema,
   start_node: StartNodeInputSchema,
   restart_node: RestartNodeInputSchema,
+  propose_repo: ProposeRepoInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -384,6 +397,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Director, or a coordinator for its own children: start a node’s agent ({node}); one already running is left as it is. Applied at Organise/Run; at Advise a proposal.',
   restart_node:
     'Director, or a coordinator for its own children: restart a stuck node’s agent ({node}). Applied at Run only; otherwise a proposal.',
+  propose_repo:
+    'Propose adding a registered repo to this node ({repo: its name, why: what needs changing there}). Use it when the work needs changes in a repo this node doesn’t work in (one of the repos your brief lists), rather than asking the human to add it by hand. It changes nothing by itself: the human adds it with one click, which turns this node into work on it (or adds a part).',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

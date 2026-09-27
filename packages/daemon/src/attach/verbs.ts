@@ -25,8 +25,11 @@ import {
   formatKnowledgeScope,
   formatZodError,
   isConversationNode,
+  liveChildrenOf,
+  nodeRole,
   parseKnowledgeScope,
   quoteThreadBody,
+  repoProposalRef,
   validateVerbInput,
   withExamplesNote,
 } from '@agile-agents/shared';
@@ -38,6 +41,7 @@ import type { DocsSearch, SearchHit } from '../docs/service';
 import { summaryOf } from '../events/delivery';
 import type { EmitRouted } from '../events/producers';
 import { type KnowledgeService, worktreeRelativePaths } from '../knowledge/service';
+import { canReadRepo } from '../permissions/visibility';
 import type { QuestionService } from '../questions/service';
 import { NotFoundError, type StateStore } from '../store';
 import type { StreamService } from '../streams/service';
@@ -404,6 +408,79 @@ export class VerbService {
       'agent',
       caller.stream,
       { kind: 'proposal', body: `next: ${title} — ${goal}`.slice(0, 800) },
+      session,
+    );
+  }
+
+  /**
+   * T455 (D45, projects-design §7): a conversation's or a work node's own
+   * agent proposes adding a registered repo it can read to its node. It
+   * writes one `proposal` line whose `ref` names the repo; the cockpit shows
+   * **Add <repo>** on it, and only that click reshapes the node (T205).
+   */
+  async proposeRepo(input: unknown): Promise<ThreadEntry> {
+    const { session, repo, why } = validateVerbInput('propose_repo', input);
+    if (this.isDirector(session)) {
+      throw new Error(
+        'propose_repo: the Director has no node to add a repo to; draft or create a node on that repo instead',
+      );
+    }
+    const caller = this.caller(session);
+    if (caller.role !== 'worker') {
+      throw new Error(
+        caller.role === 'coordinator'
+          ? 'propose_repo: a coordinator adds a part on another repo with add_child, not propose_repo'
+          : `propose_repo: a ${caller.role} session cannot propose a repo; only a node's own agent can`,
+      );
+    }
+    const node = this.options.streams.get(caller.stream);
+    if (node.archived === true || node.human.status === 'closed') {
+      throw new Error('propose_repo: this node is closed; nothing can be added to it');
+    }
+    if (node.human.status === 'landed') {
+      throw new Error('propose_repo: this node is merged; propose a follow-up with propose_next');
+    }
+    if (node.helper_of !== undefined) {
+      throw new Error("propose_repo: a helper works only in its host node's repo");
+    }
+    const all = this.options.streams.list();
+    const role = nodeRole(node, liveChildrenOf(node.id, all), all);
+    if (role === 'project') {
+      throw new Error(
+        "propose_repo: this is a project's root; its repos are set in the project's settings, not proposed",
+      );
+    }
+    if (role === 'coordinating') {
+      throw new Error('propose_repo: this node coordinates parts; its coordinator adds a part');
+    }
+    if (node.repo === repo) throw new Error(`propose_repo: this node already works in ${repo}`);
+    // A repo the node's project can't read reads exactly as one that isn't registered.
+    const repos = this.options.store.getRepos();
+    const readable = (name: string) =>
+      Object.hasOwn(repos, name) && canReadRepo(repos, name, node.project);
+    if (!readable(repo)) {
+      const names = Object.keys(repos)
+        .filter((name) => name !== node.repo && readable(name))
+        .sort();
+      throw new Error(
+        `propose_repo: no registered repo named ${repo} that this node can read; ${
+          names.length === 0
+            ? 'there is none to propose'
+            : `it can read ${names.slice(0, 20).join(', ')}`
+        }`,
+      );
+    }
+    const ref = repoProposalRef(repo);
+    const thread = this.options.store.readThread(node.id);
+    if (thread.some((entry) => entry.kind === 'proposal' && entry.ref === ref)) {
+      throw new Error(
+        `propose_repo: you already proposed ${repo} on this node; the human adds it from that line`,
+      );
+    }
+    return this.options.streams.appendThread(
+      'agent',
+      caller.stream,
+      { kind: 'proposal', body: `Proposes adding **${repo}**: ${why}`.slice(0, 800), ref },
       session,
     );
   }
@@ -780,5 +857,6 @@ export function verbHandlers(
     create_node: (input) => service.createNode(input),
     start_node: (input) => service.startNode(input),
     restart_node: (input) => service.restartNode(input),
+    propose_repo: (input) => service.proposeRepo(input),
   };
 }

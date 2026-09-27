@@ -65,6 +65,7 @@ describe('agent verbs', () => {
       'create_node',
       'start_node',
       'restart_node',
+      'propose_repo',
     ]);
     for (const verb of AGENT_VERBS) {
       expect(AGENT_VERB_SCHEMAS[verb]).toBeDefined();
@@ -113,6 +114,29 @@ describe('agent verbs', () => {
     expect(() =>
       validateVerbInput('finding', { session, severity: 'huge', file: 'a', text: 'x' }),
     ).toThrow();
+  });
+
+  test('T455: propose_repo takes a repo name and a why, and nothing else', () => {
+    const input = validateVerbInput('propose_repo', {
+      session,
+      repo: ' web ',
+      why: 'the export button lives there',
+    });
+    expect(input).toEqual({ session, repo: 'web', why: 'the export button lives there' });
+    const propose = (fields: Record<string, unknown>) =>
+      AGENT_VERB_SCHEMAS.propose_repo.safeParse({ session, repo: 'web', why: 'x', ...fields })
+        .success;
+    expect(propose({})).toBe(true);
+    // A name the registry could hold: no path, no spaces, no markup in the line it writes.
+    expect(propose({ repo: '../web' })).toBe(false);
+    expect(propose({ repo: 'we b' })).toBe(false);
+    expect(propose({ repo: '**web**' })).toBe(false);
+    expect(propose({ repo: '' })).toBe(false);
+    expect(propose({ why: '' })).toBe(false);
+    expect(propose({ why: 'x'.repeat(801) })).toBe(false);
+    // The agent names no node: the session's own is the one proposed for.
+    expect(propose({ node: ulid() })).toBe(false);
+    expect(Object.keys(AGENT_VERB_SCHEMAS.propose_repo.shape)).toEqual(['session', 'repo', 'why']);
   });
 
   test('bodies are capped at the thread body cap', () => {

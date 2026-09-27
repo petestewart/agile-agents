@@ -783,6 +783,20 @@ describe('proposalLineAction (T445, audit r7 #3)', () => {
     expect(proposalLineAction(line('repo:web', 'line'), base)).toBeUndefined();
   });
 
+  test('T455: once the repo is added, the line offers nothing (in place, or as a part)', () => {
+    const convo = { ...base, current: undefined };
+    expect(proposalLineAction(line('repo:web'), convo)).toEqual({ kind: 'add_repo', repo: 'web' });
+    // A conversation given web is a work node on web.
+    expect(proposalLineAction(line('repo:web'), { ...convo, current: 'web' })).toBeUndefined();
+    // A work node on api given web is coordinating, with api and web parts.
+    const split = { ...convo, partRepos: ['api', 'web'] };
+    expect(proposalLineAction(line('repo:web'), split)).toBeUndefined();
+    expect(proposalLineAction(line('repo:docs'), split)).toEqual({
+      kind: 'add_repo',
+      repo: 'docs',
+    });
+  });
+
   test('an autonomy proposal points to its open card; a contract proposal to the plan', () => {
     expect(proposalLineAction(line(`proposals/${AP}.yaml`), base)).toEqual({
       kind: 'decide',

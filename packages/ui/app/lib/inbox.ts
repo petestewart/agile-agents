@@ -868,8 +868,9 @@ export function isAgentFailure(text: string): boolean {
 
 /**
  * T445 (audit r7 #3): what a `proposal` line in a node's chat offers. Only a
- * line whose `ref` proposes a repository (`repo:<name>`, T205's + Repo)
- * offers "Add <repo>" — a registered repo, not the node's own, and never on
+ * line whose `ref` proposes a repository (`repo:<name>`, T205's + Repo; an
+ * agent writes it with `propose_repo`, T455) offers "Add <repo>" — a
+ * registered repo the node doesn't have yet (nor a part of it), and never on
  * a project's root (its repositories are its settings). An autonomy
  * proposal (`proposals/AP-….yaml`) points to its decision card while that
  * is open; a contract proposal (`contracts/C-….yaml`) to the plan. The words
@@ -887,6 +888,8 @@ export function proposalLineAction(
     repos: readonly string[];
     /** The node's own repository. */
     current?: string | undefined;
+    /** T455: its open parts' repositories (once added, a split node has the repo in a part). */
+    partRepos?: readonly string[];
     projectRoot: boolean;
     /** The ids of this node's open decision cards. */
     cards: readonly string[];
@@ -897,7 +900,12 @@ export function proposalLineAction(
   if (entry.kind !== 'proposal' || entry.ref === undefined) return undefined;
   const repo = repoOfProposalRef(entry.ref);
   if (repo !== undefined) {
-    if (input.projectRoot || repo === input.current || !input.repos.includes(repo)) {
+    if (
+      input.projectRoot ||
+      repo === input.current ||
+      input.partRepos?.includes(repo) === true ||
+      !input.repos.includes(repo)
+    ) {
       return undefined;
     }
     return { kind: 'add_repo', repo };

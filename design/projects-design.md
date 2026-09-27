@@ -227,7 +227,7 @@ You don't have to restructure the tree by hand to change where work happens (you
 | Working in api | + web | It becomes a coordinating node. Its api work moves into a child "<node> · api" (T446: a part is named for its node, then its repo, e.g. "Rotate the API keys · api"), keeping the branch and commits, and a new child "<node> · web" is created | The same chat carries on at this node; the two parts appear as rows under it |
 | Working in api, nothing committed | Switch to web | As above, and the empty api part is closed | The same chat, now on web |
 
-New children start with the thread so far, the docs and the decisions, so nothing has to be copied by hand. An agent can also suggest it ("this needs a change in web too; add it?"), and you add it with one click.
+New children start with the thread so far, the docs and the decisions, so nothing has to be copied by hand. An agent can also suggest it ("this needs a change in web too; add it?"), and you add it with one click: a conversation's or a work node's agent calls `propose_repo` with a registered repo its project can read (not its own), which writes one proposal line with an **Add <repo>** button; only that click reshapes the node (T455, D45).
 
 Example: you ask a conversation node "can we show sale prices?" and it explains how. You click + api and + web. The node is now "Show sale prices" with two parts, and you are still in the same conversation.
 

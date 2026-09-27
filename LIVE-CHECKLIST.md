@@ -1260,3 +1260,15 @@ can grow into work in place. Keep the cockpit open; every step is in it.
       seconds), and its agent starts on the goal. The chat still opens with
       your question and the answer, then `Goal changed: …`,
       `Repo added: ledger-lite; …` and `Now work on the goal above. …`.
+
+### 10.4 An agent proposes a repo
+
+- [ ] Open **Shop** and press **a**: `Does the agile-test-repo README name
+      ledger-lite? If it should, propose adding the repo.`, Enter.
+- [ ] Its answer comes with a **Proposal** in the chat, `Proposes adding
+      **agile-test-repo**: …` (its `propose_repo`), with an **Add
+      agile-test-repo** button under it. Nothing has changed yet: the node
+      still reads `Conversation`.
+- [ ] Click **Add agile-test-repo**. The same node becomes `Work` on its own
+      branch of agile-test-repo (`Repo added: agile-test-repo; now a work node
+      on stream/…`), the chat carries on, and the button has gone.
