@@ -443,7 +443,11 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   says "Fix its login or install, then reply to start it again…"; the
   picker tags a vendor whose command isn't on the daemon's PATH "Not
   installed" (session defaults' `not_installed`). A done node with its own
-  branch keeps its Merge card even when it has parts.
+  branch keeps its Merge card even when it has parts. T438: the chat reads a
+  failed start as "The agent couldn't start: … Fix its install or login,
+  then send a message to start it again.", the empty-chat hero stays hidden
+  under a failure, and Details → Agent says why a session ended in words
+  ("Stopped with an error: <vendor line>" in red; a clean end in grey).
 - **What a worker proposes next** (T427): an agent's `propose_next` line
   ("Proposal") reads as the node it proposes — "Next: **<title>**", the goal
   under it (T435) — and carries **Create node…**, which opens New node with

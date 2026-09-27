@@ -19,6 +19,7 @@ import {
   deliveryStateWords,
   detailsOpenFrom,
   diffTotals,
+  endedReasonText,
   headerActions,
   isNearBottom,
   listWords,
@@ -815,5 +816,41 @@ describe('an agent that failed (T438)', () => {
     expect(
       agentFailed([{ by: 'human', kind: 'line', body: 'could not start the agent: typo' }]),
     ).toBe(false);
+  });
+});
+
+describe('why a session ended, in Details (T438)', () => {
+  test("a non-zero exit is an error with the vendor's line, never the exit code's words", () => {
+    expect(
+      endedReasonText({
+        status: 'error',
+        ended_reason: 'process exited (code 1): Invalid API key · Please run /login',
+      }),
+    ).toEqual({
+      text: 'Stopped with an error: Invalid API key · Please run /login',
+      tone: 'error',
+    });
+    expect(endedReasonText({ status: 'error', ended_reason: 'process exited (code 137)' })).toEqual(
+      { text: 'Stopped with an error (exit code 137)', tone: 'error' },
+    );
+  });
+  test('a clean end, a finished turn and a stop are quiet', () => {
+    expect(endedReasonText({ status: 'stopped', ended_reason: 'process exited (code 0)' })).toEqual(
+      { text: 'The process ended', tone: 'muted' },
+    );
+    expect(endedReasonText({ status: 'stopped', ended_reason: 'its turn finished' })).toEqual({
+      text: 'Finished its turn',
+      tone: 'muted',
+    });
+    expect(endedReasonText({ status: 'stopped', ended_reason: 'stopped: reshape' })).toEqual({
+      text: 'Stopped: reshape',
+      tone: 'muted',
+    });
+    expect(endedReasonText({ status: 'stopped' })).toBeUndefined();
+  });
+  test('any other failure keeps its words, capitalised, as an error', () => {
+    expect(
+      endedReasonText({ status: 'error', ended_reason: 'transport error: pipe closed' }),
+    ).toEqual({ text: 'Transport error: pipe closed', tone: 'error' });
   });
 });
