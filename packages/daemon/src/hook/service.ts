@@ -338,6 +338,10 @@ export class HookService {
       upstreamBranch: branches.upstream,
       headBranch: branches.head,
       ...this.visibilityFor(stream, worktreePath),
+      // T442: a conversation (no repo of its own) reads repos as a coordinator does.
+      ...(stream !== DIRECTOR_NODE && this.streamRecord(stream)?.repo === undefined
+        ? { noOwnRepo: true as const }
+        : {}),
     };
   }
 
