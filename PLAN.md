@@ -2773,11 +2773,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T457 Permission posture: Trusted or Ask (D45 follow-up)
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** worker (manager reviews)
 - **Scope:** Pete, 2026-09-27. Vendors keep their default permission mode (the daemon answers every ask; a vendor bypass flag would switch the daemon's gating off, and a hook-less vendor would have none). Add a daemon-side posture per home, project or repo. **Trusted** (like Claude's bypass or Codex's yolo): an agent reads anything on disk except the agile home and secrets, without asking. **Ask**: a read outside the registered repos is a Needs me card (Allow once, Always for this project, Deny) instead of today's deny. Both: the project's own repos lead the brief's readable list; writes stay in the node's own worktree; the never-without-human list (protected-branch pushes, deletes outside the worktree, the agile home) is unchanged.
 - **Acceptance Criteria:** The setting in `packages/shared`, Settings and config.yaml; the hook and ACP responder both apply it (one decision function); the card's Always adds a read root for the project.
 - **Validation Steps:** `permissions/decide.test.ts` and hook tests for both postures; a control-room e2e for the Ask card.
+- **Notes:** Branch T457-permission-posture (worker; manager reviewed; merged after T456 with three import/key-list conflicts kept both sides). `permissions: trusted | ask` (default Ask) at home and per project (`packages/shared/src/posture.ts`); one `readVerdict` in `policy-tables.ts` serves the hook, the ACP responder, the benign-command table, the coordinator's `cd` and the `git -C` read allowlist: worktree, then `CREDENTIAL_PATHS`, then hidden roots, then read roots, then the posture. Ask raises an "Allow this read?" card (Allow once, Always for this project, Deny); Always stores the dir in the project's `read_roots` (never `/` or the home dir). Hardened: `~`, `..` through symlinks, globs and braces, recursive reads (`grep -r`, `rg`), case variants, the reviewer's reads, `grep -e`. Settings → General → Permissions, and per project. Repo level not added (the node's project decides). Gate on the merged tree (with T456): lint, typecheck clean, `bun test` 3367/0. The worker's review found three older Bash classifier holes; confirmed by the manager and filed as T459.
 
 ### Ticket: T458 A conversation knows the work in progress
 - **Priority:** P3
@@ -2786,6 +2787,14 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Scope:** Pete, 2026-09-27. A conversation's brief lists the repos it can read (paths only) and, when asked about a node, that node's branch and worktree; it doesn't know what else is in flight. Add a capped "Work in progress" section: the project's open work nodes with repo, branch, worktree, status and progress line, so a question like "is anyone touching the export code?" is answered from the right worktree.
 - **Acceptance Criteria:** Capped by count and characters like the other brief sections; ids only where the agent needs them; closed and merged nodes left out.
 - **Validation Steps:** `runner/brief.test.ts` for the section and its caps.
+
+### Ticket: T459 Bash classifier holes: input redirects, xargs, braces in write paths
+- **Priority:** P0
+- **Status:** In Progress
+- **Owner:** manager
+- **Scope:** Found by T457's review, confirmed on the merged tree with `decidePermission` (engineer, Ask): `cat </root/.agile/config.yaml`, `tr a b < file` and `echo <path> | xargs cat` are allowed although `cat <path>` of the agile home is denied; `echo a /tmp/x | xargs cp` and `touch a/{b,../../x}` are allowed although they write outside the worktree. The agile home holds the classifier key and every node's state.
+- **Acceptance Criteria:** An input redirect's file (`<f`, `0<f`, `< f`, fused or spaced) is read-checked like an argument. `xargs` is not stripped as a harmless wrapper: its command runs on paths the checker can't see, so an `xargs` pipeline is held for the human (or denied), whatever it runs. A write path with a brace or glob pattern is checked after expansion or refused when a branch can leave the worktree. Existing allowed shapes stay allowed.
+- **Validation Steps:** `permissions/decide.test.ts` cases for each spelling above (they allow on the old code); full `bun test`.
 
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
