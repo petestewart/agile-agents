@@ -10124,10 +10124,16 @@ describe('views and polish (Playwright e2e, T436, audit r6)', () => {
         await page.goto(`${cockpit.base}/?view=events`);
         const row = (id: string) => `[data-testid="event-log"] [data-event="${id}"]`;
         await page.locator(row(done.id)).waitFor();
-        expect(await page.locator(`${row(done.id)} .cr-lens-log-detail`).textContent()).toBe(
+        // The words need the node's row, which comes with the first cockpit frame (it may land
+        // after the events): until then a row reads "finished".
+        await waitForText(
+          page,
+          `${row(done.id)} .cr-lens-log-detail`,
           'Add CSV import is ready to merge',
         );
-        expect(await page.locator(`${row(replied.id)} .cr-lens-log-detail`).textContent()).toBe(
+        await waitForText(
+          page,
+          `${row(replied.id)} .cr-lens-log-detail`,
           'Does import handle Excel? replied',
         );
         const events = (await page.locator('[data-testid="event-log"]').textContent()) ?? '';
@@ -10144,13 +10150,12 @@ describe('views and polish (Playwright e2e, T436, audit r6)', () => {
         // The parent's Activity reads the same words; the node's own reads the overlap the same way.
         await page.goto(`${cockpit.base}/?node=${parent.id}&tab=activity`);
         const activity = (id: string) => `[data-testid="activity"] [data-event="${id}"]`;
-        await page.locator(activity(done.id)).waitFor();
-        expect(await page.locator(activity(done.id)).textContent()).toContain(
-          'Add CSV import is ready to merge',
-        );
-        expect(await page.locator(activity(replied.id)).textContent()).toContain(
-          'Does import handle Excel? replied',
-        );
+        await page
+          .locator(activity(done.id), { hasText: 'Add CSV import is ready to merge' })
+          .waitFor();
+        await page
+          .locator(activity(replied.id), { hasText: 'Does import handle Excel? replied' })
+          .waitFor();
         await page.goto(`${cockpit.base}/?node=${work.id}&tab=activity`);
         await page.locator(activity(overlap.id)).waitFor();
         expect(await page.locator(`${activity(overlap.id)} [data-icon="overlap"]`).count()).toBe(1);
