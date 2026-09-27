@@ -10,6 +10,7 @@
  *    repo (`repos.yaml`) and per project (T379). An unset field inherits the
  *    next step, and says what ("Inherits Claude Opus 5.5"). T423: models by
  *    name, and each change saves at once, as the other sections' controls do.
+ *    T456: If the agent fails (the home's `vendor_failure`).
  *  - **Repositories** — `SettingsRepos.tsx`: every repo with its icon,
  *    delivery and visibility; Add repository (`AddRepo.tsx`).
  *  - **Classifier** — T167: the TypeSafe API key, write-only (the daemon
@@ -30,10 +31,12 @@ import type {
   SessionDefaultsFields,
   SessionDefaultsPatch,
   SessionDefaultsStatus,
+  SessionVendor,
   TrackerSettingsInput,
   TrackerSettingsStatus,
+  VendorFailureSettings,
 } from '@agile-agents/shared';
-import { GATE_KINDS } from '@agile-agents/shared';
+import { GATE_KINDS, resolveVendorFailure, vendorHasHooks } from '@agile-agents/shared';
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import {
   type DaemonHealth,
@@ -52,7 +55,7 @@ import {
   setQuickDrafts,
   updateProject,
 } from '../lib/api';
-import { agentLabel, sessionIdText } from '../lib/chat';
+import { agentLabel, sessionIdText, vendorLabel } from '../lib/chat';
 import { foldedRepos, inheritingReposText, resolvedFor } from '../lib/defaults';
 import { useOptionalFeed } from '../lib/feed-context';
 import { useOptionalShell } from '../lib/shell';
@@ -83,6 +86,7 @@ import {
   Button,
   ConfirmDialog,
   Field,
+  IconButton,
   PageHeader,
   RepoIcon,
   Segmented,
@@ -699,6 +703,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
             resolved={status.resolved}
             save={async (patch) => setStatus(await saveHomeSessionDefaults(patch))}
           />
+          <VendorFailureCard status={status} onSaved={setStatus} />
           {/* T436 (audit r6 #25): in the order they win: a project's default before its repositories'. */}
           {projects.length > 0 ? (
             <div className="cr-set-subhd" data-testid="settings-session-projects-heading">
@@ -770,6 +775,153 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
         </>
       ) : null}
     </SetSection>
+  );
+}
+
+/**
+ * T456 (D43 follow-up): the home's `vendor_failure` — when an agent's
+ * process fails on its own, retry it once, then the next agent on the list.
+ * Home only here; a project's record or a repo's `repos.yaml` entry may
+ * override it (through the API), resolved project, repository, global.
+ * Saves on change.
+ */
+function VendorFailureCard({
+  status,
+  onSaved,
+}: {
+  status: SessionDefaultsStatus;
+  onSaved: (next: SessionDefaultsStatus) => void;
+}): JSX.Element {
+  // What is being saved shows at once (a switch flips when clicked); a refusal puts it back.
+  const [saving, setSaving] = useState<VendorFailureSettings | undefined>();
+  const own = saving ?? status.home.vendor_failure ?? {};
+  const shown = resolveVendorFailure(own);
+  const busy = saving !== undefined;
+  const [error, setError] = useState<string | undefined>();
+  const { saved, markSaved, clear } = useSavedFlash();
+  const save = async (next: VendorFailureSettings): Promise<void> => {
+    setSaving(next);
+    setError(undefined);
+    clear();
+    try {
+      onSaved(await saveHomeSessionDefaults({ vendor_failure: next }));
+      markSaved();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setSaving(undefined);
+    }
+  };
+  const setList = (fallback: SessionVendor[]) => void save({ ...own, fallback });
+  const list = shown.fallback;
+  const addable = status.vendors.filter((v) => !list.includes(v));
+  const notInstalled = (v: SessionVendor) => status.not_installed?.[v];
+  return (
+    <SetCard
+      title="If the agent fails"
+      icon="refresh"
+      description="When an agent’s process stops with an error on its own, its node can keep going on the same branch and thread. When nothing is left to try, the node is stuck, as before. This is the global setting; a project or repository can override it (its vendor_failure setting)."
+      testid="settings-vendor-failure"
+      status={<SavedNote show={saved} testid="settings-vendor-failure-saved" />}
+    >
+      <SetRow
+        label="Retry once"
+        hint="Start the same agent and model again, once. Not after a login or model refusal: a retry can’t fix those."
+      >
+        <Switch
+          label="Start it again once"
+          data-testid="settings-vendor-failure-retry"
+          checked={shown.retry}
+          disabled={busy}
+          onChange={(e) => void save({ ...own, retry: e.target.checked })}
+        />
+      </SetRow>
+      <SetRow
+        label="Then try"
+        hint="In this order, the next installed agent takes over with its own default model."
+        testid="settings-vendor-failure-list"
+      >
+        {list.length === 0 ? (
+          <span className="cr-set-muted" data-testid="settings-vendor-failure-none">
+            No other agent
+          </span>
+        ) : (
+          <ol className="cr-set-order">
+            {list.map((v, i) => (
+              <li key={v} data-testid={`settings-vendor-failure-item-${v}`}>
+                <span>{vendorLabel(v)}</span>
+                {notInstalled(v) !== undefined ? (
+                  <Badge title={notInstalled(v)}>Not installed</Badge>
+                ) : null}
+                {!vendorHasHooks(v) ? (
+                  <Badge title="Your rules are checked by its permission requests only.">
+                    No hooks
+                  </Badge>
+                ) : null}
+                <span className="cr-set-order-btns">
+                  <IconButton
+                    icon="arrow-up"
+                    label={`Move ${vendorLabel(v)} up`}
+                    size="sm"
+                    disabled={busy || i === 0}
+                    data-testid={`settings-vendor-failure-up-${v}`}
+                    onClick={() =>
+                      setList([
+                        ...list.slice(0, i - 1),
+                        v,
+                        ...list.slice(i - 1, i),
+                        ...list.slice(i + 1),
+                      ])
+                    }
+                  />
+                  <IconButton
+                    icon="x"
+                    label={`Remove ${vendorLabel(v)}`}
+                    size="sm"
+                    disabled={busy}
+                    data-testid={`settings-vendor-failure-remove-${v}`}
+                    onClick={() => setList(list.filter((x) => x !== v))}
+                  />
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
+        {addable.length > 0 ? (
+          <select
+            aria-label="Add an agent to try"
+            data-testid="settings-vendor-failure-add"
+            value=""
+            disabled={busy}
+            onChange={(e) => {
+              const v = e.target.value as SessionVendor;
+              if (v) setList([...list, v]);
+            }}
+          >
+            <option value="">Add an agent…</option>
+            {addable.map((v) => (
+              <option key={v} value={v} title={notInstalled(v)}>
+                {vendorLabel(v)}
+                {notInstalled(v) !== undefined ? ' (not installed)' : ''}
+              </option>
+            ))}
+          </select>
+        ) : null}
+      </SetRow>
+      <SetRow
+        label="Agents without hooks"
+        hint="Claude and Pi check every tool call against your rules before it runs; the others ask permission for edits and commands only. Off: Claude or Pi falls back only to Claude or Pi."
+      >
+        <Switch
+          label="Allow a fallback without hooks"
+          data-testid="settings-vendor-failure-hookless"
+          checked={shown.allow_hookless}
+          disabled={busy}
+          onChange={(e) => void save({ ...own, allow_hookless: e.target.checked })}
+        />
+      </SetRow>
+      <FormError error={error} />
+    </SetCard>
   );
 }
 

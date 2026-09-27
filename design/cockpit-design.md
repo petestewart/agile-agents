@@ -198,6 +198,8 @@ create ──► human.status: open, agent.status: idle
 
 One live worker at a time per stream. A reviewer may run concurrently with a finished worker; it cannot write (§4.2).
 
+D43 narrows "session exit ► done": a vendor that exits non-zero on its own (not a stop of the daemon's or the human's, not after a finished turn) leaves the node `blocked` with the vendor's last stderr line. T456 puts a recovery in front of that end state, set by `vendor_failure` (project, repo, home): the same vendor once more (not after a login or model refusal), then the next installed vendor on its `fallback` list (one with pre-tool hooks when the failed one had them, unless `allow_hookless`), on the same node, worktree and thread, at most three restarts per node an hour. The node stays `working`, the thread says who failed and what took over, and an `agent_restarted` record goes to Events; the parent hears nothing until the list is spent and D43's `blocked` follows.
+
 ---
 
 ## 3. The inbox

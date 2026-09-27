@@ -105,6 +105,8 @@ The daemon writes these files only through a validating store. A corrupt file is
 
 A new session's vendor, model and effort come from, in order: what you pick when starting it, the project's settings, the repo's settings, the home default, then the built-in `claude` / `claude-opus-5-5` / `low`. A model only carries over to the same vendor. Settings → Agents edits the defaults.
 
+When an agent's process fails on its own (it exits with an error, not stopped by you or the daemon), `vendor_failure` decides what happens: `retry` (default on) starts the same agent again once, except after a login or model refusal; then each vendor on `fallback` (default none) that is installed takes its place in turn, on the same node, branch and thread, told to check `git status` before it goes on. A vendor with pre-tool hooks (Claude, Pi) falls back only to another with hooks unless `allow_hookless` is on. At most three restarts per node an hour. When nothing is left, the node is stuck with the vendor's error, as before. It is set in `config.yaml` (Settings → Agents → If the agent fails), and a repo's entry in `repos.yaml` or a project can override it, field by field, in the same order as the session defaults.
+
 ## Development
 
 ```sh
