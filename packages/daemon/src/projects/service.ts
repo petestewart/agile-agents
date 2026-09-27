@@ -13,6 +13,8 @@ import {
   validateProjectCreateInput,
   validateProjectUpdateInput,
 } from '@agile-agents/shared';
+import { isPathInside } from '../permissions/command';
+import { readRootRefusal } from '../permissions/policy-tables';
 import type { StateStore } from '../store/store';
 import { type StreamService, UnknownRepoError } from '../streams/service';
 
@@ -69,16 +71,40 @@ export class ProjectService {
   async update(id: string, rawPatch: unknown): Promise<Project> {
     const patch: ProjectUpdateInput = validateProjectUpdateInput(rawPatch);
     if (patch.repos !== undefined) this.assertReposKnown(patch.repos);
+    for (const root of patch.read_roots ?? []) assertReadRoot(root);
     return this.store.updateProject(id, (before) => {
       const next: Project = { ...before, autonomy: { ...before.autonomy, ...patch.autonomy } };
       if (patch.name !== undefined) next.name = patch.name;
       if (patch.repos !== undefined) next.repos = [...new Set(patch.repos)];
-      for (const key of ['session', 'vendor_failure', 'delivery', 'tracker'] as const) {
+      for (const key of [
+        'session',
+        'vendor_failure',
+        'delivery',
+        'tracker',
+        'permissions',
+      ] as const) {
         const value = patch[key];
         if (value === null) delete next[key];
         else if (value !== undefined) (next as Record<string, unknown>)[key] = value;
       }
+      // T457: the whole list (Settings removes one); empty is none.
+      if (patch.read_roots === null || patch.read_roots?.length === 0) {
+        Reflect.deleteProperty(next, 'read_roots');
+      } else if (patch.read_roots !== undefined) next.read_roots = [...new Set(patch.read_roots)];
       return next;
+    });
+  }
+
+  /**
+   * T457: "Always for this project" — every node in the project may read
+   * `root` from now on. A root already covered by one on the list is a no-op.
+   */
+  async addReadRoot(id: string, root: string): Promise<Project> {
+    assertReadRoot(root);
+    return this.store.updateProject(id, (before) => {
+      const roots = before.read_roots ?? [];
+      if (roots.some((existing) => isPathInside(root, existing))) return before;
+      return { ...before, read_roots: [...roots, root] };
     });
   }
 
@@ -86,4 +112,10 @@ export class ProjectService {
   async archive(id: string): Promise<Project> {
     return this.store.updateProject(id, (before) => ({ ...before, archived: true }));
   }
+}
+
+/** T457: `/`, the home dir or a dir above it is refused as a read root (use Trusted instead). */
+function assertReadRoot(root: string): void {
+  const refusal = readRootRefusal(root);
+  if (refusal !== undefined) throw new Error(`invalid read root ${refusal}`);
 }

@@ -115,6 +115,8 @@ export interface GateRequestContext {
   session?: AgentId;
   /** The classifier rule whose band routed this call, so the answer is attributed back (§6.3). */
   rule?: KnowledgeId;
+  /** T457: a held Ask read: the dir an "Always for this project" answer adds (`HilRequest.read_root`). */
+  readRoot?: string;
 }
 
 /**
@@ -252,6 +254,7 @@ export class GateService {
       ...(ctx.call !== undefined ? { call: ctx.call } : {}),
       ...(ctx.session !== undefined ? { session: ctx.session } : {}),
       ...(ctx.rule !== undefined ? { rule: ctx.rule } : {}),
+      ...(ctx.readRoot !== undefined ? { read_root: ctx.readRoot } : {}),
     };
 
     let record: HilRequest = base; // plain human

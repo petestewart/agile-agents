@@ -262,7 +262,7 @@ export function isPipedIntoBareShell(atom: CommandAtom): boolean {
  * or among the root's own ancestors) is followed before the containment
  * check. Never throws: falls back to the plain resolved path.
  */
-function realpathNearestExisting(p: string): string {
+export function realpathNearestExisting(p: string): string {
   const target = resolve(p);
   const missingSegments: string[] = [];
   let current = target;
@@ -900,10 +900,47 @@ export function benignPathArgs(tokens: string[]): string[] {
   return tokens.slice(1).filter((t) => !isFlagToken(t) && !isTestBracketClose(t, head));
 }
 
-/** `grep`/`rg` path arguments: the first non-flag token is the pattern, the rest are paths. */
+/**
+ * `grep`/`rg` path arguments: the first non-flag token is the pattern, the
+ * rest are paths. T457: unless the pattern comes from a flag (`-e`/`-f` in
+ * any bundle or fused spelling, `--regexp`, `--file`) or there is none (`rg
+ * --files`): then every non-flag token is a path, and so is a pattern
+ * file's name (`-f`), fused or not. Only an `-e`/`--regexp` value is
+ * skipped. Lowercase `e`/`f` only (`-E`, `-F` are grep's syntax switches).
+ */
 export function grepPathArgs(tokens: string[]): string[] {
-  const rest = tokens.slice(1).filter((t) => !isFlagToken(t));
-  return rest.slice(1);
+  const args = tokens.slice(1);
+  const positionals: string[] = [];
+  let fromFlag = false;
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i] ?? '';
+    if (t === '--files' || /^--regexp=/.test(t)) {
+      fromFlag = true;
+    } else if (t === '--regexp') {
+      fromFlag = true;
+      i++; // its value is the pattern
+    } else if (t === '--file') {
+      fromFlag = true; // its value, the next token, is a path
+    } else if (/^--file=/.test(t)) {
+      fromFlag = true;
+      positionals.push(t.slice('--file='.length));
+    } else if (/^-[^-]/.test(t)) {
+      const letters = t.slice(1);
+      const at = letters.search(/[ef]/);
+      if (at >= 0) {
+        fromFlag = true;
+        const value = letters.slice(at + 1);
+        if (letters[at] === 'f') {
+          if (value.length > 0) positionals.push(value);
+        } else if (value.length === 0) {
+          i++; // `-e PATTERN`
+        }
+      }
+    } else if (!isFlagToken(t)) {
+      positionals.push(t);
+    }
+  }
+  return fromFlag ? positionals : positionals.slice(1);
 }
 
 /**

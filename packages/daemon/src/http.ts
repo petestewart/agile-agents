@@ -14,12 +14,15 @@ import {
   ClassifierKeyInputSchema,
   DIRECTOR_NODE,
   type HilDecision,
+  type HilId,
   HilIdSchema,
+  type HilRequest,
   KnowledgeCreateInputSchema,
   KnowledgeIdSchema,
   KnowledgePatchSchema,
   KnowledgeTestInputSchema,
   MESSAGE_BODY_MAX_CHARS,
+  PermissionsInputSchema,
   type QuestionId,
   QuestionIdSchema,
   QuickDraftsInputSchema,
@@ -84,6 +87,7 @@ import {
   buildRuleReport,
   testRules,
 } from './knowledge';
+import { NotAReadGateError, answerReadAlways } from './permissions/posture';
 import type { ProjectService } from './projects';
 import {
   QuestionAlreadyAnsweredError,
@@ -307,11 +311,11 @@ function isLoopbackHost(req: Request): boolean {
   return host === null || isLoopbackUrl(`http://${host}`);
 }
 
-/** `/api/hil/<id>/<action>`, action approve|deny|note. */
-type HilAction = 'approve' | 'deny' | 'note';
+/** `/api/hil/<id>/<action>`, action approve|deny|note, or (T457) always: a held read's "Always for this project". */
+type HilAction = 'approve' | 'deny' | 'note' | 'always';
 
 function matchHilAction(pathname: string): { id: string; action: HilAction } | undefined {
-  const match = pathname.match(/^\/api\/hil\/([^/]+)\/(approve|deny|note)$/);
+  const match = pathname.match(/^\/api\/hil\/([^/]+)\/(approve|deny|note|always)$/);
   if (!match || match[1] === undefined || match[2] === undefined) return undefined;
   return {
     id: decodeURIComponent(match[1]),
@@ -337,6 +341,8 @@ async function handleHilAction(
   gates: GateService,
   id: string,
   action: HilAction,
+  /** T457: the Always answer (`answerReadAlways`), when projects and streams are wired. */
+  always?: (id: HilId, note: string | undefined) => Promise<HilRequest>,
 ): Promise<Response> {
   const parsedId = HilIdSchema.safeParse(id);
   if (!parsedId.success) {
@@ -356,6 +362,11 @@ async function handleHilAction(
   }
 
   try {
+    if (action === 'always') {
+      if (always === undefined) return errorResponse(503, 'projects not available');
+      // The actor is always `human` for a browser write (bound in by the caller).
+      return jsonResponse(await always(parsedId.data, note));
+    }
     if (action === 'approve' || action === 'deny') {
       const decision: HilDecision = action === 'approve' ? 'approve' : 'deny';
       // The actor is always `human` for a browser write, never read from the body.
@@ -370,6 +381,7 @@ async function handleHilAction(
   } catch (err) {
     if (err instanceof GateNotFoundError) return errorResponse(404, err.message);
     if (err instanceof GateAlreadyResolvedError) return errorResponse(409, err.message);
+    if (err instanceof NotAReadGateError) return errorResponse(409, err.message);
     return errorResponse(400, messageOf(err));
   }
 }
@@ -637,6 +649,36 @@ async function handleQuickDraftsRoute(
   try {
     const config = await feed.store.setQuickDrafts(input.data.on, { by: 'human' });
     return jsonResponse({ on: config.quick_drafts !== false, available });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T457: Settings' permission posture for the home (a project overrides it
+ * with `POST /api/projects/:id` `{permissions}`):
+ *
+ *   GET  /api/settings/permissions  `{posture}`: `trusted` or `ask` (the default)
+ *   POST /api/settings/permissions  `{posture}`, live at the next tool call; same-origin only
+ */
+async function handlePermissionsRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/permissions') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  try {
+    if (req.method === 'GET') {
+      return jsonResponse({ posture: feed.store.getHomeConfig().permissions ?? 'ask' });
+    }
+    if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+    const input = PermissionsInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+    if (!input.success) return errorResponse(400, formatZodError('permissions', input.error));
+    const config = await feed.store.setPermissionPosture(input.data.posture, { by: 'human' });
+    return jsonResponse({ posture: config.permissions ?? 'ask' });
   } catch (err) {
     return errorResponse(400, messageOf(err));
   }
@@ -911,7 +953,7 @@ async function handlePlanRoute(
  *
  *   POST /api/proposals/:id/apply|dismiss  the human decides a coordinator's proposal card
  *   POST /api/streams/:id/autonomy         `{autonomy: level|null}`: the node's override
- *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null, name?, repos?}`: the project's levels, (T338) tracker settings, (T372) name and repos, and (T379) `session` defaults
+ *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null, name?, repos?}`: the project's levels, (T338) tracker settings, (T372) name and repos, (T379) `session` defaults, and (T457) `permissions` and `read_roots`
  */
 async function handleAutonomyRoute(
   req: Request,
@@ -952,6 +994,9 @@ async function handleAutonomyRoute(
         ...(body.repos !== undefined ? { repos: body.repos } : {}),
         // T379: the project's session defaults (P5); `null` clears them.
         ...(body.session !== undefined ? { session: body.session } : {}),
+        // T457: its permission posture (`null` inherits the home's) and its "Always" read roots.
+        ...(body.permissions !== undefined ? { permissions: body.permissions } : {}),
+        ...(body.read_roots !== undefined ? { read_roots: body.read_roots } : {}),
       }),
     );
   } catch (err) {
@@ -1683,6 +1728,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (draftsRoute) return draftsRoute;
         const trackerRoute = await handleTrackerSettingsRoute(req, url, feed, sameOrigin);
         if (trackerRoute) return trackerRoute;
+        const permissionsRoute = await handlePermissionsRoute(req, url, feed, sameOrigin);
+        if (permissionsRoute) return permissionsRoute;
         const settingsRoute = await handleSettingsRoute(req, url, feed, sameOrigin);
         if (settingsRoute) return settingsRoute;
 
@@ -1796,7 +1843,17 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (hilMatch && req.method === 'POST') {
           if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
           if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
-          return handleHilAction(req, feed.gates, hilMatch.id, hilMatch.action);
+          const { projects, streams } = feed;
+          return handleHilAction(
+            req,
+            feed.gates,
+            hilMatch.id,
+            hilMatch.action,
+            projects !== undefined && streams !== undefined
+              ? (id, note) =>
+                  answerReadAlways({ gates: feed.gates, streams, projects }, id, 'human', note)
+              : undefined,
+          );
         }
 
         if (url.pathname === '/ws') {

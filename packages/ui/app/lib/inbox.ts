@@ -30,7 +30,11 @@ export function cardTitle(item: InboxItem): string {
     case 'question':
       return 'Question';
     case 'gate':
-      return isLandGate(item) ? 'Approve this merge?' : 'Allow this action?';
+      return isLandGate(item)
+        ? 'Approve this merge?'
+        : item.read_root !== undefined
+          ? 'Allow this read?'
+          : 'Allow this action?';
     case 'rule_accept':
       return `${capitalise(item.knowledge_kind ?? 'knowledge')} proposed`;
     case 'rule_batch':
@@ -928,6 +932,7 @@ export function cardOutcome(
     approve: item.kind === 'plan_approve' ? 'Plan approved' : land ? 'Merging' : 'Allowed',
     deny: land ? 'Held' : 'Denied',
     note: 'Note sent',
+    always: 'Allowed for the project',
     accept: 'Accepted',
     retire: 'Retired',
     apply: 'Applied',

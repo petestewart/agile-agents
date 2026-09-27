@@ -42,7 +42,7 @@ import type {
   AcpToolKind,
 } from '../permissions';
 import type { PermissionRole } from '../permissions';
-import { readDenyReason } from '../permissions/policy-tables';
+import { readPathsVerdict } from '../permissions/policy-tables';
 import type { RuleCheckContext } from '../permissions/rule-checks';
 import { patternRulesOf, runPatternRules } from '../permissions/rule-checks';
 import { commandPaths, visibilityDenyReason } from '../permissions/visibility';
@@ -154,11 +154,14 @@ function claudeToolRawInput(
 /** Claude's built-in read tools: their paths go through the same read allow-list as Bash's. */
 const BUILT_IN_READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead']);
 
-/** T213: the deny reason for a built-in read outside what this node may read. */
-function builtInReadDenyReason(
+/**
+ * T213, T457: a built-in read outside what this node may read: `deny`, or
+ * `ask` for a read the Ask posture holds for the human.
+ */
+function builtInReadVerdict(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
-): string | undefined {
+): HookDecision | undefined {
   if (payload.tool_name === undefined || !BUILT_IN_READ_TOOLS.has(payload.tool_name)) {
     return undefined;
   }
@@ -166,14 +169,24 @@ function builtInReadDenyReason(
   const paths = [input.file_path, input.path, input.notebook_path].filter(
     (v): v is string => typeof v === 'string' && v.length > 0,
   );
-  const policy = {
-    worktreePath: ctx.worktreePath,
-    ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
-    ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
-  };
-  for (const raw of paths) {
-    const reason = readDenyReason(raw, policy);
-    if (reason !== undefined) return reason;
+  const verdict = readPathsVerdict(
+    paths,
+    {
+      worktreePath: ctx.worktreePath,
+      ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
+      ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
+      ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
+    },
+    // T457: Grep reads every file under its path.
+    { walks: payload.tool_name === 'Grep' },
+  );
+  if (verdict.action === 'deny') return { decision: 'deny', reason: verdict.reason };
+  if (verdict.action === 'hil') {
+    return {
+      decision: 'ask',
+      reason: verdict.reason,
+      ...(verdict.readAsk !== undefined ? { readAsk: verdict.readAsk } : {}),
+    };
   }
   return undefined;
 }
@@ -186,8 +199,8 @@ function roleToolVerdict(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
 ): HookDecision | undefined {
-  const readDenied = builtInReadDenyReason(ctx, payload);
-  if (readDenied !== undefined) return { decision: 'deny', reason: readDenied };
+  const read = builtInReadVerdict(ctx, payload);
+  if (read !== undefined) return read;
   // P20: a coordinator has no network. WebFetch/WebSearch have no ACP kind,
   // so the role table never sees them; deny them here by name.
   if (
@@ -213,11 +226,19 @@ function roleToolVerdict(
     worktreePath: ctx.worktreePath,
     ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
     ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
+    ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
     request,
   });
 
   if (decision.kind === 'deny') return { decision: 'deny', reason: decision.reason };
-  if (decision.kind === 'hil') return { decision: 'ask', reason: decision.reason };
+  if (decision.kind === 'hil') {
+    const readAsk = decision.hilRequest.readAsk;
+    return {
+      decision: 'ask',
+      reason: decision.reason,
+      ...(readAsk !== undefined ? { readAsk } : {}),
+    };
+  }
 
   return undefined;
 }
@@ -266,6 +287,8 @@ function patternRuleVerdict(
           coordinatorReads: {
             ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
             ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
+            // T457: Trusted widens a read-only `git -C` as it widens every read.
+            ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
           },
         }
       : {}),

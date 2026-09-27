@@ -16,6 +16,7 @@ import type {
   HilRequest,
   InboxItem,
   NodeRole,
+  PermissionPosture,
   ProjectSessionDefaults,
   Question,
   RepoRemote,
@@ -204,6 +205,9 @@ export interface CockpitProjectRow {
   tracker?: TrackerSettings;
   /** T379: the project's own session defaults (P5). Absent when it names none, or from an older daemon. */
   session?: ProjectSessionDefaults;
+  /** T457: the project's permission posture (absent inherits the home's) and its "Always" read roots. */
+  permissions?: PermissionPosture;
+  read_roots?: string[];
 }
 
 /** T161: mirror of `delivery/service.ts`'s `LandPreflight` — the Merge button's "before". */

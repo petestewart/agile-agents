@@ -14,6 +14,7 @@ import type {
   Autonomy,
   Contract,
   KnowledgeItem,
+  PermissionPosture,
   Plan,
   SessionRole,
   StatusCard,
@@ -73,9 +74,11 @@ export interface BuildBriefInput {
   /** T339: the repo's own check commands (repos.yaml `checks`, else package.json scripts). */
   checks?: readonly string[];
   /** T330 (§4.4): the registered repos it may read (a work node: the others than its own). */
-  readableRepos?: readonly { name: string; path: string }[];
+  readableRepos?: readonly ReadableRepo[];
   /** T330: the session runs in a worktree of its own (a work node), not a session dir. */
   inWorktree?: boolean;
+  /** T457: the node's permission posture: what a read outside those repos gets. */
+  readPosture?: PermissionPosture;
   /** Overrides `BRIEF_THREAD_ENTRIES`. */
   threadEntries?: number;
   /** Overrides `BRIEF_CHAR_CEILING`. Test seam. */
@@ -219,19 +222,50 @@ function renderEntry(entry: ThreadEntry): string {
 }
 
 /**
+ * T330, T457: a repo the node may read. `own`: its project lists it. No
+ * `name`: a dir the project allowed with "Always for this project".
+ */
+export interface ReadableRepo {
+  name?: string;
+  path: string;
+  own?: true;
+}
+
+/** T457: one line on what a read outside the listed repos gets. */
+const POSTURE_LINES: Record<PermissionPosture, string> = {
+  trusted:
+    "Permissions: Trusted. You may also read other paths on disk without asking (read only), but never the agile home, other projects' private repos or credential files (~/.ssh, ~/.aws and the like).",
+  ask: 'Permissions: Ask. A read anywhere else asks the human first: the call is refused with a gate id; wait for the answer, then retry the exact call.',
+};
+
+/**
  * T330 (projects-design §4.4, §7): every agent may read the registered repos
  * its project can see, so it is told where they are. A node with no
  * worktree (a conversation, a coordinator) also learns how code work starts;
  * a work node reads the others beside its own worktree.
  */
 export function readableReposSection(
-  repos: readonly { name: string; path: string }[],
+  repos: readonly ReadableRepo[],
   inWorktree = false,
+  posture?: PermissionPosture,
 ): string {
+  const line = (repo: ReadableRepo) =>
+    repo.name !== undefined
+      ? `- ${repo.name}: \`${repo.path}\``
+      : `- \`${repo.path}\` (allowed for this project)`;
+  const own = repos.filter((repo) => repo.own === true);
+  const others = repos.filter((repo) => repo.own !== true);
+  // T457: the project's own repos lead; the rest follow under their own heading.
   const lines =
     repos.length === 0
       ? ['none registered yet']
-      : repos.map((repo) => `- ${repo.name}: \`${repo.path}\``);
+      : own.length === 0
+        ? repos.map(line)
+        : [
+            "Your project's repos:",
+            ...own.map(line),
+            ...(others.length > 0 ? ['', 'Other repos you can read:', ...others.map(line)] : []),
+          ];
   const body = inWorktree
     ? [
         'Besides your own worktree, you may read these registered repos (read only; change code only in your worktree):',
@@ -243,6 +277,7 @@ export function readableReposSection(
         '',
         'Code changes happen in a work node: the operator starts one by adding a repo to this node with **+ Repo**, which cuts a branch and a worktree in that repo.',
       ];
+  if (posture !== undefined) body.push('', POSTURE_LINES[posture]);
   return section('Repos you can read', body.join('\n'));
 }
 
@@ -412,7 +447,7 @@ function assemble(
   if (babysit !== undefined) parts.push(babysit);
 
   if (input.readableRepos !== undefined) {
-    parts.push(readableReposSection(input.readableRepos, input.inWorktree));
+    parts.push(readableReposSection(input.readableRepos, input.inWorktree, input.readPosture));
   }
 
   parts.push(section('Knowledge in scope', `${renderRules(rules)}\n\n${LOOKUP_HINT}`));

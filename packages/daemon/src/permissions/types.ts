@@ -12,7 +12,8 @@
  * kind-only and the table's safe defaults (deny/hil) apply.
  */
 
-import type { KnowledgeItem } from '@agile-agents/shared';
+import type { KnowledgeItem, PermissionPosture } from '@agile-agents/shared';
+import type { ReadAsk } from './policy-tables';
 
 /** The permission-table role a session is judged under (`permissionRoleFor`): worker = `engineer`, reviewer/lessons = `reviewer`, coordinator = `coordinator` (P20). */
 export type PermissionRole = 'engineer' | 'reviewer' | 'coordinator';
@@ -86,6 +87,8 @@ export interface DecisionContext {
   readRoots?: readonly string[];
   /** T213: private repos not shared with the node, and the agile home: never readable outside the worktree. */
   hiddenRoots?: readonly string[];
+  /** T457: the node's permission posture: a read outside every root is allowed (`trusted`) or held (`ask`). */
+  posture?: PermissionPosture;
   request: AcpPermissionRequestParams;
   /**
    * The pattern rules in scope (§5.3) and what their detectors need: this
@@ -121,4 +124,6 @@ export interface HilRequestDraft {
   /** One-line summary, under the body cap. */
   summary: string;
   classified: PermissionRequest;
+  /** T457: a read the Ask posture held, and the dir "Always for this project" would add. */
+  readAsk?: ReadAsk;
 }

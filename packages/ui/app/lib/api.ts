@@ -10,6 +10,7 @@ import type {
   AutonomyProposal,
   ClassifierKeyStatus,
   Contract,
+  PermissionPosture,
   Plan,
   Policy,
   Project,
@@ -103,6 +104,11 @@ export function decideGate(
   note?: string,
 ): Promise<unknown> {
   return post(`/api/hil/${encodeURIComponent(id)}/${decision}`, note ? { note } : {});
+}
+
+/** T457: a held read's "Always for this project": the gate's dir joins the project's read roots, and the call goes through. */
+export function alwaysGate(id: string, note?: string): Promise<unknown> {
+  return post(`/api/hil/${encodeURIComponent(id)}/always`, note ? { note } : {});
 }
 
 /** A gate card's free text with no decision — recorded on the pending gate. */
@@ -545,6 +551,19 @@ export function setQuickDrafts(on: boolean): Promise<QuickDrafts> {
   return post('/api/settings/quick-drafts', { on }) as Promise<QuickDrafts>;
 }
 
+/** T457: the home's permission posture (a project may override it). */
+export interface PermissionsSetting {
+  posture: PermissionPosture;
+}
+
+export function getPermissions(): Promise<PermissionsSetting> {
+  return get<PermissionsSetting>('/api/settings/permissions');
+}
+
+export function setPermissions(posture: PermissionPosture): Promise<PermissionsSetting> {
+  return post('/api/settings/permissions', { posture }) as Promise<PermissionsSetting>;
+}
+
 export function getHealth(): Promise<DaemonHealth> {
   return get('/health');
 }
@@ -555,7 +574,15 @@ export function getHealth(): Promise<DaemonHealth> {
  */
 export function updateProject(
   id: string,
-  patch: { name?: string; repos?: string[]; session?: ProjectSessionDefaults | null },
+  patch: {
+    name?: string;
+    repos?: string[];
+    session?: ProjectSessionDefaults | null;
+    /** T457: `null` inherits the home's posture. */
+    permissions?: PermissionPosture | null;
+    /** T457: the whole list of "Always" read roots (Settings removes one). */
+    read_roots?: string[] | null;
+  },
 ): Promise<Project> {
   return post(`/api/projects/${encodeURIComponent(id)}`, patch) as Promise<Project>;
 }

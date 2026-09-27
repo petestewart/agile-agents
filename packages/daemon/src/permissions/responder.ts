@@ -12,14 +12,24 @@
 
 import { join } from 'node:path';
 import type { AcpRequestId } from '@agile-agents/acp-client';
-import { type AgentId, ulid, validateAgentMessage } from '@agile-agents/shared';
+import {
+  type AgentId,
+  type PermissionPosture,
+  ulid,
+  validateAgentMessage,
+} from '@agile-agents/shared';
 import type { StateStore } from '../store';
 import { buildEvent } from '../store';
 import { classifyPermissionRequest } from './classify';
 import { decidePermission } from './decide';
 import { worktreeBranchLookups } from './push-detector';
 import type { PatternRuleGate } from './rule-checks';
-import type { AcpPermissionRequestParams, Decision, PermissionRole } from './types';
+import type {
+  AcpPermissionRequestParams,
+  Decision,
+  HilRequestDraft,
+  PermissionRole,
+} from './types';
 
 /** Default time a human has to answer before a `hil_request` is overdue (enforced by the lifecycle owner). */
 export const DEFAULT_HIL_DEADLINE_MS = 60 * 60 * 1000;
@@ -59,7 +69,19 @@ export interface PermissionResponderContext {
   /** T305, T330 (P20): where a read may reach beyond the cwd, and what it never may (as `DecisionContext`). */
   readRoots?: readonly string[];
   hiddenRoots?: readonly string[];
+  /** T457: the node's permission posture (as `DecisionContext`). */
+  posture?: PermissionPosture;
+  /**
+   * T457: a read the Ask posture held goes through the hook's route band
+   * (`hook/route-band.ts`): a Needs me card and a deny to retry, the retry
+   * allowed once the human says yes. Absent: parked on `requestHil` as any
+   * other `hil`.
+   */
+  routeRead?: (draft: HilRequestDraft, reason: string) => Promise<RoutedReadVerdict>;
 }
+
+/** What the route band said about one held read at this tier. */
+export type RoutedReadVerdict = { decision: 'allow' } | { decision: 'deny'; reason: string };
 
 /** How a pending `hil_request` was answered. */
 export type HilResolution = { optionId: string } | { cancelled: true };
@@ -158,6 +180,22 @@ export function buildPermissionResponder(
     );
   }
 
+  /** A held Ask read's routed answer by option id, or `undefined` to park it as before. */
+  async function routeHeldRead(
+    decision: Extract<Decision, { kind: 'hil' }>,
+    request: AcpPermissionRequestParams,
+  ): Promise<Exclude<Decision, { kind: 'hil' }> | undefined> {
+    if (decision.hilRequest.readAsk === undefined || ctx.routeRead === undefined) return undefined;
+    const options = request.options ?? [];
+    const allow = options.find((o) => o.kind === 'allow_once');
+    const reject = options.find((o) => o.kind === 'reject_once');
+    if (allow === undefined || reject === undefined) return undefined;
+    const verdict = await ctx.routeRead(decision.hilRequest, decision.reason);
+    return verdict.decision === 'allow'
+      ? { kind: 'allow', optionId: allow.optionId }
+      : { kind: 'deny', optionId: reject.optionId, reason: verdict.reason };
+  }
+
   return {
     async handleRequest(requestId, request) {
       const gate = ctx.patternRules;
@@ -167,6 +205,7 @@ export function buildPermissionResponder(
         request,
         ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
         ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
+        ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
         ...(gate !== undefined
           ? {
               patternRules: gate.rules(),
@@ -185,6 +224,14 @@ export function buildPermissionResponder(
         await recordRuleStats(decision);
         await logDecision(request, decision);
         return decision;
+      }
+
+      // T457: a held Ask read is routed like the hook's (a card, deny now, the retry allowed once).
+      const routed = await routeHeldRead(decision, request);
+      if (routed !== undefined) {
+        ctx.session.respondPermission(requestId, selectOption(routed.optionId));
+        await logDecision(request, routed);
+        return routed;
       }
 
       await logDecision(request, decision);

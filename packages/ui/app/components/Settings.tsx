@@ -3,7 +3,8 @@
  * sub-navigation on the left (a scrolling row of tabs on a phone):
  *
  *  - **General** — the theme (system, light, dark; per browser), browser
- *    notifications (T388; per browser, off by default), the decisions that
+ *    notifications (T388; per browser, off by default), T457's permissions
+ *    (Trusted or Ask, per home and per project), the decisions that
  *    are always yours (T416: what the Permissions page said, as one note) and
  *    the daemon this cockpit talks to.
  *  - **Agents** — T170 (D17) session defaults: global (`config.yaml`), per
@@ -80,6 +81,7 @@ import {
   errorText,
   useSavedFlash,
 } from './SettingsCard';
+import { PermissionsCard } from './SettingsPermissions';
 import { ReposSection } from './SettingsRepos';
 import {
   Badge,
@@ -282,6 +284,8 @@ function GeneralSection(): JSX.Element {
       <NotificationsCard />
 
       <QuickDraftsCard />
+
+      <PermissionsCard />
 
       <DecisionsCard />
 

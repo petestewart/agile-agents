@@ -44,7 +44,7 @@ export interface RuleCheckContext extends PushDetectorContext {
    * has no worktree). A read-only `git -C` into a dir this scope may read is
    * not an escape; for every other session, and any other dir, it still is.
    */
-  coordinatorReads?: Pick<PolicyContext, 'readRoots' | 'hiddenRoots'>;
+  coordinatorReads?: Pick<PolicyContext, 'readRoots' | 'hiddenRoots' | 'posture'>;
 }
 
 function pathMatchesGlob(path: string, glob: string): boolean {

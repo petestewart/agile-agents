@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { ULID_PATTERN, UlidSchema, formatZodError } from './ids';
+import { PermissionPostureSchema, ReadRootsSchema } from './posture';
 import { VendorFailureSchema } from './session-defaults';
 
 export const PROJECT_ID_PATTERN = new RegExp(`^P-${ULID_PATTERN.source.slice(1, -1)}$`);
@@ -81,6 +82,10 @@ export const ProjectSchema = z
       .strict()
       .default({ coordinator: 'advise', director: 'advise' }),
     tracker: TrackerSettingsSchema.optional(),
+    /** T457: overrides the home's permission posture for this project's nodes; absent inherits. */
+    permissions: PermissionPostureSchema.optional(),
+    /** T457: dirs an "Always for this project" answer let every node here read. */
+    read_roots: ReadRootsSchema.optional(),
     /** Like a stream's: hidden from `list` by default, nothing moves on disk. */
     archived: z.literal(true).optional(),
     created_at: z.string().min(1),
@@ -117,6 +122,10 @@ export const ProjectUpdateInputSchema = z
       .strict()
       .optional(),
     tracker: TrackerSettingsSchema.nullable().optional(),
+    /** T457: `null` inherits the home's posture again. */
+    permissions: PermissionPostureSchema.nullable().optional(),
+    /** T457: the whole list (Settings removes one); `null` or `[]` clears it. */
+    read_roots: ReadRootsSchema.nullable().optional(),
   })
   .strict();
 export type ProjectUpdateInput = z.infer<typeof ProjectUpdateInputSchema>;

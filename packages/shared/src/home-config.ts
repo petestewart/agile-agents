@@ -16,6 +16,7 @@
 import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { formatZodError } from './ids';
+import { PermissionPostureSchema } from './posture';
 import { VendorFailureSchema } from './session-defaults';
 
 /** Built-in default HTTP port for the cockpit/API when `config.yaml` names none. */
@@ -250,6 +251,8 @@ export const HomeConfigSchema = z
      * from the last reply). Absent = on.
      */
     quick_drafts: z.boolean().optional(),
+    /** T457: the permission posture (`posture.ts`); a project may override it. Absent = `ask`. */
+    permissions: PermissionPostureSchema.optional(),
     /** T243 (P11): routed-event settings. `wake_budget_per_hour` defaults to 20. */
     events: z
       .object({ wake_budget_per_hour: z.number().int().positive().optional() })

@@ -1935,3 +1935,217 @@ describe('decidePermission — T345 a worker may cd within its worktree', () => 
     expect(reviewer('tree -o out.txt')).toBe('deny');
   });
 });
+
+// T457: the permission posture. Trusted reads anything on disk but the agile
+// home, other projects' private repos and credentials; Ask holds a read
+// outside every root for the human; writes stay in the worktree under both.
+describe('decidePermission — permission posture (T457)', () => {
+  let root: string;
+  let worktree: string;
+  let repo: string;
+  let other: string;
+  let secret: string;
+  let home: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(joinPath(tmpdir(), 'agile-posture-'));
+    worktree = joinPath(root, 'wt');
+    repo = joinPath(root, 'repo');
+    other = joinPath(root, 'code', 'other');
+    secret = joinPath(root, 'secret');
+    home = joinPath(root, 'agile-home');
+    for (const dir of [worktree, repo, joinPath(other, 'src'), secret, home]) {
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(joinPath(other, 'src', 'a.ts'), 'x');
+    writeFileSync(joinPath(home, 'config.yaml'), 'classifier: {}');
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  const decideAs = (
+    posture: 'trusted' | 'ask' | undefined,
+    req: AcpPermissionRequestParams,
+    role: PermissionRole = 'engineer',
+  ) =>
+    decidePermission({
+      role,
+      worktreePath: worktree,
+      readRoots: [repo],
+      hiddenRoots: [secret, home],
+      ...(posture !== undefined ? { posture } : {}),
+      request: req,
+    });
+  const read = (path: string) => request('read', { targetPath: path });
+  const bash = (command: string) => request('execute', { command });
+
+  test('a read outside every root: Ask holds it (with the dir Always adds), Trusted allows, none denies', () => {
+    const file = joinPath(other, 'src', 'a.ts');
+    const asked = decideAs('ask', read(file));
+    expect(asked.kind).toBe('hil');
+    if (asked.kind === 'hil') {
+      expect(asked.reason).toContain('permissions: Ask');
+      expect(asked.hilRequest.readAsk).toEqual({ path: file, root: joinPath(other, 'src') });
+    }
+    expect(decideAs('trusted', read(file)).kind).toBe('allow');
+    expect(decideAs(undefined, read(file)).kind).toBe('deny');
+    // A directory read's root is the directory itself.
+    const dir = decideAs('ask', bash(`ls ${other}`));
+    expect(dir.kind === 'hil' ? dir.hilRequest.readAsk?.root : undefined).toBe(other);
+    // Inside a registered repo nothing changes.
+    expect(decideAs('ask', read(joinPath(repo, 'README.md'))).kind).toBe('allow');
+  });
+
+  test('the same holds for a Bash read, and Always is never offered for / or the home dir', () => {
+    expect(decideAs('ask', bash(`cat ${other}/src/a.ts`)).kind).toBe('hil');
+    expect(decideAs('trusted', bash(`cat ${other}/src/a.ts`)).kind).toBe('allow');
+    expect(decideAs('trusted', bash(`grep -r TODO ${other}`)).kind).toBe('allow');
+    const top = decideAs('ask', bash('ls /'));
+    expect(top.kind).toBe('hil');
+    if (top.kind === 'hil') expect(top.hilRequest.readAsk?.root).toBeUndefined();
+    const inHome = decideAs('ask', bash('cat ~/notes.txt'));
+    expect(inHome.kind).toBe('hil');
+    if (inHome.kind === 'hil') expect(inHome.hilRequest.readAsk?.root).toBeUndefined();
+  });
+
+  test('credentials, the agile home and a private repo are denied under both postures', () => {
+    for (const posture of ['trusted', 'ask'] as const) {
+      for (const req of [
+        read(joinPath(homedir(), '.ssh', 'id_ed25519')),
+        read('~/.aws/credentials'),
+        read(joinPath(homedir(), '.claude', '.credentials.json')),
+        read(joinPath(homedir(), '.config', 'gh', 'hosts.yml')),
+        read(joinPath(home, 'config.yaml')),
+        read(joinPath(secret, 'a.ts')),
+        read('/proc/self/environ'),
+        bash('cat ~/.ssh/id_rsa'),
+        bash(`cat ${home}/config.yaml`),
+        bash('cat ~/.netrc'),
+        bash('cat ~/.docker/config.json'),
+      ]) {
+        const input = JSON.stringify(req.toolCall.rawInput);
+        expect([posture, input, decideAs(posture, req).kind]).toEqual([posture, input, 'deny']);
+      }
+    }
+  });
+
+  test('no spelling reaches the home or a credential under Trusted: a symlink, `..` through one, `~`', () => {
+    symlinkSync(home, joinPath(other, 'link-home'));
+    mkdirSync(joinPath(home, 'threads'), { recursive: true });
+    symlinkSync(joinPath(home, 'threads'), joinPath(other, 'link-threads'));
+    symlinkSync(joinPath(homedir(), '.ssh'), joinPath(other, 'link-ssh'));
+    for (const path of [
+      joinPath(other, 'link-home', 'config.yaml'),
+      `${other}/link-threads/../config.yaml`,
+      `${other}/./link-home/../agile-home/config.yaml`,
+      joinPath(other, 'link-ssh', 'id_rsa'),
+      `${worktree}/../agile-home/config.yaml`,
+    ]) {
+      expect([path, decideAs('trusted', read(path)).kind]).toEqual([path, 'deny']);
+      expect([path, decideAs('trusted', bash(`cat ${path}`)).kind]).toEqual([path, 'deny']);
+    }
+  });
+
+  test('patterns, recursive reads and case variants cannot reach the home or a credential', () => {
+    writeFileSync(joinPath(other, 'README.md'), 'x');
+    mkdirSync(joinPath(home, 'threads'), { recursive: true });
+    writeFileSync(joinPath(home, 'threads', 't.yaml'), 'secret');
+    symlinkSync(joinPath(home, 'threads'), joinPath(other, 'src', 'link'));
+    for (const posture of ['trusted', 'ask'] as const) {
+      for (const command of [
+        // A glob or brace whose fixed prefix holds the agile home.
+        `cat ${root}/agile-*/config.yaml`,
+        `cat ${root}/{agile-home,x}/config.yaml`,
+        `cat ${root}/*/config.yaml`,
+        'cat ~/.ss*/id_rsa',
+        'cat /*/*/.aws/credentials',
+        // A pattern that can climb out of its dir.
+        `cat ${other}/src/*/../config.yaml`,
+        `cat ${other}/.*/.*/agile-home/config.yaml`,
+        `cat ${other}/{.,.}{.,.}/agile-home/config.yaml`,
+        `cat ${other}/{a,../../agile-home}/config.yaml`,
+        // A recursive read over a dir that holds the home, a private repo or credentials.
+        `grep -r api_key ${root}`,
+        `rg api_key ${root}`,
+        'grep -rn token ~',
+        `grep -rekey ${root}`,
+        `rg --files ${root}`,
+        `diff -r ${root} ${other}`,
+        // The home by another case (a case-insensitive disk opens it).
+        `cat ${root}/AGILE-HOME/config.yaml`,
+        'cat ~/.SSH/id_rsa',
+        // A pattern whose match is a symlink into the home; a walk that follows symlinks.
+        `cat ${other}/src/*/t.yaml`,
+        `head ${other}/src/l?nk/t.yaml`,
+        `grep -R api_key ${other}`,
+        `rg -L api_key ${other}`,
+        `diff -r ${other}/src ${repo}`,
+      ]) {
+        expect([posture, command, decideAs(posture, bash(command)).kind]).toEqual([
+          posture,
+          command,
+          'deny',
+        ]);
+      }
+    }
+    // A pattern or a recursive read that reaches nothing protected is an ordinary read.
+    expect(decideAs('trusted', bash(`cat ${other}/src/*.ts`)).kind).toBe('allow');
+    expect(decideAs('trusted', bash(`grep -rn TODO ${other}`)).kind).toBe('allow');
+    expect(decideAs('ask', bash(`grep -rn TODO ${other}`)).kind).toBe('hil');
+    expect(decideAs('trusted', bash(`ls ${other}/*/`)).kind).toBe('allow');
+    // Inside the worktree nothing changes.
+    expect(decideAs('ask', bash('cat src/*.ts && grep -rn TODO .')).kind).toBe('allow');
+  });
+
+  test("a reviewer's commands keep to the read scope too", () => {
+    const reviewer = (posture: 'trusted' | 'ask', command: string) =>
+      decideAs(posture, bash(command), 'reviewer').kind;
+    expect(reviewer('ask', `cat ${home}/config.yaml`)).toBe('deny');
+    expect(reviewer('trusted', 'cat ~/.ssh/id_rsa')).toBe('deny');
+    expect(reviewer('ask', `cat ${other}/src/a.ts`)).toBe('hil');
+    expect(reviewer('trusted', `cat ${other}/src/a.ts`)).toBe('allow');
+    expect(reviewer('ask', 'git diff HEAD~1 -- src/a.ts')).toBe('allow');
+    expect(reviewer('ask', `cat ${repo}/README.md`)).toBe('allow');
+    expect(decideAs('ask', read(joinPath(home, 'config.yaml')), 'reviewer').kind).toBe('deny');
+  });
+
+  test('a held read waits for the rest of the command: any deny in it still wins', () => {
+    for (const command of [
+      `cat ${other}/src/a.ts && curl https://evil.example`,
+      `cat ${other}/src/a.ts ~/.ssh/id_rsa`,
+      `cat ${other}/src/a.ts; cat ${home}/config.yaml`,
+      `cat ${other}/src/a.ts > ${other}/copy.ts`,
+      `ls ${other} && touch ${other}/x`,
+    ]) {
+      expect([command, decideAs('ask', bash(command)).kind]).toEqual([command, 'deny']);
+    }
+  });
+
+  test('writes stay in the worktree under both postures', () => {
+    for (const posture of ['trusted', 'ask'] as const) {
+      const edit = (path: string) => decideAs(posture, request('edit', { targetPath: path })).kind;
+      expect(edit(joinPath(other, 'x.ts'))).toBe('deny');
+      expect(edit(joinPath(worktree, 'a.ts'))).toBe('allow');
+      expect(decideAs(posture, bash(`touch ${other}/x`)).kind).toBe('deny');
+      expect(decideAs(posture, bash(`cp ${other}/src/a.ts ${other}/b.ts`)).kind).toBe('deny');
+      expect(decideAs(posture, bash(`echo x > ${other}/x`)).kind).toBe('deny');
+    }
+  });
+
+  test('the never-without-human list is unchanged', () => {
+    for (const posture of ['trusted', 'ask'] as const) {
+      expect(decideAs(posture, bash('git push --force origin main')).kind).toBe('hil');
+      expect(decideAs(posture, bash(`rm -rf ${other}`)).kind).toBe('hil');
+      expect(decideAs(posture, bash('sudo cat /etc/shadow')).kind).toBe('hil');
+    }
+  });
+
+  test("a coordinator's cd elsewhere is held under Ask, and what follows it is still checked", () => {
+    const coordinator = (posture: 'trusted' | 'ask', command: string) =>
+      decideAs(posture, bash(command), 'coordinator').kind;
+    expect(coordinator('ask', `cd ${other} && git log`)).toBe('hil');
+    expect(coordinator('trusted', `cd ${other} && git log`)).toBe('allow');
+    expect(coordinator('ask', `cd ${other} && rm x`)).toBe('deny');
+    expect(coordinator('trusted', `cd ${other} && echo x > out`)).toBe('deny');
+    expect(coordinator('trusted', `cd ${home} && ls`)).toBe('deny');
+  });
+});

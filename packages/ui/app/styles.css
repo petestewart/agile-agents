@@ -7775,6 +7775,28 @@ div.cr-ov-ev:hover {
   color: var(--text-muted);
   font-size: var(--text-sm);
 }
+/* T457: a project's "Always" read roots under its permissions row, each removable. */
+.cr-set-roots {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cr-set-roots li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.cr-set-roots code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cr-set-muted {
   display: flex;
   align-items: center;

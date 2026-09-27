@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { UlidSchema, formatZodError } from './ids';
 import { KnowledgeIdSchema, KnowledgeKindSchema } from './knowledge';
+import { ReadRootSchema } from './posture';
 import { QUESTION_OPTIONS_MAX, QuestionOptionSchema } from './question';
 
 /**
@@ -97,6 +98,8 @@ export const InboxItemSchema = z
     knowledge_kind: KnowledgeKindSchema.optional(),
     /** T361: a `question` item's choices (the question's `options`); typing is always allowed. */
     options: InboxItemOptionsSchema.optional(),
+    /** T457: a routed read's gate: the dir "Always for this project" adds (`HilRequest.read_root`). */
+    read_root: ReadRootSchema.optional(),
   })
   .strict()
   .refine((item) => isRuleKind(item.kind) || item.stream !== undefined, {
@@ -118,6 +121,10 @@ export const InboxItemSchema = z
   .refine((item) => item.options === undefined || item.kind === 'question', {
     message: 'only a question item carries options',
     path: ['options'],
+  })
+  .refine((item) => item.read_root === undefined || item.kind === 'gate', {
+    message: 'only a gate item carries a read root',
+    path: ['read_root'],
   });
 export type InboxItem = z.infer<typeof InboxItemSchema>;
 

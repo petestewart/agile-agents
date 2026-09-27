@@ -63,10 +63,12 @@ import {
   WakeBudget,
   wakeVerdict,
 } from '../events/wake';
+import { type RouteBandGates, acpReadRouter } from '../hook/route-band';
 import { settingsFileName } from '../hook/settings';
 import type { RuleStatsOutcome } from '../knowledge/service';
 import { repoScriptChecks } from '../permissions/command';
 import { nodeReadScope } from '../permissions/policy-tables';
+import { projectReadSettings } from '../permissions/posture';
 import type { AboutParent, BriefDoc } from '../runner/brief';
 import { buildBrief } from '../runner/brief';
 import type { CliInvocation } from '../runner/cli-bin';
@@ -172,6 +174,9 @@ export interface OpenQuestionsSource {
  */
 export interface OpenGatesSource {
   list(): HilRequest[];
+  /** T457: raise and spend a routed read's gate at the ACP tier (`acpReadRouter`); both or neither. */
+  request?: RouteBandGates['request'];
+  consume?: RouteBandGates['consume'];
 }
 
 /** The docs a stream's brief sees. */
@@ -751,17 +756,35 @@ export class AttachService {
       });
     }
 
-    // T330 (§4.4, P20): the same read scope the hook tier gives this node.
-    const readScope = nodeReadScope(stream, () => repos, this.options.home);
+    // T330 (§4.4, P20): the same read scope the hook tier gives this node (T457: and posture).
+    const readScope = nodeReadScope(
+      stream,
+      () => repos,
+      this.options.home,
+      projectReadSettings(store),
+    );
     // 3. The brief. It names the repos the node may read (a work node: the
-    // others than its own), so the agent knows where they are.
-    const readableRepos = Object.entries(repos)
-      .filter(([name, entry]) => readScope.readRoots.includes(entry.path) && name !== stream.repo)
-      .map(([name, entry]) => ({ name, path: entry.path }));
+    // others than its own), so the agent knows where they are. T457: its
+    // project's own repos first, then the others, then the project's Always dirs.
+    const projectRepos = this.projectRepos(stream);
+    const readableRepos = [
+      ...Object.entries(repos)
+        .filter(([name, entry]) => readScope.readRoots.includes(entry.path) && name !== stream.repo)
+        .map(([name, entry]) => ({
+          name,
+          path: entry.path,
+          ...(projectRepos.has(name) ? { own: true as const } : {}),
+        })),
+      ...readScope.readRoots
+        .filter((root) => !Object.values(repos).some((entry) => entry.path === root))
+        .map((root) => ({ path: root })),
+    ];
     const inWorktree = worktreePath !== undefined;
     const ancestors = this.ancestorsOf(stream);
     const brief = buildBrief({
-      ...(!inWorktree || readableRepos.length > 0 ? { readableRepos, inWorktree } : {}),
+      ...(!inWorktree || readableRepos.length > 0 || readScope.posture === 'trusted'
+        ? { readableRepos, inWorktree, readPosture: readScope.posture }
+        : {}),
       role,
       stream,
       ancestors,
@@ -875,6 +898,8 @@ export class AttachService {
         sessionDir,
         provider,
         readScope,
+        // T457: a read the Ask posture held raises the same card as the hook tier's.
+        ...this.readRouter(stream.id, sessionId, cwd),
         ...(this.options.rules !== undefined ? { rules: this.options.rules } : {}),
         ...(this.options.spawn !== undefined ? { spawn: this.options.spawn } : {}),
         ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
@@ -981,6 +1006,35 @@ export class AttachService {
       // The home was torn down: "nothing open" ends the session rather than stranding it.
       return undefined;
     }
+  }
+
+  /** T457: the names of the repos the node's project lists (none without a readable project). */
+  private projectRepos(stream: Stream): ReadonlySet<string> {
+    if (stream.project === undefined) return new Set();
+    try {
+      return new Set(this.options.store.getProject(stream.project).repos);
+    } catch {
+      return new Set();
+    }
+  }
+
+  /** T457: the ACP tier's route for a held Ask read, when the gates can raise and spend. */
+  private readRouter(
+    stream: string,
+    session: string,
+    worktreePath: string,
+  ): { routeRead?: NonNullable<ReturnType<typeof acpReadRouter>> } {
+    const gates = this.options.gates;
+    if (gates?.request === undefined || gates.consume === undefined) return {};
+    return {
+      routeRead: acpReadRouter({
+        gates: { list: () => gates.list(), request: gates.request, consume: gates.consume },
+        store: this.options.store,
+        session,
+        stream,
+        worktreePath,
+      }),
+    };
   }
 
   /**

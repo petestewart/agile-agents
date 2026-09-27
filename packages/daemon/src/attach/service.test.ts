@@ -2276,6 +2276,32 @@ describe('T330: a conversation node reads the registered repos (§4.4)', () => {
     expect(brief).not.toContain('+ Repo');
   });
 
+  test("T457: the project's own repos lead the list, its Always dirs follow, and the posture is said", async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const project = await shopWithRepos();
+    const projects = new ProjectService(store, streams);
+    await projects.update(project.id, { repos: ['shared'], read_roots: [join(scratch, 'notes')] });
+    const node = await attachService.createNode('human', {
+      title: 'Plan',
+      goal: 'plan work',
+      project: project.id,
+    });
+    const session = node.sessions[0];
+    if (session === undefined) throw new Error('no session');
+    const brief = readFileSync(join(home, 'sessions', session.id, 'brief.md'), 'utf8');
+    const own = brief.indexOf("Your project's repos:");
+    expect(own).toBeGreaterThan(0);
+    expect(brief.indexOf(`- shared: \`${shared}\``)).toBeGreaterThan(own);
+    expect(brief.indexOf('Other repos you can read:')).toBeGreaterThan(
+      brief.indexOf(`- shared: \`${shared}\``),
+    );
+    expect(brief.indexOf(`- ledger-lite: \`${other}\``)).toBeGreaterThan(
+      brief.indexOf('Other repos you can read:'),
+    );
+    expect(brief).toContain(`- \`${join(scratch, 'notes')}\` (allowed for this project)`);
+    expect(brief).toContain('Permissions: Ask.');
+  });
+
   test('a work node with no other readable repo gets no list', async () => {
     attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });

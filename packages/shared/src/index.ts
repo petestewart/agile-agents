@@ -10,6 +10,7 @@ export const PACKAGE_NAME = '@agile-agents/shared';
 
 export * from './ids';
 export * from './effort';
+export * from './posture';
 export * from './stream';
 export * from './knowledge';
 export * from './rule';

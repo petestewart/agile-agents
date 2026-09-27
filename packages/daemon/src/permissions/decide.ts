@@ -8,7 +8,7 @@
 
 import { DEFAULT_PROTECTED_BRANCHES } from '@agile-agents/shared';
 import { classifyPermissionRequest } from './classify';
-import { checkNeverWithoutHuman, roleVerdict } from './policy-tables';
+import { type ReadAsk, checkNeverWithoutHuman, roleVerdict } from './policy-tables';
 import { type RuleCheckContext, runPatternRules } from './rule-checks';
 import type { AcpPermissionOption, Decision, DecisionContext, PermissionRequest } from './types';
 
@@ -27,12 +27,22 @@ function summarize(classified: PermissionRequest, reason: string): string {
   return `${head}: ${reason}`.slice(0, 800);
 }
 
-/** A `hil` decision: the route band's `classifier_review` draft. */
-function hil(classified: PermissionRequest, reason: string, why = reason): Decision {
+/** A `hil` decision: the route band's `classifier_review` draft; T457: a held Ask read names it. */
+function hil(
+  classified: PermissionRequest,
+  reason: string,
+  why = reason,
+  readAsk?: ReadAsk,
+): Decision {
   return {
     kind: 'hil',
     reason,
-    hilRequest: { hilKind: 'classifier_review', summary: summarize(classified, why), classified },
+    hilRequest: {
+      hilKind: 'classifier_review',
+      summary: summarize(classified, why),
+      classified,
+      ...(readAsk !== undefined ? { readAsk } : {}),
+    },
   };
 }
 
@@ -65,6 +75,7 @@ export function decidePermission(ctx: DecisionContext): Decision {
     worktreePath: ctx.worktreePath,
     ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
     ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
+    ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
   };
   // The daemon's own MCP verbs are never gated here: each enforces its own
   // role rules, and the vendor reports them as kind `other`, which every
@@ -135,5 +146,5 @@ export function decidePermission(ctx: DecisionContext): Decision {
     return { kind: 'deny', optionId: option.optionId, reason: verdict.reason };
   }
 
-  return hil(classified, verdict.reason);
+  return hil(classified, verdict.reason, verdict.reason, verdict.readAsk);
 }
