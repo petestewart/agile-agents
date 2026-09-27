@@ -1309,9 +1309,9 @@ describe('T458: a conversation knows the work in progress', () => {
         `- **Export CSV** (\`${sibling.id}\`): repo demo, branch \`stream/${sibling.id}-export-csv\`, worktree \`${worktree}\`; agent working, human open; changed just now`,
       );
       expect(brief).toContain('  - Latest: streaming rows to the writer');
-      // The node on a repo it can't read is left out (T420's parts list names it, no paths).
-      const wip = brief.slice(brief.indexOf('## Work in progress'));
-      expect(wip.slice(0, wip.indexOf('\n## ', 3))).not.toContain('Hidden work');
+      // The node on a repo it can't read is left out, here and (T458b) from its parent's parts.
+      expect(brief).toContain('Its parts:');
+      expect(brief).not.toContain('Hidden work');
       expect(brief).not.toContain(secret);
     } finally {
       rmSync(secret, { recursive: true, force: true });
