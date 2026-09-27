@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxItem } from '@agile-agents/shared';
 import {
+  DECIDED_LINGER_MS,
   DONE_STOCK,
   NO_CHANGES_TEXT,
   PATH_SEP,
   applyFilter,
   branchName,
+  cardOutcome,
   cardTitle,
   choiceIndexOfKey,
   choiceKey,
@@ -31,6 +33,7 @@ import {
   parseChoices,
   plainLine,
   planView,
+  proposalLineAction,
   proposalOf,
   questionView,
   replyCommand,
@@ -38,6 +41,7 @@ import {
   scopeWords,
   setupSteps,
   statusText,
+  withDecided,
 } from './inbox';
 
 const NODE = '01ARZ3NDEKTSV4RRFFQ69G5FA1';
@@ -759,5 +763,73 @@ describe('isAgentFailure (T437)', () => {
     expect(isAgentFailure('The agent couldn’t start: Gemini CLI can’t start')).toBe(true);
     expect(isAgentFailure('The agent stopped with an error: Invalid API key')).toBe(true);
     expect(isAgentFailure('The agent is stuck and needs a hand.')).toBe(false);
+  });
+});
+
+describe('proposalLineAction (T445, audit r7 #3)', () => {
+  const AP = 'AP-01ARZ3NDEKTSV4RRFFQ69G5FAV';
+  const base = { repos: ['api', 'web', 'docs'], current: 'api', projectRoot: false, cards: [AP] };
+  const line = (ref?: string, kind = 'proposal') => ({ kind, ...(ref ? { ref } : {}) });
+
+  test('only a repo proposal (its ref) offers + Repo, never the words of a line', () => {
+    expect(proposalLineAction(line('repo:web'), base)).toEqual({ kind: 'add_repo', repo: 'web' });
+    // Its own repo, an unregistered one, or on a project root: nothing.
+    expect(proposalLineAction(line('repo:api'), base)).toBeUndefined();
+    expect(proposalLineAction(line('repo:mobile'), base)).toBeUndefined();
+    expect(proposalLineAction(line('repo:web'), { ...base, projectRoot: true })).toBeUndefined();
+    // A line with no ref (propose_next, which names docs and web in its words): nothing.
+    expect(proposalLineAction(line(), base)).toBeUndefined();
+    // Not a proposal line.
+    expect(proposalLineAction(line('repo:web', 'line'), base)).toBeUndefined();
+  });
+
+  test('an autonomy proposal points to its open card; a contract proposal to the plan', () => {
+    expect(proposalLineAction(line(`proposals/${AP}.yaml`), base)).toEqual({
+      kind: 'decide',
+      card: AP,
+    });
+    // Decided already (no card): nothing to point to.
+    expect(
+      proposalLineAction(line(`proposals/${AP}.yaml`), { ...base, cards: [] }),
+    ).toBeUndefined();
+    const contract = line('contracts/C-01ARZ3NDEKTSV4RRFFQ69G5FAV.yaml');
+    expect(proposalLineAction(contract, { ...base, hasPlan: true })).toEqual({ kind: 'plan' });
+    expect(proposalLineAction(contract, base)).toBeUndefined();
+    expect(proposalLineAction(line('knowledge/K-01ARZ3NDEKTSV4RRFFQ69G5FAV.yaml'), base)).toBe(
+      undefined,
+    );
+  });
+});
+
+describe('a decided card (T445, audit r7 #5)', () => {
+  test('its outcome in words', () => {
+    expect(cardOutcome(item({ kind: 'done' }), 'merge', 'main')).toBe('Merged into main');
+    expect(cardOutcome(item({ kind: 'plan_approve' }), 'approve')).toBe('Plan approved');
+    expect(cardOutcome(item({ kind: 'proposal' }), 'apply')).toBe('Applied');
+    expect(cardOutcome(item({ kind: 'proposal' }), 'dismiss')).toBe('Dismissed');
+    expect(cardOutcome(item({ kind: 'question' }), 'choice:1')).toBe('Answered');
+    expect(cardOutcome(item({ kind: 'gate', context: 'Bash: rm -rf dist' }), 'approve')).toBe(
+      'Allowed',
+    );
+  });
+
+  test('stays in the list a moment after the frame drops it, then goes', () => {
+    const a = item({ kind: 'done', id: 'A', ts: '2026-09-26T10:00:00.000Z' });
+    const b = item({ kind: 'done', id: 'B', ts: '2026-09-26T10:01:00.000Z' });
+    const decided = new Map([['A', { item: a, gone: 1000 }]]);
+    // Still in the frame: shown once.
+    expect(withDecided([a, b], new Map([['A', { item: a }]]), 1000).map((i) => i.id)).toEqual([
+      'A',
+      'B',
+    ]);
+    // Dropped by the frame: still shown, until its moment is up.
+    expect(withDecided([b], decided, 1000 + DECIDED_LINGER_MS - 1).map((i) => i.id)).toEqual([
+      'B',
+      'A',
+    ]);
+    expect(withDecided([b], decided, 1000 + DECIDED_LINGER_MS).map((i) => i.id)).toEqual(['B']);
+    // Grouped, it sorts back into its place (oldest first).
+    const [section] = groupNeedsMe(withDecided([b], decided, 1500), [], []);
+    expect(section?.groups[0]?.items.map((i) => i.id)).toEqual(['A', 'B']);
   });
 });

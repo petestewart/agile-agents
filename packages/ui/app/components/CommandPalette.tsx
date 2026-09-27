@@ -218,8 +218,16 @@ export function CommandPalette({
   rows: readonly CockpitStreamRow[];
   projects: readonly CockpitProjectRow[];
 }): JSX.Element | null {
-  const { select, selected, setView, setNewStreamOpen, setNewProjectOpen, openRules, openAsk } =
-    useShell();
+  const {
+    select,
+    selected,
+    setView,
+    setNewStreamOpen,
+    setNewProjectOpen,
+    setAddRepoOpen,
+    openRules,
+    openAsk,
+  } = useShell();
   const [open, setOpen] = useState(false);
   const [recent, setRecent] = useState<string[]>(loadRecent);
 
@@ -255,8 +263,16 @@ export function CommandPalette({
   }, [selected]);
 
   const actions = useMemo(
-    () => ({ select, setView, setNewStreamOpen, setNewProjectOpen, openRules, openAsk }),
-    [select, setView, setNewStreamOpen, setNewProjectOpen, openRules, openAsk],
+    () => ({
+      select,
+      setView,
+      setNewStreamOpen,
+      setNewProjectOpen,
+      setAddRepoOpen,
+      openRules,
+      openAsk,
+    }),
+    [select, setView, setNewStreamOpen, setNewProjectOpen, setAddRepoOpen, openRules, openAsk],
   );
   const close = useCallback(() => setOpen(false), []);
   // The node already open is where you are, not somewhere to go; the rest fills from what changed.
@@ -294,6 +310,8 @@ function PaletteDialog({
     setView: (view: ShellView) => void;
     setNewStreamOpen: (open: boolean) => void;
     setNewProjectOpen: (open: boolean) => void;
+    /** T445 (audit r7 #10): Add repository… where you are. */
+    setAddRepoOpen: (open: boolean) => void;
     openRules: (filter?: RulesFilter) => void;
     /** T425: Ask (T419), aimed at the open node, else the Director. */
     openAsk: () => void;
@@ -449,6 +467,17 @@ function PaletteDialog({
         },
         icon: 'folder',
         run: () => actions.setNewProjectOpen(true),
+      },
+      {
+        entry: {
+          key: 'action:add-repo',
+          group: 'actions',
+          title: 'Add repository…',
+          subtitle: 'A git repository on this machine, or one to clone',
+          keywords: ['repo', 'clone', 'git', 'folder', 'create'],
+        },
+        icon: 'folder-git',
+        run: () => actions.setAddRepoOpen(true),
       },
       {
         entry: {
