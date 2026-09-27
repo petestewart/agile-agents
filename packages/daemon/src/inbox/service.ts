@@ -133,8 +133,15 @@ export class InboxService {
       const item = this.planWaitingItem(stream, byId, drafted);
       if (item) items.push(item);
     }
+    // T443 (audit r7 #8): a project's root, where a Director draft that makes nodes sits.
+    const rootOf = (project: string | undefined): string | undefined =>
+      project === undefined
+        ? undefined
+        : [...byId.values()].find((s) => s.project === project && s.parent === undefined)?.id;
     for (const proposal of this.deps.proposals?.listOpen() ?? []) {
-      // T302: a Director proposal sits on the node its change is about.
+      // T302: a Director proposal sits on the node its change is about; T443: a draft that
+      // makes nodes, on the node it goes under (or its project's root). A new project's draft
+      // has no node yet: it stays on the Director's page.
       const c = proposal.change;
       const anchor =
         proposal.node !== DIRECTOR_NODE
@@ -143,7 +150,11 @@ export class InboxService {
             ? c.node
             : c.action === 'add_waits_on' || c.action === 'set_owner'
               ? c.child
-              : undefined;
+              : c.action === 'create_tree'
+                ? rootOf(c.tree.project)
+                : c.action === 'create_node'
+                  ? (c.node.parent ?? rootOf(c.node.project))
+                  : undefined;
       const stream = anchor === undefined ? undefined : byId.get(anchor);
       if (stream === undefined || stream.archived === true) continue;
       const text = `${proposal.principal} proposes: ${proposal.summary}`;

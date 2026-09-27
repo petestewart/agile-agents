@@ -598,8 +598,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     liveAgent !== undefined && (liveAgent.status === 'starting' || liveAgent.status === 'running');
   const thinking = isThinking(stream);
   const hasRun = stream.sessions.some((s) => isAgentRole(s.role));
-  // T361: a line starts an agent anywhere but a bare project root (Start agent still runs one there).
-  const lineStarts = !(role === 'project' && children.length === 0);
+  // T361: a line starts an agent anywhere; T443: a project's root too (its coordinator, parts or
+  // not). Only a parentless single stream with no project waits for Start agent.
+  const lineStarts = !(role === 'project' && children.length === 0 && stream.project === undefined);
   const waitingForPlan = row?.waiting_for_plan === true;
   // T174: human lines sent mid-turn, not yet delivered to the live worker.
   const queuedLines = new Set(live.flatMap((s) => s.queued ?? []));

@@ -264,3 +264,89 @@ describe('coordinator verbs through the gate', () => {
     expect(node.id).toBeDefined();
   });
 });
+
+describe('T443: what an applied change creates runs', () => {
+  let started: string[];
+  beforeEach(() => {
+    started = [];
+    autonomy.setAgents({
+      start: async (node) => {
+        started.push(node);
+      },
+      restart: async () => {},
+    });
+  });
+  const waitsForPlan = (id: string) =>
+    streams.readThread(id).entries.some((e) => e.body.startsWith('waiting for the plan: '));
+
+  test('Organise: add_child starts the child at once', async () => {
+    const { node, coordinator } = await shop('organise');
+    const out = (await verbs.addChild({
+      session: coordinator,
+      title: 'Research time zones',
+      goal: 'g',
+    })) as ActOutcome;
+    expect(out.applied).toBe(true);
+    await autonomy.settled();
+    const child = streams.list().find((s) => s.title === 'Research time zones');
+    expect(child?.parent).toBe(node.id);
+    expect(started).toEqual([child?.id ?? '']);
+  });
+
+  test('Advise: nothing starts until you apply; Apply creates and starts it', async () => {
+    const { coordinator } = await shop('advise');
+    const out = (await verbs.addChild({
+      session: coordinator,
+      title: 'Docs',
+      goal: 'g',
+    })) as ActOutcome;
+    expect(out.applied).toBe(false);
+    expect(started).toEqual([]);
+    if (out.applied) return;
+    await autonomy.apply(out.proposal.id);
+    await autonomy.settled();
+    const child = streams.list().find((s) => s.title === 'Docs');
+    expect(started).toEqual([child?.id ?? '']);
+  });
+
+  test('while the plan waits for you, a part waits for it; a conversation still starts', async () => {
+    const { node, api, coordinator } = await shop('organise');
+    await store.putRepos({ demo: { path: home, protected_branches: ['main'] } });
+    await plans.write(node.id, [{ child: api.id, owns: ['src/**'] }]);
+    expect(plans.get(node.id)?.status).toBe('draft');
+    await verbs.addChild({ session: coordinator, title: 'Web part', goal: 'g', repo: 'demo' });
+    await verbs.addChild({ session: coordinator, title: 'Ask about zones', goal: 'g' });
+    await autonomy.settled();
+    const part = streams.list().find((s) => s.title === 'Web part');
+    const talk = streams.list().find((s) => s.title === 'Ask about zones');
+    expect(waitsForPlan(part?.id ?? '')).toBe(true);
+    expect(started).toEqual([talk?.id ?? '']);
+  });
+
+  test('start_node leaves a node that is already running as it is', async () => {
+    const { node, api } = await shop('organise');
+    await streams.update('daemon', api.id, {});
+    const running = await streams.get(api.id);
+    await store.updateStream('daemon', api.id, (s) => ({
+      ...s,
+      sessions: [
+        ...running.sessions,
+        {
+          id: ulid(),
+          role: 'worker',
+          vendor: 'claude',
+          model: 'sonnet',
+          effort: 'low',
+          status: 'running',
+        },
+      ],
+    }));
+    const out = (await autonomy.act(node.id, 'coordinator', 'agent:x', {
+      action: 'start_node',
+      node: api.id,
+    })) as ActOutcome;
+    expect(out.applied).toBe(true);
+    if (out.applied) expect(out.result).toEqual({ node: api.id, already: true });
+    expect(started).toEqual([]);
+  });
+});
