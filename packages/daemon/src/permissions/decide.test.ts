@@ -2149,3 +2149,48 @@ describe('decidePermission — permission posture (T457)', () => {
     expect(coordinator('trusted', `cd ${home} && ls`)).toBe('deny');
   });
 });
+
+describe('T459: input redirects, xargs and brace patterns in write paths', () => {
+  const HOME = '/home/pete/.agile';
+  const ctx = (role: PermissionRole, command: string) =>
+    decidePermission({
+      role,
+      worktreePath: WORKTREE,
+      readRoots: [],
+      hiddenRoots: [HOME],
+      posture: 'ask',
+      request: request('execute', { command }),
+    });
+  const secret = `${HOME}/config.yaml`;
+
+  for (const role of ['engineer', 'reviewer', 'coordinator'] as PermissionRole[]) {
+    test(`${role}: an input redirect's file is read-checked, fused or spaced`, () => {
+      for (const command of [`cat <${secret}`, `cat < ${secret}`, `tr a b 0<${secret}`]) {
+        expect(ctx(role, command).kind).toBe('deny');
+      }
+    });
+    test(`${role}: xargs is never waved through`, () => {
+      expect(ctx(role, `echo ${secret} | xargs cat`).kind).not.toBe('allow');
+      expect(ctx(role, 'echo a /tmp/x | xargs cp').kind).not.toBe('allow');
+    });
+  }
+
+  test('engineer: xargs is held for the human, with the reason', () => {
+    const decision = ctx('engineer', 'find . -name "*.ts" | xargs grep foo');
+    expect(decision.kind).toBe('hil');
+    expect(decision.kind === 'hil' ? decision.reason : '').toContain('xargs');
+  });
+
+  test('engineer: a brace or glob write path that can leave the worktree is denied', () => {
+    expect(ctx('engineer', 'touch a/{b,../../x}').kind).toBe('deny');
+    expect(ctx('engineer', 'mkdir src/*/../../../x').kind).toBe('deny');
+  });
+
+  test('the ordinary shapes stay allowed', () => {
+    expect(ctx('engineer', 'cp src/*.ts out/').kind).toBe('allow');
+    expect(ctx('engineer', 'touch src/{a,b}.ts').kind).toBe('allow');
+    expect(ctx('engineer', 'cat <<EOF').kind).toBe('allow');
+    expect(ctx('engineer', 'sort < src/names.txt').kind).toBe('allow');
+    expect(ctx('reviewer', 'git diff 2>/dev/null').kind).toBe('allow');
+  });
+});

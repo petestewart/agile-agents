@@ -2790,11 +2790,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T459 Bash classifier holes: input redirects, xargs, braces in write paths
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Found by T457's review, confirmed on the merged tree with `decidePermission` (engineer, Ask): `cat </root/.agile/config.yaml`, `tr a b < file` and `echo <path> | xargs cat` are allowed although `cat <path>` of the agile home is denied; `echo a /tmp/x | xargs cp` and `touch a/{b,../../x}` are allowed although they write outside the worktree. The agile home holds the classifier key and every node's state.
 - **Acceptance Criteria:** An input redirect's file (`<f`, `0<f`, `< f`, fused or spaced) is read-checked like an argument. `xargs` is not stripped as a harmless wrapper: its command runs on paths the checker can't see, so an `xargs` pipeline is held for the human (or denied), whatever it runs. A write path with a brace or glob pattern is checked after expansion or refused when a branch can leave the worktree. Existing allowed shapes stay allowed.
 - **Validation Steps:** `permissions/decide.test.ts` cases for each spelling above (they allow on the old code); full `bun test`.
+- **Notes:** Branch T459-classifier-holes. `cmd.inputRedirectTargets` (fused `<f`, `0<f` or spaced; not heredocs, `<(`, `<>`, `<&`) is read-checked for the engineer and through `scopedReads` for the coordinator and reviewer. `xargs` is still stripped so the never-without-human and push checks see the command, but `cmd.runsUnderXargs` holds an engineer's atom for the human and denies a reviewer's or coordinator's. A write path whose pattern can climb (`patternClimbs`, shared with T457's read check) is denied; `cp src/*.ts out/` and `touch src/{a,b}.ts` stay allowed. Tests: `decide.test.ts` T459 block (6 of 9 fail on the old code). Full `bun test` 3376/0, lint and typecheck clean.
 
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
