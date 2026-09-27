@@ -458,14 +458,16 @@ let sharedBrowser: Browser | undefined;
 const nav = (label: string) =>
   page.locator('[data-testid="sidebar"] [data-view]', { hasText: new RegExp(`^${label}`) });
 const rail = () => page.locator('[data-testid="stream-tree"]');
+/** A title as a whole-text regex (a question's `?` or a file name's `.` is literal). */
+const exactly = (title: string) => new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
 const railRow = (title: string) =>
   rail().locator('.cr-tree-row', {
-    has: page.locator('.title', { hasText: new RegExp(`^${title}$`) }),
+    has: page.locator('.title', { hasText: exactly(title) }),
   });
 /** A row with its + ⋯ and (T424) its overlap mark, which sit beside the row's button. */
 const railItem = (title: string) =>
   rail().locator('.cr-tree-item', {
-    has: page.locator('.cr-tree-row .title', { hasText: new RegExp(`^${title}$`) }),
+    has: page.locator('.cr-tree-row .title', { hasText: exactly(title) }),
   });
 const streamPage = () => page.locator('[data-testid="stream-page"]');
 const tab = (name: string) =>
@@ -671,7 +673,7 @@ afterAll(async () => {
 // ------------------------------------------------------------------ the walkthrough
 
 test.skipIf(!RUN)(
-  'LIVE-CHECKLIST 3.4–9, clicked through in the cockpit with the fake agent, GitHub and Jira',
+  'LIVE-CHECKLIST 3.4–10, clicked through in the cockpit with the fake agent, GitHub and Jira',
   async () => {
     rmSync(SHOTS, { recursive: true, force: true });
     mkdirSync(SHOTS, { recursive: true });
@@ -2634,6 +2636,161 @@ test.skipIf(!RUN)(
         'threads are intact',
         page.locator('[data-testid="thread"]'),
         /landed \S+ into main/,
+      );
+    });
+
+    // ---------------------------------------------------------- 10 (D42)
+    const question = 'Should the CSV have a header row?';
+    const answer = 'Yes: a header row, then one entry per line, amounts in integer cents.';
+    await step('10.1', 'ask about a node: a conversation under it, which stays work', async () => {
+      // An open work node to ask about (by now the earlier ones are merged).
+      await pickProject('Shop');
+      await allStreams();
+      await newStream(
+        'CSV export',
+        'Add an export --csv command to ledger-lite, with a test.',
+        true,
+      );
+      await addRepo('ledger-lite');
+      const about = nodeId('CSV export');
+      // Its answer is held until Needs me is open, so it lands while you're elsewhere.
+      const answered = claimTitle(question, 'worker', async () => {
+        await turnGate.wait();
+        return answer;
+      });
+      await streamPage().locator('[data-testid="node-role"]').waitFor();
+      await page.locator('[data-testid="stream-title"]').click({ trial: true });
+      await page.keyboard.press('a');
+      await page.locator('[data-testid="ask"]').waitFor({ state: 'visible' });
+      check(
+        'a opens Ask about the open node',
+        (await page.locator('[data-testid="ask-target"]').getAttribute('data-value')) === about,
+        (await page.locator('[data-testid="ask-target"]').textContent()) ?? '',
+      );
+      await page.locator('[data-testid="ask-input"]').fill(question);
+      await page.locator('[data-testid="ask-input"]').press('Enter');
+      await page.locator('[data-testid="stream-title"]', { hasText: question }).waitFor();
+      await checkText(
+        'the chat opens with the question as your message',
+        page.locator('[data-testid="chat-question"]'),
+        question,
+      );
+      await page.waitForFunction("document.activeElement?.dataset?.testid === 'composer-input'");
+      check(
+        'the conversation sits under CSV export in the rail',
+        (await railRow(question).getAttribute('data-role')) === 'conversation',
+        (await railRow(question).getAttribute('data-role')) ?? '(no row)',
+      );
+      check(
+        'CSV export stays a work node',
+        (await railRow('CSV export').getAttribute('data-role')) === 'work',
+        (await railRow('CSV export').getAttribute('data-role')) ?? '',
+      );
+      await openView('Needs me');
+      turnGate.open();
+      await answered;
+    });
+
+    await step('10.2', 'the reply waits in Needs me; Send to puts it on the node', async () => {
+      const convo = nodeId(question);
+      const listed = page.locator(`[data-testid="reply"][data-stream="${convo}"]`);
+      await checkText('Needs me lists the reply under Replies', listed, /Replied/);
+      await checkText('with its first line', listed, /header row/);
+      await page.locator('[data-testid="replies-dot"]').first().waitFor();
+      await listed.locator('.cr-reply-open').click();
+      await page.locator('[data-testid="stream-title"]', { hasText: question }).waitFor();
+      await checkText(
+        'the answer is on the conversation',
+        page.locator('[data-testid="thread"]'),
+        /Yes: a header row, then one entry per line/,
+      );
+      await checkText(
+        'the header offers Send to CSV export',
+        page.locator('[data-testid="header-send-up"]'),
+        'Send to CSV export',
+      );
+      await page.locator('[data-testid="header-send-up"]').click();
+      const input = page.locator('[data-testid="send-up-input"]');
+      check(
+        'Send to starts from the reply',
+        (await input.inputValue()) === answer,
+        await input.inputValue(),
+      );
+      await input.press('Enter');
+      await page.locator('[data-testid="send-up"]').waitFor({ state: 'detached' });
+      await checkText(
+        'the conversation says it was sent',
+        page.locator('[data-testid="thread"]'),
+        /Sent to CSV export/,
+      );
+      await openNode('CSV export');
+      await checkText(
+        "it is your line on CSV export's chat",
+        page.locator('[data-testid="thread"]'),
+        /From the conversation “Should the CSV have a header row\?”/,
+      );
+      await openView('Needs me');
+      check(
+        'read, it has left Replies',
+        (await page.locator(`[data-testid="reply"][data-stream="${convo}"]`).count()) === 0,
+        await textOf(page.locator('[data-testid="replies"]')),
+      );
+    });
+
+    await step('10.3', 'turn a question into work, in place', async () => {
+      const csv = 'Should ledger-lite keep a CHANGELOG?';
+      const goal = 'Add CHANGELOG.md to ledger-lite with one line for the JSON export.';
+      await openNode('Shop');
+      const replied = claimTitle(
+        csv,
+        'worker',
+        async () =>
+          'Yes: one CHANGELOG.md at the root, a line per change, starting with the JSON export.',
+      );
+      await page.locator('[data-testid="stream-title"]').click({ trial: true });
+      await page.keyboard.press('a');
+      await page.locator('[data-testid="ask-input"]').fill(csv);
+      await page.locator('[data-testid="ask-input"]').press('Enter');
+      await page.locator('[data-testid="stream-title"]', { hasText: csv }).waitFor();
+      await replied;
+      await page.locator('[data-testid="header-turn-into-work"]').click();
+      const box = page.locator('[data-testid="turn-into-work-goal"]');
+      await page
+        .locator('[data-testid="turn-into-work-goal"]:not([data-drafting="true"])')
+        .waitFor();
+      check('the goal is drafted from the talk', (await box.inputValue()) !== '', '(empty)');
+      await box.fill(goal);
+      await page.locator('[data-testid="turn-into-work-repo"]').click();
+      await page
+        .locator('[data-testid="turn-into-work-repo-option"][data-repo="ledger-lite"]')
+        .click();
+      check(
+        'under the project root there is no Where to choose',
+        (await page.locator('[data-testid="turn-into-work-where"]').count()) === 0,
+        await textOf(page.locator('[data-testid="turn-into-work"]')),
+      );
+      await box.press('Enter');
+      await page.locator('[data-testid="turn-into-work"]').waitFor({ state: 'detached' });
+      await page.locator('[data-testid="node-role"][data-role="work"]').waitFor();
+      await checkText(
+        'its title follows the new goal',
+        page.locator('[data-testid="stream-title"]'),
+        'Add CHANGELOG.md to ledger-lite',
+      );
+      await checkText(
+        'the same thread goes on: the question, then the work',
+        page.locator('[data-testid="thread"]'),
+        /Should ledger-lite keep a CHANGELOG\?.*Add CHANGELOG\.md to ledger-lite/,
+      );
+      const node = world.daemon.streamService
+        ?.list()
+        .find((n) => n.title.startsWith('Add CHANGELOG.md'));
+      check(
+        'a work node on its own branch of ledger-lite, its agent started',
+        node?.repo === 'ledger-lite' &&
+          node.branch !== undefined &&
+          node.sessions.some((x) => x.role === 'worker'),
+        JSON.stringify({ repo: node?.repo, branch: node?.branch, sessions: node?.sessions.length }),
       );
     });
 
