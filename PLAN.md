@@ -2688,6 +2688,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** Gate on the merged tree (with T445): `bun test` 3277/0, control-room green, walkthrough 0 findings.
 - **Notes:** Branch T447-status-scale. Merging it with T445 needed a manual resolution of both appending tests at the end of control-room.e2e.test.ts (first attempt dropped T447's edits to T387; caught by the gate, fixed). Follow-up: the "waiting for the plan" item doesn't set `pending_decision`, so its part reads Waiting rather than Needs you.
 
+### Ticket: T446 What the agents did on their own (audit r7)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker (manager reviewed and merged)
+- **Scope:** Audit round 7: #6 (a coordinator's or the Director's own changes read as its chat message in the daemon's words, with ids), #7 (no event recorded them; no undo), #17 (a coordinator's chat was mostly its own wake-ups), #18 (two nodes named "api part").
+- **Acceptance Criteria:** A coordinator's, the Director's or your applied change is a system row in words with its actor's icon and the node it made linked ("Added a part: **X** (web)", "Created **Newsletter signup** in Blog with 2 parts", "You approved plan v1"); daemon lines meant for the agent are `agent_only`; the contract proposal line has no id; old lines re-read into the new words. The autonomy-proposal card says the level and what Apply does. A record-only routed event `autonomy_applied` (strict; delivery status `recorded`, never pending, so it wakes no one) shows in Events, Activity and the Director's Activity with a link per node and Undo (archive) while nothing it made has started. A coordinator's routine wake folds into its reply's header ("Woke for a merge · 01:14"); a wake with no reply is one muted row. Parts are named "<node> · <repo>" (the rail shows the repo under its node); clashing titles get their project or parent in overlap marks, Events and Needs me.
+- **Validation Steps:** Gate on the merged tree (with T445, T447): `bun test` 3309/0, walkthrough 0 findings.
+- **Notes:** Branch T446-agent-actions. Merging with T447 needed: rail titles (a part's short name, else T447's middle truncation), MessageList (T447's window plus T446's links), both new chat.test blocks, the checklist paragraph, and the parts line reading a part by its short name ("waiting for ledger-lite"). Follow-ups: the Director's Events rows use the bot glyph; a node-level autonomy override isn't in the frame, so its card can show the project's level.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done
