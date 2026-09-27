@@ -50,7 +50,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D37** (2026-09-26, Pete): upgrade Bun past 1.3.11 if a release fixes the child-process pipe bugs (fd double-close, EBADF on epoll_ctl); verified on a branch with the full suite and CI before the pin moves. Otherwise stay on 1.3.11 with the existing workarounds.
 - **D38** (2026-09-26, Pete): no global `Host` check on the daemon's read routes. The cockpit must stay reachable from a phone through a tunnel (D15). Writes keep their same-origin check (403 otherwise); the folder browser and clone keep their loopback-`Host` check (T362). A Host allowlist (loopback plus configured tunnel names) stays an option if DNS rebinding ever matters more than reach.
 - **D39** (2026-09-26, Pete; confirmed 2026-09-27): a browser notification fires every time a node finishes (or asks, or is blocked), including a second finish after your reply; the same card only leaving a frame and coming back does not notify again. As built in T391.
-- **D40** (2026-09-26, to confirm): in the D17 order a model belongs to its vendor. A model named at a step counts only when that step runs the resolved vendor (its own vendor, else the vendor of the steps below it). A repo set to Gemini no longer inherits the home's Claude model: it gets Gemini's own default. Vendor and effort still resolve field by field. As built in T402.
+- **D40** (2026-09-26; confirmed by Pete 2026-09-27): in the D17 order a model belongs to its vendor. A model named at a step counts only when that step runs the resolved vendor (its own vendor, else the vendor of the steps below it). A repo set to Gemini no longer inherits the home's Claude model: it gets Gemini's own default. Vendor and effort still resolve field by field. As built in T402.
 - **D41** (2026-09-26, Pete): a node created without a title gets one from a one-shot cheap LLM call (Haiku) through the user's own `claude` login, off the create path; the first-line title stands until it returns, and stays if the CLI is missing or the call fails. The daemon still holds no vendor credentials. As built in T414.
 - **D42** (2026-09-26, Pete): a conversation can be asked at any level (the Director, a project root, a coordinator, a work node) as its own node, and never reshapes the tree: a node's parts are its live children that are neither helpers nor conversations, and only parts make a node coordinating, wait for a plan or ask a coordinator first. A side conversation's status doesn't wake its parent; its conclusion goes up when the human sends it. It can grow into work in place. Widens D33 (design/projects-design.md §2). Built in T418–T422: the rule, Ask from anywhere, the parent's state in its brief, Send to parent, Turn into work.
 - **D43** (2026-09-26, to confirm): a vendor process that exits non-zero on its own (not a stop of the daemon's, not after its turn finished) crashed or refused (a login, a bad model): the node is `blocked`, its session `error`, and the thread line carries the vendor's last stderr line. Narrows cockpit-design §2.3's "exit ⇒ done", which let a first run with a logged-out vendor read as finished work ("Ready to merge", "Replied"). A clean exit (code 0) is still `done`. A vendor whose command isn't on the daemon's PATH is named before anything spawns. Built in T432.
@@ -2761,6 +2761,31 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** The verb, validated in `packages/shared` like the others; refused for an unknown repo, the node's own repo, or a project root; the line reads in words; the button is the only way it changes anything.
 - **Validation Steps:** Verb unit tests; a control-room e2e from the agent's proposal line to the reshaped node.
 - **Notes:** Pete agreed (a), 2026-09-27.
+
+### Ticket: T456 Retry a failed vendor, then fall back to another (D43 follow-up)
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** unassigned
+- **Scope:** Pete, 2026-09-27. Today a vendor that exits non-zero on its own blocks the node at once (D43, T432); nothing is retried. Add, behind a setting (home, project, repo): retry the same vendor once for a crash (not for a missing command or a login refusal), then start the next installed vendor on a fallback list (`fallback: [gemini, codex]`) on the same node, thread and worktree. The node stays working; its thread says "Claude failed (<reason>); switched to Gemini"; Events records it; the model label follows. Blocked (D43) only when the list is spent. The new agent is told the last one stopped mid-turn (check `git status`). Only what the daemon holds carries over (thread, worktree, plan, brief); the failed vendor's own session context does not.
+- **Acceptance Criteria:** The setting in `packages/shared` and Settings; the fallback skips a vendor that isn't installed and, unless allowed, one without pre-tool hooks (a lower enforcement floor); a per-node cap on switches; the parent is told only when the list is spent (a switch is not a status change).
+- **Validation Steps:** Fake-agent tests: crash → retry → fallback → working; login refusal → no retry, fallback; list spent → blocked as D43; the cap.
+- **Notes:** D43 stays the end state once retries and fallbacks are spent.
+
+### Ticket: T457 Permission posture: Trusted or Ask (D45 follow-up)
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** unassigned
+- **Scope:** Pete, 2026-09-27. Vendors keep their default permission mode (the daemon answers every ask; a vendor bypass flag would switch the daemon's gating off, and a hook-less vendor would have none). Add a daemon-side posture per home, project or repo. **Trusted** (like Claude's bypass or Codex's yolo): an agent reads anything on disk except the agile home and secrets, without asking. **Ask**: a read outside the registered repos is a Needs me card (Allow once, Always for this project, Deny) instead of today's deny. Both: the project's own repos lead the brief's readable list; writes stay in the node's own worktree; the never-without-human list (protected-branch pushes, deletes outside the worktree, the agile home) is unchanged.
+- **Acceptance Criteria:** The setting in `packages/shared`, Settings and config.yaml; the hook and ACP responder both apply it (one decision function); the card's Always adds a read root for the project.
+- **Validation Steps:** `permissions/decide.test.ts` and hook tests for both postures; a control-room e2e for the Ask card.
+
+### Ticket: T458 A conversation knows the work in progress
+- **Priority:** P3
+- **Status:** Todo
+- **Owner:** unassigned
+- **Scope:** Pete, 2026-09-27. A conversation's brief lists the repos it can read (paths only) and, when asked about a node, that node's branch and worktree; it doesn't know what else is in flight. Add a capped "Work in progress" section: the project's open work nodes with repo, branch, worktree, status and progress line, so a question like "is anyone touching the export code?" is answered from the right worktree.
+- **Acceptance Criteria:** Capped by count and characters like the other brief sections; ids only where the agent needs them; closed and merged nodes left out.
+- **Validation Steps:** `runner/brief.test.ts` for the section and its caps.
 
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
