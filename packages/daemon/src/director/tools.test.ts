@@ -139,7 +139,7 @@ describe('the Director verbs', () => {
     expect(out.proposal.node).toBe(DIRECTOR_NODE);
     expect(out.proposal.principal).toBe('director');
     // T371: the card names the project, never its id.
-    expect(out.proposal.summary).toStartWith('create "Show sale prices" in Shop (2 parts:');
+    expect(out.proposal.summary).toStartWith('Create "Show sale prices" in Shop with 2 parts:');
     expect(out.proposal.summary).not.toContain(project.id);
     expect(streams.list().some((s) => s.title === 'Show sale prices')).toBe(false);
     expect(store.readDirectorThread().at(-1)).toMatchObject({ by: 'director', kind: 'proposal' });
