@@ -262,7 +262,7 @@ export function isPipedIntoBareShell(atom: CommandAtom): boolean {
  * or among the root's own ancestors) is followed before the containment
  * check. Never throws: falls back to the plain resolved path.
  */
-function realpathNearestExisting(p: string): string {
+export function realpathNearestExisting(p: string): string {
   const target = resolve(p);
   const missingSegments: string[] = [];
   let current = target;

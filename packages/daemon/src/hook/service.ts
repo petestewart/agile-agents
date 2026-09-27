@@ -39,6 +39,7 @@ import { type Classifier, ClassifierUnavailableError, classifierEnabled } from '
 import { type RuleStatsOutcome, knowledgeMatchesPaths } from '../knowledge/service';
 import { isPathInside } from '../permissions/command';
 import { nodeReadScope } from '../permissions/policy-tables';
+import { projectReadSettings } from '../permissions/posture';
 import { worktreeBranchLookups } from '../permissions/push-detector';
 import { patternRulesOf, protectedBranchesFor, touchedPaths } from '../permissions/rule-checks';
 import { directorReadScope } from '../permissions/visibility';
@@ -52,7 +53,7 @@ import {
   pathsForToolCall,
 } from './decide';
 import { fingerprintCall } from './fingerprint';
-import { type RouteBandGates, routeCall } from './route-band';
+import { type RouteBandGates, routeCall, routePolicy } from './route-band';
 import {
   type ClaudePreToolUsePayload,
   DEFAULT_MAX_READ_BYTES,
@@ -369,12 +370,15 @@ export class HookService {
     };
   }
 
-  /** T213, T330: the registered repos this node may read, and what it never may. */
-  private readScope(stream: string): Pick<HookDecisionContext, 'readRoots' | 'hiddenRoots'> {
+  /** T213, T330, T457: the roots this node may read, what it never may, and its posture. */
+  private readScope(
+    stream: string,
+  ): Pick<HookDecisionContext, 'readRoots' | 'hiddenRoots' | 'posture'> {
     return nodeReadScope(
       this.streamRecord(stream),
       () => this.store.getRepos(),
       this.options.agileHome,
+      projectReadSettings(this.store),
     );
   }
 
@@ -526,7 +530,8 @@ export class HookService {
       // `classifier_review` gate plus a deny the model can act on, and the
       // human's yes lets exactly that call through once (`route-band.ts`).
       const why = decision.reason ?? 'never-without-human call';
-      const routed = await this.route(ctx, payload, why);
+      // T457: a held Ask read's gate carries the dir "Always for this project" adds.
+      const routed = await this.route(ctx, payload, why, undefined, decision.readAsk?.root);
       decision = { ...decision, ...routed.decision };
       allowedBy = routed.allowedBy;
     }
@@ -819,6 +824,7 @@ export class HookService {
     payload: ClaudePreToolUsePayload,
     why: string,
     rule?: KnowledgeId,
+    readRoot?: string,
   ): Promise<{ decision: HookDecision; allowedBy?: string }> {
     const gates = this.options.gates;
     const call = fingerprintCall(payload, ctx.worktreePath);
@@ -830,17 +836,7 @@ export class HookService {
         },
       };
     }
-    let policy: Policy;
-    try {
-      policy = this.store.getPolicy();
-    } catch (err) {
-      if (!(err instanceof NotFoundError)) throw err;
-      // No `policy.yaml`: every gate is the human's (the shipped default).
-      policy = {
-        gates: { land: 'human', rule_accept: 'human', classifier_review: 'human' },
-        breaker_signals: [],
-      };
-    }
+    const policy = routePolicy(this.store);
     const routed = await routeCall(gates, {
       session: ctx.session,
       stream: ctx.stream,
@@ -848,6 +844,7 @@ export class HookService {
       call,
       reason: why,
       ...(rule !== undefined ? { rule } : {}),
+      ...(readRoot !== undefined ? { readRoot } : {}),
     });
     return {
       decision: routed.decision,

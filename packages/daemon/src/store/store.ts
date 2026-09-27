@@ -18,6 +18,7 @@ import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } f
 import {
   type AgentId,
   type AgentRecord,
+  DEFAULT_PERMISSION_POSTURE,
   DIRECTOR_NODE,
   type Delivery,
   type DirectorRecord,
@@ -28,6 +29,7 @@ import {
   type KnowledgePrincipal,
   type LegacyRule,
   LegacyRuleIdSchema,
+  type PermissionPosture,
   type Policy,
   type Project,
   ProjectIdSchema,
@@ -627,6 +629,27 @@ export class StateStore {
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { quick_drafts: on },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T457: the home's permission posture in `<home>/config.yaml` (`ask`, the default, removes the key). */
+  async setPermissionPosture(
+    posture: PermissionPosture,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (posture === DEFAULT_PERMISSION_POSTURE) Reflect.deleteProperty(raw, 'permissions');
+      else raw.permissions = posture;
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { permissions: posture },
       });
       return { result: validated, event };
     });

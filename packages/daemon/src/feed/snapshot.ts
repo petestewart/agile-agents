@@ -12,6 +12,7 @@ import {
   type HilRequest,
   type InboxItem,
   type NodeRole,
+  type PermissionPosture,
   type ProjectSessionDefaults,
   type Question,
   type RepoEntry,
@@ -286,6 +287,9 @@ export interface CockpitProjectRow {
   tracker?: TrackerSettings;
   /** T379: the project's own session defaults (P5), between a flag and the repo's. */
   session?: ProjectSessionDefaults;
+  /** T457: the project's permission posture (absent inherits the home's) and its "Always" read roots. */
+  permissions?: PermissionPosture;
+  read_roots?: string[];
 }
 
 /** The latest of some ISO times (they compare as strings); the first when the rest are missing. */
@@ -372,6 +376,8 @@ export function buildCockpitFrame(
       repos: p.repos,
       ...(p.tracker !== undefined ? { tracker: p.tracker } : {}),
       ...(p.session !== undefined ? { session: p.session } : {}),
+      ...(p.permissions !== undefined ? { permissions: p.permissions } : {}),
+      ...(p.read_roots !== undefined ? { read_roots: p.read_roots } : {}),
     })),
     repos: Object.entries(repos).map(([name, entry]) => {
       const remote = remoteOf?.(entry);

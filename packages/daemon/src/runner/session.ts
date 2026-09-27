@@ -27,12 +27,19 @@ import {
   type SpawnedSession,
   spawnSession as defaultSpawnSession,
 } from '@agile-agents/acp-client';
-import type { AgentId, SessionRef, SessionRole, Stream } from '@agile-agents/shared';
+import type {
+  AgentId,
+  PermissionPosture,
+  SessionRef,
+  SessionRole,
+  Stream,
+} from '@agile-agents/shared';
 import { AGENT_LINE_MAX_CHARS } from '@agile-agents/shared';
 import { writeClaudeSettings } from '../hook';
 import { permissionRoleFor } from '../hook/decide';
 import {
   type AcpPermissionRequestParams,
+  type PermissionResponderContext,
   type PermissionResponderHandle,
   buildGrokFsPolicy,
   buildPermissionResponder,
@@ -106,8 +113,14 @@ export interface AgentSessionOptions {
   /** `AGILE_SOCKET_PATH` for the hook and MCP bridge (a worktree cwd would resolve the wrong root). */
   socketPath?: string;
   provider?: AcpProviderConfig;
-  /** T305, T330 (P20): the ACP read scope (`readRoots`/`hiddenRoots`), as the hook tier's (the Director's too). */
-  readScope?: { readRoots: readonly string[]; hiddenRoots: readonly string[] };
+  /** T305, T330 (P20): the ACP read scope (`readRoots`/`hiddenRoots`), as the hook tier's (the Director's too); T457: and the posture. */
+  readScope?: {
+    readRoots: readonly string[];
+    hiddenRoots: readonly string[];
+    posture?: PermissionPosture;
+  };
+  /** T457: how the ACP tier routes a read the Ask posture held (`acpReadRouter`); absent parks it. */
+  routeRead?: PermissionResponderContext['routeRead'];
   /** Test seam: a fake `spawnSession`. */
   spawn?: typeof defaultSpawnSession;
   now?: () => Date;
@@ -434,6 +447,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     worktreePath,
     session: spawned,
     ...(opts.readScope ?? {}),
+    ...(opts.routeRead !== undefined ? { routeRead: opts.routeRead } : {}),
     // The same rules the hook tier enforces, bound to this stream: the
     // only tier a vendor without a pre-tool-use hook has.
     ...(opts.rules !== undefined && streamId !== undefined

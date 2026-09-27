@@ -260,6 +260,10 @@ export class InboxService {
       context: inboxContext(gateText(gate)),
       ...withDetail(gateText(gate)),
       ref: `gates/${gate.id}.yaml`,
+      // T457: a held Ask read; its card offers "Always for this project" (only when the node has one).
+      ...(gate.read_root !== undefined && stream.project !== undefined
+        ? { read_root: gate.read_root }
+        : {}),
     };
   }
 

@@ -11,7 +11,9 @@
  *                     page's composer answers, and the chat's own line
  *                     carries the question's text (T416)
  *  - `gate`         → Allow/Deny (a `land` gate reads Merge/Hold), with an
- *                     optional note sent as the reason, or on its own
+ *                     optional note sent as the reason, or on its own; a
+ *                     held read (T457) reads Allow once, Always for this
+ *                     project, Deny
  *  - `rule_accept`  → Accept/Retire a proposed rule, standard, decision…
  *  - `rule_batch`   → opens Knowledge filtered to that import (T163)
  *  - `plan_approve` → Approve plan (T281)
@@ -29,6 +31,7 @@
 import type { InboxItem } from '@agile-agents/shared';
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import {
+  alwaysGate,
   answerQuestion,
   approvePlan,
   attachSession,
@@ -714,6 +717,8 @@ export function Card({
 
     case 'gate': {
       const g = gateView(item);
+      // T457: a read the Ask posture held: Allow once, Always for this project, or Deny.
+      const readRoot = item.read_root;
       const reason = shown(g.reason);
       const longAction = g.action !== undefined && !full && g.action.length > ACTION_CLIP;
       foldable = reason.foldable || longAction;
@@ -723,6 +728,11 @@ export function Card({
           <p className="cr-card-lead">
             {g.land ? (
               'This merge waits for your OK. Merge it now, or hold it.'
+            ) : readRoot !== undefined ? (
+              <span data-testid="gate-read-lead">
+                {nodeTitle ?? 'An agent'} wants to read <code title={readRoot}>{readRoot}</code>,
+                outside the repos it can read. Allow it once, always for this project, or deny it.
+              </span>
             ) : g.rule !== undefined || g.ruleId !== undefined ? (
               <>
                 The classifier wasn’t sure this action follows{' '}
@@ -779,8 +789,21 @@ export function Card({
                 act('approve', () => decideGate(item.id, 'approve', text || undefined))
               }
             >
-              {g.land ? 'Merge' : 'Allow'}
+              {g.land ? 'Merge' : readRoot !== undefined ? 'Allow once' : 'Allow'}
             </Button>
+            {readRoot !== undefined && (
+              <Button
+                size="sm"
+                icon="folder-git"
+                data-testid="gate-always"
+                busy={busy === 'always'}
+                disabled={locked}
+                title={why(`Every node in this project may read ${readRoot} from now on`)}
+                onClick={() => act('always', () => alwaysGate(item.id, text || undefined))}
+              >
+                Always for this project
+              </Button>
+            )}
             <Button
               size="sm"
               data-testid="gate-deny"
