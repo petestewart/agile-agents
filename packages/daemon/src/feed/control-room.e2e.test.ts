@@ -9663,6 +9663,13 @@ describe('views and polish (Playwright e2e, T436, audit r6)', () => {
         );
         // A project root that answered (T437: an agent line after yours): its own glyph
         // (layers, not a fork), "Finished a turn", and its reply's first line as plain words.
+        // (A root's line starts its coordinator once it has a part.)
+        await cockpit.streams.create('human', {
+          title: 'Import the file',
+          goal: 'g',
+          repo: 'demo',
+          project: shop.id,
+        });
         const planned = await fetch(`${cockpit.base}/api/streams/${shop.root}/say`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
