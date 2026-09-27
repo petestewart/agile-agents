@@ -37,6 +37,8 @@ import {
   StreamWaitRequestSchema,
   UlidSchema,
   formatZodError,
+  liveChildrenOf,
+  nodeRole,
   sendUpText,
   validatePolicy,
 } from '@agile-agents/shared';
@@ -1403,7 +1405,18 @@ async function handleStreamRoute(
       if (!input.success) return errorResponse(400, formatZodError('update', input.error));
       const { auto_title: autoTitle, ...patch } = input.data;
       const before = feed.streams.get(id);
-      const updated = await feed.streams.update('human', id, patch);
+      // T441 (D42): a conversation's goal is the question you asked; the first new goal (Turn
+      // into work) keeps it on the record, so its chat still opens with it.
+      const all = feed.streams.list();
+      const keepsQuestion =
+        patch.goal !== undefined &&
+        patch.goal.trim() !== before.goal.trim() &&
+        before.question === undefined &&
+        nodeRole(before, liveChildrenOf(before.id, all), all) === 'conversation';
+      const updated = await feed.streams.update('human', id, {
+        ...patch,
+        ...(keepsQuestion ? { question: before.goal } : {}),
+      });
       // T385: a new goal is news for the agent: its next turn reads it on the thread.
       if (patch.goal !== undefined && patch.goal.trim() !== before.goal.trim()) {
         await feed.streams.appendThread('human', id, {

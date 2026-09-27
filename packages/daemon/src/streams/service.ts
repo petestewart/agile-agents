@@ -645,6 +645,8 @@ export class StreamService {
 export interface StreamPatch {
   title?: string;
   goal?: string;
+  /** T441: a conversation's question, kept when its goal first changes. */
+  question?: string;
   parent?: string;
   repo?: string;
   branch?: string;
