@@ -29,6 +29,7 @@ import {
   type NodeRole,
   type Plan,
   type Question,
+  type ReposConfig,
   type RoutedEvent,
   type SessionRef,
   type SessionRole,
@@ -69,8 +70,8 @@ import type { RuleStatsOutcome } from '../knowledge/service';
 import { repoScriptChecks } from '../permissions/command';
 import { nodeReadScope } from '../permissions/policy-tables';
 import { projectReadSettings } from '../permissions/posture';
-import type { AboutParent, BriefDoc } from '../runner/brief';
-import { buildBrief } from '../runner/brief';
+import type { AboutParent, BriefDoc, WipNode } from '../runner/brief';
+import { buildBrief, openWorkFor } from '../runner/brief';
 import type { CliInvocation } from '../runner/cli-bin';
 import {
   type AgentSessionHandle,
@@ -814,7 +815,15 @@ export class AttachService {
         : {}),
       ...childPlanOf(this.options.plans, stream, role),
       // T420 (D42): a conversation is told its question is the human's, and about its parent.
-      ...(shape === 'conversation' ? { conversation: this.aboutParent(stream, all) } : {}),
+      // T458: and about its project's other open work it can read.
+      ...(shape === 'conversation'
+        ? {
+            conversation: {
+              ...this.aboutParent(stream, all),
+              ...this.openWork(stream, all, repos, readScope.readRoots),
+            },
+          }
+        : {}),
     });
     // The lessons material rides after the brief, never inside it (the
     // brief's own ceiling protects its parts; the caller caps the appendix).
@@ -1740,6 +1749,38 @@ export class AttachService {
         ...(parts.length > 0 ? { parts } : {}),
         ...(plan !== undefined ? { plan } : {}),
       },
+    };
+  }
+
+  /** T458: the project's open work nodes on repos the conversation can read, for its brief. */
+  private openWork(
+    stream: Stream,
+    all: readonly Stream[],
+    repos: ReposConfig,
+    readRoots: readonly string[],
+  ): { work?: WipNode[] } {
+    if (stream.project === undefined) return {};
+    const readable = new Set(
+      Object.entries(repos)
+        .filter(([, entry]) => readRoots.includes(entry.path))
+        .map(([name]) => name),
+    );
+    const { store } = this.options;
+    return {
+      work: openWorkFor(stream, all, readable).map((node) => {
+        let card: WipNode['card'];
+        try {
+          card = store.getCard(node.id);
+        } catch {
+          // An unreadable card is left out; its node still shows its progress line.
+        }
+        const threadAt = store.threadUpdatedAt(node.id);
+        return {
+          node,
+          ...(card !== undefined ? { card } : {}),
+          ...(threadAt !== undefined ? { threadAt } : {}),
+        };
+      }),
     };
   }
 
