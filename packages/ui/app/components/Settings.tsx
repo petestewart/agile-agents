@@ -820,7 +820,7 @@ function VendorFailureCard({
     <SetCard
       title="If the agent fails"
       icon="refresh"
-      description="When an agent’s process stops with an error on its own, its node can keep going on the same branch and thread. When nothing is left to try, the node is stuck, as before. This is the global setting; a project or repository can override it (its vendor_failure setting)."
+      description="When an agent’s process stops with an error on its own, its node can keep going on the same branch and thread. When nothing is left to try, the node is stuck, as before. This is the global setting; a project or repository can override it."
       testid="settings-vendor-failure"
       status={<SavedNote show={saved} testid="settings-vendor-failure-saved" />}
     >
