@@ -1097,6 +1097,49 @@ describe('T160 cockpit routes', () => {
     }
   });
 
+  test("T441: a conversation's first new goal keeps its question on the record; a root's doesn't", async () => {
+    const server = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+    });
+    try {
+      const update = (id: string, body: unknown) =>
+        fetch(`http://127.0.0.1:${server.port}/api/streams/${id}/update`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      const root = await streams.create('human', { title: 'Shop', goal: 'Shop' });
+      const convo = await streams.create('human', {
+        title: 'Does import handle Excel files?',
+        goal: 'Does import handle Excel files?',
+        parent: root.id,
+      });
+      expect((await update(convo.id, { goal: 'Add .xlsx import.' })).status).toBe(200);
+      expect(streams.get(convo.id).question).toBe('Does import handle Excel files?');
+      // A later change keeps the first question; a title-only edit sets nothing.
+      await update(convo.id, { goal: 'Add .xlsx and .ods import.' });
+      expect(streams.get(convo.id).question).toBe('Does import handle Excel files?');
+      const other = await streams.create('human', {
+        title: 'Why?',
+        goal: 'Why?',
+        parent: root.id,
+      });
+      await update(other.id, { title: 'Why indeed' });
+      expect(streams.get(other.id).question).toBeUndefined();
+      // A root's (or a work node's) goal is a brief, not a question.
+      await update(root.id, { goal: 'Everything the shop sells.' });
+      expect(streams.get(root.id).question).toBeUndefined();
+    } finally {
+      await server.stop();
+    }
+  });
+
   test('T361: POST /api/streams/:id/archive and /unarchive delete and restore a subtree as human', async () => {
     const post = (path: string, headers: Record<string, string> = {}) =>
       fetch(url(path), { method: 'POST', headers });

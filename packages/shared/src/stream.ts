@@ -359,6 +359,11 @@ export const StreamSchema = z
     id: UlidSchema,
     title: z.string().min(1),
     goal: z.string().min(1),
+    /**
+     * T441 (D42): the question a conversation was asked, kept when its goal
+     * first changes (Turn into work), so its chat still opens with it.
+     */
+    question: z.string().min(1).optional(),
     /** Parent stream — streams nest to any depth (D1), but never in a cycle. */
     parent: UlidSchema.optional(),
     repo: z.string().min(1).optional(),
