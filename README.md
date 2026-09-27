@@ -2,7 +2,7 @@
 
 A cockpit for running coding agents, for one person. You keep one tab open. Your agents (Claude Code, Gemini CLI, Codex and others) work in parallel, each on its own branch, and the cockpit brings you what needs you: a question, an action to allow, a plan to approve, work ready to merge.
 
-One long-lived daemon, `agiled`, holds all state in one directory of plain YAML, JSONL and Markdown. Agents run under your own vendor login. Nothing is written into your repos except the code the work produces, on a branch you merge.
+One long-lived daemon, `agiled`, holds all state in one directory of plain YAML, JSONL and Markdown. Agents run under your own vendor login. Nothing is committed to your repos except the code the work produces, on a branch you merge; the worktrees (`.worktrees/`) and a scratch cache (`.agile-daemon-cache/`) sit beside your code, and git ignores both.
 
 ## What it does
 
