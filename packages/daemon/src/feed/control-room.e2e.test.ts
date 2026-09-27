@@ -10518,6 +10518,58 @@ describe('flow and focus (Playwright e2e, T445)', () => {
   );
 
   browserTest(
+    'T449: a click aimed elsewhere right after a card leaves is meant: it goes through',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const a = await finishedNode(cockpit, 'Api part', 's-api');
+        const b = await finishedNode(cockpit, 'Web part', 's-web');
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.evaluate(`localStorage.setItem('agile.merge.ask', 'never')`);
+        await page.reload();
+        const first = `[data-testid="inbox"] .cr-card[data-id="${a}"]`;
+        await page.locator(`${first} [data-testid="land"]`).waitFor({ state: 'visible' });
+        const box = await page.locator(`${first} [data-testid="land"]`).boundingBox();
+        const x = (box?.x ?? 0) + (box?.width ?? 0) / 2;
+        const y = (box?.y ?? 0) + (box?.height ?? 0) / 2;
+        // The moment the merged card leaves, click the next card's View changes (another spot).
+        await page.evaluate(`(() => {
+          let seen = false;
+          const obs = new MutationObserver(() => {
+            if (document.querySelector('[data-testid="card-outcome"][data-id="${a}"]')) {
+              seen = true;
+              return;
+            }
+            if (!seen) return;
+            obs.disconnect();
+            const view = document.querySelector('.cr-card[data-id="${b}"] [data-testid="view-changes"]');
+            const r = view?.getBoundingClientRect();
+            view?.dispatchEvent(
+              new MouseEvent('click', {
+                bubbles: true,
+                cancelable: true,
+                detail: 1,
+                clientX: (r?.x ?? 0) + (r?.width ?? 0) / 2,
+                clientY: (r?.y ?? 0) + (r?.height ?? 0) / 2,
+              }),
+            );
+          });
+          obs.observe(document.body, { subtree: true, childList: true });
+        })()`);
+        await page.mouse.click(x, y);
+        // It went through: the next node opens on its Changes tab.
+        await page.locator(`[data-testid="stream-page"][data-stream="${b}"]`).waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
     'proposal lines: an autonomy proposal says Decide below, not Add <repo>; the Plan tab starts the coordinator; ⋯ has Rename and Move to; Add repository is a picker; a root points to Ask',
     async () => {
       const cockpit = await startCockpit();
