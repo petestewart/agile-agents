@@ -9274,6 +9274,10 @@ describe('what the agents did on their own (Playwright e2e, T446)', () => {
         expect(await logRow.locator('[data-testid="event-log-type"]').textContent()).toBe(
           'Coordinator added a part',
         );
+        // T451: the glyph is who made it.
+        expect(
+          await logRow.locator('.cr-lens-ev-glyph [data-icon]').getAttribute('data-icon'),
+        ).toBe('bot');
         expect(await logRow.textContent()).toContain('Add an RSS field (web)');
         await logRow.locator('[data-testid="applied-undo"]').click();
         await waitUntil(
@@ -9404,6 +9408,24 @@ describe('the Director draft tree (Playwright e2e, T301)', () => {
           'web: show salePrice',
         ]);
         expect(cockpit.autonomy.get(id).status).toBe('applied');
+
+        // T451: in Events, your Create reads as yours; the Director's own change as its.
+        await cockpit.projects.update(shop.id, { autonomy: { director: 'organise' } });
+        const own = await cockpit.autonomy.act('director', 'director', 'agent:test', {
+          action: 'create_node',
+          node: { parent: shop.root, title: 'Price history', goal: 'keep old prices' },
+        });
+        expect(own.applied).toBe(true);
+        await page.locator('[data-view="events"]').click();
+        const glyphOf = (text: string) =>
+          page
+            ?.locator('[data-testid="event-log-row"][data-type="autonomy_applied"]', {
+              hasText: text,
+            })
+            .locator('.cr-lens-ev-glyph [data-icon]')
+            .getAttribute('data-icon');
+        expect(await glyphOf('Show sale prices')).toBe('user');
+        expect(await glyphOf('Price history')).toBe('sparkles');
       } finally {
         await teardown([page]);
         await cockpit.stop();

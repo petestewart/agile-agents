@@ -2715,6 +2715,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** snapshot test "T450: a plan its parts wait for…" (fails without the kind); control-room e2e "waiting for the plan (T344)" checks the rail row reads Needs you; full `bun test` 3311/0; lint and typecheck clean.
 - **Notes:** Branch T450-plan-waiting-needs-you.
 
+### Ticket: T451 An applied change's glyph names who made it
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T446's follow-up: every `autonomy_applied` row (Events, a node's Activity, the Director's activity, the Overview) showed the coordinator's bot, even for the Director's change or your own Apply.
+- **Acceptance Criteria:** `EventGlyph` takes the event: an applied change shows its principal's icon (the Director's sparkles, a coordinator's bot, a person for you); other types are unchanged.
+- **Validation Steps:** control-room e2e T446 (a coordinator's row: bot) and T301 (your Create: user; the Director's own create_node at Organise: sparkles); full `bun test` 3311/0; lint and typecheck clean.
+- **Notes:** Branch T451-applied-glyph.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done

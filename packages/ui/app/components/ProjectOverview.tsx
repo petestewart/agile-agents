@@ -241,7 +241,7 @@ function RecentActivity({
             const about = recentEventText(e, titleOf, rowOf);
             const body = (
               <>
-                <EventGlyph type={e.type} />
+                <EventGlyph event={e} />
                 <span className="cr-ov-ev-text">
                   <span className="cr-ov-ev-label">{eventTitle(e)}</span>
                   {about !== undefined && <span className="cr-ov-ev-node"> · {about}</span>}

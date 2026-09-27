@@ -273,7 +273,7 @@ export function ActivityView({
                     {day.day === 'Today' ? ago(event.at) : clockTime(event.at)}
                   </time>
                   <div className="cr-lens-log-what">
-                    <EventGlyph type={event.type} />
+                    <EventGlyph event={event} />
                     <div className="cr-lens-log-text">
                       <span className="cr-lens-ev-label" data-testid="activity-type">
                         {eventTitle(event)}
