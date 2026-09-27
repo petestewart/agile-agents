@@ -2616,6 +2616,24 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/ui/app/lib/chat.test.ts`; control-room e2e T438, T171.
 - **Notes:** Branches T438-turn-edge-empty-hero, T438b-details-ended-reason, T438c-menu-stable-review. T438c: after T436, "Ask an agent to review…" waited on the page's merge check to show, so it could appear in an open ⋯ menu and push the items under it down; the walkthrough's 4.1 clicked "Waits on…" and hit "Add repository…" about half the time (seen in its screenshot). It now shows once the node has a branch, disabled until commits are known: 5 of 5 walkthrough runs clean. Gate on the integrated tip: `bun test` 3233/0, `test:integration` green (control-room 105/0).
 
+### Ticket: T440 LIVE-CHECKLIST §10 and the walkthrough: Ask at any level (D42)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** The live checklist, and the fake-agent walkthrough that clicks through it, had no step for D42's flows (Ask, Replies, Send to, Turn into work) or for a vendor that fails.
+- **Acceptance Criteria:** LIVE-CHECKLIST §10: 10.1 Ask about a new work node (the conversation under it, the question first, focus in its composer, the node still Work); 10.2 the reply in Needs me's Replies with its first line and dots, reading it, Send to the node (its line on the node's chat); 10.3 a question under the project root turned into work in place (a repo, the title following the goal, the question kept). 9.4's "An agent never starts" names the chat's and Details' words and **Not installed**. The walkthrough runs 10.1–10.3 after 9.2 (now "3.4–10"); its rail helpers match titles literally (a `?` or `.` in a title).
+- **Validation Steps:** `bun run test:walkthrough`: 0 findings.
+- **Notes:** Branch T440-d42-checklist. Writing it found T441.
+
+### Ticket: T441 A conversation turned into work keeps its question
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by T440's walkthrough: a conversation's question lived only in its goal, so Turn into work (a new goal) dropped the question from the chat; the thread read as an answer to nothing.
+- **Acceptance Criteria:** The stream record has an optional `question` (strict schema). The update route sets it to the old goal when a conversation's goal first changes (never for a root or work node, never again after); the chat opens with `question ?? (conversation ? goal : none)` after "Node created".
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T441`; control-room e2e T422; the walkthrough's 10.3.
+- **Notes:** Branch T441-keep-the-question.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done

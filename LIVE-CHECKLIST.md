@@ -1134,8 +1134,13 @@ agile daemon status
 
 - **`AGILE_HOME` points at a file.** Every command refuses with one line
   naming the variable and the path. Point it at a directory.
-- **An agent never starts, or stops at once.** Look at the node's session
-  list (the ended reason) and its `stderr.log` (9.3). Creating a node on, or
+- **An agent never starts, or stops at once.** The node reads **Blocked**,
+  and its chat says why: `The agent couldn’t start: …` (its command isn't on
+  the daemon's PATH; the model picker marks that vendor **Not installed**) or
+  `The agent stopped with an error: …` (the vendor's own last line, often a
+  login). **Details** → **Agent** says the same (`Stopped with an error: …`).
+  Fix the install or login, then send a message: that starts it again. The
+  full output is the session's `stderr.log` (9.3). Creating a node on, or
   adding, a repo whose main has no commits is refused up front: make an
   initial commit first.
 - **A delivery refuses.** The Delivery panel says why: held by a ship check
@@ -1167,3 +1172,57 @@ These steps have no cockpit control, so they stay on the CLI:
   (`.delivery_state.pr`). The Delivery panel shows the open PR's review, CI
   and auto-merge on one line, and the **Activity** tab has the `pr review`
   and `ci failed` rows.
+
+## 10. **[vendor]** Ask at any level (D42)
+
+A question can go to any node, or to the Director. It becomes a conversation
+of its own under that node, so the node's work goes on undisturbed, and it
+can grow into work in place. Keep the cockpit open; every step is in it.
+
+### 10.1 Ask about a node
+
+- [ ] Filter the rail to Shop, open **Needs me**, then **New node**: title
+      `CSV export`, goal `Add an export --csv command to ledger-lite, with a test.`,
+      switch **Start the agent now** off, **Create node**. Then **⋯** →
+      **Add repository…** → ledger-lite → **Add**. It reads `Work` on
+      ledger-lite.
+- [ ] Press **a** (or **⋯** → **Ask about this…**, or **Ctrl K** → Ask). The
+      box is aimed at CSV export. Type `Should the CSV have a header row?`
+      and press Enter.
+- [ ] A conversation opens under CSV export, its chat starting with your
+      question after `Node created`, the cursor in its composer. In the rail
+      it sits under CSV export with the conversation icon ○; CSV export
+      still reads `Work`. Its agent starts on its own and knows what it was
+      asked about (CSV export's goal, repo and branch, read-only).
+- [ ] Before it answers, go to **Needs me**.
+
+### 10.2 The reply, and Send to
+
+- [ ] When it answers, **Needs me** lists it first under **Replies**
+      (`Replied`, with the first line of its answer); the sidebar's Needs me
+      and its row in the rail show a blue dot. No card: nothing waits on a
+      decision.
+- [ ] Open it. Its row leaves **Replies**. The header offers **Send to CSV
+      export** and **Turn into work…** (Restart agent is in **⋯**).
+- [ ] **Send to CSV export**: the box holds the answer (edit it; a counter
+      shows near 3,000 characters). Press Enter. The conversation's chat
+      says `Sent to CSV export`, and CSV export's chat has it as your line,
+      `From the conversation “Should the CSV have a header row?”: …`. Its
+      agent reads it as it reads anything you type.
+
+### 10.3 A question that becomes work
+
+- [ ] Open **Shop** (the project's root) and press **a**: `Should ledger-lite keep a CHANGELOG?`,
+      Enter. Wait for its answer.
+- [ ] **Turn into work…** (the header). The goal box drafts a goal from the
+      talk in a few seconds (you can type over it at once; a draft that
+      arrives after you typed offers **Use it instead**). Make it
+      `Add CHANGELOG.md to ledger-lite with one line for the JSON export.`,
+      pick ledger-lite under **Repository** (no **Where** here: under a
+      project root the node stays where it is; under a work node you'd
+      choose **Next to** or **Under** it), and press Enter.
+- [ ] The same node becomes `Work` on its own branch of ledger-lite, its
+      title follows the new goal (the cheap model names it within a few
+      seconds), and its agent starts on the goal. The chat still opens with
+      your question and the answer, then `Goal changed: …`,
+      `Repo added: ledger-lite; …` and `Now work on the goal above. …`.

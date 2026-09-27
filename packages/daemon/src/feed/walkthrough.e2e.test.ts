@@ -673,7 +673,7 @@ afterAll(async () => {
 // ------------------------------------------------------------------ the walkthrough
 
 test.skipIf(!RUN)(
-  'LIVE-CHECKLIST 3.4–9, clicked through in the cockpit with the fake agent, GitHub and Jira',
+  'LIVE-CHECKLIST 3.4–10, clicked through in the cockpit with the fake agent, GitHub and Jira',
   async () => {
     rmSync(SHOTS, { recursive: true, force: true });
     mkdirSync(SHOTS, { recursive: true });
