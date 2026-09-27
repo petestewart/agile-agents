@@ -15,7 +15,8 @@
  *  - **Repositories** — `SettingsRepos.tsx`: every repo with its icon,
  *    delivery and visibility; Add repository (`AddRepo.tsx`).
  *  - **Classifier** — T167: the TypeSafe API key, write-only (the daemon
- *    never sends it back, only where it comes from).
+ *    never sends it back, only where it comes from). T454: Accepted
+ *    decisions, Jev's say on which conversations an accepted item wakes.
  *  - **Trackers** — T326: Jira's site and email, and a write-only token per
  *    tracker.
  *
@@ -41,9 +42,11 @@ import { GATE_KINDS, resolveVendorFailure, vendorHasHooks } from '@agile-agents/
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import {
   type DaemonHealth,
+  type KnowledgeWake,
   type QuickDrafts,
   getClassifierKey,
   getHealth,
+  getKnowledgeWake,
   getPolicy,
   getQuickDrafts,
   getSessionDefaults,
@@ -53,6 +56,7 @@ import {
   saveHomeSessionDefaults,
   saveRepoSessionDefaults,
   saveTrackerSettings,
+  setKnowledgeWake,
   setQuickDrafts,
   updateProject,
 } from '../lib/api';
@@ -1042,6 +1046,7 @@ function ClassifierSection(): JSX.Element {
           />
         </Field>
       </SetCard>
+      <KnowledgeWakeCard keyLoaded={status?.loaded} />
       <ConfirmDialog
         open={confirm}
         title="Remove the TypeSafe key?"
@@ -1059,6 +1064,65 @@ function ClassifierSection(): JSX.Element {
         </p>
       </ConfirmDialog>
     </SetSection>
+  );
+}
+
+/**
+ * T454 (D44 follow-up): whether Jev decides which other conversations an
+ * accepted decision wakes. Off, only the conversation that proposed it
+ * wakes. Here rather than in General: it needs the key above, and reads
+ * the key's status live (saving or removing the key enables or disables it).
+ */
+function KnowledgeWakeCard({ keyLoaded }: { keyLoaded: boolean | undefined }): JSX.Element {
+  const [state, setState] = useState<KnowledgeWake | undefined>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    getKnowledgeWake()
+      .then(setState)
+      .catch((err: unknown) => setError(errorText(err)));
+  }, []);
+
+  async function toggle(on: boolean): Promise<void> {
+    setBusy(true);
+    setError(undefined);
+    try {
+      setState(await setKnowledgeWake(on));
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <SetCard
+      title="Accepted decisions"
+      icon="book-open"
+      description="When you accept a decision, the conversation that proposed it hears at once; the others in its scope read it with their next message. On: Jev also wakes a finished conversation when the decision changes its answer or settles something it left open, and the conversation is still current."
+      testid="settings-knowledge-wake"
+    >
+      <Switch
+        label="Let Jev decide which conversations hear an accepted decision"
+        data-testid="settings-knowledge-wake-switch"
+        checked={state?.on === true && keyLoaded === true}
+        disabled={busy || state === undefined || keyLoaded !== true}
+        onChange={(e) => void toggle(e.target.checked)}
+      />
+      {keyLoaded === false ? (
+        <p className="cr-set-note" data-tone="plain" data-testid="settings-knowledge-wake-note">
+          <Icon name="info" size={14} />
+          <span>Needs the TypeSafe key above.</span>
+        </p>
+      ) : null}
+      {error ? (
+        <p className="cr-set-note" data-tone="amber" role="alert">
+          <Icon name="alert-triangle" size={14} />
+          <span>{error}</span>
+        </p>
+      ) : null}
+    </SetCard>
   );
 }
 

@@ -985,6 +985,30 @@ describe('T160 cockpit routes', () => {
     });
   });
 
+  test('T454: GET/POST /api/settings/knowledge-wake lets Jev decide, or not', async () => {
+    const post = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url('/api/settings/knowledge-wake'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    expect(await (await fetch(url('/api/settings/knowledge-wake'))).json()).toEqual({ on: false });
+    expect((await post({ on: true }, { origin: 'http://evil.example' })).status).toBe(403);
+    expect(store.getHomeConfig().knowledge_wake).toBeUndefined();
+    expect(await (await post({ on: true })).json()).toEqual({ on: true });
+    expect(store.getHomeConfig().knowledge_wake).toBe('jev');
+    expect(await (await fetch(url('/api/settings/knowledge-wake'))).json()).toEqual({ on: true });
+    expect((await post({ on: 'yes' })).status).toBe(400);
+    expect(await (await post({ on: false })).json()).toEqual({ on: false });
+    // Off is the default: the key goes.
+    expect(store.getHomeConfig().knowledge_wake).toBeUndefined();
+    const put = store
+      .listEvents()
+      .filter((e) => e.kind === 'home_config_put')
+      .at(-1);
+    expect(put?.agent).toBe('human');
+  });
+
   test('T457: permissions — the home posture, a project override, and a held read answered Always', async () => {
     const at = (path: string) => url(path);
     const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>

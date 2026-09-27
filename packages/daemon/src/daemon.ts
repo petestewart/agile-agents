@@ -32,7 +32,13 @@ import {
 } from './delivery';
 import { DirectorService, NormWatch, buildDirectorRpcMethods } from './director';
 import { DocsService, buildDocsRpcMethods } from './docs';
-import { type EmitRouted, RoutedEventService, emitTransitions, makeEmitter } from './events';
+import {
+  type EmitRouted,
+  KnowledgeWakeJudge,
+  RoutedEventService,
+  emitTransitions,
+  makeEmitter,
+} from './events';
 import { GateService, buildGateRpcMethods } from './gates';
 import type { DelegateFn } from './gates';
 import { PrPoller } from './github/poller';
@@ -263,6 +269,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(routedEvents ? { events: routedEvents } : {}),
           // T300: the `director` queue's delivery and wakes (declared below).
           director: () => directorService,
+          // T454: with `knowledge_wake: jev`, Jev's say on the other conversations in scope.
+          knowledgeWake: new KnowledgeWakeJudge({
+            store,
+            streams: () => streamService.list(),
+            home: config.home,
+            classifier,
+            config: config.classifier,
+          }),
           onWorkerTurnEnd: (id) => {
             void mainSync?.turnEnded(id).catch((err) => console.error('main sync failed:', err));
           },

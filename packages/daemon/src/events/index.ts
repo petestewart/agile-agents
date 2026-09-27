@@ -3,3 +3,4 @@ export * from './router';
 export * from './delivery';
 export * from './wake';
 export * from './producers';
+export * from './knowledge-wake';

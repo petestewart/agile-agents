@@ -11,7 +11,8 @@
  *   D10, narrowed by T453 / Q25) by `knowledge_accepted` only for an item
  *   it proposed itself (the event's `source`): it hears at once that its
  *   proposal was accepted. Every other conversation in scope gets the item
- *   on its next turn.
+ *   on its next turn, unless (T454, `knowledge_wake: jev`) Jev judged the
+ *   item relevant to it and it still current (`heard`).
  * - A project root is woken like a coordinating node once it has had a
  *   coordinator (P20, T280); before that it has no agent and never wakes.
  * - A node the human stopped is never woken; its events stay pending.
@@ -118,7 +119,9 @@ export class WakeBudget {
 export function wakeVerdict(
   node: Stream,
   role: NodeRole,
-  pending: readonly { type: RoutedEventType; payload?: Record<string, unknown> }[],
+  pending: readonly PendingForWake[],
+  /** T454: Jev said this conversation should hear this accepted item (`knowledge-wake.ts`). */
+  heard?: (event: PendingForWake) => boolean,
 ): Exclude<WakeVerdict, 'budget'> {
   // A project root has "an agent" once it has had a coordinator (P20).
   if (role === 'project' && !node.sessions.some((s) => s.role === 'coordinator')) {
@@ -128,20 +131,25 @@ export function wakeVerdict(
     return 'no_agent';
   }
   if (stoppedByHuman(node)) return 'stopped';
-  return pending.some((e) => wakesRole(role, e.type) && !notItsKnowledge(node, role, e))
+  return pending.some(
+    (e) => wakesRole(role, e.type) && (!notItsKnowledge(node, role, e) || heard?.(e) === true),
+  )
     ? 'wake'
     : 'no_trigger';
+}
+
+/** What the verdict reads of a pending event. */
+export interface PendingForWake {
+  id?: string;
+  type: RoutedEventType;
+  payload?: Record<string, unknown>;
 }
 
 /**
  * T453 (Q25): accepted knowledge wakes a conversation only when it proposed
  * the item; another conversation in scope gets it on its next turn.
  */
-function notItsKnowledge(
-  node: Stream,
-  role: NodeRole,
-  event: { type: RoutedEventType; payload?: Record<string, unknown> },
-): boolean {
+export function notItsKnowledge(node: Stream, role: NodeRole, event: PendingForWake): boolean {
   return (
     role === 'conversation' &&
     event.type === 'knowledge_accepted' &&

@@ -1493,6 +1493,50 @@ describe('rules screen: patterns, new rule, cancel, classifier key (Playwright e
   );
 
   browserTest(
+    'T454: Accepted decisions — the Jev switch needs the key, then saves on change',
+    async () => {
+      const cockpit = await startCockpit({ classifierKey: true });
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=classifier`);
+        const toggle = page.locator('[data-testid="settings-knowledge-wake-switch"]');
+        await waitForText(page, '[data-testid="settings-key-status"]', 'No key');
+        await waitForText(
+          page,
+          '[data-testid="settings-knowledge-wake-note"]',
+          'Needs the TypeSafe key above.',
+        );
+        expect(await toggle.isDisabled()).toBe(true);
+
+        await page.locator('[data-testid="settings-key-input"]').fill('fake-t454-playwright-key');
+        await page.locator('[data-testid="settings-key-save"]').click();
+        await waitForText(page, '[data-testid="settings-key-status"]', 'Key set');
+        await waitUntilAsync('the switch to be enabled', async () =>
+          page ? !(await toggle.isDisabled()) : false,
+        );
+        expect(await page.locator('[data-testid="settings-knowledge-wake-note"]').count()).toBe(0);
+        expect(await toggle.isChecked()).toBe(false);
+        // A controlled switch: it turns on once the daemon says so.
+        await toggle.click();
+        await waitUntilAsync(
+          'knowledge_wake saved',
+          async () => cockpit.store.getHomeConfig().knowledge_wake === 'jev',
+        );
+        // A reload shows it on.
+        await page.reload();
+        await waitUntilAsync('the switch to read on', async () =>
+          page ? await toggle.isChecked() : false,
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
     'T326: Settings sets a Jira token write-only; the screen shows "set" and never the token',
     async () => {
       const token = 'fake-t326-jira-token-4455';

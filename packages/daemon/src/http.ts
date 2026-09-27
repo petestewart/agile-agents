@@ -21,6 +21,7 @@ import {
   KnowledgeIdSchema,
   KnowledgePatchSchema,
   KnowledgeTestInputSchema,
+  KnowledgeWakeInputSchema,
   MESSAGE_BODY_MAX_CHARS,
   PermissionsInputSchema,
   type QuestionId,
@@ -649,6 +650,38 @@ async function handleQuickDraftsRoute(
   try {
     const config = await feed.store.setQuickDrafts(input.data.on, { by: 'human' });
     return jsonResponse({ on: config.quick_drafts !== false, available });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T454: Settings' "Let Jev decide which conversations hear an accepted
+ * decision" switch (`knowledge_wake` in config.yaml; on = `jev`):
+ *
+ *   GET  /api/settings/knowledge-wake  `{on}`
+ *   POST /api/settings/knowledge-wake  `{on}`, live at once; same-origin only
+ */
+async function handleKnowledgeWakeRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/knowledge-wake') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (req.method === 'GET') {
+    return jsonResponse({ on: feed.store.getHomeConfig().knowledge_wake === 'jev' });
+  }
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = KnowledgeWakeInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('knowledge wake', input.error));
+  try {
+    const config = await feed.store.setKnowledgeWake(input.data.on ? 'jev' : 'source', {
+      by: 'human',
+    });
+    return jsonResponse({ on: config.knowledge_wake === 'jev' });
   } catch (err) {
     return errorResponse(400, messageOf(err));
   }
@@ -1726,6 +1759,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           sameOrigin,
         );
         if (draftsRoute) return draftsRoute;
+        const knowledgeWakeRoute = await handleKnowledgeWakeRoute(req, url, feed, sameOrigin);
+        if (knowledgeWakeRoute) return knowledgeWakeRoute;
         const trackerRoute = await handleTrackerSettingsRoute(req, url, feed, sameOrigin);
         if (trackerRoute) return trackerRoute;
         const permissionsRoute = await handlePermissionsRoute(req, url, feed, sameOrigin);

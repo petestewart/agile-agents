@@ -216,6 +216,10 @@ export function trackerStatus(config: TrackersConfig | undefined): TrackerStatus
   };
 }
 
+/** T454: `knowledge_wake`'s two values; `source` is the default. */
+export const KNOWLEDGE_WAKE_MODES = ['source', 'jev'] as const;
+export type KnowledgeWakeMode = (typeof KNOWLEDGE_WAKE_MODES)[number];
+
 export const HomeConfigSchema = z
   .object({
     /** HTTP port for the localhost cockpit/API. `0` lets the OS pick. */
@@ -251,6 +255,13 @@ export const HomeConfigSchema = z
      * from the last reply). Absent = on.
      */
     quick_drafts: z.boolean().optional(),
+    /**
+     * T454 (D44 follow-up): who an accepted knowledge item wakes among the
+     * conversations in its scope. `source` (absent): only the one that
+     * proposed it (T453). `jev`: also any other the classifier judges it
+     * relevant to and still current (`events/knowledge-wake.ts`).
+     */
+    knowledge_wake: z.enum(KNOWLEDGE_WAKE_MODES).optional(),
     /** T457: the permission posture (`posture.ts`); a project may override it. Absent = `ask`. */
     permissions: PermissionPostureSchema.optional(),
     /** T243 (P11): routed-event settings. `wake_budget_per_hour` defaults to 20. */
@@ -320,3 +331,7 @@ export function trackerSettingsStatus(config: TrackersConfig | undefined): Track
 /** T434: Settings' quick drafts switch (`POST /api/settings/quick-drafts`). */
 export const QuickDraftsInputSchema = z.object({ on: z.boolean() }).strict();
 export type QuickDraftsInput = z.infer<typeof QuickDraftsInputSchema>;
+
+/** T454: Settings' "Let Jev decide" switch (`POST /api/settings/knowledge-wake`). */
+export const KnowledgeWakeInputSchema = z.object({ on: z.boolean() }).strict();
+export type KnowledgeWakeInput = z.infer<typeof KnowledgeWakeInputSchema>;

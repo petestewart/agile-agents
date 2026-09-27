@@ -151,3 +151,17 @@ describe('T453 (Q25): accepted knowledge wakes only the conversation it came fro
     expect(wakeVerdict(node(), 'work', [accepted()])).toBe('no_trigger');
   });
 });
+
+describe('T454: an accepted item Jev judged relevant wakes another conversation', () => {
+  const accepted = { id: 'E-1', type: 'knowledge_accepted' as const, payload: { item: 'K-1' } };
+  const heard = (e: { id?: string }) => e.id === 'E-1';
+  test('heard: the conversation wakes; unheard, it waits; stopped stays stopped', () => {
+    expect(wakeVerdict(node(), 'conversation', [accepted], heard)).toBe('wake');
+    expect(wakeVerdict(node(), 'conversation', [accepted], () => false)).toBe('no_trigger');
+    const detached = node({ agent: { status: 'idle' } } as Partial<Stream>);
+    expect(wakeVerdict(detached, 'conversation', [accepted], heard)).toBe('stopped');
+  });
+  test('a work node still waits (P11): Jev only speaks for conversations', () => {
+    expect(wakeVerdict(node(), 'work', [accepted], heard)).toBe('no_trigger');
+  });
+});
