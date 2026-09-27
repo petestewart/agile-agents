@@ -19,7 +19,11 @@ export function runCliInit(): CliInitResult {
   const { home } = discoverConfig();
   const result = runInit(home);
   return {
-    message: `agile init: state home ${result.home} ready (${result.filesWritten.length} files written)`,
+    // T448 (audit r7 #25): and what comes next.
+    message: [
+      `agile init: state home ${result.home} ready (${result.filesWritten.length} files written)`,
+      'Next: `agile daemon start`, then open the cockpit it prints (http://127.0.0.1:4600/ by default).',
+    ].join('\n'),
     alreadyInitialised: result.filesWritten.length === 0,
   };
 }

@@ -272,8 +272,8 @@ const AUTONOMY_HINT: Record<Autonomy, string> = {
   advise:
     '`add_child`, `add_waits_on` and `set_owner` become proposals the operator applies; contract changes (`decide_contract`) go to the operator.',
   organise:
-    '`add_child`, `add_waits_on` and `set_owner` apply at once (the thread says so); contract changes go to the operator.',
-  run: '`add_child`, `add_waits_on` and `set_owner` apply at once; a routine (additive) contract change with `routine: true` applies too.',
+    '`add_child`, `add_waits_on` and `set_owner` apply at once (the thread says so), and a child you add starts its agent (a part waits while your plan waits for the operator); `start_node` starts a child that stopped. Contract changes go to the operator.',
+  run: '`add_child`, `add_waits_on` and `set_owner` apply at once, and a child you add starts its agent (a part waits while your plan waits for the operator); `start_node` starts a child that stopped, `restart_node` restarts a stuck one; a routine (additive) contract change with `routine: true` applies too.',
 };
 
 /** T338: people read what agents write; ids are for tool calls only. */
@@ -291,7 +291,9 @@ export function coordinatorSection(
   const contractTitle = (id: string) => contracts.find((c) => c.id === id)?.title ?? id;
   const lines =
     children.length === 0
-      ? ['none yet']
+      ? [
+          'none yet. To split the work, `add_child` one part per repo or area (a clear goal each), then `plan_write` who owns which paths.',
+        ]
       : children.map((c) => {
           const card = cards?.get(c.id);
           const head = `- ${c.title} (\`${c.id}\`): agent ${c.agent.status}, human ${c.human.status}`;

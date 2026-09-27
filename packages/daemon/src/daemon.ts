@@ -513,6 +513,15 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       console.error('agiled: could not recover routed events:', err);
     }
   }
+  // T444: sessions a daemon that died mid-turn left "running" end first, so their nodes
+  // read idle (not Working for good) and the wake below can start them again.
+  if (attachService) {
+    try {
+      await attachService.endOrphansAtStart();
+    } catch (err) {
+      console.error('agiled: could not end sessions left by the last run:', err);
+    }
+  }
   // T243: nodes left with pending events are considered for wake/delivery now.
   attachService?.wakePending();
 

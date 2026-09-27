@@ -124,9 +124,10 @@ function liveAgent(stream: Stream): SessionRef | undefined {
 
 /**
  * P20 (T280): the agent a node runs as it stands now: a coordinator on a
- * coordinating node, or on a project root once it has children (a bare
- * root is still a single stream a worker runs on, the pre-projects shape);
- * a worker otherwise.
+ * coordinating node, or on a project root (T443: from the start, so "plan
+ * this and split it" works before there is a part; a parentless node with a
+ * repo of its own is still a single stream a worker runs on, the
+ * pre-projects shape); a worker otherwise.
  */
 function agentFor(
   stream: Stream,
@@ -135,12 +136,17 @@ function agentFor(
   const shape = nodeRole(stream, liveChildrenOf(stream.id, all), all);
   // D42: a coordinator's children are its parts; conversations under it are not.
   const children = partsOf(stream.id, all);
-  const coordinates = shape === 'coordinating' || (shape === 'project' && children.length > 0);
+  const projectRoot = stream.project !== undefined && stream.repo === undefined;
+  const coordinates =
+    shape === 'coordinating' || (shape === 'project' && (children.length > 0 || projectRoot));
   return { children, shape, role: coordinates ? 'coordinator' : 'worker' };
 }
 
 /** T370: the ended reason of a session the daemon's shutdown stopped. */
 export const DAEMON_SHUTDOWN_REASON = 'the daemon stopped';
+
+/** T444: the ended reason of a session a daemon that died mid-turn left on record. */
+export const DAEMON_RESTART_REASON = 'the daemon restarted during this turn';
 
 /** Not closed, landed or archived: a node an agent may still work on. */
 function isOpen(stream: Stream): boolean {
@@ -631,8 +637,8 @@ export class AttachService {
     const stream = streams.get(streamId);
     // P20 (T280): the agent of a coordinating node or a project root is a
     // coordinator: no worktree, the session dir, every write denied.
-    // A project root counts once it has children: a bare root is still a
-    // single stream a worker runs on (the pre-projects shape).
+    // T443: a project's root coordinates from the start; a parentless node
+    // with a repo of its own is still a single stream a worker runs on.
     const all = streams.list();
     const { children, shape, role: agentRole } = agentFor(stream, all);
     const coordinates = agentRole === 'coordinator';
@@ -1132,7 +1138,8 @@ export class AttachService {
    * the node would have: a worker on a work node or a conversation, the
    * coordinator on a coordinating node or a project root with parts. Its
    * pending events, the line among them, are handed over in the brief.
-   * Not on a closed, landed or deleted node, nor a bare project root. A
+   * Not on a closed, landed or deleted node, nor a parentless single stream
+   * (T443: a project's root starts its coordinator, parts or not). A
    * failed start is a thread line; the line stays pending.
    * T423: `flags` (the composer's model chip) name the vendor, model and
    * effort, as attach's flags do; the defaults fill the rest.
@@ -1404,6 +1411,43 @@ export class AttachService {
         .catch(() => {});
     }
     return stopped;
+  }
+
+  /**
+   * T444 (audit r7 #16): at daemon start no process is ours, so every
+   * `starting`/`running` session on record was left by a daemon that died
+   * mid-turn. Each ends (`stopped`, the daemon's own reason, so the node's
+   * next event still wakes it), its node goes back to `idle`, and its thread
+   * says so. Before this, such a node read "Working" for good and a line to
+   * it only queued. Returns the nodes it touched.
+   */
+  async endOrphansAtStart(): Promise<string[]> {
+    const touched: string[] = [];
+    for (const stream of this.options.streams.list()) {
+      const orphans = this.orphanSessions(stream.id);
+      if (orphans.length === 0) continue;
+      for (const orphan of orphans) {
+        await this.setSessionStatus(
+          stream.id,
+          orphan.id,
+          'stopped',
+          `${DAEMON_STOP_PREFIX}${DAEMON_RESTART_REASON}`,
+        ).catch(() => {});
+      }
+      if (orphans.some((o) => isAgentRole(o.role))) {
+        await this.options.streams
+          .update('daemon', stream.id, { agent: { status: 'idle' } })
+          .catch(() => {});
+        await this.options.streams
+          .appendThread('daemon', stream.id, {
+            kind: 'event',
+            body: `session ended: ${DAEMON_RESTART_REASON}`,
+          })
+          .catch(() => {});
+      }
+      touched.push(stream.id);
+    }
+    return touched;
   }
 
   /** T437: `starting`/`running` session records on a node that no live handle stands behind. */

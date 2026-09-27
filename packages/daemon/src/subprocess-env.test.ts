@@ -43,6 +43,16 @@ describe('sandboxedSubprocessEnv', () => {
     expect(existsSync(env.XDG_STATE_HOME as string)).toBe(true);
   });
 
+  test('T448: the cache ignores itself, so git status in the repo never lists it', () => {
+    Bun.spawnSync(['git', 'init', '-q'], { cwd: repoRoot });
+    sandboxedSubprocessEnv(repoRoot, 'git');
+    expect(existsSync(join(repoRoot, DAEMON_CACHE_DIR, '.gitignore'))).toBe(true);
+    const status = Bun.spawnSync(['git', 'status', '--porcelain', '--untracked-files=all'], {
+      cwd: repoRoot,
+    });
+    expect(status.stdout.toString()).toBe('');
+  });
+
   test('namespaces different callers under different <name> subdirectories', () => {
     const a = sandboxedSubprocessEnv(repoRoot, 'test-run');
     const b = sandboxedSubprocessEnv(repoRoot, 'git');

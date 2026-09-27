@@ -161,3 +161,26 @@ describe('T434: the quick drafts switch', () => {
     expect(asked[0]).toContain('second idea');
   });
 });
+
+describe('T444: sessions a dead daemon left running', () => {
+  test('end at start: the node reads idle, not Working for good', async () => {
+    // A home as a daemon killed mid-turn leaves it: a node working, its session running.
+    const store = StateStore.open(runInit(home).stateRoot);
+    const { StreamService } = await import('./streams/service');
+    const node = await new StreamService(store).create('human', { title: 'mid-turn', goal: 'g' });
+    const session = ulid();
+    await store.updateStream('daemon', node.id, (before) => ({
+      ...before,
+      agent: { ...before.agent, status: 'working' },
+      sessions: [{ id: session, vendor: 'claude', model: 'm', role: 'worker', status: 'running' }],
+    }));
+    await store.flush();
+    store.close();
+
+    handle = await startDaemon({ port: 0, socketPath: join(repo, '.agile-daemon.sock') });
+    const after = handle.streamService?.get(node.id);
+    expect(after).toBeDefined();
+    expect(after?.agent.status).toBe('idle');
+    expect(after?.sessions.map((s) => s.status)).toEqual(['stopped']);
+  });
+});
