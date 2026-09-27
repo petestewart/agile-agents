@@ -3,7 +3,8 @@
  * typing) and the `g` then letter jumps to a view (`g i` Needs me). It
  * lists only keys that work: the palette (⌘K), `n` (NewStream), `a` (Ask, T419), `/`
  * (StreamTree), Esc (every Dialog, Menu and panel), the composer's Enter,
- * `j`/`k` in Needs me (Inbox) and the tree (T395), A/B or 1/2 on a focused
+ * `j`/`k` in Needs me (Inbox) and the tree (T395; T445: on a node's page they
+ * open the next or previous node from anywhere), A/B or 1/2 on a focused
  * question card (T416), the arrows in menus, Knowledge and the tree.
  */
 
@@ -88,7 +89,8 @@ function sections(mod: string): ReadonlyArray<{
       title: 'Lists',
       rows: [
         { label: 'Move through menus, results and Knowledge', keys: ['↑', '↓'] },
-        { label: 'Move through the tree', keys: ['J', 'K'] },
+        // T445 (audit r7 #14): from anywhere on a node's page, not only a focused row.
+        { label: 'Open the next or previous node in the tree', keys: ['J', 'K'] },
         { label: 'Fold or unfold a node in the tree', keys: ['←', '→'] },
         // T424: the tree's drag has no key; the sheet says it is there.
         { label: DRAG_NOTE, keys: [] },

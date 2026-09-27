@@ -8,6 +8,7 @@ import {
   LEGEND_NOTE,
   LEGEND_ORDER,
   checkMove,
+  defaultRepoOf,
   deleteQuestion,
   filesText,
   legendRow,
@@ -75,6 +76,40 @@ describe('titleFromGoal', () => {
     expect(titleFromGoal('x'.repeat(70))).toBe('x'.repeat(60));
     // Exactly the limit stays whole.
     expect(titleFromGoal('y'.repeat(60))).toBe('y'.repeat(60));
+  });
+
+  test('T445: a cut goes before a clause, and never leaves a quote open', () => {
+    // The audit's goal: before " that ", not mid-quote.
+    expect(
+      titleFromGoal(
+        'Add a greet() function to src/index.ts that returns "hello, world" and a test',
+      ),
+    ).toBe('Add a greet() function to src/index.ts');
+    expect(
+      titleFromGoal('Rework the importer with streaming reads so that big files never load whole'),
+    ).toBe('Rework the importer with streaming reads');
+    expect(
+      titleFromGoal(
+        'Show sale prices on the product page, the cart and the order confirmation mail',
+      ),
+    ).toBe('Show sale prices on the product page');
+    // A clause too early to name the work: the word cut, as before.
+    expect(
+      titleFromGoal(
+        'Fix it, then write a migration guide for every plugin author we know of today',
+      ),
+    ).toBe('Fix it, then write a migration guide for every plugin author');
+    // A word cut inside a quote stops before it, or drops the stray mark when little is left.
+    expect(
+      titleFromGoal(
+        'Rename the export button label to "Download your ledger as a spreadsheet now"',
+      ),
+    ).toBe('Rename the export button label to');
+    expect(
+      titleFromGoal('"Download everything as one archive file for the accountant please"'),
+    ).toBe('Download everything as one archive file for the accountant');
+    // A line that fits is kept as written.
+    expect(titleFromGoal('Say "hi')).toBe('Say "hi');
   });
 });
 
@@ -396,5 +431,16 @@ describe('T424: the overlap mark', () => {
       overlapMark('a1x', [{ nodes: ['a1x', 'gone'], files: ['x.ts'] }], rows, false)?.text,
     ).toBe('Overlaps another node on x.ts');
     expect(overlapMark('a1x', [], rows, false)).toBeUndefined();
+  });
+});
+
+describe('defaultRepoOf (T445)', () => {
+  test("a project's only registered repository, else none", () => {
+    expect(defaultRepoOf(['shop'], ['shop', 'web'])).toBe('shop');
+    expect(defaultRepoOf(['shop', 'web'], ['shop', 'web'])).toBe('');
+    expect(defaultRepoOf([], ['shop'])).toBe('');
+    expect(defaultRepoOf(undefined, ['shop'])).toBe('');
+    // Not (or no longer) registered: nothing to start on.
+    expect(defaultRepoOf(['gone'], ['shop'])).toBe('');
   });
 });

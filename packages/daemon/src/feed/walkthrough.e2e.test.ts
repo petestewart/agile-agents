@@ -518,11 +518,26 @@ async function allStreams(): Promise<void> {
   await page.locator('[data-testid="sidebar"] [data-view="inbox"]').click();
 }
 
-/** New node (the sidebar), as 5.1 fills it in. */
-async function newStream(title: string, goal: string, startLater: boolean): Promise<void> {
+/**
+ * T445: in a project with one repository (Blog), New node starts on it;
+ * **Just talk instead** leaves the Repository at "No repository", as 5.1 asks.
+ */
+async function justTalk(): Promise<void> {
+  await page.locator('[data-testid="new-stream-no-repo"]').click();
+  await page.locator('[data-testid="new-stream-repo"][data-value=""]').waitFor();
+}
+
+/** New node (the sidebar), as 5.1 fills it in; `talk` in a one-repository project (Blog). */
+async function newStream(
+  title: string,
+  goal: string,
+  startLater: boolean,
+  talk = false,
+): Promise<void> {
   await page.locator('[data-testid="new-stream-open"]').click();
   await page.locator('[data-testid="new-stream-title"]').fill(title);
   await page.locator('[data-testid="new-stream-goal"]').fill(goal);
+  if (talk) await justTalk();
   // T365: "Start the agent now" is on by default; off is the old Start later.
   if (startLater) await page.locator('[data-testid="new-stream-start"]').uncheck();
   await page.locator('[data-testid="new-stream-create"]').click();
@@ -541,7 +556,10 @@ async function nodeMenu(): Promise<void> {
 async function addRepo(repo: string): Promise<void> {
   await nodeMenu();
   await page.locator('[data-testid="add-repo"]').click();
-  await page.locator('[data-testid="add-repo-select"]').selectOption(repo);
+  // T445: the searchable repository picker.
+  await page.locator('[data-testid="add-repo-select"]').click();
+  await page.locator(`[data-testid="add-repo-select-option"][data-repo="${repo}"]`).click();
+  await page.locator(`[data-testid="add-repo-select"][data-value="${repo}"]`).waitFor();
   await page.locator('[data-testid="add-repo-submit"]').click();
   await page.locator('[data-testid="add-repo-form"]').waitFor({ state: 'detached' });
 }
@@ -1376,6 +1394,8 @@ test.skipIf(!RUN)(
         (await parent.getAttribute('data-value')) === '' && parentText === 'Top level of Blog',
         parentText ?? '',
       );
+      // T445: Blog has one repository, which New node starts on; 5.1 asks for none.
+      await justTalk();
       await page.locator('[data-testid="new-stream-start"]').uncheck();
       await page.locator('[data-testid="new-stream-create"]').click();
       await page
@@ -1489,7 +1509,7 @@ test.skipIf(!RUN)(
       await addRepo('ledger-lite');
       await pickProject('Blog');
       await allStreams();
-      await newStream('Blog note', 'Fill in the Blog section of walkthrough-notes.md.', true);
+      await newStream('Blog note', 'Fill in the Blog section of walkthrough-notes.md.', true, true);
       await addRepo('ledger-lite');
       const edit = (title: string, from: string, to: string, message: string) => {
         const wt = worktreeOf(title);
@@ -1907,7 +1927,7 @@ test.skipIf(!RUN)(
     await step('6.3a', 'Ledger count: held by the ship check', async () => {
       await pickProject('Blog');
       await allStreams();
-      await newStream('Ledger count', 'Add a count function in src/ledger-count.ts.', true);
+      await newStream('Ledger count', 'Add a count function in src/ledger-count.ts.', true, true);
       await addRepo('ledger-lite');
       commitFile(
         worktreeOf('Ledger count'),

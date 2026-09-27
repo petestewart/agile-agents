@@ -22,20 +22,28 @@
 import type { SessionDefaultsStatus } from '@agile-agents/shared';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import {
+  type QuickDrafts,
   type RepoRow,
   attachSession,
   createStream,
+  getQuickDrafts,
   getSessionDefaults,
   listRepos,
 } from '../lib/api';
-import { coordinatesIt } from '../lib/ask';
+import { coordinatesIt, focusComposerOn } from '../lib/ask';
 import { agentLabel, sessionIdText } from '../lib/chat';
 import { resolvedFor } from '../lib/defaults';
 import { useOptionalFeed } from '../lib/feed-context';
 import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
 import { type NewStreamPreset, isShortcut, useShell } from '../lib/shell';
 import { ROLE_LABEL } from '../lib/status';
-import { newNodeDefaults, projectOutline, splitRepos, titleFromGoal } from '../lib/tree';
+import {
+  defaultRepoOf,
+  newNodeDefaults,
+  projectOutline,
+  splitRepos,
+  titleFromGoal,
+} from '../lib/tree';
 import { lazyNamed } from './ErrorBoundary';
 import { Icon } from './Icon';
 import { type PickOption, PickerField } from './Pickers';
@@ -155,8 +163,10 @@ function NewStreamForm({
   const [title, setTitle] = useState<string | undefined>(preset?.title);
   const [projectId, setProjectId] = useState(defaults.project);
   const [parent, setParent] = useState(defaults.parent);
-  // T435 (#14): a proposal's node starts on the proposing node's repository.
-  const [repo, setRepo] = useState(preset?.repo ?? '');
+  // T435 (#14): a proposal's node starts on the proposing node's repository. T445 (audit r7
+  // #12): else, in a project with one repository, on that one ("No repository" is a pick away).
+  // `undefined` follows the project's default; a pick (even "No repository") takes it over.
+  const [repoPick, setRepo] = useState<string | undefined>(preset?.repo);
   // T373: Add a repository from here; the new repo is picked.
   const [addingRepo, setAddingRepo] = useState(false);
   const [start, setStart] = useState(true);
@@ -165,6 +175,22 @@ function NewStreamForm({
   const [choice, setChoice] = useState<SessionChoice | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  // T445 (audit r7 #11): a title is only promised when the cheap model is on and there.
+  const [drafts, setDrafts] = useState<QuickDrafts | undefined>(undefined);
+
+  useEffect(() => {
+    let alive = true;
+    getQuickDrafts()
+      .then((status) => {
+        if (alive) setDrafts(status);
+      })
+      .catch(() => {
+        // Unknown: the hint promises nothing.
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -196,6 +222,11 @@ function NewStreamForm({
   const ownTitle = (title ?? '').trim() !== '' && title !== derived;
   const projectRow = projects.find((p) => p.id === projectId);
   const projectLabel = projectRow?.name;
+  const defaultRepo = defaultRepoOf(
+    projectRow?.repos,
+    repos.map((r) => r.name),
+  );
+  const repo = repoPick ?? defaultRepo;
   const outline = useMemo(() => projectOutline(rows, projectId), [rows, projectId]);
   const parentRow = parent ? rows.find((r) => r.id === parent) : undefined;
   const resolved = session
@@ -240,6 +271,8 @@ function NewStreamForm({
         );
       }
       saveLastProject(parentRow?.project ?? projectId);
+      // T445 (audit r7 #13): the new node's composer takes focus once its page shows.
+      focusComposerOn(created.id);
       close();
       select(created.id);
     } catch (err) {
@@ -421,7 +454,12 @@ function NewStreamForm({
           htmlFor="cr-newnode-title"
           {...(ownTitle
             ? {}
-            : { hint: 'Left as is, a short title is written for you once it’s made.' })}
+            : {
+                hint:
+                  drafts?.on === true && drafts.available
+                    ? 'Left as is, a short title is written for you once it’s made.'
+                    : 'The goal’s first line — edit it if you like.',
+              })}
         >
           <input
             id="cr-newnode-title"
@@ -442,6 +480,8 @@ function NewStreamForm({
                 onChange={(e) => {
                   setProjectId(e.target.value || undefined);
                   setParent('');
+                  // Another project: its own default repository, unless a proposal named one.
+                  if (preset?.repo === undefined) setRepo(undefined);
                 }}
               >
                 {projects.map((p) => (
@@ -481,6 +521,21 @@ function NewStreamForm({
                 <>
                   <b>{ROLE_LABEL.work}</b>: writes code on its own branch in {repo}, then hands it
                   to you to merge.
+                  {repoPick === undefined && (
+                    // T445 (audit r7 #12): the project's one repository was picked for you.
+                    <>
+                      {' '}
+                      <button
+                        type="button"
+                        className="cr-link"
+                        data-testid="new-stream-no-repo"
+                        onClick={() => setRepo('')}
+                      >
+                        Just talk instead
+                      </button>
+                      {' ·'}
+                    </>
+                  )}
                 </>
               ) : (
                 <>
