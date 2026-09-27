@@ -112,6 +112,8 @@ export const ROUTED_EVENT_PAYLOADS = {
     kind: NonEmpty,
     text: NonEmpty,
     enforcement: NonEmpty,
+    /** T453 (Q25): the node the item came from; the only conversation its accept wakes. */
+    source: UlidSchema.optional(),
   }),
   dependency_satisfied: z.object({
     node: UlidSchema,

@@ -806,7 +806,7 @@ The agreed design does not settle these. Each one is a proposal, recorded in `PL
 - **P11. Wake policy.**
   - A **coordinating node** with an agent is woken by any event routed to it.
   - A **work node** whose session has ended is woken by `human_line`, `answer`, `pr_review`, `ci_failed`, `pr_behind`, `sync_conflict` and `contract_changed`. Other events wait for its next turn.
-  - A **conversation node** is woken only by `human_line`, `answer` and (D36 D10) `knowledge_accepted`, so an accepted decision reaches it at once. One accepted item wakes at most 5 conversations; the rest get it on their next turn. The count is kept in memory and resets when the daemon restarts.
+  - A **conversation node** is woken only by `human_line`, `answer` and (D36 D10, narrowed by D44) a `knowledge_accepted` for an item it proposed itself, so it hears at once that its proposal was accepted. Every other conversation in scope gets the item with its next message.
   - A **wake budget** (default 20 wakes per node per hour) stops event loops. When a node hits it, it goes to your inbox.
   - Nodes you have stopped are never woken. Their events stay pending and are shown.
 - **P12. "Routine" contract changes** mean additive changes: a new optional field, a widened type, or a docs-only change that all parties accept. Renames, removals and behaviour changes are never routine. The coordinator judges this; at Run it may approve routine changes itself. Everything else comes to you.

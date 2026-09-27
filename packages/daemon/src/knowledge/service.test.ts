@@ -419,6 +419,17 @@ describe('accept emits knowledge_accepted (T264)', () => {
 
     const [event] = emitted.filter((e) => e.type === 'knowledge_accepted');
     expect(event?.payload).toMatchObject({ item: item.id, kind: 'decision', enforcement: 'tell' });
+    // T453: an item you wrote came from no node, so it names none.
+    expect(event?.payload.source).toBeUndefined();
+    const proposed = await emitting.create('agent', {
+      kind: 'decision',
+      text: 'totals round half up',
+      scope: { kind: 'project', project: shop.id },
+      source: { by: 'agent', node: child.id },
+    });
+    await emitting.accept(proposed.id, 'pete');
+    const second = emitted.filter((e) => e.type === 'knowledge_accepted').at(-1);
+    expect(second?.payload.source).toBe(child.id);
     const routed = event?.routing.map((r) => r.node).sort();
     expect(routed).toEqual([shop.root, child.id].sort());
     expect(routed).not.toContain(blogChild.id);

@@ -1652,7 +1652,7 @@ describe('T243: the wake policy (P11)', () => {
   }, 30_000);
 });
 
-describe('T351: accepting a decision wakes the conversation (D36 D10)', () => {
+describe('T351, T453: accepting a decision wakes the conversation it came from (D36 D10, Q25)', () => {
   const prompts = (log: string) =>
     (existsSync(log) ? readFileSync(log, 'utf8') : '')
       .split('\n')
@@ -1678,24 +1678,26 @@ describe('T351: accepting a decision wakes the conversation (D36 D10)', () => {
       goal: 'g',
       project: project.id,
     });
-    const accept = async () => {
-      const item = await knowledge.create('human', {
+    /** T453: `from` is the node that proposed the item (its agent); none when you wrote it. */
+    const accept = async (from?: string) => {
+      const item = await knowledge.create(from !== undefined ? 'agent' : 'human', {
         text: TEXT,
         kind: 'decision',
         enforcement: 'tell',
         scope: { kind: 'project', project: project.id },
+        ...(from !== undefined ? { source: { by: 'agent', node: from } } : {}),
       });
       await knowledge.accept(item.id, 'human');
     };
     return { node, accept };
   }
 
-  test('accept → the ended conversation is woken and the item delivered', async () => {
+  test('accept → the ended conversation that proposed it is woken and the item delivered', async () => {
     const log = join(scratch, 'k-wake.jsonl');
     const { node, accept } = await setUp({ ...SPEAKS, logFile: log });
     await waitFor(() => streams.get(node.id).agent.status === 'done');
     await waitFor(() => attachService.handleFor(node.id) === undefined);
-    await accept();
+    await accept(node.id);
     await waitFor(() => streams.get(node.id).sessions.length === 2);
     await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
     await waitFor(() => prompts(log).some((p) => p.includes('integer cents')));
@@ -1706,11 +1708,26 @@ describe('T351: accepting a decision wakes the conversation (D36 D10)', () => {
     expect(store.readDeliveries(node.id).at(-1)?.session).toBe(woken);
   }, 30_000);
 
+  test('T453: another ended conversation is not woken; your next line brings the item', async () => {
+    const log = join(scratch, 'k-narrow.jsonl');
+    const { node, accept } = await setUp({ ...SPEAKS, logFile: log });
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    await waitFor(() => attachService.handleFor(node.id) === undefined);
+    await accept();
+    await Bun.sleep(200);
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+    expect(threadBodies(node.id)).not.toContain('woken by knowledge accepted');
+    await attachService.say(node.id, 'Does that change your answer?');
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    await waitFor(() => prompts(log).some((p) => p.includes('integer cents')));
+  }, 30_000);
+
   test('a conversation the human stopped is not woken; the item stays pending', async () => {
     const { node, accept } = await setUp(SPEAKS_THEN_HANGS);
     await attachService.stop(node.id, 'worker', { detach: true });
     expect(streams.get(node.id).agent.status).toBe('idle');
-    await accept();
+    await accept(node.id);
     await Bun.sleep(200);
     expect(streams.get(node.id).sessions).toHaveLength(1);
     expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);

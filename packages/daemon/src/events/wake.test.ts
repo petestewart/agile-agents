@@ -5,15 +5,7 @@ import {
   type RoutedEventType,
   type Stream,
 } from '@agile-agents/shared';
-import {
-  KNOWLEDGE_WAKE_FANOUT,
-  WakeBudget,
-  WakeFanout,
-  fanoutTriggers,
-  stoppedByHuman,
-  wakeVerdict,
-  wakesRole,
-} from './wake';
+import { WakeBudget, stoppedByHuman, wakeVerdict, wakesRole } from './wake';
 
 const WORK: RoutedEventType[] = [
   'human_line',
@@ -26,7 +18,7 @@ const WORK: RoutedEventType[] = [
   'contract_changed',
   'coordinator_note',
 ];
-// D36 D10 (T351): an accepted knowledge item wakes a conversation too.
+// D36 D10 (T351, narrowed by T453): an accepted item the conversation proposed wakes it.
 const CONVERSATION: RoutedEventType[] = ['human_line', 'answer', 'knowledge_accepted'];
 
 describe('wakesRole (P11 table)', () => {
@@ -125,26 +117,37 @@ describe('WakeBudget', () => {
   });
 });
 
-describe('T351: accepted knowledge wakes a conversation, capped per item', () => {
-  test('a finished conversation wakes on knowledge_accepted, a stopped one does not', () => {
-    expect(wakeVerdict(node(), 'conversation', [{ type: 'knowledge_accepted' }])).toBe('wake');
-    const detached = node({ agent: { status: 'idle' } } as Partial<Stream>);
-    expect(wakeVerdict(detached, 'conversation', [{ type: 'knowledge_accepted' }])).toBe('stopped');
-    // A work node still waits for its next turn (P11 unchanged there).
-    expect(wakeVerdict(node(), 'work', [{ type: 'knowledge_accepted' }])).toBe('no_trigger');
+describe('T453 (Q25): accepted knowledge wakes only the conversation it came from', () => {
+  const CONVERSATION_ID = '01HZX8W9Q7M3N4P5R6S7T8V9W0';
+  const accepted = (source?: string) => ({
+    type: 'knowledge_accepted' as const,
+    payload: { item: 'K-1', ...(source !== undefined ? { source } : {}) },
   });
-  test('only a knowledge-only conversation wake counts against the fan-out', () => {
-    const k = { id: 'E-1', type: 'knowledge_accepted' as const };
-    const line = { id: 'E-2', type: 'human_line' as const };
-    expect(fanoutTriggers('conversation', [k])).toEqual([k]);
-    expect(fanoutTriggers('conversation', [k, line])).toEqual([]);
-    expect(fanoutTriggers('coordinating', [k])).toEqual([]);
+  test('the conversation that proposed the item wakes; a stopped one does not', () => {
+    const own = node({ id: CONVERSATION_ID } as Partial<Stream>);
+    expect(wakeVerdict(own, 'conversation', [accepted(own.id)])).toBe('wake');
+    const detached = node({ id: CONVERSATION_ID, agent: { status: 'idle' } } as Partial<Stream>);
+    expect(wakeVerdict(detached, 'conversation', [accepted(detached.id)])).toBe('stopped');
   });
-  test(`one item wakes at most ${KNOWLEDGE_WAKE_FANOUT} conversations`, () => {
-    const fanout = new WakeFanout();
-    for (let i = 0; i < KNOWLEDGE_WAKE_FANOUT; i++) expect(fanout.take([{ id: 'E-1' }])).toBe(true);
-    expect(fanout.take([{ id: 'E-1' }])).toBe(false);
-    // A node with a second, unspent item pending is woken for that one.
-    expect(fanout.take([{ id: 'E-1' }, { id: 'E-2' }])).toBe(true);
+  test('another conversation in scope waits for its next turn', () => {
+    expect(wakeVerdict(node(), 'conversation', [accepted('01ARZ3NDEKTSV4RRFFQ69G5FAV')])).toBe(
+      'no_trigger',
+    );
+    // An item you wrote yourself came from no node: it wakes no conversation.
+    expect(wakeVerdict(node(), 'conversation', [accepted()])).toBe('no_trigger');
+    // Your line still wakes it, and the item goes with it.
+    expect(
+      wakeVerdict(node(), 'conversation', [accepted(), { type: 'human_line', payload: {} }]),
+    ).toBe('wake');
+  });
+  test('coordinators still wake on any accepted item; a work node waits (P11)', () => {
+    expect(
+      wakeVerdict(
+        node({ sessions: [{ role: 'coordinator' }] } as Partial<Stream>),
+        'coordinating',
+        [accepted()],
+      ),
+    ).toBe('wake');
+    expect(wakeVerdict(node(), 'work', [accepted()])).toBe('no_trigger');
   });
 });
