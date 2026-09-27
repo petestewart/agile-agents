@@ -65,6 +65,8 @@ export interface NodeHeaderProps {
   menu: ReadonlyArray<MenuItem>;
   /** T385: renames the node in place (a click on the title); absent where it can't be. */
   onRename?: (title: string) => Promise<void>;
+  /** T435: actions before the agent's (an answered conversation's Send to and Turn into work…). */
+  extra?: ReactNode;
   /** Under the title row: the action error, a banner. */
   children?: ReactNode;
 }
@@ -139,7 +141,7 @@ function Title({
 export function NodeHeader(props: NodeHeaderProps): JSX.Element {
   const copy = useCopy();
   const { actions, offline = false } = props;
-  const hasActions = actions.agent !== undefined || actions.merge;
+  const hasActions = actions.agent !== undefined || actions.merge || props.extra !== undefined;
   return (
     <header className="cr-node-hd">
       <div className="cr-node-hd-row" data-actions={hasActions ? 'true' : undefined}>
@@ -219,6 +221,7 @@ export function NodeHeader(props: NodeHeaderProps): JSX.Element {
         </div>
         {hasActions && (
           <div className="cr-node-actions">
+            {props.extra}
             {actions.agent === 'start' && (
               <span
                 className="cr-split"

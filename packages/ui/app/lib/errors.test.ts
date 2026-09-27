@@ -6,12 +6,15 @@
 import { describe, expect, test } from 'bun:test';
 import {
   SEND_UNREACHABLE,
+  TOO_LONG_FIX,
   conflictMessage,
   isNetworkError,
   isNetworkMessage,
+  lengthBudget,
   mergeConflict,
   mergeRefusal,
   rebaseMessage,
+  sendUpFailure,
   stripRefusal,
   writeFailure,
 } from './errors';
@@ -120,5 +123,39 @@ describe('mergeConflict', () => {
     expect(conflictMessage('main', ['src/a.ts', 'src/b.ts'])).toContain('`src/a.ts`, `src/b.ts`');
     expect(conflictMessage('main', [])).toContain('Merge main into your branch');
     expect(rebaseMessage('develop', 'Develop moved.')).toContain('up to date with develop');
+  });
+});
+
+describe('T435: a text with a cap', () => {
+  test('the counter shows as the box nears its cap, and says when it is over', () => {
+    expect(lengthBudget(400, 3000)).toEqual({ show: false, over: false, count: '400 / 3,000' });
+    expect(lengthBudget(2550, 3000)).toEqual({ show: true, over: false, count: '2,550 / 3,000' });
+    expect(lengthBudget(3000, 3000).over).toBe(false);
+    expect(lengthBudget(3001, 3000)).toEqual({ show: true, over: true, count: '3,001 / 3,000' });
+  });
+
+  test('a refused Send to <parent> in words, never the schema error', () => {
+    // Audit r6 #2.
+    const long = sendUpFailure(
+      new Error('invalid send-up: body: String must contain at most 3000 character(s)'),
+      3000,
+    );
+    expect(long).toBe(`Too long to send: at most 3,000 characters. ${TOO_LONG_FIX}`);
+    expect(long).not.toContain('invalid');
+    expect(
+      sendUpFailure(
+        new Error('invalid send-up: body: String must contain at least 1 character(s)'),
+        3000,
+      ),
+    ).toBe('Write what to send first.');
+    expect(sendUpFailure(new Error('Why buffer? has nothing above it to send to'), 3000)).toBe(
+      'Why buffer? has nothing above it to send to.',
+    );
+    expect(sendUpFailure(new Error('invalid send-up: <root>: Unrecognized key(s)'), 3000)).toBe(
+      'Unrecognized key(s)',
+    );
+    expect(sendUpFailure(new TypeError('Failed to fetch'), 3000)).toBe(
+      'Couldn’t reach the daemon; nothing was sent.',
+    );
   });
 });

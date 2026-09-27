@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createStream, sayToDirector } from '../lib/api';
-import { DIRECTOR_TARGET, askHint, askTargets } from '../lib/ask';
+import { DIRECTOR_TARGET, askHint, askTargets, focusComposerOn } from '../lib/ask';
 import { useOptionalFeed } from '../lib/feed-context';
 import type { CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
 import { isShortcut, useShell } from '../lib/shell';
@@ -17,7 +17,7 @@ import { titleFromGoal } from '../lib/tree';
 import { Icon } from './Icon';
 import { type PickOption, PickerField } from './Pickers';
 import { ROLE_GLYPH } from './StreamTree';
-import { Button, Dialog, Field, Kbd } from './ui';
+import { Button, Dialog, Field, Kbd, StatusDot } from './ui';
 
 export function Ask({
   rows,
@@ -70,14 +70,18 @@ function AskBox({
     box.current?.focus();
   }, []);
 
+  // T435 (#20): each node with its status dot, as the rail shows it (merged and closed ones last).
   const options: PickOption[] = targets.map((t) => ({
     value: t.value,
     text: t.title,
     icon: (
-      <Icon
-        name={t.value === DIRECTOR_TARGET ? 'sparkles' : ROLE_GLYPH[t.role ?? 'work']}
-        size={14}
-      />
+      <span className="cr-ask-pick-icon">
+        {t.row ? <StatusDot row={t.row} /> : <span className="cr-ask-pick-nodot" />}
+        <Icon
+          name={t.value === DIRECTOR_TARGET ? 'sparkles' : ROLE_GLYPH[t.role ?? 'work']}
+          size={14}
+        />
+      </span>
     ),
     depth: t.depth,
     ...(t.project !== undefined ? { group: t.project } : {}),
@@ -105,6 +109,8 @@ function AskBox({
       });
       feed?.refresh();
       close();
+      // T435 (#20): straight on to the conversation's composer, for a follow-up.
+      focusComposerOn(created.id);
       select(created.id, { tab: 'thread' });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

@@ -729,13 +729,16 @@ export const StreamSayInputSchema = z
 export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;
 
 /**
+ * T437: what Send to <parent> carries (the parent's line adds the
+ * conversation's title). T435: the dialog counts down to it.
+ */
+export const SEND_UP_MAX_CHARS = 3000;
+
+/**
  * T421 (D42): a conversation's conclusion, sent up to the node it was asked
  * under (`POST /api/streams/:id/send-up`): your line on the parent's thread,
  * which its agent reads as it reads its composer.
  */
-/** T437: what Send to <parent> carries (the parent's line adds the conversation's title). */
-export const SEND_UP_MAX_CHARS = 3000;
-
 export const StreamSendUpInputSchema = z
   .object({
     body: z.string().trim().min(1).max(SEND_UP_MAX_CHARS),
@@ -802,6 +805,12 @@ export const StreamUpdateRequestSchema = z
   .object({
     title: z.string().trim().min(1).optional(),
     goal: z.string().trim().min(1).optional(),
+    /**
+     * T435 (D41's path): `title` is a placeholder the cockpit derived from the
+     * new goal (a conversation turned into work); the daemon asks the cheap
+     * model for a better one, unless the title changes again meanwhile.
+     */
+    auto_title: z.boolean().optional(),
   })
   .strict()
   .refine((input) => input.title !== undefined || input.goal !== undefined, {

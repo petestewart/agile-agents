@@ -146,6 +146,11 @@ export class TitleNamer {
 const DRAFT_LINES = 30;
 const DRAFT_LINE_CHARS = 1200;
 export const DRAFT_GOAL_MAX_CHARS = 1500;
+/** T435: what the model replies when no work follows from the conversation. */
+export const NO_GOAL = 'NONE';
+
+/** T435: a drafted goal longer than this is the model explaining, not a goal. */
+export const DRAFT_GOAL_USABLE_CHARS = 600;
 
 /**
  * T422 (D42): the prompt for a work goal drawn from a conversation: what it
@@ -167,11 +172,42 @@ export function draftGoalPrompt(
     'This conversation has reached a conclusion that should now become work.',
     'Write the goal for that work: one to three sentences, imperative, saying what should',
     'be done and what done looks like. Plain text, no preamble, no quotes, no lists.',
+    `If no work follows from it, reply ${NO_GOAL} and nothing else.`,
     '',
     `The question: ${question.trim().slice(0, DRAFT_LINE_CHARS)}`,
     '',
     talk,
   ].join('\n');
+}
+
+/**
+ * T435 (audit r6 #6): the model talking to you rather than a goal: it
+ * speaks as itself ("I don't have…", "I'd need…"), addresses you ("Could
+ * you…", "Please share…", "Let me know…") or says it lacks what it needs.
+ */
+const ADDRESSES_YOU =
+  /(?:^|[.!?:;]\s+|\n\s*)(?:I|I'm|I’m|I've|I’ve|I'd|I’d|I'll|I’ll)\b|\b(?:could|can|would|will) you\b|\bplease (?:share|provide|tell|clarify|confirm|send|paste|let)\b|\blet me know\b|\b(?:without|need) (?:more|the|any) (?:context|details|information)\b/i;
+/** A line that starts a list: "- a", "* a", "• a", "1. a", "2) a". */
+const LIST_LINE = /(?:^|\n)\s*(?:[-*•]\s+|\d+[.)]\s+)/;
+/** A list run into one line: "…either: 1. Share it… 2. Tell me…". */
+const INLINE_LIST = /(?:^|\s)1[.)]\s+\S[\s\S]*?\s2[.)]\s+\S/;
+/** A sentence that asks: a question mark before a space or the end. */
+const ASKS = /\?(?:\s|$)/;
+
+/**
+ * T435: the model's draft as a goal, or `undefined` when it is no goal at
+ * all: empty, "NONE" (the prompt's escape), a question, the model talking
+ * to you, a list, or longer than `DRAFT_GOAL_USABLE_CHARS`. The draft-goal
+ * route then falls back to the last reply, then the question.
+ */
+export function draftedGoal(raw: string | undefined): string | undefined {
+  const goal = cleanGoal(raw);
+  if (goal === undefined) return undefined;
+  if (goal.replace(/[.!\s]+$/, '').toUpperCase() === NO_GOAL) return undefined;
+  if (goal.length > DRAFT_GOAL_USABLE_CHARS) return undefined;
+  if (ASKS.test(goal) || ADDRESSES_YOU.test(goal)) return undefined;
+  if (LIST_LINE.test(goal) || INLINE_LIST.test(goal)) return undefined;
+  return goal;
 }
 
 /** The model's goal: trimmed, unwrapped, capped; nothing usable is `undefined`. */

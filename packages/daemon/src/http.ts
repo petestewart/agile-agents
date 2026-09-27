@@ -109,6 +109,7 @@ import {
   type TitleRun,
   cleanGoal,
   draftGoalPrompt,
+  draftedGoal,
 } from './streams';
 import type { TrackerLinks } from './trackers/link';
 import { TrackerError } from './trackers/port';
@@ -486,6 +487,8 @@ interface FeedContext {
   steps: StepIndex;
   /** T422 (D42): the cheap model call that drafts a goal from a conversation. */
   cheapModel?: TitleRun;
+  /** T435: names a node whose title the cockpit re-derived (`update` with `auto_title`). */
+  titleNamer?: TitleNamer;
   /** T437: why a vendor can't start here. */
   vendorMissing?: (vendor: SessionVendor) => string | undefined;
   userHome?: string;
@@ -546,6 +549,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
       : {}),
     steps: new StepIndex(`${options.stateRoot}/log/events.jsonl`),
     ...(options.cheapModel ? { cheapModel: options.cheapModel } : {}),
+    ...(options.titleNamer ? { titleNamer: options.titleNamer } : {}),
     ...(options.vendorMissing ? { vendorMissing: options.vendorMissing } : {}),
     userHome: options.userHome,
   };
@@ -1283,7 +1287,8 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
  *   POST /api/streams/:id/wait         Link (T228, P8): `{on, remove?}` a `waits_on` edge
  *   POST /api/streams/:id/move         Move (T333, D34): `{parent}` a node or a project id
- *   POST /api/streams/:id/update       Rename (T365): `{title?, goal?}`, as `stream.update`
+ *   POST /api/streams/:id/update       Rename (T365): `{title?, goal?, auto_title?}`, as `stream.update`
+ *                                      (T435: `auto_title` has the cheap model name it better)
  *   POST /api/streams/:id/archive      Delete (T361): stops the subtree's sessions, archives it
  *                                      → `{node, archived: [ids], stopped: [session ids]}`
  *   POST /api/streams/:id/unarchive    Restore (T361): the node and what its delete archived
@@ -1396,15 +1401,19 @@ async function handleStreamRoute(
       // T365: the same `StreamService.update` as the RPC's `stream.update`, title and goal only.
       const input = StreamUpdateRequestSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('update', input.error));
+      const { auto_title: autoTitle, ...patch } = input.data;
       const before = feed.streams.get(id);
-      const updated = await feed.streams.update('human', id, input.data);
+      const updated = await feed.streams.update('human', id, patch);
       // T385: a new goal is news for the agent: its next turn reads it on the thread.
-      if (input.data.goal !== undefined && input.data.goal.trim() !== before.goal.trim()) {
+      if (patch.goal !== undefined && patch.goal.trim() !== before.goal.trim()) {
         await feed.streams.appendThread('human', id, {
           kind: 'event',
           body: `goal changed: ${clip(updated.goal, GOAL_LINE_MAX)}`,
         });
       }
+      // T435 (D41): a title the cockpit derived from the new goal is a placeholder; the cheap
+      // model names it better, off this path (a rename meanwhile wins).
+      if (autoTitle === true && patch.title !== undefined) feed.titleNamer?.name(updated);
       return jsonResponse(updated);
     }
     if (action === 'draft-goal') {
@@ -1422,7 +1431,8 @@ async function handleStreamRoute(
       const reply = run
         ? await run(draftGoalPrompt(node.goal, lines)).catch(() => undefined)
         : undefined;
-      const drafted = cleanGoal(reply);
+      // T435: a draft that asks, talks to you, lists or rambles (or says NONE) is no goal.
+      const drafted = draftedGoal(reply);
       if (drafted !== undefined) return jsonResponse({ goal: drafted, from: 'model' });
       const last = cleanGoal([...lines].reverse().find((l) => l.who === 'agent')?.text);
       if (last !== undefined) return jsonResponse({ goal: last, from: 'reply' });

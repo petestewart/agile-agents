@@ -168,6 +168,8 @@ export interface NewStreamPreset {
   /** T427: a proposed node's words (an agent's `propose_next`), yours to edit. */
   title?: string;
   goal?: string;
+  /** T435: the repository it starts on (a proposal's: the proposing node's). */
+  repo?: string;
 }
 
 const ShellContext = createContext<ShellValue | undefined>(undefined);
