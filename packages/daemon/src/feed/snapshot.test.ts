@@ -263,6 +263,17 @@ describe('T437: a decision of yours marks its node', () => {
   });
 });
 
+describe("T452: a node's own autonomy", () => {
+  test("a row carries the node's override, and nothing when it inherits", async () => {
+    const own = await streams.create('human', { title: 'Sale prices', goal: 'g' });
+    const inherits = await streams.create('human', { title: 'Search', goal: 'g' });
+    await streams.setAutonomy(own.id, 'organise');
+    const rows = new Map(buildCockpitFrame(streams).streams.map((r) => [r.id, r]));
+    expect(rows.get(own.id)?.autonomy).toBe('organise');
+    expect(rows.get(inherits.id)?.autonomy).toBeUndefined();
+  });
+});
+
 describe('T382: the live agent a row names', () => {
   const session = (
     role: SessionRef['role'],

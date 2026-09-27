@@ -7,6 +7,7 @@
 
 import { basename } from 'node:path';
 import {
+  type Autonomy,
   type Event,
   type HilRequest,
   type InboxItem,
@@ -174,6 +175,8 @@ export interface CockpitStreamRow {
   visibility_advisory?: true;
   /** T437: a decision of yours about this node waits in Needs me (a plan, a gate, a proposal). */
   pending_decision?: true;
+  /** T452: its own coordinator autonomy, overriding its project's (absent: it inherits). */
+  autonomy?: Autonomy;
   /** T437: when its agent last answered a line of yours (or its question); a woken turn is not an answer. */
   answered_at?: string;
   /** T336: a part not yet started because its coordinator's plan is not approved. */
@@ -352,6 +355,7 @@ export function buildCockpitFrame(
       ...(visibilityAdvisory(s, repos) ? { visibility_advisory: true as const } : {}),
       ...(waitingForPlan?.(s) === true ? { waiting_for_plan: true as const } : {}),
       ...(deciding.has(s.id) ? { pending_decision: true as const } : {}),
+      ...(s.autonomy !== undefined ? { autonomy: s.autonomy } : {}),
       ...(s.delivery_state?.status === 'pr_open' ? { pr_open: true as const } : {}),
       ...(nothingToMerge?.(s) === true ? { nothing_to_merge: true as const } : {}),
       ...mergeRow(mergeStateOf?.(s)),
