@@ -4678,6 +4678,10 @@ span.cr-answering-q {
   border-radius: var(--radius-sm);
   overflow-wrap: anywhere;
 }
+.cr-sess-reason[data-tone="muted"] {
+  color: var(--text-muted);
+  background: var(--bg-inset);
+}
 .cr-sess-none {
   font-size: var(--text-sm);
   color: var(--text-faint);

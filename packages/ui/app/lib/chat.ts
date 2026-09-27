@@ -160,6 +160,35 @@ export function sessionStatusWord(status: SessionRef['status']): string {
   return SESSION_STATUS_WORD[status] ?? status;
 }
 
+/**
+ * T438 (audit r6 #4): why a session ended, in words, for Details → Agent:
+ * a non-zero exit is "Stopped with an error" and the vendor's own line,
+ * never "process exited (code 1)"; `error` tone only for a failure.
+ */
+export function endedReasonText(
+  session: Pick<SessionRef, 'status' | 'ended_reason'>,
+): { text: string; tone: 'error' | 'muted' } | undefined {
+  const reason = session.ended_reason?.trim();
+  if (!reason) return undefined;
+  const exited = /^process exited \(code (-?\d+)\)(?:: (.+))?$/s.exec(reason);
+  if (exited) {
+    const [, code, why] = exited;
+    if (code === '0') return { text: 'The process ended', tone: 'muted' };
+    return {
+      text: why
+        ? `Stopped with an error: ${tidyIds(why)}`
+        : `Stopped with an error (exit code ${code})`,
+      tone: 'error',
+    };
+  }
+  if (reason === 'its turn finished') return { text: 'Finished its turn', tone: 'muted' };
+  const text = tidyIds(reason);
+  return {
+    text: text.charAt(0).toUpperCase() + text.slice(1),
+    tone: session.status === 'error' ? 'error' : 'muted',
+  };
+}
+
 /** Who wrote a thread line, for the chat's name row. */
 export interface ChatAuthor {
   /** "You", "Claude", "Coordinator", "agile". */

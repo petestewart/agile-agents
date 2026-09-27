@@ -34,7 +34,13 @@ import {
   inheritsOption,
   runConfirm,
 } from '../lib/autonomy';
-import { agentLabel, sessionIdText, sessionRoleWord, sessionStatusWord } from '../lib/chat';
+import {
+  agentLabel,
+  endedReasonText,
+  sessionIdText,
+  sessionRoleWord,
+  sessionStatusWord,
+} from '../lib/chat';
 import { projectDrafts } from '../lib/drafts';
 import { useOptionalFeed } from '../lib/feed-context';
 import type {
@@ -112,6 +118,7 @@ const SESSION_STATUS_TONE: Record<SessionRef['status'], 'blue' | 'green' | 'gray
 };
 
 function SessionItem({ session }: { session: SessionRef }): JSX.Element {
+  const ended = endedReasonText(session);
   return (
     <li
       className="cr-sess"
@@ -136,9 +143,14 @@ function SessionItem({ session }: { session: SessionRef }): JSX.Element {
             · {sessionStatusWord(session.status)}
           </span>
         </div>
-        {session.ended_reason && (
-          <div className="cr-sess-reason" data-testid="session-ended-reason">
-            {session.ended_reason}
+        {ended && (
+          <div
+            className="cr-sess-reason"
+            data-testid="session-ended-reason"
+            data-tone={ended.tone}
+            title={session.ended_reason}
+          >
+            {ended.text}
           </div>
         )}
       </div>
