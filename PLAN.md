@@ -2746,17 +2746,17 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T454 Jev decides whether accepted knowledge wakes a conversation (D44 follow-up)
 - **Priority:** P3
-- **Status:** Todo
-- **Owner:** unassigned
+- **Status:** In Progress
+- **Owner:** worker (manager reviews)
 - **Scope:** Behind a config setting (off by default: T453's narrow rule), ask Jev, per conversation in an accepted item's scope, whether to wake it now. The state: the item (kind, text, scope), the conversation's question, its last reply (capped), when it last changed, and whether a newer conversation covers the same ground. The questions: does this decision change the answer given or settle something it left open; is the conversation still current (not moved on from, not covered by a newer one, not too old, not treated as finished). Pete also raised a later step: Jev reviewing threads on its own (e.g. after X minutes idle) to flag stale or settled conversations.
 - **Acceptance Criteria:** A `wake_on_knowledge: jev` style setting (Settings and config.yaml). On yes, the conversation wakes as the source does; on no, or Jev unavailable, it waits for its next message. Offline tests use `FakeClassifier`; a real Jev check via `agile rules test` or equivalent.
 - **Validation Steps:** Unit tests with `FakeClassifier` for yes / no / unavailable; the setting off keeps T453's behaviour.
-- **Notes:** Jev calls are cheap (Pete); conversation text goes through the existing scrubber.
+- **Notes:** Pete, 2026-09-27: build it, gated behind a config setting in the UI (off by default: T453's narrow rule). Jev calls are cheap (Pete); conversation text goes through the existing scrubber.
 
 ### Ticket: T455 Agents propose adding a repo to their node (D45)
 - **Priority:** P3
-- **Status:** Todo
-- **Owner:** unassigned
+- **Status:** In Progress
+- **Owner:** worker (manager reviews)
 - **Scope:** T445 left the `repo:<name>` proposal ref with no writer. A conversation's or worker's agent gets a verb to propose a repo for its node (name and why); it writes a `proposal` line with `ref: repo:<name>`, which shows **Add <repo>** in the cockpit. Clicking it runs Add repository in place (T205).
 - **Acceptance Criteria:** The verb, validated in `packages/shared` like the others; refused for an unknown repo, the node's own repo, or a project root; the line reads in words; the button is the only way it changes anything.
 - **Validation Steps:** Verb unit tests; a control-room e2e from the agent's proposal line to the reshaped node.
@@ -2782,8 +2782,8 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T458 A conversation knows the work in progress
 - **Priority:** P3
-- **Status:** Todo
-- **Owner:** unassigned
+- **Status:** In Progress
+- **Owner:** worker (manager reviews)
 - **Scope:** Pete, 2026-09-27. A conversation's brief lists the repos it can read (paths only) and, when asked about a node, that node's branch and worktree; it doesn't know what else is in flight. Add a capped "Work in progress" section: the project's open work nodes with repo, branch, worktree, status and progress line, so a question like "is anyone touching the export code?" is answered from the right worktree.
 - **Acceptance Criteria:** Capped by count and characters like the other brief sections; ids only where the agent needs them; closed and merged nodes left out.
 - **Validation Steps:** `runner/brief.test.ts` for the section and its caps.
