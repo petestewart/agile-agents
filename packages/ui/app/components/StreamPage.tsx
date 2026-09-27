@@ -1334,10 +1334,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   });
   // T419 (D42): a conversation's goal is the question you asked: your first message. T435 (#10):
   // in the thread's own list (one day divider), after "Node created".
+  // T441: one turned into work keeps the question it was asked (the record's `question`).
+  const asked = stream.question ?? (role === 'conversation' ? stream.goal : undefined);
   const listed = withQuestion(
     page.thread,
-    role === 'conversation' && stream.goal.trim() !== ''
-      ? { ts: stream.created_at, by: 'human', kind: 'line' as const, body: stream.goal }
+    asked !== undefined && asked.trim() !== ''
+      ? { ts: stream.created_at, by: 'human', kind: 'line' as const, body: asked }
       : undefined,
   );
   const listSteps = new Map([...steps.before].map(([i, led]) => [listed.listIndex(i), led]));

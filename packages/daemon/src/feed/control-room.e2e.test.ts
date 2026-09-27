@@ -5940,8 +5940,15 @@ describe('Turn into work (Playwright e2e, T422, D42)', () => {
           'Stream the upload in 1 MB chunks so 2 GB files import.',
         );
         expect(cockpit.store.getProject(shop.id).repos).toEqual(['demo']);
-        // In the thread's list its question stays a Goal card now: it is work.
+        // Its goal is a Goal card now: it is work. T441: and the question you asked still opens
+        // the chat, kept on the record.
         await page.locator('[data-testid="goal-card"]').waitFor();
+        expect(cockpit.streams.get(convo.id).question).toBe(
+          'why does the importer read the whole file?',
+        );
+        expect(await page.locator('[data-testid="chat-question"]').textContent()).toContain(
+          'why does the importer read the whole file?',
+        );
 
         // No repository: it stays a conversation, researching the goal.
         const research = await cockpit.streams.create('human', {
