@@ -368,6 +368,35 @@ describe('T432 (D43): a vendor that exits with an error on its own', () => {
     expect(after.agent.status).toBe('idle');
   });
 
+  test('T444: at start, sessions a dead daemon left running end, and their nodes read idle', async () => {
+    const stream = await makeStream();
+    const other = await makeStream();
+    const [a, b] = [ulid(), ulid()];
+    await store.updateStream('daemon', stream.id, (before) => ({
+      ...before,
+      agent: { ...before.agent, status: 'working' },
+      sessions: [
+        { id: a, vendor: 'claude', model: 'm', role: 'worker', status: 'running' },
+        { id: b, vendor: 'claude', model: 'm', role: 'reviewer', status: 'starting' },
+      ],
+    }));
+    expect(await attachService.endOrphansAtStart()).toEqual([stream.id]);
+    const after = streams.get(stream.id);
+    expect(after.sessions.map((s) => [s.status, s.ended_reason])).toEqual([
+      ['stopped', 'stopped: the daemon restarted during this turn'],
+      ['stopped', 'stopped: the daemon restarted during this turn'],
+    ]);
+    expect(after.agent.status).toBe('idle');
+    // Not the human's stop: its next event wakes it again.
+    expect(stoppedByHuman(after)).toBe(false);
+    expect(threadBodies(stream.id)).toContain(
+      'session ended: the daemon restarted during this turn',
+    );
+    // A node with nothing on record is left alone.
+    expect(streams.get(other.id).sessions).toEqual([]);
+    expect(await attachService.endOrphansAtStart()).toEqual([]);
+  });
+
   test('T437: a crash leaves its reason as the progress line; the next start clears it', async () => {
     attachService = buildAttachService({
       ...ACP_PROVIDERS.claude,

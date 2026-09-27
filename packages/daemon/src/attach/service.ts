@@ -145,6 +145,9 @@ function agentFor(
 /** T370: the ended reason of a session the daemon's shutdown stopped. */
 export const DAEMON_SHUTDOWN_REASON = 'the daemon stopped';
 
+/** T444: the ended reason of a session a daemon that died mid-turn left on record. */
+export const DAEMON_RESTART_REASON = 'the daemon restarted during this turn';
+
 /** Not closed, landed or archived: a node an agent may still work on. */
 function isOpen(stream: Stream): boolean {
   return (
@@ -1408,6 +1411,43 @@ export class AttachService {
         .catch(() => {});
     }
     return stopped;
+  }
+
+  /**
+   * T444 (audit r7 #16): at daemon start no process is ours, so every
+   * `starting`/`running` session on record was left by a daemon that died
+   * mid-turn. Each ends (`stopped`, the daemon's own reason, so the node's
+   * next event still wakes it), its node goes back to `idle`, and its thread
+   * says so. Before this, such a node read "Working" for good and a line to
+   * it only queued. Returns the nodes it touched.
+   */
+  async endOrphansAtStart(): Promise<string[]> {
+    const touched: string[] = [];
+    for (const stream of this.options.streams.list()) {
+      const orphans = this.orphanSessions(stream.id);
+      if (orphans.length === 0) continue;
+      for (const orphan of orphans) {
+        await this.setSessionStatus(
+          stream.id,
+          orphan.id,
+          'stopped',
+          `${DAEMON_STOP_PREFIX}${DAEMON_RESTART_REASON}`,
+        ).catch(() => {});
+      }
+      if (orphans.some((o) => isAgentRole(o.role))) {
+        await this.options.streams
+          .update('daemon', stream.id, { agent: { status: 'idle' } })
+          .catch(() => {});
+        await this.options.streams
+          .appendThread('daemon', stream.id, {
+            kind: 'event',
+            body: `session ended: ${DAEMON_RESTART_REASON}`,
+          })
+          .catch(() => {});
+      }
+      touched.push(stream.id);
+    }
+    return touched;
   }
 
   /** T437: `starting`/`running` session records on a node that no live handle stands behind. */
