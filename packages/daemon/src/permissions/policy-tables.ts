@@ -183,6 +183,25 @@ function walkReachesProtected(
 const PATTERN_CHARS = /[*?[\]{}]/;
 
 /**
+ * T457, T459: a glob or brace pattern whose matches can leave the dir its
+ * fixed prefix names: a `..` segment after the first pattern character, a
+ * segment like `.*` (matches `..` in older shells), or a brace group with a
+ * `.` or `/` in it (`{b,../../x}`). Its literal text resolves inside, so a
+ * lexical check alone would pass it.
+ */
+function patternClimbs(path: string): boolean {
+  const at = path.search(PATTERN_CHARS);
+  if (at < 0) return false;
+  const rest = path.slice(path.lastIndexOf('/', at) + 1);
+  const segments = rest.split('/');
+  return (
+    segments.includes('..') ||
+    segments.some((segment) => /^\.[*?[]/.test(segment)) ||
+    /\{[^}]*[./][^}]*\}/.test(rest)
+  );
+}
+
+/**
  * T457: a read path with a glob or brace pattern expands to paths its
  * literal text doesn't name, so the literal check alone can't hold. What it
  * can reach is bounded by its fixed prefix (the dirs before the first
@@ -202,12 +221,7 @@ function patternReadVerdict(
   if (at < 0) return undefined;
   const cut = expanded.lastIndexOf('/', at);
   const rest = expanded.slice(cut + 1);
-  const segments = rest.split('/');
-  if (
-    segments.includes('..') ||
-    segments.some((segment) => /^\.[*?[]/.test(segment)) ||
-    /\{[^}]*[./][^}]*\}/.test(rest)
-  ) {
+  if (patternClimbs(expanded)) {
     return deny(`"${raw}" is a pattern that may climb out of its dir: name the path without it`);
   }
   const prefix =
@@ -722,6 +736,9 @@ function verifyBenignPaths(
         const verdict = readVerdict(path, ctx, { walks });
         if (verdict.action === 'deny') return verdict;
         if (verdict.action === 'hil') held ??= verdict;
+      } else if (patternClimbs(resolved.path)) {
+        // T459: `touch a/{b,../../x}` reads as inside the worktree but writes outside it.
+        return deny(`"${raw}" is a pattern that may write outside the worktree: name each path`);
       } else if (!isPathInside(path, ctx.worktreePath)) {
         return deny(`${raw} is outside the worktree`);
       } else {
@@ -939,6 +956,16 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
   for (const step of walkCwds(command, ctx.worktreePath, cd)) {
     if ('action' in step) return step;
     const { atom, cwds } = step;
+    // T459: `… | xargs cat` runs on paths no check here can see.
+    if (cmd.runsUnderXargs(atom)) {
+      return hil(
+        'xargs runs a command on paths known only when it runs: pass the paths directly (or use grep -r / find), or ask the human',
+      );
+    }
+    // T459: an input redirect's file is read like an argument (`cat <f`, `tr a b < f`).
+    const inputs = verifyBenignPaths(cmd.inputRedirectTargets(atom.tokens), ctx, true, cwds);
+    if (isHeldRead(inputs)) held ??= inputs;
+    else if (inputs.action !== 'allow') return inputs;
     if (cmd.hasRedirectionOrTee(atom.tokens)) {
       // Every non-benign redirection target (`>`, `1>`, `2>`, `&>`, a second
       // `>`, ...) must resolve inside the worktree. `tee`, an unresolvable
@@ -1112,6 +1139,9 @@ function reviewerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
   // T457: a held Ask read is asked only once the whole command has passed.
   let held: PolicyVerdict | undefined;
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
+    if (cmd.runsUnderXargs(atom)) {
+      return deny('reviewer role denies xargs: it runs a command on paths no check can see');
+    }
     // Benign redirects write nothing (`git diff 2>/dev/null` is a read);
     // any other redirection or tee is a write primitive.
     if (cmd.hasWritingRedirectionOrTee(atom.tokens)) {
@@ -1214,6 +1244,12 @@ function scopedReads(
 ): PolicyVerdict {
   if (!hasReadScope(ctx)) return ALLOW;
   const paths: string[] = [];
+  // T459: an input redirect's file (`cat <f`), whatever its spelling.
+  for (const raw of cmd.inputRedirectTargets(tokens)) {
+    const resolved = cmd.resolveTargetPath(raw);
+    if (!resolved.safe) return deny(`coordinator role cannot resolve the path "${raw}"`);
+    paths.push(resolve(cwd, resolved.path));
+  }
   for (const raw of tokens.slice(1).flatMap(pathCandidates)) {
     if (!(raw.includes('/') || raw.startsWith('.') || raw.startsWith('~'))) continue;
     const resolved = cmd.resolveTargetPath(raw);
@@ -1259,6 +1295,9 @@ function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyV
   for (const step of walkCwds(command, ctx.worktreePath, cd)) {
     if ('action' in step) return step;
     const { atom, cwds } = step;
+    if (cmd.runsUnderXargs(atom)) {
+      return deny('coordinator role denies xargs: it runs a command on paths no check can see');
+    }
     for (const cwd of cwds) {
       const redirect = coordinatorRedirectVerdict(atom.tokens, ctx, cwd);
       if (redirect.action !== 'allow') return redirect;

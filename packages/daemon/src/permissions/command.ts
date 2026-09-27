@@ -849,6 +849,36 @@ function redirectionOccurrences(tokens: string[]): RedirectionOccurrence[] {
   return occurrences;
 }
 
+/**
+ * T459: an input redirect (`<`, `0<`, fused or its own token): the file it
+ * names is read, so it is read-checked like an argument. Not `<<` (a heredoc),
+ * `<<<`, `<(` (process substitution), `<>` (a write, above) or `<&` (an fd).
+ */
+const INPUT_REDIRECT_RE = /^\d*<(?![<(>&])/;
+
+/** T459: every file an input redirect reads (`cat <f`, `tr a b < f`, `cmd 0<f`). */
+export function inputRedirectTargets(tokens: string[]): string[] {
+  const targets: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i] ?? '';
+    const m = INPUT_REDIRECT_RE.exec(t);
+    if (!m) continue;
+    const rest = t.slice(m[0].length);
+    if (rest.length > 0) targets.push(rest);
+    else if (tokens[i + 1] !== undefined) targets.push(tokens[++i] as string);
+  }
+  return targets;
+}
+
+/**
+ * T459: `xargs` was stripped from the front of this atom (`… | xargs cat`):
+ * the command runs on paths that only exist at run time, so no check of its
+ * arguments can see what it reads or writes.
+ */
+export function runsUnderXargs(atom: CommandAtom): boolean {
+  return (atom.prefix ?? []).some((t) => normalizeToken(t) === 'xargs');
+}
+
 /** A redirection with nothing after it is unresolvable, never benign. */
 export function hasUnresolvedRedirection(tokens: string[]): boolean {
   return redirectionOccurrences(tokens).some((o) => o.target === undefined);
