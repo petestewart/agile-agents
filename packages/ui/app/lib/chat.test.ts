@@ -5,6 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxItem, SessionRef, ThreadEntry } from '@agile-agents/shared';
 import {
+  agentFailed,
   agentLabel,
   agentName,
   agentStateText,
@@ -731,5 +732,32 @@ describe('a vendor that exits (T432)', () => {
       text: 'The agent’s process ended',
       tone: 'muted',
     });
+  });
+});
+
+describe('an agent that failed (T438)', () => {
+  const daemon = (body: string) => ({ by: 'daemon', kind: 'event' as const, body });
+  test('a start that failed reads in words, with what to do', () => {
+    const line = systemLine(
+      "could not start the agent: Claude Code can't start: `claude` is not on the daemon's PATH.",
+    );
+    expect(line.tone).toBe('warn');
+    expect(line.icon).toBe('alert-triangle');
+    expect(line.text).toBe(
+      "The agent couldn’t start: Claude Code can't start: `claude` is not on the daemon's PATH. Fix its install or login, then send a message to start it again.",
+    );
+  });
+  test('a failed start or a non-zero exit is a failure; a clean end or other lines are not', () => {
+    expect(agentFailed([daemon('could not start the agent: no vendor')])).toBe(true);
+    expect(agentFailed([daemon('session ended: process exited (code 1): Invalid API key')])).toBe(
+      true,
+    );
+    expect(agentFailed([daemon('session ended: process exited (code 0)')])).toBe(false);
+    expect(agentFailed([daemon('session ended: its turn finished')])).toBe(false);
+    expect(agentFailed([])).toBe(false);
+    // A line you wrote that says the same is yours, not the daemon's.
+    expect(
+      agentFailed([{ by: 'human', kind: 'line', body: 'could not start the agent: typo' }]),
+    ).toBe(false);
   });
 });

@@ -411,6 +411,23 @@ export function tidyIds(text: string): string {
 }
 
 /**
+ * T438 (audit r6 #4): the agent failed to start or stopped with an error
+ * (the chat's warning line), so an empty chat's "Tell the agent what to do"
+ * would contradict it.
+ */
+export function agentFailed(
+  thread: readonly Pick<ThreadEntry, 'by' | 'kind' | 'body' | 'ref' | 'agent_only'>[],
+): boolean {
+  return thread.some(
+    (e) =>
+      chatVariant(e) === 'system' &&
+      /^(?:could not start the agent: |session ended: process exited \(code (?!0\))-?\d+\))/.test(
+        e.body,
+      ),
+  );
+}
+
+/**
  * A daemon line as a one-line system row. The text is the daemon's own,
  * except the lines it writes in its own terms (T413: an agent starting,
  * finishing its turn, waking, a sync, a wait that is over), and with ids
@@ -442,6 +459,16 @@ export function systemLine(body: string): SystemLine {
     return {
       icon: 'alert-triangle',
       text: `The agent stopped with an error${why ? `: ${tidyIds(why)}` : ` (exit code ${code})`}. Check its vendor is installed and logged in, then send a message to start it again.`,
+      tone: 'warn',
+    };
+  }
+  // T438 (audit r6 #4): the start failed before the vendor ran (its command missing, a spawn error).
+  const failed = /^could not start the agent: (.+)$/s.exec(body);
+  if (failed) {
+    const why = tidyIds(failed[1] ?? '').replace(/[.\s]+$/, '');
+    return {
+      icon: 'alert-triangle',
+      text: `The agent couldn’t start: ${why}. Fix its install or login, then send a message to start it again.`,
       tone: 'warn',
     };
   }

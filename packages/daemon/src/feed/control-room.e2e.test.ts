@@ -2187,6 +2187,44 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
   );
 
   browserTest(
+    "T438: a start that failed shows its warning in words, and no 'Tell the agent what to do'",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'sync prices',
+          goal: 'sync prices from Stripe',
+          project: shop.id,
+        });
+        await cockpit.streams.appendThread('daemon', node.id, {
+          kind: 'event',
+          body: "could not start the agent: Claude Code can't start: `claude` is not on the daemon's PATH.",
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        await page
+          .locator('[data-testid="thread"]', {
+            hasText: "The agent couldn’t start: Claude Code can't start",
+          })
+          .waitFor();
+        expect(await page.locator('[data-testid="thread"]').textContent()).toContain(
+          'Fix its install or login, then send a message to start it again.',
+        );
+        expect(await page.locator('[data-testid="chat-empty"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
     'T423: the model chip picks what the next message runs; a pick starts nothing; Send starts with it, and restarts a live agent with another',
     async () => {
       const firstLog = join(tmpdir(), `agile-t423-first-${ulid()}.jsonl`);
