@@ -72,7 +72,7 @@ import {
   workingAs,
 } from '../lib/chat';
 import { choiceOf, modelChip, resolvedFor } from '../lib/defaults';
-import { useComposerDraft } from '../lib/drafts';
+import { draftOf, useDraftSetter } from '../lib/drafts';
 import {
   type MergeFix,
   type MergeRefusal,
@@ -89,13 +89,13 @@ import { proposalLineAction } from '../lib/inbox';
 import { appendToDraft, roomAfter, useReview } from '../lib/review';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
-import { type StatusInput, statusKey } from '../lib/status';
+import { type StatusInput, ownStatusKey, partsSummary } from '../lib/status';
 import { groupSteps, turnStartedAt } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
 import { splitRepos, titleFromGoal } from '../lib/tree';
 import { ChatScroll, ContextMeter, MessageList, StepsFold, Thinking, useSteps } from './Chat';
 import { type NodeCommands, useNodeCommands } from './CommandPalette';
-import { Composer, type ComposerHandle } from './Composer';
+import { type ComposerHandle, DraftComposer } from './Composer';
 import { addReviewToDraft, useMergeAsk } from './DecisionCard';
 import { DeliveryPanel, isMergeable, outcomeTone, useDelivery } from './Delivery';
 import { TabBoundary, lazyNamed } from './ErrorBoundary';
@@ -363,7 +363,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   // `tab` (the shell's, in the URL: T436 #21) is `undefined` for the node's own first tab (T387:
   // a project root's Overview, else the chat); T403: a Needs me card asks for the chat.
   // T436 (#11): the draft is kept per node, across a reload too (`lib/drafts.ts`).
-  const [draft, setDraft] = useComposerDraft(id);
+  // T447 (audit r7 #15): the page writes the draft but doesn't hold it: `DraftComposer` does, so a
+  // keystroke re-renders the composer alone, not this page and its chat.
+  const setDraft = useDraftSetter(id);
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
@@ -630,6 +632,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     human_status: stream.human.status,
     ...(live.length > 0 ? { live: true as const } : {}),
   };
+  // T447 (audit r7 #2): a coordinating node's parts in one line: "2 of 4 merged · waiting for web part".
+  const partsLine = partsSummary(row?.parts);
   const intent = sendIntent({
     open,
     merged,
@@ -771,7 +775,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     });
 
   async function send(): Promise<void> {
-    const text = draft.trim();
+    const text = draftOf(stream.id).trim();
     if (!text || intent.action === 'none') return;
     if (offline) {
       setSendError(SEND_UNREACHABLE);
@@ -1448,6 +1452,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           onOpenRule={(rule) => openRules({ ...DEFAULT_RULES_FILTER, rule })}
           openQuestions={new Set(questions.map((q) => q.id))}
           steps={listSteps}
+          windowKey={stream.id}
         />
         {thinking && (
           <Thinking
@@ -1539,10 +1544,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       </ChatScroll>
       <div className="cr-chat-foot">
         <div className="cr-chat-col">
-          <Composer
+          <DraftComposer
             ref={composer}
-            value={draft}
-            onChange={setDraft}
+            node={stream.id}
             onSend={() => void send()}
             {...(agentWorking && open ? { onStop: stop } : {})}
             busy={sending}
@@ -1563,31 +1567,33 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             label={answeringItem ? 'Your answer' : 'Message the agent'}
             mode={intent.action === 'answer' ? 'answer' : undefined}
             {...(offline ? { sendBlocked: RECONNECTING } : {})}
+            after={(draft) =>
+              sendError && (
+                <div className="cr-send-error" role="alert" data-testid="send-error">
+                  <Icon name="alert-circle" size={14} />
+                  <span>{sendError}</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon="refresh"
+                    data-testid="send-retry"
+                    busy={sending}
+                    disabled={offline || draft.trim() === ''}
+                    title={offline ? RECONNECTING : 'Send it again'}
+                    onClick={() => void send()}
+                  >
+                    Retry
+                  </Button>
+                  <IconButton
+                    icon="x"
+                    size="sm"
+                    label="Dismiss"
+                    onClick={() => setSendError(undefined)}
+                  />
+                </div>
+              )
+            }
           />
-          {sendError && (
-            <div className="cr-send-error" role="alert" data-testid="send-error">
-              <Icon name="alert-circle" size={14} />
-              <span>{sendError}</span>
-              <Button
-                size="sm"
-                variant="ghost"
-                icon="refresh"
-                data-testid="send-retry"
-                busy={sending}
-                disabled={offline || draft.trim() === ''}
-                title={offline ? RECONNECTING : 'Send it again'}
-                onClick={() => void send()}
-              >
-                Retry
-              </Button>
-              <IconButton
-                icon="x"
-                size="sm"
-                label="Dismiss"
-                onClick={() => setSendError(undefined)}
-              />
-            </div>
-          )}
         </div>
       </div>
     </div>
@@ -1622,6 +1628,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           onOpen={select}
           status={statusInput}
           role={role}
+          {...(partsLine !== undefined ? { parts: partsLine } : {})}
           agentText={agentStateText({
             agent_status: stream.agent.status,
             human_status: stream.human.status,
@@ -1819,7 +1826,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                               setTab('thread');
                               requestAnimationFrame(() => composer.current?.focusEnd());
                             },
-                            room: roomAfter(draft),
+                            room: roomAfter(draftOf(stream.id)),
                           }
                         : {})}
                     />
@@ -1857,7 +1864,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             page={page}
             delivery={delivery}
             onResolve={() => setPicker('resolve')}
-            status={statusKey(statusInput)}
+            status={ownStatusKey(statusInput)}
           />
           <AgentSection
             stream={stream}

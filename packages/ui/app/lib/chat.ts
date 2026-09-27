@@ -363,6 +363,37 @@ export function chatRows<
   return rows;
 }
 
+/**
+ * T447 (audit r7 #15): how many rows a long thread renders at first, and how
+ * many more each "Show earlier" (or a scroll to the top) adds.
+ */
+export const THREAD_WINDOW = 80;
+
+/**
+ * T447: the last `size` of `rows` (all of them for `size` ≥ their count),
+ * and how many are left above. The first row shown carries its day and its
+ * author's head, which the hidden row before it would have shown. Each row
+ * keeps its `index` into the entries, so the steps map still lines up.
+ */
+export function windowRows<E>(
+  rows: readonly ChatRow<E>[],
+  size: number,
+): { rows: readonly ChatRow<E>[]; hidden: number } {
+  const hidden = Math.max(0, rows.length - Math.max(0, size));
+  if (hidden === 0) return { rows, hidden: 0 };
+  const first = rows[hidden];
+  if (first === undefined) return { rows: [], hidden };
+  let day = first.day;
+  for (let i = hidden; day === undefined && i >= 0; i--) day = rows[i]?.day;
+  return {
+    rows: [
+      { ...first, continued: false, ...(day !== undefined ? { day } : {}) },
+      ...rows.slice(hidden + 1),
+    ],
+    hidden,
+  };
+}
+
 /** "14:05" in the viewer's local time: the time a message shows on hover. */
 export function clockTime(iso: string): string {
   const at = new Date(iso);

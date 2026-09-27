@@ -26,6 +26,7 @@ import type {
   ThreadEntry,
   TrackerSettings,
 } from '@agile-agents/shared';
+import type { PartsRollup } from './status';
 
 /** The project the daemon drives — the header's name, and its path on hover. */
 export interface FeedProjectInfo {
@@ -100,6 +101,11 @@ export interface CockpitStreamRow {
   stopped?: true;
   /** T382: the live session Running names (its own agent first). Absent when nothing is live, or from an older daemon. */
   live_agent?: CockpitLiveAgent;
+  /**
+   * T447: a coordinating node's (or a project root's) parts, rolled up. Never
+   * sent by the daemon: the feed derives it from the rows (`withParts`).
+   */
+  parts?: PartsRollup;
 }
 
 /** T382: mirror of `feed/snapshot.ts`'s `CockpitLiveAgent`. */

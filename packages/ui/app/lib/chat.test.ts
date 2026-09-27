@@ -5,6 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxItem, SessionRef, ThreadEntry } from '@agile-agents/shared';
 import {
+  THREAD_WINDOW,
   agentFailed,
   agentLabel,
   agentName,
@@ -43,6 +44,7 @@ import {
   tokensText,
   vendorLabel,
   wakeWords,
+  windowRows,
   withQuestion,
   workingAs,
 } from './chat';
@@ -852,5 +854,35 @@ describe('why a session ended, in Details (T438)', () => {
     expect(
       endedReasonText({ status: 'error', ended_reason: 'transport error: pipe closed' }),
     ).toEqual({ text: 'Transport error: pipe closed', tone: 'error' });
+  });
+});
+
+describe('windowRows (T447, audit r7 #15)', () => {
+  const line = (i: number, by = 'human'): ThreadEntry => ({
+    ts: `2026-09-2${i < 50 ? 5 : 6}T10:${String(i % 60).padStart(2, '0')}:00.000Z`,
+    by,
+    kind: 'line',
+    body: `line ${i}`,
+  });
+
+  test('a short thread is shown whole', () => {
+    const rows = chatRows([line(1), line(2)]);
+    expect(windowRows(rows, THREAD_WINDOW)).toEqual({ rows, hidden: 0 });
+  });
+
+  test("a long one shows its newest rows; the first keeps its day and author's head and its index", () => {
+    const entries = Array.from({ length: 120 }, (_, i) => line(i, i < 60 ? 'human' : 'agent:s'));
+    const rows = chatRows(entries);
+    const { rows: shown, hidden } = windowRows(rows, 30);
+    expect(hidden).toBe(90);
+    expect(shown).toHaveLength(30);
+    expect(shown[0]?.index).toBe(90);
+    expect(shown[0]?.continued).toBe(false);
+    const days = rows.slice(0, 91).filter((r) => r.day !== undefined);
+    expect(shown[0]?.day).toBe(days[days.length - 1]?.day);
+    expect(shown.slice(1)).toEqual(rows.slice(91));
+    // More shown: fewer hidden.
+    expect(windowRows(rows, 30 + THREAD_WINDOW).hidden).toBe(10);
+    expect(windowRows(rows, Number.MAX_SAFE_INTEGER).hidden).toBe(0);
   });
 });

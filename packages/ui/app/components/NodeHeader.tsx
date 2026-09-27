@@ -46,6 +46,8 @@ export interface NodeHeaderProps {
   role: CockpitStreamRow['role'] | undefined;
   /** "Agent finished", "Merged": the agent's half in words. */
   agentText: string;
+  /** T447: a coordinating node's parts in one line ("2 of 4 merged · waiting for web part"). */
+  parts?: string;
   repo?: string;
   branch?: string;
   actions: HeaderActions;
@@ -216,6 +218,17 @@ export function NodeHeader(props: NodeHeaderProps): JSX.Element {
                   </>
                 )}
               </span>
+              {/* T447 (audit r7 #2): a coordinating node's parts; on a phone, a line of its own. */}
+              {props.parts !== undefined && (
+                <span className="cr-node-parts-wrap">
+                  <span className="cr-meta-sep" aria-hidden="true">
+                    ·
+                  </span>
+                  <span className="cr-node-parts" data-testid="node-parts" title={props.parts}>
+                    {props.parts}
+                  </span>
+                </span>
+              )}
             </span>
           </div>
         </div>
