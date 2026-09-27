@@ -1,12 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import { parseDiff } from './chat';
+import type { StorageLike } from './drafts';
 import { renderMarkdown } from './markdown';
 import {
   MESSAGE_MAX,
   REVIEW_HEADING,
   ReviewStore,
   appendToDraft,
+  clearComments,
   codeSpan,
+  finishedIds,
   formatReview,
   isOutdated,
   lineLabel,
@@ -14,10 +17,12 @@ import {
   newComment,
   openAt,
   orderComments,
+  parseNodeReview,
   reviewSummary,
   roomAfter,
   rowKey,
   rowsBetween,
+  unsentReviewQuestion,
   whereLabel,
 } from './review';
 
@@ -394,5 +399,82 @@ describe('ReviewStore', () => {
     store.set('N1', { comments: [c] });
     expect(calls).toBe(2);
     expect(store.nextId()).not.toBe(c.id);
+  });
+});
+
+describe('T436: review comments survive a reload', () => {
+  function fakeStorage(): StorageLike {
+    const data = new Map<string, string>();
+    return {
+      getItem: (key) => data.get(key) ?? null,
+      setItem: (key, value) => {
+        data.set(key, value);
+      },
+      removeItem: (key) => {
+        data.delete(key);
+      },
+    };
+  }
+
+  test('a comment and one being written come back in the next page load, and ids stay unique', () => {
+    const storage = fakeStorage();
+    const before = new ReviewStore(() => storage);
+    const c = newComment(importTs, 'n1', 'n1', 'Quoted fields?', before.nextId());
+    if (!c) throw new Error('no comment');
+    before.set('N1', {
+      comments: [c],
+      draft: { path: 'README.md', start: 'n1', end: 'n1', text: 'hm' },
+    });
+    const after = new ReviewStore(() => storage);
+    expect(after.get('N1')).toEqual(before.get('N1'));
+    expect(after.unsent()).toEqual([{ node: 'N1', count: 1 }]);
+    expect(after.nextId()).not.toBe(c.id);
+  });
+
+  test('clearing the comments keeps the one being written; clearing both forgets the node', () => {
+    const storage = fakeStorage();
+    const store = new ReviewStore(() => storage);
+    const c = newComment(importTs, 'n1', 'n1', 'a', store.nextId());
+    if (!c) throw new Error('no comment');
+    const draft = { path: 'README.md', start: 'n1', end: 'n1', text: 'hm' };
+    store.set('N1', { comments: [c], draft });
+    clearComments('N1', store);
+    expect(store.get('N1')).toEqual({ comments: [], draft });
+    expect(store.unsent()).toEqual([]);
+    store.set('N1', { comments: [] });
+    expect(store.nodes()).toEqual([]);
+    expect(new ReviewStore(() => storage).nodes()).toEqual([]);
+  });
+
+  test('a stored review keeps what reads right and drops the rest', () => {
+    const c = newComment(importTs, 'n1', 'n1', 'a', 'c1');
+    if (!c) throw new Error('no comment');
+    expect(parseNodeReview({ comments: [c, { id: 'x' }, 7] })).toEqual({ comments: [c] });
+    expect(parseNodeReview({ comments: [], draft: { path: 'a', start: 'n1', end: 'n1' } })).toBe(
+      undefined,
+    );
+    expect(parseNodeReview({ comments: 'nope' })).toBeUndefined();
+    expect(parseNodeReview(null)).toBeUndefined();
+  });
+
+  test('Merge asks about unsent comments in words, with where they would merge', () => {
+    expect(unsentReviewQuestion({ node: 'Add CSV import', count: 1, target: 'main' })).toEqual({
+      title: '1 review comment on Add CSV import isn’t sent. Merge anyway?',
+      body: 'Add to message puts it in the chat for the agent, and nothing merges. Merging puts its commits onto main now and leaves it unsent.',
+      confirm: 'Merge anyway',
+    });
+    const two = unsentReviewQuestion({ node: 'Web', count: 2, pr: true });
+    expect(two.title).toBe('2 review comments on Web aren’t sent. Open the pull request anyway?');
+    expect(two.body).toContain('its target branch');
+    expect(two.confirm).toBe('Open pull request anyway');
+  });
+
+  test('a merged, closed or deleted node drops its kept draft; one the frame does not name yet stays', () => {
+    const rows = [
+      { id: 'A', human_status: 'open' },
+      { id: 'B', human_status: 'landed' },
+      { id: 'C', human_status: 'closed' },
+    ];
+    expect(finishedIds(['A', 'B', 'C', 'D', 'E'], rows, [{ id: 'D' }])).toEqual(['B', 'C', 'D']);
   });
 });

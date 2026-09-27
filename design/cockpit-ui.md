@@ -83,7 +83,10 @@ Roles keep their design names but are explained where shown: **Conversation**
   drawer opened from a menu button in the page header.
 - A node page is three regions: header, chat (centred, max 760px), and an
   optional **details panel** on the right (320px, toggled, remembered per
-  viewer in localStorage; hidden below 1200px unless opened).
+  viewer in localStorage; hidden below 1200px unless opened). T436: its tab
+  is in the URL (`?node=<id>&tab=diff`; the first tab is no `tab=`), so a
+  reload, Back/Forward and a pasted link keep Changes, Plan…; a tab switch
+  rewrites the entry rather than adding one (`lib/shell.tsx`).
 - Pages other than a node use a centred content column (max 960px) with a
   `PageHeader`.
 - A project's root node opens on an **Overview** tab (T387): counts by status
@@ -189,7 +192,11 @@ Screen-level building blocks built on these (reuse them rather than copy):
   others run elsewhere; its header and rows share one grid (CSS subgrid), so
   Status is as wide as its widest pill and Node gets the room (at least
   280px); its subtitle counts one status each, in the Overview's words.
-  Dependencies shows both ends' statuses as `StatusPill`s.
+  Dependencies shows both ends' statuses as `StatusPill`s. T436: a
+  `child_status` event reads in the status words (`childStatusPhrase`: "Add
+  CSV import is ready to merge", "… replied", "… is blocked"), never the
+  daemon's enum or "no progress line"; an overlap wears the rail's neutral
+  two squares in Events, Activity and the Repos lens.
 - `lib/defaults.ts` `resolvedFor` — what a new session starts with, with the
   project step (P5) before the repo's, as attach resolves it.
 - `SessionPicker.tsx` (T423; pure half in `lib/defaults.ts`: `modelGroups`,
@@ -242,7 +249,9 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   model list in a dialog, T423; ⌘K's "This node" has it too). The ⋯ menu has
   no model choice of its own (Restart agent keeps the model). While the
   daemon is away, Start, Stop and Merge are off and say "Reconnecting to the
-  daemon…".
+  daemon…". T436: with a decision card open at the end of the chat (a plan
+  to approve, a gate), Start is secondary: the card's button is the page's
+  one primary.
 - **Lists** are rows (40px, hover background, click opens), not stacks of
   bordered cards. Cards are for things that need a decision.
 - **The rail's marks** (T424): a node whose changes overlap another live
@@ -251,10 +260,14 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   tooltip names the other node and the files ("Overlaps Fix rounding in
   totals on src/ledger.ts") and a click opens that node; with several, a
   small menu of them. A parent or a project carries it only while folded,
-  for the nodes hidden inside it (`lib/tree.ts` `overlapMark`). Rows drag
+  for the nodes hidden inside it (`lib/tree.ts` `overlapMark`). Events, a
+  node's Activity and the Repos lens show an overlap with the same neutral
+  mark (T436). Rows drag
   (T333): a 6-dot grip shows left of a row on hover (not on touch), `grab`
   over it, and the dragged row dims. The legend (the `?` by Projects) lists
-  both marks, and "Drag a row to move it (or ⋯ → Move to…)".
+  both marks, and "Drag a row to move it (or ⋯ → Move to…)". T436: its
+  statuses include **Replied** after Done (a conversation that answered),
+  each dot drawn from the row it stands for, as the rail draws it.
 - **Decision cards** (`Card` in `Inbox.tsx`): a title line (kind icon, what it
   is, node path, age), the body, and actions on one row, primary first.
   A question with `options` shows each as a button; typing is always allowed.
@@ -291,7 +304,8 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   another model it restarts the agent with it (Stop, then the same start) and
   the message is its first prompt ("Restarts the agent with …, then sends
   this."). A pick lasts one message: the chip then goes back to the default,
-  as its tooltip says. Where a line starts nothing (a bare project root, a
+  as its tooltip says. T436: the draft is kept per node in this tab's
+  `sessionStorage` (`lib/drafts.ts`), so a reload keeps it too. Where a line starts nothing (a bare project root, a
   part waiting for its plan) the chip only names what runs. With a
   question open the composer answers it ("Answering the question above",
   the whole question in its tooltip); the question reads once, in its own
@@ -305,7 +319,10 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   typed under Other… when you press Enter or leave the field; Esc puts it
   back). T423: Agents names models ("Claude Opus 5.5") and what an unset
   field inherits ("Inherits Claude Opus 5.5"; each card says from where),
-  never ids or `inherit (…)`, and has no Save buttons.
+  never ids or `inherit (…)`, and has no Save buttons. T436: in the order
+  they win — Global default, Per project, Per repository — and two or more
+  repositories that set nothing fold into one row ("5 repositories use the
+  global default", their names beside it) that opens to their cards.
 - **Details panel** (T423): it shows the running model but never picks one
   (the chip and Start with… do). On a coordinating node or a project root,
   one **Autonomy** group: a labelled row per agent — Coordinator, and on a
@@ -315,7 +332,15 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   project. A change saves at once, except one up to Run (the agent acts
   without asking), which confirms first (`ConfirmDialog`). A root's
   **Project** group (its repositories; its tracker: None, Jira or Linear)
-  has one Save, with Cancel, once something in it changed.
+  has one Save, with Cancel, once something in it changed. T436: an unsaved
+  change is kept per project (`sessionStorage`) across navigation and a
+  reload, until Save or Cancel, or until the saved settings change under it.
+  **Delivery** shows once the node has a branch; its badge says the node's
+  status in the header's word and tone where it is about delivery ("Ready to
+  merge" amber, "No changes", "Already merged", "PR open", "Merged"), and
+  only Conflict, Held, "Can merge" (commits on a node still going) and "Not
+  ready" in its own words. "Ask an agent to review…" shows once the branch
+  has commits.
 - **Errors**: inline under the control that caused them, in words a user can
   act on. A refused action names the reason and, if there is one, the fix.
   T416: a refused merge reads "Couldn’t merge. <reason>." under the card's
@@ -338,7 +363,13 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   in the node's composer and opens the chat. It never sends by itself.
   In the comment box Enter adds and Shift+Enter is a new line, as in the
   composer; the Changes tab's count is the unsent comments, with a comment
-  glyph (T426).
+  glyph (T426). T436: the comments are kept per node in this tab's
+  `sessionStorage`, so a reload keeps them; leaving the page while one is
+  unsent asks first (`beforeunload`); a merged, closed or deleted node's are
+  dropped. Merge (the header's or a card's) asks "1 review comment on
+  <node> isn't sent. Merge anyway?" with **Add to message** as the other
+  button (the review joins the node's draft and its chat opens); that
+  question stands in for the first-Merge one.
 - **Forms check as you type** (T426): New project says a taken name under
   Name before Create; a short picker with no search box still takes typing
   (the letters pick the first match, Enter chooses it); a list's
@@ -394,7 +425,11 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   (open, ✓ to mark read, Mark all read), the sidebar's Needs me shows a dot,
   and one notification says "Replied: …" while you're away (T388's
   setting). Read marks are per browser (localStorage); a first visit starts
-  with everything read. T433: the node's row in the rail is bold with a blue
+  with everything read. T436: a reply's row wears the rail's role glyph and a
+  clipped first line of what it said (its node's last agent line, else its
+  progress line; read once per reply from the node's page read, as the frame
+  carries no reply text), and ⌘K's Needs me group lists it first as "Read
+  reply: <title>", opening its chat. T433: the node's row in the rail is bold with a blue
   dot, and the Director counts too: its reply marks the sidebar's Director,
   heads Replies, and is read when its page is on screen (the frame's
   `director.replied_at`). T437: a reply is an agent's (or coordinator's, or
@@ -443,8 +478,8 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
     model names it better (D41's path: `update` with `auto_title`); a title you
     gave it stays.
 - **Notifications** (Settings → General, per browser, off by default): one
-  browser notification at a time for what is new in Needs me while the tab is
-  away; a click opens it. Never for what was there at load. They go through
+  browser notification at a time for what is new in Needs me (or a reply,
+  T429) while the tab is away; a click opens it. Never for what was there at load. They go through
   the service worker (`registration.showNotification`, T394) where one is
   active, which Android Chrome and an installed iOS app require; its
   `notificationclick` focuses the cockpit tab and opens the node.

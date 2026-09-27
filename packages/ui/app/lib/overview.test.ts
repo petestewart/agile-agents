@@ -78,7 +78,8 @@ describe('statuses', () => {
   });
 
   test('every status key sits in exactly one group, in one order', () => {
-    const keys: OverviewStatus[] = [...LEGEND_ORDER, 'replied'];
+    // T436: the legend lists "Replied" too, so its entries are exactly the Overview's statuses.
+    const keys: OverviewStatus[] = [...LEGEND_ORDER];
     expect([...OVERVIEW_ORDER].sort()).toEqual([...keys].sort());
     expect(new Set(OVERVIEW_ORDER).size).toBe(OVERVIEW_ORDER.length);
     expect(overviewGroupOf(needs)).toBe('you');

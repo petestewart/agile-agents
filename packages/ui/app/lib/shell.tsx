@@ -52,11 +52,30 @@ export function isShellView(value: string | null): value is ShellView {
  * T348 (D36 D2): the part of the shell a URL carries, so a reload or a
  * shared link reopens the same view. `?node=<id>` is a node's page,
  * `?view=<view>` any other view, `&project=<id>` the rail's project filter.
+ * T436 (audit r6 #21): `&tab=<tab>` a node's tab other than its first
+ * (Changes, Plan…), so a reload, Back/Forward and a link keep it.
  */
 export interface ShellLocation {
   view: ShellView;
   node: string | undefined;
   project: string | undefined;
+  /** T436: the node's tab; absent is its first (a root's Overview, else the chat). */
+  tab?: NodeTab;
+}
+
+/** T436: the tabs a `&tab=` may name (a node that lacks the one named opens on its first). */
+export const NODE_TABS: readonly NodeTab[] = [
+  'overview',
+  'thread',
+  'diff',
+  'plan',
+  'activity',
+  'rules',
+  'docs',
+];
+
+export function isNodeTab(value: string | null): value is NodeTab {
+  return value !== null && (NODE_TABS as readonly string[]).includes(value);
 }
 
 /** Reads a `location.search`; anything unknown or missing is the inbox, "All" projects. */
@@ -64,7 +83,10 @@ export function parseShellUrl(search: string): ShellLocation {
   const params = new URLSearchParams(search);
   const node = params.get('node') || undefined;
   const project = params.get('project') || undefined;
-  if (node !== undefined) return { view: 'stream', node, project };
+  if (node !== undefined) {
+    const tab = params.get('tab');
+    return { view: 'stream', node, project, ...(isNodeTab(tab) ? { tab } : {}) };
+  }
   // Knowledge is the `rules` view inside; its link says `knowledge` (`rules` still opens it).
   const raw = params.get('view');
   const view = raw === 'knowledge' ? 'rules' : raw;
@@ -72,7 +94,7 @@ export function parseShellUrl(search: string): ShellLocation {
 }
 
 /** The query params the shell owns; any other belongs to the screen showing (Settings' `section`). */
-const SHELL_PARAMS: ReadonlySet<string> = new Set(['node', 'view', 'project']);
+const SHELL_PARAMS: ReadonlySet<string> = new Set(['node', 'view', 'project', 'tab']);
 
 /**
  * T409: `next` (the shell's own query) plus the screen's params from
@@ -90,10 +112,12 @@ export function keepScreenParams(next: string, current: string): string {
 }
 
 /** The `location.search` for a shell location: `''` for the plain inbox. */
-export function shellSearch({ view, node, project }: ShellLocation): string {
+export function shellSearch({ view, node, project, tab }: ShellLocation): string {
   const params = new URLSearchParams();
-  if (view === 'stream' && node !== undefined) params.set('node', node);
-  else if (view !== 'inbox' && view !== 'stream')
+  if (view === 'stream' && node !== undefined) {
+    params.set('node', node);
+    if (tab !== undefined) params.set('tab', tab);
+  } else if (view !== 'inbox' && view !== 'stream')
     params.set('view', view === 'rules' ? 'knowledge' : view);
   if (project !== undefined) params.set('project', project);
   const query = params.toString();
@@ -111,8 +135,13 @@ export interface ShellValue {
    * project root on its chat, where the card is, not its Overview).
    */
   select(id: string | undefined, options?: { tab?: NodeTab }): void;
-  /** T403: the tab the last `select` asked for, with its node; read when the page opens. */
-  openOn: { id: string; tab: NodeTab } | undefined;
+  /**
+   * T436 (audit r6 #21): the open node's tab, `undefined` for its first; in
+   * the URL (`&tab=`). `select` sets it (T403: a Needs me card asks for the
+   * chat), and so does the page's tab bar.
+   */
+  tab: NodeTab | undefined;
+  setTab(tab: NodeTab | undefined): void;
   /** Phone width only: the stream tree is a drawer. Ignored on a wide screen, where the rail is always shown. */
   railOpen: boolean;
   toggleRail(): void;
@@ -180,7 +209,7 @@ export function ShellProvider({
 }: PropsWithChildren<{ initial?: ShellLocation }>): JSX.Element {
   const [view, setView] = useState<ShellView>(initial.view);
   const [selected, setSelected] = useState<string | undefined>(initial.node);
-  const [openOn, setOpenOn] = useState<ShellValue['openOn']>(undefined);
+  const [tab, setTab] = useState<NodeTab | undefined>(initial.tab);
   const [railOpen, setRailOpen] = useState(false);
   const [newStreamOpen, setNewStreamOpen] = useState(false);
   const [newStreamPreset, setNewStreamPreset] = useState<NewStreamPreset | undefined>(undefined);
@@ -214,6 +243,7 @@ export function ShellProvider({
         ...(archived !== undefined ? { title: archived.title } : {}),
       });
       setSelected(undefined);
+      setTab(undefined);
       setView((current) => (current === 'stream' ? 'inbox' : current));
     }
     if (project !== undefined && !cockpit.projects.some((p) => p.id === project)) {
@@ -223,9 +253,10 @@ export function ShellProvider({
   }, [unchecked, cockpit, selected, project]);
 
   // State → URL. Opening another node or view is a new history entry (so
-  // back returns to it); the project filter alone only rewrites the current one.
+  // back returns to it); the project filter or a node's tab alone only
+  // rewrites the current one (so Back returns to the tab you left it on).
   useEffect(() => {
-    const own = shellSearch({ view, node: selected, project });
+    const own = shellSearch({ view, node: selected, project, ...(tab ? { tab } : {}) });
     const current = parseShellUrl(location.search);
     const target = parseShellUrl(own);
     const moved = current.view !== target.view || current.node !== target.node;
@@ -236,7 +267,7 @@ export function ShellProvider({
     if (moved && !replaceNext.current) history.pushState(null, '', url);
     else history.replaceState(null, '', url);
     replaceNext.current = false;
-  }, [view, selected, project]);
+  }, [view, selected, project, tab]);
 
   // URL → state, on back/forward.
   useEffect(() => {
@@ -244,6 +275,7 @@ export function ShellProvider({
       const next = parseShellUrl(location.search);
       setView(next.view);
       setSelected(next.node);
+      setTab(next.tab);
       setProject(next.project);
       setUnchecked(next.node !== undefined || next.project !== undefined);
     };
@@ -258,16 +290,23 @@ export function ShellProvider({
       // node's page leaves no node open (so New node doesn't default to it).
       setView: (next: ShellView) => {
         setView(next);
-        if (next !== 'stream') setSelected(undefined);
+        if (next !== 'stream') {
+          setSelected(undefined);
+          setTab(undefined);
+        }
         setRailOpen(false);
       },
       selected,
-      openOn,
+      tab,
+      setTab,
       // T161: picking a stream opens its page (§9.3); "All streams" is the
       // inbox. On a phone the drawer gets out of the way either way.
       select: (id, options) => {
         setSelected(id);
-        setOpenOn(id !== undefined && options?.tab ? { id, tab: options.tab } : undefined);
+        // Another node opens on its first tab (or the one asked for); the open one keeps its tab.
+        setTab((current) =>
+          id === undefined ? undefined : (options?.tab ?? (id === selected ? current : undefined)),
+        );
         setView(id === undefined ? 'inbox' : 'stream');
         setRailOpen(false);
       },
@@ -279,6 +318,7 @@ export function ShellProvider({
         setRulesFilter(filter);
         setView('rules');
         setSelected(undefined);
+        setTab(undefined);
       },
       newStreamOpen,
       setNewStreamOpen: (open: boolean) => {
@@ -315,7 +355,7 @@ export function ShellProvider({
       missingNode,
       view,
       selected,
-      openOn,
+      tab,
       railOpen,
       newStreamOpen,
       newStreamPreset,

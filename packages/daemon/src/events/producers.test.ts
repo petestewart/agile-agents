@@ -70,13 +70,18 @@ describe('stream-transition producers (T244)', () => {
     expect(emitted).toHaveLength(1);
   });
 
-  test('child_status falls back when there is no progress line; a question reads as asking', async () => {
+  test('child_status with no progress line carries none (T436); a question reads as asking', async () => {
     const root = await streams.create('human', { title: 'Shop', goal: 'g' });
     const child = await streams.create('human', { title: 'web', goal: 'g', parent: root.id });
     await streams.update('daemon', child.id, { agent: { status: 'question' } });
-    expect(summarize(emitted[0] as RoutedEvent, root.id)).toBe(
-      'Child web is asking: no progress line.',
-    );
+    expect(emitted[0]?.payload).toEqual({ child: child.id, title: 'web', status: 'question' });
+    expect(summarize(emitted[0] as RoutedEvent, root.id)).toBe('Child web is asking.');
+    // An event written before T436 still carries the old stand-in: it says nothing either.
+    const old = {
+      ...(emitted[0] as RoutedEvent),
+      payload: { child: child.id, title: 'web', status: 'done', progress: 'no progress line' },
+    };
+    expect(summarize(old as RoutedEvent, root.id)).toBe('Child web is done.');
   });
 
   test('dependency_satisfied when a repo-less node that others wait on is closed', async () => {

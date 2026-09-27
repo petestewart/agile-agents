@@ -29,6 +29,7 @@ import { StreamPage } from './components/StreamPage';
 import { Spinner, useToast } from './components/ui';
 import { unarchiveStream } from './lib/api';
 import { useFeed } from './lib/feed-context';
+import { useReviewUpkeep } from './lib/review';
 import { type ShellView, useShell } from './lib/shell';
 import { useNeedsMeNotifications } from './lib/use-notify';
 import { useReadOpenNode, useReplyNotifications } from './lib/use-unread';
@@ -177,6 +178,8 @@ export function App(): JSX.Element {
   // T429: the open node is read as it changes; a reply while you're away notifies.
   useReadOpenNode();
   useReplyNotifications();
+  // T436: leaving with review comments unsent asks first; a finished node's drafts are dropped.
+  useReviewUpkeep();
   useWarmChunks();
   // T394: a caught error resets when you go somewhere else.
   const place = `${view}:${selected ?? ''}`;

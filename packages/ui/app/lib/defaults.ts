@@ -255,3 +255,32 @@ export function modelChip(input: ModelChipInput): ModelChipState {
     title: `Your next message starts the agent with ${label}, the default here. Pick another model for that message; it resets to the default after you send.`,
   };
 }
+
+// ---------------------------------------------------------------- Settings → Agents
+
+/** T436 (audit r6 #25): a repository that names nothing of its own: all three inherit. */
+export function inheritsAll(fields: {
+  vendor?: unknown;
+  model?: unknown;
+  effort?: unknown;
+}): boolean {
+  return fields.vendor === undefined && fields.model === undefined && fields.effort === undefined;
+}
+
+/**
+ * T436: which repositories' cards fold into one row — the ones that set
+ * nothing, when there are at least two (one card is no longer than the row).
+ */
+export function foldedRepos<T extends { vendor?: unknown; model?: unknown; effort?: unknown }>(
+  repos: Record<string, T>,
+): string[] {
+  const names = Object.entries(repos)
+    .filter(([, fields]) => inheritsAll(fields))
+    .map(([name]) => name);
+  return names.length >= 2 ? names : [];
+}
+
+/** "5 repositories use the global default". */
+export function inheritingReposText(n: number): string {
+  return `${n} ${n === 1 ? 'repository uses' : 'repositories use'} the global default`;
+}

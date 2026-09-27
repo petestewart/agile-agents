@@ -16,6 +16,7 @@ import { deliveryBadge, deliveryStateWords, tidyIds } from '../lib/chat';
 import { mergeRefusal } from '../lib/errors';
 import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
 import { branchName } from '../lib/inbox';
+import type { NodeStatusKey } from '../lib/status';
 import { isLiveSession } from '../lib/streams';
 import { Icon } from './Icon';
 import { Linked } from './Markdown';
@@ -138,15 +139,19 @@ export function DeliveryPanel({
   page,
   delivery,
   onResolve,
+  status,
 }: {
   page: StreamPagePayload;
   delivery: Delivery;
   /** T176: opens the session picker for a Resolve worker. */
   onResolve: () => void;
+  /** T436: the node's status, which the badge says where it is about delivery. */
+  status?: NodeStatusKey;
 }): JSX.Element | null {
   const { stream, land } = page;
   const { busy, outcome, refused } = delivery;
-  if (stream.repo === undefined) return null;
+  // T436 (audit r6 #24): nothing to say before the node has a branch (its agent never started).
+  if (stream.repo === undefined || stream.branch === undefined) return null;
   const finished = stream.human.status === 'landed' || stream.human.status === 'closed';
   // T176: a failed land's own line replaces the preflight, never "Ready" beside it.
   const failed =
@@ -172,6 +177,7 @@ export function DeliveryPanel({
     held: stream.delivery_state?.status === 'held',
     ready: land?.ready === true,
     mergedOutside: land?.merged === true,
+    ...(status !== undefined ? { status } : {}),
   });
 
   return (

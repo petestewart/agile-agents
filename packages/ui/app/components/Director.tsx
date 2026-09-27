@@ -235,7 +235,9 @@ function ActivitySection({
       ) : (
         <ol className="cr-timeline cr-dir-activity" data-testid="director-activity">
           {rows.slice(0, 40).map((row) => {
-            const detail = eventDetail(row.event, titleOf);
+            const detail = eventDetail(row.event, titleOf, (id) =>
+              cockpit?.streams.find((s) => s.id === id),
+            );
             return (
               <li
                 key={row.event.id}

@@ -14,6 +14,7 @@
 
 import type { InboxItem } from '@agile-agents/shared';
 import { useEffect, useRef, useState } from 'react';
+import { getDirector, getStreamPage } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
 import type { CockpitStreamRow } from '../lib/feed-types';
 import {
@@ -26,6 +27,7 @@ import {
   groupNeedsMe,
   isFirstRun,
   nodePath,
+  replyPreview,
   setupSteps,
 } from '../lib/inbox';
 import { isShortcut, useShell } from '../lib/shell';
@@ -34,6 +36,7 @@ import { DIRECTOR_READ_KEY, ancestorTitles } from '../lib/unread';
 import { markAllRead, markRead, useDirectorUnread, useUnreadReplies } from '../lib/use-unread';
 import { Card } from './DecisionCard';
 import { Icon, type IconName } from './Icon';
+import { ROLE_GLYPH } from './StreamTree';
 import { Button, EmptyState, IconButton, Kbd, PageHeader, Segmented, Spinner } from './ui';
 
 export { Card } from './DecisionCard';
@@ -287,66 +290,130 @@ function Replies({
       </h2>
       <ul className="cr-replies-list">
         {director !== undefined && (
-          <li className="cr-reply" data-testid="reply" data-stream={DIRECTOR_READ_KEY}>
-            <button
-              type="button"
-              className="cr-reply-open"
-              title="Open the Director"
-              onClick={() => setView('director')}
-            >
-              <Icon name="sparkles" size={14} className="cr-reply-icon" />
-              <span className="cr-reply-text">
-                <span className="cr-reply-title">The Director</span>
-              </span>
-              <span className="cr-reply-when">Replied · {ago(director)}</span>
-            </button>
-            <IconButton
-              icon="check"
-              size="sm"
-              label="Mark read"
-              data-testid="reply-read"
-              onClick={() => markRead(DIRECTOR_READ_KEY, director)}
-            />
-          </li>
+          <ReplyRow
+            id={DIRECTOR_READ_KEY}
+            at={director}
+            icon="sparkles"
+            title="The Director"
+            parents={[]}
+            when="Replied"
+            label="Open the Director"
+            onOpen={() => setView('director')}
+            onRead={() => markRead(DIRECTOR_READ_KEY, director)}
+          />
         )}
-        {rows.map((row) => {
-          const parents = ancestorTitles(all, row.id);
-          return (
-            <li key={row.id} className="cr-reply" data-testid="reply" data-stream={row.id}>
-              <button
-                type="button"
-                className="cr-reply-open"
-                title={`Open ${row.title}`}
-                onClick={() => select(row.id, { tab: 'thread' })}
-              >
-                <Icon
-                  name={row.role === 'conversation' ? 'message-square' : 'git-fork'}
-                  size={14}
-                  className="cr-reply-icon"
-                />
-                <span className="cr-reply-text">
-                  {parents.length > 0 && (
-                    <span className="cr-reply-path">{`${nodePath(parents)}${PATH_SEP}`}</span>
-                  )}
-                  <span className="cr-reply-title">{row.title}</span>
-                </span>
-                <span className="cr-reply-when">
-                  {row.role === 'conversation' ? 'Replied' : 'Finished a turn'}
-                  {row.answered_at ? ` · ${ago(row.answered_at)}` : ''}
-                </span>
-              </button>
-              <IconButton
-                icon="check"
-                size="sm"
-                label="Mark read"
-                data-testid="reply-read"
-                onClick={() => row.updated_at && markRead(row.id, row.updated_at)}
-              />
-            </li>
-          );
-        })}
+        {rows.map((row) => (
+          <ReplyRow
+            key={row.id}
+            id={row.id}
+            // T437: when it answered (a status change later is no new reply).
+            at={row.answered_at}
+            // T436 (audit r6 #17): the rail's role glyphs, so a row reads as the tree does.
+            icon={ROLE_GLYPH[row.role]}
+            title={row.title}
+            parents={ancestorTitles(all, row.id)}
+            when={row.role === 'conversation' ? 'Replied' : 'Finished a turn'}
+            label={`Open ${row.title}`}
+            onOpen={() => select(row.id, { tab: 'thread' })}
+            onRead={() => row.updated_at && markRead(row.id, row.updated_at)}
+          />
+        ))}
       </ul>
     </section>
+  );
+}
+
+/** T436: previews read so far, per reply (`id@when`): a re-render or a revisit reads nothing again. */
+const previews = new Map<string, string | null>();
+
+/**
+ * T436 (audit r6 #17): the first line of what `id` replied — its node's
+ * last agent line (else its last progress line), or the Director's — read
+ * once per reply. The cockpit frame carries no reply text, so this is the
+ * node's page read (the Director's), cached; nothing shows until it's in,
+ * and a read that fails shows nothing.
+ */
+function useReplyPreview(id: string, at: string | undefined): string | undefined {
+  const key = `${id}@${at ?? ''}`;
+  const [text, setText] = useState<string | undefined>(() => previews.get(key) ?? undefined);
+  useEffect(() => {
+    if (previews.has(key)) {
+      setText(previews.get(key) ?? undefined);
+      return;
+    }
+    let live = true;
+    const read =
+      id === DIRECTOR_READ_KEY
+        ? getDirector().then((page) => replyPreview(page.thread))
+        : getStreamPage(id).then((page) => replyPreview(page.thread, page.stream.agent.progress));
+    read
+      .then((preview) => {
+        for (const old of previews.keys()) if (old.startsWith(`${id}@`)) previews.delete(old);
+        previews.set(key, preview ?? null);
+        if (live) setText(preview);
+      })
+      .catch(() => {
+        // No preview: the row still reads, and opens the reply.
+      });
+    return () => {
+      live = false;
+    };
+  }, [id, key]);
+  return text;
+}
+
+function ReplyRow({
+  id,
+  at,
+  icon,
+  title,
+  parents,
+  when,
+  label,
+  onOpen,
+  onRead,
+}: {
+  id: string;
+  at: string | undefined;
+  icon: IconName;
+  title: string;
+  parents: readonly string[];
+  when: string;
+  label: string;
+  onOpen: () => void;
+  onRead: () => void;
+}): JSX.Element {
+  const preview = useReplyPreview(id, at);
+  return (
+    <li className="cr-reply" data-testid="reply" data-stream={id}>
+      <button type="button" className="cr-reply-open" title={label} onClick={onOpen}>
+        <Icon name={icon} size={14} className="cr-reply-icon" />
+        <span className="cr-reply-text">
+          <span className="cr-reply-head">
+            {parents.length > 0 && (
+              <span className="cr-reply-path">{`${nodePath(parents)}${PATH_SEP}`}</span>
+            )}
+            <span className="cr-reply-title">{title}</span>
+          </span>
+          {preview !== undefined && (
+            <span className="cr-reply-preview" data-testid="reply-preview" title={preview}>
+              {preview}
+            </span>
+          )}
+        </span>
+        <span className="cr-reply-when">
+          {when}
+          {at ? ` · ${ago(at)}` : ''}
+        </span>
+      </button>
+      <IconButton
+        icon="check"
+        size="sm"
+        label="Mark read"
+        data-testid="reply-read"
+        onClick={onRead}
+      />
+    </li>
   );
 }
 

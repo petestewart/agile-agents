@@ -792,6 +792,65 @@ export function itemCommand(item: InboxItem, row?: Parameters<typeof doneCardOf>
   }
 }
 
+/** T436 (audit r6 #29): an unread reply in ⌘K's Needs me group: "Read reply: Which repos…". */
+export function replyCommand(title: string): string {
+  return `Read reply: ${title}`;
+}
+
+// ---------------------------------------------------------------- a reply's preview
+
+/** How long a reply's preview may be (the row clips it to one line anyway). */
+export const REPLY_PREVIEW_MAX = 160;
+
+/** One line of Markdown as plain words: no heading, quote or list marks, emphasis, code ticks or link targets. */
+export function plainLine(line: string): string {
+  return line
+    .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/, '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__)(.+?)\1/g, '$2')
+    .replace(/(^|[^\w*])[*_]([^*_\s][^*_]*?)[*_](?=[^\w*]|$)/g, '$1$2')
+    .replace(/`+([^`]*)`+/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** A line an agent wrote: a session's (`agent:<id>`), a coordinator's, or the Director's own. */
+function byAgent(by: string): boolean {
+  return by.startsWith('agent:') || by === 'coordinator' || by === 'director';
+}
+
+/**
+ * T436 (audit r6 #17): what a reply row previews — the first line with
+ * words of the agent's last line in the thread (the reply itself; the
+ * Director's own, in its thread), else its last progress line; clipped.
+ * `undefined` when there is neither.
+ */
+export function replyPreview(
+  thread: ReadonlyArray<{ kind: string; by: string; body: string }>,
+  progress?: string,
+): string | undefined {
+  let text: string | undefined;
+  for (let i = thread.length - 1; i >= 0; i--) {
+    const e = thread[i];
+    if (e !== undefined && e.kind === 'line' && byAgent(e.by)) {
+      text = e.body;
+      break;
+    }
+  }
+  for (const source of [text, progress]) {
+    const line = (source ?? '')
+      .split('\n')
+      .map(plainLine)
+      .find((l) => l !== '' && !/^[-=*_|:\s`~]+$/.test(l));
+    if (line !== undefined) {
+      return line.length > REPLY_PREVIEW_MAX
+        ? `${line.slice(0, REPLY_PREVIEW_MAX - 1).trimEnd()}…`
+        : line;
+    }
+  }
+  return undefined;
+}
+
 /**
  * T437: a blocked card whose line is the daemon's failure note (a vendor that
  * isn't installed, or that stopped with an error): a reply alone restarts the

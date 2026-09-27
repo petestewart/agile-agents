@@ -519,6 +519,26 @@ describe('the header', () => {
     expect(headerActions({ ...base, open: false })).toEqual({ merge: false });
   });
 
+  test('T436: with a decision card open (a plan to approve), Start is plain: the card leads', () => {
+    const base = {
+      open: true,
+      liveAgent: false,
+      anyLive: false,
+      canStart: true,
+      mergeable: false,
+      landReady: false,
+    };
+    expect(headerActions({ ...base, decisionOpen: true })).toEqual({
+      agent: 'start',
+      merge: false,
+    });
+    expect(headerActions({ ...base, decisionOpen: false })).toEqual({
+      agent: 'start',
+      merge: false,
+      primary: 'agent',
+    });
+  });
+
   test('tabs that do not apply are left out', () => {
     expect(nodeTabs({ role: 'conversation', hasRepo: false, knowledge: 0, docs: 0 })).toEqual([
       'thread',
@@ -590,16 +610,52 @@ test('the Delivery badge: merged, conflict, PR, held, then whether a merge would
     ready: false,
     mergedOutside: false,
   };
-  expect(deliveryBadge({ ...none, landed: true, ready: true }).label).toBe('Merged');
+  expect(deliveryBadge({ ...none, landed: true, ready: true })).toEqual({
+    label: 'Merged',
+    tone: 'purple',
+  });
   expect(deliveryBadge({ ...none, conflict: true, ready: true })).toEqual({
     label: 'Conflict',
     tone: 'red',
   });
-  expect(deliveryBadge({ ...none, prOpen: true }).label).toBe('PR open');
+  expect(deliveryBadge({ ...none, prOpen: true })).toEqual({ label: 'PR open', tone: 'blue' });
   expect(deliveryBadge({ ...none, held: true, ready: true }).label).toBe('Held');
-  expect(deliveryBadge({ ...none, ready: true })).toEqual({ label: 'Can merge', tone: 'green' });
-  expect(deliveryBadge({ ...none, mergedOutside: true }).label).toBe('Merged outside');
+  // T436: commits on a node still going: it can merge, but that is no status of its own.
+  expect(deliveryBadge({ ...none, ready: true })).toEqual({ label: 'Can merge', tone: 'gray' });
+  expect(deliveryBadge({ ...none, mergedOutside: true })).toEqual({
+    label: 'Already merged',
+    tone: 'amber',
+  });
   expect(deliveryBadge(none)).toEqual({ label: 'Not ready', tone: 'gray' });
+});
+
+test('T436: the Delivery badge says the node’s status in its word and tone, as the header’s pill', () => {
+  const none = {
+    landed: false,
+    conflict: false,
+    prOpen: false,
+    held: false,
+    ready: true,
+    mergedOutside: false,
+  };
+  // The header says "Ready to merge" in amber: so does Delivery (it said "Can merge" in green).
+  expect(deliveryBadge({ ...none, status: 'ready' })).toEqual({
+    label: 'Ready to merge',
+    tone: 'amber',
+  });
+  expect(deliveryBadge({ ...none, ready: false, status: 'no_changes' })).toEqual({
+    label: 'No changes',
+    tone: 'amber',
+  });
+  // A status that isn't about delivery leaves the badge to what the branch can do.
+  expect(deliveryBadge({ ...none, status: 'working' })).toEqual({
+    label: 'Can merge',
+    tone: 'gray',
+  });
+  // A conflict or a hold says more than the status.
+  expect(deliveryBadge({ ...none, conflict: true, status: 'ready' }).label).toBe('Conflict');
+  expect(deliveryBadge({ ...none, held: true, status: 'ready' }).label).toBe('Held');
+  expect(deliveryBadge({ ...none, landed: true, status: 'merged' }).label).toBe('Merged');
 });
 
 describe('parseDiff', () => {

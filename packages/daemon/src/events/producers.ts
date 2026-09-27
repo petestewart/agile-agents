@@ -98,15 +98,12 @@ export function transitionEvents(
       payload: { child: after.id, title, summary: tangentSummary(after, tangents) },
     });
   } else if (waits && after.parent !== undefined) {
+    // T436 (audit r6 #15): no progress line is no `progress`, never a stand-in sentence.
+    const progress = clipLine(after.agent.progress ?? '');
     out.push({
       ...base,
       type: 'child_status',
-      payload: {
-        child: after.id,
-        title,
-        status,
-        progress: clipLine(after.agent.progress ?? '') || 'no progress line',
-      },
+      payload: { child: after.id, title, status, ...(progress !== '' ? { progress } : {}) },
     });
   }
   const merged =
@@ -256,7 +253,12 @@ export function summarize(
   switch (event.type) {
     case 'child_status': {
       const word = p.status === 'question' ? 'asking' : String(p.status);
-      return `Child ${String(p.title)} is ${word}: ${String(p.progress ?? 'no progress line')}.`;
+      // Events from before T436 carry the old stand-in; it says nothing.
+      const progress =
+        typeof p.progress === 'string' && p.progress !== '' && p.progress !== 'no progress line'
+          ? `: ${p.progress}`
+          : '';
+      return `Child ${String(p.title)} is ${word}${progress}.`;
     }
     case 'child_delivered':
       return `Child ${String(p.title)} merged into ${String(p.repo)} main (${String(p.sha).slice(0, 12)}). Tell the siblings it affects with \`note_child\`; same-repo siblings get the main sync.`;

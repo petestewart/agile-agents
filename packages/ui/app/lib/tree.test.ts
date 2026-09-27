@@ -3,7 +3,9 @@
 import { describe, expect, test } from 'bun:test';
 import type { CockpitProjectRow, CockpitStreamRow } from './feed-types';
 import { nodeStatus } from './status';
+import { streamDot } from './streams';
 import {
+  LEGEND_NOTE,
   LEGEND_ORDER,
   checkMove,
   deleteQuestion,
@@ -301,8 +303,23 @@ describe('newNodeDefaults', () => {
 
 describe('the legend', () => {
   test('every status is listed once, and its row reads as that status', () => {
-    expect(new Set(LEGEND_ORDER).size).toBe(14);
-    for (const key of LEGEND_ORDER) expect(nodeStatus(legendRow(key)).key).toBe(key);
+    expect(new Set(LEGEND_ORDER).size).toBe(15);
+    for (const key of LEGEND_ORDER) {
+      if (key === 'replied') continue;
+      expect(nodeStatus(legendRow(key)).key).toBe(key);
+    }
+  });
+
+  test('T436: "Replied" is listed after Done, and its row reads as a conversation that answered', () => {
+    expect(LEGEND_ORDER.indexOf('replied')).toBe(LEGEND_ORDER.indexOf('done') + 1);
+    const replied = nodeStatus(legendRow('replied'));
+    expect(replied.label).toBe('Replied');
+    expect(replied.tone).toBe('green');
+    // The dot the rail draws for a project's conversation that finished its turn.
+    expect(streamDot(legendRow('replied'))).toBe(
+      streamDot({ agent_status: 'done', human_status: 'open', role: 'conversation', project: 'P' }),
+    );
+    expect(LEGEND_NOTE.replied).toContain('conversation');
   });
 });
 

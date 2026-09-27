@@ -195,6 +195,8 @@ export function ActivityView({
   const [rows, setRows] = useState<ActivityEntry[] | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   const titleOf = useTitleOf();
+  const streams = useOptionalFeed()?.cockpit?.streams;
+  const rowOf = (node: string) => streams?.find((r) => r.id === node);
   const { select, setView } = useShell();
   // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` (the pushed frame) is the re-read trigger.
   useEffect(() => {
@@ -228,7 +230,7 @@ export function ActivityView({
           <ul className="cr-lens-rows">
             {day.events.map(({ row }) => {
               const { event } = row;
-              const detail = eventDetail(event, titleOf);
+              const detail = eventDetail(event, titleOf, rowOf);
               const why = ROUTE_REASON[row.because];
               return (
                 <li

@@ -35,6 +35,7 @@ import {
   runConfirm,
 } from '../lib/autonomy';
 import { agentLabel, sessionIdText, sessionRoleWord, sessionStatusWord } from '../lib/chat';
+import { projectDrafts } from '../lib/drafts';
 import { useOptionalFeed } from '../lib/feed-context';
 import type {
   CockpitCardError,
@@ -734,28 +735,40 @@ export function ProjectSection({
 }): JSX.Element {
   // A fresh form whenever the saved project changes (a save, or a change made elsewhere).
   const key = `${(project.repos ?? []).join(',')}|${JSON.stringify(project.tracker ?? null)}`;
-  return <ProjectForm key={key} project={project} busy={busy} act={act} />;
+  return <ProjectForm key={key} base={key} project={project} busy={busy} act={act} />;
 }
 
 function ProjectForm({
   project,
+  base,
   busy,
   act,
 }: {
   project: CockpitProjectRow;
+  /** The saved settings the form starts from (its key). */
+  base: string;
   busy: boolean;
   act: Act;
 }): JSX.Element {
   const tracker = project.tracker;
   const current = project.repos;
   const saved = trackerDraft(tracker);
-  const [repos, setRepos] = useState<string[]>([...(current ?? [])]);
-  const [draft, setDraft] = useState<TrackerDraft>(saved);
+  // T436 (audit r6 #22): unsaved changes wait for you, per project, when you go elsewhere
+  // (or reload), until Save or Cancel; a draft over settings changed since is dropped.
+  const [kept] = useState(() => {
+    const d = projectDrafts.get(project.id);
+    return d !== undefined && d.base === base ? d : undefined;
+  });
+  const [repos, setRepos] = useState<string[]>(() => kept?.repos ?? [...(current ?? [])]);
+  const [draft, setDraft] = useState<TrackerDraft>(() => kept?.tracker ?? saved);
   const reposDirty =
     current !== undefined &&
     (repos.length !== current.length || repos.some((name) => !current.includes(name)));
   const trackerDirty = !sameTracker(draft, saved);
   const dirty = reposDirty || trackerDirty;
+  useEffect(() => {
+    projectDrafts.set(project.id, dirty ? { base, repos, tracker: draft } : undefined);
+  }, [project.id, base, dirty, repos, draft]);
   function save(): void {
     if (!dirty) return;
     void act(async () => {

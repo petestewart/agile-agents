@@ -2538,19 +2538,37 @@ describe('session defaults (Playwright e2e, T170)', () => {
         page = await openPage();
         await page.goto(`${cockpit.base}/`);
         await page.locator('[data-view="settings"]').click();
+        // T436 (audit r6 #25): Notifications' copy names replies too (T429 notifies them).
+        await page
+          .locator('[data-testid="settings-notifications"]', { hasText: 'or a reply' })
+          .waitFor();
         await page.locator('[data-testid="settings-nav-agents"]').click();
         const home = (suffix: string) => `[data-testid="settings-session-home${suffix}"]`;
         const contains = async (selector: string, text: string) =>
           waitUntilAsync(`${selector} to contain ${text}`, async () =>
             ((await page?.locator(selector).first().textContent()) ?? '').includes(text),
           );
-        // T164: a Global default card, then Per repository, one card per repo (T367).
+        // T164: a Global default card, then (T436) Per project, then Per repository, one card
+        // per repo (T367) — those that set nothing folded into one row.
         await contains(home(''), 'Global default');
         await contains('[data-testid="settings-session-repos-heading"]', 'Per repository');
         await contains(
           '[data-testid="settings-session-repos-heading"]',
           'overrides the global default',
         );
+        const projectsFirst = (await page.evaluate(`(() => {
+          const projects = document.querySelector('[data-testid="settings-session-projects-heading"]');
+          const repos = document.querySelector('[data-testid="settings-session-repos-heading"]');
+          return !!projects && !!repos && !!(projects.compareDocumentPosition(repos) & Node.DOCUMENT_POSITION_FOLLOWING);
+        })()`)) as unknown;
+        expect(projectsFirst).toBe(true);
+        // demo and web set nothing of their own: one row says so, and opens to their cards.
+        await contains(
+          '[data-testid="settings-session-repos-fold"]',
+          '2 repositories use the global default',
+        );
+        expect(await page.locator('[data-testid="settings-session-repo-demo"]').count()).toBe(0);
+        await page.locator('[data-testid="settings-session-repos-fold-toggle"]').click();
         await contains('[data-testid="settings-session-repo-demo"]', 'demo');
         // T382: the default reads in words, as the composer says it; the ids are on hover.
         await contains('[data-testid="settings-session-repo-demo-resolved"]', 'Claude');
@@ -7050,6 +7068,11 @@ describe("the rail's row menus, Deleted and New project (Playwright e2e, T365)",
         for (const label of ['Needs you', 'Ready to merge', 'Working', 'Not started', 'Stopped']) {
           expect(text).toContain(label);
         }
+        // T436 (audit r6 #23): "Replied" too, its dot as the rail draws a conversation's.
+        const replied = legend.locator('[data-status="replied"]');
+        expect(await replied.textContent()).toContain('Replied');
+        expect(await replied.locator('.cr-dot').getAttribute('data-tone')).toBe('green');
+        expect(await replied.locator('.cr-dot').getAttribute('aria-label')).toBe('Replied');
         // T424: the marks: the overlap button's two squares, and that rows drag.
         expect(await legend.locator('[data-mark="overlap"] [data-icon="overlap"]').count()).toBe(1);
         expect(await legend.locator('[data-mark="overlap"]').textContent()).toBe(
@@ -7617,6 +7640,17 @@ describe('overlap warnings (Playwright e2e, T227)', () => {
               true && texts.includes('api: add salePrice and api: sale banner both changed sale.ts')
           );
         });
+        // T436 (audit r6 #18): the callout wears the rail's neutral mark, not the alert triangle.
+        expect(
+          await page
+            .locator('[data-testid="repo-view"] .cr-lens-overlap [data-icon="overlap"]')
+            .count(),
+        ).toBeGreaterThan(0);
+        expect(
+          await page
+            .locator('[data-testid="repo-view"] .cr-lens-overlap [data-icon="alert-triangle"]')
+            .count(),
+        ).toBe(0);
         // T424c: each live node's status is a pill, as in Dependencies and Running.
         await page
           .locator('[data-testid="repo-view"] [data-repo="api"] [data-testid="repo-node-status"]')
@@ -9616,6 +9650,517 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
           .locator(`[data-testid="stream-page"][data-stream="${child.id}"]`)
           .waitFor({ state: 'visible' });
         expect(cockpit.streams.get(child.id).archived).not.toBe(true);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T436: views and polish (audit round 6) -----------------------------------
+
+describe('views and polish (Playwright e2e, T436, audit r6)', () => {
+  browserTest(
+    '#11 #21: review comments and a draft survive a reload on the tab they were on; leaving asks; Merge asks about unsent comments (header and card)',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const stream = await cockpit.streams.create('human', {
+          title: 'csv import',
+          goal: 'import a csv',
+          repo: 'demo',
+          project: shop.id,
+        });
+        const worktree = join(cockpit.repo, '.worktrees', 's-t436');
+        git(['worktree', 'add', '-q', '-b', 's-t436', worktree, 'main'], cockpit.repo);
+        mkdirSync(join(worktree, 'src'));
+        writeFileSync(
+          join(worktree, 'src', 'import.ts'),
+          'export function importCsv(text: string) {\n  const rows = text.split(",");\n  return rows;\n}\n',
+        );
+        git(['add', '-A'], worktree);
+        git(['commit', '-q', '-m', 'import'], worktree);
+        await cockpit.streams.update('daemon', stream.id, {
+          branch: 's-t436',
+          worktree,
+          agent: { status: 'done' },
+        });
+
+        const p = await openPage();
+        page = p;
+        // The browser's own "Leave site?" is a dialog: recorded, and answered Leave.
+        const asked: string[] = [];
+        p.on('dialog', (dialog) => {
+          asked.push(dialog.type());
+          void dialog.accept();
+        });
+        const pageOf = `[data-testid="stream-page"][data-stream="${stream.id}"]`;
+        await p.goto(`${cockpit.base}/?node=${stream.id}`);
+        await p.locator(pageOf).waitFor();
+        const composer = p.locator('[data-testid="composer-input"]');
+        await composer.fill('Also rename the helper.');
+
+        // #21: a tab is in the URL, so a reload (and a link) opens it.
+        await p.locator('.cr-tabs [data-tab="diff"]').click();
+        await waitUntilAsync(
+          'the Changes tab in the URL',
+          async () => new URL(p.url()).searchParams.get('tab') === 'diff',
+        );
+        const splitLine = p
+          .locator('[data-testid="diff-file"][data-path="src/import.ts"] [data-line="add"]')
+          .filter({ hasText: 'text.split' });
+        await splitLine.hover();
+        await splitLine.locator('[data-testid="diff-comment-add"]').click();
+        await p.locator('[data-testid="diff-comment-input"]').fill('Quoted fields hold commas.');
+        await p.locator('[data-testid="diff-comment-submit"]').click();
+        await waitForText(p, '[data-testid="review-count"]', '1 comment on 1 file');
+
+        // #11: a reload asks first (a review is unsent), then brings back the tab, the comment
+        // and the draft.
+        await p.reload();
+        await p.locator(pageOf).waitFor();
+        expect(asked).toEqual(['beforeunload']);
+        await p.locator('.cr-tabs [data-tab="diff"][aria-current="page"]').waitFor();
+        await p.locator('[data-testid="diff-comment"]', { hasText: 'Quoted fields' }).waitFor();
+        await waitForText(p, '.cr-tabs [data-tab="diff"] .cr-tab-count', '1');
+        await p.locator('.cr-tabs [data-tab="thread"]').click();
+        expect(await composer.inputValue()).toBe('Also rename the helper.');
+        // The node's first tab is the plain link.
+        expect(new URL(p.url()).searchParams.get('tab')).toBeNull();
+        // Back/Forward keep the tab too: another view, then Back.
+        await p.locator('.cr-tabs [data-tab="diff"]').click();
+        await p.locator('[data-view="inbox"]').click();
+        await p.locator('[data-testid="inbox"]').waitFor();
+        await p.goBack();
+        await p.locator('.cr-tabs [data-tab="diff"][aria-current="page"]').waitFor();
+
+        // Merge (the header's) asks about the comment; Add to message puts it in the draft,
+        // opens the chat on it, and merges nothing.
+        await p.locator('[data-testid="stream-land"]').click();
+        const unsent = p.locator('[data-testid="merge-unsent"]');
+        await unsent.waitFor();
+        expect(await unsent.textContent()).toContain(
+          '1 review comment on csv import isn’t sent. Merge anyway?',
+        );
+        expect(await p.locator('[data-testid="merge-confirm"]').count()).toBe(0);
+        await p.locator('[data-testid="merge-unsent-add"]').click();
+        await unsent.waitFor({ state: 'detached' });
+        await p.locator('.cr-tabs [data-tab="thread"][aria-current="page"]').waitFor();
+        await waitUntilAsync('the review in the draft', async () =>
+          (await composer.inputValue()).includes('Review of the changes:'),
+        );
+        expect(await composer.inputValue()).toBe(
+          [
+            'Also rename the helper.',
+            '',
+            'Review of the changes:',
+            '',
+            '1. `src/import.ts:2`',
+            '   `const rows = text.split(",");`',
+            '   Quoted fields hold commas.',
+          ].join('\n'),
+        );
+        expect(await p.locator('.cr-tabs [data-tab="diff"] .cr-tab-count').count()).toBe(0);
+        expect(cockpit.streams.get(stream.id).human.status).toBe('open');
+
+        // A second comment, then Merge from its Needs me card: Merge anyway merges, with no
+        // second question (it stands in for the first-Merge one).
+        await p.locator('.cr-tabs [data-tab="diff"]').click();
+        await splitLine.hover();
+        await splitLine.locator('[data-testid="diff-comment-add"]').click();
+        await p.locator('[data-testid="diff-comment-input"]').fill('And a header row.');
+        await p.locator('[data-testid="diff-comment-submit"]').click();
+        await waitForText(p, '[data-testid="review-count"]', '1 comment on 1 file');
+        await p.locator('[data-view="inbox"]').click();
+        const card = p.locator(`[data-kind="done"][data-id="${stream.id}"]`);
+        await card.locator('[data-testid="land"]').click();
+        await unsent.waitFor();
+        // A card knows its node, not the branch: the dialog reads it, and names it.
+        await waitUntilAsync('the dialog to name main', async () =>
+          ((await unsent.textContent()) ?? '').includes('Merging puts its commits onto main now'),
+        );
+        await p.locator('[data-testid="merge-unsent-merge"]').click();
+        await waitUntil(
+          'the node to merge',
+          () => cockpit.streams.get(stream.id).human.status === 'landed',
+        );
+        expect(await p.locator('[data-testid="merge-confirm"]').count()).toBe(0);
+        // Merged: its draft and review are dropped, and leaving no longer asks.
+        await waitUntilAsync(
+          'the merged node’s kept draft and review dropped',
+          async () =>
+            (await p.evaluate(
+              "sessionStorage.getItem('agile.review') === null && sessionStorage.getItem('agile.drafts') === null",
+            )) === true,
+        );
+        await p.reload();
+        await p.locator('[data-testid="inbox"]').waitFor();
+        expect(asked).toEqual(['beforeunload']);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    '#15 #18: Events and Activity read a child status in the status words and an overlap with the neutral mark',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const parent = await cockpit.streams.create('human', {
+          title: 'Checkout',
+          goal: 'g',
+          project: shop.id,
+        });
+        const work = await cockpit.streams.create('human', {
+          title: 'Add CSV import',
+          goal: 'g',
+          project: shop.id,
+          parent: parent.id,
+          repo: 'api',
+        });
+        const other = await cockpit.streams.create('human', {
+          title: 'Fix rounding',
+          goal: 'g',
+          project: shop.id,
+          repo: 'api',
+        });
+        const talk = await cockpit.streams.create('human', {
+          title: 'Does import handle Excel?',
+          goal: 'g',
+          project: shop.id,
+          parent: parent.id,
+        });
+        const emit = (input: Parameters<typeof routeAndEmit>[1]) =>
+          routeAndEmit(cockpit.events, input, cockpit.streams.list());
+        // An event from before T436 still carries the stand-in "no progress line".
+        const done = await emit({
+          type: 'child_status',
+          subject: work.id,
+          payload: {
+            child: work.id,
+            title: 'Add CSV import',
+            status: 'done',
+            progress: 'no progress line',
+          },
+          by: 'daemon',
+        });
+        const replied = await emit({
+          type: 'child_status',
+          subject: talk.id,
+          payload: { child: talk.id, title: 'Does import handle Excel?', status: 'done' },
+          by: 'daemon',
+        });
+        const overlap = await emit({
+          type: 'overlap',
+          subject: work.id,
+          repo: 'api',
+          payload: { other: other.id, files: ['src/ledger.ts'] },
+          by: 'daemon',
+        });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=events`);
+        const row = (id: string) => `[data-testid="event-log"] [data-event="${id}"]`;
+        await page.locator(row(done.id)).waitFor();
+        expect(await page.locator(`${row(done.id)} .cr-lens-log-detail`).textContent()).toBe(
+          'Add CSV import is ready to merge',
+        );
+        expect(await page.locator(`${row(replied.id)} .cr-lens-log-detail`).textContent()).toBe(
+          'Does import handle Excel? replied',
+        );
+        const events = (await page.locator('[data-testid="event-log"]').textContent()) ?? '';
+        expect(events).not.toContain('no progress line');
+        expect(events).not.toContain('is done');
+        // #18: the rail's neutral two squares, no amber, never the alert triangle.
+        const glyph = page.locator(`${row(overlap.id)} .cr-lens-ev-glyph`);
+        expect(await glyph.locator('[data-icon="overlap"]').count()).toBe(1);
+        expect(await glyph.getAttribute('data-tone')).toBeNull();
+        expect(await page.locator(`${row(overlap.id)} [data-icon="alert-triangle"]`).count()).toBe(
+          0,
+        );
+
+        // The parent's Activity reads the same words; the node's own reads the overlap the same way.
+        await page.goto(`${cockpit.base}/?node=${parent.id}&tab=activity`);
+        const activity = (id: string) => `[data-testid="activity"] [data-event="${id}"]`;
+        await page.locator(activity(done.id)).waitFor();
+        expect(await page.locator(activity(done.id)).textContent()).toContain(
+          'Add CSV import is ready to merge',
+        );
+        expect(await page.locator(activity(replied.id)).textContent()).toContain(
+          'Does import handle Excel? replied',
+        );
+        await page.goto(`${cockpit.base}/?node=${work.id}&tab=activity`);
+        await page.locator(activity(overlap.id)).waitFor();
+        expect(await page.locator(`${activity(overlap.id)} [data-icon="overlap"]`).count()).toBe(1);
+        expect(
+          await page.locator(`${activity(overlap.id)} [data-icon="alert-triangle"]`).count(),
+        ).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    '#17 #29: a reply row previews what was said, with the rail’s role glyph; ⌘K lists it as "Read reply" and opens the chat',
+    async () => {
+      const reply = '**It buffers** because the parser needs the header row first.\n\nMore below.';
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'agent_text', text: reply }, { type: 'end_turn' }] },
+        {
+          steps: [
+            { type: 'agent_text', text: '## Planned the week: two nodes to start.' },
+            { type: 'end_turn' },
+          ],
+        },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const convo = await cockpit.streams.create('human', {
+          title: 'Why buffer the file?',
+          goal: 'why does the importer read the whole file?',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="inbox"]').waitFor();
+        const asked = await fetch(`${cockpit.base}/api/streams/${convo.id}/say`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ body: 'why buffer?', start: true }),
+        });
+        expect(asked.status).toBe(201);
+        const listed = page.locator(`[data-testid="reply"][data-stream="${convo.id}"]`);
+        await listed.waitFor();
+        await waitForText(
+          page,
+          `[data-testid="reply"][data-stream="${convo.id}"] [data-testid="reply-preview"]`,
+          'It buffers because the parser needs the header row first.',
+        );
+        expect(await listed.locator('.cr-reply-icon').getAttribute('data-icon')).toBe(
+          'message-square',
+        );
+        // A project root that answered (T437: an agent line after yours): its own glyph
+        // (layers, not a fork), "Finished a turn", and its reply's first line as plain words.
+        // (A root's line starts its coordinator once it has a part.)
+        await cockpit.streams.create('human', {
+          title: 'Import the file',
+          goal: 'g',
+          repo: 'demo',
+          project: shop.id,
+        });
+        const planned = await fetch(`${cockpit.base}/api/streams/${shop.root}/say`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ body: 'plan the week', start: true }),
+        });
+        expect(planned.status).toBe(201);
+        const root = page.locator(`[data-testid="reply"][data-stream="${shop.root}"]`);
+        await root.waitFor();
+        expect(await root.locator('.cr-reply-icon').getAttribute('data-icon')).toBe('layers');
+        expect(await root.locator('.cr-reply-when').textContent()).toContain('Finished a turn');
+        await waitForText(
+          page,
+          `[data-testid="reply"][data-stream="${shop.root}"] [data-testid="reply-preview"]`,
+          'Planned the week: two nodes to start.',
+        );
+        expect(await root.locator('[data-icon="git-fork"]').count()).toBe(0);
+
+        // ⌘K: "Read reply: …" in Needs me; it opens the chat, which reads it.
+        const palette = '[data-testid="command-palette"]';
+        await page.keyboard.press('Control+k');
+        const item = page.locator(
+          `${palette} [data-testid="palette-item"][data-key="reply:${convo.id}"]`,
+        );
+        await item.waitFor();
+        expect(await item.locator('.cr-palette-title').textContent()).toBe(
+          'Read reply: Why buffer the file?',
+        );
+        await page.locator(`${palette} [data-testid="palette-input"]`).fill('read reply buffer');
+        await waitForAttr(
+          page,
+          `${palette} [aria-selected="true"]`,
+          'data-key',
+          `reply:${convo.id}`,
+        );
+        await page.keyboard.press('Enter');
+        await page.locator(`[data-testid="stream-page"][data-stream="${convo.id}"]`).waitFor();
+        await page.locator('.cr-tabs [data-tab="thread"][aria-current="page"]').waitFor();
+        await page.locator('[data-view="inbox"]').click();
+        await page.locator('[data-testid="inbox"]').waitFor();
+        await listed.waitFor({ state: 'detached' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    '#22: a project’s unsaved repositories wait for you across navigation and a reload, until Cancel',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({
+          api: { path: cockpit.home },
+          web: { path: cockpit.home },
+        });
+        const shop = await cockpit.projects.create({ name: 'Shop', repos: ['api'] });
+        const other = await cockpit.streams.create('human', {
+          title: 'Research pricing',
+          goal: 'g',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${shop.root}`);
+        const web = page.locator('[data-testid="project-repo"][data-repo="web"]');
+        await web.check();
+        const bar = page.locator('[data-testid="project-save-bar"]');
+        await bar.waitFor();
+        // Somewhere else, and back: the change is still there to save.
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${other.id}"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${other.id}"]`).waitFor();
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+        await bar.waitFor();
+        expect(await web.isChecked()).toBe(true);
+        await page.reload();
+        await bar.waitFor();
+        expect(await web.isChecked()).toBe(true);
+        expect(cockpit.store.getProject(shop.id).repos).toEqual(['api']);
+        // Cancel drops it for good.
+        await page.locator('[data-testid="project-cancel"]').click();
+        await bar.waitFor({ state: 'detached' });
+        expect(await web.isChecked()).toBe(false);
+        await page.reload();
+        await page.locator('[data-testid="project-repos"]').waitFor();
+        expect(await bar.count()).toBe(0);
+        expect(await web.isChecked()).toBe(false);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    '#24: Details says nothing of delivery before a branch, offers a reviewer only with commits, and reads a finished branch as the header does',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const fresh = await cockpit.streams.create('human', {
+          title: 'Not started yet',
+          goal: 'g',
+          repo: 'demo',
+          project: shop.id,
+        });
+        // A work node in a project (a node with no project is a root of its own, which never
+        // reads "Ready to merge"), finished with a commit.
+        const done = (
+          await cockpit.streams.create('human', {
+            title: 'Export entries',
+            goal: 'g',
+            repo: 'demo',
+            project: shop.id,
+          })
+        ).id;
+        const worktree = join(cockpit.repo, '.worktrees', 's-t436-done');
+        git(['worktree', 'add', '-q', '-b', 's-t436-done', worktree, 'main'], cockpit.repo);
+        writeFileSync(join(worktree, 'export.txt'), 'export\n');
+        git(['add', '-A'], worktree);
+        git(['commit', '-q', '-m', 'export'], worktree);
+        await cockpit.streams.update('daemon', done, {
+          branch: 's-t436-done',
+          worktree,
+          agent: { status: 'done' },
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${fresh.id}`);
+        await page.locator('[data-testid="node-details"] [data-testid="sessions"]').waitFor();
+        expect(await page.locator('[data-testid="land-panel"]').count()).toBe(0);
+        expect(
+          await page
+            .locator('[data-testid="node-details"] button', { hasText: 'Ask an agent to review' })
+            .count(),
+        ).toBe(0);
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page.locator('[data-testid="node-menu"]').waitFor();
+        expect(await page.locator('[data-testid="node-menu"] [data-testid="review"]').count()).toBe(
+          0,
+        );
+        await page.keyboard.press('Escape');
+
+        await page.goto(`${cockpit.base}/?node=${done}`);
+        await waitForText(page, '[data-testid="delivery-badge"]', 'Ready to merge');
+        expect(await page.locator('[data-testid="delivery-badge"]').getAttribute('data-tone')).toBe(
+          'amber',
+        );
+        expect(await page.locator('[data-testid="node-status"]').textContent()).toContain(
+          'Ready to merge',
+        );
+        await page
+          .locator('[data-testid="node-details"] button', { hasText: 'Ask an agent to review' })
+          .waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    '#28: with a plan to approve on a coordinator, its card’s button is the one primary; Start is plain',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const node = await cockpit.streams.create('human', {
+          title: 'Show sale prices',
+          goal: 'g',
+          project: shop.id,
+        });
+        const api = await cockpit.streams.create('human', {
+          title: 'api: add salePrice',
+          goal: 'g',
+          project: shop.id,
+          parent: node.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        // No plan yet: Start is the page's primary.
+        await waitForAttr(page, '[data-testid="attach"]', 'data-variant', 'primary');
+        await cockpit.plans.write(node.id, [{ child: api.id, owns: ['prices.ts'] }], []);
+        await page.locator('[data-testid="plan-approve"]').waitFor();
+        await waitForAttr(page, '[data-testid="attach"]', 'data-variant', 'secondary');
+        expect(
+          await page.locator('[data-testid="plan-approve"]').getAttribute('data-variant'),
+        ).toBe('primary');
+        expect(await page.locator('.cr-node-hd .cr-btn[data-variant="primary"]').count()).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
