@@ -842,13 +842,14 @@ cd ~
       Applies to `Project: Shop`, **Guidance**, **Save as proposal**. Then
       **Accept** it (on its row under **To review**, or on the `Decision
       proposed` card in **Needs me**).
-- [ ] Back on Cents check: accepting the decision woke it (a Shop
-      conversation whose turn ended is woken by an accepted item, D36). Its
-      **Chat** tab has `Woke up for new knowledge` and a new session;
-      its **Activity** has a `Knowledge accepted` row that reads
-      `Seen by the agent`, and its
-      reply reacts to it ("new decision in scope: …"). A Blog node never
-      gets it.
+- [ ] Back on Cents check: you wrote the decision, so accepting it woke
+      no conversation (an accept wakes only the conversation that proposed
+      the item, Q25). Its **Activity** has a `Knowledge accepted` row that
+      reads `Not seen by the agent yet`, and no new session started.
+- [ ] Send Cents check `Does the new decision change your answer?`. Its
+      reply reacts to the decision ("new decision in scope: …"), and the
+      `Knowledge accepted` row now reads `Seen by the agent`. A Blog node
+      never gets it.
 - [ ] Its **Knowledge** tab lists the global items and the new
       decision, as the **Knowledge** screen lists them (`Decision`,
       `Project Shop`, `Guidance`), and nothing scoped to Blog.

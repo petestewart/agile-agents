@@ -264,6 +264,7 @@ export class KnowledgeService {
             kind: item.kind,
             text: item.text.slice(0, 200),
             enforcement: item.enforcement,
+            ...(item.source.node !== undefined ? { source: item.source.node } : {}),
           },
           ref: `knowledge/${item.id}.yaml`,
           by: 'human',

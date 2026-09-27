@@ -54,6 +54,8 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D41** (2026-09-26, Pete): a node created without a title gets one from a one-shot cheap LLM call (Haiku) through the user's own `claude` login, off the create path; the first-line title stands until it returns, and stays if the CLI is missing or the call fails. The daemon still holds no vendor credentials. As built in T414.
 - **D42** (2026-09-26, Pete): a conversation can be asked at any level (the Director, a project root, a coordinator, a work node) as its own node, and never reshapes the tree: a node's parts are its live children that are neither helpers nor conversations, and only parts make a node coordinating, wait for a plan or ask a coordinator first. A side conversation's status doesn't wake its parent; its conclusion goes up when the human sends it. It can grow into work in place. Widens D33 (design/projects-design.md §2). Built in T418–T422: the rule, Ask from anywhere, the parent's state in its brief, Send to parent, Turn into work.
 - **D43** (2026-09-26, to confirm): a vendor process that exits non-zero on its own (not a stop of the daemon's, not after its turn finished) crashed or refused (a login, a bad model): the node is `blocked`, its session `error`, and the thread line carries the vendor's last stderr line. Narrows cockpit-design §2.3's "exit ⇒ done", which let a first run with a logged-out vendor read as finished work ("Ready to merge", "Replied"). A clean exit (code 0) is still `done`. A vendor whose command isn't on the daemon's PATH is named before anything spawns. Built in T432.
+- **D44** (2026-09-27, Pete): Q25 answered. Accepting a knowledge item wakes only the conversation that proposed it (the item's `source.node`); every other conversation in scope gets it with its next message, and coordinators still wake as before. Narrows D36 D10; the per-item fan-out cap goes. Built in T453. Follow-up T454: behind a config setting, Jev decides whether an accepted item merits waking a conversation (does it change the answer given or settle something left open, and is the conversation still current).
+- **D45** (2026-09-27, Pete): an agent reads every registered repo it can see (every repo not private, plus private ones listing its project), not only its project's; the project's own repos are the ones it is pointed at. Agents may propose adding a repo to their node (T455).
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -2733,6 +2735,33 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** snapshot test "T452: a node's own autonomy"; control-room e2e "coordinator autonomy (T282)" (after the node's override to Organise, a held restart reads "Show sale prices is at Organise: …" and its link opens the node with Organise selected); full `bun test` 3312/0; lint and typecheck clean.
 - **Notes:** Branch T452-node-autonomy-row.
 
+### Ticket: T453 Accepted knowledge wakes only the conversation it came from (D44)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Q25 / D44: D36 D10 (T351) woke every finished conversation in an accepted item's scope, up to five per item, each a vendor turn and a reply nobody asked for.
+- **Acceptance Criteria:** `knowledge_accepted` carries `source` (the node the item came from, when it has one). A conversation with no live session wakes on it only when it is that node; any other conversation in scope keeps it pending and gets it with its next message. Coordinators, roots and work nodes are unchanged (P11). `WakeFanout` and `KNOWLEDGE_WAKE_FANOUT` are gone (one conversation per item at most).
+- **Validation Steps:** `events/wake.test.ts` T453 block; `attach/service.test.ts` "another ended conversation is not woken; your next line brings the item" (fails on the old rule: a second session starts) and "the ended conversation that proposed it is woken"; `knowledge/service.test.ts` checks `source`; walkthrough 6.4b and LIVE-CHECKLIST 6.4b follow (not woken, then read with your next message).
+- **Notes:** Branch T453-narrow-knowledge-wake.
+
+### Ticket: T454 Jev decides whether accepted knowledge wakes a conversation (D44 follow-up)
+- **Priority:** P3
+- **Status:** Todo
+- **Owner:** unassigned
+- **Scope:** Behind a config setting (off by default: T453's narrow rule), ask Jev, per conversation in an accepted item's scope, whether to wake it now. The state: the item (kind, text, scope), the conversation's question, its last reply (capped), when it last changed, and whether a newer conversation covers the same ground. The questions: does this decision change the answer given or settle something it left open; is the conversation still current (not moved on from, not covered by a newer one, not too old, not treated as finished). Pete also raised a later step: Jev reviewing threads on its own (e.g. after X minutes idle) to flag stale or settled conversations.
+- **Acceptance Criteria:** A `wake_on_knowledge: jev` style setting (Settings and config.yaml). On yes, the conversation wakes as the source does; on no, or Jev unavailable, it waits for its next message. Offline tests use `FakeClassifier`; a real Jev check via `agile rules test` or equivalent.
+- **Validation Steps:** Unit tests with `FakeClassifier` for yes / no / unavailable; the setting off keeps T453's behaviour.
+- **Notes:** Jev calls are cheap (Pete); conversation text goes through the existing scrubber.
+
+### Ticket: T455 Agents propose adding a repo to their node (D45)
+- **Priority:** P3
+- **Status:** Todo
+- **Owner:** unassigned
+- **Scope:** T445 left the `repo:<name>` proposal ref with no writer. A conversation's or worker's agent gets a verb to propose a repo for its node (name and why); it writes a `proposal` line with `ref: repo:<name>`, which shows **Add <repo>** in the cockpit. Clicking it runs Add repository in place (T205).
+- **Acceptance Criteria:** The verb, validated in `packages/shared` like the others; refused for an unknown repo, the node's own repo, or a project root; the line reads in words; the button is the only way it changes anything.
+- **Validation Steps:** Verb unit tests; a control-room e2e from the agent's proposal line to the reshaped node.
+- **Notes:** Pete agreed (a), 2026-09-27.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done
@@ -2771,7 +2800,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Q3. Whether `bus/` survives as the thread's transport or is deleted; decided in T120 by whichever is less code.
 - Q4. Whether repo docs live in `.agile-docs/` (tracked) or under the home (untracked). Plan says tracked so a repo carries its own guidance; Pete to confirm at T134. Superseded by D24: docs move to the home (T207).
 - Q5–Q24. The proposed decisions P1–P20 in `design/projects-design.md` §19 are open until Pete confirms each one as a D-entry. Tickets assume them. P17 (tracker tokens in `config.yaml`, a second credential exception) must be approved before T320.
-- Q25. D36 D10 (T351) wakes every finished conversation in an accepted item's scope, so one project-wide decision starts up to five vendor turns (audit r6 #9). T437 stopped those turns from reading as unread replies. Narrowing the wake to the conversation the item came from (its `source.node`) or a subtree scoped to it would save the turns; the rest would get the item on their next turn, as before D10. Pete to decide; the walkthrough's "Cents check" step assumes the wide wake.
+- Q25. D36 D10 (T351) wakes every finished conversation in an accepted item's scope, so one project-wide decision starts up to five vendor turns (audit r6 #9). T437 stopped those turns from reading as unread replies. Narrowing the wake to the conversation the item came from (its `source.node`) or a subtree scoped to it would save the turns; the rest would get the item on their next turn, as before D10. Pete to decide; the walkthrough's "Cents check" step assumes the wide wake. **Answered by D44 (2026-09-27): narrowed, T453.**
 
 ## 10. Discovered Issues Log
 

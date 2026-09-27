@@ -8,10 +8,10 @@
  *   (`note_child`, T287) is one of them (T290), so a child always gets its
  *   coordinator's distilled note, within the same stop rule and budget.
  * - A conversation node is woken by `human_line` and `answer`, and (D36
- *   D10, T351) by `knowledge_accepted`, so an accepted decision reaches a
- *   conversation whose turn ended at once. One item wakes at most
- *   `KNOWLEDGE_WAKE_FANOUT` conversations (`WakeFanout`); the rest get it
- *   on their next turn.
+ *   D10, narrowed by T453 / Q25) by `knowledge_accepted` only for an item
+ *   it proposed itself (the event's `source`): it hears at once that its
+ *   proposal was accepted. Every other conversation in scope gets the item
+ *   on its next turn.
  * - A project root is woken like a coordinating node once it has had a
  *   coordinator (P20, T280); before that it has no agent and never wakes.
  * - A node the human stopped is never woken; its events stay pending.
@@ -48,14 +48,6 @@ const CONVERSATION_WAKE_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEven
   'answer',
   'knowledge_accepted',
 ]);
-
-/**
- * T351: how many conversations one accepted item may wake. A global or
- * project item is routed to every live node in scope, and each woken
- * conversation is a vendor session started at once; past the cap the item
- * waits for those conversations' next turn, as it did before D36 D10.
- */
-export const KNOWLEDGE_WAKE_FANOUT = 5;
 
 /** P11's table: does an event of `type` wake a node of `role` with no live session? */
 export function wakesRole(role: NodeRole, type: RoutedEventType): boolean {
@@ -120,41 +112,13 @@ export class WakeBudget {
 }
 
 /**
- * T351: the events that would wake a conversation when only accepted
- * knowledge does (no `human_line` or `answer` among them); empty otherwise.
- * Those wakes count against the item's fan-out.
- */
-export function fanoutTriggers<E extends { type: RoutedEventType }>(
-  role: NodeRole,
-  pending: readonly E[],
-): E[] {
-  if (role !== 'conversation') return [];
-  if (pending.some((e) => e.type === 'human_line' || e.type === 'answer')) return [];
-  return pending.filter((e) => e.type === 'knowledge_accepted');
-}
-
-/** T351: wakes per accepted-knowledge event, in memory (a restart starts afresh). */
-export class WakeFanout {
-  private readonly woken = new Map<string, number>();
-  constructor(private readonly limit: number = KNOWLEDGE_WAKE_FANOUT) {}
-
-  /** Takes a wake from the first of `events` with one left; false when all are spent. */
-  take(events: readonly { id: string }[]): boolean {
-    const open = events.find((e) => (this.woken.get(e.id) ?? 0) < this.limit);
-    if (open === undefined) return false;
-    this.woken.set(open.id, (this.woken.get(open.id) ?? 0) + 1);
-    return true;
-  }
-}
-
-/**
  * The decision for a node with pending events and no live session, before
  * the budget. A coordinating node has "an agent" once it has had a worker or coordinator session.
  */
 export function wakeVerdict(
   node: Stream,
   role: NodeRole,
-  pending: readonly { type: RoutedEventType }[],
+  pending: readonly { type: RoutedEventType; payload?: Record<string, unknown> }[],
 ): Exclude<WakeVerdict, 'budget'> {
   // A project root has "an agent" once it has had a coordinator (P20).
   if (role === 'project' && !node.sessions.some((s) => s.role === 'coordinator')) {
@@ -164,5 +128,23 @@ export function wakeVerdict(
     return 'no_agent';
   }
   if (stoppedByHuman(node)) return 'stopped';
-  return pending.some((e) => wakesRole(role, e.type)) ? 'wake' : 'no_trigger';
+  return pending.some((e) => wakesRole(role, e.type) && !notItsKnowledge(node, role, e))
+    ? 'wake'
+    : 'no_trigger';
+}
+
+/**
+ * T453 (Q25): accepted knowledge wakes a conversation only when it proposed
+ * the item; another conversation in scope gets it on its next turn.
+ */
+function notItsKnowledge(
+  node: Stream,
+  role: NodeRole,
+  event: { type: RoutedEventType; payload?: Record<string, unknown> },
+): boolean {
+  return (
+    role === 'conversation' &&
+    event.type === 'knowledge_accepted' &&
+    (event.payload?.source === undefined || event.payload.source !== node.id)
+  );
 }
