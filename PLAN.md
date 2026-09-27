@@ -2782,11 +2782,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T458 A conversation knows the work in progress
 - **Priority:** P3
-- **Status:** In Progress
+- **Status:** Done
 - **Owner:** worker (manager reviews)
 - **Scope:** Pete, 2026-09-27. A conversation's brief lists the repos it can read (paths only) and, when asked about a node, that node's branch and worktree; it doesn't know what else is in flight. Add a capped "Work in progress" section: the project's open work nodes with repo, branch, worktree, status and progress line, so a question like "is anyone touching the export code?" is answered from the right worktree.
 - **Acceptance Criteria:** Capped by count and characters like the other brief sections; ids only where the agent needs them; closed and merged nodes left out.
 - **Validation Steps:** `runner/brief.test.ts` for the section and its caps.
+- **Notes:** Branch T458-wip-brief (worker; manager reviewed). A "Work in progress" section in a conversation's brief: the project's open work nodes on repos it can read (not itself or its parent), newest first, with repo, branch, worktree, statuses, when it last changed and its latest line; at most 15 nodes and 6,000 characters, then "and N more". Conversations only (a coordinator's brief already lists its parts). T458b (branch T458b-about-hidden-parts, manager): the worker found that T420's "What you were asked about" listed the parent's parts on repos the conversation can't read (titles and progress, no paths); they are now left out too. Full `bun test` 3382/0 on the merged tree.
 
 ### Ticket: T459 Bash classifier holes: input redirects, xargs, braces in write paths
 - **Priority:** P0

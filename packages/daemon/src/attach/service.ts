@@ -283,6 +283,15 @@ function projectSession(store: StateStore, id: string) {
   }
 }
 
+/** T458: the registered repos a node may read, by name (its read scope's roots). */
+function readableRepoNames(repos: ReposConfig, readRoots: readonly string[]): Set<string> {
+  return new Set(
+    Object.entries(repos)
+      .filter(([, entry]) => readRoots.includes(entry.path))
+      .map(([name]) => name),
+  );
+}
+
 /** T456: the project step of the crash settings; absent when unreadable. */
 function projectVendorFailure(store: StateStore, id: string) {
   try {
@@ -819,7 +828,7 @@ export class AttachService {
       ...(shape === 'conversation'
         ? {
             conversation: {
-              ...this.aboutParent(stream, all),
+              ...this.aboutParent(stream, all, readableRepoNames(repos, readScope.readRoots)),
               ...this.openWork(stream, all, repos, readScope.readRoots),
             },
           }
@@ -1727,7 +1736,12 @@ export class AttachService {
   }
 
   /** T420 (D42): the parent a conversation was asked under, as it stands, for its brief. */
-  private aboutParent(stream: Stream, all: readonly Stream[]): { about?: AboutParent } {
+  private aboutParent(
+    stream: Stream,
+    all: readonly Stream[],
+    /** T458b: the repos it may read; a part on any other repo is left out. */
+    readable?: ReadonlySet<string>,
+  ): { about?: AboutParent } {
     const { store, streams } = this.options;
     if (stream.parent === undefined) return {};
     const parent = all.find((s) => s.id === stream.parent);
@@ -1738,7 +1752,9 @@ export class AttachService {
     } catch (err) {
       card = { error: err instanceof Error ? err.message : String(err) };
     }
-    const parts = partsOf(parent.id, all);
+    const parts = partsOf(parent.id, all).filter(
+      (p) => readable === undefined || p.repo === undefined || readable.has(p.repo),
+    );
     const plan = this.options.plans?.get(parent.id);
     return {
       about: {
@@ -1760,11 +1776,7 @@ export class AttachService {
     readRoots: readonly string[],
   ): { work?: WipNode[] } {
     if (stream.project === undefined) return {};
-    const readable = new Set(
-      Object.entries(repos)
-        .filter(([, entry]) => readRoots.includes(entry.path))
-        .map(([name]) => name),
-    );
+    const readable = readableRepoNames(repos, readRoots);
     const { store } = this.options;
     return {
       work: openWorkFor(stream, all, readable).map((node) => {
