@@ -50,6 +50,7 @@ import {
 import { coordinatesIt, hasReplied, sendUpTarget, takeComposerFocus } from '../lib/ask';
 import {
   type NodeTab,
+  agentFailed,
   agentLabel,
   agentName,
   agentStateText,
@@ -1305,7 +1306,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     role !== 'conversation' &&
     showGoalCard({ goal: stream.goal, title: stream.title, projectRoot });
 
-  const emptyChat = !conversation && !thinking && cards.length === 0;
+  // T438 (audit r6 #4): under a failure's warning, "Tell the agent what to do" would contradict it.
+  const emptyChat = !conversation && !thinking && cards.length === 0 && !agentFailed(page.thread);
   // The open questions whose own line the chat shows (an older one may be above the loaded lines).
   const askedInChat = new Set(
     page.thread

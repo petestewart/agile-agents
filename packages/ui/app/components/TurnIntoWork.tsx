@@ -139,7 +139,9 @@ export function TurnIntoWorkDialog({
     project !== undefined && repo !== '' && !(project.repos ?? []).includes(repo);
   // T435 (#3): under a work node, a repository would make it coordinate this.
   const coordinates = coordinatesIt(parent);
-  const asksWhere = coordinates !== undefined && repo !== '';
+  // T438: "Next to" needs somewhere above the parent; with nowhere, the consequence still shows.
+  const asksWhere = coordinates !== undefined && repo !== '' && parent?.parent !== undefined;
+  const nestsOnly = coordinates !== undefined && repo !== '' && !asksWhere;
   const nextTo = asksWhere && where === 'next-to';
   const renames = !keepsTitle(title, current);
 
@@ -256,10 +258,16 @@ export function TurnIntoWorkDialog({
         <Field
           label="Repository"
           hint={
-            joinsProject ? (
-              <span data-testid="turn-into-work-joins">
-                Also adds {repo} to {projectName}’s repositories.
-              </span>
+            joinsProject || nestsOnly ? (
+              <>
+                {joinsProject && (
+                  <span data-testid="turn-into-work-joins">
+                    Also adds {repo} to {projectName}’s repositories.
+                  </span>
+                )}
+                {joinsProject && nestsOnly && ' '}
+                {nestsOnly && <span data-testid="turn-into-work-nests">{coordinates}</span>}
+              </>
             ) : undefined
           }
         >
