@@ -2,8 +2,9 @@
  * T360: what a node's status *reads as* (design/cockpit-ui.md §6). One
  * mapping from a cockpit row (or a stream record shaped like one) to a key,
  * a word and a tone, so the rail, the page header, the lenses and the cards
- * never disagree about what a node is doing. `streamDot` (lib/streams.ts)
- * stays as it was for the dot's `data-dot` colour the e2e suites read.
+ * never disagree about what a node is doing. T447: the dot's `data-dot`
+ * colour follows the key (`statusDot` in lib/streams.ts), and a coordinating
+ * node's key rolls up its parts (`withParts`).
  *
  * Pure: no DOM, covered by plain `bun test`.
  */
@@ -57,7 +58,27 @@ export type StatusInput = Pick<CockpitStreamRow, 'agent_status' | 'human_status'
     stopped?: true;
     /** Unsatisfied "waits on" links (the row's `waits_on`). */
     waits_on?: readonly string[];
+    /** T447: a coordinating node's (or a project root's) parts, rolled up by `withParts`. */
+    parts?: PartsRollup;
   };
+
+/**
+ * T447 (audit r7 #2): a node's parts at a glance — its children that are
+ * work or coordinating (not conversations), each by its own status, which
+ * for a coordinating part is itself rolled up. Derived in the UI from the
+ * frame's rows (`withParts`), never stored.
+ */
+export interface PartsRollup {
+  /** Every part, closed ones included. */
+  total: number;
+  /** Merged, or a coordinating part whose own parts are all finished. */
+  merged: number;
+  closed: number;
+  /** Parts not merged or closed. */
+  open: number;
+  /** The most urgent open part: the node reads as it does. */
+  lead?: { id: string; title: string; key: NodeStatusKey };
+}
 
 const STATUS: Record<NodeStatusKey, Omit<NodeStatus, 'key'>> = {
   merged: { label: 'Merged', tone: 'purple', hint: 'Its work is merged. Nothing left to do.' },
@@ -132,7 +153,12 @@ function readyOrEmpty(row: StatusInput): 'ready' | 'no_changes' | 'merged_outsid
   return 'ready';
 }
 
-export function statusKey(row: StatusInput): NodeStatusKey {
+/**
+ * T447: what the node itself reads as, leaving its parts out: its own
+ * question, agent and branch. The Delivery panel reads this (a part's
+ * merge is not the coordinator's); everything else reads `statusKey`.
+ */
+export function ownStatusKey(row: StatusInput): NodeStatusKey {
   if (row.human_status === 'landed') return 'merged';
   if (row.human_status === 'closed') return 'closed';
   // T437: a plan, a gate or a proposal of this node's waiting on you is your move too.
@@ -159,8 +185,183 @@ export function statusKey(row: StatusInput): NodeStatusKey {
   return 'idle';
 }
 
+/**
+ * T447 (audit r7 #2): how urgent a status is when a node's own state and its
+ * parts' are weighed together — Needs you > Blocked > Ready to merge >
+ * Working > Not started. Finished parts don't take part.
+ */
+const URGENCY: Record<NodeStatusKey, number> = {
+  needs_you: 0,
+  blocked: 1,
+  ready: 2,
+  no_changes: 2,
+  merged_outside: 2,
+  working: 3,
+  pr_open: 4,
+  waiting: 5,
+  not_started: 6,
+  stopped: 7,
+  idle: 8,
+  done: 9,
+  merged: 10,
+  closed: 10,
+};
+
+/** The node's own states that still count once it has parts: it asks, is stuck, works, or its branch waits. */
+const OWN_COUNTS: ReadonlySet<NodeStatusKey> = new Set([
+  'needs_you',
+  'blocked',
+  'ready',
+  'no_changes',
+  'merged_outside',
+  'working',
+  'pr_open',
+  'waiting',
+]);
+
+/** Merged, closed, or (a coordinating part) done: nothing left to do there. */
+export function isFinishedKey(key: NodeStatusKey): boolean {
+  return key === 'merged' || key === 'closed' || key === 'done';
+}
+
+/**
+ * T447 (audit r7 #2): a coordinating node (or a project root) with parts is
+ * Done only when every part is merged or closed. Until then it reads as the
+ * most urgent of its own state and its open parts'. Merged and closed stay
+ * its own; a node without parts reads as before.
+ */
+function rolledUp(own: NodeStatusKey, parts: PartsRollup | undefined): NodeStatusKey {
+  if (parts === undefined || parts.total === 0) return own;
+  if (own === 'merged' || own === 'closed') return own;
+  const mine = OWN_COUNTS.has(own) ? own : undefined;
+  const lead = parts.lead?.key;
+  if (lead === undefined) return mine ?? 'done';
+  if (mine === undefined) return lead;
+  return URGENCY[lead] < URGENCY[mine] ? lead : mine;
+}
+
+export function statusKey(row: StatusInput): NodeStatusKey {
+  return rolledUp(ownStatusKey(row), row.parts);
+}
+
+/** T447: the status comes from a part (the lead), not from the node itself. */
+export function statusFromPart(row: StatusInput): boolean {
+  const lead = row.parts?.lead;
+  if (lead === undefined) return false;
+  const own = ownStatusKey(row);
+  return statusKey(row) === lead.key && !(OWN_COUNTS.has(own) && own === lead.key);
+}
+
+const PART_HINT: Partial<Record<NodeStatusKey, (title: string) => string>> = {
+  needs_you: (t) => `A part waits on you: ${t}.`,
+  blocked: (t) => `A part is stuck: ${t}.`,
+  ready: (t) => `A part is ready to merge: ${t}.`,
+  no_changes: (t) => `A part finished with nothing to merge: ${t}.`,
+  merged_outside: (t) => `A part is already merged outside the cockpit: ${t}.`,
+  working: (t) => `Its parts are working (${t} among them).`,
+  pr_open: (t) => `A part's pull request is open: ${t}.`,
+  waiting: (t) => `Its open parts wait on a plan or another node (${t} among them).`,
+  not_started: (t) => `Its open parts haven't started (${t} among them).`,
+  stopped: (t) => `Its open parts are stopped (${t} among them).`,
+  idle: (t) => `Its open parts are idle (${t} among them).`,
+};
+
+/** "2 of 4 merged · waiting for web part": a coordinating node's parts in one line. */
+export function partsSummary(parts: PartsRollup | undefined): string | undefined {
+  if (parts === undefined || parts.total === 0) return undefined;
+  const counted = parts.total - parts.closed;
+  const out = [`${parts.merged} of ${counted} merged`];
+  if (parts.closed > 0) out.push(`${parts.closed} closed`);
+  const lead = parts.lead;
+  if (lead !== undefined) {
+    const more = parts.open > 1 ? ` and ${parts.open - 1} more` : '';
+    switch (lead.key) {
+      case 'needs_you':
+        out.push(`${lead.title} needs you`);
+        break;
+      case 'blocked':
+        out.push(`${lead.title} is blocked`);
+        break;
+      case 'ready':
+        out.push(`${lead.title} is ready to merge`);
+        break;
+      default:
+        out.push(`waiting for ${lead.title}${more}`);
+    }
+  } else {
+    out.push('every part finished');
+  }
+  return out.join(' · ');
+}
+
+type PartRow = StatusInput & Pick<CockpitStreamRow, 'id' | 'title' | 'parent' | 'role'>;
+
+/** A child that is one of its parent's parts: work or coordinating, not a conversation. */
+function isPart(row: Pick<CockpitStreamRow, 'role'>): boolean {
+  return row.role === 'work' || row.role === 'coordinating';
+}
+
+/**
+ * T447 (audit r7 #2): the rows with each coordinating node's and project
+ * root's `parts` rolled up, bottom-up, so every place that reads a row's
+ * status (the rail, the header, the Overview, Children) reads the same
+ * honest one. Rows without parts come back as they were (same object).
+ */
+export function withParts<R extends PartRow>(rows: readonly R[]): R[] {
+  const kids = new Map<string, R[]>();
+  for (const row of rows) {
+    if (row.parent === undefined || !isPart(row)) continue;
+    const list = kids.get(row.parent) ?? [];
+    list.push(row);
+    kids.set(row.parent, list);
+  }
+  if (kids.size === 0) return [...rows];
+  const done = new Map<string, R>();
+  const visiting = new Set<string>();
+  const resolve = (row: R): R => {
+    const known = done.get(row.id);
+    if (known !== undefined) return known;
+    const children = (row.role === 'coordinating' || row.role === 'project') && kids.get(row.id);
+    if (!children || visiting.has(row.id)) {
+      done.set(row.id, row);
+      return row;
+    }
+    visiting.add(row.id);
+    const parts: PartsRollup = { total: 0, merged: 0, closed: 0, open: 0 };
+    let leadRank = Number.POSITIVE_INFINITY;
+    for (const child of children) {
+      const part = resolve(child);
+      const key = statusKey(part);
+      parts.total += 1;
+      if (key === 'closed') parts.closed += 1;
+      else if (key === 'merged' || key === 'done') parts.merged += 1;
+      else {
+        parts.open += 1;
+        if (URGENCY[key] < leadRank) {
+          leadRank = URGENCY[key];
+          // A coordinating part that reads as one of its own parts names that one: the node to open.
+          const deeper = statusFromPart(part) ? part.parts?.lead : undefined;
+          parts.lead = deeper ?? { id: child.id, title: child.title, key };
+        }
+      }
+    }
+    visiting.delete(row.id);
+    const out = { ...row, parts };
+    done.set(row.id, out);
+    return out;
+  };
+  return rows.map(resolve);
+}
+
 export function nodeStatus(row: StatusInput): NodeStatus {
   const key = statusKey(row);
+  if (statusFromPart(row) && row.parts?.lead !== undefined) {
+    const hint = PART_HINT[key]?.(row.parts.lead.title);
+    if (hint !== undefined) return { key, ...STATUS[key], hint };
+  }
+  if (key === 'done' && row.parts !== undefined && row.parts.total > 0) {
+    return { key, ...STATUS.done, hint: 'Every part is merged or closed.' };
+  }
   // T374: a conversation goes on after a turn: its agent replied, it isn't "done".
   if (key === 'done' && row.role === 'conversation') {
     return {

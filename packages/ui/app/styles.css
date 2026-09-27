@@ -636,7 +636,8 @@ legend {
 .cr-dot[data-tone="purple"] {
   background: var(--purple);
 }
-.cr-dot[data-status="ready"] {
+.cr-dot[data-status="ready"],
+.cr-dot[data-status="needs_you"] {
   background: var(--amber);
 }
 .cr-dot[data-status="done"] {
@@ -1680,6 +1681,22 @@ ul.cr-error {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* T447 (audit r7 #20): a long title gives way in the middle; its end always shows. */
+.cr-tree-row .title[data-split] {
+  display: flex;
+  min-width: 0;
+}
+.cr-tree-row .title-head {
+  flex: 0 1 auto;
+  min-width: 1.5em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+.cr-tree-row .title-tail {
+  flex: none;
+  white-space: pre;
 }
 .cr-role {
   display: inline-flex;
@@ -3283,6 +3300,19 @@ input[type="checkbox"].cr-switch:focus-visible {
 .cr-meta-item .cr-icon {
   color: var(--text-faint);
 }
+/* T447: a coordinating node's parts give way first on a narrow header… */
+.cr-node-parts-wrap {
+  display: flex;
+  align-items: center;
+  flex: 0 1000 auto;
+  gap: 6px;
+  min-width: 0;
+}
+.cr-node-parts {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .cr-meta-branch {
   flex: 0 1 auto;
   min-width: 0;
@@ -3474,6 +3504,19 @@ input[type="checkbox"].cr-switch:focus-visible {
   font-size: var(--text-sm);
   color: var(--text-faint);
   text-align: center;
+}
+/* T447 (audit r7 #15): a long thread renders its newest rows; this loads the earlier ones. */
+.cr-thread-earlier {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 14px;
+  list-style: none;
+}
+.cr-thread-earlier .cr-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-sm);
 }
 .cr-goal-card {
   position: relative;
@@ -4735,6 +4778,11 @@ span.cr-answering-q {
   color: var(--accent-fg);
   text-decoration: underline;
 }
+.cr-child-parts {
+  margin-top: 2px !important;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
 .cr-child-doing {
   margin-top: 2px !important;
   font-size: var(--text-sm);
@@ -5751,6 +5799,17 @@ span.cr-answering-q {
     grid-area: meta;
     margin-top: 2px;
   }
+  /* …and on a phone take a line of their own. */
+  .cr-node-meta-line:has(.cr-node-parts-wrap) {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+  .cr-node-parts-wrap {
+    flex: 1 1 100%;
+  }
+  .cr-node-parts-wrap > .cr-meta-sep {
+    display: none;
+  }
   .cr-node-tools {
     grid-area: tools;
     padding-top: 0;
@@ -6300,6 +6359,89 @@ button.cr-ov-fold:hover {
   white-space: nowrap;
 }
 
+/* T447 (audit r7 #19): a branch per top-level node; its nodes nest under it, and it folds. */
+.cr-ov-nodes-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.cr-ov-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px 0 8px;
+  color: var(--text-faint);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.cr-ov-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-weak);
+}
+.cr-ov-search input {
+  width: 150px;
+  min-width: 0;
+  padding: 0;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text);
+  background: none;
+  border: 0;
+  outline: none;
+}
+.cr-ov-search input::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+.cr-ov-branch-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cr-ov-li {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.cr-ov-li > .cr-ov-row {
+  flex: 1;
+  min-width: 0;
+}
+.cr-ov-branch-fold {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 28px;
+  padding: 0;
+  color: var(--text-faint);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+button.cr-ov-branch-fold:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+/* Its nodes: indented past the chevron, with a guide line. */
+.cr-ov-li[data-nested] {
+  margin-left: 32px;
+  border-left: 1px solid var(--border);
+}
+.cr-ov-branch[data-open="true"] + .cr-ov-branch,
+.cr-ov-branch + .cr-ov-branch[data-open="true"] {
+  margin-top: 6px;
+}
+.cr-ov-branch-sum {
+  margin-left: 10px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
 /* -- repos and recent activity: side by side when there is room */
 .cr-ov-pair {
   display: grid;
@@ -6454,6 +6596,12 @@ div.cr-ov-ev:hover {
   }
   .cr-ov-callout {
     flex-wrap: wrap;
+  }
+  .cr-ov-li[data-nested] {
+    margin-left: 12px;
+  }
+  .cr-ov-search input {
+    width: 100px;
   }
 }
 

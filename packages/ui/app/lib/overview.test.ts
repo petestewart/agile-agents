@@ -16,6 +16,7 @@ import {
   overviewCounts,
   overviewGroupOf,
   overviewGroups,
+  overviewSections,
   overviewStatus,
   overviewSummary,
   pathUnder,
@@ -23,6 +24,7 @@ import {
   projectRepoNames,
   recentProjectEvents,
 } from './overview';
+import { withParts } from './status';
 import { LEGEND_ORDER } from './tree';
 
 function row(id: string, extra: Partial<CockpitStreamRow> = {}): CockpitStreamRow {
@@ -335,5 +337,95 @@ describe('recent events', () => {
     // Nothing new: the same array.
     expect(recentProjectEvents(first, [e4, e3, e2], 'P-1', nodes, 2)).toBe(first);
     expect(recentProjectEvents([], [], 'P-1', nodes)).toEqual([]);
+  });
+});
+
+describe('T447 (audit r7 #19): grouped by top-level node, folded, filtered', () => {
+  // A project: an epic with three parts (one asks), a finished epic, and two loose nodes.
+  const rows = withParts([
+    ROOT,
+    row('epic', {
+      parent: 'root',
+      role: 'coordinating',
+      agent_status: 'done',
+      title: 'Checkout v2',
+    }),
+    row('schema', {
+      parent: 'epic',
+      title: 'Schema change for checkout v2',
+      agent_status: 'question',
+    }),
+    row('form', { parent: 'epic', title: 'Web form for checkout v2', agent_status: 'working' }),
+    row('tests', { parent: 'epic', title: 'Unit tests for checkout v2', never_started: true }),
+    row('old', { parent: 'root', role: 'coordinating', agent_status: 'done', title: 'Search' }),
+    row('idx', { parent: 'old', title: 'Index for search', human_status: 'landed' }),
+    row('loose', { parent: 'root', title: 'Fix the footer', agent_status: 'done' }),
+    row('talk', {
+      parent: 'root',
+      role: 'conversation',
+      title: 'Which provider?',
+      never_started: true,
+    }),
+  ]);
+  const nodes = projectNodes(rows, 'root');
+  const shape = (sections: ReturnType<typeof overviewSections<CockpitStreamRow>>) =>
+    sections.map((s) => [
+      s.key,
+      s.count,
+      s.branches.map((b) => [b.row.id, b.children.map((c) => c.id)]),
+    ]);
+
+  test('each top-level node heads its branch, under the group it reads as (a part asks: Your move)', () => {
+    const sections = overviewSections(nodes, 'root');
+    expect(shape(sections)).toEqual([
+      [
+        'you',
+        5,
+        [
+          ['epic', ['schema', 'form', 'tests']],
+          ['loose', []],
+        ],
+      ],
+      ['not_running', 1, [['talk', []]]],
+      ['finished', 2, [['old', ['idx']]]],
+    ]);
+    const epic = sections[0]?.branches[0];
+    expect(epic?.summary).toBe('1 needs you · 1 working · 1 not started');
+    expect(sections[0]?.branches[1]?.summary).toBeUndefined();
+  });
+
+  test('the counts count the parts, not the coordinator that reads as one of them', () => {
+    expect(overviewCounts(nodes).map((c) => c.text)).toEqual([
+      '1 needs you',
+      '1 ready to merge',
+      '1 working',
+      '2 not started',
+      '1 done',
+      '1 merged',
+    ]);
+    expect(
+      overviewCounts(nodes)
+        .find((c) => c.status === 'not_started')
+        ?.rows.map((r) => r.id),
+    ).toEqual(['tests', 'talk']);
+  });
+
+  test('a count lists its nodes on their own, wherever they sit', () => {
+    expect(shape(overviewSections(nodes, 'root', { only: 'needs_you' }))).toEqual([
+      ['you', 1, [['schema', []]]],
+    ]);
+  });
+
+  test('the filter keeps matching nodes under their top-level node; a matching head keeps its branch', () => {
+    expect(shape(overviewSections(nodes, 'root', { query: 'form' }))).toEqual([
+      ['you', 2, [['epic', ['form']]]],
+    ]);
+    expect(shape(overviewSections(nodes, 'root', { query: 'search' }))).toEqual([
+      ['finished', 2, [['old', ['idx']]]],
+    ]);
+    expect(shape(overviewSections(nodes, 'root', { query: 'CHECKOUT unit' }))).toEqual([
+      ['you', 2, [['epic', ['tests']]]],
+    ]);
+    expect(overviewSections(nodes, 'root', { query: 'nothing like it' })).toEqual([]);
   });
 });

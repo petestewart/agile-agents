@@ -8715,23 +8715,30 @@ describe('project overview (Playwright e2e, T387)', () => {
           await page.locator(`${tabs}[data-tab="overview"]`).getAttribute('aria-current'),
         ).toBe('page');
 
-        // T424: the root's agent never ran: it reads Not started, as its Details say.
+        // T424: the root's agent never ran, as its Details say. T447 (audit r7 #2): a root with
+        // parts reads as its most urgent part (Add salePrice is ready), and says so in words.
         expect(
           await page
             .locator('[data-testid="stream-page"] [data-testid="node-status"]')
             .getAttribute('data-status'),
-        ).toBe('not_started');
+        ).toBe('ready');
         expect(
           await page
             .locator('[data-testid="stream-page"] [data-testid="stream-status"]')
             .textContent(),
         ).toContain('Agent not started');
         expect(
+          await page
+            .locator('[data-testid="stream-page"] [data-testid="node-parts"]')
+            .textContent(),
+        ).toBe('1 of 3 merged · Add salePrice is ready to merge');
+        expect(
           await page.locator(`${tree} [data-stream="${shop.root}"]`).getAttribute('data-status'),
-        ).toBe('not_started');
+        ).toBe('ready');
 
-        // The counts, your move first: T424, one status each, with that status's own dot and word
-        // (the coordinating "Show sale prices" never ran, so it is Not started, not Idle).
+        // The counts, your move first: T424, one status each, with that status's own dot and word.
+        // T447: the coordinating "Show sale prices" reads as its working part, so it is not
+        // counted again (the part is).
         const counts = `${overview} [data-testid="overview-count"]`;
         await waitForCount(page, counts, 6);
         const chips = await page
@@ -8748,12 +8755,13 @@ describe('project overview (Playwright e2e, T387)', () => {
           ['needs_you', 'you', '1 needs you', 'needs_you'],
           ['ready', 'you', '1 ready to merge', 'ready'],
           ['working', 'in_progress', '1 working', 'working'],
-          ['not_started', 'not_running', '2 not started', 'not_started'],
+          ['not_started', 'not_running', '1 not started', 'not_started'],
           ['merged', 'finished', '1 merged', 'merged'],
           ['closed', 'finished', '1 closed', 'closed'],
         ]);
 
         // The nodes: your move, in progress, not running; merged and closed folded under Finished.
+        // T447: by top-level node, Show sale prices heading its part.
         const rows = `${overview} [data-testid="overview-node"]`;
         const shown = (): Promise<Array<string | null>> =>
           page
@@ -8762,15 +8770,19 @@ describe('project overview (Playwright e2e, T387)', () => {
           Promise.resolve([]);
         const showing = (what: string, ids: string[]): Promise<void> =>
           waitUntilAsync(what, async () => (await shown()).join() === ids.join());
-        expect((await shown()).slice(0, 3)).toEqual([asks.id, ready.id, working.id]);
-        expect(new Set((await shown()).slice(3))).toEqual(new Set([feature.id, fresh.id]));
+        expect(await shown()).toEqual([asks.id, ready.id, feature.id, working.id, fresh.id]);
         const row = (id: string): string => `${rows}[data-stream="${id}"]`;
         expect(await page.locator(`${row(ready.id)} .cr-status-pill`).textContent()).toBe(
           'Ready to merge',
         );
         expect(
           await page.locator(`${row(working.id)} [data-testid="overview-node-path"]`).textContent(),
-        ).toBe('Show sale prices › Show the sale badge');
+        ).toBe('Show the sale badge');
+        expect(
+          await page
+            .locator(`${row(feature.id)} [data-testid="overview-branch-summary"]`)
+            .textContent(),
+        ).toBe('1 working');
         expect(
           await page
             .locator(`${row(working.id)} [data-testid="overview-node-agent"]`)
@@ -8782,8 +8794,8 @@ describe('project overview (Playwright e2e, T387)', () => {
         await page.locator(row(closed.id)).waitFor({ state: 'visible' });
         expect((await shown()).slice(5)).toEqual([merged.id, closed.id]);
 
-        // T424 (finding 16): the counts are the list's groups — each group holds exactly its
-        // counts' statuses, as many rows of each as the count says, and its heading adds them up.
+        // T424 (finding 16): the groups in order, each heading adding up its rows. T447: a
+        // branch sits in the group its top-level node reads as, its nodes under it.
         const groups = await page
           .locator(`${overview} [data-testid="overview-group"]`)
           .evaluateAll((els) =>
@@ -8795,20 +8807,13 @@ describe('project overview (Playwright e2e, T387)', () => {
               ),
             })),
           );
-        expect(groups.map((g) => g.group)).toEqual([
-          'you',
-          'in_progress',
-          'not_running',
-          'finished',
+        expect(groups.map((g) => [g.group, g.statuses])).toEqual([
+          ['you', ['needs_you', 'ready']],
+          ['in_progress', ['working', 'working']],
+          ['not_running', ['not_started']],
+          ['finished', ['merged', 'closed']],
         ]);
-        for (const g of groups) {
-          const mine = chips.filter((c) => c[1] === g.group);
-          const tally = mine.map((c) => `${c[0]}:${Number.parseInt(String(c[2]), 10)}`);
-          expect(
-            [...new Set(g.statuses)].map((s) => `${s}:${g.statuses.filter((x) => x === s).length}`),
-          ).toEqual(tally);
-          expect(Number(g.n)).toBe(g.statuses.length);
-        }
+        for (const g of groups) expect(Number(g.n)).toBe(g.statuses.length);
 
         // A count filters the list to exactly its rows; again (or Show all) shows everything.
         for (const [status, , text] of chips) {
@@ -10174,6 +10179,303 @@ describe('views and polish (Playwright e2e, T436, audit r6)', () => {
           await page.locator('[data-testid="plan-approve"]').getAttribute('data-variant'),
         ).toBe('primary');
         expect(await page.locator('.cr-node-hd .cr-btn[data-variant="primary"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T447 (audit r7): honest coordinator status, and scale ---------------
+
+describe('honest coordinator status, and scale (Playwright e2e, T447)', () => {
+  browserTest(
+    '#2/#9: a coordinator reads as its most urgent part, in its header, the rail and the Overview, and is Done only when every part is merged or closed',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home }, web: { path: cockpit.home } });
+        const shop = await cockpit.projects.create({ name: 'Shop', repos: ['api', 'web'] });
+        const sale = await cockpit.streams.create('human', {
+          title: 'Show sale prices',
+          goal: 'g',
+          project: shop.id,
+          parent: shop.root,
+        });
+        const api = await cockpit.streams.create('human', {
+          title: 'api part',
+          goal: 'g',
+          project: shop.id,
+          parent: sale.id,
+          repo: 'api',
+        });
+        const web = await cockpit.streams.create('human', {
+          title: 'web part',
+          goal: 'g',
+          project: shop.id,
+          parent: sale.id,
+          repo: 'web',
+        });
+        // The coordinator's turn ended; one part works, the other never started.
+        await cockpit.streams.update('daemon', sale.id, { agent: { status: 'done' } });
+        await cockpit.streams.update('daemon', api.id, { agent: { status: 'working' } });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${sale.id}`);
+        const pill = '[data-testid="stream-page"] [data-testid="node-status"]';
+        const row = `[data-testid="stream-tree"] [data-stream="${sale.id}"]`;
+        const parts = '[data-testid="stream-page"] [data-testid="node-parts"]';
+        await waitForAttr(page, pill, 'data-status', 'working');
+        await waitForAttr(page, row, 'data-status', 'working');
+        await waitForText(page, parts, '0 of 2 merged · waiting for api part and 1 more');
+        expect(await page.locator(`${pill} .cr-dot`).getAttribute('data-dot')).toBe('blue');
+
+        // A part asks: the coordinator needs you, amber in the pill and the rail.
+        await cockpit.streams.update('daemon', api.id, { agent: { status: 'question' } });
+        await waitForAttr(page, pill, 'data-status', 'needs_you');
+        await waitForText(page, parts, '0 of 2 merged · api part needs you');
+        expect(await page.locator(`${pill} .cr-dot`).getAttribute('data-dot')).toBe('amber');
+        await waitForAttr(page, `${row} .cr-dot`, 'data-dot', 'amber');
+
+        // The Overview files it under Your move, heading its parts, never under Finished.
+        await page.goto(`${cockpit.base}/?node=${shop.root}`);
+        const overview = '[data-testid="project-overview"]';
+        const saleBranch = `[data-testid="overview-branch"][data-stream="${sale.id}"]`;
+        const branch = `${overview} ${saleBranch}`;
+        await page.locator(branch).waitFor();
+        expect(
+          await page
+            .locator(`${overview} [data-testid="overview-group"]`, {
+              has: page.locator(saleBranch),
+            })
+            .getAttribute('data-group'),
+        ).toBe('you');
+        await waitForText(
+          page,
+          `${branch} [data-testid="overview-branch-summary"]`,
+          '1 needs you · 1 not started',
+        );
+        expect(
+          await page
+            .locator(`${branch} [data-testid="overview-node"]`)
+            .evaluateAll((els) => els.map((el) => el.getAttribute('data-stream'))),
+        ).toEqual([sale.id, api.id, web.id]);
+        // The counts count the part that asks, not the coordinator that reads as it.
+        await waitForText(
+          page,
+          `${overview} [data-testid="overview-count"][data-status="needs_you"]`,
+          '1 needs you',
+        );
+
+        // Both parts finish: merged, and closed. Only now is the coordinator Done.
+        await cockpit.streams.update('daemon', api.id, {
+          agent: { status: 'done' },
+          human: { status: 'landed' },
+        });
+        await cockpit.streams.close('human', web.id);
+        await page.goto(`${cockpit.base}/?node=${sale.id}`);
+        await waitForAttr(page, pill, 'data-status', 'done');
+        await waitForText(page, parts, '1 of 1 merged · 1 closed · every part finished');
+        await page.goto(`${cockpit.base}/?node=${shop.root}`);
+        await page.locator(`${overview} [data-testid="overview-done-toggle"]`).click();
+        expect(
+          await page
+            .locator(`${overview} [data-testid="overview-group"]`, {
+              has: page.locator(saleBranch),
+            })
+            .getAttribute('data-group'),
+        ).toBe('finished');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    '#19/#20: a big Overview groups by top-level node (folded past 30 nodes), filters with /, and the rail keeps alike titles apart',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home } });
+        const plat = await cockpit.projects.create({ name: 'Platform', repos: ['api'] });
+        const epics = ['Onboarding emails', 'Data retention', 'Checkout v2', 'Search relevance'];
+        const tasks = ['Schema change', 'Migration script', 'API endpoint', 'Web form'];
+        const ids: Record<string, string> = {};
+        for (const epic of epics) {
+          const e = await cockpit.streams.create('human', {
+            title: epic,
+            goal: 'g',
+            project: plat.id,
+            parent: plat.root,
+          });
+          ids[epic] = e.id;
+          for (const task of tasks) {
+            const title = `${task} for ${epic.toLowerCase()}`;
+            const t = await cockpit.streams.create('human', {
+              title,
+              goal: 'g',
+              project: plat.id,
+              parent: e.id,
+              repo: 'api',
+            });
+            ids[title] = t.id;
+          }
+        }
+        for (let i = 0; i < 12; i++) {
+          await cockpit.streams.create('human', {
+            title: `Question ${i}`,
+            goal: 'g',
+            project: plat.id,
+            parent: plat.root,
+          });
+        }
+        page = await openPage();
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await page.goto(`${cockpit.base}/?node=${plat.root}`);
+        const overview = '[data-testid="project-overview"]';
+        const rows = `${overview} [data-testid="overview-node"]`;
+        const shown = async (): Promise<Array<string | null>> =>
+          (await page
+            ?.locator(rows)
+            .evaluateAll((els) => els.map((el) => el.getAttribute('data-stream')))) ?? [];
+        // 32 nodes: every branch starts folded, each head with its counts.
+        await waitForCount(page, `${overview} [data-testid="overview-branch"]`, 16);
+        expect(await page.locator(rows).count()).toBe(16);
+        const epic = `${overview} [data-testid="overview-branch"][data-stream="${ids['Data retention']}"]`;
+        expect(await page.locator(epic).getAttribute('data-open')).toBe('false');
+        await waitForText(page, `${epic} [data-testid="overview-branch-summary"]`, '4 not started');
+        await page.locator(`${epic} [data-testid="overview-branch-toggle"]`).click();
+        await waitForAttr(page, epic, 'data-open', 'true');
+        expect(await page.locator(`${epic} [data-testid="overview-node"]`).count()).toBe(5);
+
+        // `/` with the Overview focused goes to its filter, not the rail's.
+        await page.locator(`${overview} .cr-ov-h`).first().click();
+        await page.keyboard.press('/');
+        await waitUntilAsync(
+          'the Overview filter to have focus',
+          async () =>
+            (await page?.evaluate(`document.activeElement?.getAttribute('data-testid')`)) ===
+            'overview-filter',
+        );
+        await page.keyboard.type('schema retention');
+        await waitUntilAsync('only the matching node, under its epic', async () => {
+          const now = await shown();
+          return (
+            now.join() === [ids['Data retention'], ids['Schema change for data retention']].join()
+          );
+        });
+        await page.keyboard.press('Escape');
+        await waitForCount(page, `${overview} [data-testid="overview-branch"]`, 16);
+        expect(await page.locator('[data-testid="overview-filter"]').inputValue()).toBe('');
+
+        // The rail: alike titles keep their distinct end; the whole title is the row's.
+        const railRow = (title: string) =>
+          `[data-testid="stream-tree"] [data-stream="${ids[title]}"]`;
+        for (const [title, tail] of [
+          ['Schema change for onboarding emails', 'emails'],
+          ['Schema change for data retention', 'data retention'],
+        ] as const) {
+          const r = railRow(title);
+          await page.locator(r).waitFor();
+          expect(await page.locator(`${r} .title`).textContent()).toBe(title);
+          expect(await page.locator(`${r} .title-tail`).textContent()).toBe(tail);
+          expect(await page.locator(r).getAttribute('title')).toContain(title);
+          // The tail is drawn inside the row, not cut off.
+          const [tailBox, rowBox] = await Promise.all([
+            page.locator(`${r} .title-tail`).boundingBox(),
+            page.locator(r).boundingBox(),
+          ]);
+          expect(tailBox !== null && rowBox !== null).toBe(true);
+          if (tailBox && rowBox) {
+            expect(tailBox.width).toBeGreaterThan(10);
+            expect(tailBox.x + tailBox.width).toBeLessThanOrEqual(rowBox.x + rowBox.width + 1);
+          }
+        }
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    '#15: a long thread renders its newest rows, loads earlier ones, and typing stays quick; the draft survives a reload',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ billing: { path: cockpit.home } });
+        const plat = await cockpit.projects.create({ name: 'Platform', repos: ['billing'] });
+        const node = await cockpit.streams.create('human', {
+          title: 'Refactor the invoice renderer',
+          goal: 'g',
+          project: plat.id,
+          repo: 'billing',
+        });
+        const t0 = Date.now() - 3_600_000;
+        for (let i = 0; i < 162; i++) {
+          await cockpit.store.appendThreadEntry(node.id, {
+            ts: new Date(t0 + i * 10_000).toISOString(),
+            by: 'human',
+            kind: 'line',
+            body: `Next: step ${i}.`,
+          });
+          await cockpit.store.appendThreadEntry(node.id, {
+            ts: new Date(t0 + i * 10_000 + 5_000).toISOString(),
+            by: 'agent:01ARZ3NDEKTSV4RRFFQ69G5FAV',
+            kind: 'line',
+            body: `Done with step ${i}: moved \`formatLine${i}()\` into \`layout.ts\`.\n\n\`\`\`ts\nexport const step${i} = ${i};\n\`\`\``,
+          });
+        }
+        page = await openPage();
+        // Long tasks (≥50 ms) while the page runs: a keystroke that re-renders the chat is one.
+        await page.addInitScript(`window.__lt = [];
+          new PerformanceObserver((list) => {
+            for (const e of list.getEntries()) window.__lt.push(Math.round(e.duration));
+          }).observe({ type: 'longtask', buffered: true });`);
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        const entries = '[data-testid="thread"] [data-testid="thread-entry"]';
+        await waitForCount(page, entries, 1);
+        // The newest 80 rows (324 lines, plus the node's own system rows), and the rest above.
+        const count = async () => (await page?.locator(entries).count()) ?? 0;
+        await waitUntilAsync('a window of the newest rows', async () => (await count()) === 80);
+        expect(await page.locator(entries).last().textContent()).toContain('step 161');
+        const earlier = '[data-testid="thread-earlier"]';
+        expect(await page.locator(earlier).textContent()).toContain('Show 80 earlier messages');
+        await page.locator(earlier).click();
+        await waitUntilAsync('80 more', async () => (await count()) === 160);
+        // Scrolling to the top loads the rest by itself.
+        await waitUntilAsync('every row, scrolling up', async () => {
+          await page?.evaluate(
+            `(() => { const el = document.querySelector('.cr-chat-scroll'); if (el) el.scrollTop = 0; })()`,
+          );
+          return (await page?.locator(earlier).count()) === 0;
+        });
+        expect(await page.locator(entries, { hasText: 'Next: step 0.' }).count()).toBe(1);
+
+        // Typing a line: no long task re-rendering the chat per key.
+        const input = page.locator('[data-testid="composer-input"]');
+        await input.click();
+        await page.evaluate('window.__lt = []');
+        const typed = Date.now();
+        await page.keyboard.type('Checking typing latency on a long thread', { delay: 0 });
+        const took = Date.now() - typed;
+        const long = (await page.evaluate('window.__lt')) as number[];
+        expect(long.filter((ms) => ms >= 50).length).toBeLessThanOrEqual(2);
+        expect(took).toBeLessThan(5_000);
+        // T436's behaviour holds: the draft is the node's, across a reload.
+        await page.reload();
+        await page.locator('[data-testid="composer-input"]').waitFor();
+        expect(await page.locator('[data-testid="composer-input"]').inputValue()).toBe(
+          'Checking typing latency on a long thread',
+        );
       } finally {
         await teardown([page]);
         await cockpit.stop();

@@ -6,9 +6,11 @@
  * question being answered), and one hint line saying what Send will do.
  *
  * It knows nothing about streams: the page decides what Send means.
+ * `DraftComposer` keeps a node's draft for it (T447).
  */
 
 import { type ReactNode, forwardRef, useImperativeHandle, useLayoutEffect, useRef } from 'react';
+import { useComposerDraft } from '../lib/drafts';
 import { Icon } from './Icon';
 import { Kbd, Spinner } from './ui';
 
@@ -175,5 +177,28 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         </div>
       )}
     </div>
+  );
+});
+
+/**
+ * T447 (audit r7 #15): a Composer that holds a node's kept draft itself
+ * (`useComposerDraft`: per node, across a reload). A keystroke re-renders
+ * this alone, not the page around it and its chat, which on a long thread
+ * cost ~60 ms a key. `after` renders under it with the draft (a Retry that
+ * needs text).
+ */
+export const DraftComposer = forwardRef<
+  ComposerHandle,
+  Omit<ComposerProps, 'value' | 'onChange'> & {
+    node: string;
+    after?: (draft: string) => ReactNode;
+  }
+>(function DraftComposer({ node, after, ...props }, ref) {
+  const [draft, setDraft] = useComposerDraft(node);
+  return (
+    <>
+      <Composer ref={ref} {...props} value={draft} onChange={setDraft} />
+      {after?.(draft)}
+    </>
   );
 });

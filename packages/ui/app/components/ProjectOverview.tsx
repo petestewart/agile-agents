@@ -20,27 +20,44 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { getEvents } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
 import type { CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
-import { deliveryHint, deliveryWords, eventDetail, eventTitle, runningAgent } from '../lib/lenses';
 import {
+  childStatusPhrase,
+  deliveryHint,
+  deliveryWords,
+  eventDetail,
+  eventTitle,
+  runningAgent,
+} from '../lib/lenses';
+import {
+  OVERVIEW_FOLD_AT,
   type OverviewStatus,
   RECENT_EVENTS,
   createdAt,
   lastChange,
   openNodesOn,
   overviewCounts,
-  overviewGroups,
+  overviewSections,
   overviewStatus,
   pathUnder,
   projectNodes,
   projectRepoNames,
   recentProjectEvents,
 } from '../lib/overview';
-import { useShell } from '../lib/shell';
+import { isShortcut, useShell } from '../lib/shell';
 import { ago, nodeStatus } from '../lib/status';
 import { eventTime } from '../lib/streams';
 import { Icon } from './Icon';
 import { EventGlyph } from './Lenses';
-import { Button, EmptyState, RepoIcon, Spinner, StatusDot, StatusPill, repoKindLabel } from './ui';
+import {
+  Button,
+  EmptyState,
+  Kbd,
+  RepoIcon,
+  Spinner,
+  StatusDot,
+  StatusPill,
+  repoKindLabel,
+} from './ui';
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -142,6 +159,29 @@ function useProjectEvents(
   return { events, error };
 }
 
+/**
+ * What a Recent activity row says after its label. T447 (audit r7 #19): a
+ * child's status in the Events words ("Schedule posts is ready to merge",
+ * `childStatusPhrase`); otherwise the node it is about, else what it says
+ * (a standard's text), else its repo.
+ */
+function recentEventText(
+  e: RoutedEvent,
+  titleOf: (id: string) => string,
+  rowOf: (id: string) => CockpitStreamRow | undefined,
+): string | undefined {
+  if (e.type === 'child_status') {
+    const child = typeof e.payload.child === 'string' ? e.payload.child : undefined;
+    const title =
+      typeof e.payload.title === 'string' && e.payload.title !== ''
+        ? e.payload.title
+        : titleOf(child ?? e.subject ?? '');
+    const status = typeof e.payload.status === 'string' ? e.payload.status : '';
+    return `${title} ${childStatusPhrase(status, child !== undefined ? rowOf(child) : undefined)}`;
+  }
+  return e.subject !== undefined ? titleOf(e.subject) : (eventDetail(e, titleOf) ?? e.repo);
+}
+
 function RecentActivity({
   project,
   root,
@@ -156,7 +196,9 @@ function RecentActivity({
   onOpenChat: () => void;
 }): JSX.Element {
   const { select, setView } = useShell();
+  const { cockpit } = useFeed();
   const { events, error } = useProjectEvents(project, nodes);
+  const rowOf = (id: string) => cockpit?.streams.find((r) => r.id === id);
   // An event about the root is on this page already: its chat.
   const open = (id: string): void => (id === root ? onOpenChat() : select(id));
   return (
@@ -196,9 +238,7 @@ function RecentActivity({
       ) : (
         <ul className="cr-ov-events">
           {events.map((e) => {
-            // The node it is about; else what it says (a standard's text), else its repo.
-            const about =
-              e.subject !== undefined ? titleOf(e.subject) : (eventDetail(e, titleOf) ?? e.repo);
+            const about = recentEventText(e, titleOf, rowOf);
             const body = (
               <>
                 <EventGlyph type={e.type} />
@@ -240,11 +280,21 @@ function NodeRow({
   rows,
   root,
   repo,
+  summary,
+  nested,
+  fold,
 }: {
   row: CockpitStreamRow;
   rows: readonly CockpitStreamRow[];
+  /** Where its path starts: the project's root, or (nested under a branch) its top-level node. */
   root: string;
   repo: CockpitRepoRow | undefined;
+  /** T447: a top-level node's counts over its branch. */
+  summary?: string;
+  /** T447: a row under its top-level node. */
+  nested?: boolean;
+  /** T447: a branch's fold toggle, before its status; `null` keeps its room (a branch of one). */
+  fold?: { open: boolean; toggle: () => void; count: number } | null;
 }): JSX.Element {
   const { select } = useShell();
   const status = nodeStatus(row);
@@ -255,7 +305,21 @@ function NodeRow({
   const changedAt = lastChange(row);
   const path = pathUnder(row, rows, root);
   return (
-    <li>
+    <li className="cr-ov-li" data-nested={nested ? 'true' : undefined}>
+      {fold === null && <span className="cr-ov-branch-fold" aria-hidden="true" />}
+      {fold !== undefined && fold !== null && (
+        <button
+          type="button"
+          className="cr-ov-branch-fold"
+          data-testid="overview-branch-toggle"
+          aria-expanded={fold.open}
+          aria-label={`${fold.open ? 'Fold' : 'Unfold'} ${row.title} (${fold.count} under it)`}
+          title={fold.open ? 'Fold' : `Show the ${fold.count} under it`}
+          onClick={fold.toggle}
+        >
+          <Icon name={fold.open ? 'chevron-down' : 'chevron-right'} size={13} />
+        </button>
+      )}
       <button
         type="button"
         className="cr-ov-row"
@@ -277,6 +341,11 @@ function NodeRow({
             </span>
           ))}
           <span className="title">{row.title}</span>
+          {summary !== undefined && (
+            <span className="cr-ov-branch-sum" data-testid="overview-branch-summary">
+              {summary}
+            </span>
+          )}
         </span>
         <span className="cr-ov-meta">
           <span className="cr-ov-repo">
@@ -314,36 +383,61 @@ function NodeRow({
   );
 }
 
+/**
+ * T447 (audit r7 #19): the list, one branch per top-level node under the
+ * group its top-level node reads as. A branch folds (its chevron); one in
+ * Finished starts folded, as Finished itself does, and in a project past
+ * `OVERVIEW_FOLD_AT` nodes every branch does. A search unfolds all.
+ */
 function NodeList({
   nodes,
   rows,
   root,
   repos,
   filter,
+  query,
 }: {
   nodes: readonly CockpitStreamRow[];
   rows: readonly CockpitStreamRow[];
   root: string;
   repos: ReadonlyMap<string, CockpitRepoRow>;
   filter: OverviewStatus | undefined;
+  query: string;
 }): JSX.Element {
   const [doneOpen, setDoneOpen] = useState(false);
-  const groups = overviewGroups(nodes, filter);
+  // What was folded or unfolded by hand; the rest follows its group (Finished folds).
+  const [folds, setFolds] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const sections = useMemo(
+    () => overviewSections(nodes, root, { ...(filter ? { only: filter } : {}), query }),
+    [nodes, root, filter, query],
+  );
+  const searching = query.trim() !== '';
+  // A big project's branches start folded: each head says what is under it.
+  const big = nodes.length > OVERVIEW_FOLD_AT;
+  if (sections.length === 0) {
+    return (
+      <p className="cr-ov-quiet" data-testid="overview-no-match">
+        No node matches “{query.trim()}”.
+      </p>
+    );
+  }
+  const repoOf = (row: CockpitStreamRow) =>
+    row.repo !== undefined ? repos.get(row.repo) : undefined;
   return (
     <div className="cr-ov-groups" data-testid="overview-nodes">
-      {groups.map((group) => {
-        // Finished folds, unless one of its counts was the one clicked.
-        const folds = group.key === 'finished' && filter === undefined;
-        const open = !folds || doneOpen;
+      {sections.map((section) => {
+        // Finished folds, unless one of its counts was clicked or you are searching.
+        const foldsHere = section.key === 'finished' && filter === undefined && !searching;
+        const open = !foldsHere || doneOpen;
         return (
           <section
-            key={group.key}
+            key={section.key}
             className="cr-ov-group"
-            data-group={group.key}
+            data-group={section.key}
             data-testid="overview-group"
-            aria-label={group.title}
+            aria-label={section.title}
           >
-            {folds ? (
+            {foldsHere ? (
               <button
                 type="button"
                 className="cr-ov-group-hd cr-ov-fold"
@@ -352,26 +446,65 @@ function NodeList({
                 onClick={() => setDoneOpen((v) => !v)}
               >
                 <Icon name={doneOpen ? 'chevron-down' : 'chevron-right'} size={13} />
-                {group.title}
-                <span className="cr-ov-group-n">{group.rows.length}</span>
+                {section.title}
+                <span className="cr-ov-group-n">{section.count}</span>
               </button>
             ) : (
               <h3 className="cr-ov-group-hd">
-                {group.title}
-                <span className="cr-ov-group-n">{group.rows.length}</span>
+                {section.title}
+                <span className="cr-ov-group-n">{section.count}</span>
               </h3>
             )}
             {open && (
               <ul className="cr-ov-rows">
-                {group.rows.map((row) => (
-                  <NodeRow
-                    key={row.id}
-                    row={row}
-                    rows={rows}
-                    root={root}
-                    repo={row.repo !== undefined ? repos.get(row.repo) : undefined}
-                  />
-                ))}
+                {section.branches.map((branch) => {
+                  const id = branch.row.id;
+                  const has = branch.children.length > 0;
+                  const unfolded =
+                    searching || (folds.get(id) ?? (section.key !== 'finished' && !big));
+                  return (
+                    <li
+                      key={id}
+                      className="cr-ov-branch"
+                      data-testid="overview-branch"
+                      data-stream={id}
+                      data-open={has ? String(unfolded) : undefined}
+                    >
+                      <ul className="cr-ov-branch-rows">
+                        <NodeRow
+                          row={branch.row}
+                          rows={rows}
+                          root={root}
+                          repo={repoOf(branch.row)}
+                          {...(branch.summary !== undefined ? { summary: branch.summary } : {})}
+                          fold={
+                            filter !== undefined
+                              ? undefined
+                              : has
+                                ? {
+                                    open: unfolded,
+                                    count: branch.children.length,
+                                    toggle: () => setFolds((m) => new Map(m).set(id, !unfolded)),
+                                  }
+                                : null
+                          }
+                        />
+                        {has &&
+                          unfolded &&
+                          branch.children.map((row) => (
+                            <NodeRow
+                              key={row.id}
+                              row={row}
+                              rows={rows}
+                              root={id}
+                              repo={repoOf(row)}
+                              nested
+                            />
+                          ))}
+                      </ul>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </section>
@@ -478,6 +611,9 @@ export function ProjectOverview({
   const { cockpit } = useFeed();
   const { openNewStream } = useShell();
   const [filter, setFilter] = useState<OverviewStatus | undefined>(undefined);
+  // T447 (audit r7 #19): a filter box over the nodes' titles; `/` in the Overview focuses it.
+  const [query, setQuery] = useState('');
+  const search = useRef<HTMLInputElement>(null);
 
   const rows = cockpit?.streams ?? [];
   const nodes = useMemo(() => projectNodes(rows, root), [rows, root]);
@@ -511,7 +647,19 @@ export function ProjectOverview({
   const pick = (status: OverviewStatus): void => setFilter(shown === status ? undefined : status);
 
   return (
-    <div className="cr-ov" data-testid="project-overview">
+    <div
+      className="cr-ov"
+      data-testid="project-overview"
+      tabIndex={-1}
+      onKeyDown={(e) => {
+        if (!isShortcut(e.nativeEvent, '/') || search.current === null) return;
+        // The Overview's own filter, not the rail's (the shell's `/`).
+        e.preventDefault();
+        e.stopPropagation();
+        search.current.focus();
+        search.current.select();
+      }}
+    >
       {waiting > 0 && (
         <div className="cr-ov-callout" role="note" data-testid="overview-root-waiting">
           <span className="cr-ov-callout-dot" aria-hidden="true" />
@@ -537,15 +685,37 @@ export function ProjectOverview({
             Nodes
           </h2>
           {nodes.length > 0 && (
-            <Button
-              size="sm"
-              variant="ghost"
-              icon="plus"
-              data-testid="overview-new-node"
-              onClick={() => openNewStream({ project })}
-            >
-              New node
-            </Button>
+            <div className="cr-ov-nodes-tools">
+              <label className="cr-ov-search">
+                <Icon name="search" size={13} />
+                <input
+                  ref={search}
+                  type="search"
+                  data-testid="overview-filter"
+                  placeholder="Filter nodes"
+                  aria-label="Filter the nodes by title"
+                  aria-keyshortcuts="/"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Escape' || query === '') return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setQuery('');
+                  }}
+                />
+                {query === '' && <Kbd>/</Kbd>}
+              </label>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="plus"
+                data-testid="overview-new-node"
+                onClick={() => openNewStream({ project })}
+              >
+                New node
+              </Button>
+            </div>
           )}
         </div>
         {nodes.length === 0 ? (
@@ -614,7 +784,14 @@ export function ProjectOverview({
                 </button>
               )}
             </div>
-            <NodeList nodes={nodes} rows={rows} root={root} repos={repos} filter={shown} />
+            <NodeList
+              nodes={nodes}
+              rows={rows}
+              root={root}
+              repos={repos}
+              filter={shown}
+              query={query}
+            />
           </>
         )}
       </section>

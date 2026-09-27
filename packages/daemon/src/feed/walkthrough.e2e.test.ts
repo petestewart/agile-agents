@@ -1351,11 +1351,19 @@ test.skipIf(!RUN)(
         /Child delivered/,
       );
       await settle();
+      // T447 (audit r7 #2): a coordinator whose own turn ended reads as its most urgent part,
+      // never Done while a part is open: here the ledger-lite part, ready to merge (amber).
       const coordDot = await railRow('Ledger export').locator('.cr-dot').getAttribute('data-dot');
       check(
-        'a coordinating node whose coordinator finished is not amber (nothing waits on you)',
-        coordDot !== 'amber',
+        "a coordinating node reads as its open part: ledger-lite part's Ready to merge (amber), not Done",
+        coordDot === 'amber' &&
+          (await railRow('Ledger export').getAttribute('data-status')) === 'ready',
         coordDot ?? '',
+      );
+      await checkText(
+        'its header says so in words: 1 of 2 merged · ledger-lite part is ready to merge',
+        page.locator('[data-testid="node-parts"]'),
+        /1 of 2 merged · ledger-lite part is ready to merge/,
       );
     });
 

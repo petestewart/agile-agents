@@ -97,7 +97,20 @@ Roles keep their design names but are explained where shown: **Conversation**
   as "replied"), and the counts are the list's own grouping
   (`lib/overview.ts` `overviewGroups`), so a count always equals the rows it
   filters to. The list's groups are **Your move**, **In progress**, **Not
-  running** and **Finished** (folded) — never a status's own word. Other nodes open on
+  running** and **Finished** (folded) — never a status's own word. T447
+  (audit r7 #19): within a group the list reads by **top-level node**: each
+  heads a branch (its row, then the counts over what is under it, "1 needs
+  you · 2 working · 3 merged"), with everything under it nested below, the
+  most pressing first; a branch sits in the group its top-level node reads
+  as (a coordinator reads as its most urgent part, §6). A branch folds
+  (its chevron); Finished's start folded, and past 30 nodes every branch
+  starts folded. The counts count the nodes that read as themselves, not a
+  coordinator that reads as one of its parts, and a clicked count lists its
+  nodes on their own, wherever they sit. A **Filter nodes** box (`/` while
+  the Overview has focus; Esc clears it) keeps the nodes whose title has its
+  words, under their top-level node (a matching head keeps its branch).
+  Recent activity says a child's status in the Events words ("Schedule
+  posts is ready to merge", `childStatusPhrase`). Other nodes open on
   their chat. A Needs me card opens its node on the chat, root or not, since
   that's where the card is (T403).
 
@@ -229,16 +242,35 @@ One mapping from a cockpit row to what the UI shows, in precedence order:
 | ready | done, a branch to merge | Ready to merge | amber |
 | no_changes | done, a branch with no commits beyond its target (T380) | No changes | amber |
 | merged_outside | done, a branch already in its target, merged by hand (T412) | Already merged | amber |
-| done | done, nothing to merge (coordinating); a conversation reads "Replied" | Done / Replied | green |
+| done | done, nothing to merge; a coordinating node or a project root with parts only once every part is merged or closed (T447); a conversation reads "Replied" | Done / Replied | green |
 | waiting | waiting for the plan, or waits on another node | Waiting | gray |
 | working | a turn in flight | Working | blue (animated) |
 | not_started | its agent never ran (any role: T424, a project root or a coordinator too — the daemon's `never_started`) | Not started | gray, hollow |
 | stopped | you stopped it | Stopped | gray, hollow |
 | idle | anything else | Idle | gray |
 
-The `.cr-dot data-dot` colour (amber/blue/grey/green/red) is kept as
-`streamDot()` returns it, so older tests read the same. A pill drops the
-needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
+**A node with parts** (T447, audit r7 #2): a coordinating node or a project
+root whose children include work or coordinating nodes (conversations are
+not parts, D42) reads as the most urgent of its own state and its open
+parts': Needs you > Blocked > Ready to merge (or No changes, Already merged)
+> Working > PR open > Waiting > Not started > Stopped > Idle. Its own
+question, block, work or branch still counts; its own Merged and Closed win.
+It is **Done** only when every part is merged or closed (a coordinating part
+counts once it is Done itself). The UI derives this from the frame's rows
+(`withParts`, applied as each frame arrives in `lib/feed-context.tsx`), so
+the rail, the header, the Overview and Children agree; the Delivery panel
+reads the node's own status (`ownStatusKey`). The header's line and each
+child card say it in words: "2 of 4 merged · waiting for web part", naming
+the part to open (however deep). The daemon matches it: a coordinator's own
+`child_status: done` goes up only on a turn that ends with every part merged
+or closed (`events/producers.ts` `subtreeFinished`), not after every turn.
+
+The `.cr-dot data-dot` colour (amber/blue/grey/green/red) follows the status
+(`statusDot` in `lib/streams.ts`, T447 audit r7 #9): amber for your move
+(Needs you — a question, a plan, a gate or a proposal — Ready to merge, No
+changes, Already merged), red for Blocked, blue for Working and PR open, green
+for Merged, grey otherwise. A pill drops the needs-you and blocked halo but
+keeps a hollow dot's ring (stopped, waiting).
 
 ## 7. Patterns
 
@@ -268,6 +300,11 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   both marks, and "Drag a row to move it (or ⋯ → Move to…)". T436: its
   statuses include **Replied** after Done (a conversation that answered),
   each dot drawn from the row it stands for, as the rail draws it.
+  T447 (audit r7 #20): a long title truncates in the middle — its head gives
+  way ("Schema change f… emails") and its last word or two always show
+  (`splitTitle`, up to 16 characters) — so alike titles stay apart at any
+  depth and on a phone; the row's tooltip has the whole title. Chosen over
+  a draggable rail: it needs no stored width and works in the phone drawer.
 - **Decision cards** (`Card` in `Inbox.tsx`): a title line (kind icon, what it
   is, node path, age), the body, and actions on one row, primary first.
   A question with `options` shows each as a button; typing is always allowed.
@@ -313,6 +350,11 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   with several open, one line of each to tell them apart). A send that
   fails says so under the composer ("Couldn’t reach the daemon; your
   message wasn’t sent."), keeps the draft and offers Retry.
+  T447 (audit r7 #15): the composer holds the draft (`DraftComposer`), so a
+  keystroke re-renders the composer, not the page and its chat; and a long
+  thread renders its newest 80 rows, with a "Show 80 earlier messages" row
+  above them that also loads by itself as you scroll up (the view stays
+  where you were). Ctrl/⌘+F shows every row, so the browser's find sees them.
 - **Forms** in dialogs; labels above inputs; the submit button is the primary
   action and says what it does ("Create project", not "OK").
 - **Settings** controls save on change and say "Saved" in place (a model id

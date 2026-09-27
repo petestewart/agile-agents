@@ -49,6 +49,7 @@ import {
   filterStreamRows,
   parseCollapsed,
   rowsInProject,
+  splitTitle,
   subtreeNeedsYou,
 } from '../lib/streams';
 import {
@@ -177,6 +178,21 @@ function menuPlacement(el: Element): 'top' | 'bottom' {
   const view = scroller.getBoundingClientRect();
   const bottom = Math.min(view.bottom, window.innerHeight);
   return box.bottom + 250 > bottom && box.top - 250 > view.top ? 'top' : 'bottom';
+}
+
+/**
+ * T447 (audit r7 #20): the title truncates in the middle, keeping its end
+ * (`splitTitle`), so alike titles stay apart; the row's tooltip has it all.
+ */
+function RowTitle({ title }: { title: string }): JSX.Element {
+  const split = splitTitle(title);
+  if (split === undefined) return <span className="title">{title}</span>;
+  return (
+    <span className="title" data-split="true">
+      <span className="title-head">{split.head}</span>
+      <span className="title-tail">{split.tail}</span>
+    </span>
+  );
 }
 
 function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.Element {
@@ -379,7 +395,7 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
           </span>
           {/* T347 (D36 D11): the plan badge sits on its own line, so the title keeps the width. */}
           <span className="cr-tree-label">
-            <span className="title">{row.title}</span>
+            <RowTitle title={row.title} />
             {row.waiting_for_plan && (
               <span className="cr-waiting" data-testid="waiting-for-plan">
                 waiting for the plan
