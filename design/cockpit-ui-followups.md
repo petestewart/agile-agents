@@ -29,7 +29,15 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 - The UI's main file still carries zod and every shared schema (~90 KB):
   the UI imports small helpers from `@agile-agents/shared`, whose index pulls
   in schema modules that can't be tree-shaken. A schema-free entry for the UI
-  would drop them. (T394)
+  would drop them. (T394) Measured after T438 (Vite 5.4.11, the repo's): the
+  main script is 400 KB (121 KB gzip), of which zod is 56 KB (13 KB gzip)
+  and shared 30 KB (9 KB gzip). Neither Rollup's
+  `treeshake.manualPureFunctions: ['z']` nor a zod-free fast path in
+  `validateEffort` moves it: main-chunk helpers still reach schemas
+  (`resolveSessionDefaults` → `validateEffort`, and the modules behind
+  `inboxContext`, `START_ON_GOAL`, `THREAD_BODY_MAX_CHARS` define theirs at
+  top level). The fix is the schema-free modules above, for a ~22 KB gzip
+  saving on first load; not worth it while the cockpit is served locally.
 - `sw.js` still sends every request through its fetch handler, which recent
   Chrome no longer needs for install. Removing it takes the worker out of
   every request's path; check installability on the browsers in use first.
