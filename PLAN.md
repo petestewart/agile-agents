@@ -2614,7 +2614,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Scope:** T437 put the failure on the node's progress; the chat still read "could not start the agent: …" raw, the empty-chat hero ("Tell the agent what to do next") sat under the warning, and Details → Agent showed "process exited (code 1): …" in red for every ended reason.
 - **Acceptance Criteria:** A failed start reads "The agent couldn't start: <why>. Fix its install or login, then send a message to start it again." The empty-chat hero is hidden when the thread has a failed start or a non-zero exit (`agentFailed`). Details reads "Stopped with an error: <vendor line>" (red), and a clean end, a finished turn or a stop in grey (`endedReasonText`; the raw reason on hover). Turn into work under a work node with nothing above it offers no "Next to" and says the parent will coordinate it.
 - **Validation Steps:** `bun test packages/ui/app/lib/chat.test.ts`; control-room e2e T438, T171.
-- **Notes:** Branches T438-turn-edge-empty-hero, T438b-details-ended-reason.
+- **Notes:** Branches T438-turn-edge-empty-hero, T438b-details-ended-reason, T438c-menu-stable-review. T438c: after T436, "Ask an agent to review…" waited on the page's merge check to show, so it could appear in an open ⋯ menu and push the items under it down; the walkthrough's 4.1 clicked "Waits on…" and hit "Add repository…" about half the time (seen in its screenshot). It now shows once the node has a branch, disabled until commits are known: 5 of 5 walkthrough runs clean. Gate on the integrated tip: `bun test` 3233/0, `test:integration` green (control-room 105/0).
 
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
