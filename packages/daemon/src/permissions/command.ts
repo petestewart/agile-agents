@@ -5,7 +5,7 @@
  * routed to `hil`, never `allow` (`hasUnsafeShellConstruct`).
  */
 
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join as joinPath, relative, resolve, sep } from 'node:path';
 
@@ -262,7 +262,7 @@ export function isPipedIntoBareShell(atom: CommandAtom): boolean {
  * or among the root's own ancestors) is followed before the containment
  * check. Never throws: falls back to the plain resolved path.
  */
-export function realpathNearestExisting(p: string): string {
+export function realpathNearestExisting(p: string, depth = 0): string {
   const target = resolve(p);
   const missingSegments: string[] = [];
   let current = target;
@@ -271,11 +271,36 @@ export function realpathNearestExisting(p: string): string {
       const real = realpathSync(current);
       return missingSegments.length > 0 ? resolve(real, ...missingSegments.reverse()) : real;
     } catch {
+      // T457b: a dangling symlink (its target doesn't exist yet) still names
+      // where it points: follow its text, or a link into `~/.ssh` (absent now)
+      // or out of the worktree would read as the dir it sits in.
+      if (depth < SYMLINK_DEPTH_MAX) {
+        const pointsTo = danglingLinkTarget(current);
+        if (pointsTo !== undefined) {
+          return realpathNearestExisting(
+            resolve(pointsTo, ...[...missingSegments].reverse()),
+            depth + 1,
+          );
+        }
+      }
       const parent = dirname(current);
       if (parent === current) return target; // even the fs root failed: give up safely
       missingSegments.push(basename(current));
       current = parent;
     }
+  }
+}
+
+/** The kernel's own limit on symlinks followed in one path (Linux: 40). */
+const SYMLINK_DEPTH_MAX = 40;
+
+/** T457b: where `p` points when it is a symlink `realpath` couldn't follow; `undefined` otherwise. */
+function danglingLinkTarget(p: string): string | undefined {
+  try {
+    if (!lstatSync(p).isSymbolicLink()) return undefined;
+    return resolve(dirname(p), readlinkSync(p));
+  } catch {
+    return undefined;
   }
 }
 

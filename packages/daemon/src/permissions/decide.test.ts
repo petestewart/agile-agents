@@ -2194,3 +2194,31 @@ describe('T459: input redirects, xargs and brace patterns in write paths', () =>
     expect(ctx('reviewer', 'git diff 2>/dev/null').kind).toBe('allow');
   });
 });
+
+describe('T457b: a dangling symlink is followed by its text', () => {
+  test('a link to a place that does not exist yet is judged by where it points', () => {
+    const root = mkdtempSync(joinPath(tmpdir(), 'agile-dangling-'));
+    try {
+      const worktree = joinPath(root, 'wt');
+      mkdirSync(worktree, { recursive: true });
+      // Points out of the worktree, at a dir that isn't there (yet).
+      symlinkSync(joinPath(root, 'outside', 'later'), joinPath(worktree, 'out'));
+      const write = decidePermission({
+        role: 'engineer',
+        worktreePath: worktree,
+        request: request('edit', { targetPath: joinPath(worktree, 'out', 'x.ts') }),
+      });
+      expect(write.kind).toBe('deny');
+      // One that stays inside is still an ordinary write.
+      symlinkSync(joinPath(worktree, 'src-later'), joinPath(worktree, 'in'));
+      const inside = decidePermission({
+        role: 'engineer',
+        worktreePath: worktree,
+        request: request('edit', { targetPath: joinPath(worktree, 'in', 'x.ts') }),
+      });
+      expect(inside.kind).toBe('allow');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
