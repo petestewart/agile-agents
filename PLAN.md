@@ -2643,6 +2643,33 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun test packages/daemon/src/hook` (decide: T442 allow/deny tables; pattern-rules: the hook service end to end); each new test fails with its half of the change reverted.
 - **Notes:** Branch T442-conversation-git-reads. The bug exists from Phase 7's T336, but conversations as D42 has them (research at any level) are Phase 14's, so it is fixed here; the other session watching PRs #4–#11 had it noted as open.
 
+### Ticket: T443 Autonomy spawns running work (audit r7 #1, #4, #8)
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Audit round 7: no path from a coordinator ended with a running child. `add_child` created nodes idle ("starting stays the human's call"), Apply at Advise too; the Director's `create_tree`/`create_node` made idle trees; coordinators had no `start_node`; a project root ran a worker until it had a part, so "plan this and split it" couldn't add one (`add_child`: only a coordinator can); the Director's drafts for new nodes never reached Needs me. §12 says Organise creates nodes and starts agents.
+- **Acceptance Criteria:** A node an applied change creates (a coordinator's `add_child` at Organise/Run, Apply at Advise, the Director's `create_node`) starts its agent off the caller's path (`AutonomyService.run`; `settled()` for tests); a part (it has a repo) under a node whose plan waits for the operator (a draft, or parts waiting) gets the `WAITING_FOR_PLAN` line instead and starts on approval; a conversation child always starts. `create_tree` starts its node's coordinator and its parts wait for that plan (the worked example). `start_node`/`restart_node` take a coordinator for its own children, gated like `add_child`; `start_node` on a running node is `{already: true}`. A project's root (a project, no repo) runs a coordinator from the start and a line to it starts it; a parentless node with its own repo stays a worker. A Director draft that makes nodes sits in Needs me on the node it goes under (or the project's root). Briefs and verb descriptions say so.
+- **Validation Steps:** `bun test packages/daemon/src/coordination/autonomy.test.ts -t T443 packages/daemon/src/director/tools.test.ts packages/daemon/src/attach/service.test.ts -t T361`; full `bun test`, control-room e2e, walkthrough.
+- **Notes:** Branch T443-autonomy-starts. The UI half of "tell the user" (the Apply card's words, a Needs me item for anything left unstarted) is T446's and T445's.
+
+### Ticket: T444 Sessions a dead daemon left running end at start (audit r7 #16)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** After a daemon died mid-turn (not a clean stop), its nodes read "Working" for good on restart, Running listed them, Delivery said "still has a live agent", and a line to them only queued; only Stop cleared it (T437's orphan clean-up ran inside `stop()` alone).
+- **Acceptance Criteria:** `AttachService.endOrphansAtStart()` runs at daemon start, before `wakePending()`: every `starting`/`running` session on record ends `stopped` with `stopped: the daemon restarted during this turn` (the daemon's prefix, so the node isn't "stopped by the human" and its next event wakes it), the node goes `idle`, and its thread says `session ended: the daemon restarted during this turn`.
+- **Validation Steps:** `bun test packages/daemon/src/attach/service.test.ts -t T444 packages/daemon/src/daemon.test.ts -t T444` (the daemon test fails with the call removed).
+- **Notes:** Branch T444-orphans-at-start.
+
+### Ticket: T448 First-run nits (audit r7 #24, #25)
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Adding a repository left an untracked `.agile-daemon-cache/` in it; `agile init` said nothing about what comes next.
+- **Acceptance Criteria:** The cache writes its own `.gitignore` (`*`) once, so `git status` never lists it and nothing of the operator's is edited. `agile init` ends with "Next: `agile daemon start`, then open the cockpit it prints (http://127.0.0.1:4600/ by default)." README says what sits beside your code.
+- **Validation Steps:** `bun test packages/daemon/src/subprocess-env.test.ts packages/cli`.
+- **Notes:** Branch T448-first-run-nits.
+
 ### Ticket: T423b CI: the picker's model read before it loaded
 - **Priority:** P0
 - **Status:** Done

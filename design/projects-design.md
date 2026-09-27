@@ -823,7 +823,7 @@ The agreed design does not settle these. Each one is a proposal, recorded in `PL
 - **P17. Tracker credentials.** Jira and Linear have no ambient CLI login like `gh`. Proposed: a per-tracker token in `config.yaml` (`trackers.<system>.token`), handled exactly like the classifier key: never printed, logged or sent to the browser, and reported only as loaded or not. This would be a **second written exception** to "no vendor credentials in the daemon", so it needs Pete's explicit approval before Phase 13 starts.
 - **P18. GitHub token source.** Per call from `gh auth token`, never stored (§18). The alternative, a token in `config.yaml`, is rejected because it would add a third credential exception.
 - **P19. Auto-merge unavailable.** If GitHub refuses to enable auto-merge (it isn't allowed on the repo, or there are no required checks), the node shows `auto_merge: unavailable` and waits for a human merge. The daemon never merges a PR through the API itself.
-- **P20. The coordinator's session** is spawned with the project's session defaults and no worktree. Its cwd is a scratch directory under `sessions/<id>/`. It reads repos under the visibility rules, and hooks deny all writes outside its scratch directory.
+- **P20. The coordinator's session** (T443: a project's root runs one from the start, parts or not; what a coordinator or the Director creates starts its agent, a part waiting while its parent's plan waits for the operator) is spawned with the project's session defaults and no worktree. Its cwd is a scratch directory under `sessions/<id>/`. It reads repos under the visibility rules, and hooks deny all writes outside its scratch directory.
 
 ### 19.1 Contradictions and loose ends found in the agreed design
 

@@ -16,11 +16,11 @@
  * login.
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-/** The daemon's host-local scratch space under `repoRoot` (gitignored). */
+/** The daemon's host-local scratch space under `repoRoot`, ignored by its own `.gitignore` (`*`). */
 export const DAEMON_CACHE_DIR = '.agile-daemon-cache';
 
 /** The sandboxed env for a subprocess of kind `name`, creating its dirs. */
@@ -34,6 +34,15 @@ export function sandboxedSubprocessEnv(repoRoot: string, name: string): Record<s
   const xdgState = join(cacheRoot, 'xdg-state');
   for (const dir of [home, npmCache, xdgCache, xdgConfig, xdgData, xdgState]) {
     mkdirSync(dir, { recursive: true });
+  }
+  // T448 (audit r7 #24): git never lists it, and nothing of the operator's is edited.
+  const ignore = join(repoRoot, DAEMON_CACHE_DIR, '.gitignore');
+  if (!existsSync(ignore)) {
+    try {
+      writeFileSync(ignore, '# agiled scratch space: ignored by git\n*\n');
+    } catch {
+      // Read-only or gone: the cache still works; it just shows as untracked.
+    }
   }
   return {
     ...process.env,

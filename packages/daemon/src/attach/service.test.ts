@@ -368,6 +368,35 @@ describe('T432 (D43): a vendor that exits with an error on its own', () => {
     expect(after.agent.status).toBe('idle');
   });
 
+  test('T444: at start, sessions a dead daemon left running end, and their nodes read idle', async () => {
+    const stream = await makeStream();
+    const other = await makeStream();
+    const [a, b] = [ulid(), ulid()];
+    await store.updateStream('daemon', stream.id, (before) => ({
+      ...before,
+      agent: { ...before.agent, status: 'working' },
+      sessions: [
+        { id: a, vendor: 'claude', model: 'm', role: 'worker', status: 'running' },
+        { id: b, vendor: 'claude', model: 'm', role: 'reviewer', status: 'starting' },
+      ],
+    }));
+    expect(await attachService.endOrphansAtStart()).toEqual([stream.id]);
+    const after = streams.get(stream.id);
+    expect(after.sessions.map((s) => [s.status, s.ended_reason])).toEqual([
+      ['stopped', 'stopped: the daemon restarted during this turn'],
+      ['stopped', 'stopped: the daemon restarted during this turn'],
+    ]);
+    expect(after.agent.status).toBe('idle');
+    // Not the human's stop: its next event wakes it again.
+    expect(stoppedByHuman(after)).toBe(false);
+    expect(threadBodies(stream.id)).toContain(
+      'session ended: the daemon restarted during this turn',
+    );
+    // A node with nothing on record is left alone.
+    expect(streams.get(other.id).sessions).toEqual([]);
+    expect(await attachService.endOrphansAtStart()).toEqual([]);
+  });
+
   test('T437: a crash leaves its reason as the progress line; the next start clears it', async () => {
     attachService = buildAttachService({
       ...ACP_PROVIDERS.claude,
@@ -2362,7 +2391,7 @@ describe('T361: a message starts a node with no live agent', () => {
     expect(streams.get(stream.id).sessions).toHaveLength(1);
   }, 30_000);
 
-  test('a coordinating node gets its coordinator; a closed node and a bare project root start nothing', async () => {
+  test('a coordinating node gets its coordinator; a closed node starts nothing; a bare project root its coordinator', async () => {
     attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     const project = await new ProjectService(store, streams).create({ name: 'Shop' });
@@ -2391,13 +2420,18 @@ describe('T361: a message starts a node with no live agent', () => {
       start: false,
     });
     await streams.close('human', closed.id);
+    const said = await attachService.say(closed.id, 'hello?', { start: true });
+    expect(said.started).toBeUndefined();
+    expect(said.prompted).toBeUndefined();
+    expect(streams.get(closed.id).sessions).toEqual([]);
+    // T443 (audit r7 #4): a bare project root coordinates from the start, so "plan this and split
+    // it" reaches a coordinator that can add parts.
     const bare = await new ProjectService(store, streams).create({ name: 'Blog' });
-    for (const id of [closed.id, bare.root]) {
-      const said = await attachService.say(id, 'hello?', { start: true });
-      expect(said.started).toBeUndefined();
-      expect(said.prompted).toBeUndefined();
-      expect(streams.get(id).sessions).toEqual([]);
-    }
+    const planned = await attachService.say(bare.root, 'Plan the blog and split it.', {
+      start: true,
+    });
+    expect(planned.started).toBe(true);
+    expect(streams.get(bare.root).sessions.map((s) => s.role)).toEqual(['coordinator']);
   }, 30_000);
 
   test('T389: a part waiting for its plan is not started by a line; the line waits for it', async () => {

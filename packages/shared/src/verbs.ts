@@ -357,7 +357,7 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   contract_write:
     'Coordinator only: create a contract ({title, body ≤800, parties: [child ids]}) or bump one ({id, …, reason, routine?}); a bump of an agreed contract is gated by your autonomy level (routine = additive only).',
   add_child:
-    'Coordinator only: add a child node ({title, goal, repo?}). At Advise it is proposed to the operator; at Organise/Run it is created.',
+    'Coordinator only: add a child node ({title, goal, repo?}). At Advise it is proposed to the operator; at Organise/Run it is created and its agent starts (a part with a repo waits while your plan waits for the operator, and starts when it is approved).',
   add_waits_on:
     'Coordinator or Director: make one node wait on another ({child, on}); a coordinator only for its own children. Gated by your autonomy level.',
   set_owner:
@@ -380,9 +380,10 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Director only: create a project ({name, repos?}). A new project has no level yet, so it is always a draft for the operator.',
   create_node:
     'Director only: create a node ({title, goal, parent | project, repo?}). Gated by the project’s Director level.',
-  start_node: 'Director only: start a node’s agent ({node}). Applied at Organise/Run.',
+  start_node:
+    'Director, or a coordinator for its own children: start a node’s agent ({node}); one already running is left as it is. Applied at Organise/Run; at Advise a proposal.',
   restart_node:
-    'Director only: restart a stuck node’s agent ({node}). Applied at Run only; otherwise a proposal.',
+    'Director, or a coordinator for its own children: restart a stuck node’s agent ({node}). Applied at Run only; otherwise a proposal.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

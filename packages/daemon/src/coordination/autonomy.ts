@@ -36,7 +36,7 @@ import type { ProjectService } from '../projects/service';
 import type { StateStore } from '../store/store';
 import type { StreamService } from '../streams/service';
 import { type ContractService, assertChildren } from './contracts';
-import type { PlanService } from './plans';
+import { type PlanService, WAITING_FOR_PLAN } from './plans';
 
 export type AutonomyPrincipal = 'human' | 'coordinator' | 'director' | 'agent';
 export type GateVerdict = 'apply' | 'propose' | 'refuse';
@@ -283,11 +283,66 @@ function asYou(line: string): string {
 
 export class AutonomyService {
   private agents: NodeAgents | undefined;
+  /** T443: starts under way (off the verb's path); `settled()` waits for them. */
+  private readonly starting = new Set<Promise<void>>();
 
   constructor(private readonly options: AutonomyServiceOptions) {}
 
   setAgents(agents: NodeAgents): void {
     this.agents = agents;
+  }
+
+  /** T443: resolves once every start begun so far has finished (tests). */
+  async settled(): Promise<void> {
+    while (this.starting.size > 0) await Promise.allSettled([...this.starting]);
+  }
+
+  /**
+   * T443 (§12, audit r7 #1): a node an applied change created runs, as a
+   * node you create does. While its parent's plan waits for the operator
+   * (a draft, or parts still waiting for it), it waits too and starts when
+   * the plan is approved (the `WAITING_FOR_PLAN` line, T336); otherwise it
+   * starts now. Off the caller's path: a coordinator's turn never waits on a
+   * vendor starting, and a failed start is the attach service's thread line.
+   */
+  private async run(ids: readonly string[], parent: string | undefined): Promise<void> {
+    const agents = this.agents;
+    if (agents === undefined || ids.length === 0) return;
+    const { streams } = this.options;
+    const waits = parent !== undefined && this.planPending(parent);
+    for (const id of ids) {
+      // A part (it has a repo) waits for the plan; a conversation is never one (D42).
+      if (waits && streams.get(id).repo !== undefined) {
+        await streams.appendThread('daemon', id, {
+          kind: 'event',
+          body: `${WAITING_FOR_PLAN}this part starts when "${this.titleOf(parent)}"'s plan is approved`,
+        });
+        continue;
+      }
+      const started = agents
+        .start(id)
+        .then(() => undefined)
+        .catch((err) => {
+          console.error(
+            `autonomy: could not start ${id}:`,
+            err instanceof Error ? err.message : err,
+          );
+        })
+        .finally(() => this.starting.delete(started));
+      this.starting.add(started);
+    }
+  }
+
+  /** The node's plan waits for the operator: a draft, or parts still waiting for one. */
+  private planPending(node: string): boolean {
+    const plans = this.options.plans;
+    if (plans === undefined) return false;
+    try {
+      if (plans.get(node)?.status === 'draft') return true;
+      return plans.waitingParts(node).length > 0;
+    } catch {
+      return false;
+    }
   }
 
   private now(): string {
@@ -562,6 +617,10 @@ export class AutonomyService {
       streams.get(change.on);
     }
     if (change.action === 'set_owner') assertChildren(streams, node, [change.child], 'set_owner');
+    // T443: a coordinator starts (or restarts) its own children only.
+    if (change.action === 'start_node' || change.action === 'restart_node') {
+      assertChildren(streams, node, [change.node], change.action);
+    }
     if (change.action === 'approve_contract') {
       const contract = this.options.contracts?.get(change.contract);
       if (contract !== undefined && contract.node !== node) {
@@ -633,6 +692,17 @@ export class AutonomyService {
         if (child !== undefined && on !== undefined) await streams.wait(principal, child.id, on.id);
       }
     }
+    // T443 (§12's worked example): the node's coordinator starts and plans; its parts wait
+    // for that plan (T336) and start when it is approved. A node without parts just runs.
+    if (parts.length > 0 && this.agents !== undefined) {
+      for (const part of parts) {
+        await streams.appendThread('daemon', part.id, {
+          kind: 'event',
+          body: `${WAITING_FOR_PLAN}this part starts when "${node.title}"'s plan is approved`,
+        });
+      }
+    }
+    await this.run([node.id], undefined);
     return { project: project.id, node: node.id, parts: parts.map((p) => p.id) };
   }
 
@@ -654,14 +724,17 @@ export class AutonomyService {
   ): Promise<unknown> {
     const { streams, plans, contracts } = this.options;
     switch (change.action) {
-      case 'add_child':
-        // Created idle: starting its agent stays the human's (or a later ticket's) call.
-        return streams.create(principal, {
+      case 'add_child': {
+        const child = await streams.create(principal, {
           title: change.title,
           goal: change.goal,
           parent: node,
           ...(change.repo !== undefined ? { repo: change.repo } : {}),
         });
+        // T443: it runs, now or once the plan it waits for is approved.
+        await this.run([child.id], node);
+        return child;
+      }
       case 'add_waits_on':
         return streams.wait(principal, change.child, change.on);
       case 'set_owner':
@@ -678,14 +751,20 @@ export class AutonomyService {
         return this.projects().create({ name: change.name, repos: change.repos ?? [] }, principal);
       case 'create_node': {
         const { parent, project, ...fields } = change.node;
-        // Created idle; `start_node` starts it.
-        return streams.create(principal, {
-          ...fields,
-          parent: parent ?? this.projects().get(project ?? '').root,
-        });
+        const under = parent ?? this.projects().get(project ?? '').root;
+        const created = await streams.create(principal, { ...fields, parent: under });
+        // T443: it runs, as a node you create does.
+        await this.run([created.id], under);
+        return created;
       }
-      case 'start_node':
+      case 'start_node': {
+        // T443: already running (started when it was created) is done, not an error.
+        const target = streams.get(change.node);
+        if (target.sessions.some((s) => s.status === 'starting' || s.status === 'running')) {
+          return { node: target.id, already: true };
+        }
         return this.nodeAgents().start(change.node);
+      }
       case 'restart_node':
         return this.nodeAgents().restart(change.node);
     }
