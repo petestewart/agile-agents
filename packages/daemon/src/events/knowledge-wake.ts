@@ -45,6 +45,7 @@ export const JEV_WAKES_PER_ITEM = 5;
 export const LAST_REPLY_MAX_CHARS = 600;
 export const QUESTION_MAX_CHARS = 400;
 export const ITEM_TEXT_MAX_CHARS = 800;
+const TITLE_MAX_CHARS = 120;
 /** Newer conversations in the same project listed in the state, newest first. */
 export const NEWER_CONVERSATIONS_MAX = 10;
 
@@ -277,7 +278,7 @@ export class KnowledgeWakeJudge {
       `- text: ${clip(item?.text ?? String(p.text), ITEM_TEXT_MAX_CHARS)}`,
       '',
       'A conversation it applies to, which did not propose it:',
-      `- title: ${node.title}`,
+      `- title: ${clip(node.title, TITLE_MAX_CHARS)}`,
       `- question: ${clip(node.question ?? node.goal, QUESTION_MAX_CHARS)}`,
       `- last reply: ${lastReply ? clip(lastReply.body, LAST_REPLY_MAX_CHARS) : '(none yet)'}`,
       `- last changed: ${Number.isNaN(changedAt) ? 'unknown' : `${new Date(changedAt).toISOString()} (${ageInWords(now - changedAt)})`}`,
@@ -287,7 +288,9 @@ export class KnowledgeWakeJudge {
     lines.push('', 'Newer conversations in the same project:');
     if (newer.length === 0) lines.push('- (none)');
     for (const s of newer) {
-      lines.push(`- ${s.title} (started ${ageInWords(now - at(s.created_at))})`);
+      lines.push(
+        `- ${clip(s.title, TITLE_MAX_CHARS)} (started ${ageInWords(now - at(s.created_at))})`,
+      );
     }
     return lines.join('\n');
   }
