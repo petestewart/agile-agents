@@ -246,7 +246,7 @@ function ActivitySection({
                 data-delivery={row.status}
                 title={[row.session, eventTime(row.event.at)].filter(Boolean).join(' · ')}
               >
-                <EventGlyph type={row.event.type} />
+                <EventGlyph event={row.event} />
                 <div className="cr-timeline-main">
                   <span className="cr-timeline-type">{eventTitle(row.event)}</span>
                   {detail !== undefined && <span className="cr-dir-act-detail">{detail}</span>}

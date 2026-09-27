@@ -308,13 +308,13 @@ function RepoEvents({ repo }: { repo: string }): JSX.Element | null {
                   className="cr-lens-ev"
                   onClick={() => e.subject && open(e.subject)}
                 >
-                  <EventGlyph type={e.type} />
+                  <EventGlyph event={e} />
                   {text}
                   {when}
                 </button>
               ) : (
                 <div className="cr-lens-ev">
-                  <EventGlyph type={e.type} />
+                  <EventGlyph event={e} />
                   {text}
                   {when}
                 </div>
@@ -967,11 +967,28 @@ const EVENT_TONE: Partial<Record<RoutedEventType, 'red' | 'amber' | 'purple' | '
   knowledge_accepted: 'green',
 };
 
+/**
+ * T451: an applied change reads as who made it, with the icon the rest of
+ * the cockpit gives them (the Director's sparkles, a coordinator's bot, you).
+ */
+const APPLIED_ICON: Record<string, IconName> = {
+  coordinator: 'bot',
+  director: 'sparkles',
+  human: 'user',
+};
+
 /** An event's type as a small tinted glyph (the Events log, a repo's events, the Director's activity). */
-export function EventGlyph({ type }: { type: RoutedEventType }): JSX.Element {
+export function EventGlyph({
+  event,
+}: {
+  event: Pick<RoutedEvent, 'type' | 'payload'>;
+}): JSX.Element {
+  const { type } = event;
+  const applied =
+    type === 'autonomy_applied' ? APPLIED_ICON[String(event.payload.principal)] : undefined;
   return (
     <span className="cr-lens-ev-glyph" data-tone={EVENT_TONE[type]} aria-hidden="true">
-      <Icon name={EVENT_ICON[type] ?? FAMILY_ICON[eventFamily(type)]} size={13} />
+      <Icon name={applied ?? EVENT_ICON[type] ?? FAMILY_ICON[eventFamily(type)]} size={13} />
     </span>
   );
 }
@@ -1095,7 +1112,7 @@ function EventRow({
         {today ? ago(event.at) : clockTime(event.at)}
       </time>
       <div className="cr-lens-log-what">
-        <EventGlyph type={event.type} />
+        <EventGlyph event={event} />
         <div className="cr-lens-log-text">
           <span className="cr-lens-ev-label" data-testid="event-log-type">
             {eventTitle(event)}
