@@ -29,6 +29,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
 import {
+  type AgentId,
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_DENY_AT,
   type Question,
@@ -53,6 +54,7 @@ import {
   chromium,
 } from 'playwright-core';
 import { AttachService, VerbService } from '../attach';
+import { Bus } from '../bus';
 import { ClassifierKeyService, FakeClassifier } from '../classifier';
 import { AutonomyService } from '../coordination/autonomy';
 import { CardService } from '../coordination/cards';
@@ -63,6 +65,7 @@ import { DirectorService } from '../director';
 import { DocsService } from '../docs';
 import { RoutedEventService, emitTransitions, makeEmitter, routeAndEmit } from '../events';
 import { GateService } from '../gates';
+import { HookService } from '../hook';
 import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
 import { runInit } from '../init';
@@ -11203,6 +11206,119 @@ describe('honest coordinator status, and scale (Playwright e2e, T447)', () => {
       } finally {
         await teardown([page]);
         await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+// ---- T457: the permission posture's Ask card and its Settings ----------
+
+describe('permissions: the Ask card and Settings (Playwright e2e, T457)', () => {
+  browserTest(
+    "an agent's read outside its repos raises Allow once / Always / Deny; Always persists and lets it read; Settings shows and removes it",
+    async () => {
+      const cockpit = await startCockpit();
+      const outside = mkdtempSync(join(tmpdir(), 'agile-e2e-outside-'));
+      const worktree = mkdtempSync(join(tmpdir(), 'agile-e2e-wt-'));
+      let page: Page | undefined;
+      try {
+        mkdirSync(join(outside, 'src'), { recursive: true });
+        writeFileSync(join(outside, 'src', 'a.ts'), 'export const a = 1;\n');
+        writeFileSync(join(outside, 'src', 'b.ts'), 'export const b = 2;\n');
+        const project = await cockpit.projects.create({ name: 'Cents' });
+        const node = await cockpit.streams.create('human', {
+          title: 'Cents check',
+          goal: 'check the cents',
+          project: project.id,
+        });
+        const agent = '01ARZ3NDEKTSV4RRFFQ69GE457';
+        await cockpit.store.putAgent(agent as AgentId, {
+          vendor: 'claude',
+          model: 'test-model',
+          stream: node.id,
+          last_seen: new Date().toISOString(),
+          role: 'worker',
+          worktree,
+        });
+        // The agent's own PreToolUse hook call, as `agile hook` forwards it.
+        const hook = new HookService(cockpit.store, new Bus(cockpit.store, cockpit.home), {
+          agileHome: cockpit.home,
+          gates: cockpit.gates,
+        });
+        const read = async (file: string) =>
+          (
+            await hook.preToolUse({
+              cwd: worktree,
+              tool_name: 'Read',
+              tool_input: { file_path: join(outside, 'src', file) },
+              agile_agent: agent,
+            })
+          ).hookSpecificOutput;
+
+        const first = await read('a.ts');
+        expect(first.permissionDecision).toBe('deny');
+        expect(first.permissionDecisionReason).toContain('routed to your inbox');
+        const gate = cockpit.gates.list().find((g) => g.read_root !== undefined);
+        if (gate === undefined) throw new Error('no read gate raised');
+        const root = join(outside, 'src');
+        expect(gate.read_root).toBe(root);
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const card = `[data-testid="inbox"] [data-id="${gate.id}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        expect(await page.locator(`${card} .kind`).textContent()).toBe('Allow this read?');
+        const lead = await page.locator(`${card} [data-testid="gate-read-lead"]`).textContent();
+        expect(lead).toContain('Cents check wants to read');
+        expect(lead).toContain(root);
+        expect(await page.locator(`${card} [data-testid="gate-approve"]`).textContent()).toBe(
+          'Allow once',
+        );
+        expect(await page.locator(`${card} [data-testid="gate-deny"]`).count()).toBe(1);
+        await page.locator(`${card} [data-testid="gate-always"]`).click();
+        await page.locator(card).waitFor({ state: 'detached' });
+        await waitUntil('the root to be saved on the project', () => {
+          const saved = cockpit.store.getProject(project.id).read_roots;
+          return saved?.length === 1 && saved[0] === root;
+        });
+        expect(cockpit.gates.get(gate.id).decision).toBe('approve');
+        // The retry, and any other read in that dir, go through without a card.
+        expect((await read('a.ts')).permissionDecision).toBe('allow');
+        expect((await read('b.ts')).permissionDecision).toBe('allow');
+        expect(cockpit.gates.list().filter((g) => g.status === 'pending')).toHaveLength(0);
+
+        // Settings → General → Permissions: the project inherits Ask, and lists its Always dir.
+        await page.goto(`${cockpit.base}/?view=settings`);
+        const row = `[data-testid="settings-permissions-project-${project.id}"]`;
+        await page.locator(row).waitFor({ state: 'visible' });
+        await waitForText(page, `${row} [data-testid$="-inherits"]`, 'Inherits Ask from the home');
+        expect(await page.locator(`${row} [data-testid$="-roots"] code`).textContent()).toBe(root);
+        await page.locator('[data-testid="settings-permissions-trusted"]').click();
+        await waitUntil('the home to be Trusted', () => {
+          return cockpit.store.getHomeConfig().permissions === 'trusted';
+        });
+        await waitForText(
+          page,
+          `${row} [data-testid$="-inherits"]`,
+          'Inherits Trusted from the home',
+        );
+        await page.locator(`${row} [data-testid$="-root-remove"]`).click();
+        await waitUntil('the root to be removed', () => {
+          return cockpit.store.getProject(project.id).read_roots === undefined;
+        });
+        await page.locator(`${row} [data-testid$="-roots"]`).waitFor({ state: 'detached' });
+        await page
+          .locator(`${row} [data-testid="settings-permissions-project-${project.id}-ask"]`)
+          .click();
+        await waitUntil('the project to override with Ask', () => {
+          return cockpit.store.getProject(project.id).permissions === 'ask';
+        });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(outside, { recursive: true, force: true });
+        rmSync(worktree, { recursive: true, force: true });
       }
     },
     TEST_BUDGET_MS,

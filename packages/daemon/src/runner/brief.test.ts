@@ -9,6 +9,7 @@ import {
   buildBrief,
   coordinatorSection,
   readRoleBrief,
+  readableReposSection,
 } from './brief';
 
 /**
@@ -467,6 +468,38 @@ describe('buildBrief — repos a worktree-less node can read (T330)', () => {
       'none registered yet',
     );
     expect(buildBrief({ ...base, stream: makeStream() })).not.toContain('Repos you can read');
+  });
+
+  test("T457: the project's own repos lead, then the others, then its Always dirs, then the posture", () => {
+    const brief = buildBrief({
+      ...base,
+      stream: makeStream({ repo: 'web' }),
+      readableRepos: [
+        { name: 'docs', path: '/src/docs' },
+        { name: 'api', path: '/src/api', own: true },
+        { path: '/src/notes' },
+      ],
+      inWorktree: true,
+      readPosture: 'ask',
+    });
+    const at = (text: string) => {
+      const index = brief.indexOf(text);
+      expect([text, index >= 0]).toEqual([text, true]);
+      return index;
+    };
+    expect(at("Your project's repos:")).toBeLessThan(at('- api: `/src/api`'));
+    expect(at('- api: `/src/api`')).toBeLessThan(at('Other repos you can read:'));
+    expect(at('Other repos you can read:')).toBeLessThan(at('- docs: `/src/docs`'));
+    expect(at('- docs: `/src/docs`')).toBeLessThan(at('- `/src/notes` (allowed for this project)'));
+    expect(at('Permissions: Ask. A read anywhere else asks the human first')).toBeGreaterThan(
+      at('/src/notes'),
+    );
+
+    const trusted = readableReposSection([{ name: 'docs', path: '/src/docs' }], true, 'trusted');
+    expect(trusted).toContain('- docs: `/src/docs`');
+    expect(trusted).not.toContain("Your project's repos:");
+    expect(trusted).toContain('You may also read other paths on disk without asking');
+    expect(trusted).toContain('never the agile home');
   });
 });
 

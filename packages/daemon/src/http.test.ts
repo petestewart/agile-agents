@@ -952,6 +952,61 @@ describe('T160 cockpit routes', () => {
     });
   });
 
+  test('T457: permissions — the home posture, a project override, and a held read answered Always', async () => {
+    const at = (path: string) => url(path);
+    const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(at(path), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    expect(await (await fetch(at('/api/settings/permissions'))).json()).toEqual({ posture: 'ask' });
+    expect(await (await post('/api/settings/permissions', { posture: 'trusted' })).json()).toEqual({
+      posture: 'trusted',
+    });
+    expect(store.getHomeConfig().permissions).toBe('trusted');
+    expect((await post('/api/settings/permissions', { posture: 'yolo' })).status).toBe(400);
+    const foreign = { origin: 'http://evil.example' };
+    expect((await post('/api/settings/permissions', { posture: 'ask' }, foreign)).status).toBe(403);
+    expect(store.getHomeConfig().permissions).toBe('trusted');
+
+    const project = await new ProjectService(store, streams).create({ name: 'Cents' });
+    const node = await streams.create('human', {
+      title: 'Cents check',
+      goal: 'g',
+      project: project.id,
+    });
+    const updated = await post(`/api/projects/${project.id}`, { permissions: 'ask' });
+    expect(updated.status).toBe(200);
+    expect(store.getProject(project.id).permissions).toBe('ask');
+    expect((await post(`/api/projects/${project.id}`, { read_roots: ['/'] })).status).toBe(400);
+
+    const root = join(home, 'other');
+    const gate = await new GateService(store).request('classifier_review', {
+      policy: {
+        gates: { land: 'human', rule_accept: 'human', classifier_review: 'human' },
+        breaker_signals: [],
+      },
+      stream: node.id,
+      summary: `${root}/a.ts is outside every repo this node can read`,
+      call: { tool: 'Read', path: `${root}/a.ts`, fingerprint: '0123456789abcdef' },
+      readRoot: root,
+    });
+    const inbox = (await (await fetch(at('/api/inbox'))).json()) as {
+      items: Array<{ id: string; read_root?: string }>;
+    };
+    expect(inbox.items.find((item) => item.id === gate.id)?.read_root).toBe(root);
+    expect((await post(`/api/hil/${gate.id}/always`, {}, foreign)).status).toBe(403);
+    const always = await post(`/api/hil/${gate.id}/always`, {});
+    expect(always.status).toBe(200);
+    expect(((await always.json()) as { decision: string }).decision).toBe('approve');
+    expect(store.getProject(project.id).read_roots).toEqual([root]);
+    expect((await post(`/api/hil/${gate.id}/always`, {})).status).toBe(409);
+    // The project's list is the Settings control's: a removal writes the rest.
+    await post(`/api/projects/${project.id}`, { read_roots: null });
+    expect(store.getProject(project.id).read_roots).toBeUndefined();
+  });
+
   test('T161: POST /api/streams/:id/say writes a human line; the actor is never read from the body; cross-origin is 403', async () => {
     const stream = await streams.create('human', { title: 's', goal: 'g' });
     const foreign = await fetch(url(`/api/streams/${stream.id}/say`), {
