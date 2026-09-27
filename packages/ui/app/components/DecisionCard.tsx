@@ -27,7 +27,7 @@
  */
 
 import type { InboxItem } from '@agile-agents/shared';
-import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import {
   answerQuestion,
   approvePlan,
@@ -61,6 +61,7 @@ import {
   DONE_CARD_TITLE,
   MERGED_OUTSIDE_TEXT,
   branchName,
+  cardOutcome,
   cardTitle,
   cardTone,
   choiceKey,
@@ -416,11 +417,21 @@ export function Card({
   onDone,
   full = false,
   questionText = 'whole',
+  onActing,
+  gone = false,
 }: {
   item: InboxItem;
   onDone: () => void;
   full?: boolean;
   questionText?: 'whole' | 'line' | 'none';
+  /**
+   * T445 (audit r7 #5): an action on it started here. The list keeps it
+   * mounted if the frame drops it before the answer is back, and a moment
+   * after, as its outcome.
+   */
+  onActing?: (item: InboxItem) => void;
+  /** T445: it has left the list and stays a moment, collapsed to what was decided. */
+  gone?: boolean;
 }): JSX.Element {
   const { select, openRules } = useShell();
   const feed = useOptionalFeed();
@@ -438,6 +449,11 @@ export function Card({
   /** News that isn't a failure (a merge held by a ship check, a message sent). */
   const [notice, setNotice] = useState<string | undefined>(undefined);
   const noteRef = useRef<HTMLInputElement>(null);
+  /** T445: what was decided here ("Merged into main"), shown while the card stays after it left. */
+  const [outcome, setOutcome] = useState<string | undefined>(undefined);
+  const cardRef = useRef<HTMLElement>(null);
+  /** Its height as a whole card, last measured: the outcome keeps it. */
+  const wholeHeight = useRef<number | undefined>(undefined);
   const merging = useMergeAsk();
   const text = draft.trim();
   const locked = busy !== undefined || settled !== undefined || offline;
@@ -454,7 +470,29 @@ export function Card({
     if (noteOpen) noteRef.current?.focus();
   }, [noteOpen]);
 
+  // T445 (audit r7 #13): the pressed button goes disabled while it works, which drops focus to
+  // <body>; the card itself keeps it, so the list knows where you were when the card leaves.
+  const keepFocus = (): void => {
+    const card = cardRef.current;
+    if (!full && card && card.contains(document.activeElement) && document.activeElement !== card) {
+      card.focus({ preventScroll: true });
+    }
+  };
+  // T445 (audit r7 #5): once it has left the list, it keeps its height (nothing under the pointer
+  // moves) and reads only as its outcome; the height is the whole card's, measured each render.
+  const showOutcome = gone && outcome !== undefined;
+  useLayoutEffect(() => {
+    if (!showOutcome && cardRef.current !== null)
+      wholeHeight.current = cardRef.current.offsetHeight;
+  });
+  const acting = (): void => {
+    keepFocus();
+    onActing?.(item);
+  };
+  const decided = (words: string): void => setOutcome(words);
+
   async function act(key: string, fn: () => Promise<unknown>, sent?: string): Promise<void> {
+    acting();
     setBusy(key);
     setError(undefined);
     setNotice(undefined);
@@ -463,6 +501,7 @@ export function Card({
       setDraft('');
       setSettled(key);
       if (sent !== undefined) setNotice(sent);
+      decided(cardOutcome(item, key));
       onDone();
     } catch (err) {
       setError({
@@ -479,6 +518,7 @@ export function Card({
 
   /** Merge: a hold is news on the card; a refusal says why under it, with its fix. */
   async function merge(): Promise<void> {
+    acting();
     setBusy('merge');
     setError(undefined);
     setNotice(undefined);
@@ -492,7 +532,16 @@ export function Card({
           title: 'Couldn’t merge.',
           ...mergeConflict(outcome.target, outcome.conflicts),
         });
-      } else setSettled('merge');
+      } else {
+        setSettled('merge');
+        decided(
+          outcome.status === 'pr_open'
+            ? `Pull request #${outcome.pr.number} opened`
+            : outcome.status === 'gated'
+              ? 'Waiting for your OK to merge'
+              : cardOutcome(item, 'merge', outcome.target),
+        );
+      }
       onDone();
     } catch (err) {
       setError({
@@ -1229,8 +1278,33 @@ export function Card({
   const clampLine =
     item.kind === 'done' && done === 'ready' && !full && !expanded ? 'true' : undefined;
 
+  if (showOutcome) {
+    // T445 (audit r7 #5): decided here and gone from the list: its outcome, in its place, briefly.
+    return (
+      <article
+        ref={cardRef}
+        className="cr-card cr-card-outcome"
+        data-id={item.id}
+        data-kind={item.kind}
+        data-node-id={item.stream}
+        data-gone="true"
+        data-testid="card-outcome"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        style={wholeHeight.current !== undefined ? { minHeight: wholeHeight.current } : undefined}
+      >
+        <output className="cr-card-outcome-line" id={titleId}>
+          <Icon name="check" size={14} strokeWidth={2.5} />
+          <span>{outcome}</span>
+          {nodeTitle !== undefined && <span className="cr-card-outcome-node">{nodeTitle}</span>}
+        </output>
+      </article>
+    );
+  }
+
   return (
     <article
+      ref={cardRef}
       className="cr-card"
       data-id={item.id}
       data-kind={item.kind}

@@ -14,11 +14,43 @@ import { type StreamTreeNode, buildStreamTree } from './streams';
 /** Rows the rail helpers read. */
 type Row = Pick<CockpitStreamRow, 'id' | 'title' | 'parent' | 'project' | 'role'>;
 
+/** The shortest a title cut at a clause (or before a stray quote) may be; shorter, the cut is at a word. */
+const CLAUSE_MIN = 20;
+
+/** Where a clause starts, for a cut before it: a comma, or " that " (" so that "), " with ", " which ". */
+const CLAUSE_BREAK = /,\s| so that | that | with | which /g;
+
+/** The index of a quote left open in `text` (`"`, `` ` ``, or “ without its ”), else `undefined`. */
+function openQuoteAt(text: string): number | undefined {
+  for (const q of ['"', '`']) {
+    if (text.split(q).length % 2 === 0) return text.lastIndexOf(q);
+  }
+  if (text.split('“').length > text.split('”').length) return text.lastIndexOf('“');
+  return undefined;
+}
+
+/**
+ * T445 (audit r7 #11): a cut title never ends inside a quote: it stops
+ * before the quote when enough is left, else the stray quote mark goes.
+ */
+function closeQuotes(text: string): string {
+  let out = text;
+  for (let i = 0; i < 4; i++) {
+    const at = openQuoteAt(out);
+    if (at === undefined) break;
+    const before = out.slice(0, at).replace(/[\s,;:–—-]+$/, '');
+    out = before.length >= CLAUSE_MIN ? before : `${out.slice(0, at)}${out.slice(at + 1)}`.trim();
+  }
+  return out;
+}
+
 /**
  * New node: the title a goal suggests — its first non-empty line, without
- * markdown's heading, list or quote markers, cut at a word boundary at most
- * `max` characters long. T413: no ellipsis character: the title is stored
- * as it reads, and a narrow place truncates it with CSS.
+ * markdown's heading, list or quote markers, at most `max` characters long.
+ * T445 (audit r7 #11): when it has to be cut, it is cut before a clause (a
+ * comma, " that ", " with ", " which ") when one starts late enough, else at
+ * a word, and never inside a quote. T413: no ellipsis character: the title
+ * is stored as it reads, and a narrow place truncates it with CSS.
  */
 export function titleFromGoal(goal: string, max = 60): string {
   const line =
@@ -32,10 +64,22 @@ export function titleFromGoal(goal: string, max = 60): string {
       )
       .find((l) => l !== '') ?? '';
   if (line.length <= max) return line;
-  // After the last word that ends within `max`; a very long word is cut at `max`.
+  // Before the last clause that starts within `max`, far enough in to name the work (a comma
+  // inside a quote starts none).
+  let clause = -1;
+  for (const m of line.matchAll(CLAUSE_BREAK)) {
+    const at = m.index ?? -1;
+    if (at <= max && at >= CLAUSE_MIN && openQuoteAt(line.slice(0, at)) === undefined) clause = at;
+  }
+  // Else after the last word that ends within `max`; a very long word is cut at `max`.
   const space = line.lastIndexOf(' ', max);
-  const cut = space > max / 2 ? line.slice(0, space) : line.slice(0, max);
-  return cut.replace(/[\s,;:–—-]+$/, '');
+  const cut =
+    clause >= 0
+      ? line.slice(0, clause)
+      : space > max / 2
+        ? line.slice(0, space)
+        : line.slice(0, max);
+  return closeQuotes(cut.replace(/[\s,;:–—-]+$/, ''));
 }
 
 /** `id` and every node under it, depth first, `id` first. */
@@ -187,6 +231,19 @@ export function pickHighlight<
   const matches = pickable.filter((o) => o.text.toLowerCase().includes(q));
   const first = matches.some((o) => o.pinned) ? matches[0] : matches.find((o) => !o.pinned);
   return (first ?? pickable[0])?.value;
+}
+
+/**
+ * T445 (audit r7 #12): the repository New node starts on when nothing names
+ * one — a project's only repository (when it is registered), else none
+ * (a conversation).
+ */
+export function defaultRepoOf(
+  projectRepos: readonly string[] | undefined,
+  registered: readonly string[],
+): string {
+  const only = projectRepos?.length === 1 ? projectRepos[0] : undefined;
+  return only !== undefined && registered.includes(only) ? only : '';
 }
 
 /** Repos for a picker: the project's own first, then the others, each by name. */

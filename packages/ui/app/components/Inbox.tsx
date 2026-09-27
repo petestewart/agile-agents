@@ -13,11 +13,13 @@
  */
 
 import type { InboxItem } from '@agile-agents/shared';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getDirector, getStreamPage } from '../lib/api';
 import { useFeed } from '../lib/feed-context';
 import type { CockpitStreamRow } from '../lib/feed-types';
 import {
+  DECIDED_LINGER_MS,
+  LIST_SETTLE_MS,
   type NeedsMeFilter,
   PATH_SEP,
   type SetupStep,
@@ -29,6 +31,7 @@ import {
   nodePath,
   replyPreview,
   setupSteps,
+  withDecided,
 } from '../lib/inbox';
 import { isShortcut, useShell } from '../lib/shell';
 import { ago } from '../lib/status';
@@ -112,6 +115,131 @@ function useCardKeys(list: React.RefObject<HTMLElement>, open: (id: string) => v
   }, [list, open]);
 }
 
+/** A card acted on here: when (to forget one the frame never took away) and when it left the list. */
+interface Decided {
+  item: InboxItem;
+  at: number;
+  gone?: number;
+}
+
+/** How long a card acted on may wait for the frame that takes it away before it is forgotten. */
+const DECIDED_WAIT_MS = 10_000;
+
+/**
+ * T445 (audit r7 #5, #13): the list holds still under the pointer and keeps
+ * the keyboard's place.
+ *  - A card acted on here stays mounted from the moment its action starts
+ *    (the frame may drop it before the answer is back), and
+ *    `DECIDED_LINGER_MS` after the frame drops it, in place and at its
+ *    height, as its outcome ("Merged into main").
+ *  - For `LIST_SETTLE_MS` after any card leaves, a pointer's click on the
+ *    list is ignored: whatever is under it just moved there. Keys still work.
+ *  - When the card that had focus leaves, the one that took its place gets it.
+ */
+function useSteadyList(
+  items: readonly InboxItem[],
+  list: React.RefObject<HTMLElement>,
+): {
+  shown: InboxItem[];
+  gone: (id: string) => boolean;
+  onActing: (item: InboxItem) => void;
+  guard: (event: React.MouseEvent) => void;
+  onFocus: (event: React.FocusEvent) => void;
+} {
+  const [decided, setDecided] = useState<ReadonlyMap<string, Decided>>(new Map());
+  const guardUntil = useRef(0);
+  const lastFocus = useRef<{ id: string; index: number } | undefined>(undefined);
+  const shownIds = useRef<readonly string[]>([]);
+
+  const onActing = useCallback((item: InboxItem) => {
+    setDecided((before) => new Map(before).set(item.id, { item, at: Date.now() }));
+  }, []);
+
+  // Mark when each decided card left the frame's list; forget any the frame never took away.
+  useEffect(() => {
+    const ids = new Set(items.map((i) => i.id));
+    const now = Date.now();
+    let changed = false;
+    const next = new Map(decided);
+    for (const [id, d] of decided) {
+      if (ids.has(id)) {
+        if (d.gone !== undefined || now - d.at > DECIDED_WAIT_MS) {
+          next.delete(id);
+          changed = true;
+        }
+      } else if (d.gone === undefined) {
+        next.set(id, { ...d, gone: now });
+        changed = true;
+      }
+    }
+    if (changed) setDecided(next);
+  }, [items, decided]);
+
+  // Each one that left goes once it has stayed its moment.
+  useEffect(() => {
+    const leaving = [...decided.values()].flatMap((d) => (d.gone !== undefined ? [d.gone] : []));
+    if (leaving.length === 0) return;
+    const due = Math.min(...leaving) + DECIDED_LINGER_MS - Date.now();
+    const timer = setTimeout(
+      () => {
+        const now = Date.now();
+        setDecided((before) => {
+          const next = new Map(before);
+          for (const [id, d] of before) {
+            if (d.gone !== undefined && now - d.gone >= DECIDED_LINGER_MS) next.delete(id);
+          }
+          return next;
+        });
+      },
+      Math.max(0, due),
+    );
+    return () => clearTimeout(timer);
+  }, [decided]);
+
+  const shown = withDecided(items, decided, Date.now());
+  const frameIds = new Set(items.map((i) => i.id));
+  const key = shown.map((i) => i.id).join(',');
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` is the trigger.
+  useLayoutEffect(() => {
+    const now = shown.map((i) => i.id);
+    const left = shownIds.current.filter((id) => !now.includes(id));
+    shownIds.current = now;
+    if (left.length === 0) return;
+    guardUntil.current = performance.now() + LIST_SETTLE_MS;
+    const was = lastFocus.current;
+    const active = document.activeElement;
+    if (was === undefined || !left.includes(was.id)) return;
+    if (active !== null && active !== document.body) return;
+    const cards = [...(list.current?.querySelectorAll<HTMLElement>('.cr-card') ?? [])];
+    const next = cards[Math.min(was.index, cards.length - 1)];
+    if (next) {
+      next.focus({ preventScroll: true });
+      next.scrollIntoView?.({ block: 'nearest' });
+    }
+  }, [key]);
+
+  return {
+    shown,
+    gone: (id) => !frameIds.has(id),
+    onActing,
+    guard: (event) => {
+      // `detail` is 0 for a click made by a key (Enter, Space, a card's A/B): never guarded.
+      if (event.detail > 0 && performance.now() < guardUntil.current) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    onFocus: (event) => {
+      const card = (event.target as Element).closest<HTMLElement>('.cr-card');
+      const id = card?.dataset.id;
+      if (!card || id === undefined) return;
+      const cards = [...(list.current?.querySelectorAll<HTMLElement>('.cr-card') ?? [])];
+      lastFocus.current = { id, index: cards.indexOf(card) };
+    },
+  };
+}
+
 export function Inbox({
   items,
   onChanged,
@@ -128,13 +256,14 @@ export function Inbox({
   const directorReply = useDirectorUnread();
   useMinuteTick();
   useCardKeys(list, select);
+  const steady = useSteadyList(items, list);
 
   const counts = filterCounts(items);
   // A filter emptied by answering its last item falls back to everything.
   const active = filter !== 'all' && counts[filter] === 0 ? 'all' : filter;
   const kinds = FILTERS.filter((f) => f.id !== 'all' && counts[f.id] > 0).length;
   const sections = groupNeedsMe(
-    applyFilter(items, active),
+    applyFilter(steady.shown, active),
     cockpit?.streams ?? [],
     cockpit?.projects ?? [],
   );
@@ -178,10 +307,15 @@ export function Inbox({
           <Spinner size={16} />
           Loading…
         </div>
-      ) : items.length === 0 ? (
+      ) : steady.shown.length === 0 ? (
         <Empty replies={replies.length + (directorReply !== undefined ? 1 : 0)} />
       ) : (
-        <div className="cr-inbox-list" ref={list}>
+        <div
+          className="cr-inbox-list"
+          ref={list}
+          onClickCapture={steady.guard}
+          onFocus={steady.onFocus}
+        >
           {sections.map((section) => (
             <section
               className="cr-inbox-section"
@@ -234,7 +368,13 @@ export function Inbox({
                       )}
                     </h2>
                     {group.items.map((item) => (
-                      <Card key={item.id} item={item} onDone={onChanged} />
+                      <Card
+                        key={item.id}
+                        item={item}
+                        onDone={onChanged}
+                        onActing={steady.onActing}
+                        gone={steady.gone(item.id)}
+                      />
                     ))}
                   </div>
                 );
@@ -474,15 +614,49 @@ const STEP_COPY: Record<
   },
 };
 
+/** T445 (audit r7 #10, #13): the step whose button takes focus once it is the next one. */
+let focusOnStep: SetupStep['id'] | undefined;
+const stepListeners = new Set<() => void>();
+
+/**
+ * T445: after a step done elsewhere (a repository added), the next step's
+ * button takes focus — once it is the next one, whether the frame that
+ * says so came before this call or comes after it.
+ */
+export function focusSetupStep(id: SetupStep['id']): void {
+  focusOnStep = id;
+  for (const listener of stepListeners) listener();
+}
+
 function Welcome({ steps }: { steps: readonly SetupStep[] }): JSX.Element {
-  const { setView, setNewProjectOpen, setNewStreamOpen } = useShell();
+  const { setAddRepoOpen, setNewProjectOpen, setNewStreamOpen } = useShell();
   const next = steps.find((s) => !s.done)?.id;
   const started = steps.some((s) => s.done);
+  const nextButton = useRef<HTMLButtonElement>(null);
+  // T445 (audit r7 #10): every step opens its dialog here, over Needs me.
   const run: Record<SetupStep['id'], () => void> = {
-    repo: () => setView('settings'),
+    repo: () => setAddRepoOpen(true),
     project: () => setNewProjectOpen(true),
     node: () => setNewStreamOpen(true),
   };
+  const [asked, setAsked] = useState(0);
+  useEffect(() => {
+    const listener = (): void => setAsked((n) => n + 1);
+    stepListeners.add(listener);
+    return () => {
+      stepListeners.delete(listener);
+    };
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `asked` is a trigger.
+  useEffect(() => {
+    if (next === undefined || focusOnStep !== next) return;
+    // After the dialog that did the step has closed and given its focus back.
+    const timer = setTimeout(() => {
+      focusOnStep = undefined;
+      nextButton.current?.focus();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [next, asked]);
   return (
     <div className="cr-welcome" data-testid="inbox-empty" data-state="first-run">
       <div className="cr-welcome-hd">
@@ -516,6 +690,7 @@ function Welcome({ steps }: { steps: readonly SetupStep[] }): JSX.Element {
                 <Button
                   size="sm"
                   variant={step.id === next ? 'primary' : 'secondary'}
+                  {...(step.id === next ? { ref: nextButton } : {})}
                   icon={copy.icon}
                   data-testid={`setup-${step.id}`}
                   onClick={run[step.id]}

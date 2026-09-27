@@ -160,6 +160,9 @@ export interface ShellValue {
   /** T360: the "New project" dialog — from the sidebar, or Needs me's first-run steps. */
   newProjectOpen: boolean;
   setNewProjectOpen(open: boolean): void;
+  /** T445 (audit r7 #10): the "Add repository" dialog — from Needs me's first step, or ⌘K. */
+  addRepoOpen: boolean;
+  setAddRepoOpen(open: boolean): void;
   /**
    * T419 (D42): the Ask box, and what it asks about: a node's id, or
    * `'director'`; `undefined` when closed.
@@ -214,6 +217,7 @@ export function ShellProvider({
   const [newStreamOpen, setNewStreamOpen] = useState(false);
   const [newStreamPreset, setNewStreamPreset] = useState<NewStreamPreset | undefined>(undefined);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [addRepoOpen, setAddRepoOpen] = useState(false);
   const [askAbout, setAskAbout] = useState<string | undefined>(undefined);
   const [project, setProject] = useState<string | undefined>(initial.project);
   const [rulesFilter, setRulesFilter] = useState<RulesFilter>(DEFAULT_RULES_FILTER);
@@ -335,6 +339,11 @@ export function ShellProvider({
       },
       newProjectOpen,
       setNewProjectOpen,
+      addRepoOpen,
+      setAddRepoOpen: (open: boolean) => {
+        setAddRepoOpen(open);
+        if (open) setRailOpen(false);
+      },
       askAbout,
       openAsk: (target?: string | null) => {
         if (target === null) {
@@ -360,6 +369,7 @@ export function ShellProvider({
       newStreamOpen,
       newStreamPreset,
       newProjectOpen,
+      addRepoOpen,
       askAbout,
       rulesFilter,
       project,

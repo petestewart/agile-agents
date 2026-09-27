@@ -2542,6 +2542,35 @@ input[type="checkbox"].cr-switch:focus-visible {
 .cr-card[data-settled="true"] {
   opacity: 0.6;
 }
+/* T445 (audit r7 #3): "Decide below" points the eye at the card it names. */
+.cr-card[data-flash="true"] {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+  transition: box-shadow 160ms var(--ease);
+}
+/* T445 (audit r7 #5): a card decided in place stays a moment as its outcome, at its own height. */
+.cr-card-outcome {
+  display: flex;
+  align-items: center;
+  background: var(--bg-inset);
+  box-shadow: none;
+}
+.cr-card-outcome-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--green-text);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.cr-card-outcome-node {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cr-card-hd {
   display: flex;
   align-items: center;

@@ -46,11 +46,17 @@ export function PlanView({
   tick,
   onChanged,
   titleOf,
+  start,
+  running = false,
 }: {
   id: string;
   tick: unknown;
   onChanged: () => void;
   titleOf: (id: string) => string;
+  /** T445 (audit r7 #21): with no plan and no agent running, what gets one written. */
+  start?: { label: string; busy: boolean; onStart: () => void };
+  /** Its agent is running: the plan is on its way. */
+  running?: boolean;
 }): JSX.Element {
   const [data, setData] = useState<Awaited<ReturnType<typeof getStreamPlan>> | undefined>();
   const [error, setError] = useState<string | undefined>(undefined);
@@ -72,9 +78,28 @@ export function PlanView({
   if (!plan && contracts.length === 0) {
     return (
       <div data-testid="plan-empty">
-        <EmptyState icon="list" title="No plan yet">
-          The coordinator writes one when it splits the work into parts: who owns which files, and
-          the contracts between them.
+        <EmptyState
+          icon="list"
+          title="No plan yet"
+          {...(start
+            ? {
+                actions: (
+                  <Button
+                    variant="primary"
+                    icon="play"
+                    data-testid="plan-empty-start"
+                    busy={start.busy}
+                    onClick={start.onStart}
+                  >
+                    {start.label}
+                  </Button>
+                ),
+              }
+            : {})}
+        >
+          {running
+            ? 'Its agent is running: the plan shows here once it writes one — who owns which files, and the contracts between them.'
+            : 'The coordinator writes one when it splits the work into parts: who owns which files, and the contracts between them.'}
         </EmptyState>
       </div>
     );

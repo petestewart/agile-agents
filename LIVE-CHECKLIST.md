@@ -84,7 +84,7 @@ The cockpit is `http://127.0.0.1:4600/`.
 | **Events** | Every routed event, newest first, by day: what happened (and a line of detail), to which node, and who it was routed to and why; filter by type (**All** · **Messages** · **Merges and PRs** · **Coordination** · **Knowledge**), by repo, or search; **Show more** for older ones |
 | Anywhere | **Ctrl K** (**⌘K** on a Mac, or the search icon at the top of the sidebar) opens the command palette: on a node's page **This node** first (Merge, Start/Stop agent, Open Changes, Close node…, Copy branch name…), then recent nodes, what waits on you (`Read reply: …` for a reply you haven't read, `Answer: …`, `Merge: …`), the views and the actions (New node, New project, switch theme, Keyboard shortcuts); type to find a node by part of its title or path, a project, a view or an action; ↑↓ and Enter. **?** lists every keyboard shortcut; **g** then a letter goes to a view (**g i** Needs me, **g k** Knowledge…) |
 | **Settings** | Sections on the left: **General** (theme: System, Light, Dark; **Notifications**: a switch, off by default and kept per browser, that asks the browser's permission and then tells you when something new needs you, or a reply, while the tab is in the background, with **Send a test**; the daemon), **Agents** (session defaults: global, then per project, then per repository — repositories that set nothing fold into one row, `5 repositories use the global default`, that opens to their cards — by name — `Claude Opus 5.5`, `Inherits Claude Opus 5.5` — each card saying what a new agent there starts with, e.g. `Claude Opus 5.5 · low`; a change saves at once), **Repositories** (**Add repository**: a folder, or a URL to clone; per repo its icon, delivery, auto-merge, visibility), **Classifier** (the TypeSafe API key), **Trackers** (Jira, Linear). General also says what is **Always yours** (merging, accepting knowledge, allowing an action the classifier was unsure of, answering questions) |
-| A node's page | A chat with its agent. The header: path, title (click it to rename), status, role, repo and branch, then **Start agent** (its chevron, **Start with…**, picks another model), **Stop** while it works (**⋯** → **Stop agent** while it waits on you), **Merge** when there is something to merge, the details toggle and **⋯** (**Ask an agent to review…** once the branch has commits, **Restart agent** (same model), **Waits on…**, **Add repository…**, **Tracker issue…**, **Copy branch name**, **Close node…**, **Delete node…**). Tabs **Chat**, **Changes**, **Plan**, **Activity**, **Knowledge**, **Docs**, only where they apply; the tab is in the address bar, so a reload, Back and a link keep it. Review comments on **Changes** and a half-written message stay across a reload (closing the tab with a comment unsent asks first), and **Merge** asks about an unsent comment (`1 review comment on … isn’t sent. Merge anyway?`, or **Add to message**). The chat opens with the goal (**Edit** changes it; the agent reads the change), unless the goal only repeats the title or the node is a project's root: then the goal is in **Details** → **About**, with its **Edit**. What needs you (questions, gates, plans, proposals) sits at the end of the chat, and the composer answers an open question. The composer's model chip (`Claude Opus 5.5 · low ▾`) opens a list of models by name for your next message; picking starts nothing, and the next message starts the agent with it (or restarts a running one with it). The **Details** panel: **Delivery** once the node has a branch (its badge in the header's words, `Ready to merge`; Check now, Mark as merged, Resolve), **Agent** (the model that runs, sessions), **Children** (every child with its status, not on a project's root), **Waits on**, **Tracker** (**Link**, **Create issue**; then **Unlink**, **Import children**; only when the node's project has a tracker), **Autonomy** on a coordinating node or a project root (**Coordinator**, and on a project root **Director**; a change to **Run** asks first), and on a project root **Project** (its repositories and tracker, one **Save changes**; a change not saved yet waits for you if you go elsewhere or reload, until **Save changes** or **Cancel**) |
+| A node's page | A chat with its agent. The header: path, title (click it to rename), status, role, repo and branch, then **Start agent** (its chevron, **Start with…**, picks another model), **Stop** while it works (**⋯** → **Stop agent** while it waits on you), **Merge** when there is something to merge, the details toggle and **⋯** (**Ask an agent to review…** once the branch has commits, **Restart agent** (same model), **Waits on…**, **Add repository…** (a searchable list; on a coordinating node it adds a part), **Tracker issue…**, **Rename…**, **Move to…**, **Copy branch name**, **Close node…**, **Delete node…**); `j`/`k` open the next or previous node in the tree. Tabs **Chat**, **Changes**, **Plan**, **Activity**, **Knowledge**, **Docs**, only where they apply; the tab is in the address bar, so a reload, Back and a link keep it. Review comments on **Changes** and a half-written message stay across a reload (closing the tab with a comment unsent asks first), and **Merge** asks about an unsent comment (`1 review comment on … isn’t sent. Merge anyway?`, or **Add to message**). The chat opens with the goal (**Edit** changes it; the agent reads the change), unless the goal only repeats the title or the node is a project's root: then the goal is in **Details** → **About**, with its **Edit**. What needs you (questions, gates, plans, proposals) sits at the end of the chat, and the composer answers an open question. The composer's model chip (`Claude Opus 5.5 · low ▾`) opens a list of models by name for your next message; picking starts nothing, and the next message starts the agent with it (or restarts a running one with it). The **Details** panel: **Delivery** once the node has a branch (its badge in the header's words, `Ready to merge`; Check now, Mark as merged, Resolve), **Agent** (the model that runs, sessions), **Children** (every child with its status, not on a project's root), **Waits on**, **Tracker** (**Link**, **Create issue**; then **Unlink**, **Import children**; only when the node's project has a tracker), **Autonomy** on a coordinating node or a project root (**Coordinator**, and on a project root **Director**; a change to **Run** asks first), and on a project root **Project** (its repositories and tracker, one **Save changes**; a change not saved yet waits for you if you go elsewhere or reload, until **Save changes** or **Cancel**) |
 | A project's page (its root) | Opens on **Overview**: the counts by status, one per status with its own dot and word, your move first (`1 needs you · 1 blocked · 1 ready to merge · 3 working · 2 not started · 1 merged`; a count shows only those nodes, **Show all** brings the rest back), the project's nodes as rows (status, where it sits, repo, the agent it runs, age; **Your move**, then **In progress**, then **Not running**; done, merged and closed fold under **Finished**), its repositories (host icon, kind, what Merge does there, open nodes; **Edit** opens the details) and its recent events (**All events** opens Events). A click on a row opens that node. When the project's own chat waits on you, a line says so with **Open chat**. **Chat** is the next tab; the header, the other tabs and the **Details** panel are a node page's (above). An empty project reads **No nodes yet** with **New node** |
 
 ### The CLI
@@ -194,7 +194,10 @@ agile knowledge list
       and `stay-in-worktree` (accepted, `action:pattern!`) and `no-push` (retired).
 - [ ] Open the cockpit: `open http://127.0.0.1:4600/`. Nothing waits on you
       yet, so **Needs me** shows three setup steps, each with its state and a
-      button: **Add repository** (opens Settings), **New project**, **New node**.
+      button: **Add repository** (opens its dialog right there; once a
+      repository is added, **New project** is the next step and has the
+      focus), **New project**, **New node**. `⌘K` → **Add repository…** opens
+      the same dialog from anywhere.
 
 ## 2. Projects and repos
 
@@ -416,12 +419,13 @@ From here on, every step is done in the cockpit unless it is marked
       `Parties: Ledger export · ledger-lite, Ledger export · agile-test-repo`
       (by name), then its body.
 - [ ] Press **Approve plan** on the card (or **Approve** on the Plan tab).
-      The tab reads `Plan v1 · approved by human` and the card leaves
-      **Needs me**. The chat reads `You approved plan v1`. Click the
-      ledger-lite part in the rail: its chat reads
-      `Plan v1 approved: this part owns …`, and its **Activity** tab has a
-      `Plan changed` row. Each part's brief now carries its owned paths and
-      the contract.
+      The tab reads `Plan v1 · approved by human`, and in **Needs me** the
+      card stays a moment in its place as `Plan approved`, then leaves (the
+      next card never moves under the pointer). The chat reads
+      `You approved plan v1`. Click the ledger-lite part in the rail: its
+      chat reads `Plan v1 approved: this part owns …`, and its **Activity**
+      tab has a `Plan changed` row. Each part's brief now carries its owned
+      paths and the contract.
 - [ ] While the parts work, the Ledger export page shows a **Children**
       section: one row per part, its status in the words the rail uses, and
       under it what its agent last reported (what it is doing, the files it
@@ -566,7 +570,8 @@ A Blog node adds `walkthrough-notes.md` to ledger-lite and merges directly.
       **What should the agent do?**
       `Add walkthrough-notes.md with a Blog and a Shop section.`, Title
       `Walkthrough notes`, Parent `Top level of Blog`, Repository
-      `No repository`, switch **Start the agent now** off, press
+      `No repository` (Blog has one repository, so it starts on `ledger-lite`:
+      press **Just talk instead** under it), switch **Start the agent now** off, press
       **Create node**. The node's page opens reading `Not started` (its
       **Agent** section says `No sessions yet.`), and the rail shows it under
       Blog with the conversation icon ○.
@@ -784,7 +789,8 @@ Again no agent: you play it.
 
 - [ ] Rail → only **Blog** → **Needs me** → **New node**: Title
       `Ledger count`, Goal `Add a count function in src/ledger-count.ts.`,
-      switch **Start the agent now** off, **Create node**. Then **⋯** → **Add repository…** →
+      **Just talk instead** (no repository yet), switch **Start the agent now**
+      off, **Create node**. Then **⋯** → **Add repository…** →
       `ledger-lite` → **Add**.
 - [ ] Commit the function with no test:
 

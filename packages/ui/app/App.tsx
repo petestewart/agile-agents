@@ -21,7 +21,7 @@ import { Suspense, useEffect } from 'react';
 import { Ask } from './components/Ask';
 import { CommandPalette } from './components/CommandPalette';
 import { ErrorBoundary, PageLoading, lazyNamed } from './components/ErrorBoundary';
-import { Inbox } from './components/Inbox';
+import { Inbox, focusSetupStep } from './components/Inbox';
 import { NewStream } from './components/NewStream';
 import { Shortcuts } from './components/Shortcuts';
 import { MobileBar, Sidebar } from './components/Sidebar';
@@ -44,6 +44,7 @@ const DependenciesLens = lazyNamed(loadLenses, 'DependenciesLens');
 const EventLog = lazyNamed(loadLenses, 'EventLog');
 const DirectorPage = lazyNamed(() => import('./components/Director'), 'DirectorPage');
 const NewProject = lazyNamed(() => import('./components/NewProject'), 'NewProject');
+const AddRepoDialog = lazyNamed(() => import('./components/AddRepo'), 'AddRepoDialog');
 
 const LAZY_VIEWS: Partial<Record<ShellView, { preload(): Promise<unknown> }>> = {
   settings: Settings,
@@ -160,7 +161,17 @@ function useMissingNodeToast(): void {
 
 export function App(): JSX.Element {
   const { snapshot, connected, offline, cockpit, refresh } = useFeed();
-  const { view, selected, railOpen, toggleRail, newProjectOpen, setNewProjectOpen } = useShell();
+  const {
+    view,
+    selected,
+    select,
+    railOpen,
+    toggleRail,
+    newProjectOpen,
+    setNewProjectOpen,
+    addRepoOpen,
+    setAddRepoOpen,
+  } = useShell();
   const rows = cockpit?.streams ?? [];
   const items = cockpit?.inbox ?? [];
   const projects = cockpit?.projects ?? [];
@@ -247,6 +258,25 @@ export function App(): JSX.Element {
         <ErrorBoundary area="overlay" resetKey={place}>
           <Suspense fallback={null}>
             <NewProject onClose={() => setNewProjectOpen(false)} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+      {addRepoOpen && (
+        // T445 (audit r7 #10): Needs me's first step and ⌘K open it where you are.
+        <ErrorBoundary area="overlay" resetKey={place}>
+          <Suspense fallback={null}>
+            <AddRepoDialog
+              open
+              onClose={() => setAddRepoOpen(false)}
+              onAdded={() => {
+                refresh();
+                // Setting up: back to Needs me, where "Create a project" is now the next step.
+                if (projects.length === 0) {
+                  focusSetupStep('project');
+                  if (view !== 'inbox') select(undefined);
+                }
+              }}
+            />
           </Suspense>
         </ErrorBoundary>
       )}

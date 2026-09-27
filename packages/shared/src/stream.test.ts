@@ -17,6 +17,8 @@ import {
   nodeRole,
   partsOf,
   quoteThreadBody,
+  repoOfProposalRef,
+  repoProposalRef,
   ulid,
   validateSessionRef,
   validateStream,
@@ -250,6 +252,17 @@ describe('ThreadEntrySchema', () => {
     expect(() =>
       validateThreadEntry({ ts: 'now', by: 'human', kind: 'line', body: 'hi', priority: 'high' }),
     ).toThrow(/unrecognized/i);
+  });
+});
+
+describe('repo proposal refs (T445)', () => {
+  test('round-trips a repo name; anything else proposes no repo', () => {
+    expect(repoProposalRef('web')).toBe('repo:web');
+    expect(repoOfProposalRef(repoProposalRef('web'))).toBe('web');
+    expect(repoOfProposalRef(undefined)).toBeUndefined();
+    expect(repoOfProposalRef('repo:')).toBeUndefined();
+    expect(repoOfProposalRef('proposals/AP-01ARZ3NDEKTSV4RRFFQ69G5FAV.yaml')).toBeUndefined();
+    expect(repoOfProposalRef('knowledge/K-1.yaml')).toBeUndefined();
   });
 });
 

@@ -41,6 +41,7 @@ import {
   liveChildrenOf,
   nodeRole,
   patternOf,
+  repoProposalRef,
   ulid,
   validateClassifierConfig,
 } from '@agile-agents/shared';
@@ -1062,10 +1063,12 @@ describe('Needs me and the decision cards (Playwright e2e, T364)', () => {
         for (const id of ['repo', 'project', 'node']) {
           expect(await page.locator(step(id)).getAttribute('data-done')).toBe('false');
         }
-        // Add a repository opens Settings.
+        // T445 (audit r7 #10): Add a repository opens its dialog here, over Needs me.
         await page.locator('[data-testid="setup-repo"]').click();
-        await page.locator('[data-testid="settings"]').waitFor({ state: 'visible' });
-        await page.locator('[data-view="inbox"]').click();
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'visible' });
+        expect(await page.locator(empty).isVisible()).toBe(true);
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'detached' });
         // Create a project opens the New project dialog.
         await page.locator('[data-testid="setup-project"]').click();
         await page.locator('[data-testid="new-project"]').waitFor({ state: 'visible' });
@@ -6123,6 +6126,10 @@ describe('where the work goes under a work node (Playwright e2e, T435)', () => {
         expect(
           await page.locator('[data-testid="new-stream-parent"]').getAttribute('data-value'),
         ).toBe(work.id);
+        // T445 (audit r7 #12): the project's one repository is picked; with none, no hint.
+        await waitForAttr(page, '[data-testid="new-stream-repo"]', 'data-value', 'demo');
+        await page.locator('[data-testid="new-stream-coordinates"]').waitFor();
+        await page.locator('[data-testid="new-stream-no-repo"]').click();
         expect(await page.locator('[data-testid="new-stream-coordinates"]').count()).toBe(0);
         await page.locator('[data-testid="new-stream-repo"]').click();
         await page.locator('[data-testid="new-stream-repo-option"][data-repo="demo"]').click();
@@ -6163,16 +6170,19 @@ describe('what a worker proposes next (Playwright e2e, T427)', () => {
           { kind: 'proposal', body: `next: Add CSV export — ${goal}` },
           ulid(),
         );
-        // A proposal that isn't a propose_next (no title and goal) offers nothing to create.
+        // A proposal that isn't a propose_next (no title and goal) offers nothing to create;
+        // T445 (audit r7 #3): a repo proposal (its ref) offers Add <repo>, and only that one.
         await cockpit.streams.appendThread('daemon', node.id, {
           kind: 'proposal',
           body: 'next: this needs a change in web too; add it?',
+          ref: repoProposalRef('web'),
         });
         page = await openPage();
         await page.goto(`${cockpit.base}/?node=${node.id}`);
         await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
         await page.locator('[data-testid="node-role"]').waitFor();
         await page.locator('[data-testid="proposal-add-repo"]').waitFor();
+        expect(await page.locator('[data-testid="proposal-add-repo"]').count()).toBe(1);
         expect(await page.locator('[data-testid="proposal-create-node"]').count()).toBe(1);
         // T435 (#26): "Next: <title>", the goal under it — not the raw verb.
         const proposal = page.locator('[data-testid="proposal-next"]');
@@ -7358,7 +7368,10 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
         // T363: Add repository… is in the ⋯ menu and opens a dialog.
         await page.locator('[data-testid="node-menu-trigger"]').click();
         await page.locator('[data-testid="add-repo"]').click();
-        await page.locator('[data-testid="add-repo-select"]').selectOption('demo');
+        // T445 (audit r7 #23): the searchable repository picker.
+        await page.locator('[data-testid="add-repo-select"]').click();
+        await page.locator('[data-testid="add-repo-select-option"][data-repo="demo"]').click();
+        await waitForAttr(page, '[data-testid="add-repo-select"]', 'data-value', 'demo');
         await page.locator('[data-testid="add-repo-submit"]').click();
         // T413: the branch reads by its name; the whole one is the chip's `data-branch`.
         await page.locator('[data-testid="node-branch"][data-branch^="stream/"]').waitFor();
@@ -7367,10 +7380,11 @@ describe('+ Repo in place (Playwright e2e, T205)', () => {
           .locator(`${root} [data-testid="thread"]`, { hasText: 'THREAD-MARKER-205' })
           .waitFor();
 
-        // The agent's "web too?" proposal carries an Add button.
+        // The agent's "web too?" proposal (T445: a repo proposal by its ref) carries an Add button.
         await cockpit.streams.appendThread('daemon', node.id, {
           kind: 'proposal',
           body: 'next: this needs a change in web too; add it?',
+          ref: repoProposalRef('web'),
         });
         await page.locator('[data-testid="proposal-add-repo"]', { hasText: 'Add web' }).click();
         await waitUntil(
@@ -10398,6 +10412,376 @@ describe('views and polish (Playwright e2e, T436, audit r6)', () => {
           await page.locator('[data-testid="plan-approve"]').getAttribute('data-variant'),
         ).toBe('primary');
         expect(await page.locator('.cr-node-hd .cr-btn[data-variant="primary"]').count()).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('flow and focus (Playwright e2e, T445)', () => {
+  /** The `data-testid` (else the `data-id`, else the tag) of what has focus. */
+  const focusOf = async (page: Page): Promise<string> =>
+    (await page.evaluate<string>(
+      `(() => { const a = document.activeElement; return a?.getAttribute('data-testid') ?? a?.getAttribute('data-id') ?? a?.tagName.toLowerCase() ?? ''; })()`,
+    )) ?? '';
+
+  browserTest(
+    'a merged card stays as "Merged into main" at its height; the next Merge never slides under the pointer, and the next card takes focus',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const a = await finishedNode(cockpit, 'Api part', 's-api');
+        const b = await finishedNode(cockpit, 'Web part', 's-web');
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        // "Don't ask again" was ticked before: Merge is one click.
+        await page.evaluate(`localStorage.setItem('agile.merge.ask', 'never')`);
+        await page.reload();
+        const first = `[data-testid="inbox"] .cr-card[data-id="${a}"]`;
+        const second = `[data-testid="inbox"] .cr-card[data-id="${b}"]`;
+        await page.locator(`${first} [data-testid="land"]`).waitFor({ state: 'visible' });
+        await page.locator(`${second} [data-testid="land"]`).waitFor({ state: 'visible' });
+        const merge2 = await page.locator(`${second} [data-testid="land"]`).boundingBox();
+        const lands: string[] = [];
+        page.on('request', (r) => {
+          if (r.method() === 'POST' && r.url().endsWith('/land')) lands.push(r.url());
+        });
+        // The moment the decided card leaves, a pointer click lands on the list: it does nothing.
+        await page.evaluate(`(() => {
+          window.__t445 = 'armed';
+          let seen = false;
+          const obs = new MutationObserver(() => {
+            if (document.querySelector('[data-testid="card-outcome"][data-id="${a}"]')) {
+              seen = true;
+              return;
+            }
+            if (!seen) return;
+            obs.disconnect();
+            document
+              .querySelector('.cr-card[data-id="${b}"] [data-testid="land"]')
+              ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+            window.__t445 = 'clicked';
+          });
+          obs.observe(document.body, { subtree: true, childList: true });
+        })()`);
+
+        await page.locator(`${first} [data-testid="land"]`).click();
+        const outcome = page.locator(`[data-testid="card-outcome"][data-id="${a}"]`);
+        await outcome.waitFor({ state: 'visible' });
+        expect(await outcome.textContent()).toContain('Merged into main');
+        // In place, at its height: the next card's Merge is where it was.
+        expect((await page.locator(`${second} [data-testid="land"]`).boundingBox())?.y).toBe(
+          merge2?.y,
+        );
+        expect(cockpit.streams.get(a).human.status).toBe('landed');
+        await outcome.waitFor({ state: 'detached' });
+        await waitUntilAsync(
+          'the click right after',
+          async () => (await page?.evaluate<string>('window.__t445')) === 'clicked',
+        );
+        // That click was ignored: nothing asked to merge the second node.
+        await Bun.sleep(600);
+        expect(lands.filter((u) => u.includes(b))).toEqual([]);
+        expect(cockpit.streams.get(b).human.status).not.toBe('landed');
+        // The card that took its place has the focus, so j/k go on from there.
+        await waitUntilAsync(
+          'focus on the next card',
+          async () => (await focusOf(page as Page)) === b,
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'proposal lines: an autonomy proposal says Decide below, not Add <repo>; the Plan tab starts the coordinator; ⋯ has Rename and Move to; Add repository is a picker; a root points to Ask',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        await cockpit.store.putRepos({ api: { path: cockpit.home }, web: { path: cockpit.home } });
+        const shop = await cockpit.projects.create({ name: 'Shop', repos: ['api'] });
+        const node = await cockpit.streams.create('human', {
+          title: 'Show sale prices',
+          goal: 'g',
+          project: shop.id,
+        });
+        const child = (title: string, repo: string) =>
+          cockpit.streams.create('human', {
+            title,
+            goal: 'g',
+            project: shop.id,
+            parent: node.id,
+            repo,
+          });
+        const api = await child('api part', 'api');
+        const web = await child('web part', 'web');
+        const out = await cockpit.autonomy.act(node.id, 'coordinator', 'agent:test', {
+          action: 'add_waits_on',
+          child: web.id,
+          on: api.id,
+        });
+        expect(out.applied).toBe(false);
+
+        page = await openPage();
+        const attaches: string[] = [];
+        await page.route(`**/api/streams/${node.id}/attach`, (route) => {
+          attaches.push(route.request().url());
+          return route.fulfill({ status: 201, contentType: 'application/json', body: '{}' });
+        });
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator('[data-testid="node-role"]').waitFor();
+        // The line names the api repo in its words: it offers no Add api, only its card.
+        await page.locator('[data-testid="proposal-decide"]').waitFor({ state: 'visible' });
+        expect(await page.locator('[data-testid="proposal-add-repo"]').count()).toBe(0);
+        await page.locator('[data-testid="proposal-decide"]').click();
+        await waitUntilAsync(
+          'focus on its Apply',
+          async () => (await focusOf(page as Page)) === 'proposal-apply',
+        );
+
+        // No plan and no coordinator running: the Plan tab starts one.
+        await page.locator('.cr-tabs [data-tab="plan"]').click();
+        const startPlan = page.locator('[data-testid="plan-empty-start"]');
+        await startPlan.waitFor({ state: 'visible' });
+        expect(await startPlan.textContent()).toBe('Start the coordinator');
+        await startPlan.click();
+        await waitUntil('the coordinator started', () => attaches.length === 1);
+
+        // ⋯ has Move to… and Rename…; a dialog gives focus back to what opened it.
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page.locator('[data-testid="menu-rename"]').waitFor({ state: 'visible' });
+        await page.locator('[data-testid="menu-move"]').click();
+        await page.locator('[data-testid="move-dialog"]').waitFor({ state: 'visible' });
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="move-dialog"]').waitFor({ state: 'detached' });
+        await waitUntilAsync(
+          'focus back on the menu',
+          async () => (await focusOf(page as Page)) === 'node-menu-trigger',
+        );
+        // …and in ⌘K's "This node".
+        await page.keyboard.press('Control+k');
+        await page.locator('[data-testid="palette-input"]').fill('rename');
+        await page
+          .locator('[data-testid="palette-item"][data-key^="this:"]', { hasText: 'Rename…' })
+          .click();
+        await page.locator('[data-testid="rename-input"]').fill('Sale prices');
+        await page.locator('[data-testid="rename-save"]').click();
+        await waitForText(page, '[data-testid="stream-title"]', 'Sale prices');
+
+        // Add repository… on a coordinating node: the repo picker, and it adds a part.
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page.locator('[data-testid="add-repo"]').click();
+        await waitForAttr(page, '[data-testid="add-repo-select"]', 'data-value', 'api');
+        expect(await page.locator('[data-testid="add-repo-part"]').textContent()).toContain(
+          'Adds a part on api',
+        );
+        await page.locator('[data-testid="add-repo-select"]').click();
+        await page.locator('[data-testid="add-repo-select-option"][data-repo="web"]').click();
+        await waitForText(
+          page,
+          '[data-testid="add-repo-part"]',
+          'Adds a part on web, under this node, which coordinates it.',
+        );
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="add-repo-form"]').waitFor({ state: 'detached' });
+
+        // The project's root, with no agent: its composer points to Ask.
+        await page.goto(`${cockpit.base}/?node=${shop.root}&tab=thread`);
+        const composer = page.locator('[data-testid="composer-input"]');
+        await composer.waitFor({ state: 'visible' });
+        expect(await composer.getAttribute('placeholder')).toBe(
+          'Write to the project — or press A to ask it a question',
+        );
+        await page.locator('[data-testid="chat-empty-ask"]').click();
+        await page.locator('[data-testid="ask"]').waitFor({ state: 'visible' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'first run: Add repository opens in place, then "Create a project" is next and has focus; ⌘K adds one too',
+    async () => {
+      const scratch = mkdtempSync(join(tmpdir(), 'agile-t445-first-run-'));
+      const userHome = join(scratch, 'home');
+      const shop = join(userHome, 'shop');
+      mkdirSync(shop, { recursive: true });
+      git(['init', '-q', '-b', 'main'], shop);
+      git(
+        [
+          '-c',
+          'user.email=t@example.com',
+          '-c',
+          'user.name=T',
+          'commit',
+          '-q',
+          '--allow-empty',
+          '-m',
+          'init',
+        ],
+        shop,
+      );
+      const cockpit = await startCockpit({ userHome });
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const empty = '[data-testid="inbox-empty"][data-state="first-run"]';
+        await page.locator('[data-testid="setup-repo"]').click();
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'visible' });
+        const browser = '[data-testid="add-repo-browser"]';
+        await page.locator(`${browser}[data-path="${userHome}"]`).waitFor({ state: 'visible' });
+        await page.locator(`${browser} [data-testid="add-repo-dir"][data-name="shop"]`).click();
+        await waitForText(page, '[data-testid="add-repo-status"]', 'shop is a git repository.');
+        await page.locator('[data-testid="settings-repo-add-save"]').click();
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'detached' });
+        expect(cockpit.store.getRepos().shop?.path).toBe(realpathSync(shop));
+        // Still Needs me: step 1 is done and step 2 is the primary, with the focus.
+        await waitForAttr(page, `${empty} [data-step="repo"]`, 'data-done', 'true');
+        await waitForAttr(page, '[data-testid="setup-project"]', 'data-variant', 'primary');
+        await waitUntilAsync(
+          'focus on Create a project',
+          async () => (await focusOf(page as Page)) === 'setup-project',
+        );
+
+        // ⌘K: Add repository… opens the same dialog, wherever you are.
+        await page.keyboard.press('Control+k');
+        await page.locator('[data-testid="palette-input"]').fill('add repository');
+        await page.locator('[data-testid="palette-item"][data-key="action:add-repo"]').click();
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'visible' });
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="add-repo-dialog"]').waitFor({ state: 'detached' });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    "New node: a one-repository project starts on it; the title is cut at a clause and promises nothing without quick drafts; the new node's composer has focus",
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+          repos: ['demo'],
+        });
+        // The quick drafts switch is stubbed below: nothing the service worker fetches.
+        page = await openPage({ serviceWorkers: 'block' });
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="new-stream-open"]').click();
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
+        // The project's one repository, with "No repository" one click away.
+        await waitForAttr(page, '[data-testid="new-stream-repo"]', 'data-value', 'demo');
+        await page.locator('[data-testid="new-stream-no-repo"]').waitFor({ state: 'visible' });
+        await page
+          .locator('[data-testid="new-stream-goal"]')
+          .fill('Add a greet() function to src/index.ts that returns "hello, world" and a test');
+        expect(await page.locator('[data-testid="new-stream-title"]').inputValue()).toBe(
+          'Add a greet() function to src/index.ts',
+        );
+        const hint =
+          '[data-testid="new-stream"] .cr-field:has([data-testid="new-stream-title"]) .cr-field-hint';
+        expect(await page.locator(hint).textContent()).toBe(
+          'The goal’s first line — edit it if you like.',
+        );
+        await page.locator('[data-testid="new-stream-start"]').uncheck();
+        await page.locator('[data-testid="new-stream-create"]').click();
+        await waitUntil('the node', () =>
+          cockpit.streams
+            .list()
+            .some((s) => s.title === 'Add a greet() function to src/index.ts' && s.repo === 'demo'),
+        );
+        const made = cockpit.streams
+          .list()
+          .find((s) => s.title === 'Add a greet() function to src/index.ts');
+        await page.locator(`[data-testid="stream-page"][data-stream="${made?.id}"]`).waitFor();
+        await waitUntilAsync(
+          "focus on the new node's composer",
+          async () => (await focusOf(page as Page)) === 'composer-input',
+        );
+
+        // With quick drafts on and there, the hint promises a title; "Just talk" is no repository.
+        await page.route('**/api/settings/quick-drafts', (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ on: true, available: true }),
+          }),
+        );
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="new-stream-open"]').click();
+        await waitForText(
+          page,
+          hint,
+          'Left as is, a short title is written for you once it’s made.',
+        );
+        await page.locator('[data-testid="new-stream-no-repo"]').click();
+        await waitForAttr(page, '[data-testid="new-stream-repo"]', 'data-value', '');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    "j and k on a node's page open the next and previous node in the tree; Needs me keeps them for its cards",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'Shop' });
+        const a = await cockpit.streams.create('human', {
+          title: 'Alpha',
+          goal: 'g',
+          project: shop.id,
+        });
+        const b = await cockpit.streams.create('human', {
+          title: 'Beta',
+          goal: 'g',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${a.id}`);
+        const at = (id: string) => `[data-testid="stream-page"][data-stream="${id}"]`;
+        await page.locator(at(a.id)).waitFor();
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${b.id}"]`).waitFor();
+        await page.evaluate('document.activeElement?.blur()');
+        await page.keyboard.press('j');
+        await page.locator(at(b.id)).waitFor();
+        await page.keyboard.press('k');
+        await page.locator(at(a.id)).waitFor();
+        await page.keyboard.press('k');
+        await page.locator(at(shop.root)).waitFor();
+        // Not while typing.
+        await page.goto(`${cockpit.base}/?node=${a.id}&tab=thread`);
+        await page.locator('[data-testid="composer-input"]').click();
+        await page.keyboard.press('j');
+        await Bun.sleep(300);
+        expect(await page.locator(at(a.id)).count()).toBe(1);
+        // Needs me: j walks its cards, never the tree.
+        await page.goto(`${cockpit.base}/`);
+        await page.locator('[data-testid="inbox"]').waitFor();
+        await page.keyboard.press('j');
+        await Bun.sleep(300);
+        expect(await page.locator('[data-testid="stream-page"]').count()).toBe(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
