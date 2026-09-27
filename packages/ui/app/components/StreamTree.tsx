@@ -49,6 +49,7 @@ import {
   filterStreamRows,
   parseCollapsed,
   rowsInProject,
+  splitTitle,
   subtreeNeedsYou,
 } from '../lib/streams';
 import {
@@ -178,6 +179,21 @@ function menuPlacement(el: Element): 'top' | 'bottom' {
   const view = scroller.getBoundingClientRect();
   const bottom = Math.min(view.bottom, window.innerHeight);
   return box.bottom + 250 > bottom && box.top - 250 > view.top ? 'top' : 'bottom';
+}
+
+/**
+ * T447 (audit r7 #20): the title truncates in the middle, keeping its end
+ * (`splitTitle`), so alike titles stay apart; the row's tooltip has it all.
+ */
+function RowTitle({ title }: { title: string }): JSX.Element {
+  const split = splitTitle(title);
+  if (split === undefined) return <span className="title">{title}</span>;
+  return (
+    <span className="title" data-split="true">
+      <span className="title-head">{split.head}</span>
+      <span className="title-tail">{split.tail}</span>
+    </span>
+  );
 }
 
 function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.Element {
@@ -477,9 +493,11 @@ function RailTitle({
 }): JSX.Element {
   const parent = row.parent === undefined ? undefined : rows.find((r) => r.id === row.parent);
   const { lead, shown } = railTitle(row.title, parent?.title);
+  // T447: any other title keeps its distinct end (middle truncation).
+  if (lead === undefined) return <RowTitle title={row.title} />;
   return (
     <span className="title">
-      {lead !== undefined && <span className="cr-lens-sr">{lead}</span>}
+      <span className="cr-lens-sr">{lead}</span>
       {shown}
     </span>
   );

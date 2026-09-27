@@ -212,3 +212,73 @@ describe('tangent_summary (T332, D33)', () => {
     expect(emitted.map((e) => e.type)).toEqual(['child_status']);
   });
 });
+
+describe("a coordinator's own child_status: done (T447, audit r7 #2)", () => {
+  let tree: StreamService;
+  beforeEach(() => {
+    const ref: { base?: EmitRouted } = {};
+    const emit: EmitRouted = async (input) => {
+      const e = await ref.base?.(input);
+      if (e) emitted.push(e);
+      return e;
+    };
+    const holder: { s?: StreamService } = {};
+    tree = new StreamService(store, {
+      onUpdated: (before, after) => emitTransitions(emit, holder.s as StreamService)(before, after),
+    });
+    holder.s = tree;
+    ref.base = makeEmitter(new RoutedEventService(store), tree);
+  });
+
+  const doneOf = (id: string) =>
+    emitted.filter(
+      (e) =>
+        e.type === 'child_status' &&
+        (e.payload as { child: string; status: string }).child === id &&
+        (e.payload as { status: string }).status === 'done',
+    );
+
+  test('goes up only once every part is merged or closed, not after every turn', async () => {
+    const root = await tree.create('human', { title: 'Shop', goal: 'g' });
+    const sale = await tree.create('human', { title: 'Sale', goal: 'g', parent: root.id });
+    const api = await tree.create('human', { title: 'api', goal: 'g', parent: sale.id });
+    const web = await tree.create('human', { title: 'web', goal: 'g', parent: sale.id });
+    // Parts with branches: work, not conversations.
+    for (const part of [api, web]) {
+      await store.updateStream('daemon', part.id, (s) => ({ ...s, repo: 'shop' }));
+    }
+    // The coordinator's turn ends while its parts work: nothing goes up.
+    await tree.update('daemon', sale.id, { agent: { status: 'done' } });
+    expect(doneOf(sale.id)).toEqual([]);
+    // A part's own done still reaches its coordinator (and the root).
+    await tree.update('daemon', api.id, { agent: { status: 'done' } });
+    expect(doneOf(api.id)).toHaveLength(1);
+    await tree.update('daemon', api.id, { human: { status: 'landed' } });
+    await tree.update('daemon', sale.id, { agent: { status: 'working' } });
+    await tree.update('daemon', sale.id, { agent: { status: 'done' } });
+    expect(doneOf(sale.id)).toEqual([]);
+    // The last part closes: the next turn that ends sends "done" up, once.
+    await tree.close('human', web.id);
+    await tree.update('daemon', sale.id, { agent: { status: 'working' } });
+    await tree.update('daemon', sale.id, { agent: { status: 'done' } });
+    expect(doneOf(sale.id)).toHaveLength(1);
+    expect(routed(doneOf(sale.id)[0])).toEqual([[root.id, 'ancestor']]);
+  });
+
+  test('a coordinating part counts as finished once its own parts are and its agent is done', async () => {
+    const root = await tree.create('human', { title: 'Shop', goal: 'g' });
+    const epic = await tree.create('human', { title: 'Epic', goal: 'g', parent: root.id });
+    const sub = await tree.create('human', { title: 'Sub', goal: 'g', parent: epic.id });
+    const leaf = await tree.create('human', { title: 'Leaf', goal: 'g', parent: sub.id });
+    await store.updateStream('daemon', leaf.id, (s) => ({ ...s, repo: 'shop' }));
+    await tree.update('daemon', sub.id, { agent: { status: 'done' } });
+    await tree.update('daemon', epic.id, { agent: { status: 'done' } });
+    expect(doneOf(sub.id)).toEqual([]);
+    expect(doneOf(epic.id)).toEqual([]);
+    await tree.update('daemon', leaf.id, { human: { status: 'landed' } });
+    await tree.update('daemon', epic.id, { agent: { status: 'working' } });
+    await tree.update('daemon', epic.id, { agent: { status: 'done' } });
+    // Sub's agent is done and its part merged: Epic's subtree is finished.
+    expect(doneOf(epic.id)).toHaveLength(1);
+  });
+});

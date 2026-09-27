@@ -14,6 +14,7 @@ import {
   THREAD_BODY_MAX_CHARS,
   liveChildrenOf,
   nodeRole,
+  partsOf,
 } from '@agile-agents/shared';
 import type { StreamService } from '../streams/service';
 import { type RouteEmitInput, routeAndEmit } from './router';
@@ -97,6 +98,15 @@ export function transitionEvents(
       type: 'tangent_summary',
       payload: { child: after.id, title, summary: tangentSummary(after, tangents) },
     });
+  } else if (
+    waits &&
+    status === 'done' &&
+    tangents !== undefined &&
+    partsOf(after.id, tangents.all).length > 0 &&
+    !subtreeFinished(after.id, tangents.all)
+  ) {
+    // T447 (audit r7 #2): a coordinator's turn ending is not the node being done. Its own
+    // `done` goes up only once every part is merged or closed (the last merge wakes it).
   } else if (waits && after.parent !== undefined) {
     // T436 (audit r6 #15): no progress line is no `progress`, never a stand-in sentence.
     const progress = clipLine(after.agent.progress ?? '');
@@ -143,6 +153,25 @@ export function transitionEvents(
     });
   }
   return out;
+}
+
+/**
+ * T447 (audit r7 #2): every part under `node` is finished: merged, or closed
+ * (a closed child is no longer a part, D42), or a coordinating part with no
+ * branch of its own whose agent is done and whose own parts are finished.
+ */
+export function subtreeFinished(
+  node: string,
+  all: readonly Stream[],
+  seen: Set<string> = new Set(),
+): boolean {
+  if (seen.has(node)) return true;
+  seen.add(node);
+  return partsOf(node, all).every((part) => {
+    if (part.human.status === 'landed') return true;
+    if (part.repo !== undefined || part.agent.status !== 'done') return false;
+    return partsOf(part.id, all).length > 0 && subtreeFinished(part.id, all, seen);
+  });
 }
 
 /** What the tangent producer reads: the tree and a node's last agent line. */

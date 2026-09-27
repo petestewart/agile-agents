@@ -25,6 +25,8 @@ import {
   ruleHitOf,
   runningRows,
   sessionRows,
+  splitTitle,
+  statusDot,
   streamDot,
   subtreeNeedsYou,
   threadAuthorLabel,
@@ -344,5 +346,57 @@ describe('childEntries (T413)', () => {
     expect(entries[1]).toEqual({ row: rows[2] as CockpitStreamRow });
     expect(entries[2]?.error).toBe('cards/c.yaml:3: bad');
     expect(childEntries(rows, 'nobody', [card])).toEqual([]);
+  });
+});
+
+describe('T447: the dot follows the status (audit r7 #9), and alike titles stay apart (#20)', () => {
+  test('a plan or a proposal that needs you is amber, like a question', () => {
+    const row = { agent_status: 'done', human_status: 'open', role: 'coordinating' } as const;
+    expect(streamDot(row)).toBe('grey');
+    expect(streamDot({ ...row, pending_decision: true })).toBe('amber');
+    expect(statusDot('needs_you')).toBe('amber');
+    expect(statusDot('ready')).toBe('amber');
+    expect(statusDot('blocked')).toBe('red');
+    expect(statusDot('working')).toBe('blue');
+    expect(statusDot('pr_open')).toBe('blue');
+    expect(statusDot('merged')).toBe('green');
+    for (const key of ['done', 'closed', 'waiting', 'not_started', 'stopped', 'idle'] as const) {
+      expect(statusDot(key)).toBe('grey');
+    }
+  });
+
+  test('a folded coordinator calls out a part that waits on you, by its status', () => {
+    const tree = buildStreamTree([
+      { id: 'c', title: 'c', role: 'coordinating', agent_status: 'done', human_status: 'open' },
+      {
+        id: 'p',
+        title: 'p',
+        parent: 'c',
+        role: 'work',
+        agent_status: 'idle',
+        human_status: 'open',
+        pending_decision: true,
+      },
+    ]);
+    expect(subtreeNeedsYou(tree[0] as never)).toBe(true);
+  });
+
+  test('splitTitle keeps the last word or two whole, and leaves a short title alone', () => {
+    expect(splitTitle('Schema change for onboarding emails')).toEqual({
+      head: 'Schema change for onboarding ',
+      tail: 'emails',
+    });
+    expect(splitTitle('Schema change for data retention')).toEqual({
+      head: 'Schema change for ',
+      tail: 'data retention',
+    });
+    expect(splitTitle('Refactor the invoice for api part')).toEqual({
+      head: 'Refactor the invoice ',
+      tail: 'for api part',
+    });
+    expect(splitTitle('Rotate the API keys')).toBeUndefined();
+    const long = splitTitle('Supercalifragilisticexpialidocious-everything');
+    expect(long?.tail.length).toBe(12);
+    expect(`${long?.head}${long?.tail}`).toBe('Supercalifragilisticexpialidocious-everything');
   });
 });

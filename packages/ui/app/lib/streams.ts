@@ -13,6 +13,7 @@ import type {
   CockpitStatusCard,
   CockpitStreamRow,
 } from './feed-types';
+import { type NodeStatusKey, statusKey } from './status';
 
 /** §9.2's five dots. */
 export type StreamDot = 'amber' | 'blue' | 'grey' | 'green' | 'red';
@@ -26,9 +27,11 @@ export type StreamDot = 'amber' | 'blue' | 'grey' | 'green' | 'red';
  */
 export function streamDot(
   row: Pick<CockpitStreamRow, 'agent_status' | 'human_status'> &
-    Partial<Pick<CockpitStreamRow, 'role' | 'project' | 'pr_open'>>,
+    Partial<Pick<CockpitStreamRow, 'role' | 'project' | 'pr_open' | 'pending_decision'>>,
 ): StreamDot {
   if (row.human_status === 'waiting_on_you') return 'amber';
+  // T447 (audit r7 #9): a plan, a gate or a proposal waiting on you is your move too.
+  if (row.pending_decision === true && row.human_status === 'open') return 'amber';
   if (row.human_status === 'landed') return 'green';
   if (row.human_status === 'closed') return 'grey';
   switch (row.agent_status) {
@@ -41,6 +44,32 @@ export function streamDot(
       return 'red';
     case 'working':
       return 'blue';
+    default:
+      return 'grey';
+  }
+}
+
+/**
+ * T447 (audit r7 #9): the dot's colour from the status the node reads as
+ * (`lib/status.ts`), so the dot and the word never disagree: amber for your
+ * move, red when stuck, blue while it works or its PR is open, green once
+ * merged, grey otherwise. `StatusDot` draws this; `streamDot` stays for a
+ * bare two-writer pair.
+ */
+export function statusDot(key: NodeStatusKey): StreamDot {
+  switch (key) {
+    case 'needs_you':
+    case 'ready':
+    case 'no_changes':
+    case 'merged_outside':
+      return 'amber';
+    case 'blocked':
+      return 'red';
+    case 'working':
+    case 'pr_open':
+      return 'blue';
+    case 'merged':
+      return 'green';
     default:
       return 'grey';
   }
@@ -111,7 +140,9 @@ export function buildStreamTree(rows: readonly CockpitStreamRow[]): StreamTreeNo
  * hidden inside a folded subtree.
  */
 export function subtreeNeedsYou(node: StreamTreeNode): boolean {
-  return node.children.some((child) => streamDot(child.row) === 'amber' || subtreeNeedsYou(child));
+  return node.children.some(
+    (child) => statusDot(statusKey(child.row)) === 'amber' || subtreeNeedsYou(child),
+  );
 }
 
 /** T331: the rail's collapsed nodes, read back from storage; anything malformed is an empty set. */
@@ -147,6 +178,35 @@ export function filterStreamRows(
     }
   }
   return rows.filter((row) => keep.has(row.id));
+}
+
+/**
+ * T447 (audit r7 #20): a rail title in two parts for middle truncation: the
+ * head gives way (it ends in "…") and the tail — the last word or two, at
+ * most `TAIL_MAX` characters — always shows, so alike titles ("Schema change
+ * for onboarding emails", "Schema change for data retention") stay apart
+ * however narrow the rail. The row's tooltip has the whole title.
+ * `undefined` for a title short enough never to need it.
+ */
+export const TAIL_MAX = 16;
+
+export function splitTitle(title: string): { head: string; tail: string } | undefined {
+  const t = title.trim();
+  if (t.length <= 20) return undefined;
+  const words = t.split(/(\s+)/);
+  let tail = '';
+  // Whole words from the end while they fit; the last one always.
+  for (let i = words.length - 1; i >= 0; i--) {
+    const next = `${words[i]}${tail}`;
+    if (tail !== '' && next.trim().length > TAIL_MAX) break;
+    tail = next;
+  }
+  tail = tail.trimStart();
+  // One long last word: its end only.
+  if (tail.length > TAIL_MAX) tail = tail.slice(-Math.round(TAIL_MAX * 0.75));
+  const head = t.slice(0, t.length - tail.length);
+  if (head.trim() === '') return undefined;
+  return { head, tail };
 }
 
 // ---- T161: the stream page (§9.3) ----------------------------------------

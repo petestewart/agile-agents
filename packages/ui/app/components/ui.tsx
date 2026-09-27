@@ -24,7 +24,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { type NodeStatus, type StatusInput, type StatusTone, nodeStatus } from '../lib/status';
-import { streamDot } from '../lib/streams';
+import { statusDot } from '../lib/streams';
 import { Icon, type IconName } from './Icon';
 
 // ---------------------------------------------------------------- buttons
@@ -143,7 +143,9 @@ export function Badge({
 /**
  * A node's status as a small shape: filled for "your move", a spinner ring
  * for working, hollow for not started / stopped. Keeps `.cr-dot` and
- * `data-dot` (the e2e suites read the colour name from `streamDot`).
+ * `data-dot` (the e2e suites read the colour name). T447 (audit r7 #9): the
+ * colour follows the status (`statusDot`), so "Needs you" for a plan or a
+ * proposal is amber like any other.
  */
 export function StatusDot({
   row,
@@ -158,7 +160,7 @@ export function StatusDot({
   return (
     <span
       className={`cr-dot${className ? ` ${className}` : ''}`}
-      data-dot={streamDot(row)}
+      data-dot={statusDot(s.key)}
       data-status={s.key}
       data-tone={s.tone}
       role="img"

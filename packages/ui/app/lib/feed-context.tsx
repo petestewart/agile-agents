@@ -20,6 +20,7 @@ import {
   useState,
 } from 'react';
 import type { CockpitFrame, FeedSnapshot } from './feed-types';
+import { withParts } from './status';
 import { connectFeedSocket } from './ws';
 
 /** Cap on the in-memory event tail (the Feed panel renders it). */
@@ -48,6 +49,15 @@ export interface FeedContextValue {
 }
 
 const FeedContext = createContext<FeedContextValue | undefined>(undefined);
+
+/**
+ * T447 (audit r7 #2): the frame as the cockpit reads it — each coordinating
+ * node's and project root's parts rolled up once here, so the rail, the
+ * header, the Overview and Children agree on its status.
+ */
+export function readFrame(frame: CockpitFrame): CockpitFrame {
+  return { ...frame, streams: withParts(frame.streams) };
+}
 
 /** How long the socket may be down before the cockpit says so (a reconnect blip says nothing). */
 export const OFFLINE_AFTER_MS = 2000;
@@ -85,7 +95,7 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
         setEvents((prev) => [...prev, event].slice(-MAX_EVENTS));
         for (const handler of eventHandlers.current) handler(event);
       },
-      onCockpit: (frame) => setCockpit(frame),
+      onCockpit: (frame) => setCockpit(readFrame(frame)),
       onStatusChange: (status) => setConnected(status === 'open'),
     });
     return () => handle.close();
@@ -102,7 +112,7 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
     fetch('/api/cockpit')
       .then((res) => (res.ok ? (res.json() as Promise<CockpitFrame>) : undefined))
       .then((frame) => {
-        if (frame) setCockpit(frame);
+        if (frame) setCockpit(readFrame(frame));
       })
       .catch(() => {
         // The next pushed frame carries the same state.

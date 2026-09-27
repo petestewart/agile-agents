@@ -21,8 +21,10 @@
 
 import type { ThreadEntry } from '@agile-agents/shared';
 import {
+  type MutableRefObject,
   type PropsWithChildren,
   type ReactNode,
+  type RefObject,
   createContext,
   useCallback,
   useContext,
@@ -34,6 +36,7 @@ import {
 import { getStreamSteps } from '../lib/api';
 import {
   type ChatAuthor,
+  THREAD_WINDOW,
   chatRows,
   clockTime,
   contextMeter,
@@ -42,6 +45,7 @@ import {
   questionIdOfRef,
   ruleHitText,
   systemLine,
+  windowRows,
 } from '../lib/chat';
 import { useFeed, useOptionalFeed } from '../lib/feed-context';
 import {
@@ -239,6 +243,13 @@ export interface MessageListProps<E extends ChatEntry> {
    * question, in the thread's list, is `data-testid="chat-question"`).
    */
   entryAttrs?: (entry: E, index: number) => Record<string, string> | undefined;
+  /**
+   * T447 (audit r7 #15): render only the newest `THREAD_WINDOW` rows of a
+   * long thread; "Show earlier" (or scrolling to the top) adds more, and
+   * find (Ctrl/⌘+F) shows them all. The value is the conversation: another
+   * one starts from the newest rows again.
+   */
+  windowKey?: string;
   testid?: string;
   label?: string;
 }
@@ -281,6 +292,75 @@ function CopyButton({ text }: { text: string }): JSX.Element {
   );
 }
 
+/** The chat's scroll area around `el`. */
+function scrollerOf(el: Element | null): HTMLElement | null {
+  return el?.closest<HTMLElement>('.cr-chat-scroll') ?? null;
+}
+
+/**
+ * T447 (audit r7 #15): a long thread's window. `more` is how many rows past
+ * `THREAD_WINDOW` are shown; `showMore` adds a window's worth and keeps what
+ * you were reading in place; scrolling near the top loads more by itself
+ * (a scroll listener, so a jump to the top loads too); Ctrl/⌘+F shows every
+ * row so the browser's find sees them. A new `key` (another conversation)
+ * starts over. Set `hidden.current` to the rows still above on each render.
+ */
+function useThreadWindow(key: string | undefined): {
+  more: number;
+  showMore: () => void;
+  list: RefObject<HTMLOListElement>;
+  hidden: MutableRefObject<number>;
+} {
+  const [state, setState] = useState<{ key: string | undefined; more: number }>({ key, more: 0 });
+  const more = state.key === key ? state.more : 0;
+  const list = useRef<HTMLOListElement>(null);
+  const hidden = useRef(0);
+  // Distance from the bottom before rows were added above, to keep the view where it was.
+  const keep = useRef<number | undefined>(undefined);
+  const grow = useCallback(
+    (by: number) => {
+      const el = scrollerOf(list.current);
+      if (el) keep.current = el.scrollHeight - el.scrollTop;
+      setState((s) => ({ key, more: (s.key === key ? s.more : 0) + by }));
+    },
+    [key],
+  );
+  const showMore = useCallback(() => grow(THREAD_WINDOW), [grow]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `more` is the trigger: rows were added above.
+  useLayoutEffect(() => {
+    const el = scrollerOf(list.current);
+    if (el && keep.current !== undefined) el.scrollTop = el.scrollHeight - keep.current;
+    keep.current = undefined;
+  }, [more]);
+  // Near the top: the next window, once per scroll that gets there.
+  useEffect(() => {
+    const el = key === undefined ? null : scrollerOf(list.current);
+    if (el === null) return;
+    const onScroll = (): void => {
+      if (hidden.current > 0 && keep.current === undefined && el.scrollTop < EARLIER_AT_PX) {
+        showMore();
+      }
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [key, showMore]);
+  // Find in the page sees every row.
+  useEffect(() => {
+    if (key === undefined) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f') {
+        grow(Number.MAX_SAFE_INTEGER / 2);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [key, grow]);
+  return { more, showMore, list, hidden };
+}
+
+/** How near the top (px) a scroll loads the earlier rows. */
+const EARLIER_AT_PX = 300;
+
 export function MessageList<E extends ChatEntry>({
   entries,
   authorOf,
@@ -291,15 +371,37 @@ export function MessageList<E extends ChatEntry>({
   openQuestions,
   steps,
   entryAttrs,
+  windowKey,
   testid = 'thread',
   label = 'Conversation',
 }: MessageListProps<E>): JSX.Element {
-  const rows = chatRows(entries);
+  const all = chatRows(entries);
+  const earlier = useThreadWindow(windowKey);
+  const { rows, hidden } =
+    windowKey === undefined
+      ? { rows: all, hidden: 0 }
+      : windowRows(all, THREAD_WINDOW + earlier.more);
+  earlier.hidden.current = hidden;
   // T446: a system row links the node it made when the cockpit knows it.
   const streams = useOptionalFeed()?.cockpit?.streams;
   const known = (id: string): boolean => streams?.some((r) => r.id === id) === true;
   return (
-    <ol className="cr-msgs" data-testid={testid} aria-label={label}>
+    <ol className="cr-msgs" data-testid={testid} aria-label={label} ref={earlier.list}>
+      {hidden > 0 && (
+        <li className="cr-thread-earlier">
+          <button
+            type="button"
+            className="cr-link"
+            data-testid="thread-earlier"
+            onClick={earlier.showMore}
+          >
+            <Icon name="arrow-up" size={12} />
+            Show {Math.min(THREAD_WINDOW, hidden)} earlier{' '}
+            {Math.min(THREAD_WINDOW, hidden) === 1 ? 'message' : 'messages'}
+            <span className="cr-faint"> · {hidden} above</span>
+          </button>
+        </li>
+      )}
       {rows.flatMap((row) => {
         const { entry, index, variant, continued, day, wake } = row;
         const key = `${entry.ts}:${index}`;

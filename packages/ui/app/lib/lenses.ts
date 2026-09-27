@@ -348,7 +348,9 @@ export function childStatusPhrase(status: string, row?: StatusInput): string {
   if (status !== 'done') return `is ${status.replace(/_/g, ' ')}`;
   if (row === undefined) return 'finished';
   // The event is about the moment it finished: the node as it was then, open, its agent done.
-  return statusPhrase(nodeStatus({ ...row, agent_status: 'done', human_status: 'open' }));
+  // T447: a coordinator says "done" only once its parts finished, so its parts are left out.
+  const { parts: _parts, ...own } = row;
+  return statusPhrase(nodeStatus({ ...own, agent_status: 'done', human_status: 'open' }));
 }
 
 /**

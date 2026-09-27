@@ -138,7 +138,16 @@ export function useComposerDraft(node: string): [string, (next: DraftUpdate) => 
     () => composerDrafts.get(node) ?? '',
     () => composerDrafts.get(node) ?? '',
   );
-  const setDraft = useCallback(
+  return [draft, useDraftSetter(node)];
+}
+
+/**
+ * T447 (audit r7 #15): the draft's setter alone. A page that writes the
+ * draft (a review joins it, Send clears it) but doesn't show it takes this,
+ * so a keystroke re-renders only the composer that shows it.
+ */
+export function useDraftSetter(node: string): (next: DraftUpdate) => void {
+  return useCallback(
     (next: DraftUpdate) => {
       const value = typeof next === 'function' ? next(composerDrafts.get(node) ?? '') : next;
       // Kept as typed (a space is a keystroke too); only an empty box keeps nothing.
@@ -146,7 +155,6 @@ export function useComposerDraft(node: string): [string, (next: DraftUpdate) => 
     },
     [node],
   );
-  return [draft, setDraft];
 }
 
 /** A node's draft, and a new one for it: for a message prepared off its page (a card's Add to message). */

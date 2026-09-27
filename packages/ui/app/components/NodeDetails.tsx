@@ -51,7 +51,7 @@ import type {
   StreamPagePayload,
 } from '../lib/feed-types';
 import { useShell } from '../lib/shell';
-import { ROLE_HINT, ROLE_LABEL } from '../lib/status';
+import { ROLE_HINT, ROLE_LABEL, partsSummary } from '../lib/status';
 import { childEntries, isLiveSession, sessionRows, worktreeName } from '../lib/streams';
 import { railTitle } from '../lib/tree';
 import { Icon } from './Icon';
@@ -248,6 +248,11 @@ export function ChildCards({
               />
               <StatusPill row={row} testid="status-card-state" />
             </div>
+            {partsSummary(row.parts) !== undefined && (
+              <p className="cr-child-parts" data-testid="status-card-parts">
+                {partsSummary(row.parts)}
+              </p>
+            )}
             {card !== undefined && card.doing !== '' && (
               <p className="cr-child-doing" data-testid="status-card-doing">
                 {card.doing}

@@ -1,5 +1,14 @@
 import { describe, expect, test } from 'bun:test';
-import { ago, isYourMove, nodeStatus, statusKey } from './status';
+import {
+  ago,
+  isYourMove,
+  nodeStatus,
+  ownStatusKey,
+  partsSummary,
+  statusFromPart,
+  statusKey,
+  withParts,
+} from './status';
 
 const base = { agent_status: 'idle', human_status: 'open' } as const;
 
@@ -134,5 +143,98 @@ describe('T437: your move, and a coordinator with its own branch', () => {
     expect(statusKey({ agent_status: 'done', human_status: 'open', role: 'coordinating' })).toBe(
       'done',
     );
+  });
+});
+
+describe('T447 (audit r7 #2): a coordinating node rolls up its parts', () => {
+  type Row = import('./feed-types').CockpitStreamRow;
+  const row = (id: string, extra: Partial<Row> = {}): Row => ({
+    id,
+    title: id,
+    role: 'work',
+    agent_status: 'idle',
+    human_status: 'open',
+    ...extra,
+  });
+  const coord = (extra: Partial<Row> = {}) =>
+    row('sale', { role: 'coordinating', parent: 'root', agent_status: 'done', ...extra });
+  const rolled = (rows: Row[], id = 'sale') => withParts(rows).find((r) => r.id === id) as Row;
+
+  test('Done only when every part is merged or closed', () => {
+    const all = [
+      coord(),
+      row('api part', { parent: 'sale', human_status: 'landed' }),
+      row('web part', { parent: 'sale', human_status: 'closed' }),
+    ];
+    const sale = rolled(all);
+    expect(statusKey(sale)).toBe('done');
+    expect(sale.parts).toEqual({ total: 2, merged: 1, closed: 1, open: 0 });
+    expect(nodeStatus(sale).hint).toBe('Every part is merged or closed.');
+    expect(partsSummary(sale.parts)).toBe('1 of 1 merged · 1 closed · every part finished');
+  });
+
+  test('otherwise its most urgent part: Needs you > Blocked > Ready to merge > Working > Not started', () => {
+    const parts: Row[] = [
+      row('a', { parent: 'sale', never_started: true }),
+      row('b', { parent: 'sale', agent_status: 'working', live: true }),
+      row('c', { parent: 'sale', agent_status: 'done' }),
+      row('d', { parent: 'sale', agent_status: 'blocked' }),
+      row('e', { parent: 'sale', agent_status: 'question' }),
+    ];
+    const expected = ['not_started', 'working', 'ready', 'blocked', 'needs_you'];
+    for (let n = 1; n <= parts.length; n++) {
+      expect(statusKey(rolled([coord(), ...parts.slice(0, n)]))).toBe(expected[n - 1] as never);
+    }
+    const sale = rolled([coord(), ...parts]);
+    expect(statusFromPart(sale)).toBe(true);
+    expect(nodeStatus(sale)).toMatchObject({ label: 'Needs you', hint: 'A part waits on you: e.' });
+    expect(partsSummary(sale.parts)).toBe('0 of 5 merged · e needs you');
+  });
+
+  test('"2 of 4 merged · waiting for web part"', () => {
+    const sale = rolled([
+      coord(),
+      row('api part', { parent: 'sale', human_status: 'landed' }),
+      row('docs part', { parent: 'sale', human_status: 'landed' }),
+      row('web part', { parent: 'sale', agent_status: 'working', live: true }),
+      row('rss part', { parent: 'sale', never_started: true }),
+    ]);
+    expect(statusKey(sale)).toBe('working');
+    expect(partsSummary(sale.parts)).toBe('2 of 4 merged · waiting for web part and 1 more');
+  });
+
+  test("its own question, block or work still counts; its own merge and close win; conversations aren't parts", () => {
+    const working = [row('p', { parent: 'sale', never_started: true })];
+    expect(statusKey(rolled([coord({ agent_status: 'question' }), ...working]))).toBe('needs_you');
+    expect(statusKey(rolled([coord({ agent_status: 'working' }), ...working]))).toBe('working');
+    expect(statusKey(rolled([coord({ human_status: 'closed' }), ...working]))).toBe('closed');
+    const sale = rolled([coord(), row('q', { parent: 'sale', role: 'conversation' })]);
+    expect(sale.parts).toBeUndefined();
+    expect(statusKey(sale)).toBe('done');
+    // Its own status for Delivery leaves the parts out.
+    expect(ownStatusKey(rolled([coord(), ...working]))).toBe('done');
+  });
+
+  test('nested: a coordinating part reads as its own parts, and a project root as its top-level nodes', () => {
+    const all = [
+      row('root', { role: 'project', never_started: true }),
+      coord(),
+      row('sub', { parent: 'sale', role: 'coordinating', agent_status: 'done' }),
+      row('leaf', { parent: 'sub', agent_status: 'done' }),
+      row('talk', { parent: 'root', role: 'conversation', agent_status: 'done' }),
+    ];
+    const rows = withParts(all);
+    const key = (id: string) => statusKey(rows.find((r) => r.id === id) as Row);
+    expect(key('sub')).toBe('ready');
+    expect(key('sale')).toBe('ready');
+    expect(key('root')).toBe('ready');
+    // It names the node to open, however deep: the leaf, not the coordinators above it.
+    expect(rows.find((r) => r.id === 'root')?.parts?.lead).toEqual({
+      id: 'leaf',
+      title: 'leaf',
+      key: 'ready',
+    });
+    // A row with nothing to roll up comes back as it was.
+    expect(rows.find((r) => r.id === 'leaf')).toBe(all[3]);
   });
 });

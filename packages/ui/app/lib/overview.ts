@@ -9,7 +9,13 @@
 
 import type { RoutedEvent } from '@agile-agents/shared';
 import type { CockpitStreamRow } from './feed-types';
-import { type NodeStatusKey, type StatusInput, statusKey, statusOf } from './status';
+import {
+  type NodeStatusKey,
+  type StatusInput,
+  statusFromPart,
+  statusKey,
+  statusOf,
+} from './status';
 import { subtreeIds } from './tree';
 
 // ---------------------------------------------------------------- statuses and groups
@@ -134,6 +140,16 @@ export function projectRepoNames(
   return out;
 }
 
+/**
+ * T447 (audit r7 #2): the nodes the counts count. A coordinating node that
+ * reads as one of its parts ("Needs you" because a part asks) is a summary
+ * of them, so the part is counted and it is not: "1 needs you" means one
+ * thing waits on you.
+ */
+export function countedNodes<T extends StatusInput>(nodes: readonly T[]): T[] {
+  return nodes.filter((n) => !statusFromPart(n));
+}
+
 /** How many of `nodes` are on `repo` and not finished: "2 open nodes" on the repo's row. */
 export function openNodesOn(nodes: readonly CockpitStreamRow[], repo: string): number {
   return nodes.filter((n) => n.repo === repo && overviewGroupOf(n) !== 'finished').length;
@@ -225,13 +241,138 @@ export function overviewGroups<T extends StatusInput & { updated_at?: string }>(
 export function overviewCounts<T extends StatusInput & { updated_at?: string }>(
   nodes: readonly T[],
 ): OverviewCount<T>[] {
-  return overviewGroups(nodes).flatMap((g) => g.counts);
+  return overviewGroups(countedNodes(nodes)).flatMap((g) => g.counts);
 }
 
 /** "1 needs you · 1 blocked · 1 ready to merge · 2 working"; "No nodes yet" for none. */
 export function overviewSummary(nodes: readonly StatusInput[]): string {
   const counts = overviewCounts(nodes);
   return counts.length === 0 ? 'No nodes yet' : counts.map((c) => c.text).join(' · ');
+}
+
+// ---------------------------------------------------------------- T447: grouped by top-level node
+
+type OverviewRow = StatusInput &
+  Pick<CockpitStreamRow, 'id' | 'title' | 'parent'> & {
+    updated_at?: string;
+  };
+
+/**
+ * T447 (audit r7 #19): one of the project's top-level nodes and everything
+ * under it. The list reads as these, each under the status group its
+ * top-level node reads as, so a big project is a handful of headed groups
+ * rather than one long list.
+ */
+export interface OverviewBranch<T> {
+  /** The top-level node (a child of the project's root). */
+  row: T;
+  /** Everything under it, the most pressing first, then the most recently changed. */
+  children: T[];
+  /** Its nodes' counts ("1 needs you · 2 working · 3 merged"); absent when it has none. */
+  summary?: string;
+}
+
+export interface OverviewSection<T> {
+  key: OverviewGroupKey;
+  title: string;
+  branches: OverviewBranch<T>[];
+  /** Every row in it, the branches' children included. */
+  count: number;
+}
+
+/**
+ * T447: past this many nodes a project's branches start folded (each head
+ * says what is under it); below it they start open. Finished ones always
+ * start folded.
+ */
+export const OVERVIEW_FOLD_AT = 30;
+
+/** Whether `row`'s title has every word of `query` (case-insensitive); an empty query matches. */
+export function matchesQuery(row: { title: string }, query: string): boolean {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const title = row.title.toLowerCase();
+  return words.every((w) => title.includes(w));
+}
+
+const STATUS_RANK = new Map(OVERVIEW_ORDER.map((s, i) => [s, i]));
+
+/**
+ * The Overview's list (T447): the project's top-level nodes, each with its
+ * subtree, under the group its top-level node reads as (a coordinating node
+ * reads as its most urgent part, so a branch with something for you sits
+ * under Your move). `only` (a count was clicked) lists that status's nodes
+ * on their own, wherever they sit; `query` keeps the nodes whose title has
+ * its words (a matching top-level node keeps its whole branch).
+ */
+export function overviewSections<T extends OverviewRow>(
+  nodes: readonly T[],
+  root: string,
+  opts: { only?: OverviewStatus; query?: string } = {},
+): OverviewSection<T>[] {
+  const query = opts.query?.trim() ?? '';
+  const order = new Map(nodes.map((n, i) => [n.id, i]));
+  const byStatus = (a: T, b: T): number =>
+    (STATUS_RANK.get(overviewStatus(a)) ?? 0) - (STATUS_RANK.get(overviewStatus(b)) ?? 0) ||
+    (a.updated_at !== undefined && b.updated_at !== undefined && a.updated_at !== b.updated_at
+      ? a.updated_at < b.updated_at
+        ? 1
+        : -1
+      : (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+  const sections = new Map<OverviewGroupKey, OverviewBranch<T>[]>();
+  const file = (row: T, branch: OverviewBranch<T>): void => {
+    const key = overviewGroupOf(row);
+    const list = sections.get(key) ?? [];
+    list.push(branch);
+    sections.set(key, list);
+  };
+  if (opts.only !== undefined) {
+    for (const row of countedNodes(nodes)) {
+      if (overviewStatus(row) !== opts.only || !matchesQuery(row, query)) continue;
+      file(row, { row, children: [] });
+    }
+  } else {
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const topOf = (row: T): string => {
+      let at: T = row;
+      const seen = new Set<string>();
+      while (at.parent !== undefined && at.parent !== root && !seen.has(at.id)) {
+        seen.add(at.id);
+        const up = byId.get(at.parent);
+        if (up === undefined) break;
+        at = up;
+      }
+      return at.id;
+    };
+    const under = new Map<string, T[]>();
+    for (const row of nodes) {
+      const top = topOf(row);
+      if (top === row.id) continue;
+      const list = under.get(top) ?? [];
+      list.push(row);
+      under.set(top, list);
+    }
+    for (const row of nodes) {
+      if (topOf(row) !== row.id) continue;
+      const all = under.get(row.id) ?? [];
+      const children = matchesQuery(row, query) ? all : all.filter((c) => matchesQuery(c, query));
+      if (children.length === 0 && !matchesQuery(row, query)) continue;
+      const counts = overviewCounts(all);
+      file(row, {
+        row,
+        children: [...children].sort(byStatus),
+        ...(all.length > 0 ? { summary: counts.map((c) => c.text).join(' · ') } : {}),
+      });
+    }
+  }
+  return GROUP_ORDER.filter((key) => sections.has(key)).map((key) => {
+    const branches = (sections.get(key) ?? []).sort((a, b) => byStatus(a.row, b.row));
+    return {
+      key,
+      title: GROUP_TITLE[key],
+      branches,
+      count: branches.reduce((n, b) => n + 1 + b.children.length, 0),
+    };
+  });
 }
 
 // ---------------------------------------------------------------- age
