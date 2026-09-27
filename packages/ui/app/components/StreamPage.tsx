@@ -47,6 +47,7 @@ import {
   updateStream,
   waitOnStream,
 } from '../lib/api';
+import { coordinatesIt, hasReplied, sendUpTarget, takeComposerFocus } from '../lib/ask';
 import {
   type NodeTab,
   agentLabel,
@@ -68,6 +69,7 @@ import {
   showGoalCard,
   tidyIds,
   vendorLabel,
+  withQuestion,
   workingAs,
 } from '../lib/chat';
 import { choiceOf, modelChip, resolvedFor } from '../lib/defaults';
@@ -429,6 +431,14 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       .catch(() => setRepos([]));
   }, []);
 
+  // T435 (#20): Ask just opened this conversation: its composer takes focus once it shows.
+  const shownId = page?.stream.id;
+  useEffect(() => {
+    if (shownId === id && takeComposerFocus(id)) {
+      requestAnimationFrame(() => composer.current?.focus());
+    }
+  }, [shownId, id]);
+
   // A different node opened: nothing half-open (its tab is the shell's, its draft its own).
   // biome-ignore lint/correctness/useExhaustiveDependencies: `id` is the trigger.
   useEffect(() => {
@@ -568,11 +578,13 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const rows = cockpit?.streams ?? [];
   const row = rows.find((r) => r.id === stream.id);
   const role = row?.role;
-  // T421 (D42): a conversation can send what it concludes to the node it sits under.
-  const sendUpTo =
-    role === 'conversation' && stream.parent !== undefined
-      ? rows.find((r) => r.id === stream.parent)
-      : undefined;
+  // T421 (D42): a conversation can send what it concludes to the node it sits under;
+  // T435 (#19): not to a merged or closed one, where nothing acts on it.
+  const sendUpTo = sendUpTarget({ role, parent: stream.parent }, rows);
+  const parentRow =
+    stream.parent !== undefined ? rows.find((r) => r.id === stream.parent) : undefined;
+  const grandparentRow =
+    parentRow?.parent !== undefined ? rows.find((r) => r.id === parentRow.parent) : undefined;
   const project = cockpit?.projects.find((p) => p.id === stream.project);
   const rootOf = cockpit?.projects.find((p) => p.root === stream.id);
   const children = rows.filter((r) => r.parent === stream.id);
@@ -644,6 +656,10 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     landReady: page.land?.ready === true,
     decisionOpen: cards.length > 0,
   });
+  // T435 (#16): an answered conversation's next step is what follows from its answer — Turn into
+  // work…, Send to <parent> — not Restart agent, which would ask its question again (⋯ keeps it).
+  const convoNext = open && hasReplied(role, page.thread) && actions.agent !== 'stop';
+  const shownActions: typeof actions = convoNext ? { merge: actions.merge } : actions;
   // T387: a project's root, known from the page itself (no parent, a project) before the frame names it.
   const projectRoot =
     rootOf !== undefined || (stream.parent === undefined && stream.project !== undefined);
@@ -902,10 +918,13 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       label: 'Restart agent',
       icon: 'refresh',
       testid: 'restart',
-      title: 'Stop the agent and start a fresh session with the same model',
-      hidden: !open || liveAgent === undefined,
+      title: liveAgent
+        ? 'Stop the agent and start a fresh session with the same model'
+        : 'Start a fresh session: it answers the question again',
+      // T435 (#16): an answered conversation's header offers what follows instead.
+      hidden: !open || (liveAgent === undefined && !convoNext),
       disabled: busy,
-      onSelect: () => void restart(),
+      onSelect: () => (liveAgent ? void restart() : start()),
     },
     {
       // T413: "Review" is what you do on the Changes tab; this starts a reviewer agent.
@@ -999,7 +1018,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     {
       label: hasRun ? 'Restart agent' : 'Start agent',
       icon: 'play',
-      hidden: actions.agent !== 'start',
+      hidden: shownActions.agent !== 'start',
       disabled: busy || offline,
       onSelect: start,
     },
@@ -1007,7 +1026,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       // T423: the split button's other half, the one place to start with another model.
       label: 'Start with…',
       icon: 'sliders',
-      hidden: actions.agent !== 'start',
+      hidden: shownActions.agent !== 'start',
       disabled: busy || offline,
       onSelect: () => setPicker('start'),
     },
@@ -1074,8 +1093,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     <>
       {open &&
         (() => {
-          // T427: what a worker proposes next is one click from being a node (under this one,
-          // design §2's "break it down"; New node's Parent picker can put it elsewhere).
+          // T427: what a worker proposes next is one click from being a node. T435 (#14): next
+          // to this one, on its repository — under it, this node would coordinate it (New node's
+          // Parent picker can still nest it).
           const next = proposedNext(entry);
           return next ? (
             <div className="cr-msg-extra">
@@ -1083,9 +1103,18 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                 size="sm"
                 icon="plus"
                 data-testid="proposal-create-node"
-                title="Open New node with its title and goal, under this node"
+                title={`Open New node with its title and goal, next to ${stream.title}`}
                 onClick={() =>
-                  openNewStream({ parent: stream.id, title: next.title, goal: next.goal })
+                  openNewStream({
+                    ...(stream.parent !== undefined
+                      ? { parent: stream.parent }
+                      : stream.project !== undefined
+                        ? { project: stream.project }
+                        : {}),
+                    title: next.title,
+                    goal: next.goal,
+                    ...(stream.repo !== undefined ? { repo: stream.repo } : {}),
+                  })
                 }
               >
                 Create node…
@@ -1297,6 +1326,15 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     truncated: page.thread_total > page.thread.length,
     partial: agentSteps.partial,
   });
+  // T419 (D42): a conversation's goal is the question you asked: your first message. T435 (#10):
+  // in the thread's own list (one day divider), after "Node created".
+  const listed = withQuestion(
+    page.thread,
+    role === 'conversation' && stream.goal.trim() !== ''
+      ? { ts: stream.created_at, by: 'human', kind: 'line' as const, body: stream.goal }
+      : undefined,
+  );
+  const listSteps = new Map([...steps.before].map(([i, led]) => [listed.listIndex(i), led]));
 
   const chat = (
     <div className="cr-chat" data-tab-body="thread">
@@ -1305,30 +1343,31 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         resetKey={stream.id}
         label="Conversation"
       >
-        {role === 'conversation' && stream.goal.trim() !== '' ? (
-          // T419 (D42): a conversation's goal is the question you asked: your first message.
-          <MessageList
-            entries={[{ ts: stream.created_at, by: 'human', kind: 'line', body: stream.goal }]}
-            authorOf={(by) => chatAuthor(by, stream.sessions)}
-            testid="chat-question"
-            label="Your question"
-          />
-        ) : (
-          goalCard && <GoalCard goal={stream.goal} {...(saveGoal ? { onSave: saveGoal } : {})} />
-        )}
+        {goalCard && <GoalCard goal={stream.goal} {...(saveGoal ? { onSave: saveGoal } : {})} />}
         {page.thread_total > page.thread.length && (
           <p className="cr-chat-older">
             Showing the newest {page.thread.length} of {page.thread_total} lines.
           </p>
         )}
         <MessageList
-          entries={page.thread}
+          entries={listed.entries}
           authorOf={(by) => chatAuthor(by, stream.sessions)}
-          renderActions={renderActions}
-          renderExtra={renderExtra}
+          renderActions={(entry, i) => {
+            const at = listed.threadIndex(i);
+            return at === undefined ? null : renderActions(entry, at);
+          }}
+          renderExtra={(entry, i) => {
+            const at = listed.threadIndex(i);
+            return at === undefined ? null : renderExtra(entry, at);
+          }}
+          entryAttrs={(_, i) =>
+            i === listed.at
+              ? { 'data-testid': 'chat-question', 'data-question': 'true' }
+              : undefined
+          }
           onOpenRule={(rule) => openRules({ ...DEFAULT_RULES_FILTER, rule })}
           openQuestions={new Set(questions.map((q) => q.id))}
-          steps={steps.before}
+          steps={listSteps}
         />
         {thinking && (
           <Thinking
@@ -1487,7 +1526,44 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           })}
           {...(stream.repo ? { repo: stream.repo } : {})}
           {...(stream.branch ? { branch: stream.branch } : {})}
-          actions={actions}
+          actions={shownActions}
+          {...(convoNext
+            ? {
+                extra: (
+                  <>
+                    {sendUpTo !== undefined && (
+                      <Button
+                        icon="send"
+                        className="cr-send-up-btn"
+                        data-testid="header-send-up"
+                        disabled={offline}
+                        title={
+                          offline
+                            ? RECONNECTING
+                            : `Send its last reply to ${sendUpTo.title}: it arrives there as your message`
+                        }
+                        onClick={() => setSendingUp(lastAgentLine(page.thread) ?? '')}
+                      >
+                        <span className="cr-btn-clip">Send to {sendUpTo.title}</span>
+                      </Button>
+                    )}
+                    <Button
+                      icon="play"
+                      data-testid="header-turn-into-work"
+                      disabled={offline}
+                      title={
+                        offline
+                          ? RECONNECTING
+                          : 'State the goal (drafted from the talk), pick a repository or none, and start'
+                      }
+                      onClick={() => setTurning(true)}
+                    >
+                      Turn into work…
+                    </Button>
+                  </>
+                ),
+              }
+            : {})}
           startLabel={hasRun ? 'Restart agent' : 'Start agent'}
           busy={busy}
           merging={delivery.busy}
@@ -1719,16 +1795,32 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       {turning && (
         <TurnIntoWorkDialog
           node={stream.id}
+          title={stream.title}
           goal={stream.goal}
           repos={cockpit?.repos ?? []}
+          {...(project ? { project } : {})}
+          {...(parentRow ? { parent: parentRow } : {})}
+          {...(grandparentRow ? { grandparent: grandparentRow } : {})}
+          {...(sendUpTo !== undefined
+            ? {
+                onSendUp: () => {
+                  setTurning(false);
+                  setSendingUp(lastAgentLine(page.thread) ?? '');
+                },
+              }
+            : {})}
           onClose={() => setTurning(false)}
-          onDone={(repo) => {
+          onDone={({ repo, where }) => {
             setTurning(false);
             load();
             refresh();
             toast({
               tone: 'success',
-              title: repo ? `Now a work node on ${repo}` : 'Now researching its goal',
+              title: repo
+                ? where === 'next-to' && parentRow
+                  ? `Now a work node on ${repo}, next to ${parentRow.title}`
+                  : `Now a work node on ${repo}`
+                : 'Now researching its goal',
               duration: 4000,
             });
           }}
@@ -1831,9 +1923,21 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         onClose={() => setModal(undefined)}
         title="Add a repository"
         description={
-          role === 'conversation'
-            ? 'This conversation becomes a work node on the repo, with its own branch. The thread stays.'
-            : 'A second repo splits this node: each repo gets a part, and this node coordinates them.'
+          role === 'conversation' ? (
+            <>
+              This conversation becomes a work node on the repo, with its own branch. The thread
+              stays.
+              {coordinatesIt(parentRow) !== undefined && (
+                // T435 (#3): under a work node, that node then coordinates it.
+                <>
+                  {' '}
+                  <span data-testid="add-repo-coordinates">{coordinatesIt(parentRow)}</span>
+                </>
+              )}
+            </>
+          ) : (
+            'A second repo splits this node: each repo gets a part, and this node coordinates them.'
+          )
         }
         size="sm"
         testid="add-repo-form"

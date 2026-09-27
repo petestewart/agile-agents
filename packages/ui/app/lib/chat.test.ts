@@ -41,6 +41,7 @@ import {
   tokensText,
   vendorLabel,
   wakeWords,
+  withQuestion,
   workingAs,
 } from './chat';
 
@@ -224,6 +225,39 @@ describe('chat rows', () => {
       text: 'Goal changed: Import CSV and TSV',
       tone: 'muted',
     });
+  });
+});
+
+describe("T435: a conversation's question in its thread", () => {
+  const created = entry({ kind: 'event', body: 'stream created: Why buffer?' });
+  const started = entry({
+    by: 'daemon',
+    kind: 'event',
+    body: 'worker attached: claude/x effort=low',
+  });
+  const reply = entry({ by: `agent:${SESSION}`, body: 'It streams.' });
+  const question = entry({ body: 'Why buffer the file?' });
+
+  test('after "Node created", in one list: one day divider over both', () => {
+    const { entries, at, threadIndex, listIndex } = withQuestion(
+      [created, started, reply],
+      question,
+    );
+    expect(entries).toEqual([created, question, started, reply]);
+    expect(at).toBe(1);
+    expect([0, 1, 2, 3].map(threadIndex)).toEqual([0, undefined, 1, 2]);
+    expect([0, 1, 2].map(listIndex)).toEqual([0, 2, 3]);
+    expect(chatRows(entries).filter((r) => r.day !== undefined)).toHaveLength(1);
+  });
+
+  test('first when "Node created" is not loaded; nothing to add without a question', () => {
+    expect(withQuestion([reply], question).entries).toEqual([question, reply]);
+    expect(withQuestion([], question).entries).toEqual([question]);
+    const none = withQuestion([created, reply], undefined);
+    expect(none.entries).toEqual([created, reply]);
+    expect(none.at).toBe(-1);
+    expect(none.threadIndex(1)).toBe(1);
+    expect(none.listIndex(1)).toBe(1);
   });
 });
 

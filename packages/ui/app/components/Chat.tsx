@@ -38,6 +38,7 @@ import {
   clockTime,
   contextMeter,
   isNearBottom,
+  proposedNext,
   questionIdOfRef,
   ruleHitText,
   systemLine,
@@ -233,6 +234,11 @@ export interface MessageListProps<E extends ChatEntry> {
    * turn ended without one.
    */
   steps?: ReadonlyMap<number, readonly AgentStep[]>;
+  /**
+   * T435: extra attributes on an entry's row, after its own (a conversation's
+   * question, in the thread's list, is `data-testid="chat-question"`).
+   */
+  entryAttrs?: (entry: E, index: number) => Record<string, string> | undefined;
   testid?: string;
   label?: string;
 }
@@ -284,6 +290,7 @@ export function MessageList<E extends ChatEntry>({
   onOpenRule,
   openQuestions,
   steps,
+  entryAttrs,
   testid = 'thread',
   label = 'Conversation',
 }: MessageListProps<E>): JSX.Element {
@@ -345,6 +352,7 @@ export function MessageList<E extends ChatEntry>({
               data-testid="thread-entry"
               data-kind={entry.kind}
               data-by={byAttr(entry.by)}
+              {...entryAttrs?.(entry, index)}
             >
               <div
                 className="cr-sys"
@@ -390,6 +398,7 @@ export function MessageList<E extends ChatEntry>({
               data-kind={entry.kind}
               data-by={byAttr(entry.by)}
               data-cont={continued ? 'true' : undefined}
+              {...entryAttrs?.(entry, index)}
             >
               <div className="cr-you">
                 {tools(false)}
@@ -410,6 +419,8 @@ export function MessageList<E extends ChatEntry>({
         }
         const asked = entry.kind === 'question' ? questionIdOfRef(entry.ref) : undefined;
         const pending = asked !== undefined && openQuestions?.has(asked) === true;
+        // T435 (#26): a worker's `propose_next` reads as the node it proposes, not the raw verb.
+        const next = proposedNext(entry);
         out.push(
           <li
             key={key}
@@ -420,6 +431,7 @@ export function MessageList<E extends ChatEntry>({
             data-by={byAttr(entry.by)}
             data-cont={continued ? 'true' : undefined}
             data-open-question={pending ? 'true' : undefined}
+            {...entryAttrs?.(entry, index)}
           >
             {!continued && (
               <div className="cr-msg-head">
@@ -442,7 +454,16 @@ export function MessageList<E extends ChatEntry>({
                   ) : null}
                 </span>
               )}
-              <ThreadBody body={entry.body} />
+              {next ? (
+                <div className="cr-proposal-next" data-testid="proposal-next">
+                  <div className="cr-proposal-next-title">
+                    Next: <strong>{next.title}</strong>
+                  </div>
+                  <ThreadBody body={next.goal} />
+                </div>
+              ) : (
+                <ThreadBody body={entry.body} />
+              )}
             </div>
             {renderExtra?.(entry, index)}
           </li>,

@@ -33,6 +33,7 @@ import {
   DEFAULT_CLASSIFIER_DENY_AT,
   type Question,
   type KnowledgeItem as Rule,
+  SEND_UP_MAX_CHARS,
   START_ON_GOAL,
   classifierQuestion,
   examplesOf,
@@ -5583,6 +5584,13 @@ describe('Ask from anywhere (Playwright e2e, T419, D42)', () => {
         const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
           name: 'shop',
         });
+        // T435 (#20): a closed node, listed last in the picker.
+        const old = await cockpit.streams.create('human', {
+          title: 'Old experiment',
+          goal: 'g',
+          project: shop.id,
+        });
+        await cockpit.streams.close('human', old.id);
         const work = await cockpit.streams.create('human', {
           title: 'Add CSV import',
           goal: 'import CSV files into the ledger',
@@ -5612,12 +5620,21 @@ describe('Ask from anywhere (Playwright e2e, T419, D42)', () => {
         expect(asked?.goal).toBe(question);
         expect(asked?.repo).toBeUndefined();
         await page.locator(`[data-testid="stream-page"][data-stream="${asked?.id}"]`).waitFor();
+        // T435 (#10): in the thread's own list, after "Node created", under one day divider.
         const bubble = page.locator(
-          '[data-testid="chat-question"] [data-variant="you"] .cr-bubble',
+          '[data-testid="thread"] [data-testid="chat-question"][data-variant="you"] .cr-bubble',
         );
         await bubble.waitFor();
         expect(await bubble.textContent()).toContain(question);
         expect(await page.locator('[data-testid="goal-card"]').count()).toBe(0);
+        expect(await page.locator('.cr-chat .cr-day').count()).toBe(1);
+        const firstRows = await page
+          .locator('[data-testid="thread"] > li:not(.cr-day)')
+          .evaluateAll((els) => els.slice(0, 2).map((el) => el.textContent ?? ''));
+        expect(firstRows[0]).toContain('Node created');
+        expect(firstRows[1]).toContain(question);
+        // T435 (#20): straight on to its composer, for a follow-up.
+        await page.waitForFunction("document.activeElement?.dataset?.testid === 'composer-input'");
         // The node it is about is still work (D42), in the tree too.
         await page
           .locator(`[data-testid="stream-tree"] [data-stream="${work.id}"][data-role="work"]`)
@@ -5633,6 +5650,18 @@ describe('Ask from anywhere (Playwright e2e, T419, D42)', () => {
         await page.locator('[data-testid="node-menu-trigger"]').click();
         await page.locator('[data-testid="ask-about"]').click();
         await page.locator('[data-testid="ask"]').waitFor({ state: 'visible' });
+        // T435 (#20): its picker shows each node's status dot, the closed one last.
+        await page.locator('[data-testid="ask-target"]').click();
+        const targets = page.locator('[data-testid="ask-target-option"]');
+        await targets.first().waitFor();
+        const order = await targets.evaluateAll((els) =>
+          els.map((el) => [el.getAttribute('data-target'), el.querySelector('.cr-dot') !== null]),
+        );
+        expect(order[0]).toEqual(['director', false]);
+        expect(order.at(-1)).toEqual([old.id, true]);
+        expect(order.slice(1).every(([, dot]) => dot === true)).toBe(true);
+        expect(await targets.last().locator('.cr-dot').getAttribute('data-status')).toBe('closed');
+        await page.keyboard.press('Escape');
         await page.keyboard.press('Escape');
         await page.locator('[data-testid="ask"]').waitFor({ state: 'detached' });
       } finally {
@@ -5711,12 +5740,44 @@ describe('Send to parent (Playwright e2e, T421, D42)', () => {
         });
         await answer.waitFor();
 
-        // The reply's hover action opens the box with its words; Send puts them on the parent.
+        // T435 (#16): answered, its header offers what follows, not Restart (⋯ keeps it).
+        await page.locator('[data-testid="header-send-up"]').waitFor();
+        await page.locator('[data-testid="header-turn-into-work"]').waitFor();
+        expect(await page.locator('[data-testid="attach"]').count()).toBe(0);
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page.locator('[data-testid="restart"]').waitFor();
+        await page.keyboard.press('Escape');
+
+        // T435 (#2): the header's Send to starts from the last reply; near the cap it counts,
+        // past it Send is off and says how to fix it (Enter doesn't send either).
+        await page.locator('[data-testid="header-send-up"]').click();
+        const input = page.locator('[data-testid="send-up-input"]');
+        await input.waitFor();
+        expect(await input.inputValue()).toBe(reply);
+        expect(await page.locator('[data-testid="send-up-count"]').count()).toBe(0);
+        await input.fill('x'.repeat(SEND_UP_MAX_CHARS + 1));
+        const count = page.locator('[data-testid="send-up-count"][data-over="true"]');
+        await count.waitFor();
+        expect(await count.textContent()).toContain('Shorten it, or send the key point.');
+        expect(await count.textContent()).toContain('3,001 / 3,000');
+        expect(await page.locator('[data-testid="send-up-send"]').isDisabled()).toBe(true);
+        await input.press('Enter');
+        await page.waitForTimeout(200);
+        expect(await page.locator('[data-testid="send-up"]').count()).toBe(1);
+        await page.keyboard.press('Escape');
+        await page.locator('[data-testid="send-up"]').waitFor({ state: 'detached' });
+
+        // The reply's hover action opens the box with its words; T435 (#12): Shift+Enter is a
+        // new line, Enter sends them to the parent.
         await answer.hover();
         await answer.locator('[data-testid="send-up-line"]').click();
         await page.locator('[data-testid="send-up"]').waitFor({ state: 'visible' });
-        expect(await page.locator('[data-testid="send-up-input"]').inputValue()).toBe(reply);
-        await page.locator('[data-testid="send-up-send"]').click();
+        expect(await input.inputValue()).toBe(reply);
+        await input.press('End');
+        await input.press('Shift+Enter');
+        await input.pressSequentially('Worth it before merge.');
+        expect(await page.locator('[data-testid="send-up"]').count()).toBe(1);
+        await input.press('Enter');
         await page.locator('[data-testid="send-up"]').waitFor({ state: 'detached' });
         await waitUntil('the line on the parent', () =>
           cockpit.streams
@@ -5724,7 +5785,8 @@ describe('Send to parent (Playwright e2e, T421, D42)', () => {
             .entries.some(
               (e) =>
                 e.by === 'human' &&
-                e.body === `From the conversation “Why buffer the file?”:\n\n${reply}`,
+                e.body ===
+                  `From the conversation “Why buffer the file?”:\n\n${reply}\nWorth it before merge.`,
             ),
         );
         await page
@@ -5734,6 +5796,18 @@ describe('Send to parent (Playwright e2e, T421, D42)', () => {
         expect(cockpit.streams.get(work.id).sessions.every((s) => s.role !== 'coordinator')).toBe(
           true,
         );
+
+        // T435 (#19): a closed parent takes nothing: no Send to on hover, in the header or ⋯.
+        await cockpit.attach.stop(work.id).catch(() => {});
+        await cockpit.streams.close('human', work.id);
+        await page.locator('[data-testid="header-send-up"]').waitFor({ state: 'detached' });
+        await page.locator('[data-testid="header-turn-into-work"]').waitFor();
+        await answer.hover();
+        expect(await answer.locator('[data-testid="send-up-line"]').count()).toBe(0);
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page.locator('[data-testid="turn-into-work-menu"]').waitFor();
+        expect(await page.locator('[data-testid="send-up"]').count()).toBe(0);
+        await page.keyboard.press('Escape');
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -5777,15 +5851,32 @@ describe('Turn into work (Playwright e2e, T422, D42)', () => {
           .locator('[data-testid="thread-entry"][data-by="agent"]', { hasText: reply })
           .waitFor();
 
-        await page.locator('[data-testid="node-menu-trigger"]').click();
-        await page.locator('[data-testid="turn-into-work-menu"]').click();
+        // T435 (#16): answered, its header offers Turn into work… and Send to its parent (here
+        // the project's root).
+        expect(await page.locator('[data-testid="header-send-up"]').textContent()).toBe(
+          'Send to shop',
+        );
+        await page.locator('[data-testid="header-turn-into-work"]').click();
         const goal = page.locator('[data-testid="turn-into-work-goal"]');
         // No cheap model offline: the goal starts as its last reply, yours to edit.
         await waitUntilAsync('the drafted goal', async () => (await goal.inputValue()) === reply);
-        await goal.fill(`${reply} Done when the 2 GB fixture imports.`);
+        const newGoal = `${reply}\nDone when the 2 GB fixture imports.`;
+        await goal.fill(newGoal);
+        // T435 (#13): New node's grouping; a repo outside the project says it joins it.
         await page.locator('[data-testid="turn-into-work-repo"]').click();
+        const groups = await page
+          .locator('[data-testid="turn-into-work-repo-list"] .cr-picklist-group')
+          .allTextContents();
+        expect(groups).toEqual(['Repositories']);
         await page.locator('[data-testid="turn-into-work-repo-option"][data-repo="demo"]').click();
-        await page.locator('[data-testid="turn-into-work-start"]').click();
+        await page.locator('[data-testid="turn-into-work-joins"]').waitFor();
+        expect(await page.locator('[data-testid="turn-into-work-joins"]').textContent()).toBe(
+          'Also adds demo to shop’s repositories.',
+        );
+        // At the top level there is nowhere else to put it.
+        expect(await page.locator('[data-testid="turn-into-work-where"]').count()).toBe(0);
+        // T435 (#12): Enter starts.
+        await goal.press('Enter');
         await page.locator('[data-testid="turn-into-work"]').waitFor({ state: 'detached' });
 
         // Same node, same thread: now work on demo, its goal changed, its agent told to start.
@@ -5803,10 +5894,16 @@ describe('Turn into work (Playwright e2e, T422, D42)', () => {
               .entries.some((e) => e.by === 'human' && e.body === START_ON_GOAL)
           );
         });
-        expect(cockpit.streams.get(convo.id).goal).toBe(
-          `${reply} Done when the 2 GB fixture imports.`,
-        );
+        expect(cockpit.streams.get(convo.id).goal).toBe(newGoal);
         await page.locator('[data-testid="node-role"][data-role="work"]').waitFor();
+        // T435 (#27): its title was its question; now the goal's first line (the cheap model
+        // names it better where there is one). T435 (#13): demo is one of the project's now.
+        expect(cockpit.streams.get(convo.id).title).toBe(
+          'Stream the upload in 1 MB chunks so 2 GB files import.',
+        );
+        expect(cockpit.store.getProject(shop.id).repos).toEqual(['demo']);
+        // In the thread's list its question stays a Goal card now: it is work.
+        await page.locator('[data-testid="goal-card"]').waitFor();
 
         // No repository: it stays a conversation, researching the goal.
         const research = await cockpit.streams.create('human', {
@@ -5845,6 +5942,141 @@ describe('Turn into work (Playwright e2e, T422, D42)', () => {
         const after = cockpit.streams.get(research.id);
         expect(after.repo).toBeUndefined();
         expect(after.goal).toBe('Find the largest file the importer takes and why.');
+        // T435 (#27): a title that isn't its question is yours: it stays.
+        expect(after.title).toBe('Import limits');
+        expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('where the work goes under a work node (Playwright e2e, T435)', () => {
+  browserTest(
+    'Turn into work under a work node puts it next to that node by default, which stays work; Add repository and New node say it would coordinate',
+    async () => {
+      const reply = 'Strip the BOM and split on CRLF.';
+      const cockpit = await startStreamCockpit([
+        // The conversation's agent: answers, then idles.
+        {
+          turns: [[{ type: 'agent_text', text: reply }, { type: 'end_turn' }]],
+          steps: [{ type: 'end_turn' }],
+        },
+        // Restarted in its worktree once it has a repo.
+        { steps: [{ type: 'end_turn' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+          repos: ['demo'],
+        });
+        const work = await cockpit.streams.create('human', {
+          title: 'Add CSV import',
+          goal: 'import CSV files',
+          project: shop.id,
+          repo: 'demo',
+        });
+        const convo = await cockpit.streams.create('human', {
+          title: 'Does import handle Excel files?',
+          goal: 'does the importer take files saved by Excel?',
+          parent: work.id,
+        });
+        const other = await cockpit.streams.create('human', {
+          title: 'Why buffer the file?',
+          goal: 'why does the importer read the whole file?',
+          parent: work.id,
+        });
+        page = await openPage();
+
+        // ⋯ Add repository on a conversation under a work node says what it does to that node.
+        await page.goto(`${cockpit.base}/?node=${other.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${other.id}"]`).waitFor();
+        await page.locator('[data-testid="node-role"]').waitFor();
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page.locator('[data-testid="add-repo"]').click();
+        await page.locator('[data-testid="add-repo-coordinates"]').waitFor();
+        expect(await page.locator('[data-testid="add-repo-coordinates"]').textContent()).toBe(
+          'Add CSV import will coordinate it; its agent restarts as a coordinator.',
+        );
+        await page.keyboard.press('Escape');
+
+        await page.goto(`${cockpit.base}/?node=${convo.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${convo.id}"]`).waitFor();
+        await page.locator('[data-testid="attach"]').click();
+        await page
+          .locator('[data-testid="thread-entry"][data-by="agent"]', { hasText: reply })
+          .waitFor();
+        await page.locator('[data-testid="header-turn-into-work"]').click();
+        const goal = page.locator('[data-testid="turn-into-work-goal"]');
+        await waitUntilAsync('the drafted goal', async () => (await goal.inputValue()) === reply);
+        // The other way: its parent's own agent does it.
+        expect(await page.locator('[data-testid="turn-into-work-send-up"]').textContent()).toBe(
+          'To have Add CSV import’s agent do it instead, use Send to Add CSV import.',
+        );
+        // Research under it changes nothing there: no Where until a repository is picked.
+        expect(await page.locator('[data-testid="turn-into-work-where"]').count()).toBe(0);
+        await page.locator('[data-testid="turn-into-work-repo"]').click();
+        expect(
+          await page
+            .locator('[data-testid="turn-into-work-repo-list"] .cr-picklist-group')
+            .allTextContents(),
+        ).toEqual(['In shop', 'Other repositories']);
+        await page.locator('[data-testid="turn-into-work-repo-option"][data-repo="demo"]').click();
+        await page
+          .locator('[data-testid="turn-into-work-where-next-to"][data-checked="true"]')
+          .waitFor();
+        expect(
+          await page.locator('[data-testid="turn-into-work-where-under"]').textContent(),
+        ).toContain('Add CSV import will coordinate it; its agent restarts as a coordinator.');
+        // In the project already: nothing joins it.
+        expect(await page.locator('[data-testid="turn-into-work-joins"]').count()).toBe(0);
+        await goal.press('Enter');
+        await page.locator('[data-testid="turn-into-work"]').waitFor({ state: 'detached' });
+
+        // Next to it: under the project's root, on demo, started on the goal.
+        await waitUntil('the work next to Add CSV import', () => {
+          const node = cockpit.streams.get(convo.id);
+          return (
+            node.parent === shop.root &&
+            node.repo === 'demo' &&
+            cockpit.streams
+              .readThread(convo.id)
+              .entries.some((e) => e.by === 'human' && e.body === START_ON_GOAL)
+          );
+        });
+        // Add CSV import is still work, its own agent never a coordinator.
+        const all = cockpit.streams.list();
+        expect(nodeRole(cockpit.streams.get(work.id), liveChildrenOf(work.id, all), all)).toBe(
+          'work',
+        );
+        expect(cockpit.streams.get(work.id).sessions.every((s) => s.role !== 'coordinator')).toBe(
+          true,
+        );
+        expect(cockpit.streams.get(convo.id).title).toBe('Strip the BOM and split on CRLF.');
+        await page
+          .locator(`[data-testid="stream-tree"] [data-stream="${work.id}"][data-role="work"]`)
+          .waitFor();
+
+        // New node under a work node, with a repository, says the same under its Parent.
+        await page.locator('[data-testid="new-stream-open"]').click();
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
+        await page.locator('[data-testid="new-stream-parent"]').click();
+        await page.locator('[data-testid="new-stream-parent-search"]').fill('csv');
+        await page.locator('[data-testid="new-stream-parent-search"]').press('Enter');
+        expect(
+          await page.locator('[data-testid="new-stream-parent"]').getAttribute('data-value'),
+        ).toBe(work.id);
+        expect(await page.locator('[data-testid="new-stream-coordinates"]').count()).toBe(0);
+        await page.locator('[data-testid="new-stream-repo"]').click();
+        await page.locator('[data-testid="new-stream-repo-option"][data-repo="demo"]').click();
+        expect(await page.locator('[data-testid="new-stream-coordinates"]').textContent()).toBe(
+          'Add CSV import will coordinate it; its agent restarts as a coordinator.',
+        );
+        await page.keyboard.press('Escape');
         expect(cockpit.attachErrors).toEqual([]);
       } finally {
         await teardown([page]);
@@ -5857,7 +6089,7 @@ describe('Turn into work (Playwright e2e, T422, D42)', () => {
 
 describe('what a worker proposes next (Playwright e2e, T427)', () => {
   browserTest(
-    "a propose_next line's Create node… opens New node with its title and goal, under this node",
+    'a propose_next line reads as the node it proposes; Create node… opens New node with its title and goal, next to this node on its repo',
     async () => {
       const cockpit = await startStreamCockpit([]);
       let page: Page | undefined;
@@ -5889,21 +6121,47 @@ describe('what a worker proposes next (Playwright e2e, T427)', () => {
         await page.locator('[data-testid="node-role"]').waitFor();
         await page.locator('[data-testid="proposal-add-repo"]').waitFor();
         expect(await page.locator('[data-testid="proposal-create-node"]').count()).toBe(1);
+        // T435 (#26): "Next: <title>", the goal under it — not the raw verb.
+        const proposal = page.locator('[data-testid="proposal-next"]');
+        expect(await proposal.count()).toBe(1);
+        expect(await proposal.locator('strong').textContent()).toBe('Add CSV export');
+        expect(await proposal.textContent()).toBe(`Next: Add CSV export${goal}`);
         await page.locator('[data-testid="proposal-create-node"]').click();
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'visible' });
         expect(await page.locator('[data-testid="new-stream-title"]').inputValue()).toBe(
           'Add CSV export',
         );
         expect(await page.locator('[data-testid="new-stream-goal"]').inputValue()).toBe(goal);
+        // T435 (#14): next to the proposing node (its project's top level here), on its repo.
+        const parentPick = page.locator('[data-testid="new-stream-parent"]');
+        expect(await parentPick.getAttribute('data-value')).toBe('');
         expect(
-          await page.locator('[data-testid="new-stream-parent"]').getAttribute('data-value'),
-        ).toBe(node.id);
+          await page.locator('[data-testid="new-stream-repo"]').getAttribute('data-value'),
+        ).toBe('demo');
+        // T435 (#7): typing a name and Enter picks that name, not the pinned current Top level;
+        // nested under a work node with a repo, the Parent's hint says it would coordinate.
+        await parentPick.click();
+        await page.locator('[data-testid="new-stream-parent-search"]').fill('totals');
+        await page.locator('[data-testid="new-stream-parent-search"]').press('Enter');
+        expect(await parentPick.getAttribute('data-value')).toBe(node.id);
+        await page.locator('[data-testid="new-stream-coordinates"]').waitFor();
+        // A pinned option whose own words match is picked, too.
+        await parentPick.click();
+        await page.locator('[data-testid="new-stream-parent-search"]').fill('top');
+        await page.locator('[data-testid="new-stream-parent-search"]').press('Enter');
+        expect(await parentPick.getAttribute('data-value')).toBe('');
         await page.locator('[data-testid="new-stream-start"]').uncheck();
         await page.locator('[data-testid="new-stream-create"]').click();
         await waitUntil('the proposed node', () =>
           cockpit.streams
             .list()
-            .some((s) => s.parent === node.id && s.title === 'Add CSV export' && s.goal === goal),
+            .some(
+              (s) =>
+                s.parent === shop.root &&
+                s.repo === 'demo' &&
+                s.title === 'Add CSV export' &&
+                s.goal === goal,
+            ),
         );
       } finally {
         await teardown([page]);

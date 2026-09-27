@@ -5,12 +5,36 @@
  * edit. Pick a repository and it becomes a work node on its own branch; pick
  * none and it stays a research node whose goal is what it should find out.
  * Either way its agent is told to start on the goal.
+ *
+ * T435 (audit r6):
+ *  - #3: under a **work** node, a repository would make that node coordinate
+ *    it (its Merge card gone, a coordinator started). So "Where": **Next to
+ *    <parent>** (the default: the node moves up beside it first) or **Under
+ *    <parent>**, with that consequence in words; and a pointer to Send to
+ *    <parent>, for when the parent's own agent should do it.
+ *  - #12: Enter starts, Shift+Enter is a new line (Ctrl/⌘+Enter too).
+ *  - #13: the repositories grouped as New node's are ("In <project>" first);
+ *    one outside the project is added to the project's list on Start, as the
+ *    hint under the picker says.
+ *  - #27: a title that is still the question is renamed from the new goal
+ *    (and the cheap model names it better, D41); one you gave it stays.
  */
 
 import { START_ON_GOAL } from '@agile-agents/shared';
 import { useEffect, useRef, useState } from 'react';
-import { type GoalDraft, addRepoToStream, draftGoal, sayOnStream, updateStream } from '../lib/api';
-import type { CockpitRepoRow } from '../lib/feed-types';
+import {
+  type GoalDraft,
+  addRepoToStream,
+  draftGoal,
+  moveStream,
+  sayOnStream,
+  updateProject,
+  updateStream,
+} from '../lib/api';
+import { type TurnWhere, coordinatesIt, keepsTitle } from '../lib/ask';
+import { writeFailure } from '../lib/errors';
+import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
+import { splitRepos, titleFromGoal } from '../lib/tree';
 import { Icon } from './Icon';
 import { type PickOption, PickerField } from './Pickers';
 import { Button, Dialog, Field, Kbd, RepoIcon, repoKindLabel } from './ui';
@@ -30,16 +54,31 @@ const GOAL_HINT: Record<GoalDraft['from'], string> = {
 
 export function TurnIntoWorkDialog({
   node,
+  title,
   goal: current,
   repos,
+  project,
+  parent,
+  grandparent,
+  onSendUp,
   onClose,
   onDone,
 }: {
   node: string;
+  /** The conversation's title: still its question, it is renamed from the new goal. */
+  title: string;
   goal: string;
   repos: readonly CockpitRepoRow[];
+  /** Its project: its repositories come first, and one from outside joins them. */
+  project?: CockpitProjectRow;
+  /** The node it sits under; a work node there asks where the work goes. */
+  parent?: Pick<CockpitStreamRow, 'id' | 'title' | 'role' | 'parent'>;
+  /** The parent's own parent, where "Next to" puts it (its title, for the words). */
+  grandparent?: Pick<CockpitStreamRow, 'id' | 'title'>;
+  /** Send to <parent> instead (absent when the parent can't take one). */
+  onSendUp?: () => void;
   onClose: () => void;
-  onDone: (repo: string | undefined) => void;
+  onDone: (result: { repo?: string; where?: TurnWhere }) => void;
 }): JSX.Element {
   const [goal, setGoal] = useState('');
   // T431: the draft takes seconds (a model call); the box is yours meanwhile, and a
@@ -48,6 +87,7 @@ export function TurnIntoWorkDialog({
   const [drafting, setDrafting] = useState(true);
   const typed = useRef(false);
   const [repo, setRepo] = useState('');
+  const [where, setWhere] = useState<TurnWhere>('next-to');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
 
@@ -68,6 +108,17 @@ export function TurnIntoWorkDialog({
     };
   }, [node, current]);
 
+  // T435 (#13): New node's grouping — the project's repositories first.
+  const projectName = project?.name ?? 'this project';
+  const { inProject, others } = splitRepos(repos, project?.repos);
+  const repoOption = (r: CockpitRepoRow, group: string): PickOption => ({
+    value: r.name,
+    text: r.name,
+    icon: <RepoIcon remote={r.remote} size={14} />,
+    sub: repoKindLabel(r.remote),
+    group,
+    attrs: { 'data-repo': r.name },
+  });
   const options: PickOption[] = [
     {
       value: '',
@@ -77,17 +128,20 @@ export function TurnIntoWorkDialog({
       pinned: true,
       attrs: { 'data-repo': '' },
     },
-    ...repos.map(
-      (r): PickOption => ({
-        value: r.name,
-        text: r.name,
-        icon: <RepoIcon remote={r.remote} size={14} />,
-        sub: repoKindLabel(r.remote),
-        attrs: { 'data-repo': r.name },
-      }),
+    ...inProject.map((r) => repoOption(r, `In ${projectName}`)),
+    ...others.map((r) =>
+      repoOption(r, inProject.length > 0 ? 'Other repositories' : 'Repositories'),
     ),
   ];
   const picked = repos.find((r) => r.name === repo);
+  // A repo from outside the project joins its list when the work starts.
+  const joinsProject =
+    project !== undefined && repo !== '' && !(project.repos ?? []).includes(repo);
+  // T435 (#3): under a work node, a repository would make it coordinate this.
+  const coordinates = coordinatesIt(parent);
+  const asksWhere = coordinates !== undefined && repo !== '';
+  const nextTo = asksWhere && where === 'next-to';
+  const renames = !keepsTitle(title, current);
 
   const submit = async (): Promise<void> => {
     const text = (goal ?? '').trim();
@@ -95,13 +149,29 @@ export function TurnIntoWorkDialog({
     setBusy(true);
     setError(undefined);
     try {
-      if (text !== current.trim()) await updateStream(node, { goal: text });
+      // T435 (#3): beside its parent first, so the parent stays what it is.
+      if (nextTo && parent?.parent !== undefined) await moveStream(node, parent.parent);
+      if (text !== current.trim()) {
+        // T435 (#27): a title that is still the question follows the new goal.
+        const placeholder = titleFromGoal(text);
+        await updateStream(node, {
+          goal: text,
+          ...(renames && placeholder !== '' ? { title: placeholder, auto_title: true } : {}),
+        });
+      }
+      // T435 (#13): as the hint under the picker says.
+      if (joinsProject && project !== undefined) {
+        await updateProject(project.id, { repos: [...(project.repos ?? []), repo] });
+      }
       // In place (T205, D42): its branch and worktree; a live agent restarts in it.
       if (repo !== '') await addRepoToStream(node, repo);
       await sayOnStream(node, START_ON_GOAL, { start: true });
-      onDone(repo === '' ? undefined : repo);
+      onDone({
+        ...(repo !== '' ? { repo } : {}),
+        ...(asksWhere ? { where } : {}),
+      });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(writeFailure(err, 'Couldn’t reach the daemon; nothing was started.'));
     } finally {
       setBusy(false);
     }
@@ -120,8 +190,8 @@ export function TurnIntoWorkDialog({
       footer={
         <>
           <span className="cr-newnode-keys">
-            <Kbd>{navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl'}</Kbd>
-            <Kbd>↵</Kbd> to start
+            <Kbd>↵</Kbd> to start · <Kbd>Shift</Kbd>
+            <Kbd>↵</Kbd> new line
           </span>
           <Button onClick={onClose}>Cancel</Button>
           <Button
@@ -175,14 +245,24 @@ export function TurnIntoWorkDialog({
               setGoal(e.target.value);
             }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                void submit();
-              }
+              // T435 (#12): prose, like Ask: Enter starts, Shift+Enter is a new line.
+              if (e.key !== 'Enter' || e.nativeEvent.isComposing) return;
+              if (e.shiftKey && !(e.metaKey || e.ctrlKey)) return;
+              e.preventDefault();
+              void submit();
             }}
           />
         </Field>
-        <Field label="Repository">
+        <Field
+          label="Repository"
+          hint={
+            joinsProject ? (
+              <span data-testid="turn-into-work-joins">
+                Also adds {repo} to {projectName}’s repositories.
+              </span>
+            ) : undefined
+          }
+        >
           <PickerField
             testid="turn-into-work-repo"
             label="Repository"
@@ -205,6 +285,65 @@ export function TurnIntoWorkDialog({
             onPick={setRepo}
           />
         </Field>
+        {asksWhere && parent !== undefined && (
+          <Field label="Where">
+            <div
+              className="cr-kn-choices cr-turn-where"
+              role="radiogroup"
+              aria-label="Where"
+              data-testid="turn-into-work-where"
+            >
+              {(
+                [
+                  {
+                    id: 'next-to',
+                    icon: 'git-branch',
+                    label: `Next to ${parent.title}`,
+                    hint: `Its own node${grandparent ? ` under ${grandparent.title}` : ''}; ${parent.title} stays as it is.`,
+                  },
+                  {
+                    id: 'under',
+                    icon: 'network',
+                    label: `Under ${parent.title}`,
+                    hint: coordinates,
+                  },
+                ] as const
+              ).map((choice) => (
+                <label
+                  key={choice.id}
+                  className="cr-kn-choice"
+                  data-value={choice.id}
+                  data-testid={`turn-into-work-where-${choice.id}`}
+                  data-checked={where === choice.id ? 'true' : undefined}
+                >
+                  <input
+                    type="radio"
+                    name={`turn-where-${node}`}
+                    value={choice.id}
+                    checked={where === choice.id}
+                    onChange={() => setWhere(choice.id)}
+                  />
+                  <span className="cr-kn-choice-icon">
+                    <Icon name={choice.icon} size={15} />
+                  </span>
+                  <span className="cr-kn-choice-text">
+                    <span className="cr-kn-choice-label">{choice.label}</span>
+                    <span className="cr-kn-choice-hint">{choice.hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </Field>
+        )}
+        {coordinates !== undefined && parent !== undefined && onSendUp !== undefined && (
+          <p className="cr-turn-alt" data-testid="turn-into-work-send-up">
+            To have {parent.title}’s agent do it instead, use{' '}
+            <button type="button" className="cr-link" onClick={onSendUp}>
+              Send to {parent.title}
+            </button>
+            .
+          </p>
+        )}
         {error && (
           <p className="cr-error" role="alert" data-testid="turn-into-work-error">
             {error}

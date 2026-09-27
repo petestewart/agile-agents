@@ -168,6 +168,26 @@ export function typeAheadMatch<T extends { text: string }>(
   );
 }
 
+/**
+ * T435 (audit r6 #7): which option a searchable picker highlights, so Enter
+ * picks what you typed. With no query, the current value (when it can be
+ * picked), else the first. With one, the first match that isn't pinned (Top
+ * level, No repository stay listed whatever you type) — or the first match
+ * at all when a pinned option's own text matches.
+ */
+export function pickHighlight<
+  T extends { value: string; text: string; pinned?: boolean; disabled?: boolean },
+>(options: readonly T[], query: string, current: string): string | undefined {
+  const pickable = options.filter((o) => !o.disabled);
+  const q = query.trim().toLowerCase();
+  if (q === '') {
+    return pickable.some((o) => o.value === current) ? current : pickable[0]?.value;
+  }
+  const matches = pickable.filter((o) => o.text.toLowerCase().includes(q));
+  const first = matches.some((o) => o.pinned) ? matches[0] : matches.find((o) => !o.pinned);
+  return (first ?? pickable[0])?.value;
+}
+
 /** Repos for a picker: the project's own first, then the others, each by name. */
 export function splitRepos<T extends { name: string }>(
   repos: readonly T[],

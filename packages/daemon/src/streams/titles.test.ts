@@ -9,11 +9,14 @@ import { StateStore } from '../store';
 import { StreamService } from './service';
 import {
   DRAFT_GOAL_MAX_CHARS,
+  DRAFT_GOAL_USABLE_CHARS,
+  NO_GOAL,
   TitleNamer,
   claudeTitleRun,
   cleanGoal,
   cleanTitle,
   draftGoalPrompt,
+  draftedGoal,
   titlePrompt,
 } from './titles';
 
@@ -150,5 +153,51 @@ describe('T422: the goal a conversation drafts', () => {
     expect(long.endsWith('…')).toBe(true);
     expect(cleanGoal('  ')).toBeUndefined();
     expect(cleanGoal(undefined)).toBeUndefined();
+  });
+
+  test('T435: the prompt has an escape for a talk that concluded nothing', () => {
+    expect(draftGoalPrompt('q', [])).toContain(`If no work follows from it, reply ${NO_GOAL}`);
+  });
+
+  test('T435: a goal passes; NONE, a question, the model talking to you, a list or a ramble do not', () => {
+    const good =
+      'Strip a leading BOM and split on CRLF in importCsv(); done when an Excel export imports.';
+    expect(draftedGoal(`Goal: ${good}`)).toBe(good);
+    expect(draftedGoal('Implement streaming uploads; done when a 2 GB file imports.')).toBe(
+      'Implement streaming uploads; done when a 2 GB file imports.',
+    );
+    // A URL's query is no question.
+    expect(draftedGoal('Read https://example.com/a?b=1 and fix the parser.')).toBe(
+      'Read https://example.com/a?b=1 and fix the parser.',
+    );
+    // The prompt's escape.
+    expect(draftedGoal('NONE')).toBeUndefined();
+    expect(draftedGoal(' none. ')).toBeUndefined();
+    // Audit r6 #6: the model talking to you.
+    expect(
+      draftedGoal(
+        "I don't have the context of the conversation that reached this conclusion. Could you either: 1. Share the conversation 2. Tell me directly what should be done",
+      ),
+    ).toBeUndefined();
+    expect(draftedGoal('Could you share the rest of the conversation.')).toBeUndefined();
+    expect(draftedGoal('Please share what was decided.')).toBeUndefined();
+    expect(draftedGoal('I need more context to write a goal.')).toBeUndefined();
+    expect(draftedGoal('Add retries. I’d also check the timeout.')).toBeUndefined();
+    expect(draftedGoal('Without more context this is hard to say.')).toBeUndefined();
+    // A question.
+    expect(draftedGoal('Should the importer stream the file?')).toBeUndefined();
+    expect(draftedGoal('Decide: stream or buffer? Then build it.')).toBeUndefined();
+    // A list, on lines or run together.
+    expect(draftedGoal('Do these:\n- strip the BOM\n- split on CRLF')).toBeUndefined();
+    expect(draftedGoal('Steps:\n1. strip the BOM\n2. split on CRLF')).toBeUndefined();
+    expect(draftedGoal('Do two things: 1. strip the BOM 2. split on CRLF.')).toBeUndefined();
+    // Longer than a goal.
+    expect(draftedGoal(`Add retries ${'and more '.repeat(80)}`.trim())).toBeUndefined();
+    expect(draftedGoal('x'.repeat(DRAFT_GOAL_USABLE_CHARS))).toBe(
+      'x'.repeat(DRAFT_GOAL_USABLE_CHARS),
+    );
+    // Nothing usable.
+    expect(draftedGoal(undefined)).toBeUndefined();
+    expect(draftedGoal('  ')).toBeUndefined();
   });
 });

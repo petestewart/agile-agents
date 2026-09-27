@@ -1,6 +1,6 @@
 # Cockpit UI — design system and UX rules
 
-Status: 2026-09-26 (Phase 15, T360–T390). Follow-ups: `cockpit-ui-followups.md`. Applies to `packages/ui/app`. Where this
+Status: 2026-09-26 (Phase 15, T360–T390; conversation flows T435). Follow-ups: `cockpit-ui-followups.md`. Applies to `packages/ui/app`. Where this
 file and `cockpit-design.md` §9 disagree on *how the cockpit looks or reads*,
 this file wins; on *what the cockpit does*, the design docs and the Decisions
 log still decide.
@@ -39,8 +39,9 @@ is running?**
    `/` filter the tree, `g` then `i`/`d`/`k`/`r`/`e`/`s` jumps to Needs me,
    Director, Knowledge, Running, Events, Settings; `j`/`k` in Needs me, and
    A/B (or 1/2) on a focused question card (T416);
-   `Esc` closes any overlay, Enter sends, Shift+Enter is a newline. The `?`
-   list (`Shortcuts.tsx`) names only keys that work.
+   `Esc` closes any overlay, Enter sends, Shift+Enter is a newline (New
+   node's goal excepted: §7 "Submit keys"). The `?` list (`Shortcuts.tsx`)
+   names only keys that work.
 
 ## 2. Vocabulary (UI text)
 
@@ -372,7 +373,17 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
 - **Forms check as you type** (T426): New project says a taken name under
   Name before Create; a short picker with no search box still takes typing
   (the letters pick the first match, Enter chooses it); a list's
-  "Add a repository…" row is pinned below its scroll.
+  "Add a repository…" row is pinned below its scroll. T435: in a picker with
+  a search box, typing moves the highlight to the first match that isn't
+  pinned (Top level, No repository stay listed whatever you type) — or to
+  the pinned one when its own words match — so a name typed and Enter picks
+  that name (`lib/tree.ts` `pickHighlight`).
+- **Submit keys** (T435): a box of prose submits on Enter, Shift+Enter is a
+  new line and Ctrl/⌘+Enter works too — the composer, a diff comment, Ask,
+  Send to <parent> and Turn into work, each saying its keys ("↵ to send ·
+  Shift ↵ new line"). New node is the exception: its goal is a
+  long description, often several paragraphs, so Enter is a new line there
+  and Ctrl/⌘+Enter creates (as its footer says); Enter in its Title creates.
 - **Knowledge you write** is yours to accept, so Add knowledge's primary is
   **Add** (it applies at once); **Save as proposal** keeps it in To review.
   A checked rule still needs its two examples before Add (T426).
@@ -391,10 +402,23 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   conversation under that node, in its own thread, so the node's work goes on
   undisturbed; about the Director it is a line in the Director's thread. A
   conversation's chat opens with its question as your message, never a Goal
-  card.
+  card. T435: the picker shows each node's status dot, with a project's merged
+  and closed nodes last; the question sits in the thread's own list (one day
+  divider), right after "Node created"; and the new conversation opens with
+  its composer focused, for a follow-up.
+- **An answered conversation** (T435): once its agent has replied, its
+  header offers what follows from the answer — **Send to <parent>** and
+  **Turn into work…**, both secondary — instead of Restart agent, which would
+  only ask its question again (⋯ keeps Restart agent; the composer
+  continues the talk). While its agent works, the header has Stop as ever.
 - **Send to parent** (T421, D42): in a conversation under another node, a
-  reply's hover action (or ⋯) sends a conclusion up. It lands there as your
-  message, so that node's agent acts on it as on anything you type.
+  reply's hover action (or ⋯, or T435 the header) sends a conclusion up. It
+  lands there as your message, so that node's agent acts on it as on
+  anything you type. T435: not offered when that node is merged or closed
+  (nothing there acts on it). The box counts characters as it nears its cap
+  (`SEND_UP_MAX_CHARS`, "2,612 / 3,000"); past it Send is off and says
+  "Shorten it, or send the key point". A refusal reads in words
+  (`lib/errors.ts` `sendUpFailure`), never the schema's "invalid send-up: …".
 - **Replies you haven't read** (T429): a node that answered and has no
   Needs me card (a conversation, a root, a coordinator) is unread until its
   page is open in a visible tab. Needs me lists them first under **Replies**
@@ -421,15 +445,38 @@ needs-you and blocked halo but keeps a hollow dot's ring (stopped, waiting).
   installed" (session defaults' `not_installed`). A done node with its own
   branch keeps its Merge card even when it has parts.
 - **What a worker proposes next** (T427): an agent's `propose_next` line
-  ("Proposal") carries **Create node…**, which opens New node with its title
-  and goal filled in, under this node (design §2's "break it down"); the
-  Parent picker can put it elsewhere. Coordinators (Organise/Run) and the
-  Director create nodes themselves; a worker proposes.
-- **Turn into work** (T422, D42): an open conversation's ⋯ menu. One box: the
-  goal (drafted from the talk by the cheap model, else its last reply, else its
-  question; the hint says which) and a repository, "No repository" first for
-  research. Start adds the repo in place and your line starts its agent on the
-  goal: same node, same thread.
+  ("Proposal") reads as the node it proposes — "Next: **<title>**", the goal
+  under it (T435) — and carries **Create node…**, which opens New node with
+  its title and goal filled in. T435: next to this node (under its parent)
+  and on its repository: under it, a work node would become a coordinator
+  (its Merge card gone, a coordinator agent started). The Parent picker can
+  still nest it; nested under a work node with a repository, the Parent's
+  hint says "<node> will coordinate it; its agent restarts as a
+  coordinator". Coordinators (Organise/Run) and the Director create nodes
+  themselves; a worker proposes.
+- **Turn into work** (T422, D42): an open conversation's ⋯ menu (T435: and
+  its header once it has replied). One box: the goal (drafted from the talk by
+  the cheap model, else its last reply, else its question; the hint says
+  which) and a repository, "No repository" first for research. Start adds the
+  repo in place and your line starts its agent on the goal: same node, same
+  thread. T435:
+  - The draft is refused when it is no goal — a question, the model talking
+    to you ("I don't have…", "Could you…"), a list, over 600 characters, or
+    the prompt's "NONE" — and the last reply (then the question) stands in.
+  - The repositories are grouped as in New node ("In <project>" first). One
+    from outside the project says "Also adds <repo> to <project>'s
+    repositories" under the picker, and Start does so.
+  - Under a **work** node, a repository asks **Where**: **Next to <parent>**
+    (the default: the node moves up beside it first, so <parent> keeps its
+    branch, its Merge card and its own agent) or **Under <parent>** ("<parent>
+    will coordinate it; its agent restarts as a coordinator"). A line points
+    to the other way: "To have <parent>'s agent do it instead, use Send to
+    <parent>." ⋯ Add repository… on a conversation under a work node says
+    the same consequence.
+  - A title that is still its question (as asked, Ask's placeholder, or any
+    title that asks) is renamed from the new goal's first line, and the cheap
+    model names it better (D41's path: `update` with `auto_title`); a title you
+    gave it stays.
 - **Notifications** (Settings → General, per browser, off by default): one
   browser notification at a time for what is new in Needs me (or a reply,
   T429) while the tab is away; a click opens it. Never for what was there at load. They go through

@@ -283,6 +283,36 @@ function dayKey(iso: string): string {
   return Number.isNaN(at.getTime()) ? '' : `${at.getFullYear()}-${at.getMonth()}-${at.getDate()}`;
 }
 
+/**
+ * T435 (audit r6 #10): a conversation's question as your first message, in
+ * the thread's own list — one day divider over both — right after "Node
+ * created" when that line is loaded (else first). `at` is where it went
+ * (-1: no question); `threadIndex` maps a list index back to the thread's
+ * (`undefined` for the question itself), `listIndex` the other way.
+ */
+export function withQuestion<E extends Pick<ThreadEntry, 'by' | 'kind' | 'body'>>(
+  thread: readonly E[],
+  question: E | undefined,
+): {
+  entries: E[];
+  at: number;
+  threadIndex: (i: number) => number | undefined;
+  listIndex: (i: number) => number;
+} {
+  if (question === undefined) {
+    return { entries: [...thread], at: -1, threadIndex: (i) => i, listIndex: (i) => i };
+  }
+  const first = thread[0];
+  const at =
+    first !== undefined && first.kind === 'event' && /^stream created: /.test(first.body) ? 1 : 0;
+  return {
+    entries: [...thread.slice(0, at), question, ...thread.slice(at)],
+    at,
+    threadIndex: (i) => (i === at ? undefined : i > at ? i - 1 : i),
+    listIndex: (i) => (i >= at ? i + 1 : i),
+  };
+}
+
 /** The thread as chat rows: hidden lines dropped, same-author runs marked, day breaks labelled. */
 export function chatRows<
   E extends Pick<ThreadEntry, 'ts' | 'by' | 'kind' | 'body' | 'ref' | 'agent_only'>,

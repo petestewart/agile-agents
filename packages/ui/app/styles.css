@@ -3728,6 +3728,15 @@ input[type="checkbox"].cr-switch:focus-visible {
 .cr-msg-tag + .cr-md {
   margin-top: 2px;
 }
+/* T435: a worker's proposal as the node it proposes: "Next: <title>", the goal under it. */
+.cr-proposal-next-title {
+  margin-bottom: 2px;
+  font-size: var(--text-lg);
+  line-height: 1.65;
+}
+.cr-proposal-next-title strong {
+  font-weight: 600;
+}
 .cr-msg .cr-md {
   font-size: var(--text-lg);
   line-height: 1.65;
@@ -9951,6 +9960,50 @@ div.cr-lens-ev:hover {
   font: inherit;
   font-size: var(--text-md);
   line-height: 1.5;
+}
+/* T435: each target's status dot before its role glyph, as the rail reads. */
+.cr-ask-pick-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.cr-ask-pick-nodot {
+  width: 8px;
+}
+/* T435: a box's count against its cap (Send to <parent>), once it nears it. */
+.cr-charcount {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 6px 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-charcount-num {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.cr-charcount[data-over="true"] {
+  color: var(--red-text);
+}
+/* T435: Turn into work — where the work goes under a work node, and the other way. */
+.cr-turn-where {
+  margin-bottom: 0;
+}
+.cr-turn-alt {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+/* T435: an answered conversation's Send to <parent>: a long title doesn't widen the header. */
+.cr-send-up-btn {
+  max-width: 260px;
+}
+.cr-btn-clip {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ==== Error boundary ==== */

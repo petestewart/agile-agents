@@ -2,9 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import {
   AGENT_LINE_MAX_CHARS,
   HUMAN_LINE_MAX_CHARS,
+  SEND_UP_MAX_CHARS,
   type Stream,
   StreamAttachRequestSchema,
   StreamSayInputSchema,
+  StreamSendUpInputSchema,
+  StreamUpdateRequestSchema,
   THREAD_BODY_MAX_CHARS,
   assertNoStreamCycle,
   assertNoWaitsOnCycle,
@@ -341,6 +344,24 @@ describe('T161 cockpit write bodies', () => {
     ).toBe(false);
     expect(StreamSayInputSchema.safeParse({ body: 'x'.repeat(2000) }).success).toBe(true);
     expect(StreamSayInputSchema.safeParse({ body: 'hi', by: 'daemon' }).success).toBe(false);
+  });
+
+  test('T435: send-up takes a conclusion up to SEND_UP_MAX_CHARS, trimmed', () => {
+    expect(SEND_UP_MAX_CHARS).toBe(3000);
+    const full = 'x'.repeat(SEND_UP_MAX_CHARS);
+    expect(StreamSendUpInputSchema.parse({ body: ` ${full} ` }).body).toBe(full);
+    expect(StreamSendUpInputSchema.safeParse({ body: `${full}x` }).success).toBe(false);
+    expect(StreamSendUpInputSchema.safeParse({ body: ' ' }).success).toBe(false);
+  });
+
+  test('T435: update may ask for a better title; not alone, not as anything but a boolean', () => {
+    expect(
+      StreamUpdateRequestSchema.parse({ title: 'Add Excel import', auto_title: true }).auto_title,
+    ).toBe(true);
+    expect(StreamUpdateRequestSchema.safeParse({ auto_title: true }).success).toBe(false);
+    expect(StreamUpdateRequestSchema.safeParse({ title: 'x', auto_title: 'yes' }).success).toBe(
+      false,
+    );
   });
 
   test('T361: say may ask to start the agent', () => {
