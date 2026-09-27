@@ -10124,6 +10124,12 @@ describe('views and polish (Playwright e2e, T436, audit r6)', () => {
         await page
           .locator('[data-testid="node-details"] button', { hasText: 'Ask an agent to review' })
           .waitFor();
+        // T438: the menu's item is there from the first render (a branch), enabled with commits.
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page
+          .locator('[data-testid="node-menu"] [data-testid="review"]:not([disabled])')
+          .waitFor();
+        await page.keyboard.press('Escape');
       } finally {
         await teardown([page]);
         await cockpit.stop();
