@@ -3871,7 +3871,7 @@ describe('rule hits on the stream (Playwright e2e, T169)', () => {
 
 describe('a long agent message collapses (Playwright e2e, T330)', () => {
   browserTest(
-    'an agent line past ~12 lines renders collapsed with Show more / Show less',
+    'an agent line past ~12 lines opens whole (T475); Show less folds it and the fold is kept',
     async () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
@@ -3905,19 +3905,25 @@ describe('a long agent message collapses (Playwright e2e, T330)', () => {
         // One entry, the whole text in it.
         expect(await long.count()).toBe(1);
         expect(await long.textContent()).toContain('LONG-TAIL-MARKER');
+        // T475: it opens whole; Show less folds it, and the fold is kept for that message.
         const toggle = long.locator('[data-testid="thread-expand"]');
-        expect(await toggle.textContent()).toBe('Show more');
-        const bodyBox = long.locator('[data-testid="thread-body"]');
-        const clipped = () => bodyBox.evaluate((el) => el.scrollHeight > el.clientHeight + 1);
-        expect(await clipped()).toBe(true);
-
-        await toggle.click();
         expect(await toggle.textContent()).toBe('Show less');
         expect(await toggle.getAttribute('aria-expanded')).toBe('true');
+        const bodyBox = long.locator('[data-testid="thread-body"]');
+        const clipped = () => bodyBox.evaluate((el) => el.scrollHeight > el.clientHeight + 1);
         expect(await clipped()).toBe(false);
+
         await toggle.click();
         expect(await toggle.textContent()).toBe('Show more');
         expect(await clipped()).toBe(true);
+        // Away and back: still folded.
+        await page.locator('.cr-tabs [data-tab="activity"]').click();
+        await page.locator('.cr-tabs [data-tab="thread"]').click();
+        await long.waitFor({ state: 'visible' });
+        expect(await long.locator('[data-testid="thread-expand"]').textContent()).toBe('Show more');
+        await long.locator('[data-testid="thread-expand"]').click();
+        expect(await long.locator('[data-testid="thread-expand"]').textContent()).toBe('Show less');
+        expect(await clipped()).toBe(false);
 
         // A short entry has no toggle.
         const short = page.locator('[data-testid="thread-entry"]', { hasText: 'a short one' });
