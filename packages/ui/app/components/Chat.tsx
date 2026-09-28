@@ -37,6 +37,7 @@ import { getStreamSteps } from '../lib/api';
 import {
   type ChatAuthor,
   THREAD_WINDOW,
+  agentWords,
   chatRows,
   clockTime,
   contextMeter,
@@ -581,7 +582,7 @@ export function MessageList<E extends ChatEntry>({
                   <ThreadBody body={next.goal} />
                 </div>
               ) : (
-                <ThreadBody body={entry.body} />
+                <ThreadBody body={agentWords(entry.body)} />
               )}
             </div>
             {renderExtra?.(entry, index)}

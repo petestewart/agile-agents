@@ -1292,3 +1292,28 @@ can grow into work in place. Keep the cockpit open; every step is in it.
       a message. **Escape** closes the menu; the text stays.
 - [ ] On a node with no agent running, type `/`: the menu says commands load
       once the agent is running.
+
+## 12. **[vendor]** How each vendor takes a model (D46, T467)
+
+Measure before T467 is built: nothing here can be checked in the cloud. For
+each vendor installed on this machine (Claude, Codex, Gemini, Cursor, Grok,
+Pi), start one node on it and look at its session's `stderr.log` and the
+daemon's `log/events.jsonl` for the `session/new` reply.
+
+- [ ] Does its `session/new` reply list the models it offers (a model entry
+      in `configOptions` with options, or a `models` list)? Write down the
+      ids it reports.
+- [ ] Does it accept a model through ACP (setting that model option on the
+      session, or `session/set_model`)? Try one id from its list and check the
+      next turn runs on it.
+- [ ] If not: is there a vendor switch (an env variable or a flag) that works?
+      Only then does T467 use one for that vendor.
+
+| Vendor | Reports a list? | Accepts a model via ACP? | Fallback switch (measured) |
+|--------|-----------------|--------------------------|-----------------------------|
+| Claude |                 |                          |                             |
+| Codex  |                 |                          |                             |
+| Gemini |                 |                          |                             |
+| Cursor |                 |                          |                             |
+| Grok   |                 |                          |                             |
+| Pi     |                 |                          |                             |

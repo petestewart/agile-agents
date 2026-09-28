@@ -438,6 +438,30 @@ describe('propose_repo (T455)', () => {
   });
 });
 
+describe('lookup_knowledge on the repo root (T466)', () => {
+  test('`.` returns every item in scope, path-limited ones too', async () => {
+    const { session } = await attach();
+    const everywhere = await rules.create('human', {
+      text: 'small commits',
+      scope: { kind: 'global' },
+    });
+    await rules.accept(everywhere.id, 'human');
+    const pathed = await rules.create('human', {
+      text: 'prices are integer cents',
+      scope: { kind: 'global' },
+      paths: ['api/**'],
+    });
+    await rules.accept(pathed.id, 'human');
+    const root = verbs.lookupKnowledge({ session, path: '.' });
+    expect(root.path).toBe('.');
+    expect(root.items.map((i) => i.text)).toEqual(
+      expect.arrayContaining(['small commits', 'prices are integer cents']),
+    );
+    const ui = verbs.lookupKnowledge({ session, path: 'ui/app.ts' });
+    expect(ui.items.map((i) => i.text)).not.toContain('prices are integer cents');
+  });
+});
+
 describe('lookupPath (T263)', () => {
   const wt = '/srv/repo/.worktrees/s1';
   test('absolute, ./ and .. paths become repo-relative', () => {
@@ -449,6 +473,9 @@ describe('lookupPath (T263)', () => {
   test('a path outside the worktree is refused', () => {
     expect(() => lookupPath('/etc/passwd', wt)).toThrow('not a path inside');
     expect(() => lookupPath('../other/x.ts', wt)).toThrow('not a path inside');
-    expect(() => lookupPath(wt, wt)).toThrow('not a path inside');
+    // T466: the repo root asks about the whole repo (Codex passed `.`).
+    expect(lookupPath(wt, wt)).toBe('.');
+    expect(lookupPath('.', wt)).toBe('.');
+    expect(lookupPath('./', undefined)).toBe('.');
   });
 });

@@ -56,6 +56,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D43** (2026-09-26; confirmed by Pete 2026-09-27 as the end state once T456's retry and fallback are spent): a vendor process that exits non-zero on its own (not a stop of the daemon's, not after its turn finished) crashed or refused (a login, a bad model): the node is `blocked`, its session `error`, and the thread line carries the vendor's last stderr line. Narrows cockpit-design §2.3's "exit ⇒ done", which let a first run with a logged-out vendor read as finished work ("Ready to merge", "Replied"). A clean exit (code 0) is still `done`. A vendor whose command isn't on the daemon's PATH is named before anything spawns. Built in T432.
 - **D44** (2026-09-27, Pete): Q25 answered. Accepting a knowledge item wakes only the conversation that proposed it (the item's `source.node`); every other conversation in scope gets it with its next message, and coordinators still wake as before. Narrows D36 D10; the per-item fan-out cap goes. Built in T453. Follow-up T454: behind a config setting, Jev decides whether an accepted item merits waking a conversation (does it change the answer given or settle something left open, and is the conversation still current).
 - **D45** (2026-09-27, Pete): an agent reads every registered repo it can see (every repo not private, plus private ones listing its project), not only its project's; the project's own repos are the ones it is pointed at. Agents may propose adding a repo to their node (T455).
+- **D46** (2026-09-28, Pete): one way to choose a model, for every vendor (Claude included). The model list comes from the vendor (ACP's reply when a session opens), and the chosen model is set through that same ACP model option. A vendor-specific switch (Claude's `ANTHROPIC_MODEL`, a CLI flag) is a fallback only where a live run has measured that the ACP option is missing. A vendor with no way to set a model shows "default" in the picker, with the reason. Measured first (LIVE-CHECKLIST §12). (T467)
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -2856,6 +2857,57 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   - Routes: `POST /api/streams/:id/rule {rule, on}` and `POST /api/streams/:id/permissions {posture | null}`.
   - A switched-off built-in rule doesn't lift the role tables: writes still stay in the worktree, and the never-without-human list still asks. The confirm says so.
   - The ACP responder (vendors without a pre-tool hook) reads the posture when the session starts, so a change there applies from the next start. The hook reads it on every call.
+
+### Ticket: T466 Codex wrote "progress —" into its text; lookup_knowledge on the repo root failed
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by Pete in the live walkthrough (2026-09-28). Codex had the agile MCP tools (`mcp.agile.search_docs` ran) but began both of its messages with "progress — ", copying REPLY_FIRST's "Reply … with `progress`" instead of calling the verb. Its `mcp.agile.lookup_knowledge` call failed: most likely it passed the repo root, which `lookupPath` refused as "not a path inside this stream's worktree".
+- **Acceptance Criteria:** REPLY_FIRST says to call the `progress` tool and not to write the word into the message. The chat drops a leading "progress —"/"progress:" from an agent's message. `lookup_knowledge` with `.` (or the worktree itself) answers with every item in scope, path-limited items included.
+- **Validation Steps:** `attach/verbs.test.ts` T466 and `lookupPath`; `attach/service.test.ts` (the REPLY_FIRST words); `ui/app/lib/chat.test.ts` T466. Full `bun test`.
+- **Notes:** Branch T466-progress-prefix-and-lookup-root. The failed call's arguments weren't visible in the chat, so the root path is the likeliest cause, not a measured one; the next live Codex run shows whether it recurs.
+
+### Ticket: T464 A node keeps the model it ran on
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): changing the global default model made every existing node show, and start with, the new model. A node stores no model; an idle node resolves the defaults again at each start (D17).
+- **Acceptance Criteria:** A node that has run starts again on its last session's vendor, model and effort. The defaults choose only for a node that has never run. The model chip (T423) still switches a node, and the switch sticks. The chip and "Starts as …" name what a start will really run.
+- **Validation Steps:** attach tests (a changed default leaves a node that ran on its model; a node that never ran takes the new default; a chip pick sticks); the node page e2e.
+
+### Ticket: T465 Keep a finished turn's session alive, and resume an ended one
+- **Priority:** P1
+- **Status:** Todo — waiting for Pete's go-ahead (it changes §2.3's "a finished turn stops the session")
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28) asked whether a thread is one vendor session that keeps its context and prompt cache. Only while the agent runs: the turn-end rule stops the session when a turn ends with nothing open, and the next message starts a fresh session from a brief, cold.
+- **Acceptance Criteria:** A finished turn leaves the session alive and idle ("Waiting for you"); the next message goes into the same session. It ends after an idle timeout (Settings, default 30 minutes), a Stop, or the daemon stopping. An ended session is resumed with ACP `session/load` where the vendor supports it (Claude, Grok: spike-findings §C), else started fresh from the brief.
+
+### Ticket: T467 Models come from the vendor, set through ACP (D46)
+- **Priority:** P1
+- **Status:** Todo (measure first: LIVE-CHECKLIST §12)
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): only Claude lists models; every other vendor shows "default model". `KNOWN_MODEL_IDS` is hand-written for Claude alone, and only Claude's adapter can set a model (`ANTHROPIC_MODEL`). That's left over from building, not a design: Claude's switch was the only one measured. ACP vendors report their models in `session/new`'s reply, which the daemon reads for the current model but otherwise discards.
+- **Acceptance Criteria (D46), for every vendor, Claude included:**
+  1. The model list comes from the vendor: the daemon keeps the list from the reply ACP returns when a session opens (it already reads the current model there), and the pickers show it. A vendor that hasn't run yet can be asked with a Refresh that opens a session without prompting.
+  2. The chosen model is set through that same ACP model option.
+  3. A vendor-specific switch is a fallback only where the ACP option is missing, and only once a live run has measured that it's missing. Claude's `ANTHROPIC_MODEL` stays only if its bridge turns out not to support the ACP route.
+  4. A vendor with no way to set a model shows "default" in the picker, with the reason.
+- **Validation Steps:** LIVE-CHECKLIST §12 filled in for each installed vendor before building. Then fake-agent tests (a vendor reporting a list; one accepting the ACP model option; one without it), and the picker e2e.
+
+### Ticket: T469 Favourite models, and a picker that folds
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "we need a way to have presets/favorites. so, if i wanted to select 2 claude models and 3 codex models and 2 cursor models as my main selections, i should easily be able to see just those in the selection menu, or i can see all models for all vendors … at the bottom is a "show all" toggle … the vendor is collapsible".
+- **Acceptance Criteria:** You mark models as favourites (a star in the picker, and in Settings → Agents), kept in the home config. With any favourites set, the model picker shows only those, grouped by vendor, plus the model a node runs now. A **Show all** switch at the bottom opens every vendor's models. Each vendor group folds, and the fold is remembered per browser. Typing still filters across everything. Builds on T467's lists.
+- **Validation Steps:** Settings and picker e2e (star, favourites only, Show all, fold a vendor, type-ahead across all).
+
+### Ticket: T468 Model and effort as two controls; Shift+Tab cycles effort
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "separate the model and effort with model indicator on left and effort on right. shift-tab should be used to cycle through effort levels."
+- **Acceptance Criteria:** The composer bar shows the model chip on the left and an effort chip on the right (only for a vendor that takes effort, T401). Shift+Tab in the composer cycles low → medium → high → max, and the effort chip changes with it. The pick lasts like the model pick (T423, T464).
 
 ### Ticket: T457b CI: a dangling symlink read as the dir it sits in
 - **Priority:** P0

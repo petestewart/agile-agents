@@ -1549,7 +1549,10 @@ describe('say — the stream page composer (T161)', () => {
   test('the prompt tells the worker to reply on the stream first (T174)', () => {
     const text = sayPrompt('how many tests are you writing?');
     expect(text).toContain('The operator wrote on the stream: how many tests are you writing?');
-    expect(text).toContain('Reply to the operator on the stream first, with `progress`');
+    expect(text).toContain(
+      'Reply to the operator on the stream first by calling the `progress` tool',
+    );
+    expect(text).toContain('do not write the word "progress" into your message');
     expect(text).toContain('answer it directly');
     expect(text).toContain('Then continue the work.');
     expect(text).not.toContain('Continue the work.\n');
