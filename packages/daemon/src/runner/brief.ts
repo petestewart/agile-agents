@@ -114,6 +114,13 @@ const clipText = (text: string, max: number): string => {
 };
 
 /**
+ * T477: a node started with no goal. Its agent talks the work through with
+ * the operator until one is set (the thread then says "goal set: …").
+ */
+export const NO_GOAL_YET =
+  'No goal yet. The operator wants to talk it through first: answer their questions, read and research, and propose what the goal could be. Do not change files or commit until they set a goal; the thread will say "goal set: …" when they do.';
+
+/**
  * T420 (D42): the node this conversation was asked under, as it stands: its
  * goal, state, card, branch and worktree (to read, never to change), its
  * parts and plan, and its newest lines. The conversation answers here; what
@@ -124,7 +131,7 @@ export function aboutSection(about: AboutParent): string {
   const lines: string[] = [
     `You were asked about **${p.title}** (\`${p.id}\`, a ${about.role} node). It carries on its own work in its own thread: read what you need, never change its files or its thread. Answer here; when your conclusion should reach it, the human sends it up.`,
     '',
-    `- Goal: ${clipText(p.goal, 600)}`,
+    `- Goal: ${p.goal !== undefined ? clipText(p.goal, 600) : 'none yet'}`,
     `- State: agent ${p.agent.status}, human ${p.human.status}${p.agent.progress ? `; last progress: ${clipText(p.agent.progress, 300)}` : ''}`,
   ];
   if (p.repo !== undefined) {
@@ -513,12 +520,19 @@ function assemble(
     parts.push(
       section(
         'Conversation',
-        `**${stream.title}**\n\nThe human asked:\n\n${stream.goal.replace(/^/gm, '> ')}`,
+        `**${stream.title}**\n\nThe human asked:\n\n${(stream.goal ?? stream.question ?? stream.title).replace(/^/gm, '> ')}`,
       ),
     );
     if (input.conversation.about !== undefined) parts.push(aboutSection(input.conversation.about));
   } else {
-    parts.push(section('Stream', `**${stream.title}**\n\n${stream.goal}`));
+    parts.push(
+      section(
+        'Stream',
+        stream.goal !== undefined
+          ? `**${stream.title}**\n\n${stream.goal}`
+          : `**${stream.title}**\n\n${NO_GOAL_YET}`,
+      ),
+    );
   }
 
   if (ancestors.length > 0) {
@@ -526,7 +540,10 @@ function assemble(
       section(
         'Where this sits',
         ancestors
-          .map((ancestor, depth) => `${'  '.repeat(depth)}- ${ancestor.title}: ${ancestor.goal}`)
+          .map(
+            (ancestor, depth) =>
+              `${'  '.repeat(depth)}- ${ancestor.title}: ${ancestor.goal ?? '(no goal yet)'}`,
+          )
           .join('\n'),
       ),
     );

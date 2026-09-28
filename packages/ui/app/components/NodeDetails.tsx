@@ -1065,8 +1065,8 @@ export function AboutSection({
             <dt>Goal</dt>
             <dd>
               <GoalField
-                key={stream.goal}
-                goal={stream.goal}
+                key={stream.goal ?? ''}
+                goal={stream.goal ?? ''}
                 {...(goal.onSave ? { onSave: goal.onSave } : {})}
               />
             </dd>

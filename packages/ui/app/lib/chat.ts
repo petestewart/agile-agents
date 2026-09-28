@@ -1300,11 +1300,13 @@ function sameWords(a: string, b: string): boolean {
  * title; the details panel keeps the goal (and its Edit) either way.
  */
 export function showGoalCard(input: {
-  goal: string;
+  /** T477: absent for a node started with no goal: the card says so and offers Set a goal. */
+  goal: string | undefined;
   title: string;
   projectRoot: boolean;
 }): boolean {
   if (input.projectRoot) return false;
+  if (input.goal === undefined) return true;
   if (input.goal.trim() === '') return false;
   return !sameWords(input.goal, input.title);
 }

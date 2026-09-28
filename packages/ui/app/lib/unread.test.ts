@@ -30,6 +30,8 @@ describe('which nodes answer you', () => {
     expect(answersYou(row({ id: 'r', role: 'project' }))).toBe(true);
     expect(answersYou(row({ id: 'k', role: 'coordinating' }))).toBe(true);
     expect(answersYou(row({ id: 'w', role: 'work' }))).toBe(false);
+    // T477: a work node with no goal yet answered you; it has no Finished card.
+    expect(answersYou(row({ id: 'g', role: 'work', no_goal: true }))).toBe(true);
     expect(answersYou(row({ id: 'busy', agent_status: 'working' }))).toBe(false);
     expect(answersYou(row({ id: 'shut', human_status: 'closed' }))).toBe(false);
     // T437: a turn nobody asked for (woken by knowledge) is no answer.

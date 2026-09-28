@@ -1165,6 +1165,30 @@ describe('T160 cockpit routes', () => {
     expect(streams.get(node.id).permissions).toBeUndefined();
   });
 
+  test('T477: POST /api/streams/:id/dismiss stamps human.dismissed_at; a first goal reads "goal set"', async () => {
+    const post = (id: string, what: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/streams/${id}/${what}`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const node = await streams.create('human', { title: 'talk first' });
+    expect(node.goal).toBeUndefined();
+    expect((await post(node.id, 'dismiss', {}, { origin: 'http://evil.example' })).status).toBe(
+      403,
+    );
+    expect(streams.get(node.id).human.dismissed_at).toBeUndefined();
+    const dismissed = await post(node.id, 'dismiss', {});
+    expect(dismissed.status).toBe(200);
+    expect(streams.get(node.id).human.dismissed_at).toBeString();
+    expect(streams.get(node.id).human.status).toBe('open');
+
+    expect((await post(node.id, 'update', { goal: 'fix the parser' })).status).toBe(200);
+    expect(streams.readThread(node.id).entries.at(-1)?.body).toBe('goal set: fix the parser');
+    expect((await post(node.id, 'update', { goal: 'fix the lexer' })).status).toBe(200);
+    expect(streams.readThread(node.id).entries.at(-1)?.body).toBe('goal changed: fix the lexer');
+  });
+
   test('T365: POST /api/streams/:id/update renames as human; strict body; cross-origin 403', async () => {
     const update = (id: string, body: unknown, headers: Record<string, string> = {}) =>
       fetch(url(`/api/streams/${id}/update`), {

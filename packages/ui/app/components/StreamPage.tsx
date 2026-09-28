@@ -289,11 +289,11 @@ function GoalCard({
             type="button"
             className="cr-goal-edit"
             data-testid="goal-edit"
-            title="Edit the goal"
+            title={goal === '' ? 'Set the goal' : 'Edit the goal'}
             onClick={() => setDraft(goal)}
           >
             <Icon name="pencil" size={12} />
-            Edit
+            {goal === '' ? 'Set a goal' : 'Edit'}
           </button>
         )}
       </div>
@@ -336,6 +336,11 @@ function GoalCard({
             </Button>
           </div>
         </form>
+      ) : goal === '' ? (
+        <p className="cr-goal cr-goal-none" data-testid="goal-none">
+          No goal yet. The agent talks it through with you; set a goal when you know what it is, and
+          finishing it then counts.
+        </p>
       ) : (
         <Markdown className="cr-goal" text={goal} />
       )}
@@ -1444,7 +1449,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         resetKey={stream.id}
         label="Conversation"
       >
-        {goalCard && <GoalCard goal={stream.goal} {...(saveGoal ? { onSave: saveGoal } : {})} />}
+        {goalCard && (
+          <GoalCard goal={stream.goal ?? ''} {...(saveGoal ? { onSave: saveGoal } : {})} />
+        )}
         {page.thread_total > page.thread.length && (
           <p className="cr-chat-older">
             Showing the newest {page.thread.length} of {page.thread_total} lines.
@@ -1947,7 +1954,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         <TurnIntoWorkDialog
           node={stream.id}
           title={stream.title}
-          goal={stream.goal}
+          goal={stream.goal ?? stream.question ?? stream.title}
           repos={cockpit?.repos ?? []}
           {...(project ? { project } : {})}
           {...(parentRow ? { parent: parentRow } : {})}

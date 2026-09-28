@@ -322,6 +322,16 @@ export class InboxService {
     ) {
       return undefined;
     }
+    // T477: nor is a node with no goal yet: its agent answered you (a reply, not finished work).
+    if (stream.agent.status === 'done' && stream.goal === undefined) return undefined;
+    // T477: nor one whose Finished card you dismissed, until its agent finishes again.
+    if (
+      stream.agent.status === 'done' &&
+      stream.human.dismissed_at !== undefined &&
+      stream.human.dismissed_at >= stream.agent.updated_at
+    ) {
+      return undefined;
+    }
     // T341: nor is a node whose PR is open: it merges on GitHub, and the page has no Merge.
     if (stream.agent.status === 'done' && stream.delivery_state?.status === 'pr_open') {
       return undefined;

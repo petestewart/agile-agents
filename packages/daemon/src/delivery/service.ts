@@ -1358,7 +1358,7 @@ export function mergedOutside(repoRoot: string, branch: string, target: string):
 
 /** The PR body: the node's goal, progress and (T322) the issue it rolls up to. */
 export function prBody(stream: Stream, lookup: (id: string) => Stream | undefined): string {
-  const parts = [`## Goal\n\n${stream.goal}`];
+  const parts = [`## Goal\n\n${stream.goal ?? stream.title}`];
   if (stream.agent.progress) parts.push(`## Progress\n\n${stream.agent.progress}`);
   const link = rollupLink(stream, lookup);
   parts.push(link ? `Issues: ${issueRef(link.key, link.url)}` : 'Issues:');

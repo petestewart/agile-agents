@@ -369,6 +369,11 @@ export function closeStream(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/close`);
 }
 
+/** T477: the Finished card's ✕: it stays away until the node's agent finishes again. */
+export function dismissFinished(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/dismiss`);
+}
+
 /** T166: a branch merged outside `land` — record it as landed. */
 export function markStreamLanded(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/mark-landed`);

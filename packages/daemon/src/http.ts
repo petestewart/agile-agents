@@ -1365,6 +1365,7 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/attach  the sessions strip's attach / review (`role: reviewer`)
  *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
  *   POST /api/streams/:id/close   the page's Close
+ *   POST /api/streams/:id/dismiss T477: the Finished card's ✕: `human.dismissed_at`, until it finishes again
  *   POST /api/streams/:id/mark-landed  merged outside `land`
  *   POST /api/streams/:id/pr-check     Check now (T340): poll the node's open PR at once
  *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
@@ -1390,7 +1391,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|draft-goal|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|draft-goal|attach|resolve|stop|close|dismiss|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -1433,8 +1434,15 @@ async function handleStreamRoute(
       return jsonResponse(feed.attach?.commandsFor(id) ?? { running: false, commands: [] });
     }
 
-    // Close, Mark landed, Check now, Delete and Restore take no body.
+    // Close, Dismiss, Mark landed, Check now, Delete and Restore take no body.
     if (action === 'close') return jsonResponse(await feed.streams.close('human', id));
+    if (action === 'dismiss') {
+      return jsonResponse(
+        await feed.streams.update('human', id, {
+          human: { dismissed_at: new Date().toISOString() },
+        }),
+      );
+    }
     if (action === 'pr-check') {
       if (!feed.prCheck) return errorResponse(503, 'PR polling not available');
       return jsonResponse(await feed.prCheck(id));
@@ -1515,18 +1523,19 @@ async function handleStreamRoute(
       const all = feed.streams.list();
       const keepsQuestion =
         patch.goal !== undefined &&
-        patch.goal.trim() !== before.goal.trim() &&
+        patch.goal.trim() !== (before.goal ?? '').trim() &&
         before.question === undefined &&
         nodeRole(before, liveChildrenOf(before.id, all), all) === 'conversation';
       const updated = await feed.streams.update('human', id, {
         ...patch,
-        ...(keepsQuestion ? { question: before.goal } : {}),
+        ...(keepsQuestion && before.goal !== undefined ? { question: before.goal } : {}),
       });
       // T385: a new goal is news for the agent: its next turn reads it on the thread.
-      if (patch.goal !== undefined && patch.goal.trim() !== before.goal.trim()) {
+      if (patch.goal !== undefined && patch.goal.trim() !== (before.goal ?? '').trim()) {
         await feed.streams.appendThread('human', id, {
           kind: 'event',
-          body: `goal changed: ${clip(updated.goal, GOAL_LINE_MAX)}`,
+          // T477: a node's first goal is set, not changed.
+          body: `${before.goal === undefined ? 'goal set' : 'goal changed'}: ${clip(patch.goal, GOAL_LINE_MAX)}`,
         });
       }
       // T435 (D41): a title the cockpit derived from the new goal is a placeholder; the cheap
@@ -1547,14 +1556,14 @@ async function handleStreamRoute(
         }));
       const run = feed.cheapModel;
       const reply = run
-        ? await run(draftGoalPrompt(node.goal, lines)).catch(() => undefined)
+        ? await run(draftGoalPrompt(node.goal ?? node.title, lines)).catch(() => undefined)
         : undefined;
       // T435: a draft that asks, talks to you, lists or rambles (or says NONE) is no goal.
       const drafted = draftedGoal(reply);
       if (drafted !== undefined) return jsonResponse({ goal: drafted, from: 'model' });
       const last = cleanGoal([...lines].reverse().find((l) => l.who === 'agent')?.text);
       if (last !== undefined) return jsonResponse({ goal: last, from: 'reply' });
-      return jsonResponse({ goal: node.goal, from: 'question' });
+      return jsonResponse({ goal: node.goal ?? node.title, from: 'question' });
     }
     if (action === 'send-up') {
       // T421 (D42): a conversation's conclusion goes to the node above it, as your line there.

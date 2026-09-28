@@ -14,7 +14,7 @@
 
 import type { InboxItem } from '@agile-agents/shared';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { closeStream, getDirector, getStreamPage } from '../lib/api';
+import { closeStream, dismissFinished, getDirector, getStreamPage } from '../lib/api';
 import { vendorLabel } from '../lib/chat';
 import { useFeed } from '../lib/feed-context';
 import type { CockpitStreamRow } from '../lib/feed-types';
@@ -390,6 +390,16 @@ export function Inbox({
   const finished = applyFilter(items, 'finished', rowOf);
   const allTicked = shownItems.length > 0 && shownItems.every((i) => selected.has(i.id));
 
+  /** T477: a Finished row's ✕: it stays away until its agent finishes again. */
+  async function dismissOne(node: string): Promise<void> {
+    try {
+      await dismissFinished(node);
+      onChanged();
+    } catch {
+      toast({ title: 'Couldn’t dismiss it; the daemon didn’t answer.', tone: 'error' });
+    }
+  }
+
   async function closeNodes(nodes: readonly string[]): Promise<void> {
     setClosing(true);
     let closed = 0;
@@ -580,6 +590,7 @@ export function Inbox({
                       onExpand={() => toggleExpand(item.id)}
                       onOpen={() => item.stream !== undefined && select(item.stream)}
                       onClose={() => item.stream !== undefined && void closeNodes([item.stream])}
+                      onDismiss={() => item.stream !== undefined && void dismissOne(item.stream)}
                       closing={closing}
                       onDone={onChanged}
                       onActing={steady.onActing}
@@ -632,6 +643,7 @@ function InboxRow({
   onExpand,
   onOpen,
   onClose,
+  onDismiss,
   closing,
   onDone,
   onActing,
@@ -647,6 +659,8 @@ function InboxRow({
   onExpand: () => void;
   onOpen: () => void;
   onClose: () => void;
+  /** T477: a Finished row's ✕. */
+  onDismiss: () => void;
   closing: boolean;
   onDone: () => void;
   onActing: (item: InboxItem) => void;
@@ -722,6 +736,17 @@ function InboxRow({
           {ago(item.ts)}
         </span>
         <span className="cr-inbox-row-actions">
+          {item.kind === 'done' && item.stream !== undefined && (
+            <IconButton
+              icon="x"
+              size="sm"
+              label="Dismiss"
+              title="Dismiss. It comes back if the agent finishes again."
+              data-testid="inbox-dismiss"
+              disabled={closing || gone}
+              onClick={onDismiss}
+            />
+          )}
           {item.stream !== undefined && (
             <Button
               size="sm"

@@ -279,7 +279,7 @@ export class KnowledgeWakeJudge {
       '',
       'A conversation it applies to, which did not propose it:',
       `- title: ${clip(node.title, TITLE_MAX_CHARS)}`,
-      `- question: ${clip(node.question ?? node.goal, QUESTION_MAX_CHARS)}`,
+      `- question: ${clip(node.question ?? node.goal ?? node.title, QUESTION_MAX_CHARS)}`,
       `- last reply: ${lastReply ? clip(lastReply.body, LAST_REPLY_MAX_CHARS) : '(none yet)'}`,
       `- last changed: ${Number.isNaN(changedAt) ? 'unknown' : `${new Date(changedAt).toISOString()} (${ageInWords(now - changedAt)})`}`,
       `- status: ${HUMAN_STATUS_WORDS[node.human.status]}`,

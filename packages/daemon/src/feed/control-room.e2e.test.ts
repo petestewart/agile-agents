@@ -9715,8 +9715,14 @@ async function emptyFinishedNode(
   cockpit: StreamCockpit,
   title: string,
   slug: string,
+  parent?: string,
 ): Promise<string> {
-  const stream = await cockpit.streams.create('human', { title, goal: 'g', repo: 'demo' });
+  const stream = await cockpit.streams.create('human', {
+    title,
+    goal: 'g',
+    repo: 'demo',
+    ...(parent !== undefined ? { parent } : {}),
+  });
   const worktree = join(cockpit.repo, '.worktrees', slug);
   git(['worktree', 'add', '-q', '-b', slug, worktree, 'main'], cockpit.repo);
   await cockpit.streams.update('daemon', stream.id, {
@@ -9805,6 +9811,129 @@ describe('Needs me as an inbox (Playwright e2e, T470)', () => {
           'the ready node closed',
           () => cockpit.streams.get(ready).human.status === 'closed',
         );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe("No goal yet, and the Finished card's ✕ (Playwright e2e, T477)", () => {
+  browserTest(
+    'a Finished row and card dismiss with ✕ (the node stays open); a node with no goal has no Finished card until one is set',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const a = await emptyFinishedNode(cockpit, 'Count desktop files', 's-a');
+        // Under a project, with nothing to merge: the node page's card is then Finished (a
+        // node with changes has Merge in its header instead).
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const ready = await emptyFinishedNode(cockpit, 'List the repos', 's-ready', shop.root);
+        // Started with no goal: its finished turn answered you; it is no Finished card.
+        const talk = (
+          await cockpit.streams.create('human', {
+            title: 'Think about caching',
+            repo: 'demo',
+            parent: shop.root,
+          })
+        ).id;
+        await cockpit.streams.update('daemon', talk, { agent: { status: 'done' } });
+        const p = await openPage({ inboxExpandAll: false });
+        page = p;
+        await p.goto(`${cockpit.base}/`);
+        const rows = p.locator('[data-testid="inbox-row"]');
+        await waitUntilAsync('two rows', async () => (await rows.count()) === 2);
+        const row = (id: string) => `[data-testid="inbox-row"][data-node-id="${id}"]`;
+        expect(await p.locator(row(talk)).count()).toBe(0);
+
+        // The row's ✕ dismisses; the node stays open.
+        await p.locator(`${row(a)} [data-testid="inbox-dismiss"]`).click();
+        await waitUntilAsync('the row gone', async () => (await rows.count()) === 1);
+        expect(cockpit.streams.get(a).human.status).toBe('open');
+        expect(cockpit.streams.get(a).human.dismissed_at).toBeString();
+
+        // The card's ✕ (upper right) on the node page.
+        await p.locator(`[data-testid="stream-tree"] [data-stream="${ready}"]`).click();
+        await p
+          .locator(`[data-testid="stream-page"] .cr-card[data-node-id="${ready}"]`)
+          .first()
+          .waitFor();
+        await p
+          .locator(
+            `[data-testid="stream-page"] .cr-card[data-node-id="${ready}"] [data-testid="card-dismiss"]`,
+          )
+          .click();
+        await waitUntil(
+          'dismissed',
+          () => cockpit.streams.get(ready).human.dismissed_at !== undefined,
+        );
+        expect(cockpit.streams.get(ready).human.status).toBe('open');
+        await waitUntilAsync('no Finished rows', async () => (await rows.count()) === 0);
+
+        // The no-goal node's page says so; setting one is "goal set".
+        await p.locator(`[data-testid="stream-tree"] [data-stream="${talk}"]`).click();
+        await p.locator('[data-testid="goal-none"]').waitFor();
+        await p.locator('[data-testid="goal-edit"]', { hasText: 'Set a goal' }).click();
+        await p.locator('[data-testid="goal-input"]').fill('Add a read-through cache');
+        await p.locator('[data-testid="goal-save"]').click();
+        await waitUntil(
+          'the goal set',
+          () => cockpit.streams.get(talk).goal === 'Add a read-through cache',
+        );
+        expect(cockpit.streams.readThread(talk).entries.at(-1)?.body).toBe(
+          'goal set: Add a read-through cache',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'New node: "No goal yet" makes a node with no goal; the text is your first message',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+        await page.locator('[data-testid="new-stream-open"]').click();
+        await page.locator('[data-testid="new-stream-talk-first"]').check();
+        await page.locator('[data-testid="new-stream-start"]').uncheck();
+        await page
+          .locator('[data-testid="new-stream-goal"]')
+          .fill('should the cache live in the API or the client?');
+        await page.locator('[data-testid="new-stream-create"]').click();
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
+        let created: string | undefined;
+        await waitUntil('made', () => {
+          created = cockpit.streams
+            .list()
+            .find((x) => x.title.startsWith('should the cache live'))?.id;
+          return created !== undefined;
+        });
+        const node = cockpit.streams.get(created as string);
+        expect(node.goal).toBeUndefined();
+        await waitUntil('your first message on its thread', () =>
+          cockpit.streams
+            .readThread(node.id)
+            .entries.some(
+              (e) =>
+                e.by === 'human' && e.body === 'should the cache live in the API or the client?',
+            ),
+        );
+        expect(node.sessions).toHaveLength(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();

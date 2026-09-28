@@ -252,6 +252,11 @@ export const StreamHumanStateSchema = z
     decision: z.string().max(THREAD_BODY_MAX_CHARS).optional(),
     answered_at: z.string().min(1).optional(),
     note: z.string().max(THREAD_BODY_MAX_CHARS).optional(),
+    /**
+     * T477: when you dismissed its Finished card (the ✕). The card stays away
+     * until the agent finishes again (a newer `agent.updated_at`).
+     */
+    dismissed_at: z.string().min(1).optional(),
   })
   .strict();
 export type StreamHumanState = z.infer<typeof StreamHumanStateSchema>;
@@ -379,7 +384,12 @@ export const StreamSchema = z
   .object({
     id: UlidSchema,
     title: z.string().min(1),
-    goal: z.string().min(1),
+    /**
+     * What the node is for. T477: optional: a node can start with no goal
+     * (you talk it through first), and a finished turn is then a reply, not
+     * finished work. Setting one later makes finishing it count.
+     */
+    goal: z.string().min(1).optional(),
     /**
      * T441 (D42): the question a conversation was asked, kept when its goal
      * first changes (Turn into work), so its chat still opens with it.
@@ -480,7 +490,8 @@ export type StreamInput = z.input<typeof StreamSchema>;
 export const StreamCreateInputSchema = z
   .object({
     title: z.string().min(1),
-    goal: z.string().min(1),
+    /** T477: optional; a node with no goal talks until you give it one. */
+    goal: z.string().min(1).optional(),
     parent: UlidSchema.optional(),
     repo: z.string().min(1).optional(),
     /** T201: the project; the parent defaults to its root. */
