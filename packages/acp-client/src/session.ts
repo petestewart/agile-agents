@@ -405,7 +405,8 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
   function recordSessionState(result: unknown): void {
     const r = asRecord(result);
     if (r === null) return;
-    if (r.modes === undefined && r.configOptions === undefined) return;
+    // T467a: `models` (ACP's model list and current model) travels too; a vendor may send only it.
+    if (r.modes === undefined && r.configOptions === undefined && r.models === undefined) return;
     emitFrame({
       acp: 'notification',
       message: {
@@ -415,6 +416,7 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
           sessionId: typeof r.sessionId === 'string' ? r.sessionId : undefined,
           modes: r.modes ?? null,
           configOptions: r.configOptions ?? null,
+          models: r.models ?? null,
         },
       },
     });
