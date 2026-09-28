@@ -57,6 +57,8 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D44** (2026-09-27, Pete): Q25 answered. Accepting a knowledge item wakes only the conversation that proposed it (the item's `source.node`); every other conversation in scope gets it with its next message, and coordinators still wake as before. Narrows D36 D10; the per-item fan-out cap goes. Built in T453. Follow-up T454: behind a config setting, Jev decides whether an accepted item merits waking a conversation (does it change the answer given or settle something left open, and is the conversation still current).
 - **D45** (2026-09-27, Pete): an agent reads every registered repo it can see (every repo not private, plus private ones listing its project), not only its project's; the project's own repos are the ones it is pointed at. Agents may propose adding a repo to their node (T455).
 - **D46** (2026-09-28, Pete): one way to choose a model, for every vendor (Claude included). The model list comes from the vendor (ACP's reply when a session opens), and the chosen model is set through that same ACP model option. A vendor-specific switch (Claude's `ANTHROPIC_MODEL`, a CLI flag) is a fallback only where a live run has measured that the ACP option is missing. A vendor with no way to set a model shows "default" in the picker, with the reason. Measured first (LIVE-CHECKLIST §12). (T467)
+- **D47** (2026-09-28, Pete): T471's Delete forever keeps a branch with unmerged commits unless the operator ticks "Also delete its branch"; a merged branch always goes. As built.
+- **D48** (2026-09-28, Pete): go ahead with T465. A finished turn no longer stops the vendor session: it stays alive and idle, so the next message reaches the same session and keeps its context and prompt cache. It ends on an idle timeout, a Stop or the daemon stopping, and an ended session resumes through ACP `session/load` where the vendor supports it. Narrows cockpit-design §2.3's "a finished turn stops the session".
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -2878,7 +2880,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T465 Keep a finished turn's session alive, and resume an ended one
 - **Priority:** P1
-- **Status:** Todo — waiting for Pete's go-ahead (it changes §2.3's "a finished turn stops the session")
+- **Status:** In progress (D48: Pete's go-ahead, 2026-09-28)
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28) asked whether a thread is one vendor session that keeps its context and prompt cache. Only while the agent runs: the turn-end rule stops the session when a turn ends with nothing open, and the next message starts a fresh session from a brief, cold.
 - **Acceptance Criteria:** A finished turn leaves the session alive and idle ("Waiting for you"); the next message goes into the same session. It ends after an idle timeout (Settings, default 30 minutes), a Stop, or the daemon stopping. An ended session is resumed with ACP `session/load` where the vendor supports it (Claude, Grok: spike-findings §C), else started fresh from the brief.
@@ -2947,7 +2949,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:**
   - **Closed** = inactive: out of Needs me and folded in the tree. A message to it (or **Reopen**) reopens it on the same branch and worktree and wakes its agent.
   - Delete is renamed **Move to trash**. **Restore** brings a node back open and ready to resume, whatever state it was in.
-  - **Delete forever** (per node, and **Empty trash**) removes the node's record, thread, session files and worktree. Its branch goes too if merged. With unmerged commits the branch is kept unless you tick "Also delete its branch (N unmerged commits)" (proposed default; Pete to confirm).
+  - **Delete forever** (per node, and **Empty trash**) removes the node's record, thread, session files and worktree. Its branch goes too if merged. With unmerged commits the branch is kept unless you tick "Also delete its branch (N unmerged commits)" (D47: confirmed by Pete).
   - A merged node is unchanged.
 - **Validation Steps:**
   - Closed: `StreamService.reopen` (open again, thread line "reopened"). `say` reopens a closed node first, so a message wakes its agent (attach test "a merged node starts nothing, a closed one reopens"). The composer's hint reads "Reopens this node and wakes the agent…". The header has **Reopen**, as does ⋯. `POST /api/streams/:id/reopen`.
@@ -2955,7 +2957,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   - Move to trash replaces Delete (tree menu, node ⋯, dialogs, toasts). The sidebar's Deleted section is **Trash**, with Restore, a per-row Delete forever (✕) and Empty trash.
   - Delete forever is `streams/trash.ts` (`TrashService`) plus `StateStore.removeStream`, a new `stream_deleted` event (log reconstruction forgets the node). It removes the node and its subtree: record, thread, card and event queue, questions, gates, plan, other nodes' waits on it, session logs and worktree. A merged branch goes too. One with unmerged commits is kept unless "Also delete its branch (N unmerged commits)" is ticked. The dialog also names worktrees with uncommitted changes, which are lost. Routes: `GET /api/streams/:id/trash-preview`, `POST /api/streams/:id/purge {delete_branches?}`, `GET /api/trash`, `POST /api/trash/empty`. Same-origin; refusals are 409 (not in the trash, a project's root).
   - Tests: `streams/trash.test.ts` (6, real git), http T471, attach test updated, UI lib tests updated, e2e T471 (Reopen, Delete forever keeping the unmerged branch, Empty trash), T365/T361/T416 e2e updated for the new words. A worktree path outside `<repo>/.worktrees/` is never removed (a test that fails on the unguarded code, where it deleted the repo). Full `bun test` 3481/0; walkthrough clean.
-- **Notes:** Branch T471-trash-and-reopen. The unmerged-branch default (keep it unless ticked) is the proposal; Pete to confirm.
+- **Notes:** Branch T471-trash-and-reopen. The unmerged-branch default (keep it unless ticked) is D47, confirmed by Pete.
 ### Ticket: T476 Cursor's verbs and commands were refused
 - **Priority:** P0
 - **Status:** Done
