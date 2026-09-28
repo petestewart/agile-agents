@@ -1009,6 +1009,22 @@ describe('T160 cockpit routes', () => {
     expect(put?.agent).toBe('human');
   });
 
+  test("T478: GET/POST /api/settings/auto-close is New node's default; off removes the key", async () => {
+    const post = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url('/api/settings/auto-close'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    expect(await (await fetch(url('/api/settings/auto-close'))).json()).toEqual({ on: false });
+    expect((await post({ on: true }, { origin: 'http://evil.example' })).status).toBe(403);
+    expect(await (await post({ on: true })).json()).toEqual({ on: true });
+    expect(store.getHomeConfig().auto_close).toBe(true);
+    expect((await post({ on: 1 })).status).toBe(400);
+    expect(await (await post({ on: false })).json()).toEqual({ on: false });
+    expect(store.getHomeConfig().auto_close).toBeUndefined();
+  });
+
   test('T457: permissions — the home posture, a project override, and a held read answered Always', async () => {
     const at = (path: string) => url(path);
     const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
@@ -1187,6 +1203,22 @@ describe('T160 cockpit routes', () => {
     expect(streams.readThread(node.id).entries.at(-1)?.body).toBe('goal set: fix the parser');
     expect((await post(node.id, 'update', { goal: 'fix the lexer' })).status).toBe(200);
     expect(streams.readThread(node.id).entries.at(-1)?.body).toBe('goal changed: fix the lexer');
+  });
+
+  test('T478: POST /api/streams/:id/auto-close, as the operator; a node made with it keeps it', async () => {
+    const post = (id: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/streams/${id}/auto-close`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const node = await streams.create('human', { title: 'n', goal: 'g' });
+    expect((await post(node.id, { on: true }, { origin: 'http://evil.example' })).status).toBe(403);
+    expect((await post(node.id, {})).status).toBe(400);
+    expect((await post(node.id, { on: true })).status).toBe(200);
+    expect(streams.get(node.id).auto_close).toBe(true);
+    expect((await post(node.id, { on: false })).status).toBe(200);
+    expect(streams.get(node.id).auto_close).toBeUndefined();
   });
 
   test('T365: POST /api/streams/:id/update renames as human; strict body; cross-origin 403', async () => {

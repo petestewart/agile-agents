@@ -28,6 +28,7 @@ import {
   SessionShipReviewer,
   ShipChecks,
   buildDeliveryRpcMethods,
+  git,
   wireLandGateResolution,
 } from './delivery';
 import { DirectorService, NormWatch, buildDirectorRpcMethods } from './director';
@@ -61,6 +62,7 @@ import { missingVendorCommand, resolveCliBin } from './runner';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
 import {
+  AutoClose,
   type MoveCoordination,
   RepoInPlaceService,
   StreamService,
@@ -158,6 +160,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // so construction order is never a trap. One the startup migration can
   // reach before it is built is a `let`, so it reads as `undefined` (T337).
   let trackerPush: TrackerStatusPush | undefined;
+  let autoClose: AutoClose | undefined;
   const streamService: StreamService | undefined = store
     ? new StreamService(store, {
         // T244: record changes that are routed events (child_status, pr_merged, …).
@@ -167,6 +170,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           await cardService?.refresh(after);
           // T324: Node → tracker (off unless the project turns it on); never blocks the update.
           void trackerPush?.onUpdated(before, after);
+          // T478: a node set to auto-close closes itself when its goal is met; never blocks.
+          void autoClose?.onUpdated(before, after);
         },
         // T333: a move is refused while a plan awaits approval (read lazily; built below).
         coordination: {
@@ -420,6 +425,21 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           refreshPr: (id: string): Promise<unknown> | undefined => prPoller?.pollNow(id),
         })
       : undefined;
+  // T478: auto-close reads the branch through landing's preflight and the worktree by git.
+  if (streamService && landingService && store) {
+    autoClose = new AutoClose({
+      streams: streamService,
+      preflight: (id) => landingService.preflight(id),
+      uncommitted: (node) => {
+        const repoRoot = node.repo !== undefined ? store.getRepos()[node.repo]?.path : undefined;
+        if (node.worktree === undefined || repoRoot === undefined) return false;
+        const status = git(['status', '--porcelain=v1'], node.worktree, repoRoot);
+        if (status.exitCode !== 0) return true;
+        return status.stdout.split('\n').some((l) => l.length > 0 && !l.startsWith('??'));
+      },
+      log: (message) => console.error(message),
+    });
+  }
   if (gateService && landingService) wireLandGateResolution(gateService, landingService);
   if (landingService) redeliver = (id) => landingService.land(id);
   // Deciding a gate closes the question the same session left open; wired

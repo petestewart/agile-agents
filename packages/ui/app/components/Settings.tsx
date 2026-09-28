@@ -41,9 +41,11 @@ import type {
 import { GATE_KINDS, resolveVendorFailure, vendorHasHooks } from '@agile-agents/shared';
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import {
+  type AutoCloseDefault,
   type DaemonHealth,
   type KnowledgeWake,
   type QuickDrafts,
+  getAutoCloseDefault,
   getClassifierKey,
   getHealth,
   getKnowledgeWake,
@@ -56,6 +58,7 @@ import {
   saveHomeSessionDefaults,
   saveRepoSessionDefaults,
   saveTrackerSettings,
+  setAutoCloseDefault,
   setKnowledgeWake,
   setQuickDrafts,
   updateProject,
@@ -288,6 +291,8 @@ function GeneralSection(): JSX.Element {
       <NotificationsCard />
 
       <QuickDraftsCard />
+
+      <AutoCloseCard />
 
       <PermissionsCard />
 
@@ -1397,6 +1402,58 @@ function QuickDraftsCard(): JSX.Element {
           </span>
         </p>
       ) : null}
+      {error ? (
+        <p className="cr-set-note" data-tone="amber" role="alert">
+          <Icon name="alert-triangle" size={14} />
+          <span>{error}</span>
+        </p>
+      ) : null}
+    </SetCard>
+  );
+}
+
+/**
+ * T478: whether New node's "Close it when its goal is met" starts on. Each
+ * node keeps its own setting, changed on its page; a part inherits its
+ * parent's.
+ */
+function AutoCloseCard(): JSX.Element {
+  const [state, setState] = useState<AutoCloseDefault | undefined>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    getAutoCloseDefault()
+      .then(setState)
+      .catch((err: unknown) => setError(errorText(err)));
+  }, []);
+
+  async function toggle(on: boolean): Promise<void> {
+    setBusy(true);
+    setError(undefined);
+    try {
+      setState(await setAutoCloseDefault(on));
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <SetCard
+      title="Auto-close"
+      icon="check-circle"
+      description="A node set to auto-close closes itself when its agent says the goal is met and there is nothing to merge; with changes, it waits for your Merge. A coordinating node closes once every part is merged or closed. Each node has its own switch on its page; its parts inherit it."
+      testid="settings-auto-close"
+    >
+      <Switch
+        label="New nodes close themselves when their goal is met"
+        data-testid="settings-auto-close-switch"
+        checked={state?.on === true}
+        disabled={busy || state === undefined}
+        onChange={(e) => void toggle(e.target.checked)}
+      />
       {error ? (
         <p className="cr-set-note" data-tone="amber" role="alert">
           <Icon name="alert-triangle" size={14} />

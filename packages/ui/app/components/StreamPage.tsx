@@ -40,6 +40,7 @@ import {
   getStreamPage,
   resolveConflict,
   sayOnStream,
+  setNodeAutoClose,
   stopSessions,
   unarchiveStream,
   updateStream,
@@ -930,6 +931,18 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     }
   }
 
+  // T478: this node closes itself when its goal is met; the operator's, while it is open.
+  const changeAutoClose = open
+    ? async (on: boolean) => {
+        try {
+          await setNodeAutoClose(stream.id, on);
+        } catch (err) {
+          toast({ title: 'Couldn’t change auto-close', body: errorText(err), tone: 'error' });
+        }
+        load();
+        refresh();
+      }
+    : undefined;
   const menu: MenuItem[] = [
     {
       // T421 (D42): what this conversation concluded, to the node it is about.
@@ -1040,6 +1053,15 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       hidden: projectRoot,
       disabled: busy || row === undefined,
       onSelect: () => setModal('move'),
+    },
+    {
+      // T478: the Details switch, from the menu.
+      label: stream.auto_close === true ? 'Turn off auto-close' : 'Close when its goal is met',
+      icon: 'check-circle',
+      testid: 'menu-auto-close',
+      hidden: projectRoot || changeAutoClose === undefined,
+      disabled: busy,
+      onSelect: () => void changeAutoClose?.(stream.auto_close !== true),
     },
     'separator',
     {
@@ -1942,6 +1964,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             stream={stream}
             role={role}
             {...(goalCard ? {} : { goal: saveGoal ? { onSave: saveGoal } : {} })}
+            {...(projectRoot
+              ? {}
+              : { autoClose: changeAutoClose ? { onChange: changeAutoClose } : {} })}
           />
         </DetailsPanel>
       )}

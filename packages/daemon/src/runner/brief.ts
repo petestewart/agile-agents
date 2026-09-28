@@ -121,6 +121,13 @@ export const NO_GOAL_YET =
   'No goal yet. The operator wants to talk it through first: answer their questions, read and research, and propose what the goal could be. Do not change files or commit until they set a goal; the thread will say "goal set: …" when they do.';
 
 /**
+ * T478: a node set to auto-close. `goal_met` is the only signal it closes
+ * on, so the agent is told what it is for and when not to call it.
+ */
+export const AUTO_CLOSE_HINT =
+  'This node closes itself when its goal is met. When the whole goal is done and nothing is left to fix or ask, call `goal_met` with a one-line summary as your last step; if you committed changes, they wait for the operator to merge. Never call it after a partial step or when you stop to ask.';
+
+/**
  * T420 (D42): the node this conversation was asked under, as it stands: its
  * goal, state, card, branch and worktree (to read, never to change), its
  * parts and plan, and its newest lines. The conversation answers here; what
@@ -529,7 +536,7 @@ function assemble(
       section(
         'Stream',
         stream.goal !== undefined
-          ? `**${stream.title}**\n\n${stream.goal}`
+          ? `**${stream.title}**\n\n${stream.goal}${stream.auto_close === true ? `\n\n${AUTO_CLOSE_HINT}` : ''}`
           : `**${stream.title}**\n\n${NO_GOAL_YET}`,
       ),
     );

@@ -1317,3 +1317,23 @@ daemon's `log/events.jsonl` for the `session/new` reply.
 | Cursor |                 |                          |                             |
 | Grok   |                 |                          |                             |
 | Pi     |                 |                          |                             |
+
+## 13. **[vendor]** Auto-close when the goal is met (T478)
+
+The daemon closes a node set to auto-close only on the agent's `goal_met`
+call, so this needs a real agent to show it calls it at the right moment.
+
+- [ ] Settings → General → Auto-close: turn on "New nodes close themselves
+      when their goal is met". New node's "Close it when its goal is met"
+      now starts on.
+- [ ] Make a node on a repo with a goal that changes nothing ("Count the
+      markdown files in the repo and tell me"). When it answers, the thread
+      shows "goal met: …" then "closed: auto-closed: its goal is met and
+      there is nothing to merge", and it never shows in Needs me.
+- [ ] Make one whose goal changes a file. It says "goal met: …" and stays
+      open as Ready to merge; Merge lands it.
+- [ ] Make one with a vague goal ("Improve the README") and answer its first
+      question in the chat: it must not call `goal_met` on a turn that ends
+      with a question to you. If it does, note the vendor.
+- [ ] On a node's page, Details → Auto-close off: the next finished turn with
+      `goal_met` leaves it open.

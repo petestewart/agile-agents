@@ -271,6 +271,29 @@ export class VerbService {
     );
   }
 
+  /**
+   * T478: the agent says its node's whole goal is done. Recorded with its
+   * session (auto-close counts it only for the turn that said it) and on the
+   * thread; the node closes itself, if set to, when that turn ends.
+   */
+  async goalMet(input: unknown): Promise<ThreadEntry> {
+    const { session, summary } = validateVerbInput('goal_met', input);
+    const caller = this.caller(session);
+    const node = this.options.streams.get(caller.stream);
+    if (node.goal === undefined) {
+      throw new Error('goal_met: this node has no goal yet; the operator sets one first');
+    }
+    await this.options.streams.update('agent', caller.stream, {
+      agent: { goal_met: { session, at: new Date().toISOString(), summary } },
+    });
+    return this.options.streams.appendThread(
+      'agent',
+      caller.stream,
+      { kind: 'line', body: `goal met: ${summary}`.slice(0, 800) },
+      session,
+    );
+  }
+
   /** A finding goes to the thread (the narrative) and to `agent.findings` (the list the cockpit groups), §4.2. */
   async finding(input: unknown): Promise<StreamFinding> {
     const { session, severity, file, line, text } = validateVerbInput('finding', input);
@@ -868,5 +891,6 @@ export function verbHandlers(
     start_node: (input) => service.startNode(input),
     restart_node: (input) => service.restartNode(input),
     propose_repo: (input) => service.proposeRepo(input),
+    goal_met: (input) => service.goalMet(input),
   };
 }

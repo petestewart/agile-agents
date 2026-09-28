@@ -656,6 +656,24 @@ export class StateStore {
     });
   }
 
+  /** T478: New node's auto-close default (off, the default, removes the key). */
+  async setAutoCloseDefault(on: boolean, options: { by?: string } = {}): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (on) raw.auto_close = true;
+      else Reflect.deleteProperty(raw, 'auto_close');
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { auto_close: on },
+      });
+      return { result: validated, event };
+    });
+  }
+
   /** T457: the home's permission posture in `<home>/config.yaml` (`ask`, the default, removes the key). */
   async setPermissionPosture(
     posture: PermissionPosture,

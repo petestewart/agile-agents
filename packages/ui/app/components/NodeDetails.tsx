@@ -1040,13 +1040,17 @@ export function AboutSection({
   stream,
   role,
   goal,
+  autoClose,
 }: {
   stream: Stream;
   role: CockpitStreamRow['role'] | undefined;
   /** T413: the goal, when the chat shows no Goal card; `onSave` where it may change. */
   goal?: { onSave?: (goal: string) => Promise<void> };
+  /** T478: its auto-close switch; absent on a project's root. */
+  autoClose?: { onChange?: (on: boolean) => Promise<void> };
 }): JSX.Element {
   const copy = useCopy();
+  const [closing, setClosing] = useState(false);
   const created = new Date(stream.created_at);
   return (
     <DetailSection title="About">
@@ -1069,6 +1073,35 @@ export function AboutSection({
                 goal={stream.goal ?? ''}
                 {...(goal.onSave ? { onSave: goal.onSave } : {})}
               />
+            </dd>
+          </>
+        )}
+        {autoClose && (
+          <>
+            <dt>Auto-close</dt>
+            <dd>
+              <label className="cr-switch-row">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  aria-checked={stream.auto_close === true}
+                  className="cr-switch"
+                  data-testid="details-auto-close"
+                  checked={stream.auto_close === true}
+                  disabled={autoClose.onChange === undefined || closing}
+                  onChange={(e) => {
+                    const change = autoClose.onChange;
+                    if (change === undefined) return;
+                    setClosing(true);
+                    void change(e.target.checked).finally(() => setClosing(false));
+                  }}
+                />
+                <span className="cr-switch-label">When its goal is met</span>
+              </label>
+              <span className="cr-about-hint">
+                Closes itself once its agent says the goal is met and there is nothing to merge
+                {stream.goal === undefined ? ' (it needs a goal first)' : ''}.
+              </span>
             </dd>
           </>
         )}

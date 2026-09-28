@@ -9943,6 +9943,68 @@ describe("No goal yet, and the Finished card's ✕ (Playwright e2e, T477)", () =
   );
 });
 
+describe('Auto-close (Playwright e2e, T478)', () => {
+  browserTest(
+    "the Settings default seeds New node's switch; a node page turns it on and off in Details and ⋯",
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=general`);
+        const setting = page.locator('[data-testid="settings-auto-close-switch"]');
+        await waitUntilAsync('the setting read', async () => !(await setting.isDisabled()));
+        expect(await setting.isChecked()).toBe(false);
+        // A switch that follows the daemon: it flips once saved.
+        await setting.click();
+        await waitUntil('saved', () => cockpit.store.getHomeConfig().auto_close === true);
+        await waitUntilAsync('on', async () => setting.isChecked());
+
+        // New node starts with it on.
+        await page.goto(`${cockpit.base}/`);
+        await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+        await page.locator('[data-testid="new-stream-open"]').click();
+        const fresh = page.locator('[data-testid="new-stream-auto-close"]');
+        await waitUntilAsync('seeded from Settings', async () => fresh.isChecked());
+        await page.locator('[data-testid="new-stream-start"]').uncheck();
+        await page.locator('[data-testid="new-stream-goal"]').fill('count the desktop files');
+        await page.locator('[data-testid="new-stream-create"]').click();
+        await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
+        let made: string | undefined;
+        await waitUntil('made', () => {
+          made = cockpit.streams.list().find((x) => x.goal === 'count the desktop files')?.id;
+          return made !== undefined;
+        });
+        const id = made as string;
+        expect(cockpit.streams.get(id).auto_close).toBe(true);
+
+        // Its page: Details' switch turns it off; ⋯ turns it back on.
+        await page.locator(`[data-testid="stream-page"][data-stream="${id}"]`).waitFor();
+        const details = page.locator('[data-testid="details-auto-close"]');
+        await waitUntilAsync('on in Details', async () => details.isChecked());
+        await details.click();
+        await waitUntil('off', () => cockpit.streams.get(id).auto_close === undefined);
+        expect(cockpit.streams.readThread(id).entries.at(-1)?.body).toStartWith('auto-close off');
+        await page.locator('[data-testid="node-menu-trigger"]').click();
+        await page
+          .locator('[data-testid="node-menu"] [data-testid="menu-auto-close"]', {
+            hasText: 'Close when its goal is met',
+          })
+          .click();
+        await waitUntil('on again', () => cockpit.streams.get(id).auto_close === true);
+        await waitUntilAsync('Details follows', async () => details.isChecked());
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
   browserTest(
     'the first Merge asks (and can stop asking); a refusal reads in words under Merge, with its fix as a button, never as a toast',

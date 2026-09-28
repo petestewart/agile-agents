@@ -2984,10 +2984,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T478 Auto-close when the goal is met
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28): today nothing closes a node on its own. No agent can close its node, a coordinator can't close its parts, and the daemon never closes a finished node. "when i manually create a node and set a goal, there should be a toggle on the node to auto-close (when goal is met). this setting should exist and be able to change even after the node's been created."
 - **Acceptance Criteria:** New node and the node's page (header ⋯ and Details) have an **Auto-close** toggle, stored on the node and changeable any time. With it on, a node whose agent finishes its goal with nothing to merge closes itself, with a thread line; with changes, it stays Ready to merge. A coordinator's parts inherit it when it adds them, and a coordinating node with auto-close closes once every part is merged or closed. The default is a setting.
+- **Validation Steps:** "Goal met" needs a signal: every finished turn ends `done`, including one that stops to ask. So the agent reports it with a new verb, `goal_met` ({summary}), recorded as `agent.goal_met` with its session. The brief of an auto-close node tells the agent when to call it and when not to. `streams/auto-close.ts` runs from `onUpdated`: a node closes when its turn ends `done` having said `goal_met` in that session, with nothing to merge. Nothing to merge means preflight counted `ahead === 0` (or the branch was already merged), no conflict and no uncommitted tracked change; it fails closed when the preflight can't count. A coordinating node closes when every part is landed or closed. Never a root, a node with no goal, an archived one, or a running one. `auto_close` is human-only (the two-writer split) and a part inherits it at create. Routes: `POST /api/streams/:id/auto-close`, `GET/POST /api/settings/auto-close`. UI: Settings → General card, New node switch (seeded from the setting), node page Details switch and ⋯ item. Tests: `auto-close.test.ts` (8), goal_met verb (2), shared verb list, http ×2, daemon wiring (real git: a clean branch closes, a commit stays), e2e T478. Full `bun test` 3471/0; control-room e2e 126/126. LIVE-CHECKLIST §13.
+- **Notes:** Branch T478-auto-close. The daemon test caught a real bug: a preflight refusal (a live session) returned no `ahead` and read as "nothing to merge". Fixed to fail closed.
 
 ### Ticket: T472 The Ask box has the model picker
 - **Priority:** P2

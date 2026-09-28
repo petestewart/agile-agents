@@ -570,6 +570,24 @@ export function setKnowledgeWake(on: boolean): Promise<KnowledgeWake> {
   return post('/api/settings/knowledge-wake', { on }) as Promise<KnowledgeWake>;
 }
 
+/** T478: New node's "Close it when its goal is met" default. */
+export interface AutoCloseDefault {
+  on: boolean;
+}
+
+export function getAutoCloseDefault(): Promise<AutoCloseDefault> {
+  return get<AutoCloseDefault>('/api/settings/auto-close');
+}
+
+export function setAutoCloseDefault(on: boolean): Promise<AutoCloseDefault> {
+  return post('/api/settings/auto-close', { on }) as Promise<AutoCloseDefault>;
+}
+
+/** T478: this node closes itself when its goal is met (the operator's). */
+export function setNodeAutoClose(id: string, on: boolean): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/auto-close`, { on }) as Promise<Stream>;
+}
+
 /** T457: the home's permission posture (a project may override it). */
 export interface PermissionsSetting {
   posture: PermissionPosture;
