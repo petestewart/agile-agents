@@ -2912,6 +2912,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** The composer's model chip shows the model alone (`ModelChip modelOnly`). `EffortChip` sits right of it, before Stop and Send, and is absent for a vendor with no effort setting. A click or Shift+Tab in the box steps low → medium → high → max → low, with focus kept. The step sets the next message's pick, as the model chip does, so it lasts one message and restarts a live agent with it. It is highlighted only when the effort differs from what runs. The Ask box keeps its one combined chip. e2e T468 (position, Shift+Tab ×2, click, the start runs on max); the T423/T464 e2e and walkthrough 8.4 read the two chips. Full `bun test` 3486/0; walkthrough clean.
 - **Notes:** Branch T468-model-effort-chips.
 
+### Ticket: T468b Typecheck: the T468 e2e read `document` in a Node-typed file
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T468's e2e checked focus with `input.evaluate((el) => el === document.activeElement)`. The daemon package has no DOM lib, so `bun run typecheck` failed on 20eb79cc. I ran the suite, lint and the walkthrough before pushing, but not typecheck after adding the test.
+- **Acceptance Criteria:** The check reads the focused element's testid through a string `evaluate`, as the other focus checks in the file do. Typecheck is clean.
+- **Validation Steps:** `bun run typecheck` clean; e2e T468 passes.
+- **Notes:** Branch T468b-typecheck.
+
 ### Ticket: T470 Needs me as a true inbox
 - **Priority:** P1
 - **Status:** Done
