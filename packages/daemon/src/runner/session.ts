@@ -34,7 +34,12 @@ import type {
   SessionRole,
   Stream,
 } from '@agile-agents/shared';
-import { AGENT_LINE_MAX_CHARS, type AgentCommand, AgentCommandSchema } from '@agile-agents/shared';
+import {
+  AGENT_LINE_MAX_CHARS,
+  type AgentCommand,
+  AgentCommandSchema,
+  vendorHasHooks,
+} from '@agile-agents/shared';
 import { writeClaudeSettings } from '../hook';
 import { permissionRoleFor } from '../hook/decide';
 import {
@@ -497,6 +502,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     agent: sessionId as AgentId,
     worktreePath,
     session: spawned,
+    // T476: a vendor with no pre-tool hook gets a card, not a refusal, for a command it can't show.
+    hooked: vendorHasHooks(provider.id),
     ...(opts.readScope ?? {}),
     ...(opts.routeRead !== undefined ? { routeRead: opts.routeRead } : {}),
     // The same rules the hook tier enforces, bound to this stream: the

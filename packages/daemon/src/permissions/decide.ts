@@ -10,7 +10,13 @@ import { DEFAULT_PROTECTED_BRANCHES } from '@agile-agents/shared';
 import { classifyPermissionRequest } from './classify';
 import { type ReadAsk, checkNeverWithoutHuman, roleVerdict } from './policy-tables';
 import { type RuleCheckContext, runPatternRules } from './rule-checks';
-import type { AcpPermissionOption, Decision, DecisionContext, PermissionRequest } from './types';
+import type {
+  AcpPermissionOption,
+  AcpPermissionRequestParams,
+  Decision,
+  DecisionContext,
+  PermissionRequest,
+} from './types';
 
 function findOption(
   options: AcpPermissionOption[],
@@ -51,6 +57,46 @@ export function isDaemonVerb(title: string | undefined): boolean {
   return title !== undefined && /^mcp__agile__[a-z_]+$/.test(title);
 }
 
+/**
+ * T476: the same verbs as hook-less vendors title them: Cursor's
+ * `agile-progress: progress`, Codex's `mcp.agile.progress`. A name alone
+ * could be any MCP server a repo configures called "agile", so these pass
+ * only when the call's input carries this agent's own daemon session id
+ * (every verb takes `session`).
+ */
+export function isOwnDaemonVerb(
+  request: AcpPermissionRequestParams,
+  session: string | undefined,
+): boolean {
+  const title = request.toolCall?.title;
+  if (title === undefined || session === undefined) return false;
+  const named =
+    /^agile-([a-z_]+): \1$/.test(title) ||
+    /^mcp\.agile\.[a-z_]+$/.test(title) ||
+    /^agile[.:/_-]{1,2}[a-z_]+$/.test(title);
+  return named && request.toolCall.rawInput?.session === session;
+}
+
+/**
+ * T476: an exec this tier can't read the command of, from a vendor with no
+ * pre-tool hook (Cursor, Codex, Gemini, Grok): nothing else will ever see
+ * it, so it is held for the human rather than refused (Cursor's
+ * `git ls-files` was refused with no card). A hooked vendor keeps the role
+ * table's deny: its hook sees the command.
+ */
+function unreadableExec(
+  classified: PermissionRequest,
+  ctx: DecisionContext,
+): ReturnType<typeof roleVerdict> | undefined {
+  if (classified.toolClass !== 'execute' || classified.command !== undefined) return undefined;
+  if (ctx.hooked !== false) return undefined;
+  const what = classified.title !== undefined ? ` (“${classified.title}”)` : '';
+  return {
+    action: 'hil',
+    reason: `the agent wants to run a command the daemon can’t read${what}: allow it only if you know what it runs`,
+  };
+}
+
 /** The `RuleCheckContext` for one request: every path it names, and `edit` as the write case. */
 function ruleCheckContext(ctx: DecisionContext, classified: PermissionRequest): RuleCheckContext {
   const paths =
@@ -89,9 +135,9 @@ export function decidePermission(ctx: DecisionContext): Decision {
     ctx.role === 'coordinator' ? undefined : checkNeverWithoutHuman(classified, policyCtx);
   const verdict =
     neverVerdict ??
-    (isDaemonVerb(classified.title)
+    (isDaemonVerb(classified.title) || isOwnDaemonVerb(ctx.request, ctx.session)
       ? { action: 'allow' as const }
-      : roleVerdict(ctx.role, classified, policyCtx));
+      : (unreadableExec(classified, ctx) ?? roleVerdict(ctx.role, classified, policyCtx)));
 
   // The pattern rules (§5.2, §5.4), only for a call the role table cleared
   // or held (a settled call must not bump stats; a rule's deny beats a hold,

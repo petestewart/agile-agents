@@ -2275,3 +2275,56 @@ describe('T462: a simple for loop is checked as the commands it runs', () => {
     }
   });
 });
+
+describe('T476: Cursor and Codex name our verbs and commands their own way', () => {
+  const OWN = '01M3KWYMTG6XH46P8H07AH7S23';
+  const exec = (toolCall: Record<string, unknown>, hooked?: boolean, session = OWN) =>
+    decidePermission({
+      role: 'engineer',
+      worktreePath: WORKTREE,
+      session,
+      ...(hooked !== undefined ? { hooked } : {}),
+      request: { sessionId: 's', toolCall, options: STANDARD_OPTIONS } as never,
+    });
+  test("a verb titled `agile-progress: progress` (Cursor) passes with this agent's own session", () => {
+    const call = {
+      kind: 'other',
+      title: 'agile-progress: progress',
+      rawInput: { session: OWN, text: 'hi' },
+    };
+    expect(exec(call, false).kind).toBe('allow');
+    expect(exec({ ...call, title: 'mcp.agile.search_docs' }, false).kind).toBe('allow');
+    // Another session's id, or none: a lookalike "agile" server gets the old refusal.
+    expect(exec({ ...call, rawInput: { session: 'someone-else', text: 'hi' } }, false).kind).toBe(
+      'deny',
+    );
+    expect(exec({ ...call, rawInput: { text: 'hi' } }, false).kind).toBe('deny');
+    expect(exec({ ...call, title: 'agile-progress: other' }, false).kind).toBe('deny');
+  });
+  test('the command is read from `cmd`, an argv array, a backtick or labelled title, or the content', () => {
+    for (const call of [
+      { kind: 'execute', rawInput: { cmd: 'git ls-files' } },
+      { kind: 'execute', rawInput: { command: ['git', 'ls-files'] } },
+      { kind: 'execute', title: '`git ls-files`', rawInput: {} },
+      { kind: 'execute', title: 'Terminal: git ls-files', rawInput: {} },
+      {
+        kind: 'execute',
+        title: 'Terminal',
+        rawInput: {},
+        content: [{ type: 'content', content: { type: 'text', text: 'git ls-files' } }],
+      },
+    ]) {
+      expect({ call, kind: exec(call, false).kind }).toEqual({ call, kind: 'allow' });
+    }
+    // Read, it is judged like any command: the agile home stays out of reach.
+    expect(exec({ kind: 'execute', rawInput: { cmd: 'cat /etc/passwd' } }, false).kind).toBe(
+      'deny',
+    );
+  });
+  test('a command it cannot read: a card for a hook-less vendor, the old refusal for a hooked one', () => {
+    const blind = { kind: 'execute', title: 'Terminal', rawInput: {} };
+    expect(exec(blind, false).kind).toBe('hil');
+    expect(exec(blind, true).kind).toBe('deny');
+    expect(exec(blind).kind).toBe('deny');
+  });
+});

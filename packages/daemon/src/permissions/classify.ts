@@ -52,6 +52,41 @@ function allLocationPaths(locations: AcpLocation[] | undefined): string[] {
 }
 
 const RUN_TITLE_RE = /^Run (.+)$/;
+/** T476: other vendors' exec titles: "`git ls-files`", "Terminal: git ls-files", "Shell: …". */
+const BACKTICK_TITLE_RE = /^`([^`]+)`$/;
+const LABELLED_RUN_TITLE_RE = /^(?:Terminal|Shell|Execute|Command|Bash|Run command):\s*(.+)$/i;
+
+/**
+ * T476: an exec's command where vendors put it: `command` (Claude, most),
+ * `cmd`, `commandLine`/`command_line`, or an argv array under any of them.
+ */
+function rawCommandOf(rawInput: Record<string, unknown>): string | undefined {
+  for (const key of ['command', 'cmd', 'commandLine', 'command_line']) {
+    const value = rawInput[key];
+    if (typeof value === 'string' && value.trim().length > 0) return value;
+    if (Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === 'string')) {
+      return (value as string[]).map(shellWord).join(' ');
+    }
+  }
+  return undefined;
+}
+
+/** One argv word as the shell would read it back: quoted when it holds anything special. */
+function shellWord(word: string): string {
+  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
+}
+
+/** T476: the first text block of a call's `content` (a vendor may put the command there alone). */
+function contentText(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  for (const block of content) {
+    const inner = (block as { content?: { type?: unknown; text?: unknown } } | null)?.content;
+    if (inner?.type === 'text' && typeof inner.text === 'string' && inner.text.trim() !== '') {
+      return inner.text.trim();
+    }
+  }
+  return undefined;
+}
 const EDIT_TITLE_RE = /^(?:Edit|Write|Create) (.+)$/;
 const READ_TITLE_RE = /^Read(?: File)?$/;
 
@@ -93,6 +128,10 @@ function parseTitle(title: string | undefined, currentToolClass: ToolClass): Tit
   if (title === undefined) return {};
   const runMatch = RUN_TITLE_RE.exec(title);
   if (runMatch) return { command: runMatch[1] };
+  if (currentToolClass === 'execute') {
+    const run = BACKTICK_TITLE_RE.exec(title) ?? LABELLED_RUN_TITLE_RE.exec(title);
+    if (run) return { command: run[1]?.trim() };
+  }
   const editMatch = EDIT_TITLE_RE.exec(title);
   if (editMatch) {
     const captured = editMatch[1] ?? '';
@@ -112,7 +151,7 @@ export function classifyPermissionRequest(params: AcpPermissionRequestParams): P
   const rawInput = toolCall.rawInput ?? {};
 
   let toolClass = classifyToolKind(toolCall.kind);
-  const rawCommand = firstString(rawInput.command);
+  const rawCommand = rawCommandOf(rawInput);
   const rawTargetPath = firstString(rawInput.file_path, rawInput.path, rawInput.abs_path);
   const url = firstString(rawInput.url);
 
@@ -133,7 +172,15 @@ export function classifyPermissionRequest(params: AcpPermissionRequestParams): P
       locationsUsed = true;
     } else {
       const fallback = parseTitle(toolCall.title, toolClass);
-      if (fallback.command !== undefined) {
+      // T476: an exec whose command is only in its content (one plain line).
+      const fromContent =
+        toolClass === 'execute' && fallback.command === undefined
+          ? contentText(toolCall.content)
+          : undefined;
+      if (fromContent !== undefined && !fromContent.includes('\n')) {
+        command = fromContent;
+        titleFallbackUsed = true;
+      } else if (fallback.command !== undefined) {
         command = fallback.command;
         titleFallbackUsed = true;
       } else if (fallback.targetPath !== undefined) {
