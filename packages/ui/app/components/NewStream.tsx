@@ -51,7 +51,17 @@ import { Icon } from './Icon';
 import { type PickOption, PickerField } from './Pickers';
 import { type SessionChoice, SessionFields } from './SessionPicker';
 import { ROLE_GLYPH } from './StreamTree';
-import { Button, Dialog, EmptyState, Field, Kbd, RepoIcon, repoKindLabel, useToast } from './ui';
+import {
+  Button,
+  Dialog,
+  EmptyState,
+  Field,
+  Kbd,
+  RepoIcon,
+  Segmented,
+  repoKindLabel,
+  useToast,
+} from './ui';
 
 // T408: loaded when first opened (New node is always mounted, for `n`); warmed after load (`App.tsx`).
 const AddRepoDialog = lazyNamed(() => import('./AddRepo'), 'AddRepoDialog');
@@ -400,7 +410,7 @@ function NewStreamForm({
   const repoOptions: PickOption[] = [
     {
       value: '',
-      text: 'No repository',
+      text: 'No repository (just talk)',
       icon: <Icon name="message-square" size={14} />,
       sub: 'Conversation',
       pinned: true,
@@ -480,6 +490,47 @@ function NewStreamForm({
           }
         }}
       >
+        {/* T473: talk or work is the first choice, not a pick deep in the repository list. */}
+        <div className="cr-newnode-kind">
+          <Segmented
+            label="Kind of node"
+            testid="new-stream-kind"
+            value={repo === '' ? 'talk' : 'work'}
+            onChange={(kind) => {
+              if (kind === 'talk') {
+                setRepo('');
+                return;
+              }
+              const first = defaultRepo || inProject[0]?.name || others[0]?.name;
+              if (first) setRepo(first);
+              else setAddingRepo(true);
+            }}
+            items={[
+              {
+                id: 'talk',
+                label: (
+                  <>
+                    <Icon name="message-square" size={14} />
+                    Talk
+                  </>
+                ),
+                testid: 'new-stream-kind-talk',
+                title: 'Talks, researches and answers; no repository. It can turn into work later.',
+              },
+              {
+                id: 'work',
+                label: (
+                  <>
+                    <Icon name="git-branch" size={14} />
+                    Work
+                  </>
+                ),
+                testid: 'new-stream-kind-work',
+                title: 'Works in a repository on its own branch. It can go back to just talking.',
+              },
+            ]}
+          />
+        </div>
         <Field
           label={talkFirst ? 'What do you want to talk through?' : 'What should the agent do?'}
           htmlFor="cr-newnode-goal"

@@ -9945,6 +9945,61 @@ describe("No goal yet, and the Finished card's ✕ (Playwright e2e, T477)", () =
   );
 });
 
+describe('Talk and work are one kind of node (Playwright e2e, T473)', () => {
+  browserTest(
+    'New node opens on Talk or Work; a work node goes back to talk and back to work on the same branch',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+          repos: ['demo'],
+        });
+        const node = await finishedNode(cockpit, 'Add CSV import', 's-talk', shop.root);
+        const branch = cockpit.streams.get(node).branch;
+        const p = await openPage();
+        page = p;
+        await p.goto(`${cockpit.base}/`);
+        await p.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+        await p.locator('[data-testid="new-stream-open"]').click();
+        // A one-repo project starts on Work; Talk is one click, and says so in the picker.
+        const work = p.locator('[data-testid="new-stream-kind-work"]');
+        await waitUntilAsync(
+          'Work picked',
+          async () => (await work.getAttribute('aria-checked')) === 'true',
+        );
+        await p.locator('[data-testid="new-stream-kind-talk"]').click();
+        await waitForText(p, '[data-testid="new-stream-repo"] .cr-pickfield-text', 'No repository');
+        await work.click();
+        await waitForText(p, '[data-testid="new-stream-repo"] .cr-pickfield-text', 'demo');
+        await p.keyboard.press('Escape');
+
+        // Back to just talk: the work is parked, nothing on disk moves.
+        await p.goto(`${cockpit.base}/?node=${node}`);
+        await p.locator('[data-testid="node-menu-trigger"]').click();
+        await p.locator('[data-testid="node-menu"] [data-testid="menu-to-talk"]').click();
+        await p.locator('[data-testid="to-talk-confirm"]').click();
+        await waitUntil('talking', () => cockpit.streams.get(node).repo === undefined);
+        expect(cockpit.streams.get(node).parked?.branch).toBe(branch);
+
+        // Back to work on demo: the same branch again.
+        await p.locator('[data-testid="node-menu-trigger"]').click();
+        await p
+          .locator('[data-testid="node-menu"] [data-testid="menu-to-work"]', { hasText: 'demo' })
+          .click();
+        await waitUntil('working', () => cockpit.streams.get(node).repo === 'demo');
+        expect(cockpit.streams.get(node).branch).toBe(branch);
+        expect(cockpit.streams.get(node).parked).toBeUndefined();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('Closed, trash and Delete forever (Playwright e2e, T471)', () => {
   browserTest(
     'a closed node reopens from its header; Delete forever keeps an unmerged branch unless ticked; Empty trash',

@@ -754,6 +754,8 @@ export interface StreamPatch {
   permissions?: Stream['permissions'] | null;
   /** T478: `null` (or `false`) clears it: the node waits for you to close it. */
   auto_close?: boolean | null;
+  /** T473: the repo, branch and worktree a node went back to talk from; `null` clears it. */
+  parked?: Stream['parked'] | null;
   /** T176: `null` clears it. */
   land_conflict?: Stream['land_conflict'] | null;
   /** Node fields (§14.2, T201). `delivery_state`/`touched` pass the store only for the daemon. */
@@ -784,6 +786,7 @@ function applyPatch(before: Stream, patch: StreamPatch): Stream {
     rules_off,
     permissions,
     auto_close,
+    parked,
     ...rest
   } = patch;
   // `classifier` is tri-state (absent, `'off'`, `null` = remove), rebuilt
@@ -795,6 +798,8 @@ function applyPatch(before: Stream, patch: StreamPatch): Stream {
     ...(optOut !== undefined ? { classifier: optOut } : {}),
     ...rest,
   };
+  if (parked === null) Reflect.deleteProperty(next, 'parked');
+  else if (parked !== undefined) next.parked = parked;
   if (auto_close === null || auto_close === false) Reflect.deleteProperty(next, 'auto_close');
   else if (auto_close !== undefined) next.auto_close = auto_close;
   if (permissions === null) Reflect.deleteProperty(next, 'permissions');

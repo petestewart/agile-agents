@@ -10810,3 +10810,13 @@ div.cr-lens-ev:hover {
 .cr-purge-branches input {
   margin-top: 3px;
 }
+/* T473: New node's first choice, Talk or Work. */
+.cr-newnode-kind {
+  display: flex;
+  margin-bottom: 4px;
+}
+.cr-newnode-kind .cr-seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
