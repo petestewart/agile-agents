@@ -1272,3 +1272,23 @@ can grow into work in place. Keep the cockpit open; every step is in it.
 - [ ] Click **Add agile-test-repo**. The same node becomes `Work` on its own
       branch of agile-test-repo (`Repo added: agile-test-repo; now a work node
       on stream/…`), the chat carries on, and the button has gone.
+
+## 11. **[vendor]** Slash commands in the composer (T461)
+
+- [ ] Open any node whose Claude agent is running (send it a message if it
+      isn't). In the composer type `/`. A menu lists Claude's commands with
+      what each does (for example `/compact`, `/init`, `/review`, and the
+      repo's own `.claude/commands`). Write down which ones it lists: nothing
+      is assumed about the list until this step has measured it.
+- [ ] Type `/comp`: the menu narrows. Press **Enter**: the box reads
+      `/compact `. The hint under the box says `Runs /compact on Claude.`
+      Press **Enter** again. Your line shows in the chat, and Claude's reply
+      is the command's own output (no "The operator wrote…" wrapping).
+- [ ] Type `/login` and press **Enter**. Nothing is sent. A note under the box
+      says `/login can't run here…` and tells you to log in from a terminal
+      (`claude`, then `/login`).
+- [ ] Type `/model` and press **Enter**: held, pointing at the model chip.
+- [ ] Type `/frobnicate`: the hint says Claude doesn't offer it, so it goes as
+      a message. **Escape** closes the menu; the text stays.
+- [ ] On a node with no agent running, type `/`: the menu says commands load
+      once the agent is running.

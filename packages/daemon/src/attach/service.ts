@@ -23,6 +23,7 @@ import {
   type spawnSession,
 } from '@agile-agents/acp-client';
 import {
+  type AgentCommand,
   DIRECTOR_NODE,
   type HilRequest,
   type KnowledgeItem,
@@ -44,6 +45,7 @@ import {
   nodeRole,
   partsOf,
   resolveVendorFailure,
+  slashCommandOf,
   ulid,
   validateStreamCreateInput,
 } from '@agile-agents/shared';
@@ -403,6 +405,18 @@ export class AttachService {
       titleOf: (id) =>
         options.streams.list({ include_archived: true }).find((s) => s.id === id)?.title,
       ...(options.deliveryDelayMs !== undefined ? { delayMs: options.deliveryDelayMs } : {}),
+      lineBody: (node, ts) => {
+        try {
+          const thread = options.store.readThread(node);
+          for (let i = thread.length - 1; i >= 0; i--) {
+            const e = thread[i];
+            if (e?.ts === ts && e.by === 'human') return e.body;
+          }
+        } catch {
+          // Gone: the event's own copy is all there is.
+        }
+        return undefined;
+      },
       target: (node) => {
         if (node === DIRECTOR_NODE) return options.director?.()?.target();
         const handle = this.agentHandle(node);
@@ -417,6 +431,10 @@ export class AttachService {
               // Best effort: the prompt is what matters.
             });
             return turn;
+          },
+          isCommand: (line) => {
+            const name = slashCommandOf(line);
+            return name !== undefined && handle.commands().some((c) => c.name === name);
           },
         };
       },
@@ -1184,6 +1202,22 @@ export class AttachService {
         ref: sessionId,
       });
     }
+  }
+
+  /**
+   * T461: the slash commands the node's live agent advertises (empty with
+   * none running, or before its vendor has listed them), and that agent's
+   * vendor. A line starting with one is sent to it as typed (`SessionDelivery`).
+   */
+  commandsFor(streamId: string): { running: boolean; vendor?: string; commands: AgentCommand[] } {
+    const handle = this.agentHandle(streamId);
+    if (handle === undefined || handle.stopped()) return { running: false, commands: [] };
+    const vendor = this.sessionVendor(streamId, handle.sessionId);
+    return {
+      running: true,
+      ...(vendor !== 'agent' ? { vendor } : {}),
+      commands: [...handle.commands()],
+    };
   }
 
   /**

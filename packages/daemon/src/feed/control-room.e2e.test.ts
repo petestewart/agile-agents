@@ -11386,6 +11386,127 @@ describe('honest coordinator status, and scale (Playwright e2e, T447)', () => {
 
 // ---- T457: the permission posture's Ask card and its Settings ----------
 
+describe('slash commands in the composer (Playwright e2e, T461)', () => {
+  browserTest(
+    'typing / lists the agent’s commands; one runs as typed; /login is held with how to log in',
+    async () => {
+      const release = join(tmpdir(), `agile-slash-e2e-release-${ulid()}`);
+      const promptLog = join(tmpdir(), `agile-slash-e2e-prompts-${ulid()}.jsonl`);
+      const worker: FakeAgentScript = {
+        logFile: promptLog,
+        commands: [
+          { name: 'compact', description: 'Clear the conversation but keep a summary' },
+          { name: 'review', description: 'Review a pull request', input: { hint: 'PR number' } },
+        ],
+        turns: [
+          [
+            { type: 'agent_text', text: 'reading the parser' },
+            { type: 'tool_call', toolCallId: 'read-1', title: 'read parser.ts' },
+            { type: 'wait_for_file', path: release, timeoutMs: 60_000 },
+            { type: 'end_turn' },
+          ],
+          [{ type: 'agent_text', text: 'Compacted the conversation.' }, { type: 'end_turn' }],
+        ],
+        steps: [{ type: 'end_turn' }],
+      };
+      const cockpit = await startStreamCockpit([worker]);
+      let page: Page | undefined;
+      try {
+        const stream = await cockpit.streams.create('human', {
+          title: 'CSV parser',
+          goal: 'Pick the dialect.',
+          repo: 'demo',
+        });
+        await cockpit.attach.attach(stream.id);
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${stream.id}`);
+        await page
+          .locator('[data-testid="thread-entry"][data-by="agent"]', {
+            hasText: 'reading the parser',
+          })
+          .waitFor();
+        const input = page.locator('[data-testid="composer-input"]');
+        const menu = page.locator('[data-testid="slash-menu"]');
+        const items = page.locator('[data-testid="slash-item"]');
+
+        // `/` opens the menu of what the agent advertised, with descriptions.
+        await input.fill('/');
+        await menu.waitFor();
+        await items.nth(1).waitFor();
+        expect(await items.allTextContents()).toEqual([
+          '/compactClear the conversation but keep a summary',
+          '/review PR numberReview a pull request',
+        ]);
+        // Escape closes it; typing on narrows it; Enter picks the highlighted one.
+        await input.press('Escape');
+        await menu.waitFor({ state: 'detached' });
+        await input.fill('');
+        await input.fill('/co');
+        await menu.waitFor();
+        expect(await items.count()).toBe(1);
+        await input.press('Enter');
+        await menu.waitFor({ state: 'detached' });
+        expect(await input.inputValue()).toBe('/compact ');
+        await input.pressSequentially('keep the notes');
+        expect(await page.locator('[data-testid="composer-hint"]').textContent()).toBe(
+          'Runs /compact on Claude.',
+        );
+        await input.press('Enter');
+        await page
+          .locator('[data-testid="thread-entry"][data-by="human"]', {
+            hasText: '/compact keep the notes',
+          })
+          .waitFor();
+
+        // /login can't run headless: held, with how to log in; nothing is sent.
+        await input.fill('/login');
+        await input.press('Enter');
+        const held = page.locator('[data-testid="composer-held"]');
+        await held.waitFor();
+        expect(await held.textContent()).toContain(
+          'Log in from a terminal instead (run claude and type /login)',
+        );
+        expect(await held.locator('code').textContent()).toBe('claude');
+        expect(await input.inputValue()).toBe('/login');
+        expect(
+          await page
+            .locator('[data-testid="thread-entry"][data-by="human"]', { hasText: '/login' })
+            .count(),
+        ).toBe(0);
+        // An unknown command says it goes as a message.
+        await input.fill('/frobnicate');
+        await held.waitFor({ state: 'detached' });
+        expect(await page.locator('[data-testid="composer-hint"]').textContent()).toBe(
+          'Claude doesn’t offer /frobnicate here, so this goes as a message.',
+        );
+        await input.fill('');
+
+        // The first turn ends; the command is the next turn, sent as typed.
+        writeFileSync(release, '');
+        await page
+          .locator('[data-testid="thread-entry"][data-by="agent"]', {
+            hasText: 'Compacted the conversation.',
+          })
+          .waitFor();
+        const sent = readFileSync(promptLog, 'utf8')
+          .split('\n')
+          .filter((l) => l.includes('"session/prompt"'))
+          .map(
+            (l) =>
+              (JSON.parse(l) as { params: { prompt: { text: string }[] } }).params.prompt[0]?.text,
+          );
+        expect(sent[1]).toBe('/compact keep the notes');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(release, { force: true });
+        rmSync(promptLog, { force: true });
+      }
+    },
+    90_000,
+  );
+});
+
 describe('permissions: the Ask card and Settings (Playwright e2e, T457)', () => {
   browserTest(
     "an agent's read outside its repos raises Allow once / Always / Deny; Always persists and lets it read; Settings shows and removes it",

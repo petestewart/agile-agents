@@ -2818,12 +2818,18 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T461 Slash commands in the composer
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Pete (2026-09-27): "definitely ticket this, it's essential". A composer line never reaches the vendor as a slash command. The daemon wraps every line ("The operator wrote on the stream: /login …") so the slash isn't at the start of the prompt. It also drops the ACP `available_commands_update` notification, so the cockpit never knows which commands the vendor offers. Interactive commands (`/login`, `/model`, `/config`) can't run at all over ACP: the harness is headless.
 - **Acceptance Criteria:** The daemon keeps each session's advertised commands (in memory, per session) and serves them to the cockpit. Typing `/` in a node's composer opens a menu of that agent's commands, with descriptions, filtered as you type. A line that starts with an advertised command is sent to the vendor as-is (not wrapped), so the vendor runs it; its output reads in the chat like any turn. A known interactive command that can't run headless (`/login`, `/logout`, and whichever others the vendor doesn't advertise) is not sent: the composer says what to do instead (for `/login`, T460's "log in from a terminal" words for that vendor). An unknown `/word` is sent as a normal message, and the hint says so. The cockpit's own shortcuts are unchanged. No node running: the menu says the commands load when the agent starts, and the first message still starts it.
 - **Validation Steps:** Fake agent advertising commands; daemon tests for pass-through versus wrapping; cockpit e2e for the menu, a pass-through, and the `/login` hint. LIVE-CHECKLIST gets a step with real Claude (`/compact` or a custom `.claude/commands` entry).
-- **Notes:** The commands Claude advertises over ACP are to be measured live (claude-agent-acp lists built-ins such as `/compact`, `/init`, `/review`, plus the repo's own `.claude/commands` and skills). Nothing is assumed about Gemini or Codex until measured.
+- **Notes:** Branch T461-slash-commands. The commands Claude advertises over ACP are to be measured live at LIVE-CHECKLIST §11 (claude-agent-acp lists built-ins such as `/compact`, `/init`, `/review`, plus the repo's own `.claude/commands` and skills). Nothing is assumed about Gemini or Codex until measured.
+  - Daemon: the runner keeps each session's `available_commands_update` (`advertisedCommands`, at most 200, in memory). `AttachService.commandsFor` serves them, and `GET /api/streams/:id/commands` returns `{running, vendor?, commands}`. `SessionDelivery` sends a human line that starts with an advertised command as its own turn, as typed. Lines before it go first as a digest; lines after it wait for the next turn end.
+  - Found on the way and fixed here: a `human_line` event carries the line capped at 800 characters, while the composer takes 4,000, so a long message reached the agent cut off. Delivery now reads the line from the thread (`lineBody`), in digests and in a woken session's brief alike.
+  - Shared: `AgentCommandSchema`, `slashCommandOf` and `vendorLoginHow` (T460's login words, now used by the daemon and the cockpit).
+  - Cockpit: `lib/commands.ts` (`commandMenu`, `heldCommand`, `commandHint`, `useAgentCommands`). The composer's `slash` prop gives the menu (arrows, Enter or Tab, Escape), the hint and the held note. The node page re-reads the commands when a line starts with `/`, since a vendor lists them only after its session opens. Only a command the vendor doesn't advertise is held (`/login`, `/logout`, `/model`).
+  - Tests: `attach/service.test.ts` T461 (the command's own turn, a 1,500-character line whole, an unknown command wrapped), `runner/commands.test.ts`, `ui/app/lib/commands.test.ts`, and the control-room e2e "slash commands in the composer".
+  - Not done: the Director's composer has no `/` menu yet.
 
 ### Ticket: T457b CI: a dangling symlink read as the dir it sits in
 - **Priority:** P0

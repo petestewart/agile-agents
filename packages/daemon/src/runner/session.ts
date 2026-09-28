@@ -34,7 +34,7 @@ import type {
   SessionRole,
   Stream,
 } from '@agile-agents/shared';
-import { AGENT_LINE_MAX_CHARS } from '@agile-agents/shared';
+import { AGENT_LINE_MAX_CHARS, type AgentCommand, AgentCommandSchema } from '@agile-agents/shared';
 import { writeClaudeSettings } from '../hook';
 import { permissionRoleFor } from '../hook/decide';
 import {
@@ -217,6 +217,11 @@ export interface AgentSessionHandle {
    * until the vendor reports one (not every vendor does).
    */
   contextUsage(): ContextUsage | undefined;
+  /**
+   * T461: the slash commands the vendor advertises for this session, as its
+   * last `available_commands_update` listed them (empty until one arrives).
+   */
+  commands(): readonly AgentCommand[];
   /** Whether `stop()` has been called. */
   stopped(): boolean;
   /** `cancel()` + `close()`; the exit path still runs off the session's own `exit` event. */
@@ -329,6 +334,31 @@ function modelFromSessionState(params: unknown): string | undefined {
   const record = asRecord(configOptions);
   if (typeof record?.model === 'string') return record.model;
   return undefined;
+}
+
+/** T461: at most this many advertised commands are kept per session. */
+const COMMANDS_MAX = 200;
+
+/** T461: an `available_commands_update`'s commands that parse, capped; the rest are dropped. */
+export function advertisedCommands(update: Record<string, unknown> | null): AgentCommand[] {
+  const list = update?.availableCommands;
+  if (!Array.isArray(list)) return [];
+  const out: AgentCommand[] = [];
+  const seen = new Set<string>();
+  for (const item of list) {
+    const c = asRecord(item);
+    const input = asRecord(c?.input);
+    const parsed = AgentCommandSchema.safeParse({
+      name: typeof c?.name === 'string' ? c.name.replace(/^\//, '') : undefined,
+      description: typeof c?.description === 'string' ? c.description.slice(0, 300) : '',
+      ...(typeof input?.hint === 'string' ? { hint: input.hint.slice(0, 200) } : {}),
+    });
+    if (!parsed.success || seen.has(parsed.data.name)) continue;
+    seen.add(parsed.data.name);
+    out.push(parsed.data);
+    if (out.length === COMMANDS_MAX) break;
+  }
+  return out;
 }
 
 /** `session/update` kinds that report on the session, not the turn: they must not split a streaming message. */
@@ -500,6 +530,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   let buffer = '';
   let overflowed = false;
   let context: ContextUsage | undefined;
+  let commands: AgentCommand[] = [];
   function flushOutput(): void {
     const text = overflowed ? buffer.trimStart() : buffer.trim();
     const wasOverflowed = overflowed;
@@ -660,6 +691,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       // between two chunks once split one message in two). Only a real turn
       // item closes the streaming message.
       if (kind === 'usage_update') context = contextUsageOf(update) ?? context;
+      if (kind === 'available_commands_update') commands = advertisedCommands(update);
       if (typeof kind === 'string' && NON_BOUNDARY_UPDATES.includes(kind)) return;
       flushOutput();
 
@@ -826,6 +858,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     },
     contextUsage() {
       return context === undefined ? undefined : { ...context };
+    },
+    commands() {
+      return commands;
     },
     stopped() {
       return stopRequested || settled;

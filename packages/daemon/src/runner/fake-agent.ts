@@ -73,6 +73,11 @@ export interface FakeAgentScript {
   model?: string;
   /** Written to stderr once at startup, for testing the per-session stderr log. */
   stderrBanner?: string;
+  /**
+   * T461: slash commands advertised in an `available_commands_update` right
+   * after `session/new`, in ACP's shape (`{name, description, input?: {hint}}`).
+   */
+  commands?: Array<{ name: string; description: string; input?: { hint: string } }>;
 }
 
 function appendLog(script: FakeAgentScript, line: Record<string, unknown>): void {
@@ -272,6 +277,15 @@ function handleLine(line: string): void {
         id: message.id,
         result: { sessionId, modes: null, configOptions: sessionConfigOptions() },
       });
+      if (script.commands !== undefined) {
+        notify('session/update', {
+          sessionId,
+          update: {
+            sessionUpdate: 'available_commands_update',
+            availableCommands: script.commands,
+          },
+        });
+      }
       return;
     case 'session/load':
       sessionId = (message.params as { sessionId?: string } | undefined)?.sessionId ?? sessionId;

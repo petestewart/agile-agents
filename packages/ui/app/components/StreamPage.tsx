@@ -71,6 +71,7 @@ import {
   withQuestion,
   workingAs,
 } from '../lib/chat';
+import { useAgentCommands } from '../lib/commands';
 import { choiceOf, modelChip, resolvedFor } from '../lib/defaults';
 import { draftOf, useDraftSetter } from '../lib/drafts';
 import {
@@ -405,6 +406,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const reviewCount = useReview(id).comments.length;
   // T392: the agent's steps, live.
   const agentSteps = useSteps(id);
+  // T461: the live agent's slash commands, for the composer's `/` menu.
+  const agentCommands = useAgentCommands(
+    id,
+    page?.stream.id === id ? liveAgentOf(page.stream.sessions)?.id : undefined,
+  );
 
   // Every pushed frame and every action re-reads the page, so reads
   // overlap, and their responses can arrive in any order. Only the latest
@@ -1571,6 +1577,18 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             label={answeringItem ? 'Your answer' : 'Message the agent'}
             mode={intent.action === 'answer' ? 'answer' : undefined}
             {...(offline ? { sendBlocked: RECONNECTING } : {})}
+            {...(intent.action !== 'answer' && intent.action !== 'none'
+              ? {
+                  slash: {
+                    running: agentCommands.running,
+                    commands: agentCommands.commands,
+                    ...((liveAgent?.vendor ?? pending?.vendor ?? resolved?.vendor)
+                      ? { vendor: liveAgent?.vendor ?? pending?.vendor ?? resolved?.vendor }
+                      : {}),
+                  },
+                  onSlash: agentCommands.refresh,
+                }
+              : {})}
             after={(draft) =>
               sendError && (
                 <div className="cr-send-error" role="alert" data-testid="send-error">

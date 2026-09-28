@@ -4247,6 +4247,66 @@ input[type="checkbox"].cr-switch:focus-visible {
 .cr-compose-send[data-blocked="true"] {
   cursor: not-allowed;
 }
+/* T461: the composer's `/` menu, above the box, and a held command's note. */
+.cr-compose {
+  position: relative;
+}
+.cr-slash-menu {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+}
+.cr-slash-item {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.cr-slash-item[aria-selected="true"] {
+  background: var(--bg-active);
+}
+.cr-slash-name {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+.cr-slash-arg {
+  color: var(--text-faint);
+}
+.cr-slash-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-slash-empty {
+  padding: 10px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-compose-held {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  font-size: var(--text-sm);
+  color: var(--amber-text);
+  background: var(--amber-weak);
+  border-radius: var(--radius);
+}
 .cr-compose-hint {
   display: flex;
   align-items: center;

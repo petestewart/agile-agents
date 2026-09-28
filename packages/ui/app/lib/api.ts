@@ -6,6 +6,7 @@
  */
 
 import type {
+  AgentCommand,
   Autonomy,
   AutonomyProposal,
   ClassifierKeyStatus,
@@ -616,6 +617,13 @@ export function sendUp(id: string, body: string): Promise<{ parent: string }> {
   return post(`/api/streams/${encodeURIComponent(id)}/send-up`, { body }) as Promise<{
     parent: string;
   }>;
+}
+
+/** T461: the slash commands a node's live agent advertises (none when nothing runs). */
+export function getStreamCommands(
+  id: string,
+): Promise<{ running: boolean; vendor?: string; commands: AgentCommand[] }> {
+  return get(`/api/streams/${encodeURIComponent(id)}/commands`);
 }
 
 /** T392: a node's agent steps (its tool calls), newest first; the chat follows live events after. */

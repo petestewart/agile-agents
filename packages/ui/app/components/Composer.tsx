@@ -7,11 +7,26 @@
  *
  * It knows nothing about streams: the page decides what Send means.
  * `DraftComposer` keeps a node's draft for it (T447).
+ *
+ * T461: given the agent's slash commands (`slash`), typing `/` opens a
+ * menu of them (arrows, Enter or Tab to pick, Escape to close), the hint
+ * says what a command line will do, and one the cockpit can't run
+ * (`/login`) is held with what to do instead.
  */
 
-import { type ReactNode, forwardRef, useImperativeHandle, useLayoutEffect, useRef } from 'react';
+import {
+  type ReactNode,
+  forwardRef,
+  useId,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
+import { type SlashContext, commandHint, commandMenu, heldCommand } from '../lib/commands';
 import { useComposerDraft } from '../lib/drafts';
 import { Icon } from './Icon';
+import { Markdown } from './Markdown';
 import { Kbd, Spinner } from './ui';
 
 export interface ComposerProps {
@@ -41,6 +56,10 @@ export interface ComposerProps {
    * calls `onSend`, so the page can say what happened.
    */
   sendBlocked?: string;
+  /** T461: the agent's slash commands; absent, a `/` line is just text. */
+  slash?: SlashContext;
+  /** T461: a line started with `/` (the page re-reads the commands: they arrive after the start). */
+  onSlash?: () => void;
 }
 
 export interface ComposerHandle {
@@ -69,10 +88,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     sendTestid = 'composer-send',
     mode,
     sendBlocked,
+    slash,
+    onSlash,
   },
   ref,
 ): JSX.Element {
   const area = useRef<HTMLTextAreaElement>(null);
+  const menuId = useId();
+  // T461: the `/` menu's highlighted row, whether Escape closed it, and a held command's note.
+  const [active, setActive] = useState(0);
+  const [dismissed, setDismissed] = useState(false);
+  const [held, setHeld] = useState<string | undefined>(undefined);
   useImperativeHandle(
     ref,
     () => ({
@@ -104,9 +130,52 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden';
   }, [value]);
 
+  const menu = slash && !dismissed && !disabled ? commandMenu(value, slash.commands) : undefined;
+  const menuOpen = menu !== undefined && (menu.length > 0 || value === '/');
+  const current = menu !== undefined && menu.length > 0 ? Math.min(active, menu.length - 1) : -1;
+  const shownHint = (slash && commandHint(value, slash)) ?? hint;
+
+  const change = (next: string): void => {
+    setHeld(undefined);
+    setActive(0);
+    if (!next.startsWith('/')) setDismissed(false);
+    else if (!value.startsWith('/')) onSlash?.();
+    onChange(next);
+  };
+
+  const pick = (name: string): void => {
+    change(`/${name} `);
+    area.current?.focus();
+  };
+
   const send = (): void => {
     if (busy || disabled || text.length === 0) return;
+    const hold = slash ? heldCommand(text, slash) : undefined;
+    if (hold !== undefined) {
+      setHeld(hold);
+      return;
+    }
     onSend();
+  };
+
+  const onMenuKey = (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (!menuOpen || menu === undefined) return false;
+    if (e.key === 'Escape') {
+      setDismissed(true);
+      return true;
+    }
+    if (menu.length === 0) return false;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      setActive((current + step + menu.length) % menu.length);
+      return true;
+    }
+    if ((e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === 'Tab') {
+      const c = menu[current];
+      if (c !== undefined) pick(c.name);
+      return true;
+    }
+    return false;
   };
 
   return (
@@ -121,6 +190,51 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         }}
       >
         {above}
+        {menuOpen && menu !== undefined && (
+          <div
+            className="cr-slash-menu"
+            id={menuId}
+            // biome-ignore lint/a11y/useSemanticElements: a combobox's popup listbox; focus stays in the box (aria-activedescendant), which a native <select> can't do.
+            role="listbox"
+            aria-label="Commands"
+            tabIndex={-1}
+            data-testid="slash-menu"
+          >
+            {menu.length === 0 ? (
+              <div className="cr-slash-empty" data-testid="slash-empty">
+                {slash?.running
+                  ? 'This agent offers no commands.'
+                  : 'Commands load once the agent is running. Send a message to start it.'}
+              </div>
+            ) : (
+              menu.map((c, i) => (
+                <div
+                  key={c.name}
+                  id={`${menuId}-${i}`}
+                  // biome-ignore lint/a11y/useSemanticElements: an option of the listbox above; a native <option> can't hold the name and its description.
+                  role="option"
+                  aria-selected={i === current}
+                  tabIndex={-1}
+                  className="cr-slash-item"
+                  data-active={i === current ? 'true' : undefined}
+                  data-testid="slash-item"
+                  onMouseDown={(e) => {
+                    // Keep the focus in the box.
+                    e.preventDefault();
+                    pick(c.name);
+                  }}
+                  onMouseEnter={() => setActive(i)}
+                >
+                  <span className="cr-slash-name">
+                    /{c.name}
+                    {c.hint !== undefined && <span className="cr-slash-arg"> {c.hint}</span>}
+                  </span>
+                  {c.description !== '' && <span className="cr-slash-desc">{c.description}</span>}
+                </div>
+              ))
+            )}
+          </div>
+        )}
         <textarea
           ref={area}
           data-testid={inputTestid}
@@ -130,8 +244,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           value={value}
           disabled={disabled}
           placeholder={placeholder}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => change(e.target.value)}
+          {...(menuOpen
+            ? {
+                'aria-controls': menuId,
+                'aria-expanded': true,
+                ...(current >= 0 ? { 'aria-activedescendant': `${menuId}-${current}` } : {}),
+              }
+            : {})}
           onKeyDown={(e) => {
+            if (onMenuKey(e)) {
+              e.preventDefault();
+              e.stopPropagation();
+              return;
+            }
             // Enter sends; Shift+Enter is a newline; never mid-IME composition.
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -166,9 +292,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           </button>
         </div>
       </form>
-      {hint !== undefined && (
+      {held !== undefined && (
+        <div className="cr-compose-held" role="alert" data-testid="composer-held">
+          <Markdown text={held} />
+        </div>
+      )}
+      {shownHint !== undefined && (
         <div className="cr-compose-hint">
-          <span data-testid="composer-hint">{hint}</span>
+          <span data-testid="composer-hint">{shownHint}</span>
           {!disabled && (
             <span className="cr-compose-keys" aria-hidden="true">
               <Kbd>Enter</Kbd> send · <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> new line

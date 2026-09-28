@@ -9,6 +9,7 @@ import {
   type ResolvedVendorFailure,
   type SessionVendor,
   vendorHasHooks,
+  vendorLoginHow,
 } from '@agile-agents/shared';
 
 /** Restarts after a crash per node in a sliding hour (retries and switches alike), in memory. */
@@ -95,21 +96,9 @@ export function crashHandover(input: {
   ].join('\n');
 }
 
-/**
- * T460: how to log a vendor back in. Its harness runs headless over ACP,
- * so an interactive `/login` can't run in the cockpit; it runs in a
- * terminal, with the user's own login (no vendor credentials in the daemon).
- */
-const LOGIN_HOW: Partial<Record<string, string>> = {
-  claude: 'run `claude` and type /login',
-  gemini: 'run `gemini` and sign in',
-  codex: 'run `codex login`',
-  cursor: 'run `cursor-agent login`',
-};
-
 /** T460: a vendor's login refusal in words, with the way to log in. */
 export function loginRefusalWords(vendor: string, label: string): string {
-  const how = LOGIN_HOW[vendor] ?? `log in to ${label}`;
+  const how = vendorLoginHow(vendor, label);
   return `${label} isn’t logged in. Log in from a terminal (${how}), then send a message to start it again.`;
 }
 
