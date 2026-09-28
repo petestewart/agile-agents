@@ -99,6 +99,8 @@ interface PendingRuleStats {
  * ancestor). `proposed` and `retired` items are never in scope.
  * `enforcement` selects the checkpoint (`action` for the hook, `ship` for
  * delivery); omitted, every item is in scope (the brief tells them all).
+ * T463: an item the operator switched off for this node (`rules_off`) is
+ * out of scope here, unless `includeOff` (the node page lists it, unchecked).
  */
 export function knowledgeInScope(
   items: readonly KnowledgeItem[],
@@ -106,10 +108,14 @@ export function knowledgeInScope(
   ancestors: readonly Stream[] = [],
   enforcement?: KnowledgeEnforcement,
   paths?: readonly string[],
+  options: { includeOff?: boolean } = {},
 ): KnowledgeItem[] {
   const streamIds = new Set<string>([stream.id, ...ancestors.map((a) => a.id)]);
+  const off = new Set(options.includeOff ? [] : (stream.rules_off ?? []));
   return items.filter((item) => {
     if (item.status !== 'accepted') return false;
+    // T463: switched off for this node by the operator.
+    if (off.has(item.id)) return false;
     if (enforcement !== undefined && item.enforcement !== enforcement) return false;
     if (paths !== undefined && !knowledgeMatchesPaths(item, paths)) return false;
     switch (item.scope.kind) {
@@ -222,6 +228,7 @@ export class KnowledgeService {
     streamId: string,
     enforcement?: KnowledgeEnforcement,
     paths?: readonly string[],
+    options: { includeOff?: boolean } = {},
   ): KnowledgeItem[] {
     const stream = this.options.streams.get(streamId);
     return knowledgeInScope(
@@ -230,6 +237,7 @@ export class KnowledgeService {
       this.ancestorsOf(stream),
       enforcement,
       paths,
+      options,
     );
   }
 

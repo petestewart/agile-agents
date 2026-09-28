@@ -14,6 +14,8 @@
 import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { UlidSchema, formatZodError } from './ids';
+import { KnowledgeIdSchema } from './knowledge';
+import { PermissionPostureSchema } from './posture';
 import { AutonomySchema, DeliveryOverrideSchema, ProjectIdSchema } from './project';
 
 /**
@@ -424,6 +426,20 @@ export const StreamSchema = z
      * or the home turned off.
      */
     classifier: z.literal('off').optional(),
+    /**
+     * T463: knowledge items the operator switched off for this node alone
+     * (the node page's Knowledge tab). `knowledgeInScope` leaves them out,
+     * so the hook, the brief, delivery and wakes skip them here; its
+     * children are not affected. Only a human (or the daemon) changes it.
+     */
+    rules_off: z.array(KnowledgeIdSchema).max(200).optional(),
+    /**
+     * T463: this node's permission posture (T457), over its project's and
+     * the home's: Trusted reads any path without asking, Ask asks for a
+     * read outside the registered repos. Absent inherits. Only a human (or
+     * the daemon) changes it.
+     */
+    permissions: PermissionPostureSchema.optional(),
     land_conflict: LandConflictSchema.optional(),
     /*
      * Node fields (projects-design §14.2, T201). `project` is optional in
@@ -539,6 +555,7 @@ function changed(before: unknown, after: unknown): boolean {
  * - a `human` principal may not change `agent.*`
  * - the `daemon` principal may write both
  * - only the `daemon` may change `delivery_state` or `touched` (§14.2)
+ * - only a `human` (or the `daemon`) may change `rules_off` or `permissions` (T463)
  *
  * Throws on violation; returns the `after` record when the write is allowed.
  * A no-op write of the other half (identical value) is allowed — the store
@@ -560,6 +577,13 @@ export function assertStreamWrite(
       throw new Error(`invalid Stream write: only the daemon may change ${field}`);
     }
   }
+  if (principal !== 'human') {
+    for (const field of HUMAN_ONLY_FIELDS) {
+      if (changed(before[field], after[field])) {
+        throw new Error(`invalid Stream write: only a human may change ${field}`);
+      }
+    }
+  }
   if (principal === 'human' && changed(before.agent, after.agent)) {
     throw new Error('invalid Stream write: a human principal may not change agent.* fields');
   }
@@ -567,6 +591,9 @@ export function assertStreamWrite(
 }
 
 const DAEMON_ONLY_FIELDS = ['delivery_state', 'touched'] as const;
+
+/** T463: settings only the operator (or the daemon) may change: an agent never loosens its own checks. */
+const HUMAN_ONLY_FIELDS = ['rules_off', 'permissions'] as const;
 
 /**
  * Thrown when a proposed `parent` would make a stream its own ancestor.
@@ -814,6 +841,23 @@ export const StreamWaitRequestSchema = z
   })
   .strict();
 export type StreamWaitRequest = z.infer<typeof StreamWaitRequestSchema>;
+
+/** T463: `POST /api/streams/:id/rule`: a knowledge item in scope, switched on or off for this node. */
+export const StreamRuleRequestSchema = z
+  .object({
+    rule: KnowledgeIdSchema,
+    on: z.boolean(),
+  })
+  .strict();
+export type StreamRuleRequest = z.infer<typeof StreamRuleRequestSchema>;
+
+/** T463: `POST /api/streams/:id/permissions`: this node's posture; `null` inherits again. */
+export const StreamPermissionsRequestSchema = z
+  .object({
+    posture: PermissionPostureSchema.nullable(),
+  })
+  .strict();
+export type StreamPermissionsRequest = z.infer<typeof StreamPermissionsRequestSchema>;
 
 /** T333 (D34): `POST /api/streams/:id/move` and `node.move`: a node, or a project id for its root. */
 export const StreamMoveRequestSchema = z

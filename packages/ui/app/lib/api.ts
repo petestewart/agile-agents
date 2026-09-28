@@ -619,6 +619,19 @@ export function sendUp(id: string, body: string): Promise<{ parent: string }> {
   }>;
 }
 
+/** T463: switch a knowledge item in this node's scope off (or back on) for this node alone. */
+export function setStreamRule(id: string, rule: string, on: boolean): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/rule`, { rule, on }) as Promise<Stream>;
+}
+
+/** T463: this node's permission posture; `null` inherits its project's (or the home's). */
+export function setStreamPermissions(
+  id: string,
+  posture: PermissionPosture | null,
+): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/permissions`, { posture }) as Promise<Stream>;
+}
+
 /** T461: the slash commands a node's live agent advertises (none when nothing runs). */
 export function getStreamCommands(
   id: string,

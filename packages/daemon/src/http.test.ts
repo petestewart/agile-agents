@@ -1120,6 +1120,51 @@ describe('T160 cockpit routes', () => {
     });
   });
 
+  test('T463: POST /api/streams/:id/rule and /permissions, as the operator; strict; cross-origin 403', async () => {
+    const post = (id: string, what: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/streams/${id}/${what}`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const node = await streams.create('human', { title: 'n', goal: 'g' });
+    const rule = await rules.create('human', {
+      text: 'never write outside the worktree',
+      scope: { kind: 'global' },
+    });
+    await rules.accept(rule.id, 'human');
+    expect(
+      (await post(node.id, 'rule', { rule: rule.id, on: false }, { origin: 'http://evil.example' }))
+        .status,
+    ).toBe(403);
+    expect((await post(node.id, 'rule', { rule: rule.id })).status).toBe(400);
+    expect(
+      (await post(node.id, 'rule', { rule: 'K-01ARZ3NDEKTSV4RRFFQ69G5FAV', on: false })).status,
+    ).toBe(400);
+    const off = await post(node.id, 'rule', { rule: rule.id, on: false });
+    expect(off.status).toBe(200);
+    expect(((await off.json()) as { rules_off: string[] }).rules_off).toEqual([rule.id]);
+    expect(rules.inScope(node.id).map((r) => r.id)).not.toContain(rule.id);
+    expect(streams.readThread(node.id).entries.at(-1)?.body).toContain(
+      'no longer applies to this node',
+    );
+    // The node page still lists it, so it can be switched back on.
+    const page = (await (await fetch(url(`/api/streams/${node.id}`))).json()) as {
+      rules: Array<{ id: string }>;
+      stream: { rules_off?: string[] };
+    };
+    expect(page.rules.map((r) => r.id)).toContain(rule.id);
+    expect(page.stream.rules_off).toEqual([rule.id]);
+    expect((await post(node.id, 'rule', { rule: rule.id, on: true })).status).toBe(200);
+    expect(streams.get(node.id).rules_off).toBeUndefined();
+
+    expect((await post(node.id, 'permissions', { posture: 'yolo' })).status).toBe(400);
+    expect((await post(node.id, 'permissions', { posture: 'trusted' })).status).toBe(200);
+    expect(streams.get(node.id).permissions).toBe('trusted');
+    expect((await post(node.id, 'permissions', { posture: null })).status).toBe(200);
+    expect(streams.get(node.id).permissions).toBeUndefined();
+  });
+
   test('T365: POST /api/streams/:id/update renames as human; strict body; cross-origin 403', async () => {
     const update = (id: string, body: unknown, headers: Record<string, string> = {}) =>
       fetch(url(`/api/streams/${id}/update`), {

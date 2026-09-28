@@ -35,6 +35,8 @@ import {
   StreamAutonomyRequestSchema,
   StreamCreateInputSchema,
   StreamMoveRequestSchema,
+  StreamPermissionsRequestSchema,
+  StreamRuleRequestSchema,
   StreamSayInputSchema,
   StreamSendUpInputSchema,
   StreamUpdateRequestSchema,
@@ -1367,6 +1369,8 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/pr-check     Check now (T340): poll the node's open PR at once
  *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
  *   POST /api/streams/:id/wait         Link (T228, P8): `{on, remove?}` a `waits_on` edge
+ *   POST /api/streams/:id/rule         T463: `{rule, on}` a knowledge item in scope, on or off for this node
+ *   POST /api/streams/:id/permissions  T463: `{posture}` this node's Trusted or Ask; `null` inherits
  *   POST /api/streams/:id/move         Move (T333, D34): `{parent}` a node or a project id
  *   POST /api/streams/:id/update       Rename (T365): `{title?, goal?, auto_title?}`, as `stream.update`
  *                                      (T435: `auto_title` has the cheap model name it better)
@@ -1386,7 +1390,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|draft-goal|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|draft-goal|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -1477,6 +1481,23 @@ async function handleStreamRoute(
       if (!input.success) return errorResponse(400, formatZodError('wait', input.error));
       const { on, remove } = input.data;
       return jsonResponse(await feed.streams.wait('human', id, on, remove ? { remove } : {}));
+    }
+    if (action === 'rule') {
+      const input = StreamRuleRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('rule', input.error));
+      if (!feed.rules) return errorResponse(503, 'knowledge not available');
+      const { rule, on } = input.data;
+      const item = feed.rules
+        .inScope(id, undefined, undefined, { includeOff: true })
+        .find((each) => each.id === rule);
+      if (item === undefined)
+        return errorResponse(400, 'that knowledge item does not apply to this node');
+      return jsonResponse(await feed.streams.setRuleOn(id, item, on));
+    }
+    if (action === 'permissions') {
+      const input = StreamPermissionsRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('permissions', input.error));
+      return jsonResponse(await feed.streams.setPermissions(id, input.data.posture));
     }
     if (action === 'move') {
       const input = StreamMoveRequestSchema.safeParse(body);

@@ -69,7 +69,7 @@ import { HookService } from '../hook';
 import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
 import { runInit } from '../init';
-import { KnowledgeService, type RuleRpcEvalDeps } from '../knowledge';
+import { KnowledgeService, type RuleRpcEvalDeps, ensureBuiltinKnowledge } from '../knowledge';
 import { startFakeLinear } from '../trackers/fake-linear';
 import { createLinear } from '../trackers/linear';
 import { TrackerLinks } from '../trackers/link';
@@ -11385,6 +11385,93 @@ describe('honest coordinator status, and scale (Playwright e2e, T447)', () => {
 });
 
 // ---- T457: the permission posture's Ask card and its Settings ----------
+
+describe('a node’s own rules and permissions (Playwright e2e, T463)', () => {
+  browserTest(
+    'the Knowledge tab switches a rule off for this node, a critical one after a confirm, and sets Trusted',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const node = await cockpit.streams.create('human', {
+          title: 'Look around',
+          goal: 'g',
+          repo: 'demo',
+        });
+        const plain = await cockpit.rules.create('human', {
+          text: 'prefer small commits',
+          scope: { kind: 'global' },
+        });
+        await cockpit.rules.accept(plain.id, 'human');
+        // The daemon's own critical rules, as a real home has them.
+        await ensureBuiltinKnowledge(cockpit.store);
+        const critical = cockpit.rules
+          .inScope(node.id)
+          .find((r) => r.name === 'stay-in-worktree') as Rule;
+        expect(critical.critical).toBe(true);
+
+        const p = await openPage();
+        page = p;
+        await p.goto(`${cockpit.base}/?node=${node.id}&tab=rules`);
+        const row = (id: string) => p.locator(`[data-testid="rule"][data-rule="${id}"]`);
+        await row(plain.id).waitFor();
+        const box = (id: string) => row(id).locator('[data-testid="rule-applies"]');
+        expect(await box(plain.id).isChecked()).toBe(true);
+
+        // A plain item switches off at once; the row stays, dimmed, and the thread says so.
+        await box(plain.id).click();
+        await waitForAttr(
+          page,
+          `[data-testid="rule"][data-rule="${plain.id}"]`,
+          'data-off',
+          'true',
+        );
+        expect(cockpit.streams.get(node.id).rules_off).toEqual([plain.id]);
+        expect(cockpit.rules.inScope(node.id).map((r) => r.id)).not.toContain(plain.id);
+        expect(cockpit.streams.readThread(node.id).entries.at(-1)?.body).toContain(
+          'no longer applies to this node',
+        );
+
+        // A critical rule asks first; Cancel leaves it on.
+        await box(critical.id).click();
+        const confirm = page.locator('[data-testid="rule-off-confirm"]');
+        await confirm.waitFor();
+        await page.keyboard.press('Escape');
+        await confirm.waitFor({ state: 'detached' });
+        expect(cockpit.streams.get(node.id).rules_off).toEqual([plain.id]);
+
+        // Back on with one click.
+        await box(plain.id).click();
+        await waitUntil(
+          'the rule back on',
+          () => cockpit.streams.get(node.id).rules_off === undefined,
+        );
+
+        // Permissions: inherits Ask, then Trusted for this node alone, then inherits again.
+        expect(await page.locator('[data-testid="node-permissions-inherit"]').textContent()).toBe(
+          'Inherit (Ask)',
+        );
+        await page.locator('[data-testid="node-permissions-trusted"]').click();
+        await waitUntil(
+          'the node Trusted',
+          () => cockpit.streams.get(node.id).permissions === 'trusted',
+        );
+        await page
+          .locator('[data-testid="node-permissions-hint"]', { hasText: 'without asking' })
+          .waitFor();
+        await page.locator('[data-testid="node-permissions-inherit"]').click();
+        await waitUntil(
+          'inherited again',
+          () => cockpit.streams.get(node.id).permissions === undefined,
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    90_000,
+  );
+});
 
 describe('slash commands in the composer (Playwright e2e, T461)', () => {
   browserTest(

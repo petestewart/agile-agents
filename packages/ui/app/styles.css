@@ -6956,6 +6956,39 @@ div.cr-ov-ev:hover {
   background: var(--accent-weak);
   box-shadow: inset 2px 0 0 var(--accent);
 }
+/* T463: a node's Knowledge tab: its permissions, and an item switched off here. */
+.cr-node-kn-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.cr-node-perm {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+.cr-node-perm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.cr-node-perm-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.cr-node-perm-hint {
+  margin: 8px 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-kn-row[data-off="true"] .cr-kn-row-body {
+  opacity: 0.55;
+}
 .cr-kn-row[data-checked="true"] {
   background: var(--bg-active);
 }

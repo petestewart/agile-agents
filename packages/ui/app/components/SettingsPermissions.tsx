@@ -16,10 +16,10 @@ import type { CockpitProjectRow } from '../lib/feed-types';
 import { FormError, SavedNote, SetCard, SetRow, errorText, useSavedFlash } from './SettingsCard';
 import { IconButton, Segmented, Spinner } from './ui';
 
-const WORDS: Record<PermissionPosture, string> = { trusted: 'Trusted', ask: 'Ask' };
+export const POSTURE_WORDS: Record<PermissionPosture, string> = { trusted: 'Trusted', ask: 'Ask' };
 
 /** One line each on what the choice means. */
-const HINTS: Record<PermissionPosture, string> = {
+export const POSTURE_HINTS: Record<PermissionPosture, string> = {
   trusted:
     'Agents read any path on disk without asking: never the agile home, other projects’ private repos or credentials (~/.ssh, ~/.aws…).',
   ask: 'Agents read the registered repos; a read anywhere else waits for you in Needs me (Allow once, Always for this project, Deny).',
@@ -79,7 +79,7 @@ export function PermissionsCard(): JSX.Element {
     >
       <SetRow
         label="Every project"
-        hint={home !== undefined ? HINTS[home] : undefined}
+        hint={home !== undefined ? POSTURE_HINTS[home] : undefined}
         testid="settings-permissions-home"
       >
         {home === undefined && error === undefined ? (
@@ -94,9 +94,9 @@ export function PermissionsCard(): JSX.Element {
             onChange={(next) => void saveHome(next)}
             items={(['trusted', 'ask'] as const).map((id) => ({
               id,
-              label: WORDS[id],
+              label: POSTURE_WORDS[id],
               testid: `settings-permissions-${id}`,
-              title: HINTS[id],
+              title: POSTURE_HINTS[id],
               disabled: busy || home === undefined,
             }))}
           />
@@ -163,9 +163,11 @@ function ProjectPermissionsRow({
       label={project.name}
       hint={
         permissions === undefined ? (
-          <span data-testid={`${testid}-inherits`}>Inherits {WORDS[home]} from the home</span>
+          <span data-testid={`${testid}-inherits`}>
+            Inherits {POSTURE_WORDS[home]} from the home
+          </span>
         ) : (
-          HINTS[permissions]
+          POSTURE_HINTS[permissions]
         )
       }
       testid={testid}
@@ -177,10 +179,10 @@ function ProjectPermissionsRow({
         onChange={(next) => void save({ permissions: next === 'inherit' ? null : next })}
         items={(['inherit', 'trusted', 'ask'] as const).map((id) => ({
           id,
-          label: id === 'inherit' ? 'Inherit' : WORDS[id],
+          label: id === 'inherit' ? 'Inherit' : POSTURE_WORDS[id],
           testid: `${testid}-${id}`,
           disabled: busy,
-          ...(id === 'inherit' ? { title: `Use the home’s choice (${WORDS[home]})` } : {}),
+          ...(id === 'inherit' ? { title: `Use the home’s choice (${POSTURE_WORDS[home]})` } : {}),
         }))}
       />
       {roots.length > 0 ? (

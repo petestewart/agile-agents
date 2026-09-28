@@ -1872,7 +1872,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                     {...(planStart ? { start: planStart } : {})}
                   />
                 )}
-                {shownTab === 'rules' && <KnowledgeView rules={page.rules} />}
+                {shownTab === 'rules' && (
+                  <KnowledgeView node={stream} rules={page.rules} onChanged={load} />
+                )}
                 {shownTab === 'docs' && <DocsView docs={page.docs} />}
               </div>
             </div>

@@ -130,6 +130,21 @@ describe('§11 step 3: stacked scopes', () => {
   });
 });
 
+describe('T463: switched off for one node', () => {
+  test('out of scope on that node, still listed with includeOff, and its children unaffected', () => {
+    const all = texts(knowledgeInScope(items, webPart, [parent]));
+    const first = items.find((i) => all.includes(i.text)) as KnowledgeItem;
+    const off = { ...webPart, rules_off: [first.id] };
+    expect(texts(knowledgeInScope(items, off, [parent]))).not.toContain(first.text);
+    expect(
+      texts(knowledgeInScope(items, off, [parent], undefined, undefined, { includeOff: true })),
+    ).toEqual(all);
+    // A child of the node that switched it off still has it.
+    const child = { ...webPart, id: '01ARZ3NDEKTSV4RRFFQ69G5FAZ', parent: webPart.id };
+    expect(texts(knowledgeInScope(items, child, [off, parent]))).toContain(first.text);
+  });
+});
+
 describe('paths', () => {
   const pathed = items[1] as KnowledgeItem;
 

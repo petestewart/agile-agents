@@ -40,6 +40,39 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
+describe('T463: a node sets its own posture', () => {
+  test('the node, then the project, then the home', async () => {
+    const project = await projects.create({ name: 'Cents' });
+    await projects.update(project.id, { permissions: 'ask' });
+    const settings = projectReadSettings(store);
+    const scope = (permissions?: 'trusted' | 'ask') =>
+      nodeReadScope(
+        { project: project.id, ...(permissions ? { permissions } : {}) },
+        () => ({}),
+        undefined,
+        settings,
+      ).posture;
+    expect(scope()).toBe('ask');
+    expect(scope('trusted')).toBe('trusted');
+    await projects.update(project.id, { permissions: 'trusted' });
+    expect(scope('ask')).toBe('ask');
+  });
+
+  test('setPermissions writes it as the operator, says so on the thread, and null inherits', async () => {
+    const node = await streams.create('human', { title: 'n', goal: 'g' });
+    const trusted = await streams.setPermissions(node.id, 'trusted');
+    expect(trusted.permissions).toBe('trusted');
+    expect(streams.readThread(node.id).entries.at(-1)?.body).toStartWith(
+      'permissions here: Trusted',
+    );
+    const cleared = await streams.setPermissions(node.id, null);
+    expect(cleared.permissions).toBeUndefined();
+    expect(streams.readThread(node.id).entries.at(-1)?.body).toBe(
+      "permissions here: the project's setting again",
+    );
+  });
+});
+
 describe('the posture: the project, else the home, else Ask', () => {
   test('resolves in that order, and the project adds its Always roots', async () => {
     const project = await projects.create({ name: 'Cents' });

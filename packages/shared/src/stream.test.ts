@@ -279,6 +279,21 @@ describe('assertStreamWrite', () => {
     expect(assertStreamWrite('agent', before, after).agent.status).toBe('done');
   });
 
+  test('T463: only a human (or the daemon) switches rules off or sets the posture', () => {
+    const off = { ...before, rules_off: ['K-01ARZ3NDEKTSV4RRFFQ69G5FAV'] };
+    const trusted = { ...before, permissions: 'trusted' as const };
+    for (const principal of ['agent', 'coordinator', 'director'] as const) {
+      expect(() => assertStreamWrite(principal, before, off)).toThrow(
+        /only a human may change rules_off/,
+      );
+      expect(() => assertStreamWrite(principal, before, trusted)).toThrow(
+        /only a human may change permissions/,
+      );
+    }
+    expect(assertStreamWrite('human', before, off).rules_off).toEqual(off.rules_off);
+    expect(assertStreamWrite('daemon', before, trusted).permissions).toBe('trusted');
+  });
+
   test('a human principal may not change agent.*', () => {
     const after = { ...before, agent: { ...before.agent, status: 'done' as const } };
     expect(() => assertStreamWrite('human', before, after)).toThrow(/human principal/);

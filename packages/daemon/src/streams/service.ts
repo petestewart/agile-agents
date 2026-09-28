@@ -7,6 +7,8 @@
  */
 
 import {
+  type KnowledgeItem,
+  type PermissionPosture,
   type Stream,
   type StreamCreateInput,
   type StreamPrincipal,
@@ -367,6 +369,49 @@ export class StreamService {
   }
 
   /**
+   * T463: switches knowledge item `item` off (or back on) for this node
+   * alone, as the operator. Its agent is told on the thread; the hook, the
+   * brief and delivery read the node's `rules_off` from the next call.
+   */
+  async setRuleOn(id: string, item: KnowledgeItem, on: boolean): Promise<Stream> {
+    const before = this.get(id);
+    const off = new Set(before.rules_off ?? []);
+    if (off.has(item.id) === !on) return before;
+    if (on) off.delete(item.id);
+    else off.add(item.id);
+    const after = await this.update('human', id, { rules_off: [...off] });
+    const name = item.name ?? item.text;
+    const label = `“${name.length > 80 ? `${name.slice(0, 79)}…` : name}”`;
+    await this.appendThread('daemon', id, {
+      kind: 'event',
+      body: on
+        ? `rule on here: ${label} applies to this node again`
+        : `rule off here: ${label} no longer applies to this node (the operator turned it off)`,
+    });
+    return after;
+  }
+
+  /**
+   * T463: this node's permission posture (Trusted or Ask), or `null` to
+   * inherit its project's (or the home's) again. A thread line says so.
+   */
+  async setPermissions(id: string, posture: PermissionPosture | null): Promise<Stream> {
+    const before = this.get(id);
+    if ((before.permissions ?? null) === posture) return before;
+    const after = await this.update('human', id, { permissions: posture });
+    await this.appendThread('daemon', id, {
+      kind: 'event',
+      body:
+        posture === 'trusted'
+          ? 'permissions here: Trusted (reads any path without asking; never the agile home or credentials)'
+          : posture === 'ask'
+            ? 'permissions here: Ask (a read outside the registered repos asks the operator first)'
+            : "permissions here: the project's setting again",
+    });
+    return after;
+  }
+
+  /**
    * T228 (P8): adds (or, with `remove`, drops) a `waits_on` edge from `id`
    * to `on`. The store refuses an unknown target or a cycle. `satisfied_at`
    * is the daemon's (`DeliveryService.settle`).
@@ -656,6 +701,10 @@ export interface StreamPatch {
   archive_id?: string | null;
   /** `'off'` opts the stream out of the classifier tier (§6.4); `null` clears the opt-out. */
   classifier?: 'off' | null;
+  /** T463: the knowledge items switched off for this node; `null` (or empty) clears it. */
+  rules_off?: string[] | null;
+  /** T463: this node's posture; `null` clears it, so the project's (or the home's) applies. */
+  permissions?: Stream['permissions'] | null;
   /** T176: `null` clears it. */
   land_conflict?: Stream['land_conflict'] | null;
   /** Node fields (§14.2, T201). `delivery_state`/`touched` pass the store only for the daemon. */
@@ -675,8 +724,18 @@ export interface StreamPatch {
 }
 
 function applyPatch(before: Stream, patch: StreamPatch): Stream {
-  const { agent, human, classifier, land_conflict, autonomy, archived, archive_id, ...rest } =
-    patch;
+  const {
+    agent,
+    human,
+    classifier,
+    land_conflict,
+    autonomy,
+    archived,
+    archive_id,
+    rules_off,
+    permissions,
+    ...rest
+  } = patch;
   // `classifier` is tri-state (absent, `'off'`, `null` = remove), rebuilt
   // so a cleared opt-out leaves no key in the YAML.
   const { classifier: existing, ...withoutOptOut } = before;
@@ -686,6 +745,10 @@ function applyPatch(before: Stream, patch: StreamPatch): Stream {
     ...(optOut !== undefined ? { classifier: optOut } : {}),
     ...rest,
   };
+  if (permissions === null) Reflect.deleteProperty(next, 'permissions');
+  else if (permissions !== undefined) next.permissions = permissions;
+  if (rules_off === null || rules_off?.length === 0) Reflect.deleteProperty(next, 'rules_off');
+  else if (rules_off !== undefined) next.rules_off = [...new Set(rules_off)];
   if (land_conflict === null) Reflect.deleteProperty(next, 'land_conflict');
   else if (land_conflict !== undefined) next.land_conflict = land_conflict;
   if (autonomy === null) Reflect.deleteProperty(next, 'autonomy');

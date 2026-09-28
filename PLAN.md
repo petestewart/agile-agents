@@ -2840,6 +2840,23 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `permissions/decide.test.ts` T462 (Pete's loop allowed, and fails on the old code; loop and typed-out verdicts equal for engineer and reviewer; the refused shapes never allowed). `ui/app/lib/chat.test.ts` T462. Full `bun test`.
 - **Notes:** Branch T462-loops-and-refusal-words. `unrollForLoops` in `permissions/command.ts`, applied in `parseCommandIntoAtoms`, which is how every caller splits a command. Reads outside the worktree in a loop follow T457 like any read: a registered repo reads freely, any other folder asks under Ask (Always for this project stops it asking), and reads anywhere under Trusted.
 
+### Ticket: T463 A node's own rules and permissions
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28), on a node's Knowledge tab: "i should have the ability to manually uncheck individual rules for this node", and "i also should be able to change that individual node between trusted and ask … this screen would make sense for that". Knowledge applied by scope alone, and the posture was set only at the home and on projects.
+- **Acceptance Criteria:**
+  - Each item on a node's Knowledge tab has a checkbox (checked = applies here). Unchecking switches the item off for that node alone; a critical rule asks first. The item stays listed, dimmed, so it can be switched back on.
+  - The Knowledge tab opens with a Permissions row: Inherit (names what it inherits), Trusted or Ask. A node's posture wins over its project's and the home's.
+  - Both are the operator's alone: the store refuses a change from an agent, a coordinator or the Director. Each change is a thread line.
+- **Validation Steps:** `shared/src/stream.test.ts` T463 (only a human or the daemon), `knowledge/scope.test.ts` (off here, still listed with `includeOff`, children unaffected), `permissions/posture.test.ts` (node → project → home; `setPermissions`), `http.test.ts` (both routes: strict, 403 cross-origin, 400 for an item out of scope), the control-room e2e "a node’s own rules and permissions". Full `bun test`.
+- **Notes:** Branch T463-rules-off-per-node.
+  - The node record gains `rules_off` (knowledge ids) and `permissions` (T457's posture), both human-only (`HUMAN_ONLY_FIELDS` in `assertStreamWrite`).
+  - `knowledgeInScope` leaves `rules_off` out (the one scope filter: hook, brief, delivery, wakes), unless `includeOff` (the node page). `nodeReadScope` takes the node's posture first.
+  - Routes: `POST /api/streams/:id/rule {rule, on}` and `POST /api/streams/:id/permissions {posture | null}`.
+  - A switched-off built-in rule doesn't lift the role tables: writes still stay in the worktree, and the never-without-human list still asks. The confirm says so.
+  - The ACP responder (vendors without a pre-tool hook) reads the posture when the session starts, so a change there applies from the next start. The hook reads it on every call.
+
 ### Ticket: T457b CI: a dangling symlink read as the dir it sits in
 - **Priority:** P0
 - **Status:** Done

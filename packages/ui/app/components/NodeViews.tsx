@@ -8,9 +8,22 @@
  * like them, rather than pulling them into the first screen.
  */
 
-import { DIRECTOR_NODE, type KnowledgeItem as Rule, type SessionRef } from '@agile-agents/shared';
+import {
+  DIRECTOR_NODE,
+  type PermissionPosture,
+  type KnowledgeItem as Rule,
+  type SessionRef,
+  type Stream,
+} from '@agile-agents/shared';
 import { useEffect, useState } from 'react';
-import { approvePlan, getStreamActivity, getStreamPlan } from '../lib/api';
+import {
+  approvePlan,
+  getPermissions,
+  getStreamActivity,
+  getStreamPlan,
+  setStreamPermissions,
+  setStreamRule,
+} from '../lib/api';
 import { clockTime } from '../lib/chat';
 import { useOptionalFeed } from '../lib/feed-context';
 import type { ActivityEntry, StreamDoc } from '../lib/feed-types';
@@ -24,7 +37,9 @@ import { KnowledgeRow } from './KnowledgeList';
 import { AppliedChange, EventGlyph } from './Lenses';
 import { Markdown } from './Markdown';
 import { NodeLink } from './NodeDetails';
-import { Button, EmptyState } from './ui';
+import { FormError } from './SettingsCard';
+import { POSTURE_HINTS, POSTURE_WORDS } from './SettingsPermissions';
+import { Button, ConfirmDialog, EmptyState, Segmented } from './ui';
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -339,37 +354,179 @@ export function ActivityView({
  * row (its scope and enforcement in words, a critical rule's lock and
  * word); a click opens it there.
  */
-export function KnowledgeView({ rules }: { rules: readonly Rule[] }): JSX.Element {
+/**
+ * The node's Knowledge tab: what applies here. T463: each item's checkbox
+ * switches it off (or back on) for this node alone, a critical rule after
+ * a confirm, and the Permissions row sets this node's Trusted or Ask over
+ * its project's and the home's. Both are the operator's, written at once.
+ */
+export function KnowledgeView({
+  node,
+  rules,
+  onChanged,
+}: {
+  node: Pick<Stream, 'id' | 'project' | 'rules_off' | 'permissions'>;
+  rules: readonly Rule[];
+  onChanged: () => void;
+}): JSX.Element {
   const { openRules } = useShell();
-  const names = useOptionalFeed()?.cockpit;
-  if (rules.length === 0) {
-    return (
-      <div data-testid="rules">
-        <EmptyState icon="book-open" title="No knowledge applies here">
-          Accepted rules, standards, architecture and decisions in this node’s scope show here.
-        </EmptyState>
-      </div>
-    );
+  const feed = useOptionalFeed();
+  const names = feed?.cockpit;
+  const off = new Set(node.rules_off ?? []);
+  const [busy, setBusy] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [confirm, setConfirm] = useState<Rule | undefined>(undefined);
+
+  async function toggle(rule: Rule, on: boolean): Promise<void> {
+    setBusy(rule.id);
+    setError(undefined);
+    try {
+      await setStreamRule(node.id, rule.id, on);
+      onChanged();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(undefined);
+    }
   }
+
   return (
-    <div className="cr-kn-rows cr-node-kn" data-testid="rules">
-      {rules.map((rule) => (
-        <KnowledgeRow
-          key={rule.id}
-          item={rule}
-          section={sectionOf(rule)}
-          row={undefined}
-          days={0}
-          names={names}
-          open={false}
-          onOpen={() => openRules({ ...DEFAULT_RULES_FILTER, rule: rule.id })}
-          onDecide={async () => {}}
-          checked={undefined}
-          onToggle={undefined}
-          mixed
-          testid="rule"
+    <div className="cr-node-kn-wrap">
+      <NodePermissions node={node} onChanged={onChanged} />
+      {rules.length === 0 ? (
+        <div data-testid="rules">
+          <EmptyState icon="book-open" title="No knowledge applies here">
+            Accepted rules, standards, architecture and decisions in this node’s scope show here.
+          </EmptyState>
+        </div>
+      ) : (
+        <div className="cr-kn-rows cr-node-kn" data-testid="rules">
+          {rules.map((rule) => {
+            const isOff = off.has(rule.id);
+            const name = rule.name ?? rule.text;
+            return (
+              <KnowledgeRow
+                key={rule.id}
+                item={rule}
+                section={sectionOf(rule)}
+                row={undefined}
+                days={0}
+                names={names}
+                open={false}
+                onOpen={() => openRules({ ...DEFAULT_RULES_FILTER, rule: rule.id })}
+                onDecide={async () => {}}
+                checked={!isOff}
+                onToggle={
+                  busy !== undefined
+                    ? undefined
+                    : () => {
+                        if (isOff) void toggle(rule, true);
+                        else if (rule.critical) setConfirm(rule);
+                        else void toggle(rule, false);
+                      }
+                }
+                toggleLabel={
+                  isOff
+                    ? `Off for this node: ${name}. Check to apply it again.`
+                    : `Applies to this node: ${name}`
+                }
+                toggleTestid="rule-applies"
+                off={isOff}
+                mixed
+                testid="rule"
+              />
+            );
+          })}
+        </div>
+      )}
+      <FormError error={error} />
+      <ConfirmDialog
+        open={confirm !== undefined}
+        title={`Turn off ${confirm?.name ?? 'this rule'} for this node?`}
+        confirmLabel="Turn off here"
+        danger
+        busy={busy !== undefined}
+        testid="rule-off-confirm"
+        onCancel={() => setConfirm(undefined)}
+        onConfirm={() => {
+          const rule = confirm;
+          setConfirm(undefined);
+          if (rule !== undefined) void toggle(rule, false);
+        }}
+      >
+        It’s a critical rule: this node’s agent is no longer checked against it. Other nodes, and
+        this node’s children, keep it. The daemon’s own limits still hold (writes stay in the
+        worktree; pushes to a protected branch still ask you).
+      </ConfirmDialog>
+    </div>
+  );
+}
+
+type NodePosture = PermissionPosture | 'inherit';
+
+/** T463: this node's Trusted or Ask, or its project's (else the home's) inherited. */
+function NodePermissions({
+  node,
+  onChanged,
+}: {
+  node: Pick<Stream, 'id' | 'project' | 'permissions'>;
+  onChanged: () => void;
+}): JSX.Element {
+  const project = useOptionalFeed()?.cockpit?.projects.find((p) => p.id === node.project);
+  const [home, setHome] = useState<PermissionPosture | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    getPermissions()
+      .then((setting) => setHome(setting.posture))
+      .catch(() => setHome(undefined));
+  }, []);
+  const inherited: PermissionPosture = project?.permissions ?? home ?? 'ask';
+  const from = project?.permissions !== undefined ? 'the project' : 'every project';
+  const value: NodePosture = node.permissions ?? 'inherit';
+  const effective = node.permissions ?? inherited;
+
+  async function choose(next: NodePosture): Promise<void> {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await setStreamPermissions(node.id, next === 'inherit' ? null : next);
+      onChanged();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="cr-node-perm" data-testid="node-permissions">
+      <div className="cr-node-perm-head">
+        <span className="cr-node-perm-title">
+          <Icon name="lock" size={14} /> Permissions
+        </span>
+        <Segmented<NodePosture>
+          label="Permissions for this node"
+          testid="node-permissions-choice"
+          value={value}
+          onChange={(next) => void choose(next)}
+          items={(['inherit', 'trusted', 'ask'] as const).map((id) => ({
+            id,
+            label: id === 'inherit' ? `Inherit (${POSTURE_WORDS[inherited]})` : POSTURE_WORDS[id],
+            testid: `node-permissions-${id}`,
+            title:
+              id === 'inherit'
+                ? `Use ${from}’s choice (${POSTURE_WORDS[inherited]})`
+                : POSTURE_HINTS[id],
+            disabled: busy,
+          }))}
         />
-      ))}
+      </div>
+      <p className="cr-node-perm-hint" data-testid="node-permissions-hint">
+        {POSTURE_HINTS[effective]}
+        {value === 'inherit' ? ` Inherits ${POSTURE_WORDS[inherited]} from ${from}.` : ''}
+      </p>
+      <FormError error={error} />
     </div>
   );
 }
