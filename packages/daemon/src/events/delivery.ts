@@ -24,6 +24,18 @@ export interface DeliveryTarget {
   busy(): boolean;
   /** Queues a turn; `onDelivered` fires when it actually starts (the session accepted it). */
   prompt(text: string, opts: { onDelivered: () => void }): Promise<unknown>;
+  /**
+   * T461: whether a line runs as one of the vendor's slash commands
+   * (`/compact`): it is sent alone and as written, never inside a digest.
+   */
+  isCommand?(line: string): boolean;
+}
+
+/** T461: a human line that runs as a slash command on `target`. */
+function commandLine(target: DeliveryTarget, event: RoutedEvent): string | undefined {
+  if (event.type !== 'human_line' || target.isCommand === undefined) return undefined;
+  const body = String((event.payload as Record<string, unknown>).body ?? '').trim();
+  return target.isCommand(body) ? body : undefined;
 }
 
 export interface SessionDeliveryOptions {
@@ -38,6 +50,12 @@ export interface SessionDeliveryOptions {
   wake?(node: string, pending: readonly RoutedEvent[]): void;
   /** Names nodes in the summaries (T244); ids otherwise. */
   titleOf?(id: string): string | undefined;
+  /**
+   * T461: a human line's whole body from the thread, by its `ts` (the
+   * event's `ref`). The event's payload caps it at 800 characters and the
+   * composer takes 4,000, so the agent is told the thread's copy.
+   */
+  lineBody?(node: string, ts: string): string | undefined;
 }
 
 /** A digest lists at most this many summaries, newest last, plus "N earlier". */
@@ -165,6 +183,17 @@ export class SessionDelivery {
     };
   }
 
+  /** T461: `events` with each human line's body as the thread has it, uncapped. */
+  private withFullLines(node: string, events: readonly RoutedEvent[]): RoutedEvent[] {
+    const lineBody = this.options.lineBody;
+    if (lineBody === undefined) return [...events];
+    return events.map((e) => {
+      if (e.type !== 'human_line' || e.ref === undefined) return e;
+      const body = lineBody(node, e.ref);
+      return body === undefined ? e : { ...e, payload: { ...e.payload, body } };
+    });
+  }
+
   private unsent(node: string): RoutedEvent[] {
     const sending = this.sending.get(node);
     return this.options.events
@@ -201,7 +230,7 @@ export class SessionDelivery {
       if (this.waiting(node)) this.notify(node);
     };
     return {
-      text: wakePrompt(events, node, this.options.titleOf),
+      text: wakePrompt(this.withFullLines(node, events), node, this.options.titleOf),
       delivered: (sessionId) => {
         const events_ = this.options.events;
         const still = new Set(events_.pendingFor(node).map((p) => p.event.id));
@@ -272,6 +301,16 @@ export class SessionDelivery {
     if (events.length === 0) return false;
     // Re-checked after the await: a turn may have been queued meanwhile.
     if (busy(target) || this.options.target(node)?.sessionId !== target.sessionId) return false;
+    events = this.withFullLines(node, events);
+    // T461: a slash command is its own turn, as typed: what came before it
+    // goes first as a digest, what came after waits for the next turn end.
+    const command = commandLine(target, events[0] as RoutedEvent);
+    if (command !== undefined) {
+      events = events.slice(0, 1);
+    } else {
+      const at = events.findIndex((e) => commandLine(target, e) !== undefined);
+      if (at > 0) events = events.slice(0, at);
+    }
     const ids = events.map((e) => e.id);
     let sending = this.sending.get(node);
     if (sending === undefined) {
@@ -285,7 +324,7 @@ export class SessionDelivery {
     const digest = `D-${ulid()}`;
     // The prompt is reserved in the runner synchronously, before any await.
     void target
-      .prompt(digestPrompt(events, node, this.options.titleOf), {
+      .prompt(command ?? digestPrompt(events, node, this.options.titleOf), {
         onDelivered: () => {
           const events_ = this.options.events;
           // Only still-pending ones move (one may have been superseded meanwhile).

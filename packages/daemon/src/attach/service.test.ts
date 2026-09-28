@@ -1596,6 +1596,68 @@ describe('say — the stream page composer (T161)', () => {
     expect(sessionRef()?.queued).toBeUndefined();
   }, 30_000);
 
+  test('T461: a line starting with an advertised command is its own turn, sent as typed', async () => {
+    const log = join(scratch, 'say-commands.jsonl');
+    const sentinel = join(scratch, 'commands-turn-one.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        logFile: log,
+        commands: [
+          { name: 'compact', description: 'Clear the conversation but keep a summary' },
+          { name: 'review', description: 'Review a pull request', input: { hint: 'PR number' } },
+        ],
+        steps: [{ type: 'agent_text', text: 'answered' }, { type: 'end_turn' }],
+        turns: [
+          [
+            { type: 'agent_text', text: 'working on it' },
+            { type: 'tool_call', toolCallId: 'read-1', title: 'read the parser' },
+            { type: 'wait_for_file', path: sentinel },
+            { type: 'end_turn' },
+          ],
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('working on it')));
+    expect(attachService.commandsFor(stream.id)).toEqual({
+      running: true,
+      vendor: 'claude',
+      commands: [
+        { name: 'compact', description: 'Clear the conversation but keep a summary' },
+        { name: 'review', description: 'Review a pull request', hint: 'PR number' },
+      ],
+    });
+    const long = `use tabs ${'x'.repeat(1500)} end`;
+    await attachService.say(stream.id, 'first, a note');
+    await attachService.say(stream.id, '/compact keep the parser notes');
+    await attachService.say(stream.id, long);
+    await attachService.say(stream.id, '/unknown thing');
+
+    writeFileSync(sentinel, '');
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    const sent = readFileSync(log, 'utf8')
+      .split('\n')
+      .filter((l) => l.includes('"session/prompt"'))
+      .map(
+        (l) => (JSON.parse(l) as { params: { prompt: { text: string }[] } }).params.prompt[0]?.text,
+      );
+    // The brief, the note before the command, the command as typed, then the rest as a digest.
+    expect(sent).toHaveLength(4);
+    expect(sent[1]).toContain('The operator wrote on the stream: first, a note');
+    expect(sent[1]).not.toContain('/compact');
+    expect(sent[2]).toBe('/compact keep the parser notes');
+    // A line past the event's 800-character cap reaches the agent whole.
+    expect(sent[3]).toContain(long);
+    // An unknown command is a message like any other.
+    expect(sent[3]).toContain('The operator wrote on the stream: /unknown thing');
+  }, 30_000);
+
+  test('T461: with no agent running there are no commands', async () => {
+    const stream = await makeStream();
+    expect(attachService.commandsFor(stream.id)).toEqual({ running: false, commands: [] });
+  });
+
   test('a line to an idle-but-alive worker is prompted at once, never queued (T174)', async () => {
     const log = join(scratch, 'say-idle.jsonl');
     const sentinel = join(scratch, 'idle-ask.flag');

@@ -81,6 +81,46 @@ export function vendorHasHooks(vendor: string): boolean {
 }
 
 /**
+ * T460: how to log a vendor back in. Its harness runs headless over ACP,
+ * so an interactive `/login` can't run in the cockpit; it runs in a
+ * terminal, with the user's own login (no vendor credentials in the daemon).
+ */
+const VENDOR_LOGIN_HOW: Partial<Record<string, string>> = {
+  claude: 'run `claude` and type /login',
+  gemini: 'run `gemini` and sign in',
+  codex: 'run `codex login`',
+  cursor: 'run `cursor-agent login`',
+};
+
+/** T460: the way to log `vendor` in, in words ("run `claude` and type /login"). */
+export function vendorLoginHow(vendor: string, label: string): string {
+  return VENDOR_LOGIN_HOW[vendor] ?? `log in to ${label}`;
+}
+
+/**
+ * T461: one slash command a live agent advertises over ACP
+ * (`available_commands_update`): its name without the slash, what it does,
+ * and the hint for its argument, if it takes one.
+ */
+export const AgentCommandSchema = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[\w][\w:.-]*$/),
+    description: z.string().max(300),
+    hint: z.string().max(200).optional(),
+  })
+  .strict();
+export type AgentCommand = z.infer<typeof AgentCommandSchema>;
+
+/** T461: the command a line starts with (`/compact now` → `compact`), or undefined. */
+export function slashCommandOf(text: string): string | undefined {
+  return /^\/([\w][\w:.-]*)(?:\s|$)/.exec(text.trimStart())?.[1];
+}
+
+/**
  * T456 (D43 follow-up): what happens when a node's agent crashes (its
  * vendor exits non-zero on its own). `vendor_failure:` in the home
  * `config.yaml`, a repo's entry in `repos.yaml` and a project record; each

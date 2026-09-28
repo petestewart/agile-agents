@@ -1357,6 +1357,7 @@ async function handleRuleRoute(
  *   GET  /api/streams/:id         the page read (`feed/stream-page.ts`)
  *   GET  /api/streams/:id/diff    the diff tab
  *   GET  /api/streams/:id/steps   T392: the agent's steps (its tool calls), newest first, `{steps, total}`
+ *   GET  /api/streams/:id/commands  T461: the live agent's slash commands, `{running, vendor?, commands}`
  *   POST /api/streams/:id/say     the composer: a human line, and a prompt to the attached worker;
  *                                 `{body, start?}`: `start` (T361) starts an agent on a node with none live
  *   POST /api/streams/:id/attach  the sessions strip's attach / review (`role: reviewer`)
@@ -1385,11 +1386,12 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|say|send-up|draft-goal|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|draft-goal|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
-  const isGet = action === undefined || action === 'diff' || action === 'steps';
+  const isGet =
+    action === undefined || action === 'diff' || action === 'steps' || action === 'commands';
   if (isGet ? req.method !== 'GET' : req.method !== 'POST') return undefined;
   if (!feed?.streams) return errorResponse(503, 'streams not available');
   const parsedId = UlidSchema.safeParse(decodeURIComponent(match[1] ?? ''));
@@ -1421,6 +1423,10 @@ async function handleStreamRoute(
       // chat reads them once and follows the live `tool_call` events after.
       feed.streams.get(id);
       return jsonResponse(feed.steps.stepsFor(id));
+    }
+    if (action === 'commands') {
+      feed.streams.get(id);
+      return jsonResponse(feed.attach?.commandsFor(id) ?? { running: false, commands: [] });
     }
 
     // Close, Mark landed, Check now, Delete and Restore take no body.
