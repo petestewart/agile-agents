@@ -1221,6 +1221,50 @@ describe('T160 cockpit routes', () => {
     expect(streams.get(node.id).auto_close).toBeUndefined();
   });
 
+  test('T471: reopen, the trash preview, Delete forever and Empty trash; same-origin; refusals are 409', async () => {
+    const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(path), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const top = await streams.create('human', { title: 'top', goal: 'g' });
+    const node = await streams.create('human', { title: 'n', goal: 'g', parent: top.id });
+    await streams.close('human', node.id);
+    expect(
+      (await post(`/api/streams/${node.id}/reopen`, {}, { origin: 'http://evil.example' })).status,
+    ).toBe(403);
+    expect((await post(`/api/streams/${node.id}/reopen`, {})).status).toBe(200);
+    expect(streams.get(node.id).human.status).toBe('open');
+
+    // Not in the trash: refused.
+    expect((await post(`/api/streams/${node.id}/purge`, {})).status).toBe(409);
+    await streams.archiveTree('human', node.id);
+    const preview = (await (await fetch(url(`/api/streams/${node.id}/trash-preview`))).json()) as {
+      nodes: Array<{ id: string }>;
+    };
+    expect(preview.nodes.map((n) => n.id)).toEqual([node.id]);
+    const all = (await (await fetch(url('/api/trash'))).json()) as { nodes: Array<{ id: string }> };
+    expect(all.nodes.map((n) => n.id)).toEqual([node.id]);
+    expect((await post(`/api/streams/${node.id}/purge`, { delete_branches: 'yes' })).status).toBe(
+      400,
+    );
+    expect(
+      (await post(`/api/streams/${node.id}/purge`, {}, { origin: 'http://evil.example' })).status,
+    ).toBe(403);
+    expect((await post(`/api/streams/${node.id}/purge`, {})).status).toBe(200);
+    expect(store.hasStream(node.id)).toBe(false);
+
+    const other = await streams.create('human', { title: 'o', goal: 'g', parent: top.id });
+    await streams.archiveTree('human', other.id);
+    expect((await post('/api/trash/empty', {}, { origin: 'http://evil.example' })).status).toBe(
+      403,
+    );
+    const emptied = (await (await post('/api/trash/empty', {})).json()) as { deleted: string[] };
+    expect(emptied.deleted).toEqual([other.id]);
+    expect(store.hasStream(other.id)).toBe(false);
+  });
+
   test('T365: POST /api/streams/:id/update renames as human; strict body; cross-origin 403', async () => {
     const update = (id: string, body: unknown, headers: Record<string, string> = {}) =>
       fetch(url(`/api/streams/${id}/update`), {

@@ -127,9 +127,13 @@ describe('subtreeIds and deleteQuestion', () => {
   });
 
   test('the question counts the nodes under it', () => {
-    expect(deleteQuestion('Checkout', 0)).toBe('Delete “Checkout”?');
-    expect(deleteQuestion('Checkout', 1)).toBe('Delete “Checkout” and the node under it?');
-    expect(deleteQuestion('Checkout', 3)).toBe('Delete “Checkout” and the 3 nodes under it?');
+    expect(deleteQuestion('Checkout', 0)).toBe('Move “Checkout” to the trash?');
+    expect(deleteQuestion('Checkout', 1)).toBe(
+      'Move “Checkout” and the node under it to the trash?',
+    );
+    expect(deleteQuestion('Checkout', 3)).toBe(
+      'Move “Checkout” and the 3 nodes under it to the trash?',
+    );
   });
 });
 

@@ -1250,6 +1250,11 @@ export class AttachService {
     let busy = false;
     let started: AttachResult | undefined;
     try {
+      // T471: closed is inactive, not read-only: a message reopens it (and a start wakes it).
+      const node = this.options.streams.get(streamId);
+      if (node.human.status === 'closed' && node.archived !== true) {
+        await this.options.streams.reopen('human', streamId);
+      }
       entry = await this.options.streams.appendThread('human', streamId, { kind: 'line', body });
       handle = this.agentHandle(streamId);
       if (handle?.stopped()) handle = undefined;

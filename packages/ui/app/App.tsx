@@ -137,8 +137,8 @@ function useMissingNodeToast(): void {
       return;
     }
     toast({
-      title: title !== undefined ? `“${title}” was deleted` : 'That node was deleted',
-      body: 'It’s under Deleted at the foot of the sidebar. Restore brings it back.',
+      title: title !== undefined ? `“${title}” is in the trash` : 'That node is in the trash',
+      body: 'It’s under Trash at the foot of the sidebar. Restore brings it back.',
       tone: 'info',
       duration: 10000,
       action: {

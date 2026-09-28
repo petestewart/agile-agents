@@ -900,10 +900,18 @@ export interface SendIntent {
 export function sendIntent(input: SendIntentInput): SendIntent {
   const model = input.startWith ? ` with ${input.startWith}` : '';
   if (!input.open) {
-    const hint = input.merged
-      ? 'This node is merged. Its conversation is read-only.'
-      : 'This node is closed. Its conversation is read-only.';
-    return { action: 'none', hint, placeholder: hint };
+    if (input.merged) {
+      const hint = 'This node is merged. Its conversation is read-only.';
+      return { action: 'none', hint, placeholder: hint };
+    }
+    // T471: closed is inactive, not read-only: a message reopens it and wakes its agent.
+    return {
+      action: 'start',
+      hint: input.canStart
+        ? `Reopens this node and wakes the agent${model}.`
+        : 'Reopens this node and adds a note.',
+      placeholder: 'Write to reopen it…',
+    };
   }
   if (input.answering !== undefined) {
     return {

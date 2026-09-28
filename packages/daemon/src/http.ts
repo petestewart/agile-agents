@@ -43,6 +43,7 @@ import {
   StreamSendUpInputSchema,
   StreamUpdateRequestSchema,
   StreamWaitRequestSchema,
+  TrashPurgeRequestSchema,
   UlidSchema,
   formatZodError,
   liveChildrenOf,
@@ -66,7 +67,7 @@ import {
 } from './coordination/autonomy';
 import type { ContractService } from './coordination/contracts';
 import { PlanNotDraftError, type PlanService } from './coordination/plans';
-import { type DeliveryService, LandRefusedError } from './delivery';
+import { type DeliveryService, LandRefusedError, git, mainBranch } from './delivery';
 import type { DirectorService } from './director/service';
 import type { DocsService } from './docs';
 import type { RoutedEventService } from './events';
@@ -118,6 +119,8 @@ import {
   type StreamService,
   type TitleNamer,
   type TitleRun,
+  TrashError,
+  TrashService,
   cleanGoal,
   draftGoalPrompt,
   draftedGoal,
@@ -510,6 +513,8 @@ interface FeedContext {
   titleNamer?: TitleNamer;
   /** T437: why a vendor can't start here. */
   vendorMissing?: (vendor: SessionVendor) => string | undefined;
+  /** T471: the trash: Delete forever and Empty trash. */
+  trash?: TrashService;
   userHome?: string;
 }
 
@@ -535,7 +540,26 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
   if (!options.store || !options.gates) return undefined;
+  const { store, streams } = options;
+  // T471: Delete forever runs git as delivery does, against the node's merge target.
+  const trash = streams
+    ? new TrashService({
+        store,
+        streams,
+        home: options.stateRoot,
+        git,
+        targetOf: (node, root) => {
+          if (node.helper_of !== undefined) {
+            return streams.list({ include_archived: true }).find((s) => s.id === node.helper_of)
+              ?.branch;
+          }
+          const entry = node.repo !== undefined ? store.getRepos()[node.repo] : undefined;
+          return entry !== undefined ? mainBranch(entry, root) : undefined;
+        },
+      })
+    : undefined;
   return {
+    ...(trash ? { trash } : {}),
     store: options.store,
     gates: options.gates,
     streams: options.streams,
@@ -688,6 +712,43 @@ async function handleKnowledgeWakeRoute(
     return jsonResponse({ on: config.knowledge_wake === 'jev' });
   } catch (err) {
     return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T471: the trash as a whole:
+ *
+ *   GET  /api/trash        `{nodes, branches, uncommitted}`: what Empty trash removes, keeps and loses
+ *   POST /api/trash/empty  `{delete_branches?}`: every node in the trash, deleted forever; same-origin only
+ */
+async function handleTrashRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  const empty = url.pathname === '/api/trash/empty';
+  if (url.pathname !== '/api/trash' && !empty) return undefined;
+  if (req.method !== (empty ? 'POST' : 'GET')) return undefined;
+  const trash = feed?.trash;
+  if (!trash) return errorResponse(503, 'the trash is not available');
+  try {
+    if (!empty) {
+      const previews = trash.roots().map((root) => trash.preview(root.id));
+      return jsonResponse({
+        nodes: previews.flatMap((p) => p.nodes),
+        branches: previews.flatMap((p) => p.branches),
+        uncommitted: previews.flatMap((p) => p.uncommitted),
+      });
+    }
+    if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+    const input = TrashPurgeRequestSchema.safeParse(
+      (await readJsonBody(req).catch(() => undefined)) ?? {},
+    );
+    if (!input.success) return errorResponse(400, formatZodError('empty trash', input.error));
+    return jsonResponse(await trash.empty({ deleteBranches: input.data.delete_branches === true }));
+  } catch (err) {
+    return errorResponse(err instanceof TrashError ? 409 : 400, messageOf(err));
   }
 }
 
@@ -1397,6 +1458,9 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/attach  the sessions strip's attach / review (`role: reviewer`)
  *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
  *   POST /api/streams/:id/close   the page's Close
+ *   POST /api/streams/:id/reopen  T471: a closed node is open again (a message does it too)
+ *   GET  /api/streams/:id/trash-preview  T471: what Delete forever removes, keeps and loses
+ *   POST /api/streams/:id/purge   T471: Delete forever `{delete_branches?}`
  *   POST /api/streams/:id/dismiss T477: the Finished card's ✕: `human.dismissed_at`, until it finishes again
  *   POST /api/streams/:id/mark-landed  merged outside `land`
  *   POST /api/streams/:id/pr-check     Check now (T340): poll the node's open PR at once
@@ -1424,12 +1488,16 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|auto-close|draft-goal|attach|resolve|stop|close|dismiss|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|auto-close|draft-goal|attach|resolve|stop|close|reopen|purge|trash-preview|dismiss|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
   const isGet =
-    action === undefined || action === 'diff' || action === 'steps' || action === 'commands';
+    action === undefined ||
+    action === 'diff' ||
+    action === 'steps' ||
+    action === 'commands' ||
+    action === 'trash-preview';
   if (isGet ? req.method !== 'GET' : req.method !== 'POST') return undefined;
   if (!feed?.streams) return errorResponse(503, 'streams not available');
   const parsedId = UlidSchema.safeParse(decodeURIComponent(match[1] ?? ''));
@@ -1462,6 +1530,10 @@ async function handleStreamRoute(
       feed.streams.get(id);
       return jsonResponse(feed.steps.stepsFor(id));
     }
+    if (action === 'trash-preview') {
+      if (!feed.trash) return errorResponse(503, 'the trash is not available');
+      return jsonResponse(feed.trash.preview(id));
+    }
     if (action === 'commands') {
       feed.streams.get(id);
       return jsonResponse(feed.attach?.commandsFor(id) ?? { running: false, commands: [] });
@@ -1469,6 +1541,7 @@ async function handleStreamRoute(
 
     // Close, Dismiss, Mark landed, Check now, Delete and Restore take no body.
     if (action === 'close') return jsonResponse(await feed.streams.close('human', id));
+    if (action === 'reopen') return jsonResponse(await feed.streams.reopen('human', id));
     if (action === 'dismiss') {
       return jsonResponse(
         await feed.streams.update('human', id, {
@@ -1539,6 +1612,14 @@ async function handleStreamRoute(
       const input = StreamPermissionsRequestSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('permissions', input.error));
       return jsonResponse(await feed.streams.setPermissions(id, input.data.posture));
+    }
+    if (action === 'purge') {
+      if (!feed.trash) return errorResponse(503, 'the trash is not available');
+      const input = TrashPurgeRequestSchema.safeParse(body ?? {});
+      if (!input.success) return errorResponse(400, formatZodError('purge', input.error));
+      return jsonResponse(
+        await feed.trash.purge(id, { deleteBranches: input.data.delete_branches === true }),
+      );
     }
     if (action === 'auto-close') {
       const input = StreamAutoCloseRequestSchema.safeParse(body);
@@ -1692,7 +1773,11 @@ async function handleStreamRoute(
   } catch (err) {
     const message = messageOf(err);
     if (err instanceof NotFoundError) return errorResponse(404, message);
-    if (err instanceof StreamBusyError || err instanceof LandRefusedError) {
+    if (
+      err instanceof StreamBusyError ||
+      err instanceof LandRefusedError ||
+      err instanceof TrashError
+    ) {
       return errorResponse(409, message);
     }
     if (err instanceof UnregisteredRepoError || err instanceof UnknownVendorError) {
@@ -1837,6 +1922,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (knowledgeWakeRoute) return knowledgeWakeRoute;
         const autoCloseRoute = await handleAutoCloseRoute(req, url, feed, sameOrigin);
         if (autoCloseRoute) return autoCloseRoute;
+        const trashRoute = await handleTrashRoute(req, url, feed, sameOrigin);
+        if (trashRoute) return trashRoute;
         const trackerRoute = await handleTrackerSettingsRoute(req, url, feed, sameOrigin);
         if (trackerRoute) return trackerRoute;
         const permissionsRoute = await handlePermissionsRoute(req, url, feed, sameOrigin);

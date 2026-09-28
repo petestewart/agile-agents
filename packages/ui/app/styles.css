@@ -10792,3 +10792,21 @@ div.cr-lens-ev:hover {
 .cr-newnode-talk {
   margin-top: -4px;
 }
+/* T471: the Trash's Empty trash link, and Delete forever's branch box. */
+.cr-rail-deleted-empty {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+.cr-purge-branches {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: var(--text-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+.cr-purge-branches input {
+  margin-top: 3px;
+}

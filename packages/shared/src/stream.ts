@@ -891,6 +891,15 @@ export const StreamPermissionsRequestSchema = z
   .strict();
 export type StreamPermissionsRequest = z.infer<typeof StreamPermissionsRequestSchema>;
 
+/**
+ * T471: `POST /api/streams/:id/purge` (Delete forever) and `POST /api/trash/empty`.
+ * `delete_branches` also deletes branches with unmerged commits (kept otherwise).
+ */
+export const TrashPurgeRequestSchema = z
+  .object({ delete_branches: z.boolean().optional() })
+  .strict();
+export type TrashPurgeRequest = z.infer<typeof TrashPurgeRequestSchema>;
+
 /** T478: `POST /api/streams/:id/auto-close`: this node closes itself when its goal is met. */
 export const StreamAutoCloseRequestSchema = z.object({ on: z.boolean() }).strict();
 export type StreamAutoCloseRequest = z.infer<typeof StreamAutoCloseRequestSchema>;

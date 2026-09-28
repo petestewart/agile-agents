@@ -2489,7 +2489,7 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
           .waitFor({ state: 'detached' });
 
         // Undo restores it and reopens its page.
-        await page.locator('[data-testid="toast"]', { hasText: 'Deleted' }).waitFor();
+        await page.locator('[data-testid="toast"]', { hasText: 'to the trash' }).waitFor();
         await page.locator('[data-testid="toast-action"]', { hasText: 'Undo' }).click();
         await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
         await waitUntil(
@@ -6881,7 +6881,7 @@ describe("the rail's row menus, Deleted and New project (Playwright e2e, T365)",
         const dialog = page.locator('[data-testid="delete-dialog"]');
         await dialog.waitFor({ state: 'visible' });
         expect(await dialog.locator('h2').textContent()).toBe(
-          'Delete “checkout” and the node under it?',
+          'Move “checkout” and the node under it to the trash?',
         );
         expect(await dialog.textContent()).toContain('Branches and worktrees are kept');
         // Cancel keeps everything.
@@ -6898,7 +6898,9 @@ describe("the rail's row menus, Deleted and New project (Playwright e2e, T365)",
         await page.locator('[data-testid="stream-page"]').waitFor({ state: 'detached' });
         expect(new URL(page.url()).searchParams.get('node')).toBeNull();
 
-        const toast = page.locator('[data-testid="toast"]', { hasText: 'Deleted “checkout”' });
+        const toast = page.locator('[data-testid="toast"]', {
+          hasText: 'Moved “checkout” to the trash',
+        });
         await toast.waitFor({ state: 'visible' });
         await toast.locator('[data-testid="toast-action"]').click();
         await page.locator(`${tree} [data-stream="${a.id}"]`).waitFor({ state: 'visible' });
@@ -6913,7 +6915,7 @@ describe("the rail's row menus, Deleted and New project (Playwright e2e, T365)",
   );
 
   browserTest(
-    'Deleted (n) lists what Delete archived, and Restore brings it back',
+    'Trash (n) lists what Move to trash archived, and Restore brings it back',
     async () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
@@ -6934,7 +6936,7 @@ describe("the rail's row menus, Deleted and New project (Playwright e2e, T365)",
         await page.locator('[data-testid="delete-dialog-confirm"]').click();
         const toggle = page.locator('[data-testid="deleted-toggle"]');
         await toggle.waitFor({ state: 'visible' });
-        expect(await toggle.textContent()).toBe('Deleted1');
+        expect(await toggle.textContent()).toBe('Trash1');
         // Folded by default.
         expect(await toggle.getAttribute('aria-expanded')).toBe('false');
         await toggle.click();
@@ -9943,6 +9945,75 @@ describe("No goal yet, and the Finished card's ✕ (Playwright e2e, T477)", () =
   );
 });
 
+describe('Closed, trash and Delete forever (Playwright e2e, T471)', () => {
+  browserTest(
+    'a closed node reopens from its header; Delete forever keeps an unmerged branch unless ticked; Empty trash',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const paused = (
+          await cockpit.streams.create('human', { title: 'Paused', goal: 'g', parent: shop.root })
+        ).id;
+        await cockpit.streams.close('human', paused);
+        const ready = await finishedNode(cockpit, 'Add CSV import', 's-trash', shop.root);
+        const branch = cockpit.streams.get(ready).branch as string;
+        const other = (
+          await cockpit.streams.create('human', { title: 'Old idea', goal: 'g', parent: shop.root })
+        ).id;
+        await cockpit.streams.archiveTree('human', ready);
+        await cockpit.streams.archiveTree('human', other);
+        const p = await openPage();
+        page = p;
+
+        // Closed: not read-only. Its header offers Reopen, and Send would reopen it too.
+        await p.goto(`${cockpit.base}/?node=${paused}`);
+        await p
+          .locator('[data-testid="composer-hint"]', { hasText: 'Reopens this node' })
+          .waitFor();
+        await p.locator('[data-testid="header-reopen"]').click();
+        await waitUntil('reopened', () => cockpit.streams.get(paused).human.status === 'open');
+        await p.locator('[data-testid="header-reopen"]').waitFor({ state: 'detached' });
+
+        // Trash: Delete forever says what goes and offers the branch with its unmerged commit.
+        const toggle = p.locator('[data-testid="deleted-toggle"]');
+        await toggle.waitFor();
+        if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+        await p
+          .locator(
+            `[data-testid="archived-row"][data-stream="${ready}"] [data-testid="archived-purge"]`,
+          )
+          .click();
+        const dialog = p.locator('[data-testid="purge-dialog"]');
+        await dialog.locator('[data-testid="purge-branches"]').waitFor();
+        expect(await dialog.textContent()).toContain('1 unmerged commit');
+        await p.locator('[data-testid="purge-dialog-confirm"]').click();
+        await waitUntil('deleted forever', () => !cockpit.store.hasStream(ready));
+        const branchThere = () =>
+          Bun.spawnSync(['git', 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], {
+            cwd: cockpit.repo,
+          }).exitCode === 0;
+        expect(branchThere()).toBe(true);
+        await p.locator('[data-testid="toast"]', { hasText: 'Kept its branch' }).waitFor();
+
+        // Empty trash takes the rest.
+        await p.locator('[data-testid="trash-empty"]').click();
+        await p.locator('[data-testid="purge-dialog-confirm"]').click();
+        await waitUntil('emptied', () => !cockpit.store.hasStream(other));
+        await p.locator('[data-testid="deleted-nodes"]').waitFor({ state: 'detached' });
+        expect(cockpit.store.hasStream(paused)).toBe(true);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('Auto-close (Playwright e2e, T478)', () => {
   browserTest(
     "the Settings default seeds New node's switch; a node page turns it on and off in Details and ⋯",
@@ -10436,7 +10507,7 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
         page = await openPage();
         await page.goto(`${cockpit.base}/?node=${child.id}`);
         const toast = page.locator('[data-testid="toast"]', {
-          hasText: '“Old checkout” was deleted',
+          hasText: '“Old checkout” is in the trash',
         });
         await toast.waitFor({ state: 'visible' });
         await toast.locator('[data-testid="toast-action"]', { hasText: 'Restore' }).click();

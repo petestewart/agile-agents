@@ -2930,7 +2930,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T471 Closed means inactive, not read-only; Trash with Delete forever
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28): a closed node reads as read-only, yet "there's no reason we can't restart the thread". Deleted nodes can only be restored, never deleted for good. A deleted open node restores and resumes, while a deleted closed one restores but can't resume. "should closed really mean read-only? it seems more like we're done being active in this for now, and deleted/trash means we think we're done … for good (but still could revive it)".
 - **Acceptance Criteria:**
@@ -2938,6 +2938,13 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   - Delete is renamed **Move to trash**. **Restore** brings a node back open and ready to resume, whatever state it was in.
   - **Delete forever** (per node, and **Empty trash**) removes the node's record, thread, session files and worktree. Its branch goes too if merged. With unmerged commits the branch is kept unless you tick "Also delete its branch (N unmerged commits)" (proposed default; Pete to confirm).
   - A merged node is unchanged.
+- **Validation Steps:**
+  - Closed: `StreamService.reopen` (open again, thread line "reopened"). `say` reopens a closed node first, so a message wakes its agent (attach test "a merged node starts nothing, a closed one reopens"). The composer's hint reads "Reopens this node and wakes the agent…". The header has **Reopen**, as does ⋯. `POST /api/streams/:id/reopen`.
+  - Restore brings the node itself back open, even if it was closed; its parts keep their state.
+  - Move to trash replaces Delete (tree menu, node ⋯, dialogs, toasts). The sidebar's Deleted section is **Trash**, with Restore, a per-row Delete forever (✕) and Empty trash.
+  - Delete forever is `streams/trash.ts` (`TrashService`) plus `StateStore.removeStream`, a new `stream_deleted` event (log reconstruction forgets the node). It removes the node and its subtree: record, thread, card and event queue, questions, gates, plan, other nodes' waits on it, session logs and worktree. A merged branch goes too. One with unmerged commits is kept unless "Also delete its branch (N unmerged commits)" is ticked. The dialog also names worktrees with uncommitted changes, which are lost. Routes: `GET /api/streams/:id/trash-preview`, `POST /api/streams/:id/purge {delete_branches?}`, `GET /api/trash`, `POST /api/trash/empty`. Same-origin; refusals are 409 (not in the trash, a project's root).
+  - Tests: `streams/trash.test.ts` (6, real git), http T471, attach test updated, UI lib tests updated, e2e T471 (Reopen, Delete forever keeping the unmerged branch, Empty trash), T365/T361/T416 e2e updated for the new words. A worktree path outside `<repo>/.worktrees/` is never removed (a test that fails on the unguarded code, where it deleted the repo). Full `bun test` 3481/0; walkthrough clean.
+- **Notes:** Branch T471-trash-and-reopen. The unmerged-branch default (keep it unless ticked) is the proposal; Pete to confirm.
 ### Ticket: T476 Cursor's verbs and commands were refused
 - **Priority:** P0
 - **Status:** Done

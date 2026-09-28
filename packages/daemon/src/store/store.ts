@@ -959,6 +959,31 @@ export class StateStore {
     });
   }
 
+  /**
+   * T471: Delete forever. Removes the record, its thread, its status card
+   * and its routed-event queue. Only a node in the trash (archived) goes;
+   * what else points at it (questions, gates, waits, the worktree) is
+   * `TrashService`'s to clear first.
+   */
+  async removeStream(id: string): Promise<void> {
+    return this.mutate(() => {
+      const relPath = this.streamRelPath(id);
+      if (!fileExists(this.abs(relPath))) throw new NotFoundError('Stream', id);
+      const before = this.readStreamFile(this.abs(relPath));
+      if (before.archived !== true) {
+        throw new Error(`invalid Stream delete: ${id} is not in the trash`);
+      }
+      removeFile(this.abs(this.threadRelPath(id)));
+      removeFile(this.abs(this.cardRelPath(id)));
+      removeFile(this.abs(this.deliveryQueueRelPath(id)));
+      removeFile(this.abs(relPath));
+      this.threadAt.delete(id);
+      this.answers.delete(id);
+      const event = buildEvent('stream_deleted', { stream: id, data: { stream: id } });
+      return { result: undefined, event };
+    });
+  }
+
   /** Appends one validated entry to `threads/<stream>.jsonl`. */
   async appendThreadEntry(streamId: string, entry: unknown): Promise<ThreadEntry> {
     return this.mutate(() => {

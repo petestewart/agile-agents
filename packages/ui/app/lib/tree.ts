@@ -105,8 +105,9 @@ export function subtreeIds(rows: readonly Row[], id: string): string[] {
 
 /** Delete's question: "Delete 'X'?" or "Delete 'X' and its 3 nodes?" (the nodes under it). */
 export function deleteQuestion(title: string, below: number): string {
-  if (below <= 0) return `Delete “${title}”?`;
-  return `Delete “${title}” and the ${below === 1 ? 'node' : `${below} nodes`} under it?`;
+  // T471: Delete is Move to trash; Delete forever is the Trash's.
+  if (below <= 0) return `Move “${title}” to the trash?`;
+  return `Move “${title}” and the ${below === 1 ? 'node' : `${below} nodes`} under it to the trash?`;
 }
 
 export type MoveCheck =

@@ -3094,7 +3094,7 @@ describe('T361: a message starts a node with no live agent', () => {
     expect(streams.get(stream.id).sessions).toHaveLength(1);
   }, 30_000);
 
-  test('a coordinating node gets its coordinator; a closed node starts nothing; a bare project root its coordinator', async () => {
+  test('a coordinating node gets its coordinator; a merged node starts nothing, a closed one reopens (T471); a bare project root its coordinator', async () => {
     attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     const project = await new ProjectService(store, streams).create({ name: 'Shop' });
@@ -3122,11 +3122,24 @@ describe('T361: a message starts a node with no live agent', () => {
       project: project.id,
       start: false,
     });
-    await streams.close('human', closed.id);
+    await streams.update('daemon', closed.id, { human: { status: 'landed' } });
     const said = await attachService.say(closed.id, 'hello?', { start: true });
     expect(said.started).toBeUndefined();
     expect(said.prompted).toBeUndefined();
     expect(streams.get(closed.id).sessions).toEqual([]);
+    // T471: closed is inactive, not read-only: a message reopens it and wakes its agent.
+    const shut = await attachService.createNode('human', {
+      title: 'Paused',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+    await streams.close('human', shut.id);
+    const woke = await attachService.say(shut.id, 'pick this up again', { start: true });
+    expect(woke.started).toBe(true);
+    expect(streams.get(shut.id).human.status).toBe('open');
+    expect(streams.readThread(shut.id).entries.map((e) => e.body)).toContain('reopened');
+    expect(streams.get(shut.id).sessions.map((s) => s.role)).toEqual(['worker']);
     // T443 (audit r7 #4): a bare project root coordinates from the start, so "plan this and split
     // it" reaches a coordinator that can add parts.
     const bare = await new ProjectService(store, streams).create({ name: 'Blog' });

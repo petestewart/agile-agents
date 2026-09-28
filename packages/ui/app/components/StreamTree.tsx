@@ -38,7 +38,17 @@ import {
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { archiveStream, moveStream, unarchiveStream, updateStream } from '../lib/api';
+import {
+  type TrashPreview,
+  archiveStream,
+  emptyTrash,
+  getTrash,
+  getTrashPreview,
+  moveStream,
+  purgeStream,
+  unarchiveStream,
+  updateStream,
+} from '../lib/api';
 import { useOptionalFeed } from '../lib/feed-context';
 import type { CockpitOverlap, CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
 import { isShortcut, useShell } from '../lib/shell';
@@ -287,7 +297,7 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
         },
         'separator',
         {
-          label: 'Delete…',
+          label: 'Move to trash…',
           icon: 'trash',
           danger: true,
           testid: 'tree-menu-delete',
@@ -1264,7 +1274,7 @@ function DeleteDialog({
       onDeleted(result.archived.length > 0 ? result.archived : ids);
       onClose();
       toast({
-        title: `Deleted “${row.title}”`,
+        title: `Moved “${row.title}” to the trash`,
         body:
           below > 0 ? `And the ${below === 1 ? 'node' : `${below} nodes`} under it.` : undefined,
         tone: 'success',
@@ -1291,7 +1301,7 @@ function DeleteDialog({
     <ConfirmDialog
       open
       title={deleteQuestion(row.title, below)}
-      confirmLabel="Delete"
+      confirmLabel="Move to trash"
       danger
       busy={busy}
       testid="delete-dialog"
@@ -1301,7 +1311,8 @@ function DeleteDialog({
       <p className="cr-dialog-text">
         {below > 0 ? 'Their agents stop.' : 'Its agent stops.'}{' '}
         {below > 0 ? 'Branches and worktrees are kept' : 'Its branch and worktree are kept'}; you
-        can restore {below > 0 ? 'them' : 'it'} from <b>Deleted</b> at the bottom of the sidebar.
+        can restore {below > 0 ? 'them' : 'it'} from <b>Trash</b> at the bottom of the sidebar, or
+        delete {below > 0 ? 'them' : 'it'} forever there.
       </p>
       {error && (
         <p className="cr-error" role="alert" data-testid="delete-error">
@@ -1325,7 +1336,9 @@ function loadDeletedOpen(): boolean {
 /**
  * T365: the nodes Delete archived (T361's `archived` in the cockpit frame),
  * folded under "Deleted (n)" at the foot of the sidebar, each with Restore.
- * The rail's project filter applies here too.
+ * The rail's project filter applies here too. T471: it is the Trash: Restore
+ * brings a node back open, Delete forever removes it for good, and Empty
+ * trash takes them all.
  */
 export function DeletedNodes({
   projects,
@@ -1337,8 +1350,9 @@ export function DeletedNodes({
   const archived = useOptionalFeed()?.cockpit?.archived ?? [];
   const [open, setOpenState] = useState(loadDeletedOpen);
   const [busy, setBusy] = useState<string | undefined>(undefined);
+  const [purging, setPurging] = useState<PurgeTarget | undefined>(undefined);
   const shown = project === undefined ? archived : archived.filter((a) => a.project === project);
-  if (shown.length === 0) return null;
+  if (shown.length === 0 && purging === undefined) return null;
   const toggle = (): void => {
     setOpenState((was) => {
       try {
@@ -1355,6 +1369,7 @@ export function DeletedNodes({
       .then(() =>
         toast({
           title: `Restored “${title}”`,
+          body: 'It’s open again; a message picks the work back up.',
           tone: 'success',
           action: { label: 'Open', onClick: () => select(id) },
         }),
@@ -1365,7 +1380,7 @@ export function DeletedNodes({
       .finally(() => setBusy(undefined));
   };
   return (
-    <section className="cr-rail-deleted" data-testid="deleted-nodes" aria-label="Deleted nodes">
+    <section className="cr-rail-deleted" data-testid="deleted-nodes" aria-label="Trash">
       <div className="cr-sb-section">
         <button
           type="button"
@@ -1374,10 +1389,20 @@ export function DeletedNodes({
           data-testid="deleted-toggle"
           onClick={toggle}
         >
-          Deleted
+          Trash
           <span className="cr-rail-deleted-count">{shown.length}</span>
           <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
         </button>
+        {open && shown.length > 0 && project === undefined && (
+          <button
+            type="button"
+            className="cr-link cr-rail-deleted-empty"
+            data-testid="trash-empty"
+            onClick={() => setPurging({ kind: 'all' })}
+          >
+            Empty trash
+          </button>
+        )}
       </div>
       {open && (
         <ul className="cr-rail-deleted-list">
@@ -1402,16 +1427,137 @@ export function DeletedNodes({
                   variant="ghost"
                   busy={busy === a.id}
                   data-testid="archived-restore"
-                  title={`Restore “${a.title}” and what was deleted with it`}
+                  title={`Restore “${a.title}” and what was deleted with it, open and ready to resume`}
                   onClick={() => restore(a.id, a.title)}
                 >
                   Restore
                 </Button>
+                <IconButton
+                  icon="x"
+                  size="sm"
+                  variant="ghost"
+                  label={`Delete “${a.title}” forever`}
+                  data-testid="archived-purge"
+                  onClick={() => setPurging({ kind: 'node', id: a.id, title: a.title })}
+                />
               </li>
             );
           })}
         </ul>
       )}
+      {purging !== undefined && (
+        <PurgeDialog target={purging} onClose={() => setPurging(undefined)} />
+      )}
     </section>
+  );
+}
+
+type PurgeTarget = { kind: 'node'; id: string; title: string } | { kind: 'all' };
+
+/**
+ * T471: Delete forever (one node and what's under it) or Empty trash. It
+ * says what goes and what is lost; a branch with unmerged commits is kept
+ * unless its box is ticked.
+ */
+function PurgeDialog({
+  target,
+  onClose,
+}: {
+  target: PurgeTarget;
+  onClose: () => void;
+}): JSX.Element {
+  const toast = useToast();
+  const [preview, setPreview] = useState<TrashPreview | undefined>(undefined);
+  const [deleteBranches, setDeleteBranches] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const targetId = target.kind === 'node' ? target.id : undefined;
+  useEffect(() => {
+    let live = true;
+    (targetId !== undefined ? getTrashPreview(targetId) : getTrash())
+      .then((p) => {
+        if (live) setPreview(p);
+      })
+      .catch((err: unknown) => {
+        if (live) setError(errorText(err));
+      });
+    return () => {
+      live = false;
+    };
+  }, [targetId]);
+  const count = preview?.nodes.length ?? 0;
+  const unmerged = preview?.branches ?? [];
+  const confirm = async (): Promise<void> => {
+    if (busy || preview === undefined) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result =
+        target.kind === 'node'
+          ? await purgeStream(target.id, deleteBranches)
+          : await emptyTrash(deleteBranches);
+      onClose();
+      const kept = result.kept_branches.length;
+      toast({
+        title:
+          target.kind === 'node'
+            ? `Deleted “${target.title}” forever`
+            : `Emptied the trash (${result.deleted.length} ${result.deleted.length === 1 ? 'node' : 'nodes'})`,
+        ...(kept > 0
+          ? {
+              body: `Kept ${kept === 1 ? 'its branch' : `${kept} branches`} with unmerged commits.`,
+            }
+          : {}),
+        tone: 'success',
+      });
+    } catch (err) {
+      setError(errorText(err));
+      setBusy(false);
+    }
+  };
+  const commits = (n: number): string =>
+    n < 0 ? 'commits not in its target' : `${n} unmerged commit${n === 1 ? '' : 's'}`;
+  return (
+    <ConfirmDialog
+      open
+      title={target.kind === 'node' ? `Delete “${target.title}” forever?` : 'Empty the trash?'}
+      confirmLabel={target.kind === 'node' ? 'Delete forever' : 'Empty trash'}
+      danger
+      busy={busy || preview === undefined}
+      testid="purge-dialog"
+      onCancel={onClose}
+      onConfirm={() => void confirm()}
+    >
+      <p className="cr-dialog-text">
+        {preview === undefined
+          ? 'Checking what goes…'
+          : `${count === 1 ? 'The node' : `${count} nodes`}, ${count === 1 ? 'its' : 'their'} chat, session logs and worktree${count === 1 ? '' : 's'} are removed, and merged branches go too. This can’t be undone.`}
+      </p>
+      {preview !== undefined && preview.uncommitted.length > 0 && (
+        <p className="cr-dialog-text" data-testid="purge-uncommitted">
+          Uncommitted changes in <b>{preview.uncommitted.join(', ')}</b> are lost.
+        </p>
+      )}
+      {unmerged.length > 0 && (
+        <label className="cr-purge-branches" data-testid="purge-branches">
+          <input
+            type="checkbox"
+            data-testid="purge-delete-branches"
+            checked={deleteBranches}
+            onChange={(e) => setDeleteBranches(e.target.checked)}
+          />
+          <span>
+            {unmerged.length === 1
+              ? `Also delete its branch ${unmerged[0]?.branch} (${commits(unmerged[0]?.unmerged ?? -1)})`
+              : `Also delete ${unmerged.length} branches with unmerged commits`}
+          </span>
+        </label>
+      )}
+      {error && (
+        <p className="cr-error" role="alert" data-testid="purge-error">
+          {error}
+        </p>
+      )}
+    </ConfirmDialog>
   );
 }

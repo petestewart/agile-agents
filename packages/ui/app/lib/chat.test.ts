@@ -469,7 +469,9 @@ describe('what Send does', () => {
       sendIntent({ ...base, answering: 'Q-1', live: { name: 'Claude', working: false } }),
     ).toMatchObject({ action: 'answer', hint: expect.stringContaining('Answers the question') });
     expect(sendIntent({ ...base, open: false, merged: true })).toMatchObject({ action: 'none' });
-    expect(sendIntent({ ...base, open: false }).hint).toContain('closed');
+    // T471: closed is inactive, not read-only: Send reopens it and wakes the agent.
+    expect(sendIntent({ ...base, open: false })).toMatchObject({ action: 'start' });
+    expect(sendIntent({ ...base, open: false }).hint).toContain('Reopens this node');
   });
 });
 
