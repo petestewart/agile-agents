@@ -173,7 +173,7 @@ describe('§6.3 bands', () => {
     const out = await (await svc(fake)).preToolUse(call());
 
     expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
-    expect(out.hookSpecificOutput?.permissionDecisionReason).toContain('routed to your inbox');
+    expect(out.hookSpecificOutput?.permissionDecisionReason).toContain('held for the human');
     const raised = gates.list().filter((g) => g.gate === 'classifier_review');
     expect(raised).toHaveLength(1);
     expect(raised[0]?.rule).toBe(rule.id);

@@ -5,7 +5,8 @@
  *  2. this session's approved, unspent gate on that fingerprint ⇒ allow
  *     once (and spend it); a denied one ⇒ deny with the human's note;
  *  3. otherwise raise (or reuse) a `classifier_review` gate and deny with
- *     the id to wait for, why, and "retry this exact call".
+ *     why and "retry this exact call". T460: no gate id; the agent has no
+ *     use for one, and repeated it to the human.
  * Dedupe matters: a denied model retries, and one card per attempt would
  * make the inbox nag (§3.3).
  */
@@ -100,7 +101,7 @@ export async function routeCall(
   const open = candidates.find((gate) => gate.status === 'pending');
   if (open !== undefined) {
     return {
-      decision: { decision: 'deny', reason: routedReason(open.id, ctx.reason) },
+      decision: { decision: 'deny', reason: routedReason(ctx.reason) },
       gate: open.id,
     };
   }
@@ -131,7 +132,7 @@ export async function routeCall(
     summary: cap(ctx.reason),
   });
   return {
-    decision: { decision: 'deny', reason: routedReason(raised.id, ctx.reason) },
+    decision: { decision: 'deny', reason: routedReason(ctx.reason) },
     gate: raised.id,
   };
 }
@@ -146,9 +147,9 @@ async function spend(gates: RouteBandGates, id: HilId): Promise<boolean> {
   }
 }
 
-function routedReason(id: HilId, why: string): string {
+function routedReason(why: string): string {
   return cap(
-    `${why} — routed to your inbox as ${id}. Wait for the human's decision, then retry this exact call.`,
+    `${why} — held for the human's approval (a card in their Needs me). Wait for their decision, then retry this exact call.`,
   );
 }
 

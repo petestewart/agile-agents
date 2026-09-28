@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { resolveVendorFailure } from '@agile-agents/shared';
-import { crashHandover, fallbackVendors, retryWontHelp } from './fallback';
+import { crashHandover, fallbackVendors, retryWontHelp, turnFailureWords } from './fallback';
 
 describe('T456: the retry rule', () => {
   test('a crash is retried; a login or model refusal, or a command that cannot run, is not', () => {
@@ -88,5 +88,37 @@ describe('T456: the new agent is told what happened', () => {
     expect(talk).not.toContain('git status');
     expect(talk).toContain('read the thread');
     expect(talk).toContain('the same agent started again');
+  });
+});
+
+describe('T460: a failed turn in words', () => {
+  const base = { vendorError: undefined, message: 'The turn did not finish cleanly' };
+  test('a login refusal says how to log in, for vendors with and without a known way', () => {
+    const said = 'Failed to authenticate: OAuth session expired and could not be refreshed';
+    expect(turnFailureWords({ ...base, vendor: 'claude', label: 'Claude Code', said })).toBe(
+      'Claude Code isn’t logged in. Log in from a terminal (run `claude` and type /login), then send a message to start it again.',
+    );
+    expect(turnFailureWords({ ...base, vendor: 'grok', label: 'Grok', said })).toContain(
+      '(log in to Grok)',
+    );
+    // The refusal may be on stderr alone.
+    expect(
+      turnFailureWords({
+        ...base,
+        vendor: 'codex',
+        label: 'Codex',
+        said: undefined,
+        vendorError: 'Error: 401 Unauthorized',
+      }),
+    ).toContain('run `codex login`');
+  });
+  test('anything else names what the agent said, else its stderr, else the turn error', () => {
+    const words = (said?: string, vendorError?: string) =>
+      turnFailureWords({ ...base, vendor: 'claude', label: 'Claude Code', said, vendorError });
+    expect(words('It broke.')).toBe(
+      'Claude Code’s turn failed: It broke. Send a message to start it again.',
+    );
+    expect(words(undefined, 'panic: x')).toContain('turn failed: panic: x.');
+    expect(words()).toContain('turn failed: The turn did not finish cleanly.');
   });
 });

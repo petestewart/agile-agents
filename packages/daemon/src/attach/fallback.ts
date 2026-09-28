@@ -94,3 +94,42 @@ export function crashHandover(input: {
     'Then carry on with the goal; do not redo work that is already there.',
   ].join('\n');
 }
+
+/**
+ * T460: how to log a vendor back in. Its harness runs headless over ACP,
+ * so an interactive `/login` can't run in the cockpit; it runs in a
+ * terminal, with the user's own login (no vendor credentials in the daemon).
+ */
+const LOGIN_HOW: Partial<Record<string, string>> = {
+  claude: 'run `claude` and type /login',
+  gemini: 'run `gemini` and sign in',
+  codex: 'run `codex login`',
+  cursor: 'run `cursor-agent login`',
+};
+
+/** T460: a vendor's login refusal in words, with the way to log in. */
+export function loginRefusalWords(vendor: string, label: string): string {
+  const how = LOGIN_HOW[vendor] ?? `log in to ${label}`;
+  return `${label} isn’t logged in. Log in from a terminal (${how}), then send a message to start it again.`;
+}
+
+/**
+ * T460: why a turn failed, in words, for the thread, Details and Needs me.
+ * A login refusal says how to log in; anything else names what the agent
+ * said, else its last stderr line, else the turn error. `said` is the agent's
+ * own text in the failed turn; `vendorError` its last stderr line; `message`
+ * the turn error (usually "the turn did not finish cleanly").
+ */
+export function turnFailureWords(input: {
+  vendor: string;
+  label: string;
+  said: string | undefined;
+  vendorError: string | undefined;
+  message: string;
+}): string {
+  const refusal =
+    retryWontHelp(input.said, undefined) ?? retryWontHelp(input.vendorError, undefined);
+  if (refusal === 'a login refusal') return loginRefusalWords(input.vendor, input.label);
+  const why = (input.said ?? input.vendorError ?? input.message).replace(/[.\s]+$/, '');
+  return `${input.label}’s turn failed: ${why}. Send a message to start it again.`;
+}

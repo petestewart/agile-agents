@@ -182,6 +182,9 @@ export function endedReasonText(
     };
   }
   if (reason === 'its turn finished') return { text: 'Finished its turn', tone: 'muted' };
+  // T460: a turn the vendor failed, already in words (a login refusal says how to log in).
+  const turnFailed = /^turn failed: (.+)$/s.exec(reason);
+  if (turnFailed) return { text: tidyIds(turnFailed[1] ?? ''), tone: 'error' };
   const text = tidyIds(reason);
   return {
     text: text.charAt(0).toUpperCase() + text.slice(1),
@@ -562,7 +565,7 @@ export function wakeWords(types: string): string {
 export function tidyIds(text: string): string {
   return text
     .replace(/\bstream\/[0-9a-z]{26}-[\w./-]*\w/gi, (branch) => branchName(branch))
-    .replace(/\s*\((?:[A-Z]-)?[0-9A-HJKMNP-TV-Z]{26}\)/g, '');
+    .replace(/\s*\((?:[A-Z]+-)?[0-9A-HJKMNP-TV-Z]{26}\)/g, '');
 }
 
 /**
@@ -576,7 +579,7 @@ export function agentFailed(
   return thread.some(
     (e) =>
       chatVariant(e) === 'system' &&
-      /^(?:could not start the agent: |session ended: process exited \(code (?!0\))-?\d+\))/.test(
+      /^(?:could not start the agent: |session ended: turn failed: |session ended: process exited \(code (?!0\))-?\d+\))/.test(
         e.body,
       ),
   );
@@ -702,6 +705,11 @@ export function systemLine(body: string, meta: SystemLineMeta = {}): SystemLine 
       text: `The agent stopped with an error${why ? `: ${tidyIds(why)}` : ` (exit code ${code})`}. Check its vendor is installed and logged in, then send a message to start it again.`,
       tone: 'warn',
     };
+  }
+  // T460: a turn the vendor failed (a login refusal), in the daemon's words.
+  const turnFailed = /^session ended: turn failed: (.+)$/s.exec(body);
+  if (turnFailed) {
+    return { icon: 'alert-triangle', text: tidyIds(turnFailed[1] ?? ''), tone: 'warn' };
   }
   // T438 (audit r6 #4): the start failed before the vendor ran (its command missing, a spawn error).
   const failed = /^could not start the agent: (.+)$/s.exec(body);

@@ -243,8 +243,9 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
     expect(gate.session).toBe(session);
     expect(gate.call?.tool).toBe('Edit');
     expect(gate.call?.path).toBe(join(worktree, 'package.json'));
-    // The deny reason is actionable: the id to wait for, why, and what to do.
-    expect(reasonOf(first)).toContain(`routed to your inbox as ${gate.id}`);
+    // The deny reason is actionable: why, and what to do. T460: no id, which agents repeated to the human.
+    expect(reasonOf(first)).toContain("held for the human's approval");
+    expect(reasonOf(first)).not.toContain(gate.id);
     expect(reasonOf(first)).toContain('dependency manifest');
     expect(reasonOf(first)).toContain('retry this exact call');
     // The verb that no longer exists is not suggested anywhere.
@@ -262,7 +263,7 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
     // attempt (the live run's other failure mode).
     const again = await hooks.preToolUse(editPayload(session, worktree, 'package.json'));
     expect(again.hookSpecificOutput.permissionDecision).toBe('deny');
-    expect(reasonOf(again)).toContain(gate.id);
+    expect(reasonOf(again)).toContain("held for the human's approval");
     expect(openGates()).toHaveLength(1);
 
     // 4. The worker holds: it reports itself blocked and ends its turn,

@@ -826,6 +826,30 @@ describe('an agent that failed (T438)', () => {
   });
 });
 
+describe('a turn the vendor failed (T460)', () => {
+  const how =
+    'Claude Code isn’t logged in. Log in from a terminal (run `claude` and type /login), then send a message to start it again.';
+  test('reads as the daemon wrote it, a warning; the chat counts it as a failure', () => {
+    expect(systemLine(`session ended: turn failed: ${how}`)).toEqual({
+      icon: 'alert-triangle',
+      text: how,
+      tone: 'warn',
+    });
+    expect(
+      agentFailed([{ by: 'daemon', kind: 'event', body: `session ended: turn failed: ${how}` }]),
+    ).toBe(true);
+  });
+  test('Details shows the words alone, as an error', () => {
+    expect(endedReasonText({ status: 'error', ended_reason: `turn failed: ${how}` })).toEqual({
+      text: how,
+      tone: 'error',
+    });
+  });
+  test('a gate id in parentheses is left out, like a node id', () => {
+    expect(tidyIds('held for you (HIL-01M3K1XQG8KQWQ5YK53X063ECE)')).toBe('held for you');
+  });
+});
+
 describe('why a session ended, in Details (T438)', () => {
   test("a non-zero exit is an error with the vendor's line, never the exit code's words", () => {
     expect(

@@ -11430,7 +11430,7 @@ describe('permissions: the Ask card and Settings (Playwright e2e, T457)', () => 
 
         const first = await read('a.ts');
         expect(first.permissionDecision).toBe('deny');
-        expect(first.permissionDecisionReason).toContain('routed to your inbox');
+        expect(first.permissionDecisionReason).toContain('held for the human');
         const gate = cockpit.gates.list().find((g) => g.read_root !== undefined);
         if (gate === undefined) throw new Error('no read gate raised');
         const root = join(outside, 'src');

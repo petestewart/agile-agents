@@ -86,7 +86,13 @@ import { createWorktree, slugify } from '../runner/worktrees';
 import type { StateStore } from '../store';
 import { assertRepoHasCommits, buildEvent } from '../store';
 import type { StreamService } from '../streams/service';
-import { CRASH_RESTARTS_PER_HOUR, crashHandover, fallbackVendors, retryWontHelp } from './fallback';
+import {
+  CRASH_RESTARTS_PER_HOUR,
+  crashHandover,
+  fallbackVendors,
+  retryWontHelp,
+  turnFailureWords,
+} from './fallback';
 import { type AttachFlags, effortIgnoredLine, resolveSessionSettings } from './resolve';
 
 /** A live session already exists in this role (one worker and one reviewer at most). RPC: -32602. */
@@ -971,6 +977,7 @@ export class AttachService {
           findingsBefore,
           info.vendorError,
           info.exitCode,
+          info.agentSaid,
         ),
       ),
     );
@@ -1340,6 +1347,7 @@ export class AttachService {
     findingsBefore: number,
     vendorError?: string,
     exitCode?: number,
+    agentSaid?: string,
   ): Promise<void> {
     const handles = this.handles(role);
     if (handles.get(streamId)?.sessionId === sessionId) handles.delete(streamId);
@@ -1354,10 +1362,23 @@ export class AttachService {
     // finished turn): a crash or a refusal (a login, a bad model), never finished work.
     const crashed =
       ok && exitCode !== undefined && exitCode !== 0 && !endedAfterTurn && !stoppedByUs;
+    // T460: a turn the vendor failed (a login refusal answers the prompt this way,
+    // the process still alive), not a stop of ours: recovered like a crash.
+    const failedTurn =
+      !ok && !endedAfterTurn && !stoppedByUs && reason.startsWith(PROMPT_FAILED_PREFIX);
+    const failedWords = failedTurn
+      ? turnFailureWords({
+          vendor: this.sessionVendor(streamId, sessionId),
+          label: this.vendorLabel(this.sessionVendor(streamId, sessionId)),
+          said: agentSaid,
+          vendorError,
+          message: reason.slice(PROMPT_FAILED_PREFIX.length),
+        })
+      : undefined;
     // `stop()` already holds the promise it awaits; dropping it cannot lose a write.
     this.exitHandled.delete(sessionId);
     // T456: any end but a crash ends the failure being recovered from.
-    if (isAgentRole(role) && !crashed) this.crashes.delete(streamId);
+    if (isAgentRole(role) && !crashed && !failedTurn) this.crashes.delete(streamId);
     try {
       await this.setSessionStatus(
         streamId,
@@ -1367,7 +1388,9 @@ export class AttachService {
           ? undefined
           : stopReason !== undefined
             ? `${DAEMON_STOP_PREFIX}${stopReason}`
-            : endedReason(reason, ok, vendorError),
+            : failedWords !== undefined
+              ? `${TURN_FAILED_PREFIX}${failedWords}`.slice(0, 300)
+              : endedReason(reason, ok, vendorError),
       );
       // A human pulled the plug: back to `idle`. `done` would claim the kill finished the work.
       if (detached) {
@@ -1411,6 +1434,11 @@ export class AttachService {
       if (crashed && isAgentRole(role)) {
         if (await this.recoverCrash(streamId, sessionId, vendorError, exitCode)) return;
       }
+      // T460: the agent's own words name the failure (Claude Code's login refusal).
+      if (failedTurn && isAgentRole(role)) {
+        if (await this.recoverCrash(streamId, sessionId, agentSaid ?? vendorError, undefined))
+          return;
+      }
       await this.options.streams.update('daemon', streamId, {
         agent: {
           status: ok && !crashed ? 'done' : 'blocked',
@@ -1422,7 +1450,9 @@ export class AttachService {
                   800,
                 ),
               }
-            : {}),
+            : failedWords !== undefined && isAgentRole(role)
+              ? { progress: `${CRASHED_PREFIX}${failedWords}`.slice(0, 800) }
+              : {}),
         },
       });
       await this.options.streams.appendThread('daemon', streamId, {
@@ -1430,7 +1460,9 @@ export class AttachService {
         body: `session ended: ${
           finishedTurn
             ? 'its turn finished'
-            : (endedReason(reason, ok && !crashed, vendorError) ?? reason)
+            : failedWords !== undefined
+              ? `${TURN_FAILED_PREFIX}${failedWords}`
+              : (endedReason(reason, ok && !crashed, vendorError) ?? reason)
         }`.slice(0, 800),
         ref: sessionId,
       });
@@ -1566,6 +1598,18 @@ export class AttachService {
   private providerFor(vendor: string): AcpProviderConfig {
     const base = resolveAcpProvider(vendor);
     return this.options.provider ? this.options.provider(vendor, base) : base;
+  }
+
+  /** T460: the vendor a node's session ran. */
+  private sessionVendor(streamId: string, sessionId: string): string {
+    try {
+      return (
+        this.options.streams.get(streamId).sessions.find((s) => s.id === sessionId)?.vendor ??
+        'agent'
+      );
+    } catch {
+      return 'agent';
+    }
   }
 
   private vendorLabel(vendor: string): string {
@@ -1819,6 +1863,10 @@ export class AttachService {
 /** T437: the progress line a failed start or a vendor crash leaves, so Needs me, Overview and Events say why. */
 export const FAILED_START_PREFIX = 'The agent couldn’t start: ';
 export const CRASHED_PREFIX = 'The agent stopped with an error: ';
+/** T460: the session's end after a failed turn (`session ended: turn failed: …`). */
+export const TURN_FAILED_PREFIX = 'turn failed: ';
+/** The runner's reason for a session it stopped on a failed turn. */
+const PROMPT_FAILED_PREFIX = 'prompt failed: ';
 
 /** A daemon-written failure line on `agent.progress` (a new start clears it). */
 function isFailureProgress(progress: string | undefined): boolean {
