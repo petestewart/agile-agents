@@ -2807,6 +2807,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `attach/service.test.ts` T460 cases (a fake agent that says the refusal, then rejects the prompt): blocked in words with no retry; switched to the fallback; any other failure retried once, then blocked. `fallback.test.ts` wording. `chat.test.ts` T460. The route band tests assert no id. Full `bun test`.
 - **Notes:** Branch T460-refused-turn. The runner passes the failed turn's text as `agentSaid` (`TurnFailedError`). `turnFailureWords` in `attach/fallback.ts` gives the words and the per-vendor login hint (claude, gemini, codex, cursor; others "log in to <label>"). The thread line is `session ended: turn failed: …`. The fake agent gained a `reject_prompt` step. The composer's `/login` hint is part of T461.
 
+### Ticket: T460b A decided gate reaches the agent in words, not by id
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Two more places told the agent a gate's id, which it could repeat to Pete. The approval or denial prompt said "`HIL-…` approved — retry the call now.", and a retry after a denial was refused with "`HIL-…` was denied: …".
+- **Acceptance Criteria:** The prompt names the call itself ("The human approved your held Edit call: <path> — retry the call now."). The refused retry reads "The human denied this call: <note>". Neither carries the id.
+- **Validation Steps:** `hook/route-band.test.ts` asserts the words and no id; `hook/service.test.ts`.
+- **Notes:** Branch T460b-gate-decision-words. `heldCallWords` in `attach/service.ts`.
+
 ### Ticket: T461 Slash commands in the composer
 - **Priority:** P1
 - **Status:** Todo

@@ -113,7 +113,7 @@ export async function routeCall(
       decision: {
         decision: 'deny',
         reason: cap(
-          `${denied.id} was denied: ${denied.note ?? 'no reason given'}. Do not retry this call; do the work another way or ask on the stream.`,
+          `The human denied this call: ${denied.note ?? 'no reason given'}. Do not retry this call; do the work another way or ask on the stream.`,
         ),
       },
       gate: denied.id,

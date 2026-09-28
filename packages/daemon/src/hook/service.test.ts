@@ -521,7 +521,7 @@ describe('HookService — permission posture and the read card (T457)', () => {
     await gates.respond(gate.id, 'deny', 'human', 'not that repo');
     const retry = await readFile(path);
     expect(retry.permissionDecision).toBe('deny');
-    expect(retry.permissionDecisionReason).toContain('was denied: not that repo');
+    expect(retry.permissionDecisionReason).toContain('The human denied this call: not that repo');
   });
 
   test('Trusted allows the read with no card; the project override beats the home', async () => {

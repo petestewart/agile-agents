@@ -271,10 +271,12 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
     //    human approves, and the session is prompted to retry.
     await endFirstTurnHolding(stream.id, session);
     await gates.respond(gate.id, 'approve', 'pete');
-    await waitFor(() => prompts().some((line) => line.includes(gate.id)));
-    const approvalPrompt = prompts().find((line) => line.includes(gate.id)) ?? '';
-    expect(approvalPrompt).toContain('approved');
+    await waitFor(() => prompts().some((line) => line.includes('The human approved')));
+    const approvalPrompt = prompts().find((line) => line.includes('The human approved')) ?? '';
+    // T460b: the call in words, never the gate's id.
+    expect(approvalPrompt).toContain(`your held Edit call: ${join(worktree, 'package.json')}`);
     expect(approvalPrompt).toContain('retry');
+    expect(approvalPrompt).not.toContain(gate.id);
 
     // 5. The same call now goes through, once, and the event says who by.
     const allowed = await hooks.preToolUse(editPayload(session, worktree, 'package.json'));
@@ -309,16 +311,17 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
 
     await endFirstTurnHolding(stream.id, session);
     await gates.respond(gate.id, 'deny', 'pete', 'use the version already in the lockfile');
-    await waitFor(() => prompts().some((line) => line.includes(gate.id)));
-    const denial = prompts().find((line) => line.includes(gate.id)) ?? '';
-    expect(denial).toContain('denied');
+    await waitFor(() => prompts().some((line) => line.includes('The human denied')));
+    const denial = prompts().find((line) => line.includes('The human denied')) ?? '';
+    expect(denial).not.toContain(gate.id);
     expect(denial).toContain('use the version already in the lockfile');
 
     // A retry after a denial is denied with the human's reason, not routed
     // again — the answer was "no", and the model should hear it.
     const retry = await hooks.preToolUse(editPayload(session, worktree, 'package.json'));
     expect(retry.hookSpecificOutput.permissionDecision).toBe('deny');
-    expect(reasonOf(retry)).toContain(`${gate.id} was denied`);
+    expect(reasonOf(retry)).toContain('The human denied this call');
+    expect(reasonOf(retry)).not.toContain(gate.id);
     expect(reasonOf(retry)).toContain('use the version already in the lockfile');
     expect(openGates()).toHaveLength(0);
   }, 90_000);
@@ -349,7 +352,7 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
     // work, prompted with the retry.
     expect(streams.get(stream.id).human.status).toBe('open');
     expect(streams.get(stream.id).agent.status).toBe('working');
-    await waitFor(() => prompts().some((line) => line.includes(gate.id)));
+    await waitFor(() => prompts().some((line) => line.includes('The human approved')));
 
     // The retry goes through, once.
     const allowed = await hooks.preToolUse(editPayload(session, worktree, 'package.json'));
