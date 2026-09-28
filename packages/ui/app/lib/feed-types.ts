@@ -105,6 +105,8 @@ export interface CockpitStreamRow {
   stopped?: true;
   /** T382: the live session Running names (its own agent first). Absent when nothing is live, or from an older daemon. */
   live_agent?: CockpitLiveAgent;
+  /** T470: the vendor and model its agent last ran; absent if it never ran, or from an older daemon. */
+  last_agent?: { vendor: string; model: string };
   /**
    * T447: a coordinating node's (or a project root's) parts, rolled up. Never
    * sent by the daemon: the feed derives it from the rows (`withParts`).

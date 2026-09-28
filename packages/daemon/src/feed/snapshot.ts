@@ -199,6 +199,8 @@ export interface CockpitStreamRow {
   stopped?: true;
   /** T382: the live session Running names (`liveAgent`); absent when nothing is live. */
   live_agent?: CockpitLiveAgent;
+  /** T470: the vendor and model its agent last ran (Needs me names the agent); absent if it never ran. */
+  last_agent?: { vendor: string; model: string };
 }
 
 /** T382: what a live node runs: its session's role, vendor, model and effort. */
@@ -363,6 +365,7 @@ export function buildCockpitFrame(
       ...answeredRow(answeredAt?.(s.id)),
       ...startState(s),
       ...liveAgent(s, contextOf),
+      ...lastAgent(s),
     })),
     projects: (projects?.list() ?? []).map((p) => ({
       id: p.id,
@@ -462,6 +465,17 @@ function liveAgent(
       ...contextRow(contextOf?.(pick.id)),
     },
   };
+}
+
+/** T470: the newest worker or coordinator session's vendor and model. */
+function lastAgent(s: Stream): { last_agent?: { vendor: string; model: string } } {
+  for (let i = s.sessions.length - 1; i >= 0; i--) {
+    const x = s.sessions[i];
+    if (x !== undefined && (x.role === 'worker' || x.role === 'coordinator')) {
+      return { last_agent: { vendor: x.vendor, model: x.model } };
+    }
+  }
+  return {};
 }
 
 function contextRow(context: CockpitLiveAgent['context']): Pick<CockpitLiveAgent, 'context'> {

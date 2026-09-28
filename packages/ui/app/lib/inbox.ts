@@ -554,32 +554,52 @@ export function noChangesText(item: InboxItem): string {
 
 // ---------------------------------------------------------------- filter
 
-export type NeedsMeFilter = 'all' | 'questions' | 'decisions' | 'merges';
+export type NeedsMeFilter = 'all' | 'questions' | 'decisions' | 'merges' | 'finished' | 'blocked';
+
+/** T470: a node's merge-check fields, looked up by id (the cockpit row). */
+export type RowLookup = (id: string | undefined) => Parameters<typeof doneCardOf>[0] | undefined;
 
 /**
- * Questions (and a blocked agent, which a reply unblocks: its card has a
- * "Reply to unblock…" field) want your words; merges want a Merge; the rest
- * are decisions.
+ * Questions want your words; merges want a Merge; T470: a node that
+ * finished with nothing to merge is **finished** (Close it or reply), a
+ * blocked agent is **blocked**; the rest are decisions.
  */
-export function filterOf(item: InboxItem): Exclude<NeedsMeFilter, 'all'> {
-  if (item.kind === 'question' || item.kind === 'blocked') return 'questions';
-  if (item.kind === 'done' || isLandGate(item)) return 'merges';
+export function filterOf(item: InboxItem, rowOf?: RowLookup): Exclude<NeedsMeFilter, 'all'> {
+  if (item.kind === 'question') return 'questions';
+  if (item.kind === 'blocked') return 'blocked';
+  if (item.kind === 'done')
+    return doneCardOf(rowOf?.(item.stream)) === 'no_changes' ? 'finished' : 'merges';
+  if (isLandGate(item)) return 'merges';
   return 'decisions';
 }
 
-export function filterCounts(items: readonly InboxItem[]): Record<NeedsMeFilter, number> {
+export function filterCounts(
+  items: readonly InboxItem[],
+  rowOf?: RowLookup,
+): Record<NeedsMeFilter, number> {
   const counts: Record<NeedsMeFilter, number> = {
     all: items.length,
     questions: 0,
     decisions: 0,
     merges: 0,
+    finished: 0,
+    blocked: 0,
   };
-  for (const item of items) counts[filterOf(item)]++;
+  for (const item of items) counts[filterOf(item, rowOf)]++;
   return counts;
 }
 
-export function applyFilter(items: readonly InboxItem[], filter: NeedsMeFilter): InboxItem[] {
-  return filter === 'all' ? [...items] : items.filter((item) => filterOf(item) === filter);
+export function applyFilter(
+  items: readonly InboxItem[],
+  filter: NeedsMeFilter,
+  rowOf?: RowLookup,
+): InboxItem[] {
+  return filter === 'all' ? [...items] : items.filter((item) => filterOf(item, rowOf) === filter);
+}
+
+/** T470: the nodes a set of items is about, once each (a knowledge item has none). */
+export function nodesOf(items: readonly InboxItem[]): string[] {
+  return [...new Set(items.flatMap((item) => (item.stream !== undefined ? [item.stream] : [])))];
 }
 
 // ---------------------------------------------------------------- grouping

@@ -28,6 +28,7 @@ import {
   mergeQuestion,
   noChangesText,
   nodePath,
+  nodesOf,
   overlapText,
   overlapTitles,
   parseChoices,
@@ -453,18 +454,37 @@ describe('the filter (T364)', () => {
   ];
 
   test('questions want words, merges want Merge, the rest are decisions', () => {
-    expect(items.map(filterOf)).toEqual([
+    expect(items.map((i) => filterOf(i))).toEqual([
       'questions',
-      'questions',
+      'blocked',
       'decisions',
       'merges',
       'merges',
       'decisions',
       'decisions',
     ]);
-    expect(filterCounts(items)).toEqual({ all: 7, questions: 2, decisions: 3, merges: 2 });
+    expect(filterCounts(items)).toEqual({
+      all: 7,
+      questions: 1,
+      decisions: 3,
+      merges: 2,
+      finished: 0,
+      blocked: 1,
+    });
     expect(applyFilter(items, 'merges').map((i) => i.id)).toEqual(['l', 'd']);
     expect(applyFilter(items, 'all')).toHaveLength(7);
+  });
+
+  test('T470: a node that finished with nothing to merge is Finished, not a merge', () => {
+    const rowOf = (id: string | undefined) =>
+      id === NODE ? { nothing_to_merge: true as const } : undefined;
+    const done = item({ kind: 'done', id: NODE });
+    expect(filterOf(done, rowOf)).toBe('finished');
+    expect(filterOf(done)).toBe('merges');
+    expect(filterCounts([done], rowOf).finished).toBe(1);
+    expect(
+      nodesOf([done, done, item({ kind: 'rule_accept', id: 'r', stream: undefined })]),
+    ).toEqual([NODE]);
   });
 });
 
@@ -700,7 +720,7 @@ describe("T416: ⌘K's Needs me rows", () => {
   });
 
   test('a blocked agent is filed with the questions: a reply unblocks it', () => {
-    expect(filterOf(item({ kind: 'blocked', id: NODE }))).toBe('questions');
+    expect(filterOf(item({ kind: 'blocked', id: NODE }))).toBe('blocked');
   });
 });
 
