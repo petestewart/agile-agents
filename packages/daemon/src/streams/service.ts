@@ -495,6 +495,38 @@ export class StreamService {
    * line names any plan or contract of its that still names the node.
    * Moving to the current parent is a no-op.
    */
+  /**
+   * T474: places `id` just before or just after `anchor`, among `anchor`'s
+   * siblings; a node under another parent moves there first (`move`, with
+   * its checks). The siblings are renumbered 0, 1, 2… in their new order;
+   * only those whose place changed are written.
+   */
+  async reorder(id: string, anchor: string, side: 'before' | 'after'): Promise<Stream> {
+    if (id === anchor) return this.get(id);
+    const target = this.get(anchor);
+    if (target.parent === undefined) {
+      throw new NodeMoveError(
+        `${target.title} is a project root; nodes sit under it, not beside it`,
+      );
+    }
+    if (this.get(id).parent !== target.parent) await this.move(id, target.parent);
+    const siblings = this.list()
+      .filter((s) => s.parent === target.parent && s.id !== id)
+      .map((s, i) => ({ s, i }))
+      .sort(
+        (a, b) =>
+          (a.s.order ?? Number.MAX_SAFE_INTEGER) - (b.s.order ?? Number.MAX_SAFE_INTEGER) ||
+          a.i - b.i,
+      )
+      .map(({ s }) => s);
+    const at = siblings.findIndex((s) => s.id === anchor) + (side === 'after' ? 1 : 0);
+    const ordered = [...siblings.slice(0, at), this.get(id), ...siblings.slice(at)];
+    for (const [order, s] of ordered.entries()) {
+      if (s.order !== order) await this.update('human', s.id, { order });
+    }
+    return this.get(id);
+  }
+
   async move(id: string, target: string): Promise<Stream> {
     const node = this.get(id);
     const from = node.parent;
@@ -754,6 +786,8 @@ export interface StreamPatch {
   permissions?: Stream['permissions'] | null;
   /** T478: `null` (or `false`) clears it: the node waits for you to close it. */
   auto_close?: boolean | null;
+  /** T474: its place among its siblings. */
+  order?: number;
   /** T473: the repo, branch and worktree a node went back to talk from; `null` clears it. */
   parked?: Stream['parked'] | null;
   /** T176: `null` clears it. */

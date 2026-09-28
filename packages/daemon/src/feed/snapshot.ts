@@ -203,6 +203,8 @@ export interface CockpitStreamRow {
   last_agent?: { vendor: string; model: string };
   /** T477: it has no goal yet: a finished turn is a reply to you, not finished work. */
   no_goal?: true;
+  /** T474: its place among its siblings, when it was dragged there. */
+  order?: number;
 }
 
 /** T382: what a live node runs: its session's role, vendor, model and effort. */
@@ -369,6 +371,7 @@ export function buildCockpitFrame(
       ...liveAgent(s, contextOf),
       ...lastAgent(s),
       ...(s.goal === undefined ? { no_goal: true as const } : {}),
+      ...(s.order !== undefined ? { order: s.order } : {}),
     })),
     projects: (projects?.list() ?? []).map((p) => ({
       id: p.id,

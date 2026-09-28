@@ -403,6 +403,17 @@ export function waitOnStream(id: string, on: string, remove = false): Promise<un
 }
 
 /** T333 (D34): the rail's drag — move `id` under `parent` (a node, or a project id for its root). */
+/** T474: `id` just before or just after `anchor`, among `anchor`'s siblings. */
+export function reorderStream(
+  id: string,
+  anchor: string,
+  side: 'before' | 'after',
+): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/reorder`, {
+    [side]: anchor,
+  }) as Promise<Stream>;
+}
+
 export function moveStream(id: string, parent: string): Promise<Stream> {
   return post(`/api/streams/${encodeURIComponent(id)}/move`, { parent }) as Promise<Stream>;
 }

@@ -2985,10 +2985,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T474 Reorder sibling nodes by dragging
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28): dragging makes parent/child moves; it should also reorder siblings.
 - **Acceptance Criteria:** Dropping between two siblings places a node there. The order is kept on the node record (an `order` key among its siblings) and used by the rail and Overview.
+- **Validation Steps:** A drop on a row's top or bottom quarter places the node before or after it: a line shows where. The middle still nests under it, and a project's row only nests. `StreamService.reorder` moves the node to the anchor's parent first if needed (with `move`'s checks), then renumbers the siblings 0, 1, 2… and writes only those that changed (`order` on the record, `POST /api/streams/:id/reorder {before|after}`). The rail sorts siblings by `order`, with unordered nodes after, in creation order. The Overview uses it within a status. Tests: service T474 ×2, `tree.test.ts` (`dropZone`, `checkPlace`), e2e T474 (top edge → first, bottom edge → last); the T333 drag e2e still nests on the middle. Full `bun test` 3491/0.
+- **Notes:** Branch T474-reorder-siblings.
 
 ### Ticket: T475 A finished reply is never folded
 - **Priority:** P1

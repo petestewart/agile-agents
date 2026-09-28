@@ -146,6 +146,34 @@ export function checkMove(rows: readonly Row[], moving: string, target: string):
   return { ok: true };
 }
 
+/** T474: where a drop on a row puts the node: just before it, under it, or just after it. */
+export type DropZone = 'before' | 'into' | 'after';
+
+/** T474: a quarter of the row's height at each edge places it beside; the middle nests it. */
+export function dropZone(offsetY: number, height: number): DropZone {
+  if (height <= 0) return 'into';
+  if (offsetY < height * 0.25) return 'before';
+  if (offsetY > height * 0.75) return 'after';
+  return 'into';
+}
+
+/**
+ * T474: whether the rail lets `moving` go just before or after `anchor`:
+ * beside a project's root is nowhere; under another parent it is a move
+ * there first (`checkMove`'s rules).
+ */
+export function checkPlace(rows: readonly Row[], moving: string, anchor: string): MoveCheck {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const from = byId.get(moving);
+  const at = byId.get(anchor);
+  if (!from || !at || moving === anchor || at.parent === undefined || at.role === 'project') {
+    return { ok: false, quiet: true };
+  }
+  if (from.parent === at.parent)
+    return from.role === 'project' ? { ok: false, quiet: true } : { ok: true };
+  return checkMove(rows, moving, at.parent);
+}
+
 /** One row of a picker: a node and how deep it sits under its root. */
 export interface OutlineRow {
   row: CockpitStreamRow;
@@ -411,7 +439,8 @@ export function railTitle(
 
 /** T424: the legend's marks: the overlap button, and that rows drag. */
 export const OVERLAP_NOTE = 'Overlaps another node; click to open it';
-export const DRAG_NOTE = 'Drag a row to move it (or ⋯ → Move to…)';
+export const DRAG_NOTE =
+  'Drag a row onto another to put it under it, or to its top or bottom edge to place it beside it (or ⋯ → Move to…)';
 
 /** The legend's one-line gloss per kind of node. */
 export const ROLE_NOTE: Record<NonNullable<StatusInput['role']>, string> = {

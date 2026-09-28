@@ -8,8 +8,10 @@ import {
   LEGEND_NOTE,
   LEGEND_ORDER,
   checkMove,
+  checkPlace,
   defaultRepoOf,
   deleteQuestion,
+  dropZone,
   filesText,
   legendRow,
   moveTargets,
@@ -469,5 +471,23 @@ describe('defaultRepoOf (T445)', () => {
     expect(defaultRepoOf(undefined, ['shop'])).toBe('');
     // Not (or no longer) registered: nothing to start on.
     expect(defaultRepoOf(['gone'], ['shop'])).toBe('');
+  });
+});
+
+describe('T474: dropping beside a row', () => {
+  test('the edges place it, the middle nests it', () => {
+    expect(dropZone(2, 30)).toBe('before');
+    expect(dropZone(15, 30)).toBe('into');
+    expect(dropZone(28, 30)).toBe('after');
+    expect(dropZone(5, 0)).toBe('into');
+  });
+
+  test('beside a sibling is fine; beside a node elsewhere is a move there; never beside a root', () => {
+    expect(checkPlace(ROWS, 'a1', 'a2')).toEqual({ ok: true });
+    expect(checkPlace(ROWS, 'b', 'a1')).toEqual({ ok: true });
+    expect(checkPlace(ROWS, 'a1', 'a1')).toEqual({ ok: false, quiet: true });
+    expect(checkPlace(ROWS, 'a', 'root')).toEqual({ ok: false, quiet: true });
+    // Beside its own child means under itself.
+    expect(checkPlace(ROWS, 'a', 'a1x')).toMatchObject({ ok: false });
   });
 });

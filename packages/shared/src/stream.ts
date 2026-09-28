@@ -470,6 +470,12 @@ export const StreamSchema = z
      */
     auto_close: z.boolean().optional(),
     /**
+     * T474: where it sits among its siblings (smallest first), set by
+     * dragging it between two of them. Absent: after those with one, in the
+     * order the nodes were made.
+     */
+    order: z.number().int().nonnegative().optional(),
+    /**
      * T473: a work node that went back to just talking keeps its repo, branch
      * and worktree here (on disk too). Picking that repo again (Turn into
      * work, + Repo) picks the work back up on them.
@@ -912,6 +918,15 @@ export const TrashPurgeRequestSchema = z
   .object({ delete_branches: z.boolean().optional() })
   .strict();
 export type TrashPurgeRequest = z.infer<typeof TrashPurgeRequestSchema>;
+
+/** T474: `POST /api/streams/:id/reorder`: place it just before or just after a node (one of them). */
+export const StreamReorderRequestSchema = z
+  .object({ before: UlidSchema.optional(), after: UlidSchema.optional() })
+  .strict()
+  .refine((input) => (input.before === undefined) !== (input.after === undefined), {
+    message: 'send one of before or after',
+  });
+export type StreamReorderRequest = z.infer<typeof StreamReorderRequestSchema>;
 
 /** T478: `POST /api/streams/:id/auto-close`: this node closes itself when its goal is met. */
 export const StreamAutoCloseRequestSchema = z.object({ on: z.boolean() }).strict();

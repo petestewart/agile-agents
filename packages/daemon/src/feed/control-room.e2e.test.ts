@@ -7234,7 +7234,7 @@ describe("the rail's row menus, Deleted and New project (Playwright e2e, T365)",
           'Overlaps another node; click to open it',
         );
         expect(await legend.locator('[data-mark="drag"]').textContent()).toBe(
-          'Drag a row to move it (or ⋯ → Move to…)',
+          'Drag a row onto another to put it under it, or to its top or bottom edge to place it beside it (or ⋯ → Move to…)',
         );
         expect(await legend.locator('[data-icon="alert-triangle"]').count()).toBe(0);
         expect(
@@ -9943,6 +9943,52 @@ describe("No goal yet, and the Finished card's ✕ (Playwright e2e, T477)", () =
             ),
         );
         expect(node.sessions).toHaveLength(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Reorder siblings by dragging (Playwright e2e, T474)', () => {
+  browserTest(
+    "a drop on a row's top edge puts the node before it, on its bottom edge after it; the middle still nests",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const node = (title: string) =>
+          cockpit.streams.create('human', { title, goal: 'g', project: shop.id });
+        const a = await node('alpha');
+        const b = await node('bravo');
+        const c = await node('charlie');
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const tree = '[data-testid="stream-tree"]';
+        const row = (id: string) => (page as Page).locator(`${tree} [data-stream="${id}"]`);
+        const order = async () =>
+          (await (page as Page)
+            .locator(`[data-tree-node="${shop.root}"] > ul > li > .cr-tree-item .cr-tree-row`)
+            .evaluateAll((els) => els.map((el) => el.getAttribute('data-stream')))) as string[];
+        await row(c.id).waitFor();
+        expect(await order()).toEqual([a.id, b.id, c.id]);
+
+        // charlie onto alpha's top edge: first.
+        await row(c.id).dragTo(row(a.id), { targetPosition: { x: 40, y: 2 } });
+        await waitUntilAsync('charlie first', async () => (await order())[0] === c.id);
+        expect(await order()).toEqual([c.id, a.id, b.id]);
+        expect(cockpit.streams.get(c.id).parent).toBe(shop.root);
+
+        // alpha onto bravo's bottom edge: last.
+        const box = await row(b.id).boundingBox();
+        await row(a.id).dragTo(row(b.id), {
+          targetPosition: { x: 40, y: (box?.height ?? 30) - 2 },
+        });
+        await waitUntilAsync('alpha last', async () => (await order()).at(-1) === a.id);
+        expect(await order()).toEqual([c.id, b.id, a.id]);
       } finally {
         await teardown([page]);
         await cockpit.stop();
