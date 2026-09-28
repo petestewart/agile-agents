@@ -10825,3 +10825,30 @@ div.cr-lens-ev:hover {
   display: flex;
   margin: 2px 0 6px;
 }
+/* T468: the effort, on the right of the composer's bar; a click or Shift+Tab steps it. */
+.cr-effort-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 9px;
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cr-effort-chip:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.cr-effort-chip[data-chosen="true"] {
+  color: var(--accent-fg);
+  background: var(--accent-weak);
+  border-color: transparent;
+}

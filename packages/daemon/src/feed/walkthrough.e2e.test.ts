@@ -2530,11 +2530,17 @@ test.skipIf(!RUN)(
         await turnGate.wait();
         return 'TRACKER.md added.';
       });
-      // T363: Start agent is one click; the composer's chip names what it runs.
+      // T363: Start agent is one click; the composer's chips name what it runs (T468: the model,
+      // then its effort).
       await checkText(
-        'the default it starts with: Claude … · low',
+        'the default it starts with: Claude …',
         page.locator('[data-testid="composer-model"]'),
-        /^Claude .* · low$/,
+        /^Claude .+$/,
+      );
+      await checkText(
+        'at its default effort: Low',
+        page.locator('[data-testid="composer-effort"]'),
+        /^Low$/,
       );
       await streamPage().getByRole('button', { name: 'Start agent', exact: true }).click();
       await checkText(

@@ -2905,10 +2905,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T468 Model and effort as two controls; Shift+Tab cycles effort
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28): "separate the model and effort with model indicator on left and effort on right. shift-tab should be used to cycle through effort levels."
 - **Acceptance Criteria:** The composer bar shows the model chip on the left and an effort chip on the right (only for a vendor that takes effort, T401). Shift+Tab in the composer cycles low → medium → high → max, and the effort chip changes with it. The pick lasts like the model pick (T423, T464).
+- **Validation Steps:** The composer's model chip shows the model alone (`ModelChip modelOnly`). `EffortChip` sits right of it, before Stop and Send, and is absent for a vendor with no effort setting. A click or Shift+Tab in the box steps low → medium → high → max → low, with focus kept. The step sets the next message's pick, as the model chip does, so it lasts one message and restarts a live agent with it. It is highlighted only when the effort differs from what runs. The Ask box keeps its one combined chip. e2e T468 (position, Shift+Tab ×2, click, the start runs on max); the T423/T464 e2e and walkthrough 8.4 read the two chips. Full `bun test` 3486/0; walkthrough clean.
+- **Notes:** Branch T468-model-effort-chips.
 
 ### Ticket: T470 Needs me as a true inbox
 - **Priority:** P1

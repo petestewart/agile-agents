@@ -261,11 +261,14 @@ export function ModelChip({
   onPick,
   onReset,
   placement = 'top',
+  modelOnly = false,
 }: {
   status: SessionDefaultsStatus | undefined;
   chip: ModelChipState;
   /** T472: where the list opens; below where the chip sits near the top (the Ask box). */
   placement?: 'top' | 'bottom';
+  /** T468: the model alone; the effort has its own chip (`EffortChip`). */
+  modelOnly?: boolean;
   /** The live agent's model, if one runs. */
   running?: ResolvedSessionDefaults;
   /** The default here. */
@@ -280,7 +283,11 @@ export function ModelChip({
       ) : (
         <Icon name={chip.state === 'chosen' ? 'sliders' : 'sparkles'} size={12} />
       )}
-      <span className="cr-model-chip-text">{chip.label}</span>
+      <span className="cr-model-chip-text">
+        {modelOnly
+          ? agentLabel({ vendor: chip.shows.vendor, model: chip.shows.model })
+          : chip.label}
+      </span>
     </>
   );
   // The list comes with the defaults; until then the chip only names what runs.
@@ -641,5 +648,46 @@ export function SessionFields({
         ))}
       </select>
     </div>
+  );
+}
+
+/** T468: the next effort after `level`, round from max back to low. */
+export function nextEffort(level: Effort): Effort {
+  const at = EFFORT_LEVELS.indexOf(level);
+  return EFFORT_LEVELS[(at + 1) % EFFORT_LEVELS.length] as Effort;
+}
+
+/**
+ * T468: the composer's effort, on the right of its bar. A click (or
+ * Shift+Tab in the composer) steps low → medium → high → max; the pick is
+ * for the next message, like the model chip's. Absent for a vendor with no
+ * effort setting (T401).
+ */
+export function EffortChip({
+  value,
+  vendor,
+  chosen,
+  onStep,
+}: {
+  value: Effort;
+  vendor: string;
+  /** Not what runs (or the default): a pick for the next message. */
+  chosen: boolean;
+  onStep: () => void;
+}): JSX.Element | null {
+  if (!vendorTakesEffort(vendor)) return null;
+  return (
+    <button
+      type="button"
+      className="cr-effort-chip"
+      data-testid="composer-effort"
+      data-effort={value}
+      data-chosen={chosen ? 'true' : undefined}
+      title={`${effortWord(value)} effort for your next message. Click or Shift+Tab for ${effortWord(nextEffort(value))}.`}
+      onClick={onStep}
+    >
+      <Icon name="zap" size={12} />
+      {effortWord(value)}
+    </button>
   );
 }

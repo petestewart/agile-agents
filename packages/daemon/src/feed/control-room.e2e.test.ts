@@ -2332,7 +2332,9 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
         await page.goto(`${cockpit.base}/?node=${node.id}`);
         await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
         const chip = page.locator('[data-testid="composer-model"]');
-        await waitForText(page, '[data-testid="composer-model"]', 'Claude Opus 5.5 · low');
+        // T468: the model on the left, its effort on the right.
+        await waitForText(page, '[data-testid="composer-model"]', 'Claude Opus 5.5');
+        await waitForText(page, '[data-testid="composer-effort"]', 'Low');
         expect(await chip.getAttribute('title')).toContain('resets to the default after you send');
 
         // One place to pick: not in Details, not in ⋯ (the header keeps Start with…).
@@ -2374,7 +2376,8 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
         // Picking started nothing; the chip and the hint say what Send will do.
         await Bun.sleep(300);
         expect(cockpit.streams.get(node.id).sessions).toEqual([]);
-        await waitForText(page, '[data-testid="composer-model"]', 'Claude Sonnet 4.6 · high');
+        await waitForText(page, '[data-testid="composer-model"]', 'Claude Sonnet 4.6');
+        await waitForText(page, '[data-testid="composer-effort"]', 'High');
         expect(await chip.getAttribute('data-chosen')).toBe('true');
         expect(await page.locator('[data-testid="composer-hint"]').textContent()).toBe(
           'Starts the agent with Claude Sonnet 4.6 · high.',
@@ -2398,7 +2401,8 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
         await waitUntilAsync('the chip to name the live agent', async () =>
           page ? (await chip.getAttribute('data-live')) === 'true' : false,
         );
-        expect(await chip.textContent()).toBe('Claude Sonnet 4.6 · high');
+        expect(await chip.textContent()).toBe('Claude Sonnet 4.6');
+        expect(await page.locator('[data-testid="composer-effort"]').textContent()).toBe('High');
 
         // Another model for a live agent: nothing happens until you send.
         await chip.click();
@@ -2429,7 +2433,8 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
         expect(readFileSync(secondLog, 'utf8')).toContain('SWITCH-LINE use haiku');
         expect(readFileSync(firstLog, 'utf8')).not.toContain('SWITCH-LINE');
         // T464: the node keeps what it last ran on for the next message, not the default.
-        await waitForText(page, '[data-testid="composer-model"]', 'Claude Haiku 4.5 · high');
+        await waitForText(page, '[data-testid="composer-model"]', 'Claude Haiku 4.5');
+        await waitForText(page, '[data-testid="composer-effort"]', 'High');
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -2675,8 +2680,9 @@ describe('session defaults (Playwright e2e, T170)', () => {
         await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
         // T363: the composer's model chip names what Send would start.
         await page
-          .locator('[data-testid="composer-model"]', { hasText: 'Claude Sonnet 4.6 · high' })
+          .locator('[data-testid="composer-model"]', { hasText: 'Claude Sonnet 4.6' })
           .waitFor();
+        await page.locator('[data-testid="composer-effort"]', { hasText: 'High' }).waitFor();
         expect(await page.locator('[data-testid="composer-hint"]').textContent()).toBe(
           'Starts the agent with Claude Sonnet 4.6 · high.',
         );
@@ -2821,8 +2827,9 @@ describe('session defaults (Playwright e2e, T170)', () => {
         await page.locator(`[data-testid="stream-tree"] [data-stream="${stream.id}"]`).click();
         await page.locator(`[data-testid="stream-page"][data-stream="${stream.id}"]`).waitFor();
         await page
-          .locator('[data-testid="composer-model"]', { hasText: 'Claude Haiku 4.5 · max' })
+          .locator('[data-testid="composer-model"]', { hasText: 'Claude Haiku 4.5' })
           .waitFor();
+        await page.locator('[data-testid="composer-effort"]', { hasText: 'Max' }).waitFor();
         await page.locator('[data-testid="composer-input"]').fill('go');
         await page.locator('[data-testid="composer-input"]').press('Enter');
         await waitUntil(
@@ -9936,6 +9943,61 @@ describe("No goal yet, and the Finished card's ✕ (Playwright e2e, T477)", () =
             ),
         );
         expect(node.sessions).toHaveLength(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Model and effort are two chips (Playwright e2e, T468)', () => {
+  browserTest(
+    'the effort chip sits right of the model; Shift+Tab in the composer steps it, and a start runs on it',
+    async () => {
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'agent_text', text: 'On it.' }, { type: 'hang' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'Prices',
+          goal: 'g',
+          parent: shop.root,
+        });
+        const p = await openPage();
+        page = p;
+        await p.goto(`${cockpit.base}/?node=${node.id}`);
+        await waitForText(p, '[data-testid="composer-model"]', 'Claude Opus 5.5');
+        const effort = p.locator('[data-testid="composer-effort"]');
+        await waitForText(p, '[data-testid="composer-effort"]', 'Low');
+        // Right of the model chip.
+        const modelBox = await p.locator('[data-testid="composer-model"]').boundingBox();
+        const effortBox = await effort.boundingBox();
+        expect((effortBox?.x ?? 0) > (modelBox?.x ?? 0)).toBe(true);
+        const input = p.locator('[data-testid="composer-input"]');
+        await input.focus();
+        await p.keyboard.press('Shift+Tab');
+        await waitForText(p, '[data-testid="composer-effort"]', 'Medium');
+        await p.keyboard.press('Shift+Tab');
+        await waitForText(p, '[data-testid="composer-effort"]', 'High');
+        expect(await effort.getAttribute('data-chosen')).toBe('true');
+        // Focus stayed in the box; a click steps too.
+        expect(await input.evaluate((el) => el === document.activeElement)).toBe(true);
+        await effort.click();
+        await waitForText(p, '[data-testid="composer-effort"]', 'Max');
+        await input.fill('start on the prices');
+        await input.press('Enter');
+        await waitUntil('started', () => cockpit.streams.get(node.id).sessions.length > 0);
+        expect(cockpit.streams.get(node.id).sessions[0]).toMatchObject({
+          role: 'worker',
+          model: 'claude-opus-5-5',
+          effort: 'max',
+        });
       } finally {
         await teardown([page]);
         await cockpit.stop();

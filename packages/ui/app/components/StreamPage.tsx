@@ -121,7 +121,7 @@ import {
 import { type Crumb, NodeHeader } from './NodeHeader';
 import { type PickOption, PickerField } from './Pickers';
 import { SendUpDialog } from './SendUp';
-import { ModelChip, SessionPicker } from './SessionPicker';
+import { EffortChip, ModelChip, SessionPicker, nextEffort } from './SessionPicker';
 import { MoveDialog, RenameDialog } from './StreamTree';
 import { TurnIntoWorkDialog } from './TurnIntoWork';
 import {
@@ -1445,6 +1445,24 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     </button>
   ) : undefined;
 
+  // T468: the effort on the right of the bar, stepped by a click or Shift+Tab; a pick for the
+  // next message, as the model chip's is.
+  const stepEffort =
+    canPick && chip
+      ? () => {
+          const shown = chip.shows;
+          setNextSession({ ...(nextSession ?? shown), effort: nextEffort(shown.effort) });
+        }
+      : undefined;
+  const effortChipEl =
+    stepEffort && chip ? (
+      <EffortChip
+        value={chip.shows.effort}
+        vendor={chip.shows.vendor}
+        chosen={chip.pending !== undefined && chip.pending.effort !== (running ?? resolved)?.effort}
+        onStep={stepEffort}
+      />
+    ) : undefined;
   // T411: the live agent's context window, when its vendor reports it (the row's agent is this one).
   const context =
     liveAgent !== undefined && row?.live_agent?.role === liveAgent.role
@@ -1459,6 +1477,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         fallback={resolved}
         onPick={setNextSession}
         onReset={() => setNextSession(undefined)}
+        modelOnly
       />
     ) : liveAgent !== undefined ? (
       <span
@@ -1661,6 +1680,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                 modelChipEl
               )
             }
+            {...(effortChipEl ? { effort: effortChipEl } : {})}
+            {...(stepEffort && effortChipEl ? { onShiftTab: stepEffort } : {})}
             label={answeringItem ? 'Your answer' : 'Message the agent'}
             mode={intent.action === 'answer' ? 'answer' : undefined}
             {...(offline ? { sendBlocked: RECONNECTING } : {})}
