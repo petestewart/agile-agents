@@ -385,6 +385,11 @@ export function checkStreamPr(id: string): Promise<unknown> {
 }
 
 /** T205: + Repo in place (projects-design §7); `switch` moves a work node with nothing committed. */
+/** T473: a work node goes back to just talking; its repo, branch and worktree are parked. */
+export function streamToTalk(id: string): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/to-talk`) as Promise<Stream>;
+}
+
 export function addRepoToStream(id: string, repo: string, switching = false): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/add-repo`, {
     repo,

@@ -43,6 +43,7 @@ import {
   sayOnStream,
   setNodeAutoClose,
   stopSessions,
+  streamToTalk,
   unarchiveStream,
   updateStream,
   waitOnStream,
@@ -222,7 +223,7 @@ const PLAN_REQUEST =
 const ROOT_PLACEHOLDER = 'Write to the project — or press A to ask it a question';
 
 type Picker = 'start' | 'reviewer' | 'resolve';
-type Modal = 'repo' | 'wait' | 'close' | 'delete' | 'rename' | 'move';
+type Modal = 'repo' | 'wait' | 'close' | 'delete' | 'rename' | 'move' | 'talk';
 
 function PageSkeleton(): JSX.Element {
   return (
@@ -1094,6 +1095,30 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       onSelect: () => copy(stream.id, 'Copied the node id'),
     },
     'separator',
+    {
+      // T473: work and talk are one kind of node; switching is one step either way.
+      label: 'Back to just talk…',
+      icon: 'message-square',
+      testid: 'menu-to-talk',
+      hidden: !open || role !== 'work' || stream.helper_of !== undefined,
+      disabled: busy,
+      onSelect: () => setModal('talk'),
+    },
+    {
+      label: `Back to work on ${stream.parked?.repo ?? ''}`,
+      icon: 'git-branch',
+      testid: 'menu-to-work',
+      hidden: !open || role !== 'conversation' || stream.parked === undefined,
+      disabled: busy,
+      onSelect: () => {
+        const parked = stream.parked;
+        if (parked === undefined) return;
+        void act(
+          () => addRepoToStream(stream.id, parked.repo),
+          () => toast({ title: `Back to work on ${parked.repo}`, tone: 'success' }),
+        );
+      },
+    },
     {
       label: 'Reopen',
       icon: 'undo',
@@ -2270,6 +2295,34 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       )}
 
       <ConfirmDialog
+        open={modal === 'talk'}
+        title={`Back to just talking in “${stream.title}”?`}
+        confirmLabel="Back to talk"
+        busy={busy}
+        testid="to-talk"
+        onCancel={() => setModal(undefined)}
+        onConfirm={() =>
+          void act(
+            () => streamToTalk(stream.id),
+            () => {
+              setModal(undefined);
+              toast({
+                title: 'Back to talking',
+                body: `Its work on ${stream.repo ?? 'the repository'} is kept; pick that repository again to carry on.`,
+                tone: 'success',
+              });
+            },
+          )
+        }
+      >
+        <p className="cr-confirm-text">
+          Its agent stops. Its branch, commits and worktree stay as they are; the conversation
+          carries on without a repository, and its next agent reads and researches rather than
+          edits.
+        </p>
+      </ConfirmDialog>
+
+      <ConfirmDialog
         open={modal === 'close'}
         title={`Close “${stream.title}”?`}
         confirmLabel="Close node"
@@ -2287,8 +2340,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         }
       >
         <p className="cr-confirm-text">
-          Closing marks it done without merging. Its agent stops and it can’t be reopened. The
-          branch and worktree stay.
+          Closing puts it away without merging: it leaves Needs me and its agent stops. A message or
+          Reopen brings it back; the branch and worktree stay.
         </p>
       </ConfirmDialog>
 

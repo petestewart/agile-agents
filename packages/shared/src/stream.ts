@@ -469,6 +469,19 @@ export const StreamSchema = z
      * made. Only a human (or the daemon) changes it.
      */
     auto_close: z.boolean().optional(),
+    /**
+     * T473: a work node that went back to just talking keeps its repo, branch
+     * and worktree here (on disk too). Picking that repo again (Turn into
+     * work, + Repo) picks the work back up on them.
+     */
+    parked: z
+      .object({
+        repo: z.string().min(1),
+        branch: z.string().min(1),
+        worktree: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
     land_conflict: LandConflictSchema.optional(),
     /*
      * Node fields (projects-design §14.2, T201). `project` is optional in

@@ -1458,6 +1458,7 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/attach  the sessions strip's attach / review (`role: reviewer`)
  *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
  *   POST /api/streams/:id/close   the page's Close
+ *   POST /api/streams/:id/to-talk T473: a work node goes back to just talking; its work is parked
  *   POST /api/streams/:id/reopen  T471: a closed node is open again (a message does it too)
  *   GET  /api/streams/:id/trash-preview  T471: what Delete forever removes, keeps and loses
  *   POST /api/streams/:id/purge   T471: Delete forever `{delete_branches?}`
@@ -1488,7 +1489,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|auto-close|draft-goal|attach|resolve|stop|close|reopen|purge|trash-preview|dismiss|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|auto-close|draft-goal|attach|resolve|stop|close|reopen|to-talk|purge|trash-preview|dismiss|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -1542,6 +1543,10 @@ async function handleStreamRoute(
     // Close, Dismiss, Mark landed, Check now, Delete and Restore take no body.
     if (action === 'close') return jsonResponse(await feed.streams.close('human', id));
     if (action === 'reopen') return jsonResponse(await feed.streams.reopen('human', id));
+    if (action === 'to-talk') {
+      if (!feed.repoInPlace) return errorResponse(503, 'sessions not available');
+      return jsonResponse(await feed.repoInPlace.toTalk(id));
+    }
     if (action === 'dismiss') {
       return jsonResponse(
         await feed.streams.update('human', id, {

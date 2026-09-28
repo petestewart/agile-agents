@@ -25,6 +25,8 @@
  * `--no-start` and not attached since).
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   type SessionRef,
   type Stream,
@@ -36,7 +38,7 @@ import { WAITING_FOR_PLAN } from '../coordination/plans';
 import { git, removeWorktreeSafely } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
 import { stoppedByHuman } from '../events/wake';
-import { createWorktree, slugify } from '../runner/worktrees';
+import { branchLabel, createWorktree, slugify } from '../runner/worktrees';
 import { assertRepoHasCommits } from '../store/rpc-methods';
 import type { StateStore } from '../store/store';
 import { type StreamService, UnknownRepoError } from './service';
@@ -86,6 +88,50 @@ export class RepoInPlaceService {
   /** `node.add_repo`: the three rows of §7's table, minus the switch. */
   addRepo(nodeId: string, repo: string): Promise<RepoInPlaceResult> {
     return this.reshape(nodeId, repo, false);
+  }
+
+  /**
+   * T473: a work node goes back to just talking. Its agent stops; its repo,
+   * branch and worktree stay on disk and are parked on the record
+   * (`parked`), so picking that repo again picks the work back up on them.
+   * Not a coordinating node, a helper, a project root, one with an open PR,
+   * or a closed, merged or deleted one.
+   */
+  async toTalk(nodeId: string): Promise<Stream> {
+    const node = this.streams.get(nodeId);
+    if (node.human.status !== 'open' || node.archived === true) {
+      throw new RepoInPlaceError(`${node.title} is closed, merged or in the trash`);
+    }
+    const all = this.streams.list();
+    const role = nodeRole(node, liveChildrenOf(node.id, all), all);
+    if (role !== 'work' || node.repo === undefined) {
+      throw new RepoInPlaceError(`only a work node goes back to talk; ${node.title} is ${role}`);
+    }
+    if (node.helper_of !== undefined) {
+      throw new RepoInPlaceError(
+        `${node.title} helps its parent on its branch; it can't just talk`,
+      );
+    }
+    if (node.delivery_state?.status === 'pr_open') {
+      throw new RepoInPlaceError(`${node.title} has an open pull request; merge or close it first`);
+    }
+    await this.sessions.stop(node.id, 'node went back to just talking');
+    const repo = node.repo;
+    const branch = node.branch;
+    const worktree = node.worktree;
+    const talking = await this.store.updateStream('daemon', node.id, (before) => {
+      const { repo: _r, branch: _b, worktree: _w, land_conflict: _l, ...rest } = before;
+      return branch !== undefined
+        ? { ...rest, parked: { repo, branch, ...(worktree !== undefined ? { worktree } : {}) } }
+        : rest;
+    });
+    await this.event(
+      node.id,
+      branch !== undefined
+        ? `back to talk: the work on ${repo} is kept (branch ${branchLabel(branch)}); add ${repo} again to pick it up`
+        : `back to talk: no longer works in ${repo}`,
+    );
+    return talking;
   }
 
   /** `node.switch_repo`: a work node with nothing committed moves to another repo. */
@@ -147,13 +193,23 @@ export class RepoInPlaceService {
 
     let parts: Stream[] = [];
     if (inPlace) {
-      const created = await createWorktree(entry.path, { id: node.id, slug: slugify(node.title) });
+      // T473: the repo it went back to talk from: the same branch and worktree again.
+      const resumed = this.resumeParked(node, repo, entry.path);
+      const created =
+        resumed ?? (await createWorktree(entry.path, { id: node.id, slug: slugify(node.title) }));
       await this.streams.update('daemon', node.id, {
         repo,
         branch: created.branch,
         worktree: created.path,
+        // Resumed, it's no longer parked; parked for another repo, it stays for that one.
+        ...(resumed !== undefined ? { parked: null } : {}),
       });
-      await this.event(node.id, `repo added: ${repo}; now a work node on ${created.branch}`);
+      await this.event(
+        node.id,
+        resumed !== undefined
+          ? `repo added: ${repo}; back to its work on ${branchLabel(created.branch)}`
+          : `repo added: ${repo}; now a work node on ${created.branch}`,
+      );
     } else if (role !== 'work') {
       parts = [await this.newPart(node, repo)];
       await this.event(node.id, `repo added: ${repo} (new part ${parts[0]?.id})`);
@@ -321,6 +377,31 @@ export class RepoInPlaceService {
         `could not ${verb} the agent: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  /**
+   * T473: the parked branch and worktree for `repo`, when there are some to
+   * resume: the worktree as it was, or the branch checked out again.
+   */
+  private resumeParked(
+    node: Stream,
+    repo: string,
+    repoRoot: string,
+  ): { branch: string; path: string } | undefined {
+    const parked = node.parked;
+    if (parked === undefined || parked.repo !== repo) return undefined;
+    const exists = git(
+      ['rev-parse', '--verify', '--quiet', `refs/heads/${parked.branch}`],
+      repoRoot,
+      repoRoot,
+    );
+    if (exists.exitCode !== 0) return undefined;
+    if (parked.worktree !== undefined && existsSync(parked.worktree)) {
+      return { branch: parked.branch, path: parked.worktree };
+    }
+    const path = parked.worktree ?? join(repoRoot, '.worktrees', node.id);
+    const add = git(['worktree', 'add', '--', path, parked.branch], repoRoot, repoRoot);
+    return add.exitCode === 0 ? { branch: parked.branch, path } : undefined;
   }
 
   private async event(id: string, body: string): Promise<void> {

@@ -2960,10 +2960,17 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T473 Ask and Work are one kind of node
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28): "an ask agent knows how to do work … a work node knows how to do research. switching between modes should be painless. today it's a restriction." New node always makes a work node.
 - **Acceptance Criteria:** New node offers "No repository (just talk)". A work node can go back to talk: its branch and worktree are kept, and its role becomes conversation. `N` is New node (already); `a` stays Ask.
+- **Validation Steps:**
+  - New node opens with **Talk · Work** as its first choice. Talk = no repository; Work = the project's repository (or Add a repository when there is none). The picker's option reads "No repository (just talk)".
+  - ⋯ **Back to just talk…** on a work node (`RepoInPlaceService.toTalk`, `POST /api/streams/:id/to-talk`) stops its agent. It moves the repo, branch and worktree to `parked` on the record (nothing on disk changes), and the node is a conversation. Refused for a helper, an open PR, a coordinating node, or a closed or trashed one.
+  - ⋯ **Back to work on <repo>** (or Turn into work, or + Repo, with that repo) resumes the same branch and worktree. It checks the branch out again if the worktree was removed. Another repo starts fresh, and the parked work stays parked.
+  - Also fixed: the Close dialog still said "it can't be reopened" (T471).
+  - Tests: `repo-in-place.test.ts` T473 ×2 (real git: commits survive the round trip); e2e T473. Full `bun test` 3484/0.
+- **Notes:** Branch T473-talk-and-work. A node holds one parked repo: going back to talk from a second repo replaces the first parking (its branch stays on disk).
 
 ### Ticket: T474 Reorder sibling nodes by dragging
 - **Priority:** P2

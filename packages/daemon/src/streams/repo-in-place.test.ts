@@ -108,6 +108,53 @@ afterEach(async () => {
   for (const dir of [home, scratch, api, web]) rmSync(dir, { recursive: true, force: true });
 });
 
+describe('T473: back to talk, and back to work', () => {
+  test('a work node goes back to talk with its work parked; adding the repo again resumes the same branch and commits', async () => {
+    const node = await conversation();
+    const { node: working } = await reshape.addRepo(node.id, 'api');
+    const branch = working.branch as string;
+    const worktree = working.worktree as string;
+    writeFileSync(join(worktree, 'sale.txt'), 'sale\n');
+    git(['add', '-A'], worktree);
+    git(['commit', '-q', '-m', 'sale prices'], worktree);
+
+    const talking = await reshape.toTalk(node.id);
+    expect(roleOf(node.id)).toBe('conversation');
+    expect(talking.repo).toBeUndefined();
+    expect(talking.branch).toBeUndefined();
+    expect(talking.worktree).toBeUndefined();
+    expect(talking.parked).toEqual({ repo: 'api', branch, worktree });
+    // Nothing on disk is touched.
+    expect(existsSync(join(worktree, 'sale.txt'))).toBe(true);
+    expect(bodies(node.id).at(-1)).toContain('back to talk: the work on api is kept');
+    await expect(reshape.toTalk(node.id)).rejects.toThrow('only a work node');
+
+    const { node: back } = await reshape.addRepo(node.id, 'api');
+    expect(roleOf(node.id)).toBe('work');
+    expect(back.branch).toBe(branch);
+    expect(back.worktree).toBe(worktree);
+    expect(back.parked).toBeUndefined();
+    expect(git(['log', '-1', '--format=%s'], worktree)).toBe('sale prices');
+    expect(bodies(node.id).at(-1)).toContain('back to its work on');
+  }, 30_000);
+
+  test('a parked worktree removed by hand is checked out again from its branch; another repo starts fresh', async () => {
+    const node = await conversation();
+    const { node: working } = await reshape.addRepo(node.id, 'api');
+    await reshape.toTalk(node.id);
+    git(['worktree', 'remove', '--force', working.worktree as string], api);
+    const { node: back } = await reshape.addRepo(node.id, 'api');
+    expect(back.branch).toBe(working.branch);
+    expect(existsSync(back.worktree as string)).toBe(true);
+
+    await reshape.toTalk(node.id);
+    const { node: elsewhere } = await reshape.addRepo(node.id, 'web');
+    expect(elsewhere.repo).toBe('web');
+    // The api work stays parked until api comes back.
+    expect(elsewhere.parked?.repo).toBe('api');
+  }, 30_000);
+});
+
 describe('T205 + Repo in place', () => {
   test('conversation + api: becomes a work node with a branch and worktree, same thread', async () => {
     const node = await conversation();
