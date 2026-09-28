@@ -10,6 +10,7 @@ import {
   agentLabel,
   agentName,
   agentStateText,
+  agentWords,
   answerTarget,
   chatAuthor,
   chatRows,
@@ -848,6 +849,16 @@ describe('a turn the vendor failed (T460)', () => {
   });
   test('a gate id in parentheses is left out, like a node id', () => {
     expect(tidyIds('held for you (HIL-01M3K1XQG8KQWQ5YK53X063ECE)')).toBe('held for you');
+  });
+});
+
+describe('an agent that echoed a verb in its text (T466)', () => {
+  test('a leading "progress —" is dropped; the word elsewhere stays', () => {
+    expect(agentWords('progress — I’ll count the files.')).toBe('I’ll count the files.');
+    expect(agentWords('Progress: done')).toBe('done');
+    expect(agentWords('progress - x')).toBe('x');
+    expect(agentWords('Making progress — nearly there')).toBe('Making progress — nearly there');
+    expect(agentWords('progressive enhancement')).toBe('progressive enhancement');
   });
 });
 

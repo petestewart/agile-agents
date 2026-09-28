@@ -63,7 +63,7 @@ export const DIGEST_MAX = 10;
 
 /** T174: what a human line tells the worker, after the line itself. */
 export const REPLY_FIRST =
-  'Reply to the operator on the stream first, with `progress`: if it is a question, answer it directly; if it is an instruction, acknowledge it and follow it. Then continue the work.';
+  'Reply to the operator on the stream first by calling the `progress` tool (what you pass is what they read; do not write the word "progress" into your message): if it is a question, answer it directly; if it is an instruction, acknowledge it and follow it. Then continue the work.';
 
 /** The one-line summary a recipient is told (§15). */
 export function summaryOf(

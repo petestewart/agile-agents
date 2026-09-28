@@ -80,10 +80,19 @@ export interface LookupKnowledgeItem {
 /**
  * `lookup_knowledge`'s path, made repo-relative so it can match item globs:
  * an absolute path is taken relative to the worktree, `./` and `..` are
- * resolved, and anything outside the worktree is refused.
+ * resolved, and anything outside the worktree is refused. T466: the repo
+ * root is `.`, which `lookupKnowledge` answers with every item in scope.
  */
 export function lookupPath(path: string, worktree: string | undefined): string {
   const normal = isAbsolute(path) ? normalize(path) : normalize(path).replace(/\/+$/, '');
+  // T466: the repo root (`.`, or the worktree itself) asks about the whole repo.
+  if (
+    normal === '.' ||
+    normal === '' ||
+    (worktree !== undefined && normalize(worktree) === normal.replace(/\/+$/, ''))
+  ) {
+    return '.';
+  }
   const [rel] =
     worktree === undefined
       ? isAbsolute(normal) || normal === '..' || normal.startsWith('../')
@@ -541,7 +550,8 @@ export class VerbService {
     const { session, path } = validateVerbInput('lookup_knowledge', input);
     const caller = this.caller(session);
     const rel = lookupPath(path, caller.worktree);
-    const items = this.options.rules?.inScope(caller.stream, undefined, [rel]) ?? [];
+    const items =
+      this.options.rules?.inScope(caller.stream, undefined, rel === '.' ? undefined : [rel]) ?? [];
     return {
       path: rel,
       items: items.map((item) => ({

@@ -192,6 +192,15 @@ export function endedReasonText(
   };
 }
 
+/**
+ * T466: an agent's words without a verb it echoed in its text ("progress —
+ * I'll count the files"): Codex wrote the `progress` verb's name into its
+ * message instead of calling it.
+ */
+export function agentWords(body: string): string {
+  return body.replace(/^\s*progress\s*(?:—|–|-|:)\s*/i, '');
+}
+
 /** Who wrote a thread line, for the chat's name row. */
 export interface ChatAuthor {
   /** "You", "Claude", "Coordinator", "agile". */
