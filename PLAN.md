@@ -2912,7 +2912,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T470 Needs me as a true inbox
 - **Priority:** P1
-- **Status:** In progress
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28): "this is lots of noise … not going to be scalable to have all these cards for every node that's finished when i have tens of projects going on. we should rethink this to be like a true inbox. i should see agent and subject and then can click to close the node or click to open it up (2 buttons). i can also select multiple … select all finished … close all finished."
 - **Acceptance Criteria:**
@@ -2921,6 +2921,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   - Selecting: tick rows, or the header box selects everything shown. A bar then offers **Close N**, which asks once. **Close all finished** closes every Finished row.
   - Keys: `j`/`k` move, `x` selects, Space expands, Enter opens.
 - **Validation Steps:** `ui/app/lib/inbox.test.ts` (categories, `nodesOf`); the control-room e2e for rows, the category tabs, a select and bulk close, Close all finished, and a row expanding to answer a question; the existing Needs me e2e tests follow the rows.
+- **Notes:** Branch T470-needs-me-inbox.
+  - `Inbox.tsx`: `InboxRow`, the selection bar and `useRowKeys` (focus on a row or its expanded card).
+  - `lib/inbox.ts`: `filterOf` with the Finished and Blocked categories, `nodesOf` and `inboxLine`.
+  - The cockpit row gains `last_agent` (the vendor and model its agent last ran), so a finished node names its agent.
+  - **Expand all** (per browser) opens every card. The control-room tests that act on cards and the walkthrough start with it on; the T470 test covers the rows as a new browser has them.
+  - Results: control-room e2e 123/123; walkthrough 43 steps, 0 findings.
 
 ### Ticket: T471 Closed means inactive, not read-only; Trash with Delete forever
 - **Priority:** P1

@@ -139,7 +139,12 @@ function useRowKeys(
         rows[next]?.scrollIntoView({ block: 'nearest' });
         return;
       }
-      const row = at >= 0 && active === rows[at] ? rows[at] : undefined;
+      // The row itself, or its expanded card, has focus (not a button or field inside).
+      const onRow =
+        at >= 0 &&
+        (active === rows[at] ||
+          (active instanceof HTMLElement && active.classList.contains('cr-card')));
+      const row = onRow ? rows[at] : undefined;
       if (!row) return;
       const id = row.dataset.item ?? '';
       if (isShortcut(event, 'Enter')) {

@@ -450,6 +450,15 @@ async function openPage(): Promise<Page> {
   sharedBrowser = acquired.browser;
   acquired.page.setDefaultTimeout(PAGE_TIMEOUT_MS);
   acquired.page.setDefaultNavigationTimeout(PAGE_TIMEOUT_MS);
+  // T470: Needs me is rows that expand to their cards; the walkthrough acts on the cards, so
+  // it opens with Expand all on (the app's own per-browser setting).
+  await acquired.page.addInitScript(() => {
+    try {
+      localStorage.setItem('agile.inbox.expandAll', '1');
+    } catch {
+      // No storage: the rows stay folded.
+    }
+  });
   return acquired.page;
 }
 let sharedBrowser: Browser | undefined;
@@ -875,9 +884,9 @@ test.skipIf(!RUN)(
         await checkText(
           'the card is grouped under Ledger export',
           page
-            .locator('[data-testid="inbox"] .cr-group')
+            .locator('[data-testid="inbox"] .cr-inbox-item')
             .filter({ has: page.locator('.cr-card[data-kind="plan_approve"]') })
-            .locator('h2'),
+            .locator('[data-testid="inbox-subject"]'),
           /Ledger export/,
         );
       },
@@ -1161,7 +1170,7 @@ test.skipIf(!RUN)(
     await step('4.2a', 'the agile-test-repo part is done; Diff and Delivery', async () => {
       // T347 (D36 D7): the Needs me card for finished work says Merge, as the Delivery panel does.
       await openView('Needs me');
-      const doneCard = page.locator('[data-testid="inbox"] .cr-group', {
+      const doneCard = page.locator('[data-testid="inbox"] .cr-inbox-item', {
         hasText: 'Ledger export · agile-test-repo',
       });
       await checkText('its Needs me card reads Ready to merge', doneCard, /Ready to merge/);
@@ -1274,7 +1283,7 @@ test.skipIf(!RUN)(
       await openView('Needs me');
       await checkNotText(
         'with its PR open, the part is not "ready to merge" (it merges on GitHub)',
-        page.locator('[data-testid="inbox"] .cr-group', {
+        page.locator('[data-testid="inbox"] .cr-inbox-item', {
           hasText: 'Ledger export · agile-test-repo',
         }),
         /ready to (merge|land)/i,
@@ -2132,7 +2141,7 @@ test.skipIf(!RUN)(
       await openView('Needs me');
       await checkNotText(
         'a conversation that answered is not "ready to merge"',
-        page.locator('[data-testid="inbox"] .cr-group', { hasText: 'Cents check' }),
+        page.locator('[data-testid="inbox"] .cr-inbox-item', { hasText: 'Cents check' }),
         /ready to (merge|land)/i,
       );
       await openNode('Cents check');
