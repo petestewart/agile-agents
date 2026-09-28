@@ -19,6 +19,7 @@ import {
   type PullRequestState,
   type RepoEntry,
   type Stream,
+  isRestingSession,
   resolveDelivery,
 } from '@agile-agents/shared';
 import { liveSession } from '../attach/service';
@@ -906,7 +907,7 @@ export class DeliveryService {
     return { status: 'pr_open', target, pr: { number: pull.number, url: pull.html_url }, line };
   }
 
-  /** Everything that must hold before landing touches git: a repo, a live human status, no live worker. */
+  /** Everything that must hold before landing touches git: a repo, a live human status, no working worker (T465: a resting one is ended by the merge). */
   private requireLandable(
     stream: Stream,
     opts: { allowLive?: boolean } = {},
@@ -927,7 +928,8 @@ export class DeliveryService {
       );
     }
     const live = opts.allowLive ? undefined : liveSession(stream);
-    if (live !== undefined) {
+    // T465 (D48): a session resting after its finished turn does not hold a merge; the merge ends it.
+    if (live !== undefined && !isRestingSession(stream, live)) {
       throw new LandRefusedError(
         stream.id,
         `${stream.title} still has a live agent; stop it or let it finish before merging`,

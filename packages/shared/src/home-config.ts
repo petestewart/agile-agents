@@ -220,6 +220,11 @@ export function trackerStatus(config: TrackersConfig | undefined): TrackerStatus
 export const KNOWLEDGE_WAKE_MODES = ['source', 'jev'] as const;
 export type KnowledgeWakeMode = (typeof KNOWLEDGE_WAKE_MODES)[number];
 
+/** T465 (D48): a finished turn's session is kept this long (minutes) when the home sets nothing. */
+export const DEFAULT_SESSION_IDLE_MINUTES = 30;
+/** T465: the longest a finished turn's session may be kept (a day). */
+export const MAX_SESSION_IDLE_MINUTES = 1440;
+
 export const HomeConfigSchema = z
   .object({
     /** HTTP port for the localhost cockpit/API. `0` lets the OS pick. */
@@ -266,6 +271,12 @@ export const HomeConfigSchema = z
     permissions: PermissionPostureSchema.optional(),
     /** T478: New node's "Close it when its goal is met" starts on. Absent = off. */
     auto_close: z.boolean().optional(),
+    /**
+     * T465 (D48): how long an agent's session stays alive and idle after its
+     * turn finished, in minutes, so the next message keeps its context.
+     * Absent = `DEFAULT_SESSION_IDLE_MINUTES`.
+     */
+    session_idle_minutes: z.number().int().min(1).max(MAX_SESSION_IDLE_MINUTES).optional(),
     /** T243 (P11): routed-event settings. `wake_budget_per_hour` defaults to 20. */
     events: z
       .object({ wake_budget_per_hour: z.number().int().positive().optional() })
@@ -341,3 +352,9 @@ export type KnowledgeWakeInput = z.infer<typeof KnowledgeWakeInputSchema>;
 /** T478: Settings' auto-close default for new nodes (`POST /api/settings/auto-close`). */
 export const AutoCloseInputSchema = z.object({ on: z.boolean() }).strict();
 export type AutoCloseInput = z.infer<typeof AutoCloseInputSchema>;
+
+/** T465 (D48): Settings' idle session timeout (`POST /api/settings/session-idle`). */
+export const SessionIdleInputSchema = z
+  .object({ minutes: z.number().int().min(1).max(MAX_SESSION_IDLE_MINUTES) })
+  .strict();
+export type SessionIdleInput = z.infer<typeof SessionIdleInputSchema>;

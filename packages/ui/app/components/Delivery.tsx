@@ -10,6 +10,7 @@
  * refusal's reason).
  */
 
+import { isRestingSession } from '@agile-agents/shared';
 import { useCallback, useEffect, useState } from 'react';
 import { checkStreamPr, landStream, markStreamLanded } from '../lib/api';
 import { deliveryBadge, deliveryStateWords, tidyIds } from '../lib/chat';
@@ -211,7 +212,11 @@ export function DeliveryPanel({
             icon="git-merge"
             data-testid="stream-resolve"
             disabled={
-              busy || page.stream.sessions.some((s) => s.role === 'worker' && isLiveSession(s))
+              busy ||
+              // T465: a worker resting after its finished turn is not busy: Resolve ends it.
+              page.stream.sessions.some(
+                (s) => s.role === 'worker' && isLiveSession(s) && !isRestingSession(page.stream, s),
+              )
             }
             onClick={onResolve}
           >

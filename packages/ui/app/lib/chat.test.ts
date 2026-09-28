@@ -219,6 +219,12 @@ describe('chat rows', () => {
       'Reviewer started · Gemini default model',
     );
     expect(systemLine('session ended: its turn finished').text).toBe('Agent finished its turn');
+    // T465 (D48): a finished turn's session stays; it ends after its idle time, or resumes.
+    expect(systemLine('turn finished').text).toBe('Agent finished its turn');
+    expect(systemLine('resumed its earlier session').text).toBe('Resumed its earlier session');
+    expect(
+      systemLine('session ended: it sat idle for 30 minutes after its turn finished').text,
+    ).toBe('Session closed after 30 minutes idle');
     const held = systemLine('delivery held: waits on Blog note');
     expect(held.text).toBe('delivery held: waits on Blog note');
     expect(held.tone).toBe('warn');
@@ -1062,6 +1068,39 @@ describe('T446: a coordinator’s routine wake folds into its reply', () => {
       ended('2026-09-26T01:14:40', 'process exited (code 1)'),
     ]);
     expect(failed).toHaveLength(3);
+  });
+
+  test('T465: woken in its resting session, the reply, turn finished: one reply headed "Woke for a merge"', () => {
+    const woken = (types: string, at: string) =>
+      entry({ by: 'daemon', kind: 'event', body: `woken by ${types}`, ref: COORD, ts: at });
+    const finished = (at: string) =>
+      entry({ by: 'daemon', kind: 'event', body: 'turn finished', ref: COORD, ts: at });
+    const rows = chatRows([
+      attached('2026-09-26T01:00:00'),
+      entry({ by: agent, body: 'plan written.', ts: '2026-09-26T01:00:30' }),
+      finished('2026-09-26T01:00:40'),
+      woken('pr merged', '2026-09-26T01:14:00'),
+      entry({ by: agent, body: 'api merged; web goes next.', ts: '2026-09-26T01:14:30' }),
+      finished('2026-09-26T01:14:40'),
+    ]);
+    const reply = rows.find((r) => r.index === 4);
+    expect(reply?.wake).toEqual({ text: 'Woke for a merge', ts: '2026-09-26T01:14:00' });
+    expect(rows.some((r) => r.index === 3 || r.index === 5)).toBe(false);
+    // A resumed session's row folds with the rest.
+    const resumed = chatRows([
+      wake('pr merged', '2026-09-26T01:14:00'),
+      attached('2026-09-26T01:14:01'),
+      entry({
+        by: 'daemon',
+        kind: 'event',
+        body: 'resumed its earlier session',
+        ref: COORD,
+        ts: '2026-09-26T01:14:02',
+      }),
+      entry({ by: agent, body: 'api merged; web goes next.', ts: '2026-09-26T01:14:30' }),
+      finished('2026-09-26T01:14:40'),
+    ]);
+    expect(resumed.map((r) => r.index)).toEqual([3]);
   });
 
   test('a worker’s wake is not folded', () => {

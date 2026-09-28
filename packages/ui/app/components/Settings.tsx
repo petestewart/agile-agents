@@ -45,6 +45,7 @@ import {
   type DaemonHealth,
   type KnowledgeWake,
   type QuickDrafts,
+  type SessionIdle,
   getAutoCloseDefault,
   getClassifierKey,
   getHealth,
@@ -52,6 +53,7 @@ import {
   getPolicy,
   getQuickDrafts,
   getSessionDefaults,
+  getSessionIdle,
   getTrackerSettings,
   removeClassifierKey,
   saveClassifierKey,
@@ -61,6 +63,7 @@ import {
   setAutoCloseDefault,
   setKnowledgeWake,
   setQuickDrafts,
+  setSessionIdle,
   updateProject,
 } from '../lib/api';
 import { agentLabel, sessionIdText, vendorLabel } from '../lib/chat';
@@ -717,6 +720,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
             save={async (patch) => setStatus(await saveHomeSessionDefaults(patch))}
           />
           <VendorFailureCard status={status} onSaved={setStatus} />
+          <SessionIdleCard />
           {/* T436 (audit r6 #25): in the order they win: a project's default before its repositories'. */}
           {projects.length > 0 ? (
             <div className="cr-set-subhd" data-testid="settings-session-projects-heading">
@@ -932,6 +936,78 @@ function VendorFailureCard({
           disabled={busy}
           onChange={(e) => void save({ ...own, allow_hookless: e.target.checked })}
         />
+      </SetRow>
+      <FormError error={error} />
+    </SetCard>
+  );
+}
+
+/** T465 (D48): the idle times offered, in minutes; a value set by hand shows too. */
+const IDLE_CHOICES = [5, 15, 30, 60, 120, 240];
+
+function idleWords(minutes: number): string {
+  if (minutes % 60 === 0) return `${minutes / 60} hour${minutes === 60 ? '' : 's'}`;
+  return `${minutes} minutes`;
+}
+
+/**
+ * T465 (D48): how long an agent's session stays alive after its turn
+ * finished, so your next message keeps its context. Past it the session
+ * closes; the next message resumes it where the agent supports that.
+ */
+function SessionIdleCard(): JSX.Element {
+  const [state, setState] = useState<SessionIdle | undefined>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const { saved, markSaved, clear } = useSavedFlash();
+
+  useEffect(() => {
+    getSessionIdle()
+      .then(setState)
+      .catch((err: unknown) => setError(errorText(err)));
+  }, []);
+
+  async function save(minutes: number): Promise<void> {
+    setBusy(true);
+    setError(undefined);
+    clear();
+    try {
+      setState(await setSessionIdle(minutes));
+      markSaved();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const choices =
+    state === undefined || IDLE_CHOICES.includes(state.minutes)
+      ? IDLE_CHOICES
+      : [...IDLE_CHOICES, state.minutes].sort((a, b) => a - b);
+  return (
+    <SetCard
+      title="Idle sessions"
+      icon="clock"
+      description="When an agent finishes its turn its session stays open, so your next message keeps what it knows. After this long with nothing to do it closes; the next message then resumes it where the agent supports that, else starts it again from the brief."
+      testid="settings-session-idle"
+      status={<SavedNote show={saved} testid="settings-session-idle-saved" />}
+    >
+      <SetRow label="Keep a finished session open for">
+        <select
+          aria-label="Keep a finished session open for"
+          data-testid="settings-session-idle-select"
+          value={state?.minutes ?? ''}
+          disabled={busy || state === undefined}
+          onChange={(e) => void save(Number(e.target.value))}
+        >
+          {state === undefined ? <option value="">Loading…</option> : null}
+          {choices.map((m) => (
+            <option key={m} value={m}>
+              {idleWords(m)}
+            </option>
+          ))}
+        </select>
       </SetRow>
       <FormError error={error} />
     </SetCard>

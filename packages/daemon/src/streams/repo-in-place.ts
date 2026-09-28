@@ -31,6 +31,7 @@ import {
   type SessionRef,
   type Stream,
   isAgentRole,
+  isRestingSession,
   liveChildrenOf,
   nodeRole,
 } from '@agile-agents/shared';
@@ -170,8 +171,13 @@ export class RepoInPlaceService {
     }
     if (switching) this.assertNothingCommitted(node);
 
+    // T465: a session resting after its finished turn is not live work: it ends with the reshape.
     const wasLive = node.sessions.some(
-      (s) => isAgentRole(s.role) && s.status !== 'stopped' && s.status !== 'error',
+      (s) =>
+        isAgentRole(s.role) &&
+        s.status !== 'stopped' &&
+        s.status !== 'error' &&
+        !isRestingSession(node, s),
     );
     // T204's start rule for new parts: `start` isn't stored, so a node that
     // never had a worker is the `--no-start` one.

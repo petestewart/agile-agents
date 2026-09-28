@@ -1337,3 +1337,29 @@ call, so this needs a real agent to show it calls it at the right moment.
       with a question to you. If it does, note the vendor.
 - [ ] On a node's page, Details → Auto-close off: the next finished turn with
       `goal_met` leaves it open.
+
+## 14. **[vendor]** A finished turn keeps its session; an ended one resumes (D48, T465)
+
+The fake agent covers the mechanics offline; only a real vendor shows the
+context is really kept. With a real Claude login:
+
+- [ ] Start a node and tell it a detail it can't find in the repo ("the
+      codeword is pelican"). When its turn finishes, the node reads Replied or
+      Ready to merge as before, and Details → Agent still lists the session as
+      live (idle), not "Finished its turn".
+- [ ] Send "what is the codeword?". It answers at once, in the same session:
+      no "Agent started" row, and Details shows one session, not two.
+- [ ] Settings → Agents → Idle sessions: pick 5 minutes. After the next
+      finished turn, wait out the 5 minutes: the chat says "Session closed
+      after 5 minutes idle" and the node still reads finished.
+- [ ] Send "and the codeword again?". A new session starts and the chat says
+      "Resumed its earlier session"; it still knows "pelican". Its
+      `sessions/<id>/brief.md` is the brief, but the prompt it was sent is your
+      line (no brief in the vendor's transcript).
+- [ ] Restart the daemon (`agile daemon stop`, `agile daemon start`) with a
+      session idle, then send a message: it resumes the same way.
+- [ ] Pick another model on the chip and send: it starts fresh from the brief
+      (no "Resumed" row); what it knows
+      is what the thread in its brief holds.
+- [ ] Merge a Ready to merge node while its session is idle: the merge goes
+      through, and the chat says the session ended because the node was merged.

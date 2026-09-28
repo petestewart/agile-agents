@@ -13,6 +13,12 @@
  * Session exit is handled here too: the runner resolves `exited`, this
  * service writes what it means onto the stream. Every write is principal
  * `daemon` (lifecycle writes, §2.2).
+ *
+ * T465 (D48): a worker's or coordinator's finished turn leaves its session
+ * alive and idle ("resting"): the node reads `done`, and the next message
+ * or wake is prompted into the same session. It ends after an idle timeout,
+ * a Stop, a role change, the node closing or merging, or the daemon
+ * stopping; the next start resumes it with ACP `session/load` when it can.
  */
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -24,6 +30,7 @@ import {
 } from '@agile-agents/acp-client';
 import {
   type AgentCommand,
+  DEFAULT_SESSION_IDLE_MINUTES,
   DIRECTOR_NODE,
   type HilRequest,
   type KnowledgeItem,
@@ -167,6 +174,29 @@ export const DAEMON_SHUTDOWN_REASON = 'the daemon stopped';
 /** T444: the ended reason of a session a daemon that died mid-turn left on record. */
 export const DAEMON_RESTART_REASON = 'the daemon restarted during this turn';
 
+/** T465: the ended reason of an idle session a dead daemon left on record (no turn was cut). */
+export const DAEMON_RESTART_IDLE_REASON = 'the daemon restarted';
+
+/** T465 (D48): the thread line of a finished turn whose session stays alive for the next message. */
+export const TURN_FINISHED_LINE = 'turn finished';
+
+/** T465: the thread line of a start that resumed the node's earlier session. */
+export const RESUMED_LINE = 'resumed its earlier session';
+
+function secondsWords(n: number): string {
+  return `${n} second${n === 1 ? '' : 's'}`;
+}
+
+/** T465: why a resting session ended after its idle timeout, in words. */
+export function idleEndReason(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  const span =
+    minutes >= 1
+      ? `${minutes} minute${minutes === 1 ? '' : 's'}`
+      : secondsWords(Math.max(1, Math.round(ms / 1000)));
+  return `it sat idle for ${span} after its turn finished`;
+}
+
 /** Not closed, landed or archived: a node an agent may still work on. */
 function isOpen(stream: Stream): boolean {
   return (
@@ -262,6 +292,8 @@ export interface AttachServiceOptions {
   director?: () => DirectorEndpoint | undefined;
   /** T454: Jev's say on waking a conversation for an item it did not propose (`knowledge_wake: jev`). */
   knowledgeWake?: Pick<KnowledgeWakeJudge, 'approvedFor' | 'consider'>;
+  /** T465 test seam: how long a resting session lives, in ms (default: the home's `session_idle_minutes`). */
+  sessionIdleMs?: number;
 }
 
 /** What delivery needs of the Director (`director/service.ts`). */
@@ -391,6 +423,15 @@ export class AttachService {
   private readonly crashBudget: WakeBudget;
   /** T456: `stopAll()` ran (the daemon is shutting down): no crash is recovered. */
   private closing = false;
+  /**
+   * T465 (D48): resting sessions (alive and idle after a finished turn), by
+   * session id, with the timer that ends each after the idle timeout.
+   */
+  private readonly resting = new Map<string, ReturnType<typeof setTimeout>>();
+  /** T465: why the daemon ended a resting session, for its thread line. */
+  private readonly restEnds = new Map<string, string>();
+  /** T465: per node, the rest and rouse writes in order (a rouse never lands under a rest). */
+  private readonly restWrites = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: AttachServiceOptions) {
     this.events = options.events ?? new RoutedEventService(options.store);
@@ -421,6 +462,8 @@ export class AttachService {
         if (node === DIRECTOR_NODE) return options.director?.()?.target();
         const handle = this.agentHandle(node);
         if (handle === undefined || handle.stopped()) return undefined;
+        // T465: a resting session is prompted only for what would wake the node (`wake`).
+        if (this.resting.has(handle.sessionId)) return undefined;
         return {
           sessionId: handle.sessionId,
           busy: () => handle.turnsInFlight() > 0,
@@ -458,6 +501,8 @@ export class AttachService {
    * T243 (P11): a node with pending events and no live worker. Starts a
    * worker when the policy says so and the budget allows; past the budget
    * the node is `blocked` (an inbox item) and its events stay pending.
+   * T465 (D48): a node whose session is resting is woken the same way, but
+   * into that session: it takes the events as a digest, no new agent starts.
    */
   private async wake(node: string, pending: readonly RoutedEvent[]): Promise<void> {
     if (this.waking.has(node) || this.startingAgent(node)) return;
@@ -468,7 +513,8 @@ export class AttachService {
     } catch {
       return;
     }
-    if (liveAgent(stream) !== undefined) return;
+    const rested = this.restingHandle(node);
+    if (rested === undefined && liveAgent(stream) !== undefined) return;
     const all = streams.list();
     const role = nodeRole(stream, liveChildrenOf(stream.id, all), all);
     const judge = this.options.knowledgeWake;
@@ -506,7 +552,15 @@ export class AttachService {
             ? ' (Jev judged the decision relevant)'
             : ''
         }`.slice(0, 800),
+        // T465: the resting session it went to, so the chat can fold this wake into its reply.
+        ...(rested !== undefined ? { ref: rested.sessionId } : {}),
       });
+      if (rested !== undefined) {
+        // T465: back to work in the same session; delivery sends the events as its digest.
+        await this.rouse(node, rested);
+        this.delivery.notify(node);
+        return;
+      }
       // T336: the first prompt carries the events, so the agent never has to ask for them.
       await this.attach(node, { wake: pending });
     } catch (err) {
@@ -644,6 +698,11 @@ export class AttachService {
           ? 'the project root now has parts'
           : 'the project root has no parts left'
         : `role changed to ${shape}`;
+    // T465: a resting agent's work is finished: it ends, and the next message starts the new role.
+    if (this.resting.has(handle.sessionId)) {
+      await this.endResting(id, why);
+      return;
+    }
     this.roleRestarts.add(id);
     // Held so no wake starts an agent in the gap; pending events go to the new one.
     const release = this.delivery.hold(id);
@@ -687,6 +746,10 @@ export class AttachService {
   }
 
   private async attachNow(streamId: string, options: AttachOptions): Promise<AttachResult> {
+    // T465: a resting agent is not busy: it ends, and this start goes ahead (and may resume it).
+    if (isAgentRole(options.role ?? 'worker')) {
+      await this.endResting(streamId, 'a new agent was started here');
+    }
     const wake =
       options.wake !== undefined && options.wake.length > 0
         ? this.delivery.inBrief(streamId, options.wake)
@@ -881,6 +944,12 @@ export class AttachService {
           }
         : {}),
     });
+    // T465 (D48): a start with something to hand over resumes the node's last
+    // session, when the vendor can and nothing about the agent changed.
+    const resumeFrom =
+      wake !== undefined && options.briefAppendix === undefined
+        ? resumableSession(stream, role, settings, provider)
+        : undefined;
     // The lessons material rides after the brief, never inside it (the
     // brief's own ceiling protects its parts; the caller caps the appendix).
     // T336: a woken session is told what woke it, after everything else.
@@ -960,6 +1029,17 @@ export class AttachService {
         worktreePath: cwd,
         brief: prompt,
         ...(wake !== undefined ? { onBriefDelivered: () => wake.delivered(sessionId) } : {}),
+        ...(resumeFrom?.acp_session_id !== undefined && wake !== undefined
+          ? {
+              resume: { acpSessionId: resumeFrom.acp_session_id, prompt: wake.digest },
+              onResume: (result: { ok: true } | { ok: false; error: string }) => {
+                void this.onResumed(stream.id, sessionId, result);
+              },
+            }
+          : {}),
+        onAcpSession: (acpSessionId: string) => {
+          void this.setSessionAcpId(stream.id, sessionId, acpSessionId);
+        },
         sessionDir,
         provider,
         readScope,
@@ -1130,9 +1210,11 @@ export class AttachService {
    * question or an open `classifier_review` gate is waiting: it stays
    * alive, goes `idle`, and the stream says `question`/`waiting_on_you`
    * until the answer or decision is prompted in. Otherwise the work is
-   * finished: the session is stopped and the exit path (the one writer of
-   * `done`/`blocked`) records it. A Claude session told to wait for a gate
-   * ends its turn, so the gate half is the normal path.
+   * finished. T465 (D48): a worker's or coordinator's session then rests
+   * (`rest`): alive and idle, the node `done`, until the next message or
+   * the idle timeout. A reviewer's or the lessons pass's is stopped, and the
+   * exit path records it. A Claude session told to wait for a gate ends its
+   * turn, so the gate half is the normal path.
    */
   private async onTurnEnd(
     streamId: string,
@@ -1177,8 +1259,175 @@ export class AttachService {
       }
       return;
     }
+    if (isAgentRole(role)) {
+      await this.rest(streamId, sessionId, role);
+      return;
+    }
     this.turnFinished.add(sessionId);
     handle.stop();
+  }
+
+  /**
+   * T465 (D48): a finished turn's session stays alive and idle. The node
+   * reads `done` as before (Replies, Ready to merge and auto-close follow
+   * it), the thread says the turn finished, and the idle timer starts.
+   * The session is marked `idle` before the node `done`, so what the `done`
+   * write sets off (auto-close's merge check) already sees it resting.
+   */
+  private async rest(streamId: string, sessionId: string, role: SessionRole): Promise<void> {
+    // Ended meanwhile (a Stop while the turn-end rule ran): the exit path has written.
+    const handle = this.handles(role).get(streamId);
+    if (handle === undefined || handle.sessionId !== sessionId || handle.stopped()) return;
+    const ms = this.idleMs();
+    this.resting.set(
+      sessionId,
+      unrefTimer(
+        setTimeout(() => {
+          void this.endResting(streamId, idleEndReason(ms), sessionId).catch((err) =>
+            console.error('idle session end failed:', err),
+          );
+        }, ms),
+      ),
+    );
+    // Written in order with a rouse or an end that follows at once (`restWrite`).
+    const wrote = await this.restWrite(streamId, async () => {
+      await this.setSessionStatus(streamId, sessionId, 'idle');
+      await this.options.streams.update('daemon', streamId, { agent: { status: 'done' } });
+      await this.options.streams.appendThread('daemon', streamId, {
+        kind: 'event',
+        body: TURN_FINISHED_LINE,
+        ref: sessionId,
+      });
+      return true;
+    }).catch(() => false);
+    // The same as a worker's clean exit did before (§4.2).
+    if (wrote && role === 'worker') await this.maybeAutoReview(streamId);
+  }
+
+  /**
+   * T465 (D48): a resting session takes a new turn: the node works again,
+   * and a `goal_met` from an earlier turn of the same session no longer
+   * counts (auto-close reads the turn that ends next).
+   */
+  private async rouse(streamId: string, handle: AgentSessionHandle): Promise<void> {
+    const sessionId = handle.sessionId;
+    const timer = this.resting.get(sessionId);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    this.resting.delete(sessionId);
+    await this.restWrite(streamId, async () => {
+      await this.options.streams.update('daemon', streamId, {
+        agent: { status: 'working', goal_met: undefined },
+      });
+      await this.setSessionStatus(streamId, sessionId, 'running');
+    }).catch(() => {
+      // The node is gone; the prompt (or its failure) is what matters.
+    });
+  }
+
+  /** T465: runs a rest or rouse write after the node's earlier ones. */
+  private restWrite<T>(streamId: string, write: () => Promise<T>): Promise<T> {
+    const run = (this.restWrites.get(streamId) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(write);
+    this.restWrites.set(
+      streamId,
+      run.catch(() => undefined),
+    );
+    return run;
+  }
+
+  /** T465: the node's agent handle when its session is resting. */
+  private restingHandle(streamId: string): AgentSessionHandle | undefined {
+    const handle = this.agentHandle(streamId);
+    return handle !== undefined && !handle.stopped() && this.resting.has(handle.sessionId)
+      ? handle
+      : undefined;
+  }
+
+  /**
+   * T465 (D48): ends the node's resting session, if it has one (`sessionId`:
+   * only that one), for `why` (the thread line). The node stays `done`.
+   * Resolves once the exit path has written.
+   */
+  async endResting(streamId: string, why: string, sessionId?: string): Promise<void> {
+    const handle = this.restingHandle(streamId);
+    if (handle === undefined || (sessionId !== undefined && handle.sessionId !== sessionId)) return;
+    this.restEnds.set(handle.sessionId, why);
+    await this.stop(streamId, handle.role);
+  }
+
+  /**
+   * T465 (D48): a node closed, merged or deleted ends its resting session
+   * (the stream service's `onUpdated`, awaited: a merge removes the worktree
+   * after it).
+   */
+  async onNodeUpdated(before: Stream, after: Stream): Promise<void> {
+    const ended = (s: Stream) =>
+      s.archived === true || s.human.status === 'closed' || s.human.status === 'landed';
+    if (!ended(after) || ended(before)) return;
+    const why =
+      after.archived === true
+        ? 'the node was deleted'
+        : after.human.status === 'landed'
+          ? 'the node was merged'
+          : 'the node was closed';
+    await this.endResting(after.id, why).catch((err) =>
+      console.error('ending a resting session failed:', err),
+    );
+  }
+
+  /** T465: how long a finished turn's session is kept (the home's setting; a test's seam). */
+  private idleMs(): number {
+    if (this.options.sessionIdleMs !== undefined) return this.options.sessionIdleMs;
+    let minutes = DEFAULT_SESSION_IDLE_MINUTES;
+    try {
+      minutes = readHomeConfigFile(this.options.home).session_idle_minutes ?? minutes;
+    } catch {
+      // An unreadable config: the default.
+    }
+    return minutes * 60_000;
+  }
+
+  /** T465: records the vendor's ACP session id on the session, for a later resume. */
+  private async setSessionAcpId(
+    streamId: string,
+    sessionId: string,
+    acpSessionId: string,
+  ): Promise<void> {
+    await this.options.store
+      .updateStream('daemon', streamId, (before) => ({
+        ...before,
+        sessions: before.sessions.map((s) =>
+          s.id === sessionId ? { ...s, acp_session_id: acpSessionId.slice(0, 200) } : s,
+        ),
+      }))
+      .catch(() => {
+        // The node is gone: nothing to resume.
+      });
+  }
+
+  /** T465: the thread says whether the start resumed the earlier session, or why it started fresh. */
+  private async onResumed(
+    streamId: string,
+    sessionId: string,
+    result: { ok: true } | { ok: false; error: string },
+  ): Promise<void> {
+    if (!result.ok) {
+      console.error(`session/load failed for ${sessionId}; started fresh: ${result.error}`);
+    }
+    await this.options.streams
+      .appendThread('daemon', streamId, {
+        kind: 'event',
+        body: result.ok
+          ? RESUMED_LINE
+          : `could not resume its earlier session (${result.error}); started fresh from the brief`.slice(
+              0,
+              800,
+            ),
+        ref: sessionId,
+      })
+      .catch(() => {});
   }
 
   /**
@@ -1258,6 +1507,8 @@ export class AttachService {
       entry = await this.options.streams.appendThread('human', streamId, { kind: 'line', body });
       handle = this.agentHandle(streamId);
       if (handle?.stopped()) handle = undefined;
+      // T465 (D48): a resting session takes the line in the same session, context and all.
+      if (handle !== undefined) await this.rouse(streamId, handle);
       busy = handle !== undefined && handle.turnsInFlight() > 0;
       await routeAndEmit(
         this.events,
@@ -1428,6 +1679,43 @@ export class AttachService {
       : undefined;
     // `stop()` already holds the promise it awaits; dropping it cannot lose a write.
     this.exitHandled.delete(sessionId);
+    // T465 (D48): a resting session's end is no news about the work: the node stays `done`.
+    const restTimer = this.resting.get(sessionId);
+    if (restTimer !== undefined) {
+      clearTimeout(restTimer);
+      this.resting.delete(sessionId);
+    }
+    const restEnd = this.restEnds.get(sessionId);
+    this.restEnds.delete(sessionId);
+    if (restTimer !== undefined && isAgentRole(role)) {
+      this.crashes.delete(streamId);
+      const why = restEnd ?? stopReason ?? (stoppedByUs ? 'it was stopped' : undefined);
+      // The vendor's process ended on its own while idle: said as it is, never a crash to recover.
+      const failed = why === undefined && !detached && (!ok || (exitCode ?? 0) !== 0);
+      const own = why === undefined ? endedReason(reason, !failed, vendorError) : undefined;
+      // After the rest's own writes, which an idle timeout may overtake.
+      await this.restWrite(streamId, async () => {
+        await this.setSessionStatus(
+          streamId,
+          sessionId,
+          failed ? 'error' : 'stopped',
+          detached ? undefined : why !== undefined ? `${DAEMON_STOP_PREFIX}${why}` : own,
+        );
+        await this.options.streams.appendThread('daemon', streamId, {
+          kind: 'event',
+          body: (detached
+            ? `${role} detached by human`
+            : `session ended: ${why ?? own ?? reason}`
+          ).slice(0, 800),
+          ref: sessionId,
+        });
+      }).catch(() => {
+        // The stream or home went away: nothing to record on.
+      });
+      // What arrived while it was ending found it still on record: the wake policy looks again.
+      if (this.delivery.waiting(streamId)) this.delivery.notify(streamId);
+      return;
+    }
     // T456: any end but a crash ends the failure being recovered from.
     if (isAgentRole(role) && !crashed && !failedTurn) this.crashes.delete(streamId);
     try {
@@ -1758,7 +2046,8 @@ export class AttachService {
       await this.setSessionStatus(streamId, orphan.id, 'stopped').catch(() => {});
       stopped.push(orphan.id);
     }
-    if (orphans.some((o) => isAgentRole(o.role))) {
+    // T465: an idle one ends with no turn cut short: its node keeps what it says.
+    if (orphans.some((o) => isAgentRole(o.role) && o.status !== 'idle')) {
       await this.options.streams
         .update('daemon', streamId, { agent: { status: 'idle' } })
         .catch(() => {});
@@ -1773,21 +2062,34 @@ export class AttachService {
    * next event still wakes it), its node goes back to `idle`, and its thread
    * says so. Before this, such a node read "Working" for good and a line to
    * it only queued. Returns the nodes it touched.
+   * T465: an `idle` session (resting after its turn, or waiting on a
+   * question) ends too, with no turn cut short: its node keeps its status
+   * (`done` stays finished), and its next message resumes it.
    */
   async endOrphansAtStart(): Promise<string[]> {
     const touched: string[] = [];
     for (const stream of this.options.streams.list()) {
       const orphans = this.orphanSessions(stream.id);
       if (orphans.length === 0) continue;
+      const cut = orphans.filter((o) => o.status !== 'idle');
       for (const orphan of orphans) {
         await this.setSessionStatus(
           stream.id,
           orphan.id,
           'stopped',
-          `${DAEMON_STOP_PREFIX}${DAEMON_RESTART_REASON}`,
+          `${DAEMON_STOP_PREFIX}${orphan.status === 'idle' ? DAEMON_RESTART_IDLE_REASON : DAEMON_RESTART_REASON}`,
         ).catch(() => {});
       }
-      if (orphans.some((o) => isAgentRole(o.role))) {
+      if (cut.length === 0) {
+        if (orphans.some((o) => isAgentRole(o.role))) {
+          await this.options.streams
+            .appendThread('daemon', stream.id, {
+              kind: 'event',
+              body: `session ended: ${DAEMON_RESTART_IDLE_REASON}`,
+            })
+            .catch(() => {});
+        }
+      } else if (cut.some((o) => isAgentRole(o.role))) {
         await this.options.streams
           .update('daemon', stream.id, { agent: { status: 'idle' } })
           .catch(() => {});
@@ -1803,7 +2105,7 @@ export class AttachService {
     return touched;
   }
 
-  /** T437: `starting`/`running` session records on a node that no live handle stands behind. */
+  /** T437: `starting`/`running` (T465: and `idle`) session records on a node that no live handle stands behind. */
   private orphanSessions(streamId: string, role?: SessionRole): SessionRef[] {
     let stream: Stream;
     try {
@@ -1814,7 +2116,8 @@ export class AttachService {
     return stream.sessions.filter(
       (s) =>
         (role === undefined || s.role === role) &&
-        (s.status === 'starting' || s.status === 'running') &&
+        // T465: an idle one too (a resting session, or one waiting on a question).
+        (s.status === 'starting' || s.status === 'running' || s.status === 'idle') &&
         this.handles(s.role).get(streamId)?.sessionId !== s.id &&
         // A start still in flight (T396) is not an orphan: its handle is on its way.
         !this.starting.has(startKey(streamId, s.role)),
@@ -1950,6 +2253,40 @@ function isFailureProgress(progress: string | undefined): boolean {
     progress !== undefined &&
     (progress.startsWith(FAILED_START_PREFIX) || progress.startsWith(CRASHED_PREFIX))
   );
+}
+
+/** T465: a timer that never keeps the daemon's process alive on its own. */
+function unrefTimer(timer: ReturnType<typeof setTimeout>): ReturnType<typeof setTimeout> {
+  (timer as { unref?: () => void }).unref?.();
+  return timer;
+}
+
+/**
+ * T465 (D48): the node's last agent session, when a start may resume it
+ * with `session/load`: the vendor can load a session, the session ended
+ * cleanly with its ACP session id on record, and the start runs the same
+ * role, vendor, model and effort (a picked other model starts fresh).
+ */
+export function resumableSession(
+  stream: Pick<Stream, 'sessions'>,
+  role: SessionRole,
+  settings: { vendor: string; model: string; effort: string },
+  provider: Pick<AcpProviderConfig, 'loadSession' | 'effort'>,
+): SessionRef | undefined {
+  if (!provider.loadSession || !isAgentRole(role)) return undefined;
+  const last = lastAgentSession(stream, () => true);
+  if (
+    last === undefined ||
+    last.role !== role ||
+    last.status !== 'stopped' ||
+    last.acp_session_id === undefined ||
+    last.vendor !== settings.vendor ||
+    last.model !== settings.model ||
+    (provider.effort !== undefined && last.effort !== settings.effort)
+  ) {
+    return undefined;
+  }
+  return last;
 }
 
 /** A vendor failure's exit reason plus its last stderr line, for the sessions strip. A clean end says nothing. */

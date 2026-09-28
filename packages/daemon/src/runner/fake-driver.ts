@@ -16,8 +16,9 @@ const FAKE_AGENT_PATH = join(import.meta.dir, 'fake-agent.ts');
 export interface FakeSpawnOptions {
   /**
    * A `FakeAgentScript` JSON file (`AGILE_FAKE_AGENT_SCRIPT`). The default
-   * script ends its turn at once, which ends the session; point this at a
-   * hanging script to keep one live.
+   * script ends its turn at once, which leaves the session idle (T465: it
+   * rests until the idle timeout); point this at a hanging script to keep
+   * one working.
    */
   scriptPath?: string;
 }

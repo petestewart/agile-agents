@@ -639,6 +639,19 @@ export function setAutoCloseDefault(on: boolean): Promise<AutoCloseDefault> {
   return post('/api/settings/auto-close', { on }) as Promise<AutoCloseDefault>;
 }
 
+/** T465 (D48): how long a finished turn's session stays alive for the next message. */
+export interface SessionIdle {
+  minutes: number;
+}
+
+export function getSessionIdle(): Promise<SessionIdle> {
+  return get<SessionIdle>('/api/settings/session-idle');
+}
+
+export function setSessionIdle(minutes: number): Promise<SessionIdle> {
+  return post('/api/settings/session-idle', { minutes }) as Promise<SessionIdle>;
+}
+
 /** T478: this node closes itself when its goal is met (the operator's). */
 export function setNodeAutoClose(id: string, on: boolean): Promise<Stream> {
   return post(`/api/streams/${encodeURIComponent(id)}/auto-close`, { on }) as Promise<Stream>;

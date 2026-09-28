@@ -3,7 +3,8 @@
  * A tiny scriptable ACP agent for tests, always spawned as a subprocess
  * like a real vendor CLI. Speaks the newline-delimited JSON-RPC
  * `@agile-agents/acp-client` drives (`initialize` → `session/new` →
- * `session/set_mode` → `session/prompt`), and can emit updates, request
+ * `session/set_mode` → `session/prompt`; T465: or `session/load` in place of
+ * `session/new`, which it advertises), and can emit updates, request
  * permission mid-turn, end the turn, or hang until killed.
  *
  * Configured by env vars only (argv belongs to the vendor):
@@ -61,8 +62,12 @@ export interface FakeAgentScript {
    * (Cursor/Grok, spike-findings.md §C2/§D).
    */
   requireAuthMethod?: string;
-  /** One JSON line per `session/set_mode`, `authenticate` and `session/prompt` received is appended here. */
+  /** One JSON line per `session/set_mode`, `authenticate`, `session/load` and `session/prompt` received is appended here. */
   logFile?: string;
+  /** T465: `session/load` fails with this message (a vendor that lost the session). */
+  loadFails?: string;
+  /** T465: said as one `agent_message_chunk` while `session/load` replays the old conversation. */
+  loadReplay?: string;
   /**
    * Mode ids this vendor supports (a real vendor's advertised set); any
    * other `session/set_mode` is rejected with `Unknown mode: <id>`, which
@@ -262,7 +267,10 @@ function handleLine(line: string): void {
 
   switch (message.method) {
     case 'initialize':
-      write({ id: message.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+      write({
+        id: message.id,
+        result: { protocolVersion: 1, agentCapabilities: { loadSession: true } },
+      });
       return;
     case 'session/new':
       // `requireAuthMethod`: fail until `authenticate` has run.
@@ -288,7 +296,22 @@ function handleLine(line: string): void {
       }
       return;
     case 'session/load':
+      appendLog(script, { method: 'session/load', params: message.params });
+      if (script.loadFails !== undefined) {
+        write({ id: message.id, error: { code: -32603, message: script.loadFails } });
+        return;
+      }
       sessionId = (message.params as { sessionId?: string } | undefined)?.sessionId ?? sessionId;
+      // The replay comes before the reply, as a vendor re-sends its conversation.
+      if (script.loadReplay !== undefined) {
+        notify('session/update', {
+          sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: script.loadReplay },
+          },
+        });
+      }
       write({
         id: message.id,
         result: { sessionId, modes: null, configOptions: sessionConfigOptions() },

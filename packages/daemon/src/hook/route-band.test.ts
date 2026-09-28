@@ -360,11 +360,14 @@ describe('T138 route band — a routed manifest edit, approved, retried once', (
     expect(gates.get(gate.id).consumed_at).toBeDefined();
 
     // Now the turn ends with nothing open: the normal rule applies again —
-    // the session is stopped and the exit path writes `done`.
+    // the node reads `done`, and (T465) the session rests for the next message.
     writeFileSync(finishSentinel, '');
     await waitFor(() => streams.get(stream.id).agent.status === 'done');
     expect(threadBodies(stream.id).some((b) => b.includes('retrying the edit'))).toBe(true);
-    expect(store.listAgents().some((a) => a.id === session)).toBe(false);
+    await waitFor(
+      () => streams.get(stream.id).sessions.find((s) => s.id === session)?.status === 'idle',
+    );
+    expect(store.listAgents().some((a) => a.id === session)).toBe(true);
   }, 90_000);
 
   test('with no live session the decision stays on the thread and says so', async () => {
