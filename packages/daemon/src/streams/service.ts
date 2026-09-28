@@ -374,6 +374,23 @@ export class StreamService {
   }
 
   /**
+   * T471: closed means inactive, not read-only. Reopens a closed node on the
+   * same branch and worktree; its next message (or Reopen) wakes its agent.
+   * A merged or deleted node is not reopened.
+   */
+  async reopen(principal: StreamPrincipal, id: string): Promise<Stream> {
+    const before = this.get(id);
+    if (before.human.status !== 'closed') return before;
+    if (before.archived === true) {
+      throw new NodeArchiveError(`${before.title} is in the trash; restore it first`);
+    }
+    const reopened = await this.update(principal, id, { human: { status: 'open' } });
+    await this.appendThread(principal, id, { kind: 'event', body: 'reopened' });
+    await this.treeChanged([reopened.parent]);
+    return reopened;
+  }
+
+  /**
    * T463: switches knowledge item `item` off (or back on) for this node
    * alone, as the operator. Its agent is told on the thread; the hook, the
    * brief and delivery read the node's `rules_off` from the next call.
@@ -612,7 +629,8 @@ export class StreamService {
   /**
    * T361: Restore. Brings back the node and the descendants its delete
    * archived (the same `archive_id`); nodes deleted on their own before it
-   * stay deleted. Agents are not started. Refused under a deleted parent
+   * stay deleted. Agents are not started. T471: the node itself comes back
+   * open, ready to resume, even if it was closed (a merged one stays merged). Refused under a deleted parent
    * (restore that first) and for a project root (it comes back with its project).
    * Returns what was restored, the node first.
    */
@@ -638,7 +656,14 @@ export class StreamService {
     }
     const restored: Stream[] = [];
     for (const s of restore) {
-      restored.push(await this.update(principal, s.id, { archived: null, archive_id: null }));
+      const reopen = s.id === id && s.human.status === 'closed';
+      restored.push(
+        await this.update(principal, s.id, {
+          archived: null,
+          archive_id: null,
+          ...(reopen ? { human: { status: 'open' as const } } : {}),
+        }),
+      );
     }
     const below = belowText(restored.length - 1);
     await this.appendThread(principal, id, { kind: 'event', body: `restored${below}` });

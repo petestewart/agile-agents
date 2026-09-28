@@ -50,6 +50,7 @@ const STREAM_EVENT_KINDS: ReadonlySet<string> = new Set([
   'stream_updated',
   'stream_closed',
   'stream_archived',
+  'stream_deleted',
 ]);
 
 function asString(value: unknown): string | undefined {
@@ -67,6 +68,11 @@ export function reconstructStreams(events: readonly Event[]): Record<string, Rec
     if (!STREAM_EVENT_KINDS.has(event.kind)) continue;
     const id = event.stream ?? asString(event.data?.stream);
     if (id === undefined) continue;
+    // T471: deleted forever, so no record to compare.
+    if (event.kind === 'stream_deleted') {
+      Reflect.deleteProperty(streams, id);
+      continue;
+    }
     const agentStatus = asString(event.data?.agent_status);
     const humanStatus = asString(event.data?.human_status);
     if (agentStatus === undefined || humanStatus === undefined) continue;

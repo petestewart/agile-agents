@@ -38,6 +38,7 @@ import {
   createStream,
   getSessionDefaults,
   getStreamPage,
+  reopenStream,
   resolveConflict,
   sayOnStream,
   setNodeAutoClose,
@@ -604,6 +605,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const children = rows.filter((r) => r.parent === stream.id);
   const open = stream.human.status !== 'landed' && stream.human.status !== 'closed';
   const merged = stream.human.status === 'landed';
+  // T471: closed is inactive, not read-only: Reopen (or a message) brings it back.
+  const closedNode = stream.human.status === 'closed' && stream.archived !== true;
   const live = stream.sessions.filter(isLiveSession);
   const liveAgent = liveAgentOf(stream.sessions);
   const liveReviewer = live.find((s) => s.role === 'reviewer');
@@ -905,8 +908,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       refresh();
       select(undefined);
       toast({
-        title: `Deleted “${title}”`,
-        body: 'Its worktree and branch are kept.',
+        title: `Moved “${title}” to the trash`,
+        body: 'Its worktree and branch are kept until you delete it forever.',
         tone: 'info',
         duration: 8000,
         action: {
@@ -931,6 +934,21 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     }
   }
 
+  // T471: Reopen: open again on the same branch and worktree; its agent wakes with your next message.
+  async function reopen(): Promise<void> {
+    setBusy(true);
+    try {
+      await reopenStream(stream.id);
+      toast({ title: 'Reopened', body: 'Your next message wakes its agent.', tone: 'success' });
+      composer.current?.focus();
+    } catch (err) {
+      toast({ title: 'Couldn’t reopen it', body: errorText(err), tone: 'error' });
+    } finally {
+      setBusy(false);
+      load();
+      refresh();
+    }
+  }
   // T478: this node closes itself when its goal is met; the operator's, while it is open.
   const changeAutoClose = open
     ? async (on: boolean) => {
@@ -1077,6 +1095,14 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     },
     'separator',
     {
+      label: 'Reopen',
+      icon: 'undo',
+      testid: 'menu-reopen',
+      hidden: !closedNode,
+      disabled: busy,
+      onSelect: () => void reopen(),
+    },
+    {
       label: 'Close node…',
       icon: 'x-circle',
       testid: 'stream-close',
@@ -1085,7 +1111,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       onSelect: () => setModal('close'),
     },
     {
-      label: 'Delete node…',
+      label: 'Move to trash…',
       icon: 'trash',
       testid: 'stream-delete',
       danger: true,
@@ -1734,7 +1760,27 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                   </>
                 ),
               }
-            : {})}
+            : closedNode
+              ? {
+                  extra: (
+                    <Button
+                      icon="undo"
+                      variant="primary"
+                      data-testid="header-reopen"
+                      busy={busy}
+                      disabled={offline}
+                      title={
+                        offline
+                          ? RECONNECTING
+                          : 'Open it again on the same branch and worktree; your next message wakes its agent'
+                      }
+                      onClick={() => void reopen()}
+                    >
+                      Reopen
+                    </Button>
+                  ),
+                }
+              : {})}
           startLabel={hasRun ? 'Restart agent' : 'Start agent'}
           busy={busy}
           merging={delivery.busy}
@@ -2248,8 +2294,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
 
       <ConfirmDialog
         open={modal === 'delete'}
-        title={`Delete “${stream.title}”?`}
-        confirmLabel="Delete node"
+        title={`Move “${stream.title}” to the trash?`}
+        confirmLabel="Move to trash"
         danger
         busy={busy}
         testid="delete-node"
@@ -2260,7 +2306,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           {children.length > 0
             ? `It and its ${children.length} sub-node${children.length === 1 ? '' : 's'} leave the tree, and their agents stop.`
             : 'It leaves the tree, and its agent stops.'}{' '}
-          Worktrees and branches are kept, and you can undo this right after.
+          Worktrees and branches are kept. Restore it from Trash at the foot of the sidebar.
         </p>
       </ConfirmDialog>
       {mergeAsk.dialog}

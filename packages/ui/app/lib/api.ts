@@ -469,6 +469,46 @@ export function unarchiveStream(id: string): Promise<{ node: Stream; restored: s
   }>;
 }
 
+/** T471: a closed node is open again, on the same branch and worktree. */
+export function reopenStream(id: string): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/reopen`) as Promise<Stream>;
+}
+
+/** T471: what Delete forever (or Empty trash) removes, keeps and loses. */
+export interface TrashPreview {
+  nodes: Array<{ id: string; title: string }>;
+  /** Branches with commits their target doesn't have (-1: couldn't count); kept unless asked. */
+  branches: Array<{ node: string; title: string; branch: string; unmerged: number }>;
+  /** Titles of nodes whose worktree has uncommitted changes. */
+  uncommitted: string[];
+}
+
+export function getTrashPreview(id: string): Promise<TrashPreview> {
+  return get<TrashPreview>(`/api/streams/${encodeURIComponent(id)}/trash-preview`);
+}
+
+export function getTrash(): Promise<TrashPreview> {
+  return get<TrashPreview>('/api/trash');
+}
+
+export interface PurgeResult {
+  deleted: string[];
+  kept_branches: string[];
+}
+
+/** T471: Delete forever; `deleteBranches` also deletes branches with unmerged commits. */
+export function purgeStream(id: string, deleteBranches = false): Promise<PurgeResult> {
+  return post(`/api/streams/${encodeURIComponent(id)}/purge`, {
+    ...(deleteBranches ? { delete_branches: true } : {}),
+  }) as Promise<PurgeResult>;
+}
+
+export function emptyTrash(deleteBranches = false): Promise<PurgeResult> {
+  return post('/api/trash/empty', {
+    ...(deleteBranches ? { delete_branches: true } : {}),
+  }) as Promise<PurgeResult>;
+}
+
 /** T362: mirror of `store/browse-dirs.ts`'s `DirEntry`. */
 export interface DirEntry {
   name: string;

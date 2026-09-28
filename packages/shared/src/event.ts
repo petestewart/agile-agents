@@ -33,6 +33,8 @@ export const EVENT_KINDS = [
   'stream_updated',
   'stream_closed',
   'stream_archived',
+  // T471: Delete forever. data: {stream}. The record, thread, card and queue are gone.
+  'stream_deleted',
 
   // -- project (store.createProject / updateProject, via ProjectService) --
   // data: {id, name, root, archived}
