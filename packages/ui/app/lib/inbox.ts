@@ -597,6 +597,24 @@ export function applyFilter(
   return filter === 'all' ? [...items] : items.filter((item) => filterOf(item, rowOf) === filter);
 }
 
+/**
+ * T470: a Needs me row's one line: a finished node's last progress line
+ * (nothing when it left only the stock sentence), a question's text, else
+ * what the item says; plain words, never markdown.
+ */
+export function inboxLine(
+  item: InboxItem,
+  row?: Parameters<typeof doneCardOf>[0],
+): string | undefined {
+  if (item.kind === 'done') {
+    const line = doneLine(item);
+    if (line !== undefined) return plainLine(line);
+    return doneCardOf(row) === 'no_changes' ? 'Nothing to merge' : undefined;
+  }
+  if (item.kind === 'question') return plainLine(questionView(item).text) || undefined;
+  return plainLine(item.context) || undefined;
+}
+
 /** T470: the nodes a set of items is about, once each (a knowledge item has none). */
 export function nodesOf(items: readonly InboxItem[]): string[] {
   return [...new Set(items.flatMap((item) => (item.stream !== undefined ? [item.stream] : [])))];

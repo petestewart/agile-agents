@@ -287,12 +287,19 @@ async function openPage(options?: {
   serviceWorkers?: 'block';
   /** T388: permissions the page's context starts with (`['notifications']`). */
   permissions?: string[];
+  /**
+   * T470: Needs me shows rows, each expanding to its card. The tests that
+   * act on cards start with "Expand all" on (a per-browser setting of the
+   * app); the T470 test passes `false` for the rows as a new browser has them.
+   */
+  inboxExpandAll?: boolean;
 }): Promise<Page> {
+  const { inboxExpandAll = true, ...pageOptions } = options ?? {};
   const acquired = await acquireBrowserPage({
     label: 'control-room e2e',
     cached: sharedBrowser,
     launch: () => chromium.launch({ executablePath }),
-    openPage: (browser) => browser.newPage(options),
+    openPage: (browser) => browser.newPage(pageOptions),
   }).catch((err: unknown) => {
     // Nothing usable came back, so whatever was cached is wedged too.
     sharedBrowser = undefined;
@@ -303,6 +310,15 @@ async function openPage(options?: {
   sharedBrowser = acquired.browser;
   acquired.page.setDefaultTimeout(PAGE_TIMEOUT_MS);
   acquired.page.setDefaultNavigationTimeout(PAGE_TIMEOUT_MS);
+  if (inboxExpandAll) {
+    await acquired.page.addInitScript(() => {
+      try {
+        localStorage.setItem('agile.inbox.expandAll', '1');
+      } catch {
+        // No storage: the rows stay folded.
+      }
+    });
+  }
   return acquired.page;
 }
 
@@ -770,10 +786,14 @@ describe('cockpit shell (Playwright e2e)', () => {
 
         const card = `[data-id="${question.id}"]`;
         await page.locator(card).waitFor({ state: 'visible' });
-        // Grouped under the stream's full path (§3.2); T416: one separator, "›", everywhere.
-        expect(await page.locator(`.cr-group[data-stream="${leaf.id}"] h2`).textContent()).toBe(
-          'ledger-lite › import CSV › parser',
-        );
+        // The row names the stream by its full path (§3.2); T416: one separator, "›", everywhere.
+        expect(
+          await page
+            .locator(
+              `[data-testid="inbox-row"][data-item="${question.id}"] [data-testid="inbox-subject"]`,
+            )
+            .textContent(),
+        ).toBe('ledger-lite › import CSV › parser');
         expect(await page.locator(`${card} [data-testid="inbox-context"]`).textContent()).toContain(
           'comma or semicolon',
         );
@@ -1021,7 +1041,7 @@ describe('Needs me and the decision cards (Playwright e2e, T364)', () => {
         await page.keyboard.press('j');
         const focused = async (id: string): Promise<boolean> =>
           (await page?.evaluate<boolean>(
-            `document.activeElement?.getAttribute('data-id') === ${JSON.stringify(id)}`,
+            `document.activeElement?.getAttribute('data-item') === ${JSON.stringify(id)}`,
           )) === true;
         await waitUntilAsync('j to focus the first card', () => focused(first));
         await page.keyboard.press('j');
@@ -9684,6 +9704,110 @@ async function finishedNode(
   return stream.id;
 }
 
+/** T470: a work node that finished with nothing on its branch (Finished, no changes). */
+async function emptyFinishedNode(
+  cockpit: StreamCockpit,
+  title: string,
+  slug: string,
+): Promise<string> {
+  const stream = await cockpit.streams.create('human', { title, goal: 'g', repo: 'demo' });
+  const worktree = join(cockpit.repo, '.worktrees', slug);
+  git(['worktree', 'add', '-q', '-b', slug, worktree, 'main'], cockpit.repo);
+  await cockpit.streams.update('daemon', stream.id, {
+    branch: slug,
+    worktree,
+    agent: { status: 'done', progress: `${title}: looked, nothing to change` },
+  });
+  return stream.id;
+}
+
+describe('Needs me as an inbox (Playwright e2e, T470)', () => {
+  browserTest(
+    'one row per item with Close and Open; categories; select and close several; close all finished',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const a = await emptyFinishedNode(cockpit, 'Count desktop files', 's-a');
+        const b = await emptyFinishedNode(cockpit, 'Files in the branch', 's-b');
+        const c = await emptyFinishedNode(cockpit, 'List the repos', 's-c');
+        const ready = await finishedNode(cockpit, 'Add CSV import', 's-ready');
+        const ledger = (await cockpit.streams.create('human', { title: 'Ledger', goal: 'g' })).id;
+        const asked = await cockpit.questions.raise({
+          stream: ledger,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session: ulid(),
+          text: 'Store amounts how?',
+          options: ['Integer cents', 'Floats'],
+        });
+        const p = await openPage({ inboxExpandAll: false });
+        page = p;
+        await p.goto(`${cockpit.base}/`);
+        const rows = p.locator('[data-testid="inbox-row"]');
+        await waitUntilAsync('five rows', async () => (await rows.count()) === 5);
+        const row = (id: string) => `[data-testid="inbox-row"][data-item="${id}"]`;
+        // A row: the subject, what it is and its line; no card until it is expanded.
+        await p
+          .locator(`${row(a)} [data-testid="inbox-what"]`, { hasText: 'Finished, no changes' })
+          .waitFor();
+        expect(await p.locator(`${row(a)} [data-testid="inbox-subject"]`).textContent()).toBe(
+          'Count desktop files',
+        );
+        expect(await p.locator('[data-testid="inbox"] .cr-card').count()).toBe(0);
+        await p.screenshot({ path: join(tmpdir(), 'agile-t470-inbox.png') });
+
+        // The question expands in place and is answered there.
+        await p.locator(`${row(asked.id)} [data-testid="inbox-expand"]`).click();
+        await p
+          .locator(`[data-testid="inbox"] [data-id="${asked.id}"] [data-testid="answer-choice"]`)
+          .first()
+          .waitFor();
+
+        // Finished: its own tab.
+        await p.locator('[data-testid="inbox-filter-finished"]').click();
+        await waitUntilAsync('three finished rows', async () => (await rows.count()) === 3);
+
+        // Select two and close them together.
+        await p.locator(`${row(a)} [data-testid="inbox-select"]`).check();
+        await p.locator(`${row(b)} [data-testid="inbox-select"]`).check();
+        expect(await p.locator('[data-testid="inbox-selected"]').textContent()).toBe('2 selected');
+        await p.locator('[data-testid="inbox-close-selected"]').click();
+        await p
+          .locator('[data-testid="inbox-close-confirm"] button', { hasText: 'Close 2 nodes' })
+          .click();
+        await waitUntil('two closed', () =>
+          [a, b].every((id) => cockpit.streams.get(id).human.status === 'closed'),
+        );
+        expect(cockpit.streams.get(c).human.status).toBe('open');
+
+        // Close all finished takes the rest; the merge-ready node stays.
+        await p.locator('[data-testid="inbox-close-finished"]').click();
+        await p
+          .locator('[data-testid="inbox-close-confirm"] button', {
+            hasText: 'Close all finished (1)',
+          })
+          .click();
+        await waitUntil(
+          'the last finished closed',
+          () => cockpit.streams.get(c).human.status === 'closed',
+        );
+        expect(cockpit.streams.get(ready).human.status).toBe('open');
+
+        // A row's own Close closes that node at once.
+        await p.locator(`${row(ready)} [data-testid="inbox-close"]`).click();
+        await waitUntil(
+          'the ready node closed',
+          () => cockpit.streams.get(ready).human.status === 'closed',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
   browserTest(
     'the first Merge asks (and can stop asking); a refusal reads in words under Merge, with its fix as a button, never as a toast',
@@ -9851,8 +9975,8 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
         expect(said.at(-1)?.id).toBe(csv);
         expect(said.at(-1)?.body).toContain('Bring your branch up to date');
 
-        // A blocked agent is filed with the questions, and a reply unblocks it.
-        await page.locator('[data-testid="inbox-filter"] [data-value="questions"]').click();
+        // T470: a blocked agent has its own filter, and a reply unblocks it.
+        await page.locator('[data-testid="inbox-filter"] [data-value="blocked"]').click();
         const blocked = `[data-testid="inbox"] [data-kind="blocked"][data-id="${stuck}"]`;
         await page.locator(blocked).waitFor({ state: 'visible' });
         const reply = page.locator(`${blocked} [data-testid="blocked-send"]`);
@@ -9869,6 +9993,7 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
         expect(sent?.start).toBe(true);
 
         // Answer is one variant everywhere: secondary while empty, primary once typed.
+        await page.locator('[data-testid="inbox-filter"] [data-value="questions"]').click();
         const question = `[data-testid="inbox"] [data-id="${asked.id}"]`;
         const answer = page.locator(`${question} [data-testid="answer-send"]`);
         expect(await answer.getAttribute('data-variant')).toBe('secondary');
@@ -10654,10 +10779,10 @@ describe('views and polish (Playwright e2e, T436, audit r6)', () => {
 });
 
 describe('flow and focus (Playwright e2e, T445)', () => {
-  /** The `data-testid` (else the `data-id`, else the tag) of what has focus. */
+  /** A Needs me row's item (T470), else the `data-testid` (else the `data-id`, else the tag) of what has focus. */
   const focusOf = async (page: Page): Promise<string> =>
     (await page.evaluate<string>(
-      `(() => { const a = document.activeElement; return a?.getAttribute('data-testid') ?? a?.getAttribute('data-id') ?? a?.tagName.toLowerCase() ?? ''; })()`,
+      `(() => { const a = document.activeElement; return a?.getAttribute('data-item') ?? a?.getAttribute('data-testid') ?? a?.getAttribute('data-id') ?? a?.tagName.toLowerCase() ?? ''; })()`,
     )) ?? '';
 
   browserTest(

@@ -10629,3 +10629,151 @@ div.cr-lens-ev:hover {
 .cr-mpick-row[data-missing="true"] .cr-mpick-name {
   color: var(--text-faint);
 }
+
+/* T470: Needs me as an inbox: a selection bar, then one row per item; a row expands to its card. */
+.cr-inbox-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 6px 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.cr-inbox-bar-count {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.cr-inbox-bar-hint {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
+.cr-inbox-bar-end {
+  margin-left: auto;
+}
+.cr-inbox-check {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.cr-inbox-item {
+  border-bottom: 1px solid var(--border);
+}
+.cr-inbox-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(56px, 88px) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+}
+.cr-inbox-row:hover {
+  background: var(--bg-hover);
+}
+.cr-inbox-row:focus-visible,
+.cr-inbox-row:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.cr-inbox-item[data-selected="true"] > .cr-inbox-row {
+  background: var(--accent-weak);
+}
+.cr-inbox-row-icon {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+.cr-inbox-row-icon[data-tone="amber"] {
+  color: var(--amber-text);
+}
+.cr-inbox-row-icon[data-tone="green"] {
+  color: var(--green-text);
+}
+.cr-inbox-row-icon[data-tone="red"] {
+  color: var(--red-text);
+}
+.cr-inbox-row-icon[data-tone="purple"] {
+  color: var(--purple-text);
+}
+.cr-inbox-row-icon[data-tone="accent"] {
+  color: var(--accent-text);
+}
+.cr-inbox-row-agent {
+  overflow: hidden;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cr-inbox-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cr-inbox-row-subject {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cr-inbox-row-parents {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.cr-inbox-row-what {
+  flex: none;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.cr-inbox-row-line {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cr-inbox-row-age {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.cr-inbox-row-actions {
+  display: flex;
+  gap: 6px;
+}
+.cr-inbox-card {
+  padding: 2px 12px 12px 36px;
+}
+@media (max-width: 640px) {
+  .cr-inbox-row {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+  }
+  .cr-inbox-row-agent,
+  .cr-inbox-row-age {
+    display: none;
+  }
+  .cr-inbox-row-line {
+    display: none;
+  }
+  .cr-inbox-card {
+    padding-left: 12px;
+  }
+}
