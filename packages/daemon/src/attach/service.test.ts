@@ -48,7 +48,7 @@ import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { wireQuestionSupersession } from '../questions/supersede';
 import type { FakeAgentScript } from '../runner/fake-agent';
-import { missingVendorCommand } from '../runner/session';
+import { SESSION_STATE_FILE, missingVendorCommand } from '../runner/session';
 import { StateStore } from '../store';
 import { RepoInPlaceService } from '../streams/repo-in-place';
 import { StreamService } from '../streams/service';
@@ -211,6 +211,21 @@ describe('attach on a stream with no repo (a planning conversation)', () => {
     expect(streams.get(stream.id).branch).toBeUndefined();
     expect(streams.get(stream.id).worktree).toBeUndefined();
     expect(existsSync(join(home, '.git'))).toBe(false);
+  });
+
+  test("T467a: the vendor's session/new reply is kept in the session dir, as sent", async () => {
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    const file = join(home, 'sessions', session.id, SESSION_STATE_FILE);
+    await waitFor(() => existsSync(file));
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as {
+      at: string;
+      configOptions: Array<{ id: string; currentValue: string }>;
+      models: unknown;
+    };
+    expect(saved.at).toBeString();
+    expect(saved.configOptions[0]).toMatchObject({ id: 'model' });
+    expect(saved.models).toBeNull();
   });
 });
 

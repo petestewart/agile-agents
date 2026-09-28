@@ -2885,6 +2885,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Scope:** Pete (2026-09-28) asked whether a thread is one vendor session that keeps its context and prompt cache. Only while the agent runs: the turn-end rule stops the session when a turn ends with nothing open, and the next message starts a fresh session from a brief, cold.
 - **Acceptance Criteria:** A finished turn leaves the session alive and idle ("Waiting for you"); the next message goes into the same session. It ends after an idle timeout (Settings, default 30 minutes), a Stop, or the daemon stopping. An ended session is resumed with ACP `session/load` where the vendor supports it (Claude, Grok: spike-findings §C), else started fresh from the brief.
 
+### Ticket: T467a Keep the vendor's session/new reply, so §12 can be measured
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete ran the vendors and sent `log/events.jsonl`: it has no `session/new` reply, because the daemon never kept one. It read the current model out of `configOptions` and dropped the rest, and the ACP client forwarded `modes` and `configOptions` but not `models`. His log shows Claude reporting its model and Codex, Cursor, Gemini and Grok all reading "default", with no way to tell whether they sent nothing or something the parser didn't know.
+- **Acceptance Criteria:** Each session writes the vendor's `session/new` (or `session/load`) reply to `<home>/sessions/<id>/session-state.json`, with `modes`, `configOptions` and `models`. The ACP client forwards `models`, including a reply that carries only it. The current model is also read from ACP's `models.currentModelId`. LIVE-CHECKLIST §12 points at the file.
+- **Validation Steps:** attach test T467a (the file holds the reply as sent); `runner/session-state.test.ts` (configOptions, a model record, `models.currentModelId`, none). acp-client tests green; full `bun test` 3493/0.
+- **Notes:** Branch T467a-save-session-reply. Reading, not setting: D46's "measure first" still holds for how a model is set.
+
 ### Ticket: T467 Models come from the vendor, set through ACP (D46)
 - **Priority:** P1
 - **Status:** Todo (measure first: LIVE-CHECKLIST §12)
