@@ -628,3 +628,45 @@ describe('T361: Delete and Restore (archiveTree, unarchiveTree)', () => {
     expect(stops).toBe(0);
   });
 });
+
+describe('T474: reorder', () => {
+  const orderOf = (parent: string) =>
+    streams
+      .list()
+      .filter((s) => s.parent === parent)
+      .map((s, i) => ({ s, i }))
+      .sort(
+        (a, b) =>
+          (a.s.order ?? Number.MAX_SAFE_INTEGER) - (b.s.order ?? Number.MAX_SAFE_INTEGER) ||
+          a.i - b.i,
+      )
+      .map(({ s }) => s.title);
+
+  test('places a node before or after a sibling; the siblings are renumbered in order', async () => {
+    const root = await newStream('root');
+    const a = await newStream('a', { parent: root.id });
+    const b = await newStream('b', { parent: root.id });
+    const c = await newStream('c', { parent: root.id });
+    expect(orderOf(root.id)).toEqual(['a', 'b', 'c']);
+    await streams.reorder(c.id, a.id, 'before');
+    expect(orderOf(root.id)).toEqual(['c', 'a', 'b']);
+    await streams.reorder(c.id, b.id, 'after');
+    expect(orderOf(root.id)).toEqual(['a', 'b', 'c']);
+    await streams.reorder(a.id, b.id, 'after');
+    expect(orderOf(root.id)).toEqual(['b', 'a', 'c']);
+    expect([b, a, c].map((s) => streams.get(s.id).order)).toEqual([0, 1, 2]);
+  });
+
+  test('beside a node under another parent moves it there; never beside a root', async () => {
+    const root = await newStream('root');
+    const a = await newStream('a', { parent: root.id });
+    const a1 = await newStream('a1', { parent: a.id });
+    const b = await newStream('b', { parent: root.id });
+    await streams.reorder(b.id, a1.id, 'before');
+    expect(streams.get(b.id).parent).toBe(a.id);
+    expect(orderOf(a.id)).toEqual(['b', 'a1']);
+    await expect(streams.reorder(a1.id, root.id, 'after')).rejects.toThrow('project root');
+    // Beside something inside itself is a move under itself: refused.
+    await expect(streams.reorder(a.id, a1.id, 'after')).rejects.toThrow();
+  });
+});

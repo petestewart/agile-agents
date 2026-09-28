@@ -131,7 +131,21 @@ export function buildStreamTree(rows: readonly CockpitStreamRow[]): StreamTreeNo
     if (parent && parent !== node) parent.children.push(node);
     else roots.push(node);
   }
+  // T474: siblings by their place (dragged there); the rest keep the order they were made.
+  for (const node of nodes.values()) node.children = bySiblingOrder(node.children);
   return roots;
+}
+
+/** T474: `order` first (smallest first), then the incoming order; stable. */
+export function bySiblingOrder<T extends { row: { order?: number } }>(nodes: readonly T[]): T[] {
+  return nodes
+    .map((n, i) => ({ n, i }))
+    .sort(
+      (a, b) =>
+        (a.n.row.order ?? Number.MAX_SAFE_INTEGER) - (b.n.row.order ?? Number.MAX_SAFE_INTEGER) ||
+        a.i - b.i,
+    )
+    .map(({ n }) => n);
 }
 
 /**

@@ -38,6 +38,7 @@ import {
   StreamCreateInputSchema,
   StreamMoveRequestSchema,
   StreamPermissionsRequestSchema,
+  StreamReorderRequestSchema,
   StreamRuleRequestSchema,
   StreamSayInputSchema,
   StreamSendUpInputSchema,
@@ -1471,6 +1472,7 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/permissions  T463: `{posture}` this node's Trusted or Ask; `null` inherits
  *   POST /api/streams/:id/auto-close   T478: `{on}` this node closes itself when its goal is met
  *   POST /api/streams/:id/move         Move (T333, D34): `{parent}` a node or a project id
+ *   POST /api/streams/:id/reorder      T474: `{before}` or `{after}` a node: its place among the siblings
  *   POST /api/streams/:id/update       Rename (T365): `{title?, goal?, auto_title?}`, as `stream.update`
  *                                      (T435: `auto_title` has the cheap model name it better)
  *   POST /api/streams/:id/archive      Delete (T361): stops the subtree's sessions, archives it
@@ -1489,7 +1491,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|auto-close|draft-goal|attach|resolve|stop|close|reopen|to-talk|purge|trash-preview|dismiss|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|auto-close|reorder|draft-goal|attach|resolve|stop|close|reopen|to-talk|purge|trash-preview|dismiss|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -1630,6 +1632,14 @@ async function handleStreamRoute(
       const input = StreamAutoCloseRequestSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('auto-close', input.error));
       return jsonResponse(await feed.streams.setAutoClose(id, input.data.on));
+    }
+    if (action === 'reorder') {
+      const input = StreamReorderRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('reorder', input.error));
+      const { before, after } = input.data;
+      return jsonResponse(
+        await feed.streams.reorder(id, (before ?? after) as string, before ? 'before' : 'after'),
+      );
     }
     if (action === 'move') {
       const input = StreamMoveRequestSchema.safeParse(body);

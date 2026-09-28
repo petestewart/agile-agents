@@ -109,6 +109,8 @@ export interface CockpitStreamRow {
   last_agent?: { vendor: string; model: string };
   /** T477: it has no goal yet: a finished turn is a reply, not finished work. Absent from an older daemon. */
   no_goal?: true;
+  /** T474: its place among its siblings (dragged there); absent keeps the order nodes were made. */
+  order?: number;
   /**
    * T447: a coordinating node's (or a project root's) parts, rolled up. Never
    * sent by the daemon: the feed derives it from the rows (`withParts`).

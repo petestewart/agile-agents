@@ -255,6 +255,8 @@ export function overviewSummary(nodes: readonly StatusInput[]): string {
 type OverviewRow = StatusInput &
   Pick<CockpitStreamRow, 'id' | 'title' | 'parent'> & {
     updated_at?: string;
+    /** T474: its place among its siblings, when it was dragged there. */
+    order?: number;
   };
 
 /**
@@ -311,8 +313,11 @@ export function overviewSections<T extends OverviewRow>(
 ): OverviewSection<T>[] {
   const query = opts.query?.trim() ?? '';
   const order = new Map(nodes.map((n, i) => [n.id, i]));
+  // T474: within a status, the order you dragged them into, then the newest change.
+  const placed = (n: T): number => n.order ?? Number.MAX_SAFE_INTEGER;
   const byStatus = (a: T, b: T): number =>
     (STATUS_RANK.get(overviewStatus(a)) ?? 0) - (STATUS_RANK.get(overviewStatus(b)) ?? 0) ||
+    placed(a) - placed(b) ||
     (a.updated_at !== undefined && b.updated_at !== undefined && a.updated_at !== b.updated_at
       ? a.updated_at < b.updated_at
         ? 1

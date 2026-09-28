@@ -29,6 +29,7 @@
  */
 
 import {
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   useCallback,
@@ -46,6 +47,7 @@ import {
   getTrashPreview,
   moveStream,
   purgeStream,
+  reorderStream,
   unarchiveStream,
   updateStream,
 } from '../lib/api';
@@ -64,13 +66,16 @@ import {
 } from '../lib/streams';
 import {
   DRAG_NOTE,
+  type DropZone,
   LEGEND_NOTE,
   LEGEND_ORDER,
   OVERLAP_NOTE,
   type OverlapMark,
   ROLE_NOTE,
   checkMove,
+  checkPlace,
   deleteQuestion,
+  dropZone,
   legendRow,
   moveTargets,
   overlapMark,
@@ -143,13 +148,20 @@ interface Fold {
 /** T333/T365: the rail's drag; `check` is the rail's view, the daemon decides. */
 interface Drag {
   dragging: string | undefined;
-  /** The row under the pointer, and why it refuses the drop (if it does). */
-  over: { id: string; reason?: string } | undefined;
+  /** The row under the pointer, where on it (T474), and why it refuses the drop (if it does). */
+  over: { id: string; zone: DropZone; reason?: string } | undefined;
   start(id: string): void;
-  enter(target: string): boolean;
+  enter(target: string, zone: DropZone): boolean;
   leave(target: string): void;
-  drop(target: string): void;
+  drop(target: string, zone: DropZone): void;
   end(): void;
+}
+
+/** T474: where on a row the pointer is; a project's row only takes nodes under it. */
+function zoneOf(e: ReactDragEvent<HTMLElement>, isProject: boolean): DropZone {
+  if (isProject) return 'into';
+  const box = e.currentTarget.getBoundingClientRect();
+  return dropZone(e.clientY - box.top, box.height);
 }
 
 /** What a row's `+` and ⋯ do. */
@@ -347,7 +359,16 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
           tabIndex={tabbable ? 0 : -1}
           draggable={!isProject}
           data-dragging={drag.dragging === id ? 'true' : undefined}
-          data-drop-target={drag.over?.id === id && refusal === undefined ? 'true' : undefined}
+          data-drop-target={
+            drag.over?.id === id && drag.over.zone === 'into' && refusal === undefined
+              ? 'true'
+              : undefined
+          }
+          data-drop-zone={
+            drag.over?.id === id && drag.over.zone !== 'into' && refusal === undefined
+              ? drag.over.zone
+              : undefined
+          }
           onDragStart={(e) => {
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', id);
@@ -355,14 +376,14 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
           }}
           onDragEnd={() => drag.end()}
           onDragOver={(e) => {
-            if (!drag.enter(id)) return;
+            if (!drag.enter(id, zoneOf(e, isProject))) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
           }}
           onDragLeave={() => drag.leave(id)}
           onDrop={(e) => {
             e.preventDefault();
-            drag.drop(id);
+            drag.drop(id, zoneOf(e, isProject));
           }}
           aria-current={selected === id ? 'true' : undefined}
           aria-expanded={hasChildren ? open : undefined}
@@ -770,7 +791,9 @@ export function StreamTree({
 
   // ---- drag (T333, T365)
   const [dragging, setDragging] = useState<string | undefined>(undefined);
-  const [over, setOver] = useState<{ id: string; reason?: string } | undefined>(undefined);
+  const [over, setOver] = useState<{ id: string; zone: DropZone; reason?: string } | undefined>(
+    undefined,
+  );
   const [moveError, setMoveError] = useState<string | undefined>(undefined);
   // Read at dragend: why the row under the pointer refused, and whether a drop happened.
   const refused = useRef<string | undefined>(undefined);
@@ -794,29 +817,41 @@ export function StreamTree({
       setMoveError(undefined);
       setDragging(id);
     },
-    enter: (target) => {
+    enter: (target, zone) => {
       if (dragging === undefined) return false;
-      const check = checkMove(allRows, dragging, target);
+      // T474: an edge places it beside the row; the middle nests it under.
+      const check =
+        zone === 'into'
+          ? checkMove(allRows, dragging, target)
+          : checkPlace(allRows, dragging, target);
       if (check.ok) {
         refused.current = undefined;
-        if (over?.id !== target || over.reason !== undefined) setOver({ id: target });
+        if (over?.id !== target || over.zone !== zone || over.reason !== undefined)
+          setOver({ id: target, zone });
         return true;
       }
       refused.current = check.quiet ? undefined : check.reason;
-      const next = check.quiet ? undefined : { id: target, reason: check.reason };
-      if (over?.id !== next?.id || over?.reason !== next?.reason) setOver(next);
+      const next = check.quiet ? undefined : { id: target, zone, reason: check.reason };
+      if (over?.id !== next?.id || over?.zone !== next?.zone || over?.reason !== next?.reason)
+        setOver(next);
       return false;
     },
     leave: (target) => {
       if (over?.id === target) setOver(undefined);
     },
-    drop: (target) => {
+    drop: (target, zone) => {
       const moving = dragging;
       dropped.current = true;
       setDragging(undefined);
       setOver(undefined);
-      if (moving === undefined || !checkMove(allRows, moving, target).ok) return;
-      moveStream(moving, target).catch((err: unknown) => setMoveError(errorText(err)));
+      if (moving === undefined) return;
+      if (zone === 'into') {
+        if (!checkMove(allRows, moving, target).ok) return;
+        moveStream(moving, target).catch((err: unknown) => setMoveError(errorText(err)));
+        return;
+      }
+      if (!checkPlace(allRows, moving, target).ok) return;
+      reorderStream(moving, target, zone).catch((err: unknown) => setMoveError(errorText(err)));
     },
     end: () => {
       const reason = refused.current;
