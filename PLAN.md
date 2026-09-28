@@ -2910,6 +2910,34 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Scope:** Pete (2026-09-28): "separate the model and effort with model indicator on left and effort on right. shift-tab should be used to cycle through effort levels."
 - **Acceptance Criteria:** The composer bar shows the model chip on the left and an effort chip on the right (only for a vendor that takes effort, T401). Shift+Tab in the composer cycles low → medium → high → max, and the effort chip changes with it. The pick lasts like the model pick (T423, T464).
 
+### Ticket: T470 Needs me as a true inbox
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "this is lots of noise … not going to be scalable to have all these cards for every node that's finished when i have tens of projects going on. we should rethink this to be like a true inbox. i should see agent and subject and then can click to close the node or click to open it up (2 buttons). i can also select multiple … select all finished … close all finished."
+- **Acceptance Criteria:**
+  - One row per item: a checkbox, the kind's icon, the agent (the vendor it runs or last ran), the node's title as the subject, what it is and a one-line summary, and its age. Each row has **Close** (the node) and **Open**. Clicking the row itself expands the full card in place, where a question is answered or a merge made.
+  - Categories with counts: All, Questions, Decisions, Merges, Finished (nothing to merge), Blocked.
+  - Selecting: tick rows, or the header box selects everything shown. A bar then offers **Close N**, which asks once. **Close all finished** closes every Finished row.
+  - Keys: `j`/`k` move, `x` selects, Space expands, Enter opens.
+- **Validation Steps:** `ui/app/lib/inbox.test.ts` (categories, `nodesOf`); the control-room e2e for rows, the category tabs, a select and bulk close, Close all finished, and a row expanding to answer a question; the existing Needs me e2e tests follow the rows.
+- **Notes:** Branch T470-needs-me-inbox.
+  - `Inbox.tsx`: `InboxRow`, the selection bar and `useRowKeys` (focus on a row or its expanded card).
+  - `lib/inbox.ts`: `filterOf` with the Finished and Blocked categories, `nodesOf` and `inboxLine`.
+  - The cockpit row gains `last_agent` (the vendor and model its agent last ran), so a finished node names its agent.
+  - **Expand all** (per browser) opens every card. The control-room tests that act on cards and the walkthrough start with it on; the T470 test covers the rows as a new browser has them.
+  - Results: control-room e2e 123/123; walkthrough 43 steps, 0 findings.
+
+### Ticket: T471 Closed means inactive, not read-only; Trash with Delete forever
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): a closed node reads as read-only, yet "there's no reason we can't restart the thread". Deleted nodes can only be restored, never deleted for good. A deleted open node restores and resumes, while a deleted closed one restores but can't resume. "should closed really mean read-only? it seems more like we're done being active in this for now, and deleted/trash means we think we're done … for good (but still could revive it)".
+- **Acceptance Criteria:**
+  - **Closed** = inactive: out of Needs me and folded in the tree. A message to it (or **Reopen**) reopens it on the same branch and worktree and wakes its agent.
+  - Delete is renamed **Move to trash**. **Restore** brings a node back open and ready to resume, whatever state it was in.
+  - **Delete forever** (per node, and **Empty trash**) removes the node's record, thread, session files and worktree. Its branch goes too if merged. With unmerged commits the branch is kept unless you tick "Also delete its branch (N unmerged commits)" (proposed default; Pete to confirm).
+  - A merged node is unchanged.
 ### Ticket: T476 Cursor's verbs and commands were refused
 - **Priority:** P0
 - **Status:** Done

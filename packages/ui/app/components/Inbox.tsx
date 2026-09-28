@@ -14,21 +14,28 @@
 
 import type { InboxItem } from '@agile-agents/shared';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { getDirector, getStreamPage } from '../lib/api';
+import { closeStream, getDirector, getStreamPage } from '../lib/api';
+import { vendorLabel } from '../lib/chat';
 import { useFeed } from '../lib/feed-context';
 import type { CockpitStreamRow } from '../lib/feed-types';
 import {
   DECIDED_LINGER_MS,
+  DONE_CARD_TITLE,
   LIST_SETTLE_MS,
   type NeedsMeFilter,
   PATH_SEP,
   type SetupStep,
   applyFilter,
+  cardTitle,
+  cardTone,
   choiceIndexOfKey,
+  doneCardOf,
   filterCounts,
   groupNeedsMe,
+  inboxLine,
   isFirstRun,
   nodePath,
+  nodesOf,
   replyPreview,
   setupSteps,
   withDecided,
@@ -37,10 +44,20 @@ import { isShortcut, useShell } from '../lib/shell';
 import { ago } from '../lib/status';
 import { DIRECTOR_READ_KEY, ancestorTitles } from '../lib/unread';
 import { markAllRead, markRead, useDirectorUnread, useUnreadReplies } from '../lib/use-unread';
-import { Card } from './DecisionCard';
+import { Card, inboxIcon } from './DecisionCard';
 import { Icon, type IconName } from './Icon';
 import { ROLE_GLYPH } from './StreamTree';
-import { Button, EmptyState, IconButton, Kbd, PageHeader, Segmented, Spinner } from './ui';
+import {
+  Button,
+  ConfirmDialog,
+  EmptyState,
+  IconButton,
+  Kbd,
+  PageHeader,
+  Segmented,
+  Spinner,
+  useToast,
+} from './ui';
 
 export { Card } from './DecisionCard';
 
@@ -52,7 +69,33 @@ const FILTERS: ReadonlyArray<{ id: NeedsMeFilter; label: string }> = [
   { id: 'questions', label: 'Questions' },
   { id: 'decisions', label: 'Decisions' },
   { id: 'merges', label: 'Merges' },
+  // T470: nodes that finished with nothing to merge, and blocked agents.
+  { id: 'finished', label: 'Finished' },
+  { id: 'blocked', label: 'Blocked' },
 ];
+
+/** T470: a row, the focusable line of one Needs me item. */
+const ROW = '.cr-inbox-row';
+
+/** T470: "Expand all" is remembered per browser; storage may be unavailable (a private window). */
+const ALL_OPEN_KEY = 'agile.inbox.expandAll';
+
+function readAllOpen(): boolean {
+  try {
+    return localStorage.getItem(ALL_OPEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeAllOpen(on: boolean): void {
+  try {
+    if (on) localStorage.setItem(ALL_OPEN_KEY, '1');
+    else localStorage.removeItem(ALL_OPEN_KEY);
+  } catch {
+    // Not remembered: it still applies until the page reloads.
+  }
+}
 
 /** Re-renders every minute so the cards' ages stay true while the page sits open. */
 function useMinuteTick(): void {
@@ -64,44 +107,68 @@ function useMinuteTick(): void {
 }
 
 /**
- * `j`/`k` move focus between the cards; Enter on a focused card opens its
- * node. T416: on a focused question card, A/B… (or 1/2…) picks that choice,
- * as its keycaps say. Never while typing (`isShortcut`), and Enter and the
- * choice keys only when the card itself has focus, so a focused button
- * still presses and a focused input still types.
+ * T470: `j`/`k` move focus between the rows; on a focused row `x` selects
+ * it, Space expands its card and Enter opens its node. T416: on a focused
+ * question, A/B… (or 1/2…) picks that choice once its card is expanded.
+ * Never while typing (`isShortcut`), and only when the row itself has
+ * focus, so a focused button still presses and a focused input still types.
  */
-function useCardKeys(list: React.RefObject<HTMLElement>, open: (id: string) => void): void {
+function useRowKeys(
+  list: React.RefObject<HTMLElement>,
+  open: (id: string) => void,
+  toggleSelect: (id: string) => void,
+  toggleExpand: (id: string) => void,
+): void {
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       // Not behind an open dialog.
       if (event.defaultPrevented || document.querySelector('.cr-modal')) return;
       const root = list.current;
       if (!root) return;
-      const cards = [...root.querySelectorAll<HTMLElement>('.cr-card')];
-      if (cards.length === 0) return;
+      const rows = [...root.querySelectorAll<HTMLElement>(ROW)];
+      if (rows.length === 0) return;
       const active = document.activeElement;
-      const at = cards.findIndex((card) => card === active || card.contains(active));
+      const at = rows.findIndex(
+        (row) => row === active || row.closest('.cr-inbox-item')?.contains(active) === true,
+      );
       if (isShortcut(event, 'j') || isShortcut(event, 'k')) {
         event.preventDefault();
         const next =
-          at < 0 ? 0 : event.key === 'j' ? Math.min(cards.length - 1, at + 1) : Math.max(0, at - 1);
-        cards[next]?.focus();
-        cards[next]?.scrollIntoView({ block: 'nearest' });
+          at < 0 ? 0 : event.key === 'j' ? Math.min(rows.length - 1, at + 1) : Math.max(0, at - 1);
+        rows[next]?.focus();
+        rows[next]?.scrollIntoView({ block: 'nearest' });
         return;
       }
-      const card = at >= 0 && active === cards[at] ? cards[at] : undefined;
-      if (!card) return;
+      // The row itself, or its expanded card, has focus (not a button or field inside).
+      const onRow =
+        at >= 0 &&
+        (active === rows[at] ||
+          (active instanceof HTMLElement && active.classList.contains('cr-card')));
+      const row = onRow ? rows[at] : undefined;
+      if (!row) return;
+      const id = row.dataset.item ?? '';
       if (isShortcut(event, 'Enter')) {
-        const node = card.dataset.nodeId;
+        const node = row.dataset.nodeId;
         if (node) {
           event.preventDefault();
           open(node);
         }
         return;
       }
+      if (isShortcut(event, 'x')) {
+        event.preventDefault();
+        toggleSelect(id);
+        return;
+      }
+      if (isShortcut(event, ' ')) {
+        event.preventDefault();
+        toggleExpand(id);
+        return;
+      }
       if (isShortcut(event, event.key) && !event.shiftKey) {
+        const item = row.closest('.cr-inbox-item') ?? row;
         const choices = [
-          ...card.querySelectorAll<HTMLButtonElement>('[data-testid="answer-choice"]'),
+          ...item.querySelectorAll<HTMLButtonElement>('[data-testid="answer-choice"]'),
         ];
         const index = choiceIndexOfKey(event.key, choices.length);
         const choice = index !== undefined ? choices[index] : undefined;
@@ -115,7 +182,7 @@ function useCardKeys(list: React.RefObject<HTMLElement>, open: (id: string) => v
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [list, open]);
+  }, [list, open, toggleSelect, toggleExpand]);
 }
 
 /** A card acted on here: when (to forget one the frame never took away) and when it left the list. */
@@ -217,8 +284,8 @@ function useSteadyList(
     const active = document.activeElement;
     if (was === undefined || !left.includes(was.id)) return;
     if (active !== null && active !== document.body) return;
-    const cards = [...(list.current?.querySelectorAll<HTMLElement>('.cr-card') ?? [])];
-    const next = cards[Math.min(was.index, cards.length - 1)];
+    const rows = [...(list.current?.querySelectorAll<HTMLElement>(ROW) ?? [])];
+    const next = rows[Math.min(was.index, rows.length - 1)];
     if (next) {
       next.focus({ preventScroll: true });
       next.scrollIntoView?.({ block: 'nearest' });
@@ -248,11 +315,13 @@ function useSteadyList(
       }
     },
     onFocus: (event) => {
-      const card = (event.target as Element).closest<HTMLElement>('.cr-card');
-      const id = card?.dataset.id;
-      if (!card || id === undefined) return;
-      const cards = [...(list.current?.querySelectorAll<HTMLElement>('.cr-card') ?? [])];
-      lastFocus.current = { id, index: cards.indexOf(card) };
+      const row = (event.target as Element)
+        .closest('.cr-inbox-item')
+        ?.querySelector<HTMLElement>(ROW);
+      const id = row?.dataset.item;
+      if (!row || id === undefined) return;
+      const rows = [...(list.current?.querySelectorAll<HTMLElement>(ROW) ?? [])];
+      lastFocus.current = { id, index: rows.indexOf(row) };
     },
   };
 }
@@ -266,25 +335,87 @@ export function Inbox({
 }): JSX.Element {
   const { cockpit } = useFeed();
   const { select } = useShell();
+  const toast = useToast();
   const [filter, setFilter] = useState<NeedsMeFilter>('all');
   const list = useRef<HTMLDivElement>(null);
+  // T470: the rows ticked, the rows expanded to their card, and a close that asks first.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  // Expand all: every row shows its card (remembered per browser); a row can still fold itself.
+  const [allOpen, setAllOpen] = useState<boolean>(() => readAllOpen());
+  const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
+  const isExpanded = (id: string): boolean => (allOpen ? !folded.has(id) : expanded.has(id));
+  const [confirm, setConfirm] = useState<{ nodes: string[]; label: string } | undefined>();
+  const [closing, setClosing] = useState(false);
   // T429: answers you haven't read, above what waits on you (T433: the Director's first).
   const replies = useUnreadReplies();
   const directorReply = useDirectorUnread();
   useMinuteTick();
-  useCardKeys(list, select);
+  const toggleSelect = useCallback((id: string) => {
+    setSelected((before) => {
+      const next = new Set(before);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  }, []);
+  const toggleExpand = useCallback(
+    (id: string) => {
+      const flip = (before: ReadonlySet<string>) => {
+        const next = new Set(before);
+        if (!next.delete(id)) next.add(id);
+        return next;
+      };
+      if (allOpen) setFolded(flip);
+      else setExpanded(flip);
+    },
+    [allOpen],
+  );
+  useRowKeys(list, select, toggleSelect, toggleExpand);
   const steady = useSteadyList(items, list);
 
-  const counts = filterCounts(items);
+  const rows = cockpit?.streams ?? [];
+  const rowById = new Map(rows.map((r) => [r.id, r]));
+  const rowOf = (id: string | undefined) => (id === undefined ? undefined : rowById.get(id));
+  const counts = filterCounts(items, rowOf);
   // A filter emptied by answering its last item falls back to everything.
   const active = filter !== 'all' && counts[filter] === 0 ? 'all' : filter;
   const kinds = FILTERS.filter((f) => f.id !== 'all' && counts[f.id] > 0).length;
-  const sections = groupNeedsMe(
-    applyFilter(steady.shown, active),
-    cockpit?.streams ?? [],
-    cockpit?.projects ?? [],
-  );
+  const shownItems = applyFilter(steady.shown, active, rowOf);
+  const sections = groupNeedsMe(shownItems, rows, cockpit?.projects ?? []);
   const headed = sections.some((s) => s.kind === 'project');
+  // Only what is shown (and still there) counts as selected.
+  const shownIds = new Set(shownItems.map((i) => i.id));
+  const picked = shownItems.filter((i) => selected.has(i.id) && !steady.gone(i.id));
+  const pickedNodes = nodesOf(picked);
+  const finished = applyFilter(items, 'finished', rowOf);
+  const allTicked = shownItems.length > 0 && shownItems.every((i) => selected.has(i.id));
+
+  async function closeNodes(nodes: readonly string[]): Promise<void> {
+    setClosing(true);
+    let closed = 0;
+    let failed = 0;
+    for (const node of nodes) {
+      try {
+        await closeStream(node);
+        closed++;
+      } catch {
+        failed++;
+      }
+    }
+    setClosing(false);
+    setSelected(
+      (before) =>
+        new Set([...before].filter((id) => shownIds.has(id) && !picked.some((p) => p.id === id))),
+    );
+    onChanged();
+    toast({
+      title:
+        failed === 0
+          ? `Closed ${closed} ${closed === 1 ? 'node' : 'nodes'}`
+          : `Closed ${closed}; ${failed} couldn’t close`,
+      tone: failed === 0 ? 'success' : 'error',
+    });
+  }
 
   return (
     <section className="cr-inbox cr-needsme" data-testid="inbox">
@@ -307,11 +438,15 @@ export function Inbox({
               label="Show"
               testid="inbox-filter"
               value={active}
-              onChange={setFilter}
+              onChange={(next) => {
+                setFilter(next);
+                setSelected(new Set());
+              }}
               items={FILTERS.filter((f) => f.id === 'all' || counts[f.id] > 0).map((f) => ({
                 id: f.id,
                 label: f.label,
                 count: counts[f.id],
+                testid: `inbox-filter-${f.id}`,
               }))}
             />
           ) : undefined
@@ -327,85 +462,292 @@ export function Inbox({
       ) : steady.shown.length === 0 ? (
         <Empty replies={replies.length + (directorReply !== undefined ? 1 : 0)} />
       ) : (
-        <div
-          className="cr-inbox-list"
-          ref={list}
-          onClickCapture={steady.guard}
-          onFocus={steady.onFocus}
-        >
-          {sections.map((section) => (
-            <section
-              className="cr-inbox-section"
-              key={section.key}
-              data-section={section.key}
-              aria-label={section.label}
+        <>
+          <div className="cr-inbox-bar" data-testid="inbox-bar">
+            <input
+              type="checkbox"
+              className="cr-inbox-check"
+              data-testid="inbox-select-all"
+              aria-label={allTicked ? 'Select none' : 'Select all shown'}
+              title={allTicked ? 'Select none' : 'Select all shown'}
+              checked={allTicked}
+              onChange={() =>
+                setSelected(allTicked ? new Set() : new Set(shownItems.map((i) => i.id)))
+              }
+            />
+            {picked.length > 0 ? (
+              <>
+                <span className="cr-inbox-bar-count" data-testid="inbox-selected">
+                  {picked.length} selected
+                </span>
+                {pickedNodes.length > 0 && (
+                  <Button
+                    size="sm"
+                    icon="x-circle"
+                    data-testid="inbox-close-selected"
+                    busy={closing}
+                    onClick={() =>
+                      setConfirm({
+                        nodes: pickedNodes,
+                        label: `Close ${pickedNodes.length} ${pickedNodes.length === 1 ? 'node' : 'nodes'}`,
+                      })
+                    }
+                  >
+                    Close {pickedNodes.length}
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+                  Clear
+                </Button>
+              </>
+            ) : (
+              <span className="cr-inbox-bar-hint">Select rows to act on several at once</span>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={allOpen ? 'chevron-up' : 'chevron-down'}
+              className="cr-inbox-bar-end"
+              data-testid="inbox-expand-all"
+              aria-pressed={allOpen}
+              onClick={() => {
+                const next = !allOpen;
+                setAllOpen(next);
+                setFolded(new Set());
+                setExpanded(new Set());
+                writeAllOpen(next);
+              }}
             >
-              {headed && section.kind !== 'knowledge' && (
-                <h2 className="cr-inbox-section-hd">
-                  <Icon name={section.kind === 'project' ? 'layers' : 'circle-dashed'} size={14} />
-                  <span className="cr-inbox-section-name">{section.label}</span>
-                  <span className="cr-inbox-section-count">{section.count}</span>
-                </h2>
-              )}
-              {section.groups.map((group) => {
-                const leaf = group.path.at(-1) ?? '';
-                const parents = group.path.slice(0, -1);
-                return (
-                  <div className="cr-group" key={group.key} data-stream={group.key}>
-                    {/* Knowledge that belongs to no node: its one group heads the section. */}
-                    <h2
-                      data-testid="inbox-group"
-                      className={
-                        headed && section.kind === 'knowledge' ? 'cr-inbox-section-hd' : undefined
+              {allOpen ? 'Collapse all' : 'Expand all'}
+            </Button>
+            {finished.length > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="check-circle"
+                data-testid="inbox-close-finished"
+                busy={closing}
+                onClick={() =>
+                  setConfirm({
+                    nodes: nodesOf(finished),
+                    label: `Close all finished (${nodesOf(finished).length})`,
+                  })
+                }
+              >
+                Close all finished
+              </Button>
+            )}
+          </div>
+          <div
+            className="cr-inbox-list"
+            ref={list}
+            onClickCapture={steady.guard}
+            onFocus={steady.onFocus}
+          >
+            {sections.map((section) => (
+              <section
+                className="cr-inbox-section"
+                key={section.key}
+                data-section={section.key}
+                aria-label={section.label}
+              >
+                {headed && (
+                  <h2 className="cr-inbox-section-hd">
+                    <Icon
+                      name={
+                        section.kind === 'project'
+                          ? 'layers'
+                          : section.kind === 'knowledge'
+                            ? 'book-open'
+                            : 'circle-dashed'
                       }
-                    >
-                      {group.key === '' ? (
-                        headed ? (
-                          <>
-                            <Icon name="book-open" size={14} />
-                            <span className="cr-inbox-section-name">{leaf}</span>
-                            <span className="cr-inbox-section-count">{section.count}</span>
-                          </>
-                        ) : (
-                          <span className="cr-group-leaf">{leaf}</span>
-                        )
-                      ) : (
-                        <button
-                          type="button"
-                          className="cr-group-link"
-                          title={`Open ${leaf}`}
-                          onClick={() => select(group.key)}
-                        >
-                          {parents.length > 0 && (
-                            <span className="cr-group-parent">{`${nodePath(parents)}${PATH_SEP}`}</span>
-                          )}
-                          <span className="cr-group-leaf">{leaf}</span>
-                          <Icon name="chevron-right" size={13} className="cr-group-chevron" />
-                        </button>
-                      )}
-                    </h2>
-                    {group.items.map((item) => (
-                      <Card
-                        key={item.id}
-                        item={item}
-                        onDone={onChanged}
-                        onActing={steady.onActing}
-                        gone={steady.gone(item.id)}
-                      />
-                    ))}
-                  </div>
-                );
-              })}
-            </section>
-          ))}
-          <p className="cr-inbox-keys" aria-hidden="true">
-            <Kbd>j</Kbd>
-            <Kbd>k</Kbd> move between cards · <Kbd>A</Kbd>
-            <Kbd>B</Kbd> pick a choice · <Kbd>Enter</Kbd> opens the node
-          </p>
+                      size={14}
+                    />
+                    <span className="cr-inbox-section-name">{section.label}</span>
+                    <span className="cr-inbox-section-count">{section.count}</span>
+                  </h2>
+                )}
+                {section.groups.flatMap((group) =>
+                  group.items.map((item) => (
+                    <InboxRow
+                      key={item.id}
+                      item={item}
+                      row={rowOf(item.stream)}
+                      path={group.path}
+                      selected={selected.has(item.id)}
+                      expanded={isExpanded(item.id)}
+                      onSelect={() => toggleSelect(item.id)}
+                      onExpand={() => toggleExpand(item.id)}
+                      onOpen={() => item.stream !== undefined && select(item.stream)}
+                      onClose={() => item.stream !== undefined && void closeNodes([item.stream])}
+                      closing={closing}
+                      onDone={onChanged}
+                      onActing={steady.onActing}
+                      gone={steady.gone(item.id)}
+                    />
+                  )),
+                )}
+              </section>
+            ))}
+            <p className="cr-inbox-keys" aria-hidden="true">
+              <Kbd>j</Kbd>
+              <Kbd>k</Kbd> move · <Kbd>x</Kbd> select · <Kbd>Space</Kbd> expand · <Kbd>Enter</Kbd>{' '}
+              opens the node
+            </p>
+          </div>
+        </>
+      )}
+      <ConfirmDialog
+        open={confirm !== undefined}
+        title={`${confirm?.label ?? 'Close'}?`}
+        confirmLabel={confirm?.label ?? 'Close'}
+        busy={closing}
+        testid="inbox-close-confirm"
+        onCancel={() => setConfirm(undefined)}
+        onConfirm={() => {
+          const nodes = confirm?.nodes ?? [];
+          setConfirm(undefined);
+          void closeNodes(nodes);
+        }}
+      >
+        Each node stops being active: its agent won’t start and it leaves Needs me. Its branch and
+        worktree stay as they are.
+      </ConfirmDialog>
+    </section>
+  );
+}
+
+/**
+ * T470: one Needs me item as a row: select it, what it is, the agent, the
+ * node, one line, its age, Close and Open. The row itself expands the full
+ * card, where a question is answered or a merge made.
+ */
+function InboxRow({
+  item,
+  row,
+  path,
+  selected,
+  expanded,
+  onSelect,
+  onExpand,
+  onOpen,
+  onClose,
+  closing,
+  onDone,
+  onActing,
+  gone,
+}: {
+  item: InboxItem;
+  row: CockpitStreamRow | undefined;
+  /** The node's path inside its project, root→leaf. */
+  path: readonly string[];
+  selected: boolean;
+  expanded: boolean;
+  onSelect: () => void;
+  onExpand: () => void;
+  onOpen: () => void;
+  onClose: () => void;
+  closing: boolean;
+  onDone: () => void;
+  onActing: (item: InboxItem) => void;
+  gone: boolean;
+}): JSX.Element {
+  const title = item.kind === 'done' ? DONE_CARD_TITLE[doneCardOf(row)] : cardTitle(item);
+  const subject = path.at(-1) ?? (item.stream === undefined ? 'Knowledge' : 'Node');
+  const parents = path.slice(0, -1);
+  const agent = row?.live_agent?.vendor ?? row?.last_agent?.vendor;
+  const line = inboxLine(item, row);
+  // A node that finished with nothing to merge: done, not a merge.
+  const finishedIdle = item.kind === 'done' && doneCardOf(row) === 'no_changes';
+  return (
+    <div
+      className="cr-inbox-item"
+      data-testid="inbox-item"
+      data-selected={selected ? 'true' : undefined}
+      data-expanded={expanded ? 'true' : undefined}
+    >
+      <article
+        className="cr-inbox-row"
+        aria-label={`${title}: ${subject}`}
+        // The list moves focus between rows with j/k; a row is never a tab stop.
+        tabIndex={-1}
+        data-testid="inbox-row"
+        data-item={item.id}
+        data-row-kind={item.kind}
+        data-node-id={item.stream}
+        data-tone={cardTone(item)}
+      >
+        <input
+          type="checkbox"
+          className="cr-inbox-check"
+          data-testid="inbox-select"
+          aria-label={`Select ${subject}`}
+          checked={selected}
+          onChange={onSelect}
+        />
+        <span
+          className="cr-inbox-row-icon"
+          data-tone={finishedIdle ? 'gray' : cardTone(item)}
+          aria-hidden="true"
+        >
+          <Icon name={finishedIdle ? 'check-circle' : inboxIcon(item)} size={15} />
+        </span>
+        <span className="cr-inbox-row-agent" data-testid="inbox-agent">
+          {agent !== undefined ? vendorLabel(agent) : item.stream === undefined ? 'Knowledge' : ''}
+        </span>
+        <button
+          type="button"
+          className="cr-inbox-row-main"
+          data-testid="inbox-expand"
+          aria-expanded={expanded}
+          title={expanded ? 'Hide the card' : 'Show the card'}
+          onClick={onExpand}
+        >
+          <span className="cr-inbox-row-subject" data-testid="inbox-subject">
+            {parents.length > 0 && (
+              <span className="cr-inbox-row-parents">{`${nodePath(parents)}${PATH_SEP}`}</span>
+            )}
+            {subject}
+          </span>
+          <span className="cr-inbox-row-what" data-testid="inbox-what">
+            {title}
+          </span>
+          {line !== undefined && (
+            <span className="cr-inbox-row-line" data-testid="inbox-line">
+              {line}
+            </span>
+          )}
+        </button>
+        <span className="cr-inbox-row-age" title={item.ts}>
+          {ago(item.ts)}
+        </span>
+        <span className="cr-inbox-row-actions">
+          {item.stream !== undefined && (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon="x-circle"
+              data-testid="inbox-close"
+              disabled={closing || gone}
+              title="Close the node: it stops being active and leaves Needs me"
+              onClick={onClose}
+            >
+              Close
+            </Button>
+          )}
+          {item.stream !== undefined && (
+            <Button size="sm" iconRight="arrow-right" data-testid="inbox-open" onClick={onOpen}>
+              Open
+            </Button>
+          )}
+        </span>
+      </article>
+      {(expanded || gone) && (
+        <div className="cr-inbox-card">
+          <Card item={item} onDone={onDone} onActing={onActing} gone={gone} />
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
