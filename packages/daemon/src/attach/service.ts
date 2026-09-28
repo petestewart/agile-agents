@@ -1311,9 +1311,11 @@ export class AttachService {
   async deliverGateDecision(sessionId: string, gate: HilRequest): Promise<void> {
     const approved = gate.decision === 'approve';
     const note = gate.note !== undefined ? `: ${gate.note}` : '';
+    // T460b: the call in words, never the gate's id (agents repeated it to the human).
+    const call = heldCallWords(gate);
     const line = approved
-      ? `${gate.id} approved${note} — retry the call now.`
-      : `${gate.id} denied${note} — do not retry it; do the work another way or ask on the stream.`;
+      ? `The human approved ${call}${note} — retry the call now.`
+      : `The human denied ${call}${note} — do not retry it; do the work another way or ask on the stream.`;
     const handle = this.liveHandleBySession(sessionId);
     if (handle === undefined) {
       await this.options.streams.appendThread('daemon', gate.stream, {
@@ -1863,6 +1865,16 @@ export class AttachService {
 /** T437: the progress line a failed start or a vendor crash leaves, so Needs me, Overview and Events say why. */
 export const FAILED_START_PREFIX = 'The agent couldn’t start: ';
 export const CRASHED_PREFIX = 'The agent stopped with an error: ';
+/** T460b: a held call as the agent knows it: its tool and path or command. */
+export function heldCallWords(gate: Pick<HilRequest, 'call'>): string {
+  const call = gate.call;
+  if (call === undefined) return 'your held call';
+  const target = call.path ?? call.command;
+  const shown =
+    target === undefined ? '' : `: ${target.length > 200 ? `${target.slice(0, 199)}…` : target}`;
+  return `your held ${call.tool} call${shown}`;
+}
+
 /** T460: the session's end after a failed turn (`session ended: turn failed: …`). */
 export const TURN_FAILED_PREFIX = 'turn failed: ';
 /** The runner's reason for a session it stopped on a failed turn. */
