@@ -15,7 +15,7 @@
  *   record" can't point at `agiled`.
  */
 
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   ACP_PROVIDERS,
@@ -337,7 +337,7 @@ function mcpServerConfig(
 }
 
 /** Best-effort model id from `_agile/session_state`'s vendor-specific `configOptions`. */
-function modelFromSessionState(params: unknown): string | undefined {
+export function modelFromSessionState(params: unknown): string | undefined {
   const p = asRecord(params);
   const configOptions = p?.configOptions;
   if (Array.isArray(configOptions)) {
@@ -349,7 +349,31 @@ function modelFromSessionState(params: unknown): string | undefined {
   }
   const record = asRecord(configOptions);
   if (typeof record?.model === 'string') return record.model;
+  // T467a: ACP's `models` field (`{currentModelId, availableModels}`), when the vendor sends it.
+  const models = asRecord(p?.models);
+  if (typeof models?.currentModelId === 'string') return models.currentModelId;
   return undefined;
+}
+
+/** T467a (D46, LIVE-CHECKLIST §12): the vendor's `session/new` (or `session/load`) reply, as sent. */
+export const SESSION_STATE_FILE = 'session-state.json';
+
+/**
+ * T467a: keeps what the vendor said about its modes, config options and
+ * models in `<sessionDir>/session-state.json`, so §12 can be measured
+ * from the file rather than guessed. Best-effort, like the other logs;
+ * never holds a credential (the reply carries none).
+ */
+function saveSessionState(dir: string, params: Record<string, unknown> | null): void {
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, SESSION_STATE_FILE),
+      `${JSON.stringify({ at: new Date().toISOString(), ...(params ?? {}) }, null, 2)}\n`,
+    );
+  } catch {
+    // Diagnostics never take a session down.
+  }
 }
 
 /** T461: at most this many advertised commands are kept per session. */
@@ -678,6 +702,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
 
     if (frame.acp === 'notification' && frame.message.method === '_agile/session_state') {
       const p = asRecord(frame.message.params);
+      saveSessionState(opts.sessionDir, p);
       const resolvedModel = modelFromSessionState(p);
       const vendorSessionId = p?.sessionId;
       if (resolvedModel !== undefined || typeof vendorSessionId === 'string') {

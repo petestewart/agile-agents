@@ -1297,8 +1297,12 @@ can grow into work in place. Keep the cockpit open; every step is in it.
 
 Measure before T467 is built: nothing here can be checked in the cloud. For
 each vendor installed on this machine (Claude, Codex, Gemini, Cursor, Grok,
-Pi), start one node on it and look at its session's `stderr.log` and the
-daemon's `log/events.jsonl` for the `session/new` reply.
+Pi), start one node on it (pick the vendor with the model chip), send one
+message, then open `<home>/sessions/<session id>/session-state.json`
+(T467a). It holds the vendor's `session/new` reply as sent: its `modes`,
+`configOptions` and `models`. The session id is on the node's Details →
+Agent (hover), or run `ls -t <home>/sessions | head` right after starting it.
+Sending the six files back is enough; the table below can be filled from them.
 
 - [ ] Does its `session/new` reply list the models it offers (a model entry
       in `configOptions` with options, or a `models` list)? Write down the

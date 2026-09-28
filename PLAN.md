@@ -2893,6 +2893,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   - Resume sends the pending events as the live digest, only when there is something to hand over (a line, a wake); a plain Start agent, a crash retry or a Resolve (a brief appendix) starts fresh. A resting coordinator's wake keeps the chat fold (the "woken by" line names the session).
   - The Director keeps its own session handling.
 
+### Ticket: T467a Keep the vendor's session/new reply, so §12 can be measured
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete ran the vendors and sent `log/events.jsonl`: it has no `session/new` reply, because the daemon never kept one. It read the current model out of `configOptions` and dropped the rest, and the ACP client forwarded `modes` and `configOptions` but not `models`. His log shows Claude reporting its model and Codex, Cursor, Gemini and Grok all reading "default", with no way to tell whether they sent nothing or something the parser didn't know.
+- **Acceptance Criteria:** Each session writes the vendor's `session/new` (or `session/load`) reply to `<home>/sessions/<id>/session-state.json`, with `modes`, `configOptions` and `models`. The ACP client forwards `models`, including a reply that carries only it. The current model is also read from ACP's `models.currentModelId`. LIVE-CHECKLIST §12 points at the file.
+- **Validation Steps:** attach test T467a (the file holds the reply as sent); `runner/session-state.test.ts` (configOptions, a model record, `models.currentModelId`, none). acp-client tests green; full `bun test` 3493/0.
+- **Notes:** Branch T467a-save-session-reply. Reading, not setting: D46's "measure first" still holds for how a model is set.
+
 ### Ticket: T467 Models come from the vendor, set through ACP (D46)
 - **Priority:** P1
 - **Status:** Todo (measure first: LIVE-CHECKLIST §12)
