@@ -71,6 +71,8 @@ export interface PermissionResponderContext {
   hiddenRoots?: readonly string[];
   /** T457: the node's permission posture (as `DecisionContext`). */
   posture?: PermissionPosture;
+  /** T476: the vendor has a pre-tool hook (as `DecisionContext`); absent counts as hooked. */
+  hooked?: boolean;
   /**
    * T457: a read the Ask posture held goes through the hook's route band
    * (`hook/route-band.ts`): a Needs me card and a deny to retry, the retry
@@ -164,6 +166,12 @@ export function buildPermissionResponder(
         data: {
           role: ctx.role,
           toolClass: classified.toolClass,
+          // T476: the request's own shape, so a vendor's unread naming is diagnosable from the log.
+          ...(request.toolCall?.kind !== undefined ? { kind: request.toolCall.kind } : {}),
+          ...(request.toolCall?.title !== undefined
+            ? { title: request.toolCall.title.slice(0, 200) }
+            : {}),
+          input_keys: Object.keys(request.toolCall?.rawInput ?? {}).slice(0, 20),
           ...(classified.targetPath !== undefined ? { targetPath: classified.targetPath } : {}),
           ...(classified.command !== undefined ? { command: classified.command } : {}),
           ...(classified.url !== undefined ? { url: classified.url } : {}),
@@ -203,6 +211,9 @@ export function buildPermissionResponder(
         role: ctx.role,
         worktreePath: ctx.worktreePath,
         request,
+        // T476: the agent's own session id (for its verbs as a hook-less vendor names them).
+        session: ctx.agent,
+        ...(ctx.hooked !== undefined ? { hooked: ctx.hooked } : {}),
         ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
         ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
         ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),

@@ -2932,6 +2932,60 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   - Delete is renamed **Move to trash**. **Restore** brings a node back open and ready to resume, whatever state it was in.
   - **Delete forever** (per node, and **Empty trash**) removes the node's record, thread, session files and worktree. Its branch goes too if merged. With unmerged commits the branch is kept unless you tick "Also delete its branch (N unmerged commits)" (proposed default; Pete to confirm).
   - A merged node is unchanged.
+### Ticket: T476 Cursor's verbs and commands were refused
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by Pete in the live walkthrough (2026-09-28). The log showed that every Cursor call to our own verbs was refused: "unknown tool kind (agile-progress: progress) — safe default deny". Every exec was refused too: "execute request carries no command to classify at this tier". Cursor names MCP tools `agile-<verb>: <verb>` (Codex: `mcp.agile.<verb>`), and only Claude's `mcp__agile__<verb>` was recognised. Cursor's exec request doesn't carry `rawInput.command`, and a request with no command was refused with no card, although a hook-less vendor has no other gate to fall back on.
+- **Acceptance Criteria:**
+  - A verb titled the Cursor or Codex way passes when its input carries this agent's own daemon session id, so a lookalike "agile" server can't borrow the pass.
+  - An exec's command is read from `command`, `cmd`, `commandLine`, an argv array, a backtick or "Terminal: …" title, or the call's text content.
+  - A command still unreadable from a hook-less vendor is a card for you; a hooked vendor keeps the refusal, since its hook sees the command.
+  - The decision log records the request's kind, title and input keys.
+- **Validation Steps:** `permissions/decide.test.ts` T476, built from the log's shapes. The next live Cursor run confirms the exec shape from the new log fields.
+- **Notes:** Branch T476-cursor-verbs-and-commands. Cursor's exact exec shape isn't known yet; the new log fields name it.
+
+### Ticket: T473 Ask and Work are one kind of node
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "an ask agent knows how to do work … a work node knows how to do research. switching between modes should be painless. today it's a restriction." New node always makes a work node.
+- **Acceptance Criteria:** New node offers "No repository (just talk)". A work node can go back to talk: its branch and worktree are kept, and its role becomes conversation. `N` is New node (already); `a` stays Ask.
+
+### Ticket: T474 Reorder sibling nodes by dragging
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): dragging makes parent/child moves; it should also reorder siblings.
+- **Acceptance Criteria:** Dropping between two siblings places a node there. The order is kept on the node record (an `order` key among its siblings) and used by the rail and Overview.
+
+### Ticket: T475 A finished reply is never folded
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "i should never have to click show more to see all the output. only if i have closed it on my own with show less first".
+- **Acceptance Criteria:** A long message shows in full, with **Show less** to fold it. A fold you made is kept for that message.
+
+### Ticket: T477 A node without a goal; dismiss a Finished card
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "there can never not be a goal … i want to ask a question related to what its goal will be and THEN give it a goal. i should not see a finished card like this until i've explicitly given it a goal and it's finished with it. also whenever there is a finished card i should be able to discard the message with an X".
+- **Acceptance Criteria:** A node can be created with no goal. Its agent just talks, and a finished turn is not "Finished". Giving it a goal (the goal card, or Turn into work) makes finishing it count. A Finished card or row has an ✕ that dismisses it until the node finishes again.
+
+### Ticket: T478 Auto-close when the goal is met
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): today nothing closes a node on its own. No agent can close its node, a coordinator can't close its parts, and the daemon never closes a finished node. "when i manually create a node and set a goal, there should be a toggle on the node to auto-close (when goal is met). this setting should exist and be able to change even after the node's been created."
+- **Acceptance Criteria:** New node and the node's page (header ⋯ and Details) have an **Auto-close** toggle, stored on the node and changeable any time. With it on, a node whose agent finishes its goal with nothing to merge closes itself, with a thread line; with changes, it stays Ready to merge. A coordinator's parts inherit it when it adds them, and a coordinating node with auto-close closes once every part is merged or closed. The default is a setting.
+
+### Ticket: T472 The Ask box has the model picker
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "when i press 'a' to ask the regular model selector should be there".
+- **Acceptance Criteria:** The Ask box shows the composer's model chip, and the conversation starts on the pick.
 
 ### Ticket: T457b CI: a dangling symlink read as the dir it sits in
 - **Priority:** P0
