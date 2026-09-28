@@ -23,7 +23,7 @@ export interface StreamPagePayload {
   thread: ThreadEntry[];
   /** Total entries; more than `thread.length` means older ones were left out. */
   thread_total: number;
-  /** Exactly the rules in scope (§9.3: "why was I denied" is one click). */
+  /** Exactly the rules in scope (§9.3: "why was I denied" is one click), and T463's switched off here (`stream.rules_off`). */
   rules: KnowledgeItem[];
   /** In-scope rules Land checks against the whole diff (§8.2). */
   diff_rules: string[];
@@ -67,7 +67,8 @@ export function buildStreamPage(sources: StreamPageSources, id: string): StreamP
     limit: STREAM_PAGE_THREAD_LIMIT,
   }).entries;
 
-  const rules = sources.rules?.inScope(id) ?? [];
+  // T463: the ones switched off here too, so the Knowledge tab can switch them back on.
+  const rules = sources.rules?.inScope(id, undefined, undefined, { includeOff: true }) ?? [];
   const diffRules = sources.rules?.inScope(id, 'ship') ?? [];
 
   const rollup =

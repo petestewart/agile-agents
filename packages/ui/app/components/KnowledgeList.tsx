@@ -261,6 +261,9 @@ export function KnowledgeRow({
   onToggle,
   mixed = false,
   testid = 'rules-row',
+  toggleLabel,
+  toggleTestid = 'rules-select',
+  off = false,
 }: {
   item: KnowledgeItem;
   section: KnowledgeSectionId;
@@ -274,6 +277,11 @@ export function KnowledgeRow({
   onToggle: (() => void) | undefined;
   mixed?: boolean;
   testid?: string;
+  /** T463: the checkbox's own words, where it means something other than "select". */
+  toggleLabel?: string;
+  toggleTestid?: string;
+  /** T463: switched off for the node on show: dimmed, with "Off here". */
+  off?: boolean;
 }): JSX.Element {
   const [busy, setBusy] = useState<'accept' | 'retire' | undefined>(undefined);
   const title = titleOf(item);
@@ -313,7 +321,9 @@ export function KnowledgeRow({
       data-rule={item.id}
       data-status={item.status}
       data-open={open ? 'true' : undefined}
-      data-checked={checked ? 'true' : undefined}
+      // T463: a node's "applies here" box is not a selection: no selected look.
+      data-checked={checked && toggleLabel === undefined ? 'true' : undefined}
+      data-off={off ? 'true' : undefined}
       onClick={onRowClick}
     >
       <span className="cr-kn-row-lead">
@@ -321,8 +331,9 @@ export function KnowledgeRow({
           <input
             type="checkbox"
             className="cr-kn-row-check"
-            data-testid="rules-select"
-            aria-label={`Select ${title}`}
+            data-testid={toggleTestid}
+            aria-label={toggleLabel ?? `Select ${title}`}
+            title={toggleLabel}
             checked={checked ?? false}
             onChange={onToggle}
           />

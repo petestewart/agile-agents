@@ -469,11 +469,11 @@ export interface ProjectReadSettings {
  * except a private one its project isn't listed on; the agile home never is
  * (the session's own dir, its cwd, is allowed before any root is checked).
  * The project's "Always" roots are read roots too, unless one lies inside a
- * hidden root. The posture is the project's, else the home's, else Ask
- * (`settings`). An unreadable registry reads nothing beyond the cwd.
+ * hidden root. The posture is the node's own (T463), else the project's,
+ * else the home's, else Ask (`settings`). An unreadable registry reads nothing beyond the cwd.
  */
 export function nodeReadScope(
-  node: Pick<Stream, 'repo' | 'project'> | undefined,
+  node: Pick<Stream, 'repo' | 'project' | 'permissions'> | undefined,
   readRepos: () => ReposConfig,
   agileHome: string | undefined,
   settings?: (project: string | undefined) => ProjectReadSettings,
@@ -508,7 +508,12 @@ export function nodeReadScope(
     // An "Always" root inside a hidden one would open it (the nested-repo exception): never.
     if (!hiddenRoots.some((hidden) => isPathInside(root, hidden))) readRoots.push(root);
   }
-  return { readRoots, hiddenRoots, posture: project.posture ?? DEFAULT_PERMISSION_POSTURE };
+  // T463: the node's own posture, over its project's and the home's.
+  return {
+    readRoots,
+    hiddenRoots,
+    posture: node?.permissions ?? project.posture ?? DEFAULT_PERMISSION_POSTURE,
+  };
 }
 
 // Never-without-human (§14 "Never without a human"). Checked before any
