@@ -9945,6 +9945,62 @@ describe("No goal yet, and the Finished card's ✕ (Playwright e2e, T477)", () =
   );
 });
 
+describe('Ask picks the model (Playwright e2e, T472)', () => {
+  browserTest(
+    "the Ask box shows the composer's model chip; a pick starts the conversation on it",
+    async () => {
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'agent_text', text: 'On it.' }, { type: 'hang' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const p = await openPage();
+        page = p;
+        await p.goto(`${cockpit.base}/?node=${shop.root}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${shop.root}"]`).waitFor();
+        await p.keyboard.press('a');
+        const ask = p.locator('[data-testid="ask"]');
+        await ask.waitFor({ state: 'visible' });
+        await waitForText(
+          p,
+          '[data-testid="ask"] [data-testid="composer-model"]',
+          'Claude Opus 5.5 · low',
+        );
+        await ask.locator('[data-testid="composer-model"]').click();
+        const popover = p.locator('[data-testid="model-popover"]');
+        await popover.locator('[data-model="claude-sonnet-4-6"]').click();
+        await p.waitForTimeout(300);
+        await p.screenshot({ path: join(tmpdir(), 'agile-t472-ask.png') });
+        // The chip closes its list again.
+        await ask.locator('[data-testid="composer-model"]').click();
+        await popover.waitFor({ state: 'detached' });
+        await waitForText(
+          p,
+          '[data-testid="ask"] [data-testid="composer-model"]',
+          'Claude Sonnet 4.6 · low',
+        );
+        await ask.locator('[data-testid="ask-input"]').fill('How are prices stored?');
+        await ask.locator('[data-testid="ask-send"]').click();
+        let made: string | undefined;
+        await waitUntil('asked', () => {
+          made = cockpit.streams.list().find((x) => x.goal === 'How are prices stored?')?.id;
+          return made !== undefined && cockpit.streams.get(made).sessions.length > 0;
+        });
+        expect(cockpit.streams.get(made as string).sessions).toMatchObject([
+          { role: 'worker', vendor: 'claude', model: 'claude-sonnet-4-6' },
+        ]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('Talk and work are one kind of node (Playwright e2e, T473)', () => {
   browserTest(
     'New node opens on Talk or Work; a work node goes back to talk and back to work on the same branch',

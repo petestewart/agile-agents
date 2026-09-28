@@ -260,9 +260,12 @@ export function ModelChip({
   fallback,
   onPick,
   onReset,
+  placement = 'top',
 }: {
   status: SessionDefaultsStatus | undefined;
   chip: ModelChipState;
+  /** T472: where the list opens; below where the chip sits near the top (the Ask box). */
+  placement?: 'top' | 'bottom';
   /** The live agent's model, if one runs. */
   running?: ResolvedSessionDefaults;
   /** The default here. */
@@ -296,7 +299,7 @@ export function ModelChip({
   return (
     <Popover
       align="start"
-      placement="top"
+      placement={placement}
       label="Model for your next message"
       testid="model-popover"
       className="cr-mpick-pop"

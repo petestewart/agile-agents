@@ -4,18 +4,22 @@
  * box aimed at the open node; the picker re-aims it at any node or the
  * Director. Enter sends: about a node, it makes a conversation under it
  * (named for you, its agent started) and opens it; about the Director, it is
- * a line in the Director's thread. Shift+Enter is a new line.
+ * a line in the Director's thread. Shift+Enter is a new line. T472: the
+ * composer's model chip picks what the conversation's agent starts on.
  */
 
+import type { ResolvedSessionDefaults, SessionDefaultsStatus } from '@agile-agents/shared';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { createStream, sayToDirector } from '../lib/api';
+import { attachSession, createStream, getSessionDefaults, sayToDirector } from '../lib/api';
 import { DIRECTOR_TARGET, askHint, askTargets, focusComposerOn } from '../lib/ask';
+import { modelChip, resolvedFor } from '../lib/defaults';
 import { useOptionalFeed } from '../lib/feed-context';
 import type { CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
 import { isShortcut, useShell } from '../lib/shell';
 import { titleFromGoal } from '../lib/tree';
 import { Icon } from './Icon';
 import { type PickOption, PickerField } from './Pickers';
+import { ModelChip } from './SessionPicker';
 import { ROLE_GLYPH } from './StreamTree';
 import { Button, Dialog, Field, Kbd, StatusDot } from './ui';
 
@@ -65,9 +69,29 @@ function AskBox({
   const targets = useMemo(() => askTargets(rows, projects), [rows, projects]);
   const chosen = targets.find((t) => t.value === target);
   const close = (): void => openAsk(null);
+  // T472: what the conversation's agent starts on: the defaults for where it is asked, or a pick.
+  const [defaults, setDefaults] = useState<SessionDefaultsStatus | undefined>(undefined);
+  const [picked, setPicked] = useState<ResolvedSessionDefaults | undefined>(undefined);
+  const targetRow = rows.find((r) => r.id === target);
+  const projectSession = projects.find((p) => p.id === targetRow?.project)?.session;
+  const fallback = defaults ? resolvedFor(defaults, undefined, projectSession) : undefined;
+  const chip = fallback
+    ? modelChip({ fallback, ...(picked ? { chosen: picked } : {}) })
+    : undefined;
 
   useEffect(() => {
     box.current?.focus();
+    let live = true;
+    getSessionDefaults()
+      .then((d) => {
+        if (live) setDefaults(d);
+      })
+      .catch(() => {
+        // No chip: the conversation starts on the defaults.
+      });
+    return () => {
+      live = false;
+    };
   }, []);
 
   // T435 (#20): each node with its status dot, as the rail shows it (merged and closed ones last).
@@ -100,13 +124,23 @@ function AskBox({
         setView('director');
         return;
       }
+      const pick = chip?.pending;
       const created = await createStream({
         title: titleFromGoal(question) || 'Question',
         goal: question,
         parent: target,
         // Named for you (D41); its agent starts with the question.
         auto_title: true,
+        // T472: a picked model starts it below, through the sessions' own attach.
+        ...(pick ? { start: false } : {}),
       });
+      if (pick) {
+        await attachSession(created.id, 'worker', {
+          vendor: pick.vendor,
+          effort: pick.effort,
+          ...(pick.model ? { model: pick.model } : {}),
+        });
+      }
       feed?.refresh();
       close();
       // T435 (#20): straight on to the conversation's composer, for a follow-up.
@@ -169,6 +203,18 @@ function AskBox({
             onPick={setTarget}
           />
         </Field>
+        {target !== DIRECTOR_TARGET && chip && fallback && (
+          <div className="cr-ask-model">
+            <ModelChip
+              status={defaults}
+              chip={chip}
+              fallback={fallback}
+              onPick={setPicked}
+              onReset={() => setPicked(undefined)}
+              placement="bottom"
+            />
+          </div>
+        )}
         <textarea
           ref={box}
           className="cr-ask-input"
