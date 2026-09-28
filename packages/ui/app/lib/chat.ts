@@ -653,6 +653,19 @@ function olderWording(body: string): string {
   return body;
 }
 
+/**
+ * T462: the hook's reason with the daemon's role names in words: "for is
+ * not an allowed command for the engineer role" → "for is not an allowed
+ * command"; "reviewer role denies all exec except read-only tools (…)" →
+ * "a reviewer runs only read-only tools (…)".
+ */
+export function refusalWords(reason: string): string {
+  return tidyIds(reason)
+    .replace(/ for the (?:engineer|reviewer|coordinator) role\b/, '')
+    .replace(/^reviewer role denies all exec except /, 'a reviewer runs only ')
+    .replace(/^coordinator role denies exec except /, 'a coordinator runs only ');
+}
+
 export function systemLine(body: string, meta: SystemLineMeta = {}): SystemLine {
   const created = /^stream created: (.+)$/s.exec(body);
   // T446 (audit r7 #6): whoever wrote it (you, the daemon, a coordinator, the Director).
@@ -704,6 +717,17 @@ export function systemLine(body: string, meta: SystemLineMeta = {}): SystemLine 
       icon: 'alert-triangle',
       text: `The agent stopped with an error${why ? `: ${tidyIds(why)}` : ` (exit code ${code})`}. Check its vendor is installed and logged in, then send a message to start it again.`,
       tone: 'warn',
+    };
+  }
+  // T462: a call the permission hook refused or held, in words ("hook_deny" and role names are the daemon's).
+  const refused = /^hook_deny: (denied|routed to the human) `(.*)` — (.+)$/s.exec(body);
+  if (refused) {
+    const [, outcome, target = '', why = ''] = refused;
+    const held = outcome !== 'denied';
+    return {
+      icon: held ? 'clock' : 'lock',
+      text: `${held ? 'Held for your approval' : 'Refused'}: \`${target}\` — ${refusalWords(why)}`,
+      tone: held ? 'warn' : 'muted',
     };
   }
   // T460: a turn the vendor failed (a login refusal), in the daemon's words.

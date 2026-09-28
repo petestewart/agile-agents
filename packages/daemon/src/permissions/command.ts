@@ -200,10 +200,104 @@ function isShellDashC(tokens: string[]): boolean {
   return SHELL_RUNNERS.has(tokens[0] ?? '') && tokens[1] === '-c' && tokens.length >= 3;
 }
 
+/** T462: a `for` loop is unrolled only up to these sizes; a larger one stays refused. */
+const FOR_WORDS_MAX = 50;
+const FOR_UNROLLED_MAX = 200;
+/** Shell keywords that open or close a compound command: a loop body holding one isn't unrolled. */
+const COMPOUND_KEYWORDS = new Set([
+  'for',
+  'while',
+  'until',
+  'if',
+  'then',
+  'elif',
+  'else',
+  'fi',
+  'case',
+  'esac',
+  'do',
+  'done',
+  'select',
+  'function',
+]);
+/** A loop word unrolled as written: no quoting, variable, substitution or brace to reinterpret. */
+const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./~*?-]+$/;
+
+/**
+ * T462: `for NAME in WORD…; do BODY; done`, unrolled into BODY once per
+ * word with `$NAME` / `${NAME}` written out, so every command the loop runs
+ * is checked as if typed (a loop was refused outright before: `for` is no
+ * command). Unrolled only when the words are plain, the body holds no other
+ * compound command and never quotes `$NAME` in single quotes, and the sizes
+ * stay small; anything else keeps its `for`/`do`/`done` atoms, which no role
+ * allows. `undefined` when `segments[at]` doesn't open such a loop.
+ */
+function unrollFor(
+  segments: RawSegment[],
+  at: number,
+): { unrolled: RawSegment[]; next: number } | undefined {
+  const head = tokenizeSegment(segments[at]?.raw ?? '');
+  if (head[0] !== 'for' || head[2] !== 'in') return undefined;
+  const name = head[1] ?? '';
+  const words = head.slice(3);
+  if (!/^[A-Za-z_]\w*$/.test(name) || words.length === 0 || words.length > FOR_WORDS_MAX) {
+    return undefined;
+  }
+  if (!words.every((w) => PLAIN_WORD.test(w))) return undefined;
+  // `do` opens the body on its own line or before the first command.
+  const opener = segments[at + 1];
+  if (opener === undefined || !/^do(?:\s|$)/.test(opener.raw)) return undefined;
+  const body: RawSegment[] = [];
+  const firstCommand = opener.raw.replace(/^do\s*/, '');
+  if (firstCommand !== '') body.push({ ...opener, raw: firstCommand });
+  let end = at + 2;
+  for (; end < segments.length; end++) {
+    const seg = segments[end] as RawSegment;
+    if (seg.raw === 'done') break;
+    body.push(seg);
+  }
+  if (end >= segments.length || body.length === 0) return undefined;
+  const ref = new RegExp(`\\$\\{${name}\\}|\\$${name}(?![A-Za-z0-9_])`, 'g');
+  for (const seg of body) {
+    const tokens = tokenizeSegment(seg.raw);
+    if (tokens.length === 0 || COMPOUND_KEYWORDS.has(tokens[0] ?? '')) return undefined;
+    if (seg.raw.includes("'") && ref.test(seg.raw)) return undefined;
+    ref.lastIndex = 0;
+  }
+  if (words.length * body.length > FOR_UNROLLED_MAX) return undefined;
+  const unrolled: RawSegment[] = [];
+  for (const [i, word] of words.entries()) {
+    for (const [j, seg] of body.entries()) {
+      unrolled.push({
+        raw: seg.raw.replace(ref, word),
+        delimiterBefore:
+          j > 0 ? seg.delimiterBefore : i === 0 ? (segments[at]?.delimiterBefore ?? 'start') : ';',
+      });
+    }
+  }
+  return { unrolled, next: end + 1 };
+}
+
+/** T462: `segments` with each simple `for` loop unrolled (`unrollFor`). */
+function unrollForLoops(segments: RawSegment[]): RawSegment[] {
+  const out: RawSegment[] = [];
+  for (let i = 0; i < segments.length; ) {
+    const loop = unrollFor(segments, i);
+    if (loop === undefined) {
+      out.push(segments[i] as RawSegment);
+      i += 1;
+      continue;
+    }
+    out.push(...loop.unrolled);
+    i = loop.next;
+  }
+  return out;
+}
+
 /** Splits `command` into prefix-stripped atoms, recursing into `sh|bash|zsh -c "..."`. */
 export function parseCommandIntoAtoms(command: string): CommandAtom[] {
   const atoms: CommandAtom[] = [];
-  const rawSegments = splitCommandSegments(command);
+  const rawSegments = unrollForLoops(splitCommandSegments(command));
 
   for (const seg of rawSegments) {
     const raw = tokenizeSegment(seg.raw);

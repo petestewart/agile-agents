@@ -67,7 +67,9 @@ test command, and prefer a summary over pasting a file back at us.
 Every tool call goes through a gate that can refuse it with a reason you
 will see verbatim. Keep commands classifiable: one command per call (not
 `a && b`), no command substitution, backticks, `eval` or heredocs — for a
-multi-line commit message use repeated `-m` flags. Stay inside your
+multi-line commit message use repeated `-m` flags. A plain
+`for x in a b c; do …; done` over literal words is fine: each command in it
+is checked as if typed; `while`, `if` and nested loops are not. Stay inside your
 worktree. Never install a dependency or push to a protected branch without
 asking first; a refusal tells you which rule refused and why.
 

@@ -2831,6 +2831,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   - Tests: `attach/service.test.ts` T461 (the command's own turn, a 1,500-character line whole, an unknown command wrapped), `runner/commands.test.ts`, `ui/app/lib/commands.test.ts`, and the control-room e2e "slash commands in the composer".
   - Not done: the Director's composer has no `/` menu yet.
 
+### Ticket: T462 A simple for loop runs; a refused call reads in words
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by Pete in the live walkthrough (2026-09-28). A worker's `for t in 1790274589 …; do date -r $t "+%F %R %Z"; done` was refused with "hook_deny: denied `…` — for is not an allowed command for the engineer role". The command splitter cut the loop at `;`, so `for`, `do …` and `done` were checked as commands, and no role allows `for`. The chat showed the daemon's raw line, with its "hook_deny" and role jargon.
+- **Acceptance Criteria:** `for NAME in WORD…; do BODY; done` over plain words is unrolled before any check: BODY once per word, with `$NAME` and `${NAME}` written out. Every check (the role tables, the never-without-human list, push detection, pattern rules) sees the commands the loop runs. Each unrolled loop gets the verdict its commands would get typed one by one. The loop stays unrunnable on its own when its words hold substitutions or quoting, its body quotes `$NAME` in single quotes or holds `while`/`if`/another loop, or it has more than 50 words or 200 unrolled commands. The chat reads a hook line as "Refused: `…` — <reason>" or "Held for your approval: `…` — <reason>", with the role names in words. The worker brief says plain loops are fine.
+- **Validation Steps:** `permissions/decide.test.ts` T462 (Pete's loop allowed, and fails on the old code; loop and typed-out verdicts equal for engineer and reviewer; the refused shapes never allowed). `ui/app/lib/chat.test.ts` T462. Full `bun test`.
+- **Notes:** Branch T462-loops-and-refusal-words. `unrollForLoops` in `permissions/command.ts`, applied in `parseCommandIntoAtoms`, which is how every caller splits a command. Reads outside the worktree in a loop follow T457 like any read: a registered repo reads freely, any other folder asks under Ask (Always for this project stops it asking), and reads anywhere under Trusted.
+
 ### Ticket: T457b CI: a dangling symlink read as the dir it sits in
 - **Priority:** P0
 - **Status:** Done
