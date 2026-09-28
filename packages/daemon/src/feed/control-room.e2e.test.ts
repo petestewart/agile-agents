@@ -9987,7 +9987,9 @@ describe('Model and effort are two chips (Playwright e2e, T468)', () => {
         await waitForText(p, '[data-testid="composer-effort"]', 'High');
         expect(await effort.getAttribute('data-chosen')).toBe('true');
         // Focus stayed in the box; a click steps too.
-        expect(await input.evaluate((el) => el === document.activeElement)).toBe(true);
+        expect(
+          (await p.evaluate('document.activeElement?.dataset?.testid ?? null')) as string,
+        ).toBe('composer-input');
         await effort.click();
         await waitForText(p, '[data-testid="composer-effort"]', 'Max');
         await input.fill('start on the prices');
