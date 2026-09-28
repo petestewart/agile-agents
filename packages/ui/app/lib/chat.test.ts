@@ -32,6 +32,7 @@ import {
   parseDiff,
   proposedNext,
   questionIdOfRef,
+  refusalWords,
   sendIntent,
   sessionIdText,
   sessionLabel,
@@ -847,6 +848,34 @@ describe('a turn the vendor failed (T460)', () => {
   });
   test('a gate id in parentheses is left out, like a node id', () => {
     expect(tidyIds('held for you (HIL-01M3K1XQG8KQWQ5YK53X063ECE)')).toBe('held for you');
+  });
+});
+
+describe('a call the hook refused or held (T462)', () => {
+  test("in words, without the daemon's role names", () => {
+    expect(
+      systemLine(
+        'hook_deny: denied `for t in 1 2; do date -r $t; done` — for is not an allowed command for the engineer role',
+      ),
+    ).toEqual({
+      icon: 'lock',
+      text: 'Refused: `for t in 1 2; do date -r $t; done` — for is not an allowed command',
+      tone: 'muted',
+    });
+    expect(
+      systemLine(
+        'hook_deny: routed to the human `rm -rf ../a` — rm -rf outside the worktree is never automatic',
+      ),
+    ).toEqual({
+      icon: 'clock',
+      text: 'Held for your approval: `rm -rf ../a` — rm -rf outside the worktree is never automatic',
+      tone: 'warn',
+    });
+    expect(
+      refusalWords(
+        'reviewer role denies all exec except read-only tools (git diff/log/show, grep, …)',
+      ),
+    ).toBe('a reviewer runs only read-only tools (git diff/log/show, grep, …)');
   });
 });
 
