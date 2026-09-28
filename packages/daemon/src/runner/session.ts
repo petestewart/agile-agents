@@ -160,6 +160,12 @@ export interface AgentExitInfo {
   vendorError?: string;
   /** T432: the process's exit code, when it exited (absent on a transport error). */
   exitCode?: number;
+  /**
+   * T460: what the agent said in a turn that failed ("Failed to authenticate:
+   * OAuth session expired…"). Claude Code reports a login refusal this way,
+   * as reply text, while its stderr holds only a debug line.
+   */
+  agentSaid?: string;
 }
 
 /**
@@ -232,11 +238,26 @@ export function contextUsageOf(update: Record<string, unknown> | null): ContextU
   return { used: Math.round(used), size: Math.round(size) };
 }
 
+/** T460: a turn that failed, with what the agent said in it. */
+export class TurnFailedError extends Error {
+  constructor(
+    message: string,
+    readonly said: string | undefined,
+  ) {
+    super(message);
+    this.name = 'TurnFailedError';
+  }
+}
+
 /** `session.prompt()` resolves `failed` for a turn that died mid-flight; turn that into a rejection. */
 function rejectOnFailedReply(reply: unknown): unknown {
   const r = reply as Partial<SessionReply> | undefined;
   if (r && r.status === 'failed') {
-    throw new Error(r.error?.message ?? 'ACP prompt turn failed with no error message');
+    const said = typeof r.text === 'string' ? r.text.trim() : '';
+    throw new TurnFailedError(
+      r.error?.message ?? 'ACP prompt turn failed with no error message',
+      said === '' ? undefined : said.slice(0, 500),
+    );
   }
   return reply;
 }
@@ -538,6 +559,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     ok: boolean,
     failed = !ok,
     exitCode?: number,
+    agentSaid?: string,
   ): Promise<void> {
     if (settled) return;
     settled = true;
@@ -562,6 +584,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       ok,
       ...(vendorError !== undefined ? { vendorError } : {}),
       ...(exitCode !== undefined ? { exitCode } : {}),
+      ...(agentSaid !== undefined ? { agentSaid } : {}),
     });
   }
 
@@ -736,7 +759,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
           });
         cancelBeforeClose();
         spawned.close();
-        await finish(`prompt failed: ${message}`, false);
+        const said = err instanceof TurnFailedError ? err.said : undefined;
+        await finish(`prompt failed: ${message}`, false, true, undefined, said);
         throw err;
       }
     };

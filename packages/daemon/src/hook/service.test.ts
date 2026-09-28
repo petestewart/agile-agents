@@ -468,7 +468,7 @@ describe('HookService — permission posture and the read card (T457)', () => {
   test('Ask (the default): an out-of-scope read raises one card naming the dir Always adds', async () => {
     const first = await readFile(join(outside, 'src', 'a.ts'));
     expect(first.permissionDecision).toBe('deny');
-    expect(first.permissionDecisionReason).toContain('routed to your inbox as HIL-');
+    expect(first.permissionDecisionReason).toContain('held for the human');
     expect(first.permissionDecisionReason).toContain('permissions: Ask');
     // A retry before the answer reuses the card.
     await readFile(join(outside, 'src', 'a.ts'));

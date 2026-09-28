@@ -569,6 +569,69 @@ describe('T456: a crashed agent is retried, then another vendor takes over', () 
     expect(threadBodies(stream.id).some((line) => line.endsWith('retrying once'))).toBe(false);
   }, 30_000);
 
+  // T460: Claude Code's expired login answers the prompt (its words, then a failed turn), its process alive.
+  const LOGIN_EXPIRED = 'Failed to authenticate: OAuth session expired and could not be refreshed';
+  const refusesTurn = (vendor: AcpProviderConfig, said = LOGIN_EXPIRED) =>
+    fakeProviderFor(vendor, {
+      steps: [{ type: 'agent_text', text: said }, { type: 'reject_prompt' }],
+    });
+
+  test('T460: a turn refused for a login blocks in words, saying how to log in; no retry', async () => {
+    attachService = build({ claude: refusesTurn(ACP_PROVIDERS.claude) });
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).agent.status === 'blocked');
+    const how =
+      'Claude Code isn’t logged in. Log in from a terminal (run `claude` and type /login), then send a message to start it again.';
+    const after = streams.get(stream.id);
+    expect(after.agent.progress).toBe(`The agent stopped with an error: ${how}`);
+    expect(threadBodies(stream.id)).toContain(`session ended: turn failed: ${how}`);
+    expect(after.sessions[0]?.ended_reason).toBe(`turn failed: ${how}`);
+    // A login refusal isn't retried; no fallback is set, so nothing restarts.
+    expect(agents(stream.id)).toEqual([['claude', 'error']]);
+    expect(threadBodies(stream.id).some((line) => /retrying|switched/.test(line))).toBe(false);
+  }, 30_000);
+
+  test('T460: a turn refused for a login goes to the fallback vendor', async () => {
+    await setFailure({ fallback: ['gemini'], allow_hookless: true });
+    attachService = build({
+      claude: refusesTurn(ACP_PROVIDERS.claude),
+      gemini: hangs(ACP_PROVIDERS.gemini),
+    });
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes('looking at the parser now'));
+    expect(agents(stream.id)).toEqual([
+      ['claude', 'error'],
+      ['gemini', 'running'],
+    ]);
+    expect(streams.get(stream.id).agent.status).toBe('working');
+    expect(threadBodies(stream.id)).toContain(
+      `Claude Code failed (${LOGIN_EXPIRED}); switched to Gemini CLI`,
+    );
+  }, 30_000);
+
+  test('T460: any other failed turn is retried once, then blocks naming what the agent said', async () => {
+    const said = 'Something went wrong mid-turn';
+    attachService = build({ claude: refusesTurn(ACP_PROVIDERS.claude, said) });
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(
+      () =>
+        streams.get(stream.id).agent.status === 'blocked' &&
+        streams.get(stream.id).sessions.length === 2,
+    );
+    expect(agents(stream.id)).toEqual([
+      ['claude', 'error'],
+      ['claude', 'error'],
+    ]);
+    const lines = threadBodies(stream.id);
+    expect(lines).toContain(`Claude Code failed (${said}); retrying once`);
+    expect(lines).toContain(
+      `session ended: turn failed: Claude Code’s turn failed: ${said}. Send a message to start it again.`,
+    );
+  }, 30_000);
+
   test('a fallback not installed is skipped, and one without hooks unless allowed', async () => {
     const byVendor = {
       claude: crashing(ACP_PROVIDERS.claude),

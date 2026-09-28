@@ -43,7 +43,13 @@ export type FakeAgentStep =
    */
   | { type: 'text_from_file'; path: string; timeoutMs?: number }
   /** Dies mid-turn with `code` (default 1), the prompt unanswered: an agent that crashed. */
-  | { type: 'exit'; code?: number };
+  | { type: 'exit'; code?: number }
+  /**
+   * T460: answers `session/prompt` with a JSON-RPC error, the process
+   * alive: a refused turn (Claude Code's expired login says so as
+   * `agent_text`, then fails the prompt).
+   */
+  | { type: 'reject_prompt'; message?: string };
 
 export interface FakeAgentScript {
   steps: FakeAgentStep[];
@@ -185,6 +191,12 @@ async function runScript(promptRequestId: number | string): Promise<void> {
       }
       case 'end_turn':
         write({ id: promptRequestId, result: { stopReason: step.stopReason ?? 'end_turn' } });
+        return;
+      case 'reject_prompt':
+        write({
+          id: promptRequestId,
+          error: { code: -32603, message: step.message ?? 'Internal error' },
+        });
         return;
       case 'hang':
         // Never respond: an in-flight turn with no closing update, until killed.
