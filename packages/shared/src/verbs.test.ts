@@ -66,6 +66,7 @@ describe('agent verbs', () => {
       'start_node',
       'restart_node',
       'propose_repo',
+      'goal_met',
     ]);
     for (const verb of AGENT_VERBS) {
       expect(AGENT_VERB_SCHEMAS[verb]).toBeDefined();
@@ -114,6 +115,17 @@ describe('agent verbs', () => {
     expect(() =>
       validateVerbInput('finding', { session, severity: 'huge', file: 'a', text: 'x' }),
     ).toThrow();
+  });
+
+  test('T478: goal_met takes a summary, and nothing else', () => {
+    expect(validateVerbInput('goal_met', { session, summary: 'shipped' })).toEqual({
+      session,
+      summary: 'shipped',
+    });
+    expect(AGENT_VERB_SCHEMAS.goal_met.safeParse({ session }).success).toBe(false);
+    expect(
+      AGENT_VERB_SCHEMAS.goal_met.safeParse({ session, summary: 'x', close: true }).success,
+    ).toBe(false);
   });
 
   test('T455: propose_repo takes a repo name and a why, and nothing else', () => {

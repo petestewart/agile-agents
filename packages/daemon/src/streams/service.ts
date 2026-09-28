@@ -210,6 +210,10 @@ export class StreamService {
       if (entry === undefined) throw new UnknownRepoError(repo, Object.keys(repos).sort());
       assertRepoHasCommits(repo, entry);
     }
+    // T478: a part closes itself when its goal is met if its parent does, unless it says.
+    const autoClose =
+      input.auto_close ??
+      (parent !== undefined && this.store.getStream(parent).auto_close === true ? true : undefined);
     const now = new Date().toISOString();
     const stream: Stream = {
       id: ulid(),
@@ -220,6 +224,7 @@ export class StreamService {
       ...(project !== undefined ? { project } : {}),
       ...(input.labels !== undefined ? { labels: input.labels } : {}),
       ...(input.helper_of !== undefined ? { helper_of: input.helper_of } : {}),
+      ...(autoClose === true ? { auto_close: true } : {}),
       created_at: now,
       agent: { status: 'idle', updated_at: now },
       human: { status: 'open' },
@@ -407,6 +412,23 @@ export class StreamService {
           : posture === 'ask'
             ? 'permissions here: Ask (a read outside the registered repos asks the operator first)'
             : "permissions here: the project's setting again",
+    });
+    return after;
+  }
+
+  /**
+   * T478: this node closes itself when its goal is met (on), or waits for
+   * you (off). The operator's; its agent is told on the thread.
+   */
+  async setAutoClose(id: string, on: boolean): Promise<Stream> {
+    const before = this.get(id);
+    if ((before.auto_close === true) === on) return before;
+    const after = await this.update('human', id, { auto_close: on ? true : null });
+    await this.appendThread('daemon', id, {
+      kind: 'event',
+      body: on
+        ? 'auto-close on: this node closes itself when its goal is met and there is nothing to merge'
+        : 'auto-close off: this node stays open until you close it',
     });
     return after;
   }
@@ -705,6 +727,8 @@ export interface StreamPatch {
   rules_off?: string[] | null;
   /** T463: this node's posture; `null` clears it, so the project's (or the home's) applies. */
   permissions?: Stream['permissions'] | null;
+  /** T478: `null` (or `false`) clears it: the node waits for you to close it. */
+  auto_close?: boolean | null;
   /** T176: `null` clears it. */
   land_conflict?: Stream['land_conflict'] | null;
   /** Node fields (§14.2, T201). `delivery_state`/`touched` pass the store only for the daemon. */
@@ -734,6 +758,7 @@ function applyPatch(before: Stream, patch: StreamPatch): Stream {
     archive_id,
     rules_off,
     permissions,
+    auto_close,
     ...rest
   } = patch;
   // `classifier` is tri-state (absent, `'off'`, `null` = remove), rebuilt
@@ -745,6 +770,8 @@ function applyPatch(before: Stream, patch: StreamPatch): Stream {
     ...(optOut !== undefined ? { classifier: optOut } : {}),
     ...rest,
   };
+  if (auto_close === null || auto_close === false) Reflect.deleteProperty(next, 'auto_close');
+  else if (auto_close !== undefined) next.auto_close = auto_close;
   if (permissions === null) Reflect.deleteProperty(next, 'permissions');
   else if (permissions !== undefined) next.permissions = permissions;
   if (rules_off === null || rules_off?.length === 0) Reflect.deleteProperty(next, 'rules_off');

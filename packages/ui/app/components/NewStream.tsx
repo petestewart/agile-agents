@@ -26,6 +26,7 @@ import {
   type RepoRow,
   attachSession,
   createStream,
+  getAutoCloseDefault,
   getQuickDrafts,
   getSessionDefaults,
   listRepos,
@@ -173,6 +174,8 @@ function NewStreamForm({
   const [start, setStart] = useState(true);
   // T477: no goal yet: the text is your first message, and you set the goal once you've talked.
   const [talkFirst, setTalkFirst] = useState(false);
+  // T478: closes itself when its goal is met; starts as Settings says (`undefined` until read).
+  const [autoClose, setAutoClose] = useState<boolean | undefined>(undefined);
   const [session, setSession] = useState<SessionDefaultsStatus | undefined>(undefined);
   // Set once "Change" is pressed: this node's own vendor, model and effort.
   const [choice, setChoice] = useState<SessionChoice | undefined>(undefined);
@@ -189,6 +192,20 @@ function NewStreamForm({
       })
       .catch(() => {
         // Unknown: the hint promises nothing.
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    getAutoCloseDefault()
+      .then((d) => {
+        if (alive) setAutoClose((picked) => picked ?? d.on);
+      })
+      .catch(() => {
+        // Off, as the daemon's default.
       });
     return () => {
       alive = false;
@@ -260,6 +277,7 @@ function NewStreamForm({
         // no goal starts on your first message instead.
         ...(!start || custom || talkFirst ? { start: false } : {}),
         ...(!ownTitle && opener !== '' ? { auto_title: true } : {}),
+        auto_close: autoClose === true,
       });
       if (talkFirst && opener !== '') {
         const model = choice?.model.trim();
@@ -492,6 +510,18 @@ function NewStreamForm({
             onChange={(e) => setTalkFirst(e.target.checked)}
           />
           <span className="cr-switch-label">No goal yet: talk it through first</span>
+        </label>
+        <label className="cr-switch-row cr-newnode-talk">
+          <input
+            type="checkbox"
+            role="switch"
+            aria-checked={autoClose === true}
+            className="cr-switch"
+            data-testid="new-stream-auto-close"
+            checked={autoClose === true}
+            onChange={(e) => setAutoClose(e.target.checked)}
+          />
+          <span className="cr-switch-label">Close it when its goal is met</span>
         </label>
         <Field
           label="Title"

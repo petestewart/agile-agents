@@ -93,6 +93,33 @@ describe('ask (T361)', () => {
   });
 });
 
+describe('goal_met (T478)', () => {
+  test('records the session and summary on agent.goal_met and says it on the thread', async () => {
+    const { session, stream } = await attach();
+    const entry = await verbs.goalMet({ session, summary: 'RFC 4180, with tests' });
+    expect(entry.body).toBe('goal met: RFC 4180, with tests');
+    const met = streams.get(stream.id).agent.goal_met;
+    expect(met?.session).toBe(session);
+    expect(met?.summary).toBe('RFC 4180, with tests');
+    await expect(verbs.goalMet({ session, summary: '' })).rejects.toThrow(/goal_met/);
+  });
+
+  test('a node with no goal yet has nothing to meet', async () => {
+    const { session, stream } = await attach();
+    const bare = await streams.create('human', { title: 'talk first' });
+    await store.putAgent(session as AgentId, {
+      vendor: 'claude',
+      model: 'sonnet',
+      stream: bare.id,
+      last_seen: new Date().toISOString(),
+      role: 'worker',
+    });
+    await expect(verbs.goalMet({ session, summary: 'x' })).rejects.toThrow('no goal yet');
+    expect(streams.get(bare.id).agent.goal_met).toBeUndefined();
+    expect(stream.id).not.toBe(bare.id);
+  });
+});
+
 describe('propose_knowledge', () => {
   test('writes a proposed rule with provenance and a thread entry that points at it', async () => {
     const { session, stream } = await attach();

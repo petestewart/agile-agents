@@ -11,6 +11,7 @@
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  AutoCloseInputSchema,
   ClassifierKeyInputSchema,
   DIRECTOR_NODE,
   type HilDecision,
@@ -32,6 +33,7 @@ import {
   type Stream,
   StreamAddRepoRequestSchema,
   StreamAttachRequestSchema,
+  StreamAutoCloseRequestSchema,
   StreamAutonomyRequestSchema,
   StreamCreateInputSchema,
   StreamMoveRequestSchema,
@@ -684,6 +686,36 @@ async function handleKnowledgeWakeRoute(
       by: 'human',
     });
     return jsonResponse({ on: config.knowledge_wake === 'jev' });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T478: Settings' default for New node's "Close it when its goal is met"
+ * (`auto_close` in config.yaml; absent = off):
+ *
+ *   GET  /api/settings/auto-close  `{on}`
+ *   POST /api/settings/auto-close  `{on}`; same-origin only
+ */
+async function handleAutoCloseRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/auto-close') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (req.method === 'GET') {
+    return jsonResponse({ on: feed.store.getHomeConfig().auto_close === true });
+  }
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = AutoCloseInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('auto-close', input.error));
+  try {
+    const config = await feed.store.setAutoCloseDefault(input.data.on, { by: 'human' });
+    return jsonResponse({ on: config.auto_close === true });
   } catch (err) {
     return errorResponse(400, messageOf(err));
   }
@@ -1372,6 +1404,7 @@ async function handleRuleRoute(
  *   POST /api/streams/:id/wait         Link (T228, P8): `{on, remove?}` a `waits_on` edge
  *   POST /api/streams/:id/rule         T463: `{rule, on}` a knowledge item in scope, on or off for this node
  *   POST /api/streams/:id/permissions  T463: `{posture}` this node's Trusted or Ask; `null` inherits
+ *   POST /api/streams/:id/auto-close   T478: `{on}` this node closes itself when its goal is met
  *   POST /api/streams/:id/move         Move (T333, D34): `{parent}` a node or a project id
  *   POST /api/streams/:id/update       Rename (T365): `{title?, goal?, auto_title?}`, as `stream.update`
  *                                      (T435: `auto_title` has the cheap model name it better)
@@ -1391,7 +1424,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|draft-goal|attach|resolve|stop|close|dismiss|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|auto-close|draft-goal|attach|resolve|stop|close|dismiss|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -1506,6 +1539,11 @@ async function handleStreamRoute(
       const input = StreamPermissionsRequestSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('permissions', input.error));
       return jsonResponse(await feed.streams.setPermissions(id, input.data.posture));
+    }
+    if (action === 'auto-close') {
+      const input = StreamAutoCloseRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('auto-close', input.error));
+      return jsonResponse(await feed.streams.setAutoClose(id, input.data.on));
     }
     if (action === 'move') {
       const input = StreamMoveRequestSchema.safeParse(body);
@@ -1797,6 +1835,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (draftsRoute) return draftsRoute;
         const knowledgeWakeRoute = await handleKnowledgeWakeRoute(req, url, feed, sameOrigin);
         if (knowledgeWakeRoute) return knowledgeWakeRoute;
+        const autoCloseRoute = await handleAutoCloseRoute(req, url, feed, sameOrigin);
+        if (autoCloseRoute) return autoCloseRoute;
         const trackerRoute = await handleTrackerSettingsRoute(req, url, feed, sameOrigin);
         if (trackerRoute) return trackerRoute;
         const permissionsRoute = await handlePermissionsRoute(req, url, feed, sameOrigin);

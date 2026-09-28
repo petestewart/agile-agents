@@ -58,6 +58,10 @@ export type AskInput = z.infer<typeof AskInputSchema>;
 export const ProgressInputSchema = z.object({ session: Session, text: Body }).strict();
 export type ProgressInput = z.infer<typeof ProgressInputSchema>;
 
+/** T478: the node's whole goal is done; `summary` is what was done, in a line. */
+export const GoalMetInputSchema = z.object({ session: Session, summary: Body }).strict();
+export type GoalMetInput = z.infer<typeof GoalMetInputSchema>;
+
 export const FindingInputSchema = z
   .object({
     session: Session,
@@ -311,6 +315,7 @@ export const AGENT_VERBS = [
   'start_node',
   'restart_node',
   'propose_repo',
+  'goal_met',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -344,6 +349,7 @@ export const AGENT_VERB_SCHEMAS = {
   start_node: StartNodeInputSchema,
   restart_node: RestartNodeInputSchema,
   propose_repo: ProposeRepoInputSchema,
+  goal_met: GoalMetInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -399,6 +405,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Director, or a coordinator for its own children: restart a stuck node’s agent ({node}). Applied at Run only; otherwise a proposal.',
   propose_repo:
     'Propose adding a registered repo to this node ({repo: its name, why: what needs changing there}). Use it when the work needs changes in a repo this node doesn’t work in (one of the repos your brief lists), rather than asking the human to add it by hand. It changes nothing by itself: the human adds it with one click, which turns this node into work on it (or adds a part).',
+  goal_met:
+    'Report that this node’s whole goal is done ({summary: what was done, one line}). Call it once, as your last step, only when nothing is left to do, fix or ask; never after a partial step or when you stop to ask. A node set to auto-close then closes itself if there is nothing to merge.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

@@ -184,3 +184,79 @@ describe('T444: sessions a dead daemon left running', () => {
     expect(after?.sessions.map((s) => s.status)).toEqual(['stopped']);
   });
 });
+
+describe('T478: auto-close, as the daemon wires it', () => {
+  test('goal_met with nothing on the branch closes the node; with a commit it stays to merge', async () => {
+    const git = (args: string[], cwd: string) => {
+      const run = Bun.spawnSync(['git', ...args], { cwd });
+      if (run.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${run.stderr.toString()}`);
+    };
+    git(['config', 'user.email', 'test@example.com'], repo);
+    git(['config', 'user.name', 'Test'], repo);
+    git(['checkout', '-q', '-b', 'main'], repo);
+    writeFileSync(join(repo, 'README.md'), '# fixture\n');
+    git(['add', '-A'], repo);
+    git(['commit', '-q', '-m', 'initial'], repo);
+    const store = StateStore.open(runInit(home).stateRoot);
+    await store.addRepo('demo', { path: repo });
+    await store.flush();
+    store.close();
+
+    handle = await startDaemon({ port: 0, socketPath: join(repo, '.agile-daemon.sock') });
+    const streams = handle.streamService;
+    if (streams === undefined) throw new Error('no stream service');
+    const { ProjectService } = await import('./projects');
+    const project = await new ProjectService(handle.store as StateStore, streams).create({
+      name: 'Shop',
+    });
+
+    /** A node on its own branch; `commit` puts a change on it. Then a turn that says goal_met. */
+    const finish = async (slug: string, commit: boolean): Promise<string> => {
+      const node = await streams.create('human', {
+        title: slug,
+        goal: 'g',
+        repo: 'demo',
+        parent: project.root,
+        auto_close: true,
+      });
+      const worktree = join(repo, '.worktrees', slug);
+      git(['worktree', 'add', '-q', '-b', slug, worktree, 'main'], repo);
+      if (commit) {
+        writeFileSync(join(worktree, `${slug}.txt`), 'x\n');
+        git(['add', '-A'], worktree);
+        git(['commit', '-q', '-m', slug], worktree);
+      }
+      const session = ulid();
+      await (handle?.store as StateStore).updateStream('daemon', node.id, (before) => ({
+        ...before,
+        branch: slug,
+        worktree,
+        sessions: [
+          { id: session, vendor: 'claude', model: 'm', role: 'worker', status: 'running' },
+        ],
+      }));
+      await streams.update('daemon', node.id, { agent: { status: 'working' } });
+      await streams.update('agent', node.id, {
+        agent: { goal_met: { session, at: new Date().toISOString(), summary: 'done' } },
+      });
+      // As attach ends a turn: the session stops, then the node reads done.
+      await (handle?.store as StateStore).updateStream('daemon', node.id, (before) => ({
+        ...before,
+        sessions: before.sessions.map((s) => ({ ...s, status: 'stopped' as const })),
+      }));
+      await streams.update('daemon', node.id, { agent: { status: 'done' } });
+      return node.id;
+    };
+
+    const clean = await finish('s-clean', false);
+    const changed = await finish('s-changed', true);
+    const deadline = Date.now() + 5000;
+    while (streams.get(clean).human.status === 'open' && Date.now() < deadline) {
+      await Bun.sleep(20);
+    }
+    expect(streams.get(clean).human.status).toBe('closed');
+    expect(streams.get(clean).human.note).toContain('auto-closed');
+    await Bun.sleep(100);
+    expect(streams.get(changed).human.status).toBe('open');
+  });
+});

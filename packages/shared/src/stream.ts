@@ -240,6 +240,18 @@ export const StreamAgentStateSchema = z
     findings: z.array(StreamFindingSchema).optional(),
     /** Each next step is one line; the detail belongs in the thread. */
     proposed_next: z.array(z.string().min(1).max(THREAD_BODY_MAX_CHARS)).optional(),
+    /**
+     * T478: the agent said its goal is met (the `goal_met` verb), in which
+     * session. Auto-close counts it only for the session whose turn just ended.
+     */
+    goal_met: z
+      .object({
+        session: UlidSchema,
+        at: z.string().min(1),
+        summary: z.string().min(1).max(THREAD_BODY_MAX_CHARS),
+      })
+      .strict()
+      .optional(),
     updated_at: z.string().min(1),
   })
   .strict();
@@ -450,6 +462,13 @@ export const StreamSchema = z
      * the daemon) changes it.
      */
     permissions: PermissionPostureSchema.optional(),
+    /**
+     * T478: the node closes itself when its goal is met: its agent reports
+     * `goal_met` and there is nothing to merge, or (a coordinating node) every
+     * part is merged or closed. A part inherits it from its parent when it is
+     * made. Only a human (or the daemon) changes it.
+     */
+    auto_close: z.boolean().optional(),
     land_conflict: LandConflictSchema.optional(),
     /*
      * Node fields (projects-design §14.2, T201). `project` is optional in
@@ -511,6 +530,8 @@ export const StreamCreateInputSchema = z
      * the daemon asks a cheap model for a better one after creating. Not stored.
      */
     auto_title: z.boolean().optional(),
+    /** T478: close it when its goal is met. Absent: as its parent (a part inherits it). */
+    auto_close: z.boolean().optional(),
   })
   .strict();
 export type StreamCreateInput = z.infer<typeof StreamCreateInputSchema>;
@@ -566,7 +587,7 @@ function changed(before: unknown, after: unknown): boolean {
  * - a `human` principal may not change `agent.*`
  * - the `daemon` principal may write both
  * - only the `daemon` may change `delivery_state` or `touched` (§14.2)
- * - only a `human` (or the `daemon`) may change `rules_off` or `permissions` (T463)
+ * - only a `human` (or the `daemon`) may change `rules_off`, `permissions` (T463) or `auto_close` (T478)
  *
  * Throws on violation; returns the `after` record when the write is allowed.
  * A no-op write of the other half (identical value) is allowed — the store
@@ -604,7 +625,7 @@ export function assertStreamWrite(
 const DAEMON_ONLY_FIELDS = ['delivery_state', 'touched'] as const;
 
 /** T463: settings only the operator (or the daemon) may change: an agent never loosens its own checks. */
-const HUMAN_ONLY_FIELDS = ['rules_off', 'permissions'] as const;
+const HUMAN_ONLY_FIELDS = ['rules_off', 'permissions', 'auto_close'] as const;
 
 /**
  * Thrown when a proposed `parent` would make a stream its own ancestor.
@@ -869,6 +890,10 @@ export const StreamPermissionsRequestSchema = z
   })
   .strict();
 export type StreamPermissionsRequest = z.infer<typeof StreamPermissionsRequestSchema>;
+
+/** T478: `POST /api/streams/:id/auto-close`: this node closes itself when its goal is met. */
+export const StreamAutoCloseRequestSchema = z.object({ on: z.boolean() }).strict();
+export type StreamAutoCloseRequest = z.infer<typeof StreamAutoCloseRequestSchema>;
 
 /** T333 (D34): `POST /api/streams/:id/move` and `node.move`: a node, or a project id for its root. */
 export const StreamMoveRequestSchema = z

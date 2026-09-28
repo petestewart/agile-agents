@@ -264,6 +264,8 @@ export const HomeConfigSchema = z
     knowledge_wake: z.enum(KNOWLEDGE_WAKE_MODES).optional(),
     /** T457: the permission posture (`posture.ts`); a project may override it. Absent = `ask`. */
     permissions: PermissionPostureSchema.optional(),
+    /** T478: New node's "Close it when its goal is met" starts on. Absent = off. */
+    auto_close: z.boolean().optional(),
     /** T243 (P11): routed-event settings. `wake_budget_per_hour` defaults to 20. */
     events: z
       .object({ wake_budget_per_hour: z.number().int().positive().optional() })
@@ -335,3 +337,7 @@ export type QuickDraftsInput = z.infer<typeof QuickDraftsInputSchema>;
 /** T454: Settings' "Let Jev decide" switch (`POST /api/settings/knowledge-wake`). */
 export const KnowledgeWakeInputSchema = z.object({ on: z.boolean() }).strict();
 export type KnowledgeWakeInput = z.infer<typeof KnowledgeWakeInputSchema>;
+
+/** T478: Settings' auto-close default for new nodes (`POST /api/settings/auto-close`). */
+export const AutoCloseInputSchema = z.object({ on: z.boolean() }).strict();
+export type AutoCloseInput = z.infer<typeof AutoCloseInputSchema>;
