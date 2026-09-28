@@ -2408,8 +2408,8 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
         expect(sessions[1]).toMatchObject({ model: 'claude-haiku-4-5', effort: 'high' });
         expect(readFileSync(secondLog, 'utf8')).toContain('SWITCH-LINE use haiku');
         expect(readFileSync(firstLog, 'utf8')).not.toContain('SWITCH-LINE');
-        // Back to the default for the next message.
-        await waitForText(page, '[data-testid="composer-model"]', 'Claude Opus 5.5 · low');
+        // T464: the node keeps what it last ran on for the next message, not the default.
+        await waitForText(page, '[data-testid="composer-model"]', 'Claude Haiku 4.5 · high');
       } finally {
         await teardown([page]);
         await cockpit.stop();
