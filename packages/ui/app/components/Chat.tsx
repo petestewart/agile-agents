@@ -70,35 +70,54 @@ import { Icon, type IconName } from './Icon';
 import { Markdown } from './Markdown';
 import { IconButton, Spinner, useCopy } from './ui';
 
-/** T330: past ~12 lines a thread entry renders collapsed, with a Show more / Show less toggle. */
+/** T330: past ~12 lines a thread entry offers Show less (T475: it opens whole). */
 export const THREAD_COLLAPSE_LINES = 12;
 
-/** Long enough to collapse: more than 12 source lines, or ~12 wrapped lines of prose. */
+/** Long enough to fold: more than 12 source lines, or ~12 wrapped lines of prose. */
 export function isLongThreadBody(body: string): boolean {
   return (
     body.split('\n').length > THREAD_COLLAPSE_LINES || body.length > THREAD_COLLAPSE_LINES * 100
   );
 }
 
-export function ThreadBody({ body }: { body: string }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
+/**
+ * T475: the messages you folded with Show less, by id, for as long as the
+ * page is open (the chat's rows re-mount as it windows and re-renders).
+ */
+const folded = new Set<string>();
+
+/**
+ * A message's markdown, whole. T475: a long one is never folded until you
+ * fold it with Show less (Pete: "i should never have to click show more to
+ * see all the output"); your fold is kept for that message (`id`).
+ */
+export function ThreadBody({ body, id }: { body: string; id?: string }): JSX.Element {
+  const [isFolded, setFolded] = useState(() => id !== undefined && folded.has(id));
   if (!isLongThreadBody(body)) return <Markdown text={body} />;
+  const toggle = (): void => {
+    const next = !isFolded;
+    if (id !== undefined) {
+      if (next) folded.add(id);
+      else folded.delete(id);
+    }
+    setFolded(next);
+  };
   return (
     <>
       <Markdown
         text={body}
-        className={expanded ? undefined : 'cr-collapsed'}
+        className={isFolded ? 'cr-collapsed' : undefined}
         testId="thread-body"
       />
       <button
         type="button"
         className="cr-fold"
         data-testid="thread-expand"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((open) => !open)}
+        aria-expanded={!isFolded}
+        onClick={toggle}
       >
-        {expanded ? 'Show less' : 'Show more'}
-        <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={13} />
+        {isFolded ? 'Show more' : 'Show less'}
+        <Icon name={isFolded ? 'chevron-down' : 'chevron-up'} size={13} />
       </button>
     </>
   );
@@ -519,7 +538,7 @@ export function MessageList<E extends ChatEntry>({
                       Answer
                     </span>
                   )}
-                  <ThreadBody body={entry.body} />
+                  <ThreadBody body={entry.body} id={entry.ts} />
                 </div>
               </div>
               {renderExtra?.(entry, index)}
@@ -582,7 +601,7 @@ export function MessageList<E extends ChatEntry>({
                   <ThreadBody body={next.goal} />
                 </div>
               ) : (
-                <ThreadBody body={agentWords(entry.body)} />
+                <ThreadBody body={agentWords(entry.body)} id={entry.ts} />
               )}
             </div>
             {renderExtra?.(entry, index)}

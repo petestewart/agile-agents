@@ -2967,10 +2967,11 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T475 A finished reply is never folded
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28): "i should never have to click show more to see all the output. only if i have closed it on my own with show less first".
 - **Acceptance Criteria:** A long message shows in full, with **Show less** to fold it. A fold you made is kept for that message.
+- **Notes:** Branch T475-replies-unfolded. `ThreadBody` (Chat.tsx) opens whole. A fold you make is kept by the message's `ts` for as long as the page is open. The control-room e2e (T330's test, updated) checks the message opens whole, Show less folds it, and the fold survives a tab change.
 
 ### Ticket: T477 A node without a goal; dismiss a Finished card
 - **Priority:** P1
