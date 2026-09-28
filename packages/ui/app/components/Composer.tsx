@@ -44,6 +44,10 @@ export interface ComposerProps {
   above?: ReactNode;
   /** Left of the buttons: the model chip. */
   chip?: ReactNode;
+  /** T468: right of the bar, before Stop and Send: the effort chip. */
+  effort?: ReactNode;
+  /** T468: Shift+Tab in the box (steps the effort); absent, Shift+Tab moves focus as usual. */
+  onShiftTab?: () => void;
   maxLength?: number;
   label?: string;
   inputTestid?: string;
@@ -82,6 +86,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     hint,
     above,
     chip,
+    effort,
+    onShiftTab,
     maxLength = 800,
     label = 'Message',
     inputTestid = 'composer-input',
@@ -258,6 +264,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               e.stopPropagation();
               return;
             }
+            if (e.key === 'Tab' && e.shiftKey && onShiftTab !== undefined) {
+              e.preventDefault();
+              onShiftTab();
+              return;
+            }
             // Enter sends; Shift+Enter is a newline; never mid-IME composition.
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -267,6 +278,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         />
         <div className="cr-compose-bar">
           <div className="cr-compose-chips">{chip}</div>
+          {effort}
           {onStop && (
             <button
               type="button"
