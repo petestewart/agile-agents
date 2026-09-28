@@ -10820,3 +10820,8 @@ div.cr-lens-ev:hover {
   align-items: center;
   gap: 6px;
 }
+/* T472: the Ask box's model chip, above the question. */
+.cr-ask-model {
+  display: flex;
+  margin: 2px 0 6px;
+}

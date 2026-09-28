@@ -3007,10 +3007,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T472 The Ask box has the model picker
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28): "when i press 'a' to ask the regular model selector should be there".
 - **Acceptance Criteria:** The Ask box shows the composer's model chip, and the conversation starts on the pick.
+- **Validation Steps:** The Ask box shows `ModelChip` (T423's) under About, for any node target (not the Director, which runs its own agent). It reads the defaults for where the question is asked. A pick creates the conversation with `start: false` and attaches its worker on the pick, as New node does. `ModelChip` takes `placement`; Ask opens it downward, because upward it opened off the top of the dialog (the first e2e run couldn't click an option). e2e T472 checks the session runs `claude-sonnet-4-6`. Full `bun test` 3485/0.
+- **Notes:** Branch T472-ask-model-picker.
 
 ### Ticket: T457b CI: a dangling symlink read as the dir it sits in
 - **Priority:** P0
