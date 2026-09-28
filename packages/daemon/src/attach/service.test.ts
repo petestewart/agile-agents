@@ -29,8 +29,10 @@ import {
   type HilId,
   type Policy,
   type Question,
+  type SessionRef,
   type Stream,
   type VendorFailureSettings,
+  isRestingSession,
   ulid,
   validateClassifierConfig,
 } from '@agile-agents/shared';
@@ -50,17 +52,22 @@ import { wireQuestionSupersession } from '../questions/supersede';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { SESSION_STATE_FILE, missingVendorCommand } from '../runner/session';
 import { StateStore } from '../store';
+import { AutoClose } from '../streams/auto-close';
 import { RepoInPlaceService } from '../streams/repo-in-place';
 import { StreamService } from '../streams/service';
 import { buildAttachRpcMethods } from './rpc';
-import { lastAgentSession, sayPrompt } from './service';
+import { lastAgentSession, resumableSession, sayPrompt } from './service';
 import {
   AttachService,
   CRASHED_PREFIX,
+  DAEMON_RESTART_IDLE_REASON,
   DAEMON_SHUTDOWN_REASON,
   FAILED_START_PREFIX,
+  RESUMED_LINE,
   StreamBusyError,
+  TURN_FINISHED_LINE,
   endedReason,
+  idleEndReason,
 } from './service';
 import { VerbService } from './verbs';
 
@@ -102,7 +109,8 @@ const SPEAKS: FakeAgentScript = {
  * Hangs *inside* the turn after speaking, so a test can assert on a live
  * session. The `tool_call` is what closes the streaming message, so the
  * spoken line reaches the thread without the turn ending — a turn that
- * ended with no open question would now stop the session (T137).
+ * ended with no open question would read `done` (T137; T465: its session
+ * then rests, idle).
  */
 const SPEAKS_THEN_HANGS: FakeAgentScript = {
   steps: [
@@ -1177,19 +1185,26 @@ describe('one ACP message is one thread entry (T137)', () => {
   }, 20_000);
 });
 
-describe('a finished turn ends the session (T137, T341)', () => {
-  test('the thread says its turn finished, not the exit code of the stop', async () => {
+describe('T465 (D48): a finished turn keeps the session (T137, T341)', () => {
+  test('the node reads done, the session stays alive and idle, and the thread says its turn finished', async () => {
     attachService = buildAttachService(
       fakeProviderFor(ACP_PROVIDERS.claude, {
         steps: [{ type: 'agent_text', text: 'all done' }, { type: 'end_turn' }],
       }),
     );
     const stream = await makeStream();
-    await attachService.attach(stream.id);
-    await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('session ended:')));
-    const ended = threadBodies(stream.id).filter((b) => b.startsWith('session ended:'));
-    expect(ended).toEqual(['session ended: its turn finished']);
-    expect(streams.get(stream.id).agent.status).toBe('done');
+    const { session, handle } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes(TURN_FINISHED_LINE));
+    const after = streams.get(stream.id);
+    expect(after.agent.status).toBe('done');
+    const ref = after.sessions.find((s) => s.id === session.id);
+    expect(ref?.status).toBe('idle');
+    expect(isRestingSession(after, ref as SessionRef)).toBe(true);
+    // The vendor's session id is on record for a later resume.
+    expect(ref?.acp_session_id).toBe('fake-session-1');
+    expect(threadBodies(stream.id).some((b) => b.startsWith('session ended:'))).toBe(false);
+    expect(handle.stopped()).toBe(false);
+    expect(store.listAgents().some((a) => a.id === session.id)).toBe(true);
   }, 20_000);
 });
 
@@ -1279,13 +1294,13 @@ describe('ask → answer → continue (T137)', () => {
     expect(existsSync(join(home, 'bus', 'inbox', session.id))).toBe(false);
 
     // The second turn ends with no open question left: the worker is
-    // finished, so the service stops the session and the exit path writes
-    // `done`.
+    // finished, so the node reads `done` and (T465) the session rests.
     await waitFor(() => streams.get(stream.id).agent.status === 'done');
     expect(threadBodies(stream.id).some((b) => b.includes('continuing with semicolon'))).toBe(true);
-    const after = streams.get(stream.id);
-    expect(after.sessions.find((s) => s.id === session.id)?.status).toBe('stopped');
-    expect(store.listAgents().some((a) => a.id === session.id)).toBe(false);
+    await waitFor(
+      () => streams.get(stream.id).sessions.find((s) => s.id === session.id)?.status === 'idle',
+    );
+    expect(store.listAgents().some((a) => a.id === session.id)).toBe(true);
   }, 30_000);
 
   test('an answer with no live session stays on the thread and says so', async () => {
@@ -1444,7 +1459,7 @@ describe('a gate and a question in the same turn (T145)', () => {
     breaker_signals: [],
   };
 
-  test('approving the gate closes the question too, and the turn ends the session', async () => {
+  test('approving the gate closes the question too, and the turn finishes the work', async () => {
     // Pete's `--help` run, exactly: the worker raised a plain `ask` and hit
     // the route-band gate in the same turn, the operator answered the gate,
     // the worker retried and ended its turn — and the question nobody ever
@@ -1492,12 +1507,13 @@ describe('a gate and a question in the same turn (T145)', () => {
     ).toBe(true);
 
     // The turn now ends with nothing open: the worker is finished, so the
-    // session is stopped and the exit path writes `done`.
+    // node reads `done` and (T465) the session rests for the next message.
     writeFileSync(sentinel, '');
     await waitFor(() => streams.get(stream.id).agent.status === 'done');
-    const after = streams.get(stream.id);
-    expect(after.sessions.find((s) => s.id === session.id)?.status).toBe('stopped');
-    expect(store.listAgents().some((a) => a.id === session.id)).toBe(false);
+    await waitFor(
+      () => streams.get(stream.id).sessions.find((s) => s.id === session.id)?.status === 'idle',
+    );
+    expect(store.listAgents().some((a) => a.id === session.id)).toBe(true);
   }, 30_000);
 
   test('a turn that ends on a still-open question says `question`, never `working`', async () => {
@@ -1668,7 +1684,7 @@ describe('say — the stream page composer (T161)', () => {
       'The operator wrote on the stream: how many tests are you writing?',
     );
     expect(threadBodies(stream.id)).toContain('answered');
-    expect(sessionRef()?.status).toBe('stopped');
+    await waitFor(() => sessionRef()?.status === 'idle');
     expect(sessionRef()?.queued).toBeUndefined();
   }, 30_000);
 
@@ -1965,11 +1981,14 @@ describe('T204: creating a node starts its agent (P5)', () => {
 });
 
 describe('T243: the wake policy (P11)', () => {
-  /** A conversation node whose first session ran and finished (`done`, no live worker). */
+  /**
+   * A conversation node whose first session ran and finished (`done`, no live worker).
+   * T465: its session ends as soon as its turn finishes (an idle timeout of 0).
+   */
   async function finishedNode(log: string, extra = {}): Promise<Stream> {
     attachService = buildAttachService(
       fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
-      { deliveryDelayMs: 5, ...extra },
+      { deliveryDelayMs: 5, sessionIdleMs: 0, ...extra },
     );
     const project = await new ProjectService(store, streams).create({ name: 'Shop' });
     const node = await attachService.createNode('human', {
@@ -2079,11 +2098,11 @@ describe('T243: the wake policy (P11)', () => {
         attachService.stop(id, undefined, reason !== undefined ? { reason } : {}),
     });
   }
-  /** No live session and every event's latest delivery record `delivered`. */
+  /** No live session (T465: the coordinator's too, whose session ends after its turn) and every event's latest delivery record `delivered`. */
   const settled = (id: string) => {
     const latest = new Map(store.readDeliveries(id).map((d) => [d.event, d.status]));
     return (
-      attachService.handleFor(id) === undefined &&
+      attachService.agentHandle(id) === undefined &&
       [...latest.values()].every((status) => status === 'delivered')
     );
   };
@@ -2152,9 +2171,13 @@ describe('T243: the wake policy (P11)', () => {
     const log = join(scratch, 't336-told.jsonl');
     const node = await finishedNode(log);
     // The woken session stays live, so its session can call `read_event`.
+    // T465: a vendor that can't load a session, so the woken one starts from the brief.
     await attachService.stopAll();
     attachService = buildAttachService(
-      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS_THEN_HANGS, logFile: log }),
+      fakeProviderFor(
+        { ...ACP_PROVIDERS.claude, loadSession: false },
+        { ...SPEAKS_THEN_HANGS, logFile: log },
+      ),
       { deliveryDelayMs: 5 },
     );
     await attachService.say(node.id, 'use the ledger CSV format');
@@ -2191,12 +2214,16 @@ describe('T351, T453: accepting a decision wakes the conversation it came from (
       .filter((l) => l.includes('"session/prompt"'));
   const TEXT = 'Amounts in exported JSON are integer cents, never floats';
 
-  /** Attach + knowledge wired as `daemon.ts` wires them: one routed event service. */
-  async function setUp(script: FakeAgentScript) {
+  /**
+   * Attach + knowledge wired as `daemon.ts` wires them: one routed event service.
+   * T465: `ended` ends a finished turn's session at once (an idle timeout of 0).
+   */
+  async function setUp(script: FakeAgentScript, { ended = true }: { ended?: boolean } = {}) {
     const events = new RoutedEventService(store);
     attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, script), {
       deliveryDelayMs: 5,
       events,
+      ...(ended ? { sessionIdleMs: 0 } : {}),
     });
     const knowledge = new KnowledgeService({
       store,
@@ -2268,25 +2295,28 @@ describe('T351, T453: accepting a decision wakes the conversation it came from (
   test('a live conversation gets the item once, in a digest, with no second session', async () => {
     const log = join(scratch, 'k-live.jsonl');
     const sentinel = join(scratch, 'k-live.flag');
-    const { node, accept } = await setUp({
-      logFile: log,
-      steps: [{ type: 'agent_text', text: 'noted' }, { type: 'end_turn' }],
-      turns: [
-        [
-          { type: 'agent_text', text: 'reading ledger-lite' },
-          { type: 'tool_call', toolCallId: 'read-k', title: 'read' },
-          { type: 'wait_for_file', path: sentinel },
-          { type: 'end_turn' },
+    const { node, accept } = await setUp(
+      {
+        logFile: log,
+        steps: [{ type: 'agent_text', text: 'noted' }, { type: 'end_turn' }],
+        turns: [
+          [
+            { type: 'agent_text', text: 'reading ledger-lite' },
+            { type: 'tool_call', toolCallId: 'read-k', title: 'read' },
+            { type: 'wait_for_file', path: sentinel },
+            { type: 'end_turn' },
+          ],
         ],
-      ],
-    });
+      },
+      { ended: false },
+    );
     await waitFor(() => threadBodies(node.id).some((b) => b.includes('reading ledger-lite')));
     await accept();
     await Bun.sleep(100);
     expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
     writeFileSync(sentinel, '');
     await waitFor(() => streams.get(node.id).agent.status === 'done');
-    await waitFor(() => attachService.handleFor(node.id) === undefined);
+    await waitFor(() => streams.get(node.id).sessions[0]?.status === 'idle');
     await Bun.sleep(100);
     expect(streams.get(node.id).sessions).toHaveLength(1);
     const withItem = prompts(log).filter((p) => p.includes('integer cents'));
@@ -2320,6 +2350,8 @@ describe('T454: with knowledge_wake on, Jev decides which other conversations wa
     attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, script), {
       deliveryDelayMs: 5,
       events,
+      // T465: a settled conversation's session ends as soon as its turn finishes.
+      ...(settle ? { sessionIdleMs: 0 } : {}),
       knowledgeWake: new KnowledgeWakeJudge({
         store,
         streams: () => streams.list(),
@@ -2437,7 +2469,7 @@ describe('T454: with knowledge_wake on, Jev decides which other conversations wa
 });
 
 describe('T280: the coordinator role (P20)', () => {
-  test('a coordinating node runs a coordinator; child_status wakes it with a digest', async () => {
+  test('a coordinating node runs a coordinator; child_status wakes its resting session with a digest', async () => {
     const log = join(scratch, 'coordinator.jsonl');
     attachService = buildAttachService(
       fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
@@ -2470,7 +2502,8 @@ describe('T280: the coordinator role (P20)', () => {
     expect(brief).toContain('Cart API');
     expect(brief).toContain('Autonomy: **advise**');
     await waitFor(() => streams.get(node.id).agent.status === 'done');
-    await waitFor(() => attachService.handleFor(node.id, 'coordinator') === undefined);
+    // T465: its session rests after the turn.
+    await waitFor(() => streams.get(node.id).sessions[0]?.status === 'idle');
 
     await new RoutedEventService(store).emit({
       type: 'child_status',
@@ -2480,12 +2513,10 @@ describe('T280: the coordinator role (P20)', () => {
       routing: [{ node: node.id, because: 'ancestor' }],
     });
     attachService.wakePending();
-    await waitFor(() => streams.get(node.id).sessions.length === 2);
-    expect(streams.get(node.id).sessions.map((s) => s.role)).toEqual([
-      'coordinator',
-      'coordinator',
-    ]);
     await waitFor(() => store.readDeliveries(node.id).at(-1)?.status === 'delivered');
+    // Into the same session: no second coordinator.
+    expect(store.readDeliveries(node.id).at(-1)?.session).toBe(first.session.id);
+    expect(streams.get(node.id).sessions.map((s) => s.role)).toEqual(['coordinator']);
     await waitFor(() =>
       (existsSync(log) ? readFileSync(log, 'utf8') : '')
         .split('\n')
@@ -2519,9 +2550,10 @@ describe('T280: the coordinator role (P20)', () => {
 
   test('a parentless project root that has had a coordinator is woken by child_status', async () => {
     const log = join(scratch, 'root.jsonl');
+    // T465: its session ends as soon as its turn finishes; the wake resumes it.
     attachService = buildAttachService(
       fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
-      { deliveryDelayMs: 5 },
+      { deliveryDelayMs: 5, sessionIdleMs: 0 },
     );
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     const root = await streams.create('human', { title: 'Shop', goal: 'g' });
@@ -2562,9 +2594,10 @@ describe('T280: the coordinator role (P20)', () => {
       (existsSync(log) ? readFileSync(log, 'utf8') : '')
         .split('\n')
         .filter((l) => l.includes('"session/prompt"'));
+    // T465: its session ends at once, and a vendor that can't load one starts from the brief.
     attachService = buildAttachService(
-      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log }),
-      { deliveryDelayMs: 5 },
+      fakeProviderFor({ ...ACP_PROVIDERS.claude, loadSession: false }, { ...SPEAKS, logFile: log }),
+      { deliveryDelayMs: 5, sessionIdleMs: 0 },
     );
     const project = await new ProjectService(store, streams).create({ name: 'Shop' });
     const parent = await streams.create('human', {
@@ -3205,4 +3238,436 @@ describe('T361: a message starts a node with no live agent', () => {
     );
     expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
   });
+});
+
+describe('T465 (D48): a finished turn keeps its session; an ended one resumes', () => {
+  const log = () => join(scratch, 't465.jsonl');
+  const logLines = () =>
+    (existsSync(log()) ? readFileSync(log(), 'utf8') : '')
+      .split('\n')
+      .filter((l) => l.trim() !== '');
+  const prompts = () => logLines().filter((l) => l.includes('"session/prompt"'));
+  const loads = () => logLines().filter((l) => l.includes('"session/load"'));
+  const statusOf = (id: string, session: string) =>
+    streams.get(id).sessions.find((s) => s.id === session)?.status;
+  /** A node in a project, so a line starts its agent (T361; a bare parentless stream waits, T443). */
+  const lineStarts = async (): Promise<Stream> => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    return attachService.createNode('human', {
+      title: 'CSV parser',
+      goal: 'decide the dialect and implement it',
+      project: project.id,
+      start: false,
+    });
+  };
+
+  test('the next message goes into the same session: one session, two prompts', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log() }),
+      { deliveryDelayMs: 5 },
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => statusOf(stream.id, session.id) === 'idle');
+    expect(streams.get(stream.id).agent.status).toBe('done');
+
+    const said = await attachService.say(stream.id, 'one more thing');
+    expect(said.prompted).toBe(session.id);
+    expect(said.started).toBeUndefined();
+    await waitFor(() => prompts().some((p) => p.includes('one more thing')));
+    await waitFor(
+      () => threadBodies(stream.id).filter((b) => b === TURN_FINISHED_LINE).length === 2,
+    );
+    expect(prompts()).toHaveLength(2);
+    expect(prompts()[1]).toContain('The operator wrote on the stream: one more thing');
+    const after = streams.get(stream.id);
+    expect(after.sessions.map((s) => s.id)).toEqual([session.id]);
+    expect(after.agent.status).toBe('done');
+    expect(store.readDeliveries(stream.id).at(-1)?.session).toBe(session.id);
+    expect(threadBodies(stream.id).some((b) => b.startsWith('session ended:'))).toBe(false);
+  }, 30_000);
+
+  test('a routed event that would not wake the node waits for its next turn, not the resting session', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log() }),
+      { deliveryDelayMs: 5 },
+    );
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Plan',
+      goal: 'g',
+      project: project.id,
+    });
+    const session = streams.get(node.id).sessions[0]?.id as string;
+    await waitFor(() => statusOf(node.id, session) === 'idle');
+    // `ci_failed` wakes no conversation (P11): it is pending, the session stays idle.
+    await new RoutedEventService(store).emit({
+      type: 'ci_failed',
+      subject: node.id,
+      payload: { pr: 7, check: 'unit tests' },
+      by: 'daemon',
+      routing: [{ node: node.id, because: 'self' }],
+    });
+    attachService.wakePending();
+    await Bun.sleep(200);
+    expect(prompts()).toHaveLength(1);
+    expect(statusOf(node.id, session)).toBe('idle');
+    expect(store.readDeliveries(node.id).map((d) => d.status)).toEqual(['pending']);
+    // Your next line brings it, in the same session.
+    await attachService.say(node.id, 'anything new?');
+    await waitFor(() => prompts().length === 2);
+    // One digest carries both: the line and the event that was waiting.
+    expect(prompts()[1]).toContain('anything new?');
+    expect(prompts()[1]).toContain('unit tests');
+    await waitFor(() => {
+      const latest = new Map(store.readDeliveries(node.id).map((d) => [d.event, d.status]));
+      return latest.size === 2 && [...latest.values()].every((status) => status === 'delivered');
+    });
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+  }, 30_000);
+
+  test('the idle timeout ends it; the node stays done and the thread says why in words', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS), {
+      sessionIdleMs: 50,
+    });
+    const stream = await makeStream();
+    const { session, handle } = await attachService.attach(stream.id);
+    await handle.exited;
+    await waitFor(() => statusOf(stream.id, session.id) === 'stopped');
+    const after = streams.get(stream.id);
+    expect(after.agent.status).toBe('done');
+    const ended = after.sessions[0];
+    expect(ended?.ended_reason).toBe(`stopped: ${idleEndReason(50)}`);
+    expect(ended?.acp_session_id).toBe('fake-session-1');
+    await waitFor(() => threadBodies(stream.id).includes(`session ended: ${idleEndReason(50)}`));
+    expect(threadBodies(stream.id)).toContain(TURN_FINISHED_LINE);
+    // Finished work, not a stop of yours: its next event still wakes it.
+    expect(stoppedByHuman(after)).toBe(false);
+    expect(store.listAgents().some((a) => a.id === session.id)).toBe(false);
+    expect(idleEndReason(30 * 60_000)).toBe('it sat idle for 30 minutes after its turn finished');
+  }, 20_000);
+
+  test('the home setting sets the timeout: 30 minutes by default', async () => {
+    const rest = (service: AttachService) => (service as unknown as { idleMs(): number }).idleMs();
+    expect(rest(buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS)))).toBe(
+      30 * 60_000,
+    );
+    await store.setSessionIdleMinutes(5, { by: 'human' });
+    expect(store.getHomeConfig().session_idle_minutes).toBe(5);
+    expect(rest(buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS)))).toBe(
+      5 * 60_000,
+    );
+    await store.setSessionIdleMinutes(30, { by: 'human' });
+    expect(store.getHomeConfig().session_idle_minutes).toBeUndefined();
+  });
+
+  test('an ended session resumes with session/load; the new message goes instead of the brief', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        ...SPEAKS,
+        logFile: log(),
+        // What a vendor re-sends on load: already on the thread, never again.
+        loadReplay: 'looking at the parser now',
+      }),
+      { deliveryDelayMs: 5, sessionIdleMs: 0 },
+    );
+    const stream = await lineStarts();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => statusOf(stream.id, session.id) === 'stopped');
+
+    const said = await attachService.say(stream.id, 'pick it up again', { start: true });
+    expect(said.started).toBe(true);
+    await waitFor(() => prompts().length === 2);
+    expect(loads()).toHaveLength(1);
+    expect(loads()[0]).toContain('"sessionId":"fake-session-1"');
+    const second = prompts()[1] ?? '';
+    expect(second).toContain('The operator wrote on the stream: pick it up again');
+    // The digest, not the brief: no goal, no "what woke you".
+    expect(second).not.toContain('decide the dialect and implement it');
+    expect(second).not.toContain('What woke you');
+    await waitFor(() => threadBodies(stream.id).includes(RESUMED_LINE));
+    const sessions = streams.get(stream.id).sessions;
+    expect(sessions).toHaveLength(2);
+    await waitFor(() => streams.get(stream.id).sessions[1]?.acp_session_id === 'fake-session-1');
+    // Said once by the first session, once by the resumed turn; the replay adds nothing.
+    await waitFor(
+      () => threadBodies(stream.id).filter((b) => b === TURN_FINISHED_LINE).length === 2,
+    );
+    expect(threadBodies(stream.id).filter((b) => b === 'looking at the parser now')).toHaveLength(
+      2,
+    );
+    expect(store.readDeliveries(stream.id).at(-1)?.session).toBe(sessions[1]?.id);
+  }, 30_000);
+
+  test('a load that fails starts fresh from the brief, and the thread and stderr.log say so', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        ...SPEAKS,
+        logFile: log(),
+        loadFails: 'Session not found',
+      }),
+      { deliveryDelayMs: 5, sessionIdleMs: 0 },
+    );
+    const stream = await lineStarts();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => statusOf(stream.id, session.id) === 'stopped');
+
+    await attachService.say(stream.id, 'try again', { start: true });
+    await waitFor(() => prompts().length === 2);
+    expect(loads()).toHaveLength(1);
+    const second = prompts()[1] ?? '';
+    expect(second).toContain('decide the dialect and implement it');
+    expect(second).toContain('What woke you');
+    expect(second).toContain('try again');
+    await waitFor(() =>
+      threadBodies(stream.id).some((b) =>
+        b.startsWith('could not resume its earlier session (Session not found'),
+      ),
+    );
+    expect(threadBodies(stream.id)).not.toContain(RESUMED_LINE);
+    const fresh = streams.get(stream.id).sessions[1]?.id as string;
+    const stderr = readFileSync(join(home, 'sessions', fresh, 'stderr.log'), 'utf8');
+    expect(stderr).toContain('session/load failed, starting fresh with the brief');
+  }, 30_000);
+
+  test('a picked other model starts fresh, with no session/load', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log() }),
+      { deliveryDelayMs: 5, sessionIdleMs: 0 },
+    );
+    const stream = await lineStarts();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => statusOf(stream.id, session.id) === 'stopped');
+    await attachService.say(stream.id, 'now on sonnet', {
+      start: true,
+      session: { model: 'claude-sonnet-4-6' },
+    });
+    await waitFor(() => prompts().length === 2);
+    expect(loads()).toHaveLength(0);
+    expect(prompts()[1]).toContain('decide the dialect and implement it');
+    expect(streams.get(stream.id).sessions[1]?.model).toBe('claude-sonnet-4-6');
+  }, 30_000);
+
+  test('resumableSession: the vendor loads sessions, the last one ended cleanly with its id, nothing changed', () => {
+    const base: SessionRef = {
+      id: ulid(),
+      vendor: 'claude',
+      model: 'claude-opus-4-8',
+      role: 'worker',
+      status: 'stopped',
+      effort: 'low',
+      acp_session_id: 'acp-1',
+    };
+    const settings = { vendor: 'claude', model: 'claude-opus-4-8', effort: 'low' };
+    const claude = ACP_PROVIDERS.claude;
+    const of = (s: Partial<SessionRef>) => ({ sessions: [{ ...base, ...s }] });
+    expect(resumableSession(of({}), 'worker', settings, claude)?.acp_session_id).toBe('acp-1');
+    expect(resumableSession(of({}), 'worker', settings, ACP_PROVIDERS.gemini)).toBeUndefined();
+    expect(
+      resumableSession(of({ acp_session_id: undefined }), 'worker', settings, claude),
+    ).toBeUndefined();
+    expect(resumableSession(of({ status: 'error' }), 'worker', settings, claude)).toBeUndefined();
+    expect(
+      resumableSession(of({ model: 'claude-sonnet-4-6' }), 'worker', settings, claude),
+    ).toBeUndefined();
+    expect(resumableSession(of({ effort: 'high' }), 'worker', settings, claude)).toBeUndefined();
+    expect(resumableSession(of({}), 'coordinator', settings, claude)).toBeUndefined();
+    expect(resumableSession(of({}), 'reviewer', settings, claude)).toBeUndefined();
+  });
+
+  test('a merge goes through with a resting session, and ends it', async () => {
+    streams = new StreamService(store, {
+      onUpdated: (before, after) => attachService.onNodeUpdated(before, after),
+    });
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
+    await store.putRepos({ demo: { path: repo, protected_branches: [] } });
+    const landing = new DeliveryService({ store, streams });
+    const stream = await makeStream('demo');
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => statusOf(stream.id, session.id) === 'idle');
+    const wt = streams.get(stream.id).worktree as string;
+    writeFileSync(join(wt, 'parser.ts'), 'export const dialect = ";";\n');
+    git(['add', 'parser.ts'], wt);
+    git(['commit', '-q', '-m', 'parser'], wt);
+
+    expect(landing.preflight(stream.id).ready).toBe(true);
+    expect((await landing.land(stream.id)).status).toBe('landed');
+    const after = streams.get(stream.id);
+    expect(after.human.status).toBe('landed');
+    expect(after.agent.status).toBe('done');
+    expect(statusOf(stream.id, session.id)).toBe('stopped');
+    expect(threadBodies(stream.id)).toContain('session ended: the node was merged');
+    expect(attachService.handleFor(stream.id)).toBeUndefined();
+  }, 30_000);
+
+  test('a working agent still holds a merge', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    await store.putRepos({ demo: { path: repo, protected_branches: [] } });
+    const landing = new DeliveryService({ store, streams });
+    const stream = await makeStream('demo');
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes('looking at the parser now'));
+    expect(landing.preflight(stream.id).reason).toContain('still has a live agent');
+  }, 30_000);
+
+  test('auto-close counts a goal met in the turn that just ended, not in an earlier one', async () => {
+    const turnOne = join(scratch, 'goal-one.flag');
+    const turnThree = join(scratch, 'goal-three.flag');
+    // Wired as `daemon.ts` wires them: auto-close and the attach service follow each update.
+    const autoClose = new AutoClose({
+      streams: {
+        get: (id) => streams.get(id),
+        list: () => streams.list(),
+        close: (principal, id, note) => streams.close(principal, id, note),
+      },
+      preflight: () => ({}),
+      uncommitted: () => false,
+    });
+    streams = new StreamService(store, {
+      onUpdated: async (before, after) => {
+        void autoClose.onUpdated(before, after);
+        await attachService.onNodeUpdated(before, after);
+      },
+    });
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        logFile: log(),
+        steps: [{ type: 'agent_text', text: 'a small follow-up' }, { type: 'end_turn' }],
+        turns: [
+          [
+            { type: 'tool_call', toolCallId: 'goal-1', title: 'goal_met' },
+            { type: 'wait_for_file', path: turnOne },
+            { type: 'end_turn' },
+          ],
+          [{ type: 'agent_text', text: 'a small follow-up' }, { type: 'end_turn' }],
+          [
+            { type: 'tool_call', toolCallId: 'goal-3', title: 'goal_met' },
+            { type: 'wait_for_file', path: turnThree },
+            { type: 'end_turn' },
+          ],
+        ],
+      }),
+      { deliveryDelayMs: 5 },
+    );
+    const parent = await streams.create('human', { title: 'Parser work', goal: 'g' });
+    const node = await streams.create('human', {
+      title: 'CSV parser',
+      goal: 'decide the dialect and implement it',
+      parent: parent.id,
+    });
+    const { session } = await attachService.attach(node.id);
+    await waitFor(() => store.listAgents().some((a) => a.id === session.id));
+    // Turn one says its goal is met while the node is not set to close itself.
+    await verbs.goalMet({ session: session.id, summary: 'dialect decided' });
+    writeFileSync(turnOne, '');
+    await waitFor(() => statusOf(node.id, session.id) === 'idle');
+    expect(streams.get(node.id).human.status).toBe('open');
+
+    // Now set to auto-close: turn two says nothing about the goal, so it stays open.
+    await streams.update('human', node.id, { auto_close: true });
+    await attachService.say(node.id, 'one small thing');
+    await waitFor(() => streams.get(node.id).agent.goal_met === undefined);
+    await waitFor(() => threadBodies(node.id).includes('a small follow-up'));
+    await waitFor(() => threadBodies(node.id).filter((b) => b === TURN_FINISHED_LINE).length === 2);
+    await Bun.sleep(100);
+    expect(streams.get(node.id).human.status).toBe('open');
+
+    // Turn three meets it again, in its own turn: the node closes, and its session ends.
+    await attachService.say(node.id, 'wrap it up');
+    await waitFor(() => prompts().length === 3);
+    await verbs.goalMet({ session: session.id, summary: 'all done' });
+    writeFileSync(turnThree, '');
+    await waitFor(() => streams.get(node.id).human.status === 'closed');
+    await waitFor(() => statusOf(node.id, session.id) === 'stopped');
+    expect(threadBodies(node.id)).toContain('session ended: the node was closed');
+    expect(streams.get(node.id).agent.status).toBe('done');
+  }, 30_000);
+
+  test('the daemon stopping ends it with the node still done; after a restart the next message resumes it', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log() }),
+      { deliveryDelayMs: 5 },
+    );
+    const stream = await lineStarts();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => statusOf(stream.id, session.id) === 'idle');
+    await attachService.stopAll();
+    const after = streams.get(stream.id);
+    expect(after.agent.status).toBe('done');
+    expect(after.sessions[0]?.ended_reason).toBe(`stopped: ${DAEMON_SHUTDOWN_REASON}`);
+    expect(threadBodies(stream.id)).toContain(`session ended: ${DAEMON_SHUTDOWN_REASON}`);
+
+    // The next daemon: its first message resumes the session.
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log() }),
+      { deliveryDelayMs: 5 },
+    );
+    await attachService.say(stream.id, 'back again', { start: true });
+    await waitFor(() => prompts().length === 2);
+    expect(loads()).toHaveLength(1);
+    expect(prompts()[1]).toContain('back again');
+  }, 30_000);
+
+  test('T444: an idle session a dead daemon left ends at start; its node stays done', async () => {
+    const stream = await makeStream();
+    const id = ulid();
+    await store.updateStream('daemon', stream.id, (before) => ({
+      ...before,
+      agent: { ...before.agent, status: 'done' },
+      sessions: [
+        {
+          id,
+          vendor: 'claude',
+          model: 'claude-opus-4-8',
+          role: 'worker',
+          status: 'idle',
+          acp_session_id: 'acp-left',
+        },
+      ],
+    }));
+    expect(await attachService.endOrphansAtStart()).toEqual([stream.id]);
+    const after = streams.get(stream.id);
+    expect(after.agent.status).toBe('done');
+    expect(after.sessions[0]?.status).toBe('stopped');
+    expect(after.sessions[0]?.ended_reason).toBe(`stopped: ${DAEMON_RESTART_IDLE_REASON}`);
+    expect(threadBodies(stream.id)).toContain(`session ended: ${DAEMON_RESTART_IDLE_REASON}`);
+  });
+
+  test('your Stop ends it and the node stays done; a role change ends it without a restart', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
+    const stopped = await makeStream();
+    const first = await attachService.attach(stopped.id);
+    await waitFor(() => statusOf(stopped.id, first.session.id) === 'idle');
+    expect(await attachService.stop(stopped.id, undefined, { detach: true })).toEqual([
+      first.session.id,
+    ]);
+    expect(streams.get(stopped.id).agent.status).toBe('done');
+    expect(threadBodies(stopped.id)).toContain('worker detached by human');
+
+    streams = new StreamService(store, {
+      onTreeChanged: (nodes) => attachService.followRoles(nodes),
+    });
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const node = await attachService.createNode('human', {
+      title: 'Checkout',
+      goal: 'g',
+      project: project.id,
+      repo: 'demo',
+    });
+    const worker = streams.get(node.id).sessions[0]?.id as string;
+    await waitFor(() => statusOf(node.id, worker) === 'idle');
+    await attachService.createNode('human', {
+      title: 'Cart API',
+      goal: 'g',
+      parent: node.id,
+      repo: 'demo',
+      start: false,
+    });
+    await waitFor(() => statusOf(node.id, worker) === 'stopped');
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    expect(streams.get(node.id).agent.status).toBe('done');
+    expect(threadBodies(node.id)).toContain('session ended: role changed to coordinating');
+  }, 30_000);
 });

@@ -126,9 +126,27 @@ export const SessionRefSchema = z
      * yet delivered to this session. Cleared on delivery and on session end.
      */
     queued: z.array(z.string().min(1)).max(50).optional(),
+    /**
+     * T465 (D48): the vendor's own ACP session id (`session/new`'s), so a
+     * later start can resume this session with `session/load`.
+     */
+    acp_session_id: z.string().min(1).max(200).optional(),
   })
   .strict();
 export type SessionRef = z.infer<typeof SessionRefSchema>;
+
+/**
+ * T465 (D48): an agent session left alive and idle after its turn finished:
+ * the node reads finished (`done`), nothing runs, and the next message is
+ * prompted into it. An `idle` session on a node waiting on a question is not
+ * resting.
+ */
+export function isRestingSession(
+  stream: { agent: { status: StreamAgentStatus } },
+  session: Pick<SessionRef, 'role' | 'status'>,
+): boolean {
+  return session.status === 'idle' && isAgentRole(session.role) && stream.agent.status === 'done';
+}
 
 /** `human` | `daemon` | `coordinator` | `director` | `agent:<session ulid>` — the writer of a thread entry. */
 export const ThreadAuthorSchema = z

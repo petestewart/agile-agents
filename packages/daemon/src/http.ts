@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import {
   AutoCloseInputSchema,
   ClassifierKeyInputSchema,
+  DEFAULT_SESSION_IDLE_MINUTES,
   DIRECTOR_NODE,
   type HilDecision,
   type HilId,
@@ -29,6 +30,7 @@ import {
   QuestionIdSchema,
   QuickDraftsInputSchema,
   SessionDefaultsPatchSchema,
+  SessionIdleInputSchema,
   type SessionVendor,
   type Stream,
   StreamAddRepoRequestSchema,
@@ -778,6 +780,37 @@ async function handleAutoCloseRoute(
   try {
     const config = await feed.store.setAutoCloseDefault(input.data.on, { by: 'human' });
     return jsonResponse({ on: config.auto_close === true });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T465 (D48): Settings → Agents' idle session timeout: how long a finished
+ * turn's session stays alive for the next message (`session_idle_minutes`
+ * in config.yaml; absent = 30). It applies to the next finished turn.
+ *
+ *   GET  /api/settings/session-idle  `{minutes}`
+ *   POST /api/settings/session-idle  `{minutes}`; same-origin only
+ */
+async function handleSessionIdleRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/session-idle') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  const minutesOf = (config: { session_idle_minutes?: number }) =>
+    config.session_idle_minutes ?? DEFAULT_SESSION_IDLE_MINUTES;
+  if (req.method === 'GET') return jsonResponse({ minutes: minutesOf(feed.store.getHomeConfig()) });
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = SessionIdleInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('session-idle', input.error));
+  try {
+    const config = await feed.store.setSessionIdleMinutes(input.data.minutes, { by: 'human' });
+    return jsonResponse({ minutes: minutesOf(config) });
   } catch (err) {
     return errorResponse(400, messageOf(err));
   }
@@ -1937,6 +1970,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (knowledgeWakeRoute) return knowledgeWakeRoute;
         const autoCloseRoute = await handleAutoCloseRoute(req, url, feed, sameOrigin);
         if (autoCloseRoute) return autoCloseRoute;
+        const sessionIdleRoute = await handleSessionIdleRoute(req, url, feed, sameOrigin);
+        if (sessionIdleRoute) return sessionIdleRoute;
         const trashRoute = await handleTrashRoute(req, url, feed, sameOrigin);
         if (trashRoute) return trashRoute;
         const trackerRoute = await handleTrackerSettingsRoute(req, url, feed, sameOrigin);

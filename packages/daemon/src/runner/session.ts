@@ -111,6 +111,17 @@ export interface AgentSessionOptions {
   brief: string;
   /** T336: the brief's turn started (the session accepted it). */
   onBriefDelivered?: () => void;
+  /**
+   * T465 (D48): resume an earlier session of the vendor's with ACP
+   * `session/load` and send `prompt` (the new message) instead of the brief.
+   * A load that fails starts a fresh session with the brief, and says so
+   * through `onResume`.
+   */
+  resume?: { acpSessionId: string; prompt: string };
+  /** T465: how the resume went (`ok: false` carries why; the brief went instead). */
+  onResume?: (result: { ok: true } | { ok: false; error: string }) => void;
+  /** T465: the vendor's ACP session id, once it is known (recorded for a later resume). */
+  onAcpSession?: (acpSessionId: string) => void;
   /** `<home>/sessions/<session id>/`: stderr and output logs. */
   sessionDir: string;
   /** How to invoke the `agile` CLI for the hook and MCP commands. Defaults to `'agile'`. */
@@ -539,6 +550,20 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
 
   let model = sessionRef.model;
   let settled = false;
+  /** T465: a `session/load` is replaying the old conversation: none of it is new output. */
+  let replaying = false;
+  let reportedAcpSession: string | undefined;
+  /** T465: tells the caller the vendor's session id once it exists (or changes). */
+  function reportAcpSession(): void {
+    const id = spawned.sessionId;
+    if (id === null || id === reportedAcpSession) return;
+    reportedAcpSession = id;
+    try {
+      opts.onAcpSession?.(id);
+    } catch {
+      // Bookkeeping only.
+    }
+  }
   let resolveExited!: (info: AgentExitInfo) => void;
   const exited = new Promise<AgentExitInfo>((resolve) => {
     resolveExited = resolve;
@@ -701,6 +726,12 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       const params = asRecord(frame.message.params);
       const update = asRecord(params?.update);
       const kind = update?.sessionUpdate;
+      // T465: `session/load` re-sends the whole conversation; the thread already has it.
+      if (replaying) {
+        if (kind === 'usage_update') context = contextUsageOf(update) ?? context;
+        if (kind === 'available_commands_update') commands = advertisedCommands(update);
+        return;
+      }
 
       if (kind === 'agent_message_chunk') {
         const text = chunkText(update?.content);
@@ -771,9 +802,14 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   /** Turns enqueued and not yet finished, the running one included. */
   let inFlight = 0;
   let stopRequested = false;
-  async function runPromptTurn(text: string, onDelivered?: () => void): Promise<unknown> {
+  async function runPromptTurn(
+    text: string | Promise<string>,
+    onDelivered?: () => void,
+  ): Promise<unknown> {
     inFlight += 1;
     const runOnce = async (): Promise<unknown> => {
+      // T465: a resume's first turn knows its text once the old session has loaded (or not).
+      const body = await text;
       // A turn queued behind a session that has since been stopped is not
       // sent to a closed session (which would record a spurious failure).
       if (stopRequested || settled)
@@ -789,7 +825,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         await putRegistryEntry().catch(() => {
           // Not registered yet: the initial registration covers it.
         });
-        const reply = await promptWithAuthRetry(spawned, provider, text);
+        const reply = await promptWithAuthRetry(spawned, provider, body);
+        reportAcpSession();
         turnCount += 1;
         if (!settled) {
           try {
@@ -847,32 +884,101 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   // Open the ACP session at spawn: the model id arrives on `session/new`,
   // and an unprompted session would otherwise never learn it. Vendors that
   // gate `session/new` behind `authenticate` leave it to the prompt path.
-  if (provider.authMethods.length === 0) {
-    void spawned.open().catch(() => {
-      // Reported through the prompt path if it matters.
-    });
+  // T465: a resume loads the old session instead (`firstPrompt`).
+  if (provider.authMethods.length === 0 && opts.resume === undefined) {
+    void spawned
+      .open()
+      .then(reportAcpSession)
+      .catch(() => {
+        // Reported through the prompt path if it matters.
+      });
+  }
+
+  /**
+   * T465 (D48): the first turn's text. A resume loads the vendor's earlier
+   * session (authenticating first where the vendor asks for it) and sends
+   * the new message; a load that fails falls back to a fresh session and
+   * the brief, and the reason goes to stderr.log and to `onResume`.
+   */
+  async function firstPrompt(): Promise<string> {
+    const resume = opts.resume;
+    if (resume === undefined) return brief;
+    replaying = true;
+    try {
+      try {
+        await spawned.load(resume.acpSessionId);
+      } catch (err) {
+        if (provider.authMethods.length === 0) throw err;
+        let loaded = false;
+        let lastErr: unknown = err;
+        for (const methodId of provider.authMethods) {
+          try {
+            await spawned.authenticate(methodId);
+            await spawned.load(resume.acpSessionId);
+            loaded = true;
+            break;
+          } catch (retryErr) {
+            lastErr = retryErr;
+          }
+        }
+        if (!loaded) throw lastErr;
+      }
+      replaying = false;
+      if (modeId !== undefined) {
+        await spawned.setMode(modeId).catch(() => {
+          // The loaded session keeps the mode it had.
+        });
+      }
+      reportAcpSession();
+      try {
+        opts.onResume?.({ ok: true });
+      } catch {
+        // Bookkeeping only.
+      }
+      return resume.prompt;
+    } catch (err) {
+      replaying = false;
+      const error = (err instanceof Error ? err.message : String(err)).slice(0, 300);
+      stderrLog.append(`[agiled] session/load failed, starting fresh with the brief: ${error}\n`);
+      try {
+        opts.onResume?.({ ok: false, error });
+      } catch {
+        // Bookkeeping only.
+      }
+      return brief;
+    }
   }
 
   // Register before the first prompt: a crash in the first turn has a
   // record to clean up, and the hook can resolve the first tool call.
-  void putRegistryEntry()
-    .then(() => {
-      if (spawned.pid !== null) return undefined;
-      return store.appendEvent(
-        buildEvent('agent_put', {
-          agent: sessionId as AgentId,
-          data: {
-            stream: ownerId,
-            warning:
-              'spawned session pid unknown at registration; AgentRecord.pid omitted (never falls back to the daemon pid)',
-          },
-        }),
-      );
-    })
-    .then(() => runPromptTurn(brief, opts.onBriefDelivered))
-    .catch(() => {
+  const registered = putRegistryEntry().then(() => {
+    if (spawned.pid !== null) return undefined;
+    return store.appendEvent(
+      buildEvent('agent_put', {
+        agent: sessionId as AgentId,
+        data: {
+          stream: ownerId,
+          warning:
+            'spawned session pid unknown at registration; AgentRecord.pid omitted (never falls back to the daemon pid)',
+        },
+      }),
+    );
+  });
+  if (opts.resume === undefined) {
+    void registered
+      .then(() => runPromptTurn(brief, opts.onBriefDelivered))
+      .catch(() => {
+        // `runPromptTurn` already stopped and recorded the failure.
+      });
+  } else {
+    // T465: the first turn is reserved at once, so no digest is prompted in while the old session loads.
+    void runPromptTurn(
+      registered.catch(() => undefined).then(firstPrompt),
+      opts.onBriefDelivered,
+    ).catch(() => {
       // `runPromptTurn` already stopped and recorded the failure.
     });
+  }
 
   return {
     sessionId,

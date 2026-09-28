@@ -1025,6 +1025,24 @@ describe('T160 cockpit routes', () => {
     expect(store.getHomeConfig().auto_close).toBeUndefined();
   });
 
+  test('T465: GET/POST /api/settings/session-idle is the idle session timeout; 30 removes the key', async () => {
+    const post = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url('/api/settings/session-idle'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    expect(await (await fetch(url('/api/settings/session-idle'))).json()).toEqual({ minutes: 30 });
+    expect((await post({ minutes: 60 }, { origin: 'http://evil.example' })).status).toBe(403);
+    expect(await (await post({ minutes: 60 })).json()).toEqual({ minutes: 60 });
+    expect(store.getHomeConfig().session_idle_minutes).toBe(60);
+    expect((await post({ minutes: 0 })).status).toBe(400);
+    expect((await post({ minutes: 1441 })).status).toBe(400);
+    expect((await post({ minutes: 'soon' })).status).toBe(400);
+    expect(await (await post({ minutes: 30 })).json()).toEqual({ minutes: 30 });
+    expect(store.getHomeConfig().session_idle_minutes).toBeUndefined();
+  });
+
   test('T457: permissions — the home posture, a project override, and a held read answered Always', async () => {
     const at = (path: string) => url(path);
     const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>

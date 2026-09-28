@@ -348,6 +348,26 @@ describe('T382: the live agent a row names', () => {
     expect(rows.find((r) => r.id === ended)).not.toHaveProperty('live_agent');
     expect(rows.find((r) => r.id === ended)?.live).toBeUndefined();
   });
+
+  test('T465: a session resting after a finished turn is named, but the node is not in Running', async () => {
+    const resting = await nodeWith('resting', [session('worker', 'idle')]);
+    await store.updateStream('daemon', resting, (s) => ({
+      ...s,
+      agent: { ...s.agent, status: 'done' },
+    }));
+    const waiting = await nodeWith('waiting', [session('worker', 'idle')]);
+    await store.updateStream('daemon', waiting, (s) => ({
+      ...s,
+      agent: { ...s.agent, status: 'question' },
+    }));
+    const rows = new Map(buildCockpitFrame(streams).streams.map((r) => [r.id, r]));
+    expect(rows.get(resting)?.live).toBeUndefined();
+    expect(rows.get(resting)?.live_agent?.role).toBe('worker');
+    expect(rows.get(resting)).not.toHaveProperty('never_started');
+    expect(rows.get(resting)).not.toHaveProperty('stopped');
+    // One waiting on your answer is live as before.
+    expect(rows.get(waiting)?.live).toBe(true);
+  });
 });
 
 describe('T404: the recent events a connect sends', () => {

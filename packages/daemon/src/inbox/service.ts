@@ -20,6 +20,7 @@ import {
   inboxContext,
   inboxDetail,
   isAgentRole,
+  isRestingSession,
   liveChildrenOf,
   partsOf,
 } from '@agile-agents/shared';
@@ -284,8 +285,13 @@ export class InboxService {
     // Only a node that has had a coordinator has parts waiting on it (`waitingForPlan`).
     if (!stream.sessions.some((s) => s.role === 'coordinator')) return undefined;
     if (drafted.has(stream.id) || !hasParts(stream.id, byId)) return undefined;
+    // T465: a coordinator resting after its finished turn is not writing one either.
     const live = stream.sessions.some(
-      (s) => isAgentRole(s.role) && s.status !== 'stopped' && s.status !== 'error',
+      (s) =>
+        isAgentRole(s.role) &&
+        s.status !== 'stopped' &&
+        s.status !== 'error' &&
+        !isRestingSession(stream, s),
     );
     if (live) return undefined;
     const parts = plans.waitingParts(stream.id);

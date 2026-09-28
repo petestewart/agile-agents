@@ -19,6 +19,7 @@ import {
   type AgentId,
   type AgentRecord,
   DEFAULT_PERMISSION_POSTURE,
+  DEFAULT_SESSION_IDLE_MINUTES,
   DIRECTOR_NODE,
   type Delivery,
   type DirectorRecord,
@@ -669,6 +670,25 @@ export class StateStore {
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { auto_close: on },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T465 (D48): how long a finished turn's session is kept (the default, 30, removes the key). */
+  async setSessionIdleMinutes(minutes: number, options: { by?: string } = {}): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (minutes === DEFAULT_SESSION_IDLE_MINUTES)
+        Reflect.deleteProperty(raw, 'session_idle_minutes');
+      else raw.session_idle_minutes = minutes;
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { session_idle_minutes: minutes },
       });
       return { result: validated, event };
     });

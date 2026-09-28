@@ -132,6 +132,8 @@ export function wakePrompt(
 export interface WakeDelivery {
   /** The section appended to the brief (`wakePrompt`). */
   text: string;
+  /** T465 (D48): the same events as a live session's digest, for a resumed session (no brief). */
+  digest: string;
   /** The brief was accepted: the events are `delivered` to `sessionId`. */
   delivered(sessionId: string): void;
   /** The session ended (or never started): unclaimed events go with the next digest or wake. */
@@ -229,8 +231,10 @@ export class SessionDelivery {
       // Anything that arrived meanwhile (or went unmarked) goes now.
       if (this.waiting(node)) this.notify(node);
     };
+    const full = this.withFullLines(node, events);
     return {
-      text: wakePrompt(this.withFullLines(node, events), node, this.options.titleOf),
+      text: wakePrompt(full, node, this.options.titleOf),
+      digest: digestPrompt(full, node, this.options.titleOf),
       delivered: (sessionId) => {
         const events_ = this.options.events;
         const still = new Set(events_.pendingFor(node).map((p) => p.event.id));

@@ -24,6 +24,7 @@ import {
   type Stream,
   type TrackerSettings,
   isAgentRole,
+  isRestingSession,
   liveChildrenOf,
   nodeRole,
   validateEvent,
@@ -167,7 +168,7 @@ export interface CockpitStreamRow {
   human_status: Stream['human']['status'];
   /** T209: the repo a work node is on (the repo view groups by it). */
   repo?: string;
-  /** T209: a session is starting, running or idle (the Running lens). */
+  /** T209: a session is starting, running or idle (the Running lens); T465: not one resting after a finished turn. */
   live?: true;
   /** T209: the nodes this one still waits on (the Dependencies lens). */
   waits_on?: string[];
@@ -355,7 +356,9 @@ export function buildCockpitFrame(
       agent_status: s.agent.status,
       human_status: s.human.status,
       ...(s.repo !== undefined ? { repo: s.repo } : {}),
-      ...(s.sessions.some((x) => LIVE_SESSION.has(x.status)) ? { live: true as const } : {}),
+      ...(s.sessions.some((x) => LIVE_SESSION.has(x.status) && !isRestingSession(s, x))
+        ? { live: true as const }
+        : {}),
       ...waitsOn(s),
       ...(marked.has(s.id) ? { overlap: true as const } : {}),
       ...(visibilityAdvisory(s, repos) ? { visibility_advisory: true as const } : {}),

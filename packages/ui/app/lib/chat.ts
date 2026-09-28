@@ -382,6 +382,26 @@ export interface WakeFolds {
 /** How far after a "woken by" line its coordinator's "attached" line may sit. */
 const WAKE_ATTACH_WITHIN = 4;
 
+/** T465 (D48): the daemon's line for a finished turn whose session stays for the next message. */
+const TURN_FINISHED = 'turn finished';
+/** T465: the daemon's line for a start that resumed the node's earlier session. */
+const RESUMED = 'resumed its earlier session';
+
+/** T465: a coordinator started `session` before entry `before` (its "attached" line). */
+function coordinatorStarted(
+  entries: readonly FoldEntry[],
+  before: number,
+  session: string,
+): boolean {
+  for (let j = before - 1; j >= 0; j--) {
+    const e = entries[j];
+    if (e?.by === 'daemon' && e.ref === session && /^\w+ attached: /.test(e.body)) {
+      return /^coordinator attached: /.test(e.body);
+    }
+  }
+  return false;
+}
+
 /**
  * T446 (audit r7 #17): a coordinator's routine wake — woken by events, not
  * by your line or answer — folds into its reply: the "woken by", "Coordinator
@@ -389,6 +409,9 @@ const WAKE_ATTACH_WITHIN = 4;
  * says "Woke for a merge". A turn with no reply is one muted row, "Woke for
  * a merge · nothing new". A turn still running, or one that ended badly,
  * keeps its rows.
+ * T465 (D48): a coordinator whose session rests is woken in that session:
+ * its "woken by" line names the session, and "turn finished" ends the turn.
+ * A resumed session's "Resumed its earlier session" row folds away too.
  */
 export function foldWakes(entries: readonly FoldEntry[]): WakeFolds {
   const folds: WakeFolds = { hidden: new Set(), wakes: new Map(), system: new Map() };
@@ -409,22 +432,36 @@ export function foldWakes(entries: readonly FoldEntry[]): WakeFolds {
         break;
       }
     }
-    const session = entries[at]?.ref;
-    if (at < 0 || session === undefined) return;
+    // T465: woken in its resting session, which a coordinator started earlier.
+    const resting =
+      at < 0 && entry.ref !== undefined && coordinatorStarted(entries, i, entry.ref)
+        ? entry.ref
+        : undefined;
+    const session = at >= 0 ? entries[at]?.ref : resting;
+    if (session === undefined) return;
     let end = -1;
     const replies: number[] = [];
-    for (let k = at + 1; k < entries.length; k++) {
+    const resumed: number[] = [];
+    for (let k = (at >= 0 ? at : i) + 1; k < entries.length; k++) {
       const e = entries[k] as FoldEntry;
-      if (daemonEvent(e) && e.ref === session && /^session ended: /.test(e.body)) {
+      if (
+        daemonEvent(e) &&
+        e.ref === session &&
+        (/^session ended: /.test(e.body) || e.body === TURN_FINISHED)
+      ) {
         end = k;
         break;
       }
+      if (daemonEvent(e) && e.ref === session && e.body === RESUMED) resumed.push(k);
       if (e.by === `agent:${session}` && chatVariant(e) === 'agent') replies.push(k);
     }
-    const ended = end >= 0 && entries[end]?.body === 'session ended: its turn finished';
+    const body = entries[end]?.body;
+    const ended =
+      end >= 0 && (body === 'session ended: its turn finished' || body === TURN_FINISHED);
     if (!ended) return;
     const text = `Woke for ${listWords(types.map((t) => WAKE_WORD[t] ?? t))}`;
-    folds.hidden.add(at);
+    if (at >= 0) folds.hidden.add(at);
+    for (const k of resumed) folds.hidden.add(k);
     folds.hidden.add(end);
     const first = replies[0];
     if (first !== undefined) {
@@ -714,8 +751,16 @@ export function systemLine(body: string, meta: SystemLineMeta = {}): SystemLine 
   // T421 (D42): a conclusion sent up from this conversation.
   const sent = /^sent to (.+?): (.*)$/s.exec(body);
   if (sent) return { icon: 'send', text: `Sent to ${sent[1]}: ${sent[2]}`, tone: 'muted' };
-  if (/^session ended: its turn finished$/.test(body)) {
+  if (/^session ended: its turn finished$/.test(body) || body === TURN_FINISHED) {
     return { icon: 'check', text: 'Agent finished its turn', tone: 'muted' };
+  }
+  // T465 (D48): a finished turn's session, kept for the next message, ended or came back.
+  if (body === RESUMED) {
+    return { icon: 'refresh', text: 'Resumed its earlier session', tone: 'muted' };
+  }
+  const idle = /^session ended: it sat idle for (.+) after its turn finished$/.exec(body);
+  if (idle) {
+    return { icon: 'square', text: `Session closed after ${idle[1]} idle`, tone: 'muted' };
   }
   // T432 (D43): the vendor's process ended on its own; non-zero is a failure, with its reason.
   const exited = /^session ended: process exited \(code (-?\d+)\)(?:: (.+))?$/s.exec(body);

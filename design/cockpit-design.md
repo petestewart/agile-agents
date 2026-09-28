@@ -187,7 +187,7 @@ create ──► human.status: open, agent.status: idle
    │       │
    │       ├─ hook route ► agent.status: blocked, human.status: waiting_on_you  (§6.3)
    │       │
-   │       └─ session exit ► agent.status: done
+   │       └─ turn finished ► agent.status: done, session idle (kept; D48)
    │
    ├─ review ──────────► reviewer session, findings → thread + agent.findings
    │
@@ -199,6 +199,8 @@ create ──► human.status: open, agent.status: idle
 One live worker at a time per stream. A reviewer may run concurrently with a finished worker; it cannot write (§4.2).
 
 D43 narrows "session exit ► done": a vendor that exits non-zero on its own (not a stop of the daemon's or the human's, not after a finished turn) leaves the node `blocked` with the vendor's last stderr line. T456 puts a recovery in front of that end state, set by `vendor_failure` (project, repo, home): the same vendor once more (not after a login or model refusal), then the next installed vendor on its `fallback` list (one with pre-tool hooks when the failed one had them, unless `allow_hookless`), on the same node, worktree and thread, at most three restarts per node an hour. The node stays `working`, the thread says who failed and what took over, and an `agent_restarted` record goes to Events; the parent hears nothing until the list is spent and D43's `blocked` follows.
+
+D48 (T465) narrows "a finished turn ends the session": a worker's or coordinator's turn that ends with nothing open leaves the node `done` (Replies, Ready to merge and auto-close read it as before) and its vendor session alive and `idle`, so the next message, or an event that wakes the node, is prompted into the same session with its context and prompt cache. An event that would not wake the node (P11) waits for that next turn, as before. The idle session ends after an idle timeout (Settings → Agents → Idle sessions, `session_idle_minutes`, default 30), a Stop, a model or effort change, a role change, the node closing, merging or going to the trash, or the daemon stopping; none of these moves the node off `done`, and none of them holds a merge (the merge ends it first). The next start of an ended session resumes it with ACP `session/load`, sending the new message rather than the brief, when the vendor supports it (`loadSession`: Claude, Codex, Grok, Pi, spike-findings §C) and the start runs the same role, vendor, model and effort; a load that fails starts fresh from the brief, and the thread says so. A reviewer's and the lessons pass's turn still ends their session.
 
 ---
 

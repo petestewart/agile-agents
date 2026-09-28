@@ -161,6 +161,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // reach before it is built is a `let`, so it reads as `undefined` (T337).
   let trackerPush: TrackerStatusPush | undefined;
   let autoClose: AutoClose | undefined;
+  // T465 (D48): the attach service, once built: a node closed or merged ends its resting session.
+  let restingSessions: AttachService | undefined;
   const streamService: StreamService | undefined = store
     ? new StreamService(store, {
         // T244: record changes that are routed events (child_status, pr_merged, …).
@@ -172,6 +174,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           void trackerPush?.onUpdated(before, after);
           // T478: a node set to auto-close closes itself when its goal is met; never blocks.
           void autoClose?.onUpdated(before, after);
+          // T465: awaited, so a merge's worktree removal comes after the session ended.
+          await restingSessions?.onNodeUpdated(before, after);
         },
         // T333: a move is refused while a plan awaits approval (read lazily; built below).
         coordination: {
@@ -288,6 +292,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
         })
       : undefined;
+  if (attachService) restingSessions = attachService;
   // T300 (P16): the Director, above every project; its delivery is the attach service's.
   const directorService =
     store && streamService && routedEvents

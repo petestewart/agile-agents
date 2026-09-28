@@ -1981,10 +1981,15 @@ describe('stream page (Playwright e2e, T161)', () => {
           'parser.ts:1',
         );
         await page.locator('[data-testid="thread-entry"][data-kind="finding"]').waitFor();
+        // T465: the worker rests after its finished turn (the merge ends it); the reviewer ends.
         await waitUntil('the reviewer to stop', () =>
           cockpit.streams
             .get(stream.id)
-            .sessions.every((s) => s.status === 'stopped' || s.status === 'error'),
+            .sessions.every((s) =>
+              s.role === 'reviewer'
+                ? s.status === 'stopped' || s.status === 'error'
+                : s.status !== 'running',
+            ),
         );
 
         // ---- land: first refused (a dirty main), the reason on the page…
