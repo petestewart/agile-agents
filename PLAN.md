@@ -2869,11 +2869,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T464 A node keeps the model it ran on
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28): changing the global default model made every existing node show, and start with, the new model. A node stores no model; an idle node resolves the defaults again at each start (D17).
 - **Acceptance Criteria:** A node that has run starts again on its last session's vendor, model and effort. The defaults choose only for a node that has never run. The model chip (T423) still switches a node, and the switch sticks. The chip and "Starts as …" name what a start will really run.
 - **Validation Steps:** attach tests (a changed default leaves a node that ran on its model; a node that never ran takes the new default; a chip pick sticks); the node page e2e.
+- **Notes:** Branch T464-node-keeps-model. `lastAgentSession` in `attach/service.ts`: a start with no vendor or model picked takes the newest worker or coordinator session's vendor, model and effort, unless that vendor is no longer installed. The cockpit's `keptChoice` (`lib/defaults.ts`) names the same thing on the chip, in "Starts as …" and in the composer hint. A T456 switch to a fallback vendor now sticks too, since that vendor ran last.
 
 ### Ticket: T465 Keep a finished turn's session alive, and resume an ended one
 - **Priority:** P1

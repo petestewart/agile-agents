@@ -731,8 +731,18 @@ export class AttachService {
 
     const project =
       stream.project === undefined ? undefined : projectSession(store, stream.project);
+    // T464: a node that has run starts again on its last agent's vendor, model and effort;
+    // the defaults choose only for a node that never ran (or whose vendor is gone).
+    const kept =
+      isAgentRole(role) && options.vendor === undefined && options.model === undefined
+        ? lastAgentSession(stream, (v) => this.installed(v as SessionVendor))
+        : undefined;
     const settings = resolveSessionSettings({
-      flags: { vendor: options.vendor, model: options.model, effort: options.effort },
+      flags: {
+        vendor: options.vendor ?? kept?.vendor,
+        model: options.model ?? kept?.model,
+        effort: options.effort ?? kept?.effort,
+      },
       ...(project !== undefined ? { project } : {}),
       ...(repoEntry !== undefined ? { repo: repoEntry } : {}),
       home: readHomeConfigFile(this.options.home),
@@ -1899,6 +1909,21 @@ export class AttachService {
 /** T437: the progress line a failed start or a vendor crash leaves, so Needs me, Overview and Events say why. */
 export const FAILED_START_PREFIX = 'The agent couldn’t start: ';
 export const CRASHED_PREFIX = 'The agent stopped with an error: ';
+/**
+ * T464: the node's most recent worker or coordinator session whose vendor
+ * is still installed: what a start without a pick runs again.
+ */
+export function lastAgentSession(
+  stream: Pick<Stream, 'sessions'>,
+  installed: (vendor: string) => boolean,
+): SessionRef | undefined {
+  for (let i = stream.sessions.length - 1; i >= 0; i--) {
+    const s = stream.sessions[i];
+    if (s !== undefined && isAgentRole(s.role)) return installed(s.vendor) ? s : undefined;
+  }
+  return undefined;
+}
+
 /** T460b: a held call as the agent knows it: its tool and path or command. */
 export function heldCallWords(gate: Pick<HilRequest, 'call'>): string {
   const call = gate.call;

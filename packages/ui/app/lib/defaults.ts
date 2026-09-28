@@ -88,6 +88,25 @@ export function sameSession(a: ResolvedSessionDefaults, b: ResolvedSessionDefaul
   return sameModel(a, b) && (!vendorTakesEffort(a.vendor) || a.effort === b.effort);
 }
 
+/**
+ * T464: what a start without a pick runs on a node that has run: its most
+ * recent worker or coordinator session's vendor, model and effort, unless
+ * that vendor is no longer installed (then the defaults choose, as the
+ * daemon's `lastAgentSession` does). `undefined` for a node that never ran.
+ */
+export function keptChoice(
+  sessions: ReadonlyArray<{ role: string; vendor: string; model?: string; effort?: string }>,
+  fallbackEffort: Effort,
+  notInstalled: Readonly<Partial<Record<string, string>>> = {},
+): ResolvedSessionDefaults | undefined {
+  for (let i = sessions.length - 1; i >= 0; i--) {
+    const s = sessions[i];
+    if (s === undefined || (s.role !== 'worker' && s.role !== 'coordinator')) continue;
+    return notInstalled[s.vendor] !== undefined ? undefined : choiceOf(s, fallbackEffort);
+  }
+  return undefined;
+}
+
 /** A session record (`model: 'default'` for the provider's own) as a choice. */
 export function choiceOf(
   session: { vendor: string; model?: string; effort?: string },

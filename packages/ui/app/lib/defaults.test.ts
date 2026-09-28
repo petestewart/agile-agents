@@ -5,6 +5,7 @@ import {
   effortWord,
   foldedRepos,
   inheritingReposText,
+  keptChoice,
   modelChip,
   modelForVendor,
   modelGroups,
@@ -207,5 +208,21 @@ describe('T436: Settings → Agents folds the repositories that set nothing', ()
   test('the row says how many', () => {
     expect(inheritingReposText(5)).toBe('5 repositories use the global default');
     expect(inheritingReposText(1)).toBe('1 repository uses the global default');
+  });
+});
+
+describe('T464: what a node that ran starts on', () => {
+  test('its newest worker or coordinator session, unless that vendor is not installed', () => {
+    const sessions = [
+      { role: 'worker', vendor: 'claude', model: 'claude-sonnet-4-6', effort: 'high' },
+      { role: 'reviewer', vendor: 'codex', model: 'default' },
+    ];
+    expect(keptChoice(sessions, 'low')).toEqual({
+      vendor: 'claude',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+    });
+    expect(keptChoice([], 'low')).toBeUndefined();
+    expect(keptChoice(sessions, 'low', { claude: 'not on PATH' })).toBeUndefined();
   });
 });
