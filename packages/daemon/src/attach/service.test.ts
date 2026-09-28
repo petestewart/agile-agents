@@ -53,7 +53,7 @@ import { StateStore } from '../store';
 import { RepoInPlaceService } from '../streams/repo-in-place';
 import { StreamService } from '../streams/service';
 import { buildAttachRpcMethods } from './rpc';
-import { sayPrompt } from './service';
+import { lastAgentSession, sayPrompt } from './service';
 import {
   AttachService,
   CRASHED_PREFIX,
@@ -1516,6 +1516,64 @@ describe('a gate and a question in the same turn (T145)', () => {
     expect(streams.get(stream.id).human.status).toBe('waiting_on_you');
     expect(questions.get(questionId as Question['id']).status).toBe('open');
   }, 30_000);
+});
+
+describe('T464: a node keeps the model it ran on', () => {
+  test('a changed default leaves a node that ran on its model; a new node takes the default; a pick sticks', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
+    const ran = await makeStream();
+    await attachService.attach(ran.id, { model: 'claude-sonnet-4-6', effort: 'high' });
+    await waitFor(() => streams.get(ran.id).agent.status === 'done');
+    const first = streams.get(ran.id).sessions[0];
+
+    await store.setHomeSessionDefaults({
+      vendor: 'claude',
+      model: 'claude-opus-4-8',
+      effort: 'low',
+    });
+    await attachService.attach(ran.id);
+    await waitFor(() => streams.get(ran.id).agent.status === 'done');
+    const second = streams.get(ran.id).sessions[1];
+    expect({ model: second?.model, effort: second?.effort }).toEqual({
+      model: first?.model,
+      effort: 'high',
+    });
+
+    const fresh = await makeStream();
+    await attachService.attach(fresh.id);
+    await waitFor(() => streams.get(fresh.id).agent.status === 'done');
+    expect(streams.get(fresh.id).sessions[0]?.effort).toBe('low');
+
+    // A pick (the chip, Start with…) is what runs, and what the node keeps from then on.
+    await attachService.attach(ran.id, { model: 'claude-haiku-4-5', effort: 'medium' });
+    await waitFor(
+      () =>
+        streams.get(ran.id).sessions.length === 3 && streams.get(ran.id).agent.status === 'done',
+    );
+    await attachService.attach(ran.id);
+    await waitFor(
+      () =>
+        streams.get(ran.id).sessions.length === 4 && streams.get(ran.id).agent.status === 'done',
+    );
+    const [, , picked, after] = streams.get(ran.id).sessions;
+    expect(after?.effort).toBe('medium');
+    expect(after?.model).toBe(picked?.model);
+  }, 30_000);
+
+  test('lastAgentSession: the newest worker or coordinator, unless its vendor is gone', () => {
+    const at = (role: string, vendor: string) => ({ role, vendor }) as never;
+    const all = () => true;
+    expect(lastAgentSession({ sessions: [] }, all)).toBeUndefined();
+    expect(
+      lastAgentSession({ sessions: [at('worker', 'claude'), at('reviewer', 'codex')] }, all),
+    ).toMatchObject({ vendor: 'claude' });
+    expect(
+      lastAgentSession({ sessions: [at('worker', 'claude'), at('coordinator', 'gemini')] }, all),
+    ).toMatchObject({ vendor: 'gemini' });
+    expect(
+      lastAgentSession({ sessions: [at('worker', 'gemini')] }, (v) => v !== 'gemini'),
+    ).toBeUndefined();
+  });
 });
 
 describe('say — the stream page composer (T161)', () => {

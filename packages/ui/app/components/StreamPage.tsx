@@ -72,7 +72,7 @@ import {
   workingAs,
 } from '../lib/chat';
 import { useAgentCommands } from '../lib/commands';
-import { choiceOf, modelChip, resolvedFor } from '../lib/defaults';
+import { choiceOf, keptChoice, modelChip, resolvedFor } from '../lib/defaults';
 import { draftOf, useDraftSetter } from '../lib/drafts';
 import {
   type MergeFix,
@@ -616,7 +616,13 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const answering = answerTarget(questions, answerChoice);
   const answeringItem = questions.find((q) => q.id === answering);
   const name = agentName(stream.sessions);
-  const resolved = defaults ? resolvedFor(defaults, stream.repo, project?.session) : undefined;
+  const byDefaults = defaults ? resolvedFor(defaults, stream.repo, project?.session) : undefined;
+  // T464: a node that has run starts again on what it last ran; the defaults choose only for
+  // a node that never ran. Every "starts as" below names this.
+  const kept = byDefaults
+    ? keptChoice(stream.sessions, byDefaults.effort, defaults?.not_installed)
+    : undefined;
+  const resolved = kept ?? byDefaults;
   // T423: what the live agent runs, and the chip: the next message's model (a pick lasts one
   // message). It picks only where a line starts (or restarts) the agent; elsewhere it only names
   // what runs. Picking never starts anything by itself.
@@ -630,7 +636,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       })
     : undefined;
   const pending = chip?.pending;
-  // What a start by the header's Start agent runs: the default. A line starts with the chip's pick.
+  // What a start by the header's Start agent runs: what the node last ran, else the default.
+  // A line starts with the chip's pick.
   const defaultLabel = resolved ? agentLabel(resolved) : undefined;
   const startWith = pending && !liveAgent ? agentLabel(pending) : defaultLabel;
   const statusInput: StatusInput = row ?? {
