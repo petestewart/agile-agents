@@ -29,6 +29,7 @@ import {
   getQuickDrafts,
   getSessionDefaults,
   listRepos,
+  sayOnStream,
 } from '../lib/api';
 import { coordinatesIt, focusComposerOn } from '../lib/ask';
 import { agentLabel, sessionIdText } from '../lib/chat';
@@ -170,6 +171,8 @@ function NewStreamForm({
   // T373: Add a repository from here; the new repo is picked.
   const [addingRepo, setAddingRepo] = useState(false);
   const [start, setStart] = useState(true);
+  // T477: no goal yet: the text is your first message, and you set the goal once you've talked.
+  const [talkFirst, setTalkFirst] = useState(false);
   const [session, setSession] = useState<SessionDefaultsStatus | undefined>(undefined);
   // Set once "Change" is pressed: this node's own vendor, model and effort.
   const [choice, setChoice] = useState<SessionChoice | undefined>(undefined);
@@ -247,16 +250,38 @@ function NewStreamForm({
     setBusy(true);
     setError(undefined);
     try {
+      const opener = goal.trim();
       const created = await createStream({
         title: finalTitle,
-        goal: goal.trim() || finalTitle,
+        ...(talkFirst ? {} : { goal: opener || finalTitle }),
         ...(parent ? { parent } : projectId !== undefined ? { project: projectId } : {}),
         ...(repo ? { repo } : {}),
-        // A picked model starts it below, through the sessions' own attach.
-        ...(!start || custom ? { start: false } : {}),
-        ...(!ownTitle && goal.trim() !== '' ? { auto_title: true } : {}),
+        // A picked model starts it below, through the sessions' own attach; T477: a node with
+        // no goal starts on your first message instead.
+        ...(!start || custom || talkFirst ? { start: false } : {}),
+        ...(!ownTitle && opener !== '' ? { auto_title: true } : {}),
       });
-      if (start && custom && choice) {
+      if (talkFirst && opener !== '') {
+        const model = choice?.model.trim();
+        await sayOnStream(created.id, opener, {
+          ...(start ? { start: true } : {}),
+          ...(start && custom && choice
+            ? {
+                session: {
+                  vendor: choice.vendor,
+                  effort: choice.effort,
+                  ...(model ? { model } : {}),
+                },
+              }
+            : {}),
+        }).catch((err: unknown) =>
+          toast({
+            title: 'The node was made, but your message didn’t reach it',
+            body: err instanceof Error ? err.message : String(err),
+            tone: 'error',
+          }),
+        );
+      } else if (start && custom && choice) {
         const model = choice.model.trim();
         await attachSession(created.id, 'worker', {
           vendor: choice.vendor,
@@ -437,18 +462,37 @@ function NewStreamForm({
           }
         }}
       >
-        <Field label="What should the agent do?" htmlFor="cr-newnode-goal">
+        <Field
+          label={talkFirst ? 'What do you want to talk through?' : 'What should the agent do?'}
+          htmlFor="cr-newnode-goal"
+        >
           <textarea
             id="cr-newnode-goal"
             className="cr-newnode-goal"
             data-testid="new-stream-goal"
             data-autofocus
             rows={4}
-            placeholder="Describe the task, or ask a question."
+            placeholder={
+              talkFirst
+                ? 'Your first message. You give it a goal once you’ve talked it through.'
+                : 'Describe the task, or ask a question.'
+            }
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
           />
         </Field>
+        <label className="cr-switch-row cr-newnode-talk">
+          <input
+            type="checkbox"
+            role="switch"
+            aria-checked={talkFirst}
+            className="cr-switch"
+            data-testid="new-stream-talk-first"
+            checked={talkFirst}
+            onChange={(e) => setTalkFirst(e.target.checked)}
+          />
+          <span className="cr-switch-label">No goal yet: talk it through first</span>
+        </label>
         <Field
           label="Title"
           htmlFor="cr-newnode-title"

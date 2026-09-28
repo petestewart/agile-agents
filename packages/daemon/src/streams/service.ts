@@ -214,7 +214,7 @@ export class StreamService {
     const stream: Stream = {
       id: ulid(),
       title: input.title,
-      goal: input.goal,
+      ...(input.goal !== undefined ? { goal: input.goal } : {}),
       ...(parent !== undefined ? { parent } : {}),
       ...(repo !== undefined ? { repo } : {}),
       ...(project !== undefined ? { project } : {}),

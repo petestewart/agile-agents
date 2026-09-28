@@ -39,6 +39,7 @@ import {
   decideGate,
   decideProposal,
   decideRule,
+  dismissFinished,
   getStreamDiff,
   getStreamPage,
   landStream,
@@ -100,7 +101,7 @@ import { useShell } from '../lib/shell';
 import { ago } from '../lib/status';
 import { Icon, type IconName } from './Icon';
 import { Markdown } from './Markdown';
-import { Button, Dialog, Spinner } from './ui';
+import { Button, Dialog, IconButton, Spinner } from './ui';
 
 function iconOf(item: InboxItem): IconName {
   switch (item.kind) {
@@ -1370,6 +1371,22 @@ export function Card({
             Open
             <Icon name="arrow-right" size={13} />
           </button>
+        )}
+        {item.kind === 'done' && item.stream !== undefined && (
+          // T477: a Finished card goes away until the node's agent finishes again.
+          <IconButton
+            icon="x"
+            size="sm"
+            label="Dismiss"
+            title="Dismiss. It comes back if the agent finishes again."
+            className="cr-card-dismiss"
+            data-testid="card-dismiss"
+            disabled={locked}
+            onClick={() => {
+              const stream = item.stream as string;
+              void act('dismiss', () => dismissFinished(stream));
+            }}
+          />
         )}
       </header>
       {body !== null && (

@@ -2975,10 +2975,12 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T477 A node without a goal; dismiss a Finished card
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28): "there can never not be a goal … i want to ask a question related to what its goal will be and THEN give it a goal. i should not see a finished card like this until i've explicitly given it a goal and it's finished with it. also whenever there is a finished card i should be able to discard the message with an X".
 - **Acceptance Criteria:** A node can be created with no goal. Its agent just talks, and a finished turn is not "Finished". Giving it a goal (the goal card, or Turn into work) makes finishing it count. A Finished card or row has an ✕ that dismisses it until the node finishes again.
+- **Validation Steps:** `goal` is optional in `StreamSchema`/`StreamCreateInputSchema`; every `.goal` reader handles none (brief `NO_GOAL_YET`, "(no goal yet)" for an ancestor, the first goal's thread line reads "goal set: …"). The inbox skips `done` for a node with no goal and for one whose `human.dismissed_at` is at or after `agent.updated_at`; the cockpit row carries `no_goal`, so Replies lists it. `POST /api/streams/:id/dismiss` (same-origin, human). The ✕ is on the Finished card (node page and Needs me) and on a Finished row. New node has "No goal yet: talk it through first": the text becomes your first message. Tests: inbox service (no goal, dismiss and re-finish), brief, http dismiss + goal set/changed, unread `no_goal`, e2e T477 ×2. Full `bun test` 3457/0; control-room e2e 125/125.
+- **Notes:** Branch T477-no-goal-and-dismiss.
 
 ### Ticket: T478 Auto-close when the goal is met
 - **Priority:** P1

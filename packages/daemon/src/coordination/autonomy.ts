@@ -142,7 +142,7 @@ export function describeChange(change: CoordinatorChange, titleOf: (id: string) 
     case 'create_project':
       return `Create the project ${change.name}`;
     case 'create_node':
-      return `Create "${change.node.title}" under ${titleOf(change.node.parent ?? change.node.project ?? '')}: ${change.node.goal}`;
+      return `Create "${change.node.title}" under ${titleOf(change.node.parent ?? change.node.project ?? '')}${change.node.goal !== undefined ? `: ${change.node.goal}` : ''}`;
     case 'start_node':
       return `Start ${titleOf(change.node)}`;
     case 'restart_node':

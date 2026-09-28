@@ -201,6 +201,8 @@ export interface CockpitStreamRow {
   live_agent?: CockpitLiveAgent;
   /** T470: the vendor and model its agent last ran (Needs me names the agent); absent if it never ran. */
   last_agent?: { vendor: string; model: string };
+  /** T477: it has no goal yet: a finished turn is a reply to you, not finished work. */
+  no_goal?: true;
 }
 
 /** T382: what a live node runs: its session's role, vendor, model and effort. */
@@ -366,6 +368,7 @@ export function buildCockpitFrame(
       ...startState(s),
       ...liveAgent(s, contextOf),
       ...lastAgent(s),
+      ...(s.goal === undefined ? { no_goal: true as const } : {}),
     })),
     projects: (projects?.list() ?? []).map((p) => ({
       id: p.id,

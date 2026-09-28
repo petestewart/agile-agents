@@ -126,6 +126,8 @@ export class TitleNamer {
   }
 
   private async nameNow(stream: Pick<Stream, 'id' | 'title' | 'goal'>): Promise<void> {
+    // T477: a node with no goal is named from what it was first asked, else nothing to name.
+    if (stream.goal === undefined) return;
     const title = cleanTitle(await this.options.run(titlePrompt(stream.goal)));
     if (title === undefined || title === stream.title) return;
     // The human may have renamed it (or deleted it) while the model thought.

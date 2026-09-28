@@ -47,13 +47,13 @@ export function parseSeen(raw: string | null | undefined, now: string): SeenStat
 
 type ReplyRow = Pick<
   CockpitStreamRow,
-  'id' | 'role' | 'agent_status' | 'human_status' | 'updated_at' | 'answered_at'
+  'id' | 'role' | 'agent_status' | 'human_status' | 'updated_at' | 'answered_at' | 'no_goal'
 >;
 
 /**
  * A node whose agent answered and whose answer has no Needs me card: it is
  * open, its agent is done, and it is not a work node (whose finish is a
- * Merge card).
+ * Merge card) unless it has no goal yet (T477: its turn was a reply).
  */
 export function answersYou(row: ReplyRow): boolean {
   // T437: only a turn that answered something you said (`answered_at`); one woken by
@@ -61,7 +61,7 @@ export function answersYou(row: ReplyRow): boolean {
   return (
     row.human_status === 'open' &&
     row.agent_status === 'done' &&
-    row.role !== 'work' &&
+    (row.role !== 'work' || row.no_goal === true) &&
     row.answered_at !== undefined
   );
 }

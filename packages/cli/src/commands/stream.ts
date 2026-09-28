@@ -209,7 +209,7 @@ export function showFields(stream: Stream, role?: NodeRole): Array<[string, stri
   const fields: Array<[string, string]> = [
     ['id', stream.id],
     ['title', stream.title],
-    ['goal', stream.goal],
+    ['goal', stream.goal ?? '-'],
     ['status', statusPair(stream)],
     ...(role !== undefined ? ([['role', role]] as Array<[string, string]>) : []),
     ...(stream.project !== undefined

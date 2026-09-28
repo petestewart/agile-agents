@@ -236,6 +236,35 @@ describe('InboxService.list', () => {
     expect(inbox.list().find((i) => i.stream === talk.id)?.kind).toBe('blocked');
   });
 
+  test('T477: a node with no goal yet that finished a turn answered you; it is no Finished card', async () => {
+    const open = await streams.create('human', { title: 'talk first', parent: root.id });
+    expect(open.goal).toBeUndefined();
+    await streams.update('daemon', open.id, { agent: { status: 'done' } });
+    expect(inbox.list().some((i) => i.stream === open.id)).toBe(false);
+    // Once it has a goal, finishing is finished work.
+    await streams.update('human', open.id, { goal: 'fix the parser' });
+    await streams.update('daemon', open.id, { agent: { status: 'done' } });
+    expect(inbox.list().find((i) => i.stream === open.id)?.kind).toBe('done');
+    // Blocked needs you with or without a goal.
+    const talk = await streams.create('human', { title: 'still talking', parent: root.id });
+    await streams.update('daemon', talk.id, { agent: { status: 'blocked' } });
+    expect(inbox.list().find((i) => i.stream === talk.id)?.kind).toBe('blocked');
+  });
+
+  test('T477: a dismissed Finished card stays away until the agent finishes again', async () => {
+    await streams.update('daemon', child.id, { agent: { status: 'done' } });
+    expect(inbox.list().find((i) => i.stream === child.id)?.kind).toBe('done');
+    await Bun.sleep(5);
+    await streams.update('human', child.id, { human: { dismissed_at: new Date().toISOString() } });
+    expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
+    // The human side is untouched: still open.
+    expect(streams.get(child.id).human.status).toBe('open');
+    await Bun.sleep(5);
+    await streams.update('daemon', child.id, { agent: { status: 'working' } });
+    await streams.update('daemon', child.id, { agent: { status: 'done' } });
+    expect(inbox.list().find((i) => i.stream === child.id)?.kind).toBe('done');
+  });
+
   test('T341: a finished node whose PR is open is not "ready to land" (it merges on GitHub)', async () => {
     const at = new Date().toISOString();
     await streams.update('daemon', child.id, {

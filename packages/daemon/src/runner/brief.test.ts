@@ -5,6 +5,7 @@ import {
   BRIEF_CHAR_CEILING,
   BRIEF_THREAD_ENTRIES,
   NAMES_HINT,
+  NO_GOAL_YET,
   WIP_MAX_NODES,
   WIP_SECTION_CHARS,
   aboutSection,
@@ -75,6 +76,22 @@ describe('buildBrief', () => {
     // Only the tail: the oldest entries are dropped, the newest are kept.
     expect(brief).not.toContain('line 0');
     expect(brief).toContain(`line ${BRIEF_THREAD_ENTRIES + 4}`);
+  });
+
+  test('T477: a node with no goal yet says so, and its ancestors with none read "(no goal yet)"', () => {
+    const root = makeStream({ title: 'Cockpit', goal: undefined });
+    const stream = makeStream({ parent: root.id, goal: undefined });
+    const brief = buildBrief({
+      role: 'worker',
+      stream,
+      ancestors: [root],
+      thread: [],
+      docs: [],
+      rules: [],
+    });
+    expect(brief).toContain(NO_GOAL_YET);
+    expect(brief).toContain('Cockpit: (no goal yet)');
+    expect(brief).not.toContain('undefined');
   });
 
   test('the worker brief is a snapshot of the assembled sections, in order', () => {

@@ -263,7 +263,7 @@ export class RepoInPlaceService {
       // T446 (audit r7 #18): "<node> · <repo>", so two projects' parts never share a name.
       title: partTitle(node.title, repo),
       // T336: the part's share, not the parent's (often conversational) goal verbatim.
-      goal: `${repo} share of: ${node.goal}`,
+      goal: `${repo} share of: ${node.goal ?? node.title}`,
       parent: node.id,
       repo,
     });

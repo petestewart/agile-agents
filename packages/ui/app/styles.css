@@ -2689,6 +2689,11 @@ input[type="checkbox"].cr-switch:focus-visible {
   color: var(--text);
   background: var(--bg-hover);
 }
+/* T477: the Finished card's ✕, in the upper right. */
+.cr-card-dismiss {
+  flex: none;
+  margin-right: -6px;
+}
 .cr-card-body,
 .cr-card-ft,
 .cr-card-notice,
@@ -10776,4 +10781,14 @@ div.cr-lens-ev:hover {
   .cr-inbox-card {
     padding-left: 12px;
   }
+}
+
+/* T477: a node with no goal yet. */
+.cr-goal-none {
+  margin: 0;
+  color: var(--text-muted);
+}
+/* T477: New node's "No goal yet" switch, under the text. */
+.cr-newnode-talk {
+  margin-top: -4px;
 }
