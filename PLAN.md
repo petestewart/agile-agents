@@ -3006,10 +3006,10 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T485 Model routing: budget caps
 - **Priority:** P2
-- **Status:** Todo (measure first: LIVE-CHECKLIST §15, which vendors report turn token usage)
+- **Status:** Todo (measure first: LIVE-CHECKLIST §16, which vendors report turn token usage)
 - **Owner:** manager
 - **Scope:** `design/model-routing.md` §7: budgets in weighted tokens (tokens × the model profile's cost), per session and per node. At 80% a chat line; at the cap the next turn waits and Needs me offers Raise the cap / Stop here. A vendor that reports no usage says so instead of estimating.
-- **Validation Steps:** After §15: unit tests on the weighting and cap, and an attach test that the capped node waits.
+- **Validation Steps:** After §16: unit tests on the weighting and cap, and an attach test that the capped node waits.
 
 ### Ticket: T469 Favourite models, and a picker that folds
 - **Priority:** P2

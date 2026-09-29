@@ -209,7 +209,7 @@ used times its model's profile `cost`. Caps are per session and per node. At
 80% the chat says so; at the cap, the next turn doesn't start and the node goes
 to Needs me with **Raise the cap** / **Stop here**.
 
-Nothing is built until LIVE-CHECKLIST §15 has measured which vendors report
+Nothing is built until LIVE-CHECKLIST §16 has measured which vendors report
 turn token usage, and in what field. A vendor that reports none shows
 "no budget: <vendor> doesn't report usage" in the UI, rather than an invented
 estimate.
@@ -270,7 +270,7 @@ estimate.
   Details scores.
 - **T484 Escalation.** The ladder, the triggers in §6, `escalate`, Step up, and
   the Needs me card at the top of the ladder.
-- **T485 Budget.** LIVE-CHECKLIST §15 first, then the caps (§7).
+- **T485 Budget.** LIVE-CHECKLIST §16 first, then the caps (§7).
 
 T482 is the base for the rest. T483 and T484 can be built side by side after it.
 T485 waits on its measurement.
