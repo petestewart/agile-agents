@@ -24,6 +24,7 @@ import type {
   SessionDefaultsPatch,
   SessionDefaultsStatus,
   SessionFlags,
+  SessionVendor,
   Stream,
   StreamCreateInput,
   ThreadEntry,
@@ -346,6 +347,19 @@ export function saveHomeSessionDefaults(
   patch: SessionDefaultsPatch,
 ): Promise<SessionDefaultsStatus> {
   return post('/api/settings/session', patch) as Promise<SessionDefaultsStatus>;
+}
+
+/**
+ * T467 (D46): Settings → Agents' Refresh models: the daemon starts the
+ * vendor with no prompt and keeps the models its session/new reply lists.
+ * `refreshed.listed` is false when the reply listed none.
+ */
+export function refreshVendorModels(
+  vendor: SessionVendor,
+): Promise<SessionDefaultsStatus & { refreshed: { vendor: string; listed: boolean } }> {
+  return post('/api/settings/models/refresh', { vendor }) as Promise<
+    SessionDefaultsStatus & { refreshed: { vendor: string; listed: boolean } }
+  >;
 }
 
 /** T170: one repo's defaults in `repos.yaml` (`null` clears a field). */

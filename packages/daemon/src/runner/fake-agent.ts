@@ -85,6 +85,27 @@ export interface FakeAgentScript {
   commands?: Array<{ name: string; description: string; input?: { hint: string } }>;
   /** T467b: `session/new` replies with its session id alone (no modes, config options or models). */
   bareSessionNew?: boolean;
+  /**
+   * T467 (D46): the model option `session/new`/`session/load` report, in
+   * the shape the measured vendors send (LIVE-CHECKLIST §12): a
+   * `configOptions` entry `{id: "model", category: "model", type: "select",
+   * currentValue, options}`. Replaces the bare `model` entry.
+   */
+  modelOption?: { current: string; options: Array<{ value: string; name: string }> };
+  /** T467: ACP's `models` field (`{currentModelId, availableModels}`), sent beside `configOptions`. */
+  models?: {
+    currentModelId: string;
+    availableModels: Array<{ modelId: string; name: string; description?: string }>;
+  };
+  /**
+   * T467: how `session/set_config_option` for the model is answered.
+   * `honour` (default): the value becomes `currentValue`; `ignore`: the
+   * reply keeps the old value (a vendor that won't switch); `error`: a
+   * JSON-RPC error. Each call is logged (`logFile`).
+   */
+  setConfigOption?: 'honour' | 'ignore' | 'error';
+  /** T467: log `ANTHROPIC_MODEL` as the agent saw it at spawn (`{method: "spawn", ANTHROPIC_MODEL}`). */
+  logModelEnv?: boolean;
 }
 
 function appendLog(script: FakeAgentScript, line: Record<string, unknown>): void {
@@ -106,6 +127,9 @@ function loadScript(): FakeAgentScript {
 /** Loaded once; `handleLine` needs it too. */
 const script = loadScript();
 if (script.stderrBanner !== undefined) process.stderr.write(`${script.stderrBanner}\n`);
+if (script.logModelEnv && import.meta.main) {
+  appendLog(script, { method: 'spawn', ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL ?? null });
+}
 /** `authenticate` method ids seen, for `requireAuthMethod`. */
 const authenticatedMethods = new Set<string>();
 
@@ -142,9 +166,34 @@ let sessionId = 'fake-session-1';
 /** The model id reported when a script names none. */
 export const DEFAULT_FAKE_MODEL = 'fake/model-1';
 
+/** T467: the model the session runs now (`modelOption`'s, until a `session/set_config_option` takes). */
+let currentModel = script.modelOption?.current ?? script.model ?? DEFAULT_FAKE_MODEL;
+
 /** The `configOptions` of a `session/new`/`session/load` result. */
-function sessionConfigOptions(): Array<{ id: string; name: string; currentValue: string }> {
-  return [{ id: 'model', name: 'Model', currentValue: script.model ?? DEFAULT_FAKE_MODEL }];
+function sessionConfigOptions(): Array<Record<string, unknown>> {
+  if (script.modelOption !== undefined) {
+    return [
+      {
+        id: 'model',
+        name: 'Model',
+        category: 'model',
+        type: 'select',
+        currentValue: currentModel,
+        options: script.modelOption.options,
+      },
+    ];
+  }
+  return [{ id: 'model', name: 'Model', currentValue: currentModel }];
+}
+
+/** A `session/new`/`session/load` result. */
+function sessionResult(): Record<string, unknown> {
+  return {
+    sessionId,
+    modes: null,
+    configOptions: sessionConfigOptions(),
+    ...(script.models !== undefined ? { models: script.models } : {}),
+  };
 }
 
 /** Prompt turns seen so far — indexes `FakeAgentScript.turns`. */
@@ -285,9 +334,7 @@ function handleLine(line: string): void {
       }
       write({
         id: message.id,
-        result: script.bareSessionNew
-          ? { sessionId }
-          : { sessionId, modes: null, configOptions: sessionConfigOptions() },
+        result: script.bareSessionNew ? { sessionId } : sessionResult(),
       });
       if (script.commands !== undefined) {
         notify('session/update', {
@@ -316,11 +363,28 @@ function handleLine(line: string): void {
           },
         });
       }
-      write({
-        id: message.id,
-        result: { sessionId, modes: null, configOptions: sessionConfigOptions() },
-      });
+      write({ id: message.id, result: sessionResult() });
       return;
+    case 'session/set_config_option': {
+      appendLog(script, { method: 'session/set_config_option', params: message.params });
+      const params = message.params as { configId?: string; value?: string } | undefined;
+      if (script.setConfigOption === 'error') {
+        write({
+          id: message.id,
+          error: { code: -32602, message: `cannot set ${params?.configId ?? 'option'}` },
+        });
+        return;
+      }
+      if (
+        script.setConfigOption !== 'ignore' &&
+        params?.configId === 'model' &&
+        typeof params.value === 'string'
+      ) {
+        currentModel = params.value;
+      }
+      write({ id: message.id, result: { configOptions: sessionConfigOptions() } });
+      return;
+    }
     case 'session/set_mode': {
       appendLog(script, { method: 'session/set_mode', params: message.params });
       const modeId = (message.params as { modeId?: string } | undefined)?.modeId;
