@@ -31,6 +31,7 @@ import {
   type QuestionId,
   QuestionIdSchema,
   QuickDraftsInputSchema,
+  RefreshModelsInputSchema,
   SessionDefaultsPatchSchema,
   SessionIdleInputSchema,
   type SessionVendor,
@@ -108,6 +109,7 @@ import {
   parseAnswerParams,
   sayAndAnswer,
 } from './questions';
+import type { ModelCatalog } from './runner/model-catalog';
 import {
   CloneError,
   DirListError,
@@ -220,6 +222,8 @@ export interface HttpServerOptions {
   quickDraftsAvailable?: boolean;
   /** T437: why a vendor can't start here (its command isn't on PATH); the model lists say so. */
   vendorMissing?: (vendor: SessionVendor) => string | undefined;
+  /** T467 (D46): each vendor's own model list, and Settings' Refresh models. */
+  models?: Pick<ModelCatalog, 'all' | 'refresh'>;
   /** T340: `POST /api/streams/:id/pr-check`, the Delivery panel's Check now (`PrPoller.pollNow`). */
   prCheck?: (id: string) => Promise<Stream>;
   /** The stream page's sessions strip and composer. */
@@ -521,6 +525,8 @@ interface FeedContext {
   titleNamer?: TitleNamer;
   /** T437: why a vendor can't start here. */
   vendorMissing?: (vendor: SessionVendor) => string | undefined;
+  /** T467 (D46): each vendor's own model list, and Settings' Refresh models. */
+  models?: Pick<ModelCatalog, 'all' | 'refresh'>;
   /** T471: the trash: Delete forever and Empty trash. */
   trash?: TrashService;
   userHome?: string;
@@ -602,6 +608,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     ...(options.cheapModel ? { cheapModel: options.cheapModel } : {}),
     ...(options.titleNamer ? { titleNamer: options.titleNamer } : {}),
     ...(options.vendorMissing ? { vendorMissing: options.vendorMissing } : {}),
+    ...(options.models ? { models: options.models } : {}),
     userHome: options.userHome,
   };
 }
@@ -975,7 +982,7 @@ async function handleSessionSettingsRoute(
   if (req.method === 'GET' && repo === undefined) {
     if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
     try {
-      return jsonResponse(new SessionDefaultsService(feed.store, feed.vendorMissing).status());
+      return jsonResponse(sessionDefaults(feed).status());
     } catch (err) {
       return errorResponse(500, messageOf(err));
     }
@@ -991,7 +998,7 @@ async function handleSessionSettingsRoute(
   }
   const input = SessionDefaultsPatchSchema.safeParse(body);
   if (!input.success) return errorResponse(400, formatZodError('session defaults', input.error));
-  const service = new SessionDefaultsService(feed.store, feed.vendorMissing);
+  const service = sessionDefaults(feed);
   try {
     return jsonResponse(
       repo === undefined
@@ -1002,6 +1009,49 @@ async function handleSessionSettingsRoute(
     const message = messageOf(err);
     if (err instanceof NotFoundError) return errorResponse(404, message);
     return errorResponse(400, message);
+  }
+}
+
+/** D17's session defaults over the feed's store, with T437's missing vendors and T467's model lists. */
+function sessionDefaults(feed: FeedContext): SessionDefaultsService {
+  const models = feed.models;
+  return new SessionDefaultsService(
+    feed.store,
+    feed.vendorMissing,
+    models !== undefined ? () => models.all() : undefined,
+  );
+}
+
+/**
+ * T467 (D46): Settings → Agents' Refresh models: start the vendor with no
+ * prompt, keep its `session/new` reply (its model list), stop it. No node,
+ * no repo. Same-origin only.
+ *
+ *   POST /api/settings/models/refresh  `{vendor}` → the session defaults, with the new list
+ */
+async function handleRefreshModelsRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/models/refresh' || req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = RefreshModelsInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('refresh models', input.error));
+  if (feed.models === undefined) return errorResponse(503, 'model lists are not available');
+  const vendor = input.data.vendor;
+  const missing = feed.vendorMissing?.(vendor);
+  if (missing !== undefined) return errorResponse(409, missing);
+  try {
+    const listed = await feed.models.refresh(vendor);
+    return jsonResponse({
+      ...sessionDefaults(feed).status(),
+      refreshed: { vendor, listed: listed !== undefined },
+    });
+  } catch (err) {
+    return errorResponse(502, messageOf(err));
   }
 }
 
@@ -2050,6 +2100,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         const sessionSettingsRoute = await handleSessionSettingsRoute(req, url, feed, sameOrigin);
         if (sessionSettingsRoute) return sessionSettingsRoute;
+        const refreshModelsRoute = await handleRefreshModelsRoute(req, url, feed, sameOrigin);
+        if (refreshModelsRoute) return refreshModelsRoute;
 
         const autonomyRoute = await handleAutonomyRoute(req, url, feed, sameOrigin);
         if (autonomyRoute) return autonomyRoute;

@@ -97,7 +97,7 @@ export function ModelChoice({
   const extra = [value, marks.running, marks.default].filter(
     (ref): ref is ModelRef => ref !== undefined,
   );
-  const groups = modelGroups(status.known_models, status.vendors, extra);
+  const groups = modelGroups(status.known_models, status.vendors, extra, status.vendor_models);
   const choose = (ref: ModelRef): void =>
     onChange({
       vendor: ref.vendor,
@@ -142,7 +142,10 @@ export function ModelChoice({
                     ? 'Default'
                     : missing !== undefined
                       ? 'Not installed'
-                      : undefined;
+                      : // T467 (D46): its default alone, because it never said what it has.
+                        option.hint !== undefined
+                        ? 'No list yet'
+                        : undefined;
               return (
                 <button
                   key={`${option.vendor}/${option.model ?? ''}`}
@@ -155,8 +158,13 @@ export function ModelChoice({
                   data-vendor={option.vendor}
                   data-model={option.model ?? ''}
                   data-missing={missing !== undefined ? 'true' : undefined}
+                  data-no-list={option.hint !== undefined ? 'true' : undefined}
                   data-autofocus={on ? true : undefined}
-                  title={missing ?? sessionIdText({ vendor: option.vendor, model: option.model })}
+                  title={
+                    missing ??
+                    option.hint ??
+                    sessionIdText({ vendor: option.vendor, model: option.model })
+                  }
                   onClick={() => {
                     setOther(undefined);
                     choose(option);
@@ -548,7 +556,13 @@ export function SessionFields({
         },
       }).model,
     );
-  const models = modelSelectOptions(status.known_models, vendor, value.model, inheritedModel);
+  const models = modelSelectOptions(
+    status.known_models,
+    vendor,
+    value.model,
+    inheritedModel,
+    status.vendor_models,
+  );
   // T401: a vendor with no effort setting never gets the level; say so rather than offer it.
   const noEffort = vendorTakesEffort(vendor)
     ? undefined
@@ -567,7 +581,12 @@ export function SessionFields({
           change({
             ...value,
             vendor: next,
-            model: modelForVendor(status.known_models, next || inherit?.vendor || '', value.model),
+            model: modelForVendor(
+              status.known_models,
+              next || inherit?.vendor || '',
+              value.model,
+              status.vendor_models,
+            ),
           });
         }}
       >

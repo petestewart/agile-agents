@@ -1346,6 +1346,36 @@ ignores it.
 | Grok   | Yes, but thin: `configOptions` model lists only `grok-4.7`, while `currentValue` is `grok-4.5`. `models` matches, and puts effort in `availableModels[]._meta.reasoningEfforts` (xhigh, high, medium, low) | Not measured yet | None known |
 | Pi     | Not run (no file) | — | — |
 
+**Since T467** the pickers list each vendor's own models (its most recent
+`session/new` reply; `session-state.json` now also names its `vendor`), and
+a picked model is set through ACP (`session/set_config_option`, config id
+`model`) before the first message. The daemon reads the vendor's reply back
+and, when the vendor did not take the pick, the node's thread says so in
+words ("Cursor kept its own model (Auto); it did not take grok-4.7", or
+"… refused the model …") and the session records the model the vendor
+runs. Claude's full ids (`claude-opus-5-5`) still go through
+`ANTHROPIC_MODEL`; only a value from the bridge's own list goes through the
+option. To fill the "Accepts a model via ACP?" column, for each vendor:
+
+- [ ] Settings → Agents → **Models**: the vendor shows its list and when it
+      said it. A vendor that hasn't run here reads "No list yet"; press
+      **Refresh** (it starts the vendor with no message and stops it; no node
+      is made) and the list appears.
+- [ ] Open the composer's model chip: the vendor's group lists its models
+      by name (Cursor's "Auto", "grok-4.7"; Grok also shows the model it ran
+      last, `grok-4.5`, though its list lacks it).
+- [ ] Pick a model that isn't the vendor's current one and send a message.
+      No thread line about the model: it took (check the turn really runs on
+      it, e.g. ask the agent which model it is, or read
+      `session-state.json`'s `configOptions` `currentValue`, which the
+      `session/set_config_option` reply refreshed: `source` reads
+      `session/set_config_option`). A line "kept its own model" or "refused
+      the model": it did not. Write Yes or No in the column.
+- [ ] Claude: once it has reported, its group is the bridge's list (plus the
+      default full id, `claude-opus-5-5`, marked Default). Pick one of the
+      bridge's entries (Sonnet, Haiku), and a full id through "Other
+      model…"; both run on the pick.
+
 ## 13. **[vendor]** Auto-close when the goal is met (T478)
 
 The daemon closes a node set to auto-close only on the agent's `goal_met`

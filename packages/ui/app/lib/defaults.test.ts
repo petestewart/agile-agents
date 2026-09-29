@@ -149,6 +149,98 @@ describe('the model picker (T423)', () => {
     expect(modelForVendor(known, 'claude', '')).toBe('');
   });
 
+  describe("T467 (D46): the vendor's own list", () => {
+    const lists = {
+      cursor: {
+        options: [
+          { value: 'default[]', name: 'Auto' },
+          { value: 'grok-4.7[context=256k,fast=true]', name: 'grok-4.7' },
+        ],
+        current: 'default[]',
+        at: '2026-09-29T10:50:46.021Z',
+      },
+      // Grok's current model is not in its list (LIVE-CHECKLIST §12): it shows too.
+      grok: {
+        options: [{ value: 'grok-4.7', name: 'Grok 4.7' }],
+        current: 'grok-4.5',
+        at: '2026-09-29T10:50:49.514Z',
+      },
+      claude: {
+        options: [
+          { value: 'default', name: 'Default (recommended)' },
+          { value: 'opus[1m]', name: 'Opus 5.5' },
+          { value: 'sonnet', name: 'Sonnet' },
+        ],
+        at: '2026-09-29T10:49:32.639Z',
+      },
+    };
+    const all = { ...known, cursor: [], grok: [] };
+    const every = ['claude', 'gemini', 'codex', 'cursor', 'grok'];
+
+    test("a vendor that reported its models is a group of them by name; one that didn't is its default, and why", () => {
+      const groups = modelGroups(all, every, [], lists);
+      expect(groups.map((g) => g.label)).toEqual(['Claude', 'Cursor', 'Grok', 'Other agents']);
+      // Names shown, values kept; Claude's `default` is its own default, aliases included.
+      expect(groups[0]?.options).toEqual([
+        { vendor: 'claude', label: 'Default (recommended)' },
+        { vendor: 'claude', model: 'opus[1m]', label: 'Opus 5.5' },
+        { vendor: 'claude', model: 'sonnet', label: 'Sonnet' },
+      ]);
+      expect(groups[1]?.options).toEqual([
+        { vendor: 'cursor', model: 'default[]', label: 'Auto' },
+        { vendor: 'cursor', model: 'grok-4.7[context=256k,fast=true]', label: 'grok-4.7' },
+      ]);
+      expect(groups[2]?.options.map((o) => [o.model, o.label])).toEqual([
+        ['grok-4.7', 'Grok 4.7'],
+        ['grok-4.5', 'grok-4.5'],
+      ]);
+      expect(groups[3]?.options).toEqual([
+        {
+          vendor: 'gemini',
+          label: 'Gemini default model',
+          hint: "Gemini hasn't reported its models yet: start it once, or Refresh models in Settings → Agents.",
+        },
+        {
+          vendor: 'codex',
+          label: 'Codex default model',
+          hint: "Codex hasn't reported its models yet: start it once, or Refresh models in Settings → Agents.",
+        },
+      ]);
+    });
+
+    test('a model a node runs that the list lacks still shows (a Claude full id)', () => {
+      const groups = modelGroups(
+        all,
+        every,
+        [{ vendor: 'claude', model: 'claude-opus-5-5' }],
+        lists,
+      );
+      expect(groups[0]?.options.at(-1)).toEqual({
+        vendor: 'claude',
+        model: 'claude-opus-5-5',
+        label: 'Claude Opus 5.5',
+      });
+    });
+
+    test('the Model select and a changed vendor use the list too', () => {
+      expect(modelSelectOptions(all, 'cursor', '', undefined, lists)).toEqual([
+        { value: '', label: 'Cursor default model' },
+        { value: 'default[]', label: 'Auto' },
+        { value: 'grok-4.7[context=256k,fast=true]', label: 'grok-4.7' },
+      ]);
+      // Claude's `default` is the empty value; the built-in ids give way to its own list.
+      expect(modelSelectOptions(all, 'claude', '', undefined, lists).map((o) => o.value)).toEqual([
+        '',
+        'opus[1m]',
+        'sonnet',
+      ]);
+      expect(modelForVendor(all, 'cursor', 'grok-4.7[context=256k,fast=true]', lists)).toBe(
+        'grok-4.7[context=256k,fast=true]',
+      );
+      expect(modelForVendor(all, 'grok', 'grok-4.7[context=256k,fast=true]', lists)).toBe('');
+    });
+  });
+
   test('effort in words', () => {
     expect(effortWord('low')).toBe('Low');
     expect(effortWord('max')).toBe('Max');

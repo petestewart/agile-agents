@@ -78,6 +78,10 @@ describe('names', () => {
     expect(modelLabel('claude', 'sonnet')).toBe('Claude Sonnet');
     expect(modelLabel('gemini', undefined)).toBe('Gemini default model');
     expect(modelLabel('gemini', 'default')).toBe('Gemini default model');
+    // T467: a vendor's settings in brackets are left off the words.
+    expect(modelLabel('cursor', 'grok-4.7[context=256k,fast=true]')).toBe('grok-4.7');
+    expect(modelLabel('cursor', 'default[]')).toBe('Cursor default model');
+    expect(modelLabel('claude', 'opus[1m]')).toBe('Claude Opus');
     expect(modelLabel('codex', 'gpt-9')).toBe('gpt-9');
     expect(sessionLabel({ vendor: 'claude', model: 'claude-opus-5-5', effort: 'low' })).toBe(
       'Claude Opus 5.5 · low',

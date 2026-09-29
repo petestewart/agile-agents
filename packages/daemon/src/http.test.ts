@@ -19,8 +19,10 @@ import {
   type RepoRemote,
   type RoutedEvent,
   type SessionDefaultsStatus,
+  type SessionVendor,
   type Stream,
   type VendorFailureSettings,
+  type VendorModels,
   classifierQuestion,
   examplesOf,
   patternOf,
@@ -546,6 +548,88 @@ describe('T160 cockpit routes', () => {
       await fetch(url('/api/settings/session'))
     ).json()) as SessionDefaultsStatus;
     expect(plain.not_installed).toBeUndefined();
+  });
+
+  test("T467: the session defaults carry each vendor's own models; Refresh asks a vendor, same-origin only", async () => {
+    const lists: Partial<Record<SessionVendor, VendorModels>> = {};
+    const refreshed: string[] = [];
+    const withModels = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      vendorMissing: (vendor) => (vendor === 'pi' ? 'Pi is not installed' : undefined),
+      models: {
+        all: () => lists,
+        refresh: async (vendor) => {
+          refreshed.push(vendor);
+          if (vendor === 'grok') throw new Error('Grok CLI did not open a session: login needed');
+          lists[vendor] = {
+            options: [{ value: 'grok-4.7[fast=true]', name: 'grok-4.7' }],
+            current: 'default[]',
+            at: '2026-09-29T10:50:46.021Z',
+          };
+          return lists[vendor];
+        },
+      },
+    });
+    const at = (path: string) => `http://127.0.0.1:${withModels.port}${path}`;
+    const refresh = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(at('/api/settings/models/refresh'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+    try {
+      const before = (await (
+        await fetch(at('/api/settings/session'))
+      ).json()) as SessionDefaultsStatus;
+      expect(before.vendor_models).toEqual({});
+      // Built in still: the fallback list for a vendor that never reported one.
+      expect(before.known_models.claude).toContain('claude-opus-5-5');
+
+      expect((await refresh({ vendor: 'cursor' }, { origin: 'http://evil.example' })).status).toBe(
+        403,
+      );
+      expect((await refresh({ vendor: 'hal9000' })).status).toBe(400);
+      expect((await refresh({ vendor: 'cursor', extra: 1 })).status).toBe(400);
+      // Not installed: said, and nothing spawned.
+      const missing = await refresh({ vendor: 'pi' });
+      expect(missing.status).toBe(409);
+      expect(((await missing.json()) as { error: string }).error).toBe('Pi is not installed');
+      const failed = await refresh({ vendor: 'grok' });
+      expect(failed.status).toBe(502);
+      expect(((await failed.json()) as { error: string }).error).toContain('login needed');
+      expect(refreshed).toEqual(['grok']);
+
+      const ok = await refresh({ vendor: 'cursor' });
+      expect(ok.status).toBe(200);
+      const after = (await ok.json()) as SessionDefaultsStatus & {
+        refreshed: { vendor: string; listed: boolean };
+      };
+      expect(after.refreshed).toEqual({ vendor: 'cursor', listed: true });
+      expect(after.vendor_models?.cursor?.options[0]).toEqual({
+        value: 'grok-4.7[fast=true]',
+        name: 'grok-4.7',
+      });
+    } finally {
+      await withModels.stop();
+    }
+    // A daemon with no catalog says nothing about vendor models, and refuses a Refresh.
+    const plain = (await (
+      await fetch(url('/api/settings/session'))
+    ).json()) as SessionDefaultsStatus;
+    expect(plain.vendor_models).toBeUndefined();
+    expect(
+      (
+        await fetch(url('/api/settings/models/refresh'), {
+          method: 'POST',
+          body: JSON.stringify({ vendor: 'cursor' }),
+        })
+      ).status,
+    ).toBe(503);
   });
 
   test('T170: session defaults — read every step, write home and repo through the store, stamped human', async () => {

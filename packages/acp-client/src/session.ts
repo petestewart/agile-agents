@@ -56,6 +56,8 @@ const DEFAULT_CLIENT_CAPABILITIES: AcpClientCapabilities = {
 const FORCE_KILL_TIMEOUT_MS = 2000;
 /** Handshake bound only. Ordinary requests (`session/prompt`) legitimately run for minutes. */
 const INITIALIZE_TIMEOUT_MS = 120_000;
+/** T467: a `session/set_config_option` that never answers must not hold the first turn forever. */
+const CONFIG_OPTION_TIMEOUT_MS = 30_000;
 const ACP_PROTOCOL_VERSION = 1;
 
 /**
@@ -113,6 +115,14 @@ export interface SpawnedSession {
   load(sessionId: string): Promise<unknown>;
   /** `session/set_mode` for the current session. */
   setMode(modeId: string): Promise<unknown>;
+  /**
+   * T467 (D46): ACP `session/set_config_option` for the current session
+   * (`{sessionId, configId, value}`), how a model is picked. Resolves with
+   * the reply, whose `configOptions` say what the vendor now runs; they are
+   * also forwarded as `_agile/session_state` (`source:
+   * 'session/set_config_option'`). Bounded by `CONFIG_OPTION_TIMEOUT_MS`.
+   */
+  setConfigOption(configId: string, value: string): Promise<unknown>;
   /** ACP `authenticate` — required by Cursor/Grok before `session/new` succeeds. */
   authenticate(methodId: string): Promise<unknown>;
   /** Answer a request forwarded via `on(...)` — permission prompts, `switch_mode`, etc. */
@@ -402,7 +412,12 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     });
   }
 
-  function recordSessionState(result: unknown): void {
+  /**
+   * `source` names the request the reply answered (T467: a
+   * `session/set_config_option` reply carries only `configOptions`, so a
+   * listener merges it into what it had rather than reading the rest as gone).
+   */
+  function recordSessionState(result: unknown, source: string, sessionId?: string): void {
     const r = asRecord(result);
     if (r === null) return;
     // T467a: `models` (ACP's model list and current model) travels too; a vendor may send only it.
@@ -414,7 +429,8 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
         jsonrpc: '2.0',
         method: ACP_SESSION_STATE_METHOD,
         params: {
-          sessionId: typeof r.sessionId === 'string' ? r.sessionId : undefined,
+          sessionId: typeof r.sessionId === 'string' ? r.sessionId : sessionId,
+          source,
           modes: r.modes ?? null,
           configOptions: r.configOptions ?? null,
           models: r.models ?? null,
@@ -798,7 +814,7 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     await initialized;
     try {
       const result = await sendRequest('session/new', { cwd, mcpServers: opts.mcpServers ?? [] });
-      recordSessionState(result);
+      recordSessionState(result, 'session/new');
       const r = asRecord(result);
       const sessionId = r?.sessionId;
       if (typeof sessionId !== 'string') {
@@ -959,7 +975,7 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
           });
           log.commitReplace();
           acpSessionId = sessionId;
-          recordSessionState(result);
+          recordSessionState(result, 'session/load');
           return result;
         } catch (err) {
           log.abortReplace();
@@ -980,6 +996,16 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     async setMode(modeId: string): Promise<unknown> {
       const sessionId = await ensureSession();
       return sendRequest('session/set_mode', { sessionId, modeId });
+    },
+    async setConfigOption(configId: string, value: string): Promise<unknown> {
+      const sessionId = await ensureSession();
+      const result = await sendRequest(
+        'session/set_config_option',
+        { sessionId, configId, value },
+        CONFIG_OPTION_TIMEOUT_MS,
+      );
+      recordSessionState(result, 'session/set_config_option', sessionId);
+      return result;
     },
     async authenticate(methodId: string): Promise<unknown> {
       await initialized;

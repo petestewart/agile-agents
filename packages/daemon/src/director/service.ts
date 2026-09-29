@@ -82,6 +82,8 @@ export interface DirectorServiceOptions {
   cliBin?: string | CliInvocation;
   /** Test seam: inject a fake `spawnSession`. */
   spawn?: typeof spawnSession;
+  /** T467 (D46): each vendor's model list, kept from every session's `session/new` reply. */
+  models?: { record(vendor: string, state: unknown, session?: string): void };
   /** Test seam: the provider the resolved vendor maps to. */
   provider?: (vendor: string, fallback: AcpProviderConfig) => AcpProviderConfig;
   now?: () => Date;
@@ -449,6 +451,16 @@ export class DirectorService {
       ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
       ...(this.options.socketPath !== undefined ? { socketPath: this.options.socketPath } : {}),
       ...(this.options.now !== undefined ? { now: this.options.now } : {}),
+      ...(this.options.models !== undefined
+        ? {
+            onSessionState: (state: Record<string, unknown>) =>
+              this.options.models?.record(provider.id, state, sessionId),
+          }
+        : {}),
+      // T467: a picked model the vendor did not take is said on the Director's thread.
+      onModel: (result) => {
+        if (!result.ok) void this.append('daemon', 'event', result.line, sessionId).catch(() => {});
+      },
       onTurnEnd: (info) => {
         void (async () => {
           if (!turnEnded) {

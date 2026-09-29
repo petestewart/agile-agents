@@ -2915,7 +2915,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T467 Models come from the vendor, set through ACP (D46)
 - **Priority:** P1
-- **Status:** Todo (measured 2026-09-29: LIVE-CHECKLIST §12)
+- **Status:** Done (offline; whether each vendor honours `session/set_config_option` is for the live run: LIVE-CHECKLIST §12's "Accepts a model via ACP?" column)
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28): only Claude lists models; every other vendor shows "default model". `KNOWN_MODEL_IDS` is hand-written for Claude alone, and only Claude's adapter can set a model (`ANTHROPIC_MODEL`). That's left over from building, not a design: Claude's switch was the only one measured. ACP vendors report their models in `session/new`'s reply, which the daemon reads for the current model but otherwise discards.
 - **Acceptance Criteria (D46), for every vendor, Claude included:**
@@ -2924,7 +2924,14 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   3. A vendor-specific switch is a fallback only where the ACP option is missing, and only once a live run has measured that it's missing. Claude's `ANTHROPIC_MODEL` stays only if its bridge turns out not to support the ACP route.
   4. A vendor with no way to set a model shows "default" in the picker, with the reason.
 - **Measured (§12, 2026-09-29):** Claude, Codex, Cursor and Grok all send a `configOptions` entry with `category: "model"` (select: `currentValue`, `options[{value, name, description?}]`). That one shape is the list for every vendor. Claude and Codex also send a `category: "thought_level"` option for effort (`effort`, `reasoning_effort`), each with its own levels. Grok's list is short (one option, and the current value is not in it). Cursor's values carry their settings in brackets. Gemini's account was refused and Pi didn't run: they keep today's behaviour until measured.
-- **Validation Steps:** LIVE-CHECKLIST §12 filled in for each installed vendor before building. Then fake-agent tests (a vendor reporting a list; one accepting the ACP model option; one without it), and the picker e2e.
+- **Validation Steps:** LIVE-CHECKLIST §12 filled in for each installed vendor before building. Then fake-agent tests (a vendor reporting a list; one accepting the ACP model option; one without it), and the picker e2e. Built: `runner/model-catalog.test.ts` (11: the option read from `configOptions` before `models`, `models` as the fallback, grouped options, none; newest file per vendor, a reply with no list keeps the older one, Grok's off-list current kept, a corrupt file skipped, an old file mapped through the session records; `record`; Refresh with auth and no prompt, a reply with no list, a vendor that can't open), attach `T467 (D46)` block (7: a listed pick set through the option before the first prompt, in the log order authenticate → set_mode → set_config_option → prompt; ignored → the thread line and the session's model is the vendor's; refused → the line, the session carries on; Claude's full id → `ANTHROPIC_MODEL`, no option call; a Claude pick from the bridge's list not current → the option too; no model option → nothing set, catalog empty; a resume sets it again after `session/load`), acp-client (`setConfigOption` and its forwarded state), http (the `vendor_models` field; Refresh: 403 cross-origin, 400, 409 not installed, 502 failure, 200; 503 with no catalog), UI lib (the vendor's names in the groups, the select and a vendor change; the "No list yet" reason; bracket settings left off labels), control-room e2e "Models come from the vendor (T467)" (Cursor's names in the picker, the pick starts the node on its value, Settings → Agents → Models shows the list and Refresh fills Gemini's). The attach block fails 5 of 7 with the set step disabled. Full `bun test` 3535 pass, 3 skip, 0 fail; control-room e2e 132/0; walkthrough 1/0; typecheck and lint clean.
+- **Notes:** Branch T467-vendor-models. Choices:
+  - The catalog (`runner/model-catalog.ts`) is built from the `session-state.json` files, no new file: at start-up the newest session dirs (ULIDs sort by age) are read until each vendor has a list (at most 500 files), then kept in memory as sessions open (`onSessionState` from the runner, attach and Director). A file now names its `vendor`; an older one is mapped through the node records' sessions (`sessionVendorIndex`). A reply whose model option has no `options` (the old fake agent) is not a list. `GET /api/settings/session` carries it as `vendor_models` (`VendorModelsSchema`, shared, strict).
+  - The pick: once the session is open (after `session/new`, or `session/load` on a resume, or the fresh start after a failed load) and before the first prompt, a pick the vendor lists and doesn't run is sent with `session/set_config_option` (`setConfigOption` in the acp-client; its reply is forwarded as `_agile/session_state` with `source`, merged into the saved state). The reply's `currentValue` decides; a miss or an error is one thread line and the session record's `model` becomes the vendor's. A non-Claude pick the vendor doesn't list gets a line too. A fresh session's first turn now waits for the open (with authenticate where the vendor needs it); a session that can't open fails that turn as its prompt did (T171's set_mode refusal still ends it with the vendor line).
+  - Claude keeps `ANTHROPIC_MODEL` for every pick (unchanged); the option is only used when the pick is one of the bridge's own values and not its current one.
+  - Pickers: a vendor with a list is a group of its names (values stored); the current one shows even when the list lacks it; with none, the built-in list (Claude) or the default row, tagged "No list yet" with the reason. A label drops bracketed settings (`grok-4.7[…]` → "grok-4.7").
+  - Refresh: `POST /api/settings/models/refresh {vendor}` (same-origin) spawns the vendor in a new `sessions/<id>/` dir with no MCP server and no prompt, authenticates where needed, keeps the `session/new` reply, and stops it (60 s bound). Settings → Agents → Models has a Refresh per vendor.
+  - Follow-ups: effort through ACP (Claude's `effort` and Codex's `reasoning_effort`, both `category: "thought_level"`; Grok's in `models._meta.reasoningEfforts`) is untouched (Claude still uses `MAX_THINKING_TOKENS`); Codex's `models` pairs are ignored; ACP `session/set_model` isn't used (no vendor measured needing it).
 
 ### Ticket: T479 Claude bridge 0.84.0, so Sonnet 5.5 is offered
 - **Priority:** P1
@@ -2956,6 +2963,37 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   6. Updates run fixed argv, never through a shell and never with sudo, with a timeout. A permission error is reported, not retried. Running sessions are untouched.
   7. Settings also shows each ACP bridge's pinned version and the newest published one, as information only. A bridge moves by a code change (as T479 did), never by the updater.
 - **Validation Steps:** Unit tests with an injected command runner (no network, no real installs): install-method detection, version parsing, each mode's behaviour, a failed update, Off running nothing. HTTP route tests (same-origin). Settings and Needs me e2e. LIVE-CHECKLIST: one real Alert-mode update of a vendor that is behind.
+
+### Ticket: T482 Model routing: the policy and the lock
+- **Priority:** P1
+- **Status:** Todo (design proposed in `design/model-routing.md`; waiting on Pete's MR1–MR6)
+- **Owner:** manager
+- **Scope:** Pete (2026-09-29): model choice is configurable per project or node, with inherit and choose as options, the operator's own parameters (free text and settings), a chooser that looks at the task being handed off, configurable effort, and choices lockable to a set of models and effort levels. Today no parent chooses: `add_child` and `start_node` carry no model, and a child resolves like any unpicked node (T464, then project, repo, home, built-in).
+- **Acceptance Criteria:** `design/model-routing.md` §3, §4 and §8: the policy schema (mode default/inherit/choose, quality priority, allowed models, effort ceiling, escalation, pinned rules, guidance, weights), resolved node → ancestors → project → home, stored human-only. Every routed pick is clamped to the allowed set and under the effort ceiling, with a chat line when a clamp changes it. An explicit pick wins (MR3). Settings, project and node UI; `agile policy`. Depends on T467.
+- **Validation Steps:** Shared resolution unit tests; attach tests (routed vs explicit, inherit, clamp, a node write by an agent refused); UI e2e.
+
+### Ticket: T483 Model routing: the chooser
+- **Priority:** P1
+- **Status:** Todo (after T482)
+- **Owner:** manager
+- **Scope:** `design/model-routing.md` §5: a one-shot quick-draft call scores spec clarity, verifiability, horizon, stakes and volume, and picks a model and effort from the allowed set, with the reason. Pinned rules, guidance, weights and quality priority feed it. Model profiles (tier, relative cost) live in the home config. The rule fallback applies when Quick drafts is off or the call fails.
+- **Acceptance Criteria:** A chat line with the pick and why; Details shows the scores, the resolved policy's source, and "Let the policy choose again"; Settings has Try it. A reply that fails the schema, or picks outside the lock, is clamped or falls back, and says so.
+- **Validation Steps:** Unit tests with an injected drafter (a valid reply, an invalid one, an outside pick, a timeout, drafts off); attach test that a routed start runs the chooser once and a later wake doesn't (MR5); e2e for Try it.
+
+### Ticket: T484 Model routing: escalation
+- **Priority:** P2
+- **Status:** Todo (after T482)
+- **Owner:** manager
+- **Scope:** `design/model-routing.md` §6: under "start cheap", step up the ladder (effort, then model, within the lock) at the next start when a merge is refused twice for the same reason, a turn stalls, or the agent calls `escalate {why}`; Details → Step up. At the top of the ladder, a Needs me card.
+- **Acceptance Criteria:** A thread line and a record-only event per step; "strongest first" never steps; a model change ends a resting session (T465).
+- **Validation Steps:** Unit tests per trigger with the fake agent; the ladder order; the top-of-ladder card.
+
+### Ticket: T485 Model routing: budget caps
+- **Priority:** P2
+- **Status:** Todo (measure first: LIVE-CHECKLIST §15, which vendors report turn token usage)
+- **Owner:** manager
+- **Scope:** `design/model-routing.md` §7: budgets in weighted tokens (tokens × the model profile's cost), per session and per node. At 80% a chat line; at the cap the next turn waits and Needs me offers Raise the cap / Stop here. A vendor that reports no usage says so instead of estimating.
+- **Validation Steps:** After §15: unit tests on the weighting and cap, and an attach test that the capped node waits.
 
 ### Ticket: T469 Favourite models, and a picker that folds
 - **Priority:** P2
