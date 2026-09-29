@@ -3820,6 +3820,23 @@ describe('T467 (D46): models come from the vendor, set through ACP', () => {
     expect(threadBodies(stream.id).some((b) => b.includes('its own model'))).toBe(false);
   }, 30_000);
 
+  test('T486: a vendor session never sees the classifier key, even when the daemon has it', async () => {
+    const before = process.env.TYPESAFE_API_KEY;
+    process.env.TYPESAFE_API_KEY = 'test-only-not-a-real-key';
+    try {
+      attachService = buildAttachService(
+        fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log(), logSecretEnv: true }),
+      );
+      const stream = await makeStream();
+      await attachService.attach(stream.id);
+      await waitFor(() => prompts().length === 1);
+      expect(logLines()[0]).toEqual({ method: 'spawn-secrets', classifier_key: false });
+    } finally {
+      if (before === undefined) Reflect.deleteProperty(process.env, 'TYPESAFE_API_KEY');
+      else process.env.TYPESAFE_API_KEY = before;
+    }
+  }, 30_000);
+
   test('T480 (D49): the bridge runs the installed CLI, and stderr.log says which', async () => {
     const installed = {
       vendor: 'claude' as const,

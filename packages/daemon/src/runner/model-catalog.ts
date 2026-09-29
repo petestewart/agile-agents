@@ -39,6 +39,7 @@ import {
   isSessionVendor,
   ulid,
 } from '@agile-agents/shared';
+import { withoutDaemonSecrets } from '../secret-env';
 import type { InstalledCli } from './installed-cli';
 import { SESSION_STATE_FILE, saveSessionState } from './session';
 import { asRecord, vendorModelOption } from './vendor-models';
@@ -223,6 +224,8 @@ export async function probeVendorState(opts: ProbeOptions): Promise<Record<strin
     cmd: provider.command,
     args: [...provider.args],
     cwd: sessionDir,
+    // T486: the daemon's own env, less its secrets (the classifier key).
+    env: withoutDaemonSecrets(),
     envOverrides: { ...provider.envOverrides, ...(opts.installedCli?.env ?? {}) },
     clientCapabilities: provider.clientCapabilities,
     mcpServers: [],

@@ -104,6 +104,8 @@ export interface FakeAgentScript {
    * JSON-RPC error. Each call is logged (`logFile`).
    */
   setConfigOption?: 'honour' | 'ignore' | 'error';
+  /** T486: log whether the classifier key reached the agent (`{method: "spawn-secrets", classifier_key}`), never its value. */
+  logSecretEnv?: boolean;
   /** T467: log `ANTHROPIC_MODEL` as the agent saw it at spawn (`{method: "spawn", ANTHROPIC_MODEL}`); T480: and the bridge overrides, when set. */
   logModelEnv?: boolean;
 }
@@ -127,6 +129,12 @@ function loadScript(): FakeAgentScript {
 /** Loaded once; `handleLine` needs it too. */
 const script = loadScript();
 if (script.stderrBanner !== undefined) process.stderr.write(`${script.stderrBanner}\n`);
+if (script.logSecretEnv && import.meta.main) {
+  appendLog(script, {
+    method: 'spawn-secrets',
+    classifier_key: process.env.TYPESAFE_API_KEY !== undefined,
+  });
+}
 if (script.logModelEnv && import.meta.main) {
   appendLog(script, {
     method: 'spawn',
