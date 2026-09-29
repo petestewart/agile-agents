@@ -235,6 +235,20 @@ describe('attach on a stream with no repo (a planning conversation)', () => {
     expect(saved.configOptions[0]).toMatchObject({ id: 'model' });
     expect(saved.models).toBeNull();
   });
+
+  test('T467b: a reply with no modes, config options or models is kept too, naming what it carried', async () => {
+    await attachService.stopAll();
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.cursor, { ...SPEAKS, bareSessionNew: true }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    const file = join(home, 'sessions', session.id, SESSION_STATE_FILE);
+    await waitFor(() => existsSync(file));
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    expect(saved).toMatchObject({ modes: null, configOptions: null, models: null });
+    expect(saved.keys).toEqual(['sessionId']);
+  });
 });
 
 describe('attach on a stream with a repo', () => {

@@ -1295,14 +1295,28 @@ can grow into work in place. Keep the cockpit open; every step is in it.
 
 ## 12. **[vendor]** How each vendor takes a model (D46, T467)
 
-Measure before T467 is built: nothing here can be checked in the cloud. For
-each vendor installed on this machine (Claude, Codex, Gemini, Cursor, Grok,
-Pi), start one node on it (pick the vendor with the model chip), send one
-message, then open `<home>/sessions/<session id>/session-state.json`
-(T467a). It holds the vendor's `session/new` reply as sent: its `modes`,
-`configOptions` and `models`. The session id is on the node's Details →
-Agent (hover), or run `ls -t <home>/sessions | head` right after starting it.
-Sending the six files back is enough; the table below can be filled from them.
+Measure before T467 is built: nothing here can be checked in the cloud.
+
+First get a daemon that writes the file. It was added on `claude/phase-14`
+at T467a (commit 43099a46, 2026-09-28) and written for every vendor from
+T467b. Sessions started before that have none.
+
+```bash
+git fetch origin && git checkout claude/phase-14 && git pull
+git grep -n "session-state.json" -- packages   # must list runner/session.ts
+bun install && bun run build
+agile daemon stop && agile daemon start
+```
+
+Then for each vendor installed on this machine (Claude, Codex, Gemini,
+Cursor, Grok, Pi), start a **new** node on it (pick the vendor with the model
+chip) and send one message. Open
+`<home>/sessions/<session id>/session-state.json`, where the session id is
+the newest directory from `ls -t <home>/sessions | head -1`. It holds the
+vendor's `session/new` reply: its `modes`, `configOptions` and `models`
+(`null` when the reply had none), plus `keys`, the fields the reply did
+carry. Sending the six files back is enough; the table below can be filled
+from them.
 
 - [ ] Does its `session/new` reply list the models it offers (a model entry
       in `configOptions` with options, or a `models` list)? Write down the

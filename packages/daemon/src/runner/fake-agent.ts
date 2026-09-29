@@ -83,6 +83,8 @@ export interface FakeAgentScript {
    * after `session/new`, in ACP's shape (`{name, description, input?: {hint}}`).
    */
   commands?: Array<{ name: string; description: string; input?: { hint: string } }>;
+  /** T467b: `session/new` replies with its session id alone (no modes, config options or models). */
+  bareSessionNew?: boolean;
 }
 
 function appendLog(script: FakeAgentScript, line: Record<string, unknown>): void {
@@ -283,7 +285,9 @@ function handleLine(line: string): void {
       }
       write({
         id: message.id,
-        result: { sessionId, modes: null, configOptions: sessionConfigOptions() },
+        result: script.bareSessionNew
+          ? { sessionId }
+          : { sessionId, modes: null, configOptions: sessionConfigOptions() },
       });
       if (script.commands !== undefined) {
         notify('session/update', {
