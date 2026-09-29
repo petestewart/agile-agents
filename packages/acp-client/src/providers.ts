@@ -111,7 +111,7 @@ export interface AcpProviderConfig {
 /**
  * Claude's effort levels, as thinking-token budgets.
  *
- * Measured, not invented: `@agentclientprotocol/claude-agent-acp@0.81.1`
+ * Measured, not invented: `@agentclientprotocol/claude-agent-acp@0.81.1` (and 0.84.0, T479)
  * reads `MAX_THINKING_TOKENS` from its own environment at `session/new`
  * (`dist/acp-agent.js`: `resolveThinkingConfig(process.env.MAX_THINKING_TOKENS,
  * …)` — "unset → SDK default (adaptive); `0` → disabled; a positive integer
@@ -149,9 +149,12 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // Zed-maintained ACP bridge over Claude Code, measured in
     // design/spike-findings.md §A-§C against 0.75.1 / Claude Code 2.1.263;
     // bumped to 0.81.1 (SDK 0.3.280) in T171 — mode catalog, ANTHROPIC_MODEL
-    // and MAX_THINKING_TOKENS re-checked in the 0.81.1 dist.
+    // and MAX_THINKING_TOKENS re-checked in the 0.81.1 dist. T479: 0.84.0
+    // (SDK 0.3.284, the first to know claude-sonnet-5-5); the same levers
+    // (ANTHROPIC_MODEL, MAX_THINKING_TOKENS, loadSession, the config-option
+    // setter, the six mode ids, settingSources user/project/local) in its dist.
     command: 'npx',
-    args: ['-y', '@agentclientprotocol/claude-agent-acp@0.81.1'],
+    args: ['-y', '@agentclientprotocol/claude-agent-acp@0.84.0'],
     envOverrides: {},
     // `_meta.terminal_output` is a vendor extension — advertising it makes
     // command output arrive as structured terminal frames. Only ever read
