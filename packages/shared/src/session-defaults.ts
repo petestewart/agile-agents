@@ -51,6 +51,7 @@ export const KNOWN_MODEL_IDS: Readonly<Record<SessionVendor, readonly string[]>>
   claude: [
     'claude-opus-5-5',
     'claude-fable-5-1',
+    'claude-sonnet-5-5',
     'claude-opus-4-8',
     'claude-sonnet-4-6',
     'claude-haiku-4-5',

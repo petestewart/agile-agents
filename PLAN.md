@@ -2924,6 +2924,14 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Measured (§12, 2026-09-29):** Claude, Codex, Cursor and Grok all send a `configOptions` entry with `category: "model"` (select: `currentValue`, `options[{value, name, description?}]`). That one shape is the list for every vendor. Claude and Codex also send a `category: "thought_level"` option for effort (`effort`, `reasoning_effort`), each with its own levels. Grok's list is short (one option, and the current value is not in it). Cursor's values carry their settings in brackets. Gemini's account was refused and Pi didn't run: they keep today's behaviour until measured.
 - **Validation Steps:** LIVE-CHECKLIST §12 filled in for each installed vendor before building. Then fake-agent tests (a vendor reporting a list; one accepting the ACP model option; one without it), and the picker e2e.
 
+### Ticket: T479 Claude bridge 0.84.0, so Sonnet 5.5 is offered
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-29): Sonnet 5.5 is in Claude Code but missing from the list Claude reported in §12. That list comes from the ACP bridge we pin, not from the installed Claude Code. `claude-agent-acp@0.81.1` bundles `claude-agent-sdk` 0.3.280, which doesn't know `claude-sonnet-5-5`; 0.84.0 bundles 0.3.284, which does.
+- **Acceptance Criteria:** The pin is 0.84.0. Everything the daemon relies on was re-checked in the 0.84.0 dist and is unchanged: `ANTHROPIC_MODEL`, `MAX_THINKING_TOKENS` through `resolveThinkingConfig`, `loadSession`, the session config-option setter, the six mode ids, and the default `settingSources` user/project/local that the hook settings file depends on. The built-in Claude list suggests `claude-sonnet-5-5`.
+- **Validation Steps:** acp-client tests (the pinned args) 146/0; typecheck and lint clean; full `bun test` 3511/0. Live: LIVE-CHECKLIST §12's Claude row should list Sonnet 5.5 after `npx` fetches 0.84.0 (the first start after the pull takes a little longer).
+
 ### Ticket: T469 Favourite models, and a picker that folds
 - **Priority:** P2
 - **Status:** Todo
