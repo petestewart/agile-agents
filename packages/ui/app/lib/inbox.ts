@@ -51,6 +51,8 @@ export function cardTitle(item: InboxItem): string {
       return 'Ready to merge';
     case 'blocked':
       return 'Blocked';
+    case 'harness_update':
+      return item.harness?.failed === true ? 'Update failed' : 'Update available';
   }
 }
 
@@ -72,6 +74,8 @@ export function cardTone(item: InboxItem): CardTone {
       return 'green';
     case 'blocked':
       return 'red';
+    case 'harness_update':
+      return item.harness?.failed === true ? 'red' : 'blue';
   }
 }
 
@@ -631,9 +635,9 @@ export interface NeedsMeGroup {
 }
 
 export interface NeedsMeSection {
-  /** `project:<id>`, `none` (nodes in no project) or `knowledge` (no node). */
+  /** `project:<id>`, `none` (nodes in no project), `knowledge` (no node) or `updates` (T481: vendor CLIs). */
   key: string;
-  kind: 'project' | 'none' | 'knowledge';
+  kind: 'project' | 'none' | 'knowledge' | 'updates';
   project?: string;
   label: string;
   groups: NeedsMeGroup[];
@@ -661,23 +665,37 @@ export function groupNeedsMe(
   for (const item of items) {
     const projectId = item.stream !== undefined ? rowById.get(item.stream)?.project : undefined;
     const project = projectId !== undefined ? projectById.get(projectId) : undefined;
-    const key =
-      item.stream === undefined ? 'knowledge' : project ? `project:${project.id}` : 'none';
+    // T481: a vendor CLI's update belongs to no node and is not knowledge.
+    const update = item.kind === 'harness_update';
+    const kind: NeedsMeSection['kind'] = update
+      ? 'updates'
+      : item.stream === undefined
+        ? 'knowledge'
+        : project
+          ? 'project'
+          : 'none';
+    const key = kind === 'project' && project ? `project:${project.id}` : kind;
     let section = sections.get(key);
     if (!section) {
       section = {
         key,
-        kind: item.stream === undefined ? 'knowledge' : project ? 'project' : 'none',
+        kind,
         ...(project ? { project: project.id } : {}),
         label:
-          item.stream === undefined ? 'Knowledge' : project ? project.name : 'Not in a project',
+          kind === 'updates'
+            ? 'Updates'
+            : kind === 'knowledge'
+              ? 'Knowledge'
+              : project
+                ? project.name
+                : 'Not in a project',
         groups: [],
         count: 0,
         byNode: new Map(),
       };
       sections.set(key, section);
     }
-    const node = item.stream ?? '';
+    const node = update ? `harness:${item.harness?.id ?? ''}` : (item.stream ?? '');
     let group = section.byNode.get(node);
     if (!group) {
       // Inside a project, the root is the section heading; its nodes read from below it.
@@ -685,7 +703,8 @@ export function groupNeedsMe(
         project && item.stream !== project.root && item.stream_path.length > 1
           ? item.stream_path.slice(1)
           : item.stream_path;
-      group = { key: node, path: path.length > 0 ? path : ['Knowledge'], items: [] };
+      const fallback = update ? (item.harness?.label ?? 'Update') : 'Knowledge';
+      group = { key: node, path: path.length > 0 ? path : [fallback], items: [] };
       section.byNode.set(node, group);
       section.groups.push(group);
     }
@@ -831,6 +850,8 @@ export function itemCommand(item: InboxItem, row?: Parameters<typeof doneCardOf>
     }
     case 'blocked':
       return `Unblock: ${node}`;
+    case 'harness_update':
+      return `Update ${item.harness?.label ?? 'a CLI'}`;
   }
 }
 

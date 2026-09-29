@@ -18,12 +18,15 @@ import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } f
 import {
   type AgentId,
   type AgentRecord,
+  DEFAULT_HARNESS_UPDATE_MODE,
   DEFAULT_PERMISSION_POSTURE,
   DEFAULT_SESSION_IDLE_MINUTES,
   DIRECTOR_NODE,
   type Delivery,
   type DirectorRecord,
   type Event,
+  type HarnessId,
+  type HarnessUpdateMode,
   type HomeConfig,
   KnowledgeIdSchema,
   type KnowledgeItem,
@@ -40,6 +43,7 @@ import {
   type RoutedEvent,
   type SessionDefaultsPatch,
   SessionDefaultsPatchSchema,
+  type SessionVendor,
   type StatusCard,
   StatusCardSchema,
   type Stream,
@@ -689,6 +693,71 @@ export class StateStore {
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { session_idle_minutes: minutes },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /**
+   * T481 (D50): the harness update mode in `<home>/config.yaml`: the home's
+   * (`vendor` absent; `alert`, the default, removes the key) or one vendor's
+   * (`null` removes it, so it follows the home's).
+   */
+  async setHarnessUpdateMode(
+    mode: HarnessUpdateMode | null,
+    vendor: SessionVendor | undefined,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      const block = mappingCopy(raw.harness_updates);
+      if (vendor === undefined) {
+        if (mode === null) throw new Error('only a vendor’s mode can be cleared');
+        if (mode === DEFAULT_HARNESS_UPDATE_MODE) Reflect.deleteProperty(block, 'mode');
+        else block.mode = mode;
+      } else {
+        const vendors = mappingCopy(block.vendors);
+        if (mode === null) Reflect.deleteProperty(vendors, vendor);
+        else vendors[vendor] = mode;
+        if (Object.keys(vendors).length === 0) Reflect.deleteProperty(block, 'vendors');
+        else block.vendors = vendors;
+      }
+      if (Object.keys(block).length === 0) Reflect.deleteProperty(raw, 'harness_updates');
+      else raw.harness_updates = block;
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { harness_updates: { ...(vendor !== undefined ? { vendor } : {}), mode } },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T481: the version whose update was dismissed, per CLI (`undefined` forgets it). */
+  async setHarnessUpdateDismissed(
+    harness: HarnessId,
+    version: string | undefined,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      const block = mappingCopy(raw.harness_updates);
+      const dismissed = mappingCopy(block.dismissed);
+      if (version === undefined) Reflect.deleteProperty(dismissed, harness);
+      else dismissed[harness] = version;
+      if (Object.keys(dismissed).length === 0) Reflect.deleteProperty(block, 'dismissed');
+      else block.dismissed = dismissed;
+      if (Object.keys(block).length === 0) Reflect.deleteProperty(raw, 'harness_updates');
+      else raw.harness_updates = block;
+      const validated = validateHomeConfig(raw);
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { harness_updates: { dismissed: { harness, version: version ?? null } } },
       });
       return { result: validated, event };
     });

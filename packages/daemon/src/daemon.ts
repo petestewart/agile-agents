@@ -45,6 +45,13 @@ import type { DelegateFn } from './gates';
 import { PrPoller } from './github/poller';
 import { createGitHubRest, ghTokenSource, githubAuthAvailable } from './github/rest';
 import {
+  type CommandRunner,
+  HarnessUpdateService,
+  bridgesOf,
+  bunCommandRunner,
+  offlineCommandRunner,
+} from './harness';
+import {
   HookService,
   buildHookRpcMethods,
   wireClassifierRouteStats,
@@ -136,6 +143,12 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
   now?: () => Date;
   /** Test seam (T341): every agent and Director session's `spawnSession` (the fake agent offline). */
   spawn?: typeof spawnSession;
+  /**
+   * T481 (D50): runs the vendor CLIs' version checks and updates. Default:
+   * the real runner, except under `bun test`, where nothing runs (and no
+   * check is scheduled) unless a test injects one.
+   */
+  harnessRunner?: CommandRunner;
 }
 
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
@@ -344,6 +357,20 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         })
       : undefined;
 
+  // T481 (D50): each vendor's CLI kept up to date (Off, Alert or Auto). Its checks start
+  // after startup (`start()` below); under `bun test` nothing runs unless a test injects a runner.
+  const underTest = process.env.NODE_ENV === 'test';
+  const harnessUpdates = store
+    ? new HarnessUpdateService({
+        store,
+        run: options.harnessRunner ?? (underTest ? offlineCommandRunner : bunCommandRunner),
+        ...(routedEvents ? { events: routedEvents } : {}),
+        bridges: bridgesOf(ACP_PROVIDERS),
+        onError: (err) =>
+          console.error(`harness updates: ${err instanceof Error ? err.message : String(err)}`),
+      })
+    : undefined;
+
   // The inbox (§3): everything waiting on the human, across all streams.
   const inboxService =
     streamService && questionService && gateService
@@ -355,6 +382,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(planService ? { plans: planService } : {}),
           ...(contractService ? { contracts: contractService } : {}),
           ...(autonomyService ? { proposals: autonomyService } : {}),
+          ...(harnessUpdates ? { harness: harnessUpdates } : {}),
         })
       : undefined;
   // Docs: plain Markdown under `<home>/repos/<name>/docs/` and `<home>/streams/<id>.docs/`.
@@ -807,6 +835,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(contractService ? { contracts: contractService } : {}),
     ...(autonomyService ? { autonomy: autonomyService } : {}),
     ...(trackerLinks ? { trackerLinks } : {}),
+    ...(harnessUpdates ? { harnessUpdates } : {}),
     githubAuth,
   });
 
@@ -841,6 +870,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       ...(classifierKey ? { classifierStatus: () => classifierKey.status() } : {}),
       // T221 (§18): whether `gh` can supply a token, never the token.
       githubAuth,
+      // T481: each vendor CLI's version and whether an update is known.
+      ...(harnessUpdates ? { harnessStatus: () => harnessUpdates.status().harnesses } : {}),
       // T320 (D31): configured or not, read per call; never a token.
       trackerStatus: () => {
         try {
@@ -855,6 +886,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     lock.release();
     await http.stop();
     throw err;
+  }
+  // T481: the first check a little after start, then daily (unref'd timers).
+  if (harnessUpdates && (options.harnessRunner !== undefined || !underTest)) {
+    harnessUpdates.start();
   }
 
   let stopped = false;
@@ -880,6 +915,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       stopped = true;
       try {
         if (gateTimer) clearInterval(gateTimer);
+        harnessUpdates?.stop();
         overlapTracker?.stop();
         prPoller?.stop();
         trackerLinks?.stop();

@@ -11,6 +11,11 @@ import type {
   AutonomyProposal,
   ClassifierKeyStatus,
   Contract,
+  HarnessId,
+  HarnessStatus,
+  HarnessUpdateMode,
+  HarnessUpdateResult,
+  HarnessUpdatesStatus,
   PermissionPosture,
   Plan,
   Policy,
@@ -24,6 +29,7 @@ import type {
   SessionDefaultsPatch,
   SessionDefaultsStatus,
   SessionFlags,
+  SessionVendor,
   Stream,
   StreamCreateInput,
   ThreadEntry,
@@ -739,4 +745,39 @@ export function getStreamSteps(id: string): Promise<StepPage> {
 /** T399: the Director's agent steps, the same shape as a node's. */
 export function getDirectorSteps(): Promise<StepPage> {
   return get('/api/director/steps');
+}
+
+// ---------------------------------------------------------------- T481: vendor CLI updates
+
+/** T481 (D50): Settings → Agents → Updates: the mode, each CLI's last check, the bridges. */
+export function getHarnessUpdates(): Promise<HarnessUpdatesStatus> {
+  return get('/api/settings/harness-updates');
+}
+
+/** T481: Off, Alert or Auto for every vendor, or for one (`null` puts it back on the global mode). */
+export function setHarnessUpdateMode(
+  mode: HarnessUpdateMode | null,
+  vendor?: SessionVendor,
+): Promise<HarnessUpdatesStatus> {
+  return post('/api/settings/harness-updates', {
+    mode,
+    ...(vendor !== undefined ? { vendor } : {}),
+  }) as Promise<HarnessUpdatesStatus>;
+}
+
+/** T481: Check now. */
+export function checkHarnessUpdates(): Promise<HarnessUpdatesStatus> {
+  return post('/api/harness-updates/check') as Promise<HarnessUpdatesStatus>;
+}
+
+/** T481: runs a CLI's update; the result is in words (`ok: false` is a failure the daemon explains). */
+export function updateHarness(id: HarnessId): Promise<HarnessUpdateResult> {
+  return post(
+    `/api/harness-updates/${encodeURIComponent(id)}/update`,
+  ) as Promise<HarnessUpdateResult>;
+}
+
+/** T481: hides a CLI's update item until a newer version is out. */
+export function dismissHarnessUpdate(id: HarnessId): Promise<HarnessStatus> {
+  return post(`/api/harness-updates/${encodeURIComponent(id)}/dismiss`) as Promise<HarnessStatus>;
 }

@@ -2,9 +2,10 @@
  * `InboxService`: everything waiting on the human, across every stream,
  * oldest first (§3), derived on every call from existing records: open
  * questions, pending gates, proposed rules (seed imports grouped into one
- * `rule_batch` per source), and streams whose agent is `blocked`/`done`
- * while the human half is still `open`. Nothing is persisted and nothing
- * comes from the bus, so a stale message can never surface (§3.3).
+ * `rule_batch` per source), streams whose agent is `blocked`/`done`
+ * while the human half is still `open`, and (T481) vendor CLIs to update.
+ * Nothing is persisted and nothing comes from the bus, so a stale message
+ * can never surface (§3.3).
  */
 
 import {
@@ -55,6 +56,8 @@ export interface InboxServiceDeps {
   contracts?: Pick<ContractService, 'find'>;
   /** T282: a coordinator's change held at Advise is a `proposal` item with Apply. */
   proposals?: Pick<AutonomyService, 'listOpen'>;
+  /** T481 (D50): a vendor's CLI with an update (or a failed one) is a `harness_update` item. */
+  harness?: { inboxItems(): InboxItem[] };
 }
 
 export class InboxService {
@@ -174,6 +177,8 @@ export class InboxService {
       const item = this.streamItem(stream, byId);
       if (item) items.push(item);
     }
+    // T481: derived like the rest, from the harness service's last check.
+    for (const item of this.deps.harness?.inboxItems() ?? []) items.push(item);
 
     return items.sort((a, b) => (a.ts === b.ts ? a.id.localeCompare(b.id) : a.ts < b.ts ? -1 : 1));
   }

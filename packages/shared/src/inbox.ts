@@ -9,6 +9,7 @@
  */
 
 import { z } from 'zod';
+import { HarnessIdSchema } from './harness-updates';
 import { UlidSchema, formatZodError } from './ids';
 import { KnowledgeIdSchema, KnowledgeKindSchema } from './knowledge';
 import { ReadRootSchema } from './posture';
@@ -30,6 +31,10 @@ import { QUESTION_OPTIONS_MAX, QuestionOptionSchema } from './question';
  *
  * T281 adds `plan_approve`: a coordinator's draft plan (projects-design
  * §9.1, §14.4). Its `id` is the coordinating node's id.
+ *
+ * T481 (D50) adds `harness_update`: a vendor's CLI with a newer version (or,
+ * in Auto, an update that failed). It belongs to no node; its `id` is
+ * `harness:<id>` and `harness` names the CLI.
  */
 export const INBOX_ITEM_KINDS = [
   'question',
@@ -41,12 +46,25 @@ export const INBOX_ITEM_KINDS = [
   'proposal',
   'blocked',
   'done',
+  'harness_update',
 ] as const;
 
-/** The kinds that may belong to no stream: a rule decision (§5.1). */
-function isRuleKind(kind: InboxItemKind): boolean {
-  return kind === 'rule_accept' || kind === 'rule_batch';
+/** The kinds that may belong to no stream: a rule decision (§5.1), and T481's CLI update. */
+function isStreamlessKind(kind: InboxItemKind): boolean {
+  return kind === 'rule_accept' || kind === 'rule_batch' || kind === 'harness_update';
 }
+
+/** T481: the CLI a `harness_update` item is about, and whether its update failed. */
+export const InboxHarnessSchema = z
+  .object({
+    id: HarnessIdSchema,
+    /** Its name in words ("Claude Code"). */
+    label: z.string().min(1).max(80),
+    /** An update ran and failed (Auto, or an Update pressed): the item says how to run it by hand. */
+    failed: z.literal(true).optional(),
+  })
+  .strict();
+export type InboxHarness = z.infer<typeof InboxHarnessSchema>;
 export const InboxItemKindSchema = z.enum(INBOX_ITEM_KINDS);
 export type InboxItemKind = z.infer<typeof InboxItemKindSchema>;
 
@@ -100,13 +118,15 @@ export const InboxItemSchema = z
     options: InboxItemOptionsSchema.optional(),
     /** T457: a routed read's gate: the dir "Always for this project" adds (`HilRequest.read_root`). */
     read_root: ReadRootSchema.optional(),
+    /** T481: a `harness_update` item's CLI — present on that kind only. */
+    harness: InboxHarnessSchema.optional(),
   })
   .strict()
-  .refine((item) => isRuleKind(item.kind) || item.stream !== undefined, {
+  .refine((item) => isStreamlessKind(item.kind) || item.stream !== undefined, {
     message: 'must name its stream',
     path: ['stream'],
   })
-  .refine((item) => isRuleKind(item.kind) || item.stream_path.length > 0, {
+  .refine((item) => isStreamlessKind(item.kind) || item.stream_path.length > 0, {
     message: 'must carry the stream path',
     path: ['stream_path'],
   })
@@ -125,6 +145,10 @@ export const InboxItemSchema = z
   .refine((item) => item.read_root === undefined || item.kind === 'gate', {
     message: 'only a gate item carries a read root',
     path: ['read_root'],
+  })
+  .refine((item) => (item.kind === 'harness_update') === (item.harness !== undefined), {
+    message: 'a harness_update item names its CLI, and only it does',
+    path: ['harness'],
   });
 export type InboxItem = z.infer<typeof InboxItemSchema>;
 

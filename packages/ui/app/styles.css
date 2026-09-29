@@ -8343,6 +8343,73 @@ div.cr-ov-ev:hover {
   display: flex;
   gap: 2px;
 }
+
+/* T481: Agents → Updates: one row per agent CLI, then Check now and the bridges. */
+.cr-set-updates,
+.cr-set-bridges {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+.cr-set-updates-row {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.cr-set-updates-row:first-child {
+  border-top: none;
+}
+.cr-set-updates-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
+}
+.cr-set-updates-name {
+  font-weight: 500;
+  min-width: 8em;
+}
+.cr-set-updates-version {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.cr-set-updates-controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.cr-set-updates-hint,
+.cr-set-updates-result {
+  margin: 4px 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.cr-set-updates-result[data-ok="false"] {
+  color: var(--red);
+}
+.cr-set-updates-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0 4px;
+}
+.cr-set-bridges > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 4px 0;
+  font-size: var(--text-sm);
+}
+.cr-set-bridges code {
+  overflow-wrap: anywhere;
+}
 .cr-set-sf-labels > span:nth-child(1) {
   grid-area: lv;
 }

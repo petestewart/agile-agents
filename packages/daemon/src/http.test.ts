@@ -35,6 +35,7 @@ import { DirectorService } from './director';
 import { RoutedEventService } from './events';
 import type { CockpitFrame, StepPage, StreamPagePayload } from './feed';
 import { GateService } from './gates';
+import { HarnessUpdateService } from './harness';
 import { type HttpServerHandle, startHttpServer } from './http';
 import { InboxService } from './inbox';
 import { runInit } from './init';
@@ -2238,5 +2239,155 @@ describe('T383 GET /api/events pages', () => {
   test('is 503 without the event service', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/api/events`);
     expect(res.status).toBe(503);
+  });
+});
+
+describe('T481 harness update routes (D50)', () => {
+  let home: string;
+  let cockpit: HttpServerHandle;
+  let store: StateStore;
+  let harness: HarnessUpdateService;
+  const calls: string[] = [];
+  let installed = '2.2.9';
+  const update =
+    '/usr/local/bin/npm install -g --prefix /usr/local @anthropic-ai/claude-code@latest';
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'agile-http-harness-'));
+    const init = runInit(home);
+    store = StateStore.open(init.stateRoot);
+    const streams = new StreamService(store);
+    const questions = new QuestionService(store, streams);
+    const gates = new GateService(store);
+    calls.length = 0;
+    installed = '2.2.9';
+    const events = new RoutedEventService(store);
+    // A fake machine: Claude Code from global npm, 2.2.9 installed, 2.3.1 published.
+    harness = new HarnessUpdateService({
+      store,
+      harnesses: ['claude'],
+      which: (command) => (command === 'claude' ? '/usr/local/bin/claude' : null),
+      realpath: () => '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js',
+      exists: (path) => path === '/usr/local/bin/npm',
+      events,
+      run: async (argv) => {
+        const line = argv.join(' ');
+        calls.push(line);
+        const out = (stdout: string) => ({ code: 0, stdout, stderr: '', timedOut: false });
+        if (line === '/usr/local/bin/claude --version') return out(`${installed} (Claude Code)`);
+        if (line.endsWith('view @anthropic-ai/claude-code version')) return out('2.3.1\n');
+        if (line === update) {
+          installed = '2.3.1';
+          return out('');
+        }
+        return { code: 127, stdout: '', stderr: 'not found', timedOut: false };
+      },
+    });
+    cockpit = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot: init.stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates,
+      streams,
+      questions,
+      events,
+      inbox: new InboxService({ streams, questions, gates, harness }),
+      harnessUpdates: harness,
+      feedPollIntervalMs: 20,
+    });
+  });
+
+  afterEach(async () => {
+    await cockpit.stop();
+    await harness.settled();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const url = (path: string) => `http://127.0.0.1:${cockpit.port}${path}`;
+  const post = (path: string, body: unknown = {}, headers: Record<string, string> = {}) =>
+    fetch(url(path), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+  const evil = { origin: 'http://evil.example' };
+
+  test('GET/POST /api/settings/harness-updates: the mode in the home config, as the operator; 403 cross-origin', async () => {
+    const got = (await (await fetch(url('/api/settings/harness-updates'))).json()) as {
+      mode: string;
+      harnesses: Array<{ id: string; found: boolean }>;
+    };
+    expect(got.mode).toBe('alert');
+    expect(got.harnesses.map((h) => [h.id, h.found])).toEqual([['claude', false]]);
+    expect((await post('/api/settings/harness-updates', { mode: 'auto' }, evil)).status).toBe(403);
+    expect(store.getHomeConfig().harness_updates).toBeUndefined();
+    const off = (await (await post('/api/settings/harness-updates', { mode: 'off' })).json()) as {
+      mode: string;
+    };
+    expect(off.mode).toBe('off');
+    expect(store.getHomeConfig().harness_updates).toEqual({ mode: 'off' });
+    const put = store
+      .listEvents()
+      .filter((e) => e.kind === 'home_config_put')
+      .at(-1);
+    expect(put?.agent).toBe('human');
+    await post('/api/settings/harness-updates', { mode: 'auto', vendor: 'claude' });
+    expect(store.getHomeConfig().harness_updates?.vendors).toEqual({ claude: 'auto' });
+    await post('/api/settings/harness-updates', { mode: null, vendor: 'claude' });
+    expect(store.getHomeConfig().harness_updates).toEqual({ mode: 'off' });
+    expect((await post('/api/settings/harness-updates', { mode: 'weekly' })).status).toBe(400);
+    expect((await post('/api/settings/harness-updates', { mode: null })).status).toBe(400);
+    // Off: Check now runs nothing.
+    await post('/api/harness-updates/check');
+    expect(calls).toEqual([]);
+  });
+
+  test('Check now, the Needs me item, Update and Dismiss; every POST is same-origin only', async () => {
+    expect((await post('/api/harness-updates/check', {}, evil)).status).toBe(403);
+    expect(calls).toEqual([]);
+    const checked = (await (await post('/api/harness-updates/check')).json()) as {
+      harnesses: Array<{ version?: string; latest?: string; behind: boolean }>;
+    };
+    expect(checked.harnesses[0]).toMatchObject({ version: '2.2.9', latest: '2.3.1', behind: true });
+    const inbox = (await (await fetch(url('/api/inbox'))).json()) as {
+      items: Array<{ kind: string; id: string; context: string }>;
+    };
+    expect(inbox.items.map((i) => [i.kind, i.id, i.context])).toEqual([
+      ['harness_update', 'harness:claude', 'Claude Code 2.3.1 is available (you have 2.2.9)'],
+    ]);
+
+    expect((await post('/api/harness-updates/claude/update', {}, evil)).status).toBe(403);
+    expect((await post('/api/harness-updates/claude/dismiss', {}, evil)).status).toBe(403);
+    expect(calls).not.toContain(update);
+    expect((await post('/api/harness-updates/vim/update')).status).toBe(404);
+    expect((await fetch(url('/api/harness-updates/claude/update'))).status).toBe(404);
+
+    const result = (await (await post('/api/harness-updates/claude/update')).json()) as {
+      ok: boolean;
+      message: string;
+    };
+    expect(result).toMatchObject({ ok: true, message: 'Updated Claude Code to 2.3.1' });
+    expect(calls).toContain(update);
+    const after = (await (await fetch(url('/api/inbox'))).json()) as { items: unknown[] };
+    expect(after.items).toEqual([]);
+    const events = (await (await fetch(url('/api/events'))).json()) as {
+      events: Array<{ type: string; by: string; payload: { summary: string } }>;
+    };
+    expect(
+      events.events
+        .filter((e) => e.type === 'harness_updated')
+        .map((e) => [e.by, e.payload.summary]),
+    ).toEqual([['human', 'Updated Claude Code to 2.3.1']]);
+
+    expect((await post('/api/harness-updates/claude/dismiss')).status).toBe(200);
+  });
+
+  test('without the service the routes say so (503)', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    expect((await fetch(`${base}/api/settings/harness-updates`)).status).toBe(503);
+    const check = await fetch(`${base}/api/harness-updates/check`, { method: 'POST' });
+    expect(check.status).toBe(503);
   });
 });

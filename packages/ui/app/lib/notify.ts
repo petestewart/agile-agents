@@ -198,6 +198,8 @@ export function itemHeadline(item: InboxItem, lookup?: NodeLookup): string {
       return of(noChanges(item, lookup) ? 'Finished, no changes' : 'Ready to merge', node);
     case 'blocked':
       return of('Blocked', node);
+    case 'harness_update':
+      return of(cardTitle(item), item.harness?.label);
   }
 }
 

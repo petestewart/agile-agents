@@ -35,6 +35,7 @@ describe('InboxItemSchema', () => {
       'proposal',
       'blocked',
       'done',
+      'harness_update',
     ]);
     expect(InboxItemSchema.safeParse(item({ kind: 'approve_plan' as never })).success).toBe(false);
   });
@@ -59,6 +60,30 @@ describe('InboxItemSchema', () => {
       item({ kind: 'rule_accept', id: `R-${ulid()}`, stream: undefined, stream_path: [] }),
     );
     expect(streamless.success).toBe(true);
+  });
+
+  test('T481: a harness_update item names its CLI and no node; no other kind names a CLI', () => {
+    const update = item({
+      kind: 'harness_update',
+      id: 'harness:claude',
+      stream: undefined,
+      stream_path: [],
+      context: 'Claude Code 2.3.1 is available (you have 2.2.9)',
+      harness: { id: 'claude', label: 'Claude Code' },
+    });
+    expect(validateInboxItem(update).harness).toEqual({ id: 'claude', label: 'Claude Code' });
+    const failed = { ...(update as object), harness: { id: 'pi-acp', label: 'pi', failed: true } };
+    expect(InboxItemSchema.safeParse(failed).success).toBe(true);
+    expect(() => validateInboxItem({ ...(update as object), harness: undefined })).toThrow(
+      /names its CLI/,
+    );
+    expect(
+      InboxItemSchema.safeParse({ ...(update as object), harness: { id: 'vim', label: 'x' } })
+        .success,
+    ).toBe(false);
+    expect(() =>
+      validateInboxItem(item({ harness: { id: 'claude', label: 'Claude Code' } })),
+    ).toThrow(/names its CLI/);
   });
 
   test('T361: only a question item carries options, one line each, six at most', () => {

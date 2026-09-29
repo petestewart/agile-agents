@@ -22,13 +22,15 @@
  *  - `done`         → Merge (T347, D36 D7; T416: the first one asks), View
  *                     changes; a refusal says why under it, with its fix
  *  - `blocked`      → a reply unblocks it (T416: "Reply to unblock…")
+ *  - `harness_update` → Update (runs the CLI's update, says the result in
+ *                     words) and Dismiss (until a newer version) (T481)
  *
  * While the daemon is away (`offline`) every action is off, and says why.
  * The daemon's text is taken apart by `lib/inbox.ts` and `lib/errors.ts`
  * (pure, unit-tested); this file only renders and calls the API.
  */
 
-import type { InboxItem } from '@agile-agents/shared';
+import type { HarnessId, InboxItem } from '@agile-agents/shared';
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import {
   alwaysGate,
@@ -40,6 +42,7 @@ import {
   decideProposal,
   decideRule,
   dismissFinished,
+  dismissHarnessUpdate,
   getStreamDiff,
   getStreamPage,
   landStream,
@@ -48,6 +51,7 @@ import {
   sayOnStream,
   startWaitingParts,
   stopSessions,
+  updateHarness,
 } from '../lib/api';
 import { proposalCardWords } from '../lib/autonomy';
 import { parseDiff, tidyIds } from '../lib/chat';
@@ -122,6 +126,8 @@ function iconOf(item: InboxItem): IconName {
       return 'git-merge';
     case 'blocked':
       return 'alert-triangle';
+    case 'harness_update':
+      return item.harness?.failed === true ? 'alert-circle' : 'download';
   }
 }
 
@@ -557,6 +563,29 @@ export function Card({
     }
   }
 
+  /** T481: a vendor CLI's Update: the daemon runs it and says what happened, in words. */
+  async function runHarnessUpdate(id: HarnessId): Promise<void> {
+    acting();
+    setBusy('update');
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const result = await updateHarness(id);
+      if (result.ok) {
+        setSettled('update');
+        setNotice(result.message);
+        decided(result.message);
+      } else {
+        setError({ text: result.message });
+      }
+      onDone();
+    } catch (err) {
+      setError({ text: writeFailure(err, 'Couldn’t reach the daemon; nothing was updated.') });
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   /** The fix a refusal named: a prepared message to the node's agent, or stopping it. */
   async function applyFix(fix: MergeFix): Promise<void> {
     const id = item.stream;
@@ -938,6 +967,43 @@ export function Card({
           </Button>
         </div>
       );
+      break;
+    }
+
+    case 'harness_update': {
+      const harness = item.harness;
+      const main = shown(fullText(item));
+      foldable = main.foldable;
+      body = <Markdown className="context" text={main.text} testId="inbox-context" />;
+      actions =
+        harness !== undefined ? (
+          <div className="cr-actions">
+            <Button
+              variant="primary"
+              size="sm"
+              icon="download"
+              data-testid="harness-update"
+              busy={busy === 'update'}
+              disabled={locked}
+              title={why(
+                `Install the new version of ${harness.label}. Running agents keep the one they started on.`,
+              )}
+              onClick={() => void runHarnessUpdate(harness.id)}
+            >
+              Update
+            </Button>
+            <Button
+              size="sm"
+              data-testid="harness-dismiss"
+              busy={busy === 'dismiss'}
+              disabled={locked}
+              title={why('Hide it until a newer version is out')}
+              onClick={() => act('dismiss', () => dismissHarnessUpdate(harness.id))}
+            >
+              Dismiss
+            </Button>
+          </div>
+        ) : null;
       break;
     }
 

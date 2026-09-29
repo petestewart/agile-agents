@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { HarnessUpdatesInputSchema, harnessModeOf } from './harness-updates';
 import {
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_BASE_URL,
@@ -57,5 +58,33 @@ describe('classifier config (T150, cockpit design §6.2/§6.3)', () => {
     expect(validateHomeConfig({ classifier: { provider: 'off' } }).classifier?.provider).toBe(
       'off',
     );
+  });
+});
+
+describe('T481 harness_updates (D50)', () => {
+  test('absent is Alert; a vendor overrides the home; pi-acp follows Pi', () => {
+    expect(harnessModeOf(undefined, 'claude')).toBe('alert');
+    const config = validateHomeConfig({
+      harness_updates: { mode: 'auto', vendors: { pi: 'off' }, dismissed: { claude: '2.3.1' } },
+    }).harness_updates;
+    expect(harnessModeOf(config, 'claude')).toBe('auto');
+    expect(harnessModeOf(config, 'pi')).toBe('off');
+    expect(harnessModeOf(config, 'pi-acp')).toBe('off');
+  });
+
+  test('strict: an unknown mode, vendor, key or version is refused', () => {
+    expect(() => validateHomeConfig({ harness_updates: { mode: 'sometimes' } })).toThrow();
+    expect(() => validateHomeConfig({ harness_updates: { vendors: { vim: 'off' } } })).toThrow();
+    expect(() => validateHomeConfig({ harness_updates: { every: 'day' } })).toThrow();
+    expect(() =>
+      validateHomeConfig({ harness_updates: { dismissed: { claude: 'latest' } } }),
+    ).toThrow();
+  });
+
+  test('the Settings input: a mode, or a vendor with a mode or null', () => {
+    expect(HarnessUpdatesInputSchema.safeParse({ mode: 'off' }).success).toBe(true);
+    expect(HarnessUpdatesInputSchema.safeParse({ mode: null, vendor: 'codex' }).success).toBe(true);
+    expect(HarnessUpdatesInputSchema.safeParse({ mode: null }).success).toBe(false);
+    expect(HarnessUpdatesInputSchema.safeParse({ mode: 'auto', extra: 1 }).success).toBe(false);
   });
 });

@@ -27,6 +27,7 @@ import {
 } from '@agile-agents/daemon';
 import {
   type ClassifierKeyStatus,
+  type HarnessStatus,
   type ResolvedSessionDefaults,
   type TrackerStatus,
   formatSessionDefaults,
@@ -298,6 +299,8 @@ export interface DaemonStatusReport {
   githubAuth?: 'available' | 'unavailable';
   /** T320 (D31): from `daemon.status` — each tracker configured or not, never a token. */
   trackers?: TrackerStatus;
+  /** T481 (D50): from `daemon.status` — each vendor CLI's version, and a known update. */
+  harnesses?: HarnessStatus[];
   /** T170 (D17): what a session attached with nothing named gets (home config + built-in). */
   sessionDefaults?: ResolvedSessionDefaults;
 }
@@ -316,12 +319,14 @@ export async function withClassifierStatus(
       classifier?: ClassifierKeyStatus;
       github?: { auth: 'available' | 'unavailable' };
       trackers?: TrackerStatus;
+      harnesses?: HarnessStatus[];
     }>(report.socketPath, 'daemon.status', {}, { timeoutMs: 2000 });
     return {
       ...report,
       ...(status.classifier ? { classifier: status.classifier } : {}),
       ...(status.github ? { githubAuth: status.github.auth } : {}),
       ...(status.trackers ? { trackers: status.trackers } : {}),
+      ...(status.harnesses ? { harnesses: status.harnesses } : {}),
     };
   } catch {
     return report;
@@ -361,6 +366,19 @@ function sessionDefaultsFor(home: string): { sessionDefaults?: ResolvedSessionDe
   }
 }
 
+/**
+ * T481 (D50): one CLI's line: `Claude Code: 2.2.9 · update available (2.3.1)`,
+ * `Codex: not installed`, `Grok CLI: off`. Only what the last check knows.
+ */
+export function formatHarnessLine(h: HarnessStatus): string {
+  if (h.mode === 'off') return `${h.label}: off (no update checks)`;
+  if (h.checked_at === undefined) return `${h.label}: not checked yet`;
+  if (!h.found) return `${h.label}: not installed`;
+  const version = h.version ?? 'version unknown';
+  const update = h.behind && h.latest !== undefined ? ` · update available (${h.latest})` : '';
+  return `${h.label}: ${version}${update}`;
+}
+
 /** T166: the state home comes first — it is what an operator checks. */
 export function formatDaemonStatus(report: DaemonStatusReport): string {
   const home = `home: ${report.home}`;
@@ -378,5 +396,9 @@ export function formatDaemonStatus(report: DaemonStatusReport): string {
   const trackers = report.trackers
     ? `\ntrackers: jira ${report.trackers.jira} · linear ${report.trackers.linear}`
     : '';
-  return `${running}${classifier}${github}${trackers}${defaults}`;
+  const harnesses =
+    report.harnesses && report.harnesses.length > 0
+      ? `\n${report.harnesses.map(formatHarnessLine).join('\n')}`
+      : '';
+  return `${running}${classifier}${github}${trackers}${harnesses}${defaults}`;
 }
