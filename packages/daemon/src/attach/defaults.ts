@@ -76,6 +76,7 @@ export class SessionDefaultsService {
       vendors: SESSION_VENDORS,
       known_models: KNOWN_MODEL_IDS,
       ...(this.models !== undefined ? { vendor_models: this.models() } : {}),
+      ...(home.favourite_models !== undefined ? { favourite_models: home.favourite_models } : {}),
       ...this.notInstalled(),
     };
   }

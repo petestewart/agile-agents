@@ -25,6 +25,7 @@ import {
   type Delivery,
   type DirectorRecord,
   type Event,
+  type FavouriteModel,
   type HarnessId,
   type HarnessUpdateMode,
   type HomeConfig,
@@ -57,6 +58,7 @@ import {
   assertNoStreamCycle,
   assertNoWaitsOnCycle,
   assertStreamWrite,
+  favouriteKey,
   formatKnowledgeScope,
   formatZodError,
   projectNameKey,
@@ -682,6 +684,56 @@ export class StateStore {
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { installed_cli: { [vendor]: on } },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /**
+   * T469: star (`on`) or unstar one model. A star goes at the end of the
+   * list and is never doubled; `default` is kept as no `model`. The last
+   * unstar removes the key.
+   */
+  async setFavouriteModel(
+    ref: FavouriteModel,
+    on: boolean,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      const favourite: FavouriteModel =
+        ref.model === undefined || ref.model === 'default'
+          ? { vendor: ref.vendor }
+          : { vendor: ref.vendor, model: ref.model };
+      const key = favouriteKey(favourite);
+      // A hand-edited list that isn't one is refused (naming the key), never replaced.
+      if (raw.favourite_models !== undefined && !Array.isArray(raw.favourite_models)) {
+        validateHomeConfig(raw);
+      }
+      const current = (raw.favourite_models ?? []) as unknown[];
+      const others = current.filter(
+        (row) =>
+          !(
+            row !== null &&
+            typeof row === 'object' &&
+            favouriteKey(row as { vendor: string; model?: string }) === key
+          ),
+      );
+      // Starred again: it keeps its place.
+      const next = !on
+        ? others
+        : others.length < current.length
+          ? current
+          : [...current, favourite];
+      if (next.length > 0) raw.favourite_models = next;
+      else Reflect.deleteProperty(raw, 'favourite_models');
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { favourite_model: { ...favourite, on } },
       });
       return { result: validated, event };
     });

@@ -107,6 +107,37 @@ export const VendorModelsSchema = z
   .strict();
 export type VendorModels = z.infer<typeof VendorModelsSchema>;
 
+/**
+ * T469: a favourite model, one row of `favourite_models` in the home
+ * config. No `model` is the vendor's own default (a vendor that lists none).
+ */
+export const FavouriteModelSchema = z
+  .object({
+    vendor: SessionVendorSchema,
+    model: z.string().min(1).max(SESSION_MODEL_MAX_CHARS).optional(),
+  })
+  .strict();
+export type FavouriteModel = z.infer<typeof FavouriteModelSchema>;
+
+/** T469: at most this many favourites. */
+export const FAVOURITE_MODELS_MAX = 100;
+
+/** T469: `POST /api/settings/favourite-models`: star (`on`) or unstar one model. */
+export const FavouriteModelInputSchema = z
+  .object({
+    vendor: SessionVendorSchema,
+    model: z.string().min(1).max(SESSION_MODEL_MAX_CHARS).optional(),
+    on: z.boolean(),
+  })
+  .strict();
+export type FavouriteModelInput = z.infer<typeof FavouriteModelInputSchema>;
+
+/** T469: `default` (and no model) is the vendor's own default; kept as no `model`. */
+export function favouriteKey(ref: { vendor: string; model?: string | undefined }): string {
+  const model = ref.model === undefined || ref.model === 'default' ? '' : ref.model;
+  return `${ref.vendor}/${model}`;
+}
+
 /** T467: `POST /api/settings/models/refresh`: ask one vendor for its models. */
 export const RefreshModelsInputSchema = z.object({ vendor: SessionVendorSchema }).strict();
 export type RefreshModelsInput = z.infer<typeof RefreshModelsInputSchema>;
@@ -307,6 +338,8 @@ export interface SessionDefaultsStatus {
    * A vendor that never reported one is absent.
    */
   vendor_models?: Readonly<Partial<Record<SessionVendor, VendorModels>>>;
+  /** T469: the models starred as favourites (home config); absent or empty = none. */
+  favourite_models?: readonly FavouriteModel[];
   /** T437: vendors whose command isn't on the daemon's PATH, with why in words. Absent: all found (or an older daemon). */
   not_installed?: Readonly<Partial<Record<SessionVendor, string>>>;
 }

@@ -30,7 +30,7 @@ import {
   vendorTakesEffort,
 } from '@agile-agents/shared';
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react';
-import { getSessionDefaults } from '../lib/api';
+import { getSessionDefaults, setFavouriteModel } from '../lib/api';
 import { agentLabel, modelLabel, sessionIdText, vendorLabel } from '../lib/chat';
 import {
   type ModelChipState,
@@ -42,7 +42,10 @@ import {
   resolvedFor,
   sameModel,
 } from '../lib/defaults';
+import { pickerView, toggleFold } from '../lib/favourites';
+import { useFavouriteModels, usePickerPrefs } from '../lib/use-favourites';
 import { Icon } from './Icon';
+import { Switch } from './SettingsCard';
 import { Button, Dialog, Popover, Segmented, Spinner } from './ui';
 
 export interface SessionChoice {
@@ -72,9 +75,63 @@ function onArrows(event: ReactKeyboardEvent<HTMLElement>): void {
   next?.focus();
 }
 
+/** T469: a key that types (a letter, a digit, a dash), not a move or a press. */
+function typesText(event: ReactKeyboardEvent<HTMLElement>): boolean {
+  return (
+    event.key.length === 1 && event.key !== ' ' && !event.ctrlKey && !event.metaKey && !event.altKey
+  );
+}
+
+/**
+ * T469: a model's star: adds it to the favourites, or takes it out. A
+ * button with its name in its label, so the keyboard reaches it.
+ */
+export function ModelStar({
+  row,
+  onError,
+}: {
+  row: { vendor: string; model?: string; label: string; favourite: boolean };
+  /** A failed save, in words (`undefined` clears it). */
+  onError: (message: string | undefined) => void;
+}): JSX.Element {
+  const toggle = async (): Promise<void> => {
+    onError(undefined);
+    try {
+      await setFavouriteModel(
+        {
+          vendor: row.vendor as SessionVendor,
+          ...(row.model !== undefined ? { model: row.model } : {}),
+        },
+        !row.favourite,
+      );
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  return (
+    <button
+      type="button"
+      className="cr-mpick-star"
+      data-testid="model-star"
+      aria-pressed={row.favourite}
+      aria-label={
+        row.favourite ? `Remove ${row.label} from favourites` : `Add ${row.label} to favourites`
+      }
+      title={row.favourite ? 'Remove from favourites' : 'Add to favourites'}
+      onClick={() => void toggle()}
+    >
+      <Icon name="star" size={14} />
+    </button>
+  );
+}
+
 /**
  * T423: the model list, by name and grouped by vendor, with "Other model…"
  * and the effort. `marks` tags the rows for what runs and the default.
+ *
+ * T469: each row has a star. With any favourites, the list is those (and
+ * the pick and what runs), with Show all at the bottom; each vendor folds
+ * (kept per browser); typing searches every model.
  */
 export function ModelChoice({
   status,
@@ -93,11 +150,23 @@ export function ModelChoice({
   autoFocus?: boolean;
 }): JSX.Element {
   const list = useRef<HTMLDivElement>(null);
+  const search = useRef<HTMLInputElement>(null);
   const [other, setOther] = useState<{ vendor: string; model: string } | undefined>(undefined);
-  const extra = [value, marks.running, marks.default].filter(
-    (ref): ref is ModelRef => ref !== undefined,
-  );
-  const groups = modelGroups(status.known_models, status.vendors, extra, status.vendor_models);
+  const [query, setQuery] = useState('');
+  const [starError, setStarError] = useState<string | undefined>(undefined);
+  const favourites = useFavouriteModels(status);
+  const [prefs, setPrefs] = usePickerPrefs();
+  const view = pickerView({
+    known: status.known_models,
+    vendors: status.vendors,
+    ...(status.vendor_models !== undefined ? { lists: status.vendor_models } : {}),
+    favourites,
+    keep: [value, marks.running].filter((ref): ref is ModelRef => ref !== undefined),
+    extra: marks.default !== undefined ? [marks.default] : [],
+    showAll: prefs.showAll,
+    query,
+    folded: prefs.folded,
+  });
   const choose = (ref: ModelRef): void =>
     onChange({
       vendor: ref.vendor,
@@ -110,28 +179,98 @@ export function ModelChoice({
     choose({ vendor: other.vendor, model });
     setOther(undefined);
   };
-
   useEffect(() => {
     if (!autoFocus) return;
-    list.current?.querySelector<HTMLButtonElement>('.cr-mpick-row[aria-checked="true"]')?.focus();
+    const chosen = list.current?.querySelector<HTMLButtonElement>(
+      '.cr-mpick-row[aria-checked="true"]',
+    );
+    // The pick sits in a folded group: the search box, so typing still finds it.
+    (chosen ?? search.current)?.focus();
   }, [autoFocus]);
 
   return (
     <div className="cr-mpick" data-testid={testid}>
+      <div className="cr-mpick-search">
+        <Icon name="search" size={14} />
+        <input
+          ref={search}
+          type="text"
+          aria-label="Search models"
+          data-testid="model-search"
+          placeholder="Search every model…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              // Enter takes the first match; it never sends the message or submits the dialog.
+              e.preventDefault();
+              e.stopPropagation();
+              const first = view.groups.find((g) => g.rows.length > 0)?.rows[0];
+              if (first) {
+                choose(first);
+                setQuery('');
+              }
+            } else if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              list.current?.querySelector<HTMLButtonElement>('.cr-mpick-row')?.focus();
+            }
+          }}
+        />
+      </div>
       <div
         className="cr-mpick-list"
         role="radiogroup"
         aria-label="Model"
         ref={list}
-        onKeyDown={onArrows}
+        onKeyDown={(e) => {
+          onArrows(e);
+          if (e.defaultPrevented) return;
+          const tag = (e.target as HTMLElement).tagName;
+          if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+          // T469: typing on a row goes to the search box.
+          if (typesText(e)) {
+            e.preventDefault();
+            e.stopPropagation();
+            setQuery((q) => q + e.key);
+            search.current?.focus();
+          }
+        }}
       >
-        {groups.map((group) => (
-          // biome-ignore lint/a11y/useSemanticElements: a labelled run of rows inside the radiogroup, not a form fieldset.
-          <div key={group.label} className="cr-mpick-group" role="group" aria-label={group.label}>
-            <div className="cr-mpick-group-hd" aria-hidden="true">
-              {group.label}
-            </div>
-            {group.options.map((option) => {
+        {view.groups.map((group) => (
+          <div
+            key={group.key}
+            className="cr-mpick-group"
+            // biome-ignore lint/a11y/useSemanticElements: a labelled run of rows inside the radiogroup, not a form fieldset.
+            role="group"
+            aria-label={group.label}
+            data-testid="model-group"
+            data-group={group.key}
+            data-folded={group.folded ? 'true' : undefined}
+          >
+            <button
+              type="button"
+              className="cr-mpick-group-hd"
+              data-testid="model-group-toggle"
+              aria-expanded={!group.folded}
+              disabled={view.searching}
+              title={
+                view.searching
+                  ? undefined
+                  : group.folded
+                    ? `Show ${group.label}'s models`
+                    : `Fold ${group.label}'s models`
+              }
+              onClick={() => setPrefs(toggleFold(prefs, group.key))}
+            >
+              <Icon
+                name={group.folded ? 'chevron-right' : 'chevron-down'}
+                size={12}
+                className="cr-mpick-caret"
+              />
+              <span className="cr-mpick-group-name">{group.label}</span>
+              {group.folded ? <span className="cr-mpick-group-count">{group.count}</span> : null}
+            </button>
+            {group.rows.map((option) => {
               const on = sameModel(option, value);
               // T437: a vendor whose command isn't on the daemon's PATH says so (still pickable).
               const missing = status.not_installed?.[option.vendor as SessionVendor];
@@ -142,42 +281,55 @@ export function ModelChoice({
                     ? 'Default'
                     : missing !== undefined
                       ? 'Not installed'
-                      : // T467 (D46): its default alone, because it never said what it has.
-                        option.hint !== undefined
-                        ? 'No list yet'
-                        : undefined;
+                      : // T469: a favourite its vendor no longer lists.
+                        option.unlisted !== undefined
+                        ? option.unlisted
+                        : // T467 (D46): its default alone, because it never said what it has.
+                          option.hint !== undefined
+                          ? 'No list yet'
+                          : undefined;
               return (
-                <button
-                  key={`${option.vendor}/${option.model ?? ''}`}
-                  type="button"
-                  // biome-ignore lint/a11y/useSemanticElements: see the radiogroup above.
-                  role="radio"
-                  aria-checked={on}
-                  className="cr-mpick-row"
-                  data-testid="model-option"
-                  data-vendor={option.vendor}
-                  data-model={option.model ?? ''}
-                  data-missing={missing !== undefined ? 'true' : undefined}
-                  data-no-list={option.hint !== undefined ? 'true' : undefined}
-                  data-autofocus={on ? true : undefined}
-                  title={
-                    missing ??
-                    option.hint ??
-                    sessionIdText({ vendor: option.vendor, model: option.model })
-                  }
-                  onClick={() => {
-                    setOther(undefined);
-                    choose(option);
-                  }}
-                >
-                  <Icon name="check" size={14} className="cr-mpick-check" />
-                  <span className="cr-mpick-name">{option.label}</span>
-                  {tag && <span className="cr-mpick-tag">{tag}</span>}
-                </button>
+                <div key={`${option.vendor}/${option.model ?? ''}`} className="cr-mpick-item">
+                  <button
+                    type="button"
+                    // biome-ignore lint/a11y/useSemanticElements: see the radiogroup above.
+                    role="radio"
+                    aria-checked={on}
+                    className="cr-mpick-row"
+                    data-testid="model-option"
+                    data-vendor={option.vendor}
+                    data-model={option.model ?? ''}
+                    data-missing={missing !== undefined ? 'true' : undefined}
+                    data-no-list={option.hint !== undefined ? 'true' : undefined}
+                    data-unlisted={option.unlisted !== undefined ? 'true' : undefined}
+                    data-autofocus={on ? true : undefined}
+                    title={
+                      missing ??
+                      option.unlisted ??
+                      option.hint ??
+                      sessionIdText({ vendor: option.vendor, model: option.model })
+                    }
+                    onClick={() => {
+                      setOther(undefined);
+                      setQuery('');
+                      choose(option);
+                    }}
+                  >
+                    <Icon name="check" size={14} className="cr-mpick-check" />
+                    <span className="cr-mpick-name">{option.label}</span>
+                    {tag && <span className="cr-mpick-tag">{tag}</span>}
+                  </button>
+                  <ModelStar row={option} onError={setStarError} />
+                </div>
               );
             })}
           </div>
         ))}
+        {view.searching && view.groups.length === 0 ? (
+          <p className="cr-mpick-empty" data-testid="model-search-empty">
+            No model matches “{query.trim()}”.
+          </p>
+        ) : null}
         <button
           type="button"
           className="cr-mpick-row cr-mpick-other-btn"
@@ -231,6 +383,22 @@ export function ModelChoice({
           </div>
         )}
       </div>
+      {starError ? (
+        <p className="cr-error cr-mpick-error" role="alert" data-testid="model-star-error">
+          {starError}
+        </p>
+      ) : null}
+      {view.hasFavourites ? (
+        <div className="cr-mpick-showall">
+          <Switch
+            label={view.hidden > 0 ? `Show all (${view.hidden} more)` : 'Show all'}
+            data-testid="model-show-all"
+            checked={prefs.showAll}
+            disabled={view.searching}
+            onChange={(e) => setPrefs({ ...prefs, showAll: e.target.checked })}
+          />
+        </div>
+      ) : null}
       <div className="cr-mpick-effort">
         <span className="cr-mpick-effort-label">Effort</span>
         {vendorTakesEffort(value.vendor) ? (

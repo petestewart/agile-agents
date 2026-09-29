@@ -11,6 +11,7 @@ import type {
   AutonomyProposal,
   ClassifierKeyStatus,
   Contract,
+  FavouriteModel,
   HarnessId,
   HarnessStatus,
   HarnessUpdateMode,
@@ -46,6 +47,7 @@ import type {
   StreamDiff,
   StreamPagePayload,
 } from './feed-types';
+import { noteFavourites } from './use-favourites';
 
 async function post(path: string, body: unknown = {}, signal?: AbortSignal): Promise<unknown> {
   const res = await fetch(path, {
@@ -344,7 +346,25 @@ export async function getSessionDefaults(): Promise<SessionDefaultsStatus> {
   const res = await fetch('/api/settings/session');
   const payload = (await res.json()) as SessionDefaultsStatus & { error?: string };
   if (!res.ok) throw new Error(payload.error ?? `session defaults read failed (${res.status})`);
+  noteFavourites(payload.favourite_models);
   return payload;
+}
+
+/**
+ * T469: star (`on`) or unstar a favourite model. Every open picker takes
+ * the list back (`noteFavourites`).
+ */
+export async function setFavouriteModel(
+  ref: FavouriteModel,
+  on: boolean,
+): Promise<SessionDefaultsStatus> {
+  const next = (await post('/api/settings/favourite-models', {
+    vendor: ref.vendor,
+    ...(ref.model !== undefined ? { model: ref.model } : {}),
+    on,
+  })) as SessionDefaultsStatus;
+  noteFavourites(next.favourite_models);
+  return next;
 }
 
 /** T170: Settings' home-wide defaults (`null` clears a field). */

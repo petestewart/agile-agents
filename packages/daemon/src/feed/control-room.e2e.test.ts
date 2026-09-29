@@ -10218,6 +10218,211 @@ describe('Models come from the vendor (Playwright e2e, T467)', () => {
   );
 });
 
+describe('Favourite models (Playwright e2e, T469)', () => {
+  browserTest(
+    'stars in Settings and the picker; the picker shows the favourites and what runs, Show all, a fold that lasts, and search across everything',
+    async () => {
+      const cockpit = await startStreamCockpit(
+        [{ steps: [{ type: 'agent_text', text: 'On it.' }, { type: 'hang' }] }],
+        (home) => {
+          // What an earlier Cursor session kept: its model list.
+          const dir = join(home, 'sessions', ulid());
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(
+            join(dir, SESSION_STATE_FILE),
+            JSON.stringify({
+              at: '2026-09-29T10:50:46.021Z',
+              vendor: 'cursor',
+              configOptions: [
+                {
+                  id: 'model',
+                  name: 'Model',
+                  category: 'model',
+                  type: 'select',
+                  currentValue: 'default[]',
+                  options: [
+                    { value: 'default[]', name: 'Auto' },
+                    { value: 'grok-4.7[context=256k,fast=true]', name: 'grok-4.7' },
+                  ],
+                },
+              ],
+              models: null,
+            }),
+          );
+          return new ModelCatalog({ home }).load();
+        },
+      );
+      let page: Page | undefined;
+      try {
+        // A favourite starred when Cursor still listed it.
+        await cockpit.store.setFavouriteModel({ vendor: 'cursor', model: 'sonnet-4.5' }, true);
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'Prices',
+          goal: 'g',
+          parent: shop.root,
+        });
+        const p = await openPage();
+        page = p;
+        const favourites = () => cockpit.store.getHomeConfig().favourite_models ?? [];
+
+        // Settings → Agents → Models: a star per model.
+        await p.goto(`${cockpit.base}/?view=settings&section=agents`);
+        await p.locator('[data-testid="settings-models-stars-claude"]').click();
+        const sonnetStar = p.locator(
+          '[data-testid="settings-models-list-claude"] [data-testid="settings-model-row"][data-model="claude-sonnet-5-5"] [data-testid="model-star"]',
+        );
+        expect(await sonnetStar.getAttribute('aria-label')).toBe(
+          'Add Claude Sonnet 5.5 to favourites',
+        );
+        await sonnetStar.click();
+        await waitUntil('Sonnet 5.5 starred', () => favourites().length === 2);
+        await waitUntilAsync(
+          'the star shows',
+          async () => (await sonnetStar.getAttribute('aria-pressed')) === 'true',
+        );
+        await waitUntilAsync('the count', async () =>
+          (
+            (await p.locator('[data-testid="settings-models-claude"]').textContent()) ?? ''
+          ).endsWith(' · 1 starred'),
+        );
+        // Cursor's dropped favourite is listed and marked, so it can be unstarred.
+        await p.locator('[data-testid="settings-models-stars-cursor"]').click();
+        expect(
+          await p
+            .locator(
+              '[data-testid="settings-models-list-cursor"] [data-testid="settings-model-row"][data-model="sonnet-4.5"]',
+            )
+            .textContent(),
+        ).toContain("Not in Cursor's list now");
+
+        // The picker: only the favourites, and the model a start runs here.
+        await p.goto(`${cockpit.base}/?node=${node.id}`);
+        await waitForText(p, '[data-testid="composer-model"]', 'Claude Opus 5.5');
+        const chip = p.locator('[data-testid="composer-model"]');
+        const popover = p.locator('[data-testid="model-popover"]');
+        const rows = () =>
+          popover
+            .locator('[data-testid="model-option"]')
+            .evaluateAll((els) =>
+              els.map((e) => `${e.getAttribute('data-vendor')}/${e.getAttribute('data-model')}`),
+            );
+        await chip.click();
+        await popover.waitFor();
+        expect(await rows()).toEqual([
+          'claude/claude-opus-5-5',
+          'claude/claude-sonnet-5-5',
+          'cursor/sonnet-4.5',
+        ]);
+        expect(
+          await popover
+            .locator('[data-testid="model-option"][data-model="sonnet-4.5"] .cr-mpick-tag')
+            .textContent(),
+        ).toBe("Not in Cursor's list now");
+
+        // Show all, at the bottom: every vendor's models.
+        const showAll = popover.locator('[data-testid="model-show-all"]');
+        expect(await showAll.isChecked()).toBe(false);
+        expect(await popover.locator('.cr-mpick-showall').textContent()).toMatch(
+          /^Show all \(\d+ more\)$/,
+        );
+        await showAll.click();
+        await waitUntilAsync('every model', async () =>
+          (await rows()).includes('cursor/grok-4.7[context=256k,fast=true]'),
+        );
+        expect(await popover.locator('.cr-mpick-group-name').allTextContents()).toEqual([
+          'Claude',
+          'Cursor',
+          'Other agents',
+        ]);
+        // The star is a button the keyboard reaches: Enter on it stars grok-4.7.
+        const grokStar = popover
+          .locator('.cr-mpick-item', {
+            has: p.locator('[data-model="grok-4.7[context=256k,fast=true]"]'),
+          })
+          .locator('[data-testid="model-star"]');
+        expect(await grokStar.getAttribute('aria-label')).toBe('Add grok-4.7 to favourites');
+        await grokStar.focus();
+        await p.keyboard.press('Enter');
+        await waitUntil('grok-4.7 starred', () => favourites().length === 3);
+        await showAll.click();
+        await waitUntilAsync('the favourites again', async () =>
+          Bun.deepEquals(await rows(), [
+            'claude/claude-opus-5-5',
+            'claude/claude-sonnet-5-5',
+            'cursor/grok-4.7[context=256k,fast=true]',
+            'cursor/sonnet-4.5',
+          ]),
+        );
+
+        // Fold Cursor; after a reload it is still folded.
+        const cursorGroup = popover.locator('[data-testid="model-group"][data-group="cursor"]');
+        await cursorGroup.locator('[data-testid="model-group-toggle"]').click();
+        await waitUntilAsync(
+          'Cursor folded',
+          async () => !(await rows()).some((r) => r.startsWith('cursor/')),
+        );
+        await p.keyboard.press('Escape');
+        await popover.waitFor({ state: 'detached' });
+        await p.reload();
+        await waitForText(p, '[data-testid="composer-model"]', 'Claude Opus 5.5');
+        await chip.click();
+        await popover.waitFor();
+        expect(await cursorGroup.getAttribute('data-folded')).toBe('true');
+        expect(
+          await cursorGroup
+            .locator('[data-testid="model-group-toggle"]')
+            .getAttribute('aria-expanded'),
+        ).toBe('false');
+        expect(await cursorGroup.locator('.cr-mpick-group-count').textContent()).toBe('2');
+        expect(await rows()).toEqual(['claude/claude-opus-5-5', 'claude/claude-sonnet-5-5']);
+
+        // Typing searches every model, favourite or not, folded or not.
+        await p.keyboard.type('haiku');
+        const search = popover.locator('[data-testid="model-search"]');
+        expect(await search.inputValue()).toBe('haiku');
+        await waitUntilAsync('Haiku found', async () =>
+          Bun.deepEquals(await rows(), ['claude/claude-haiku-4-5']),
+        );
+        await search.fill('grok-4.7');
+        await waitUntilAsync('grok-4.7 found in the folded group', async () =>
+          Bun.deepEquals(await rows(), ['cursor/grok-4.7[context=256k,fast=true]']),
+        );
+        await search.fill('haiku');
+        await p.keyboard.press('Enter');
+        await waitForText(p, '[data-testid="composer-model"]', 'Claude Haiku 4.5');
+        // The pick shows though it isn't a favourite; the search is cleared.
+        expect(await search.inputValue()).toBe('');
+        expect(await rows()).toEqual(['claude/claude-sonnet-5-5', 'claude/claude-haiku-4-5']);
+        // Enter on a row still picks it.
+        await popover
+          .locator('[data-testid="model-option"][data-model="claude-sonnet-5-5"]')
+          .focus();
+        await p.keyboard.press('Enter');
+        await waitForText(p, '[data-testid="composer-model"]', 'Claude Sonnet 5.5');
+        // Unstar from the picker.
+        await popover
+          .locator('.cr-mpick-item', {
+            has: p.locator('[data-testid="model-option"][data-model="claude-sonnet-5-5"]'),
+          })
+          .locator('[data-testid="model-star"][aria-pressed="true"]')
+          .click();
+        await waitUntil('Sonnet 5.5 unstarred', () => favourites().length === 2);
+        expect(favourites()).toEqual([
+          { vendor: 'cursor', model: 'sonnet-4.5' },
+          { vendor: 'cursor', model: 'grok-4.7[context=256k,fast=true]' },
+        ]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('Ask picks the model (Playwright e2e, T472)', () => {
   browserTest(
     "the Ask box shows the composer's model chip; a pick starts the conversation on it",

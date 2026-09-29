@@ -15,6 +15,7 @@ import {
   ClassifierKeyInputSchema,
   DEFAULT_SESSION_IDLE_MINUTES,
   DIRECTOR_NODE,
+  FavouriteModelInputSchema,
   HarnessIdSchema,
   HarnessUpdatesInputSchema,
   type HilDecision,
@@ -1088,6 +1089,32 @@ async function handleRefreshModelsRoute(
   }
 }
 
+/**
+ * T469: star or unstar a favourite model (Settings → Agents → Models, and
+ * the star on each row of the model picker). Same-origin only.
+ *
+ *   POST /api/settings/favourite-models  `{vendor, model?, on}` → the session defaults, with the list
+ */
+async function handleFavouriteModelsRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/favourite-models' || req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = FavouriteModelInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('favourite model', input.error));
+  const { on, ...ref } = input.data;
+  try {
+    await feed.store.setFavouriteModel(ref, on, { by: 'human' });
+    return jsonResponse(sessionDefaults(feed).status());
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
 const DIRECTOR_PATHS = new Set(['/api/director', '/api/director/steps', '/api/director/say']);
 
 /**
@@ -2112,6 +2139,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (draftsRoute) return draftsRoute;
         const knowledgeWakeRoute = await handleKnowledgeWakeRoute(req, url, feed, sameOrigin);
         if (knowledgeWakeRoute) return knowledgeWakeRoute;
+        const favouritesRoute = await handleFavouriteModelsRoute(req, url, feed, sameOrigin);
+        if (favouritesRoute) return favouritesRoute;
         const autoCloseRoute = await handleAutoCloseRoute(req, url, feed, sameOrigin);
         if (autoCloseRoute) return autoCloseRoute;
         const sessionIdleRoute = await handleSessionIdleRoute(req, url, feed, sameOrigin);

@@ -4451,10 +4451,146 @@ button.cr-model-chip[aria-expanded="true"] {
   margin-top: 2px;
 }
 .cr-mpick-group-hd {
-  padding: 8px 8px 3px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 8px 3px 4px;
+  font: inherit;
   font-size: var(--text-xs);
   font-weight: 600;
+  text-align: left;
   color: var(--text-faint);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+/* T469: a group's header folds it; while searching every group is open. */
+.cr-mpick-group-hd:hover:not(:disabled),
+.cr-mpick-group-hd:focus-visible {
+  color: var(--text-muted);
+}
+.cr-mpick-group-hd:disabled {
+  cursor: default;
+}
+.cr-mpick-group-hd:disabled .cr-mpick-caret {
+  visibility: hidden;
+}
+.cr-mpick-group-name {
+  flex: 1;
+  min-width: 0;
+}
+.cr-mpick-group-count {
+  font-weight: 500;
+}
+.cr-mpick-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 8px 2px;
+  padding: 0 8px;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.cr-mpick-search input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text);
+  background: none;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+}
+.cr-mpick-search:focus-within {
+  border-color: var(--accent);
+}
+.cr-mpick-item {
+  display: flex;
+  align-items: center;
+}
+.cr-mpick-item .cr-mpick-row {
+  flex: 1;
+  min-width: 0;
+}
+.cr-mpick-star {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--text-faint);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  opacity: 0.45;
+}
+.cr-mpick-item:hover .cr-mpick-star,
+.cr-mpick-star:focus-visible {
+  opacity: 1;
+}
+.cr-mpick-star:hover,
+.cr-mpick-star:focus-visible {
+  background: var(--bg-hover);
+}
+.cr-mpick-star[aria-pressed="true"] {
+  color: var(--amber);
+  opacity: 1;
+}
+.cr-mpick-star[aria-pressed="true"] svg {
+  fill: currentColor;
+}
+.cr-mpick-row[data-unlisted="true"] .cr-mpick-name {
+  color: var(--text-faint);
+}
+.cr-mpick-empty {
+  margin: 0;
+  padding: 8px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.cr-mpick-error {
+  margin: 0;
+  padding: 4px 12px;
+}
+/* T469: Settings → Agents → Models: a vendor's models, each with its star. */
+.cr-set-models-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cr-set-models-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0 0 8px;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--border);
+}
+.cr-set-models-list .cr-mpick-item {
+  gap: 8px;
+  min-height: 30px;
+  padding-left: 8px;
+  font-size: var(--text-sm);
+  border-radius: 5px;
+}
+.cr-set-models-list .cr-mpick-item:hover {
+  background: var(--bg-hover);
+}
+.cr-mpick-showall {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 4px 12px;
+  border-top: 1px solid var(--border);
 }
 .cr-mpick-row {
   display: flex;

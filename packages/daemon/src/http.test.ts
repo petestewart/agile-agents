@@ -1138,6 +1138,53 @@ describe('T160 cockpit routes', () => {
     expect(store.getHomeConfig().auto_close).toBeUndefined();
   });
 
+  test('T469: POST /api/settings/favourite-models stars and unstars; the session defaults carry the list', async () => {
+    const post = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url('/api/settings/favourite-models'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    type Status = { favourite_models?: Array<{ vendor: string; model?: string }> };
+    const read = async () =>
+      ((await (await fetch(url('/api/settings/session'))).json()) as Status).favourite_models;
+    expect(await read()).toBeUndefined();
+    expect(
+      (
+        await post(
+          { vendor: 'codex', model: 'gpt-5.5', on: true },
+          { origin: 'http://evil.example' },
+        )
+      ).status,
+    ).toBe(403);
+    expect(store.getHomeConfig().favourite_models).toBeUndefined();
+    const starred = (await (
+      await post({ vendor: 'codex', model: 'gpt-5.5', on: true })
+    ).json()) as Status;
+    expect(starred.favourite_models).toEqual([{ vendor: 'codex', model: 'gpt-5.5' }]);
+    await post({ vendor: 'claude', model: 'claude-sonnet-5-5', on: true });
+    expect(await read()).toEqual([
+      { vendor: 'codex', model: 'gpt-5.5' },
+      { vendor: 'claude', model: 'claude-sonnet-5-5' },
+    ]);
+    expect((await post({ vendor: 'vim', model: 'x', on: true })).status).toBe(400);
+    expect((await post({ vendor: 'codex', model: 'gpt-5.5' })).status).toBe(400);
+    expect((await post({ vendor: 'codex', model: '', on: true })).status).toBe(400);
+    expect((await post({ vendor: 'codex', on: true, pin: 1 })).status).toBe(400);
+    const unstarred = (await (
+      await post({ vendor: 'codex', model: 'gpt-5.5', on: false })
+    ).json()) as Status;
+    expect(unstarred.favourite_models).toEqual([{ vendor: 'claude', model: 'claude-sonnet-5-5' }]);
+    const put = store
+      .listEvents()
+      .filter((e) => e.kind === 'home_config_put')
+      .at(-1);
+    expect(put?.agent).toBe('human');
+    await post({ vendor: 'claude', model: 'claude-sonnet-5-5', on: false });
+    expect(store.getHomeConfig().favourite_models).toBeUndefined();
+    expect(await read()).toBeUndefined();
+  });
+
   test('T465: GET/POST /api/settings/session-idle is the idle session timeout; 30 removes the key', async () => {
     const post = (body: unknown, headers: Record<string, string> = {}) =>
       fetch(url('/api/settings/session-idle'), {
