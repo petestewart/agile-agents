@@ -25,6 +25,7 @@ import {
   type HarnessInstallMethod,
   type SessionVendor,
 } from '@agile-agents/shared';
+import { TYPESAFE_API_KEY_ENV } from '../classifier/jev';
 
 // ---------------------------------------------------------------- running a command
 
@@ -48,16 +49,33 @@ export type CommandRunner = (
 /** What a command may print before the rest is dropped: only the first lines are ever read. */
 const OUTPUT_MAX_CHARS = 64 * 1024;
 
+/** Env names an updater never needs and never gets: the daemon's own secrets. */
+const UPDATER_ENV_DROP: readonly string[] = [TYPESAFE_API_KEY_ENV];
+
+/** The operator's environment without the daemon's own secrets. */
+export function updaterEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value !== undefined && !UPDATER_ENV_DROP.includes(name)) out[name] = value;
+  }
+  return out;
+}
+
 /**
  * The daemon's runner: `Bun.spawn` of the argv as given (no shell), with
  * the operator's own environment (an updater needs the real `HOME` and
- * `PATH`, as vendor sessions do), stdin closed so nothing can prompt, and
- * SIGKILL at the timeout.
+ * `PATH`, as vendor sessions do) less the classifier key, stdin closed so
+ * nothing can prompt, and SIGKILL at the timeout.
  */
 export const bunCommandRunner: CommandRunner = async (argv, { timeoutMs }) => {
   let proc: ReturnType<typeof Bun.spawn>;
   try {
-    proc = Bun.spawn([...argv], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+    proc = Bun.spawn([...argv], {
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: updaterEnv(),
+    });
   } catch (err) {
     return {
       code: null,

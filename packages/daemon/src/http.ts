@@ -21,6 +21,7 @@ import {
   type HilId,
   HilIdSchema,
   type HilRequest,
+  InstalledCliInputSchema,
   KnowledgeCreateInputSchema,
   KnowledgeIdSchema,
   KnowledgePatchSchema,
@@ -109,6 +110,7 @@ import {
   parseAnswerParams,
   sayAndAnswer,
 } from './questions';
+import { installedCliStatus } from './runner/installed-cli';
 import type { ModelCatalog } from './runner/model-catalog';
 import {
   CloneError,
@@ -693,6 +695,37 @@ async function handleQuickDraftsRoute(
   try {
     const config = await feed.store.setQuickDrafts(input.data.on, { by: 'human' });
     return jsonResponse({ on: config.quick_drafts !== false, available });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T480 (D49): Settings' "Use the installed Claude Code / Codex" switches:
+ *
+ *   GET  /api/settings/installed-cli  `{vendors: [{vendor, label, on, path?}]}`
+ *   POST /api/settings/installed-cli  `{vendor, on}`, used by the next session; same-origin only
+ */
+async function handleInstalledCliRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/installed-cli') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (req.method === 'GET') {
+    return jsonResponse({ vendors: installedCliStatus(feed.store.getHomeConfig()) });
+  }
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = InstalledCliInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('installed cli', input.error));
+  try {
+    const config = await feed.store.setInstalledCli(input.data.vendor, input.data.on, {
+      by: 'human',
+    });
+    return jsonResponse({ vendors: installedCliStatus(config) });
   } catch (err) {
     return errorResponse(400, messageOf(err));
   }
@@ -2067,6 +2100,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           }
         }
 
+        const installedCliRoute = await handleInstalledCliRoute(req, url, feed, sameOrigin);
+        if (installedCliRoute) return installedCliRoute;
         const draftsRoute = await handleQuickDraftsRoute(
           req,
           url,

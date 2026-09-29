@@ -273,6 +273,15 @@ export const HomeConfigSchema = z
     /** T478: New node's "Close it when its goal is met" starts on. Absent = off. */
     auto_close: z.boolean().optional(),
     /**
+     * T480 (D49): run the Claude Code / Codex the operator installed (found on
+     * PATH) rather than the copy bundled in the ACP bridge. `false` for a
+     * vendor keeps its bundled copy. Absent = on.
+     */
+    installed_cli: z
+      .object({ claude: z.boolean().optional(), codex: z.boolean().optional() })
+      .strict()
+      .optional(),
+    /**
      * T465 (D48): how long an agent's session stays alive and idle after its
      * turn finished, in minutes, so the next message keeps its context.
      * Absent = `DEFAULT_SESSION_IDLE_MINUTES`.
@@ -350,6 +359,16 @@ export function trackerSettingsStatus(config: TrackersConfig | undefined): Track
 /** T434: Settings' quick drafts switch (`POST /api/settings/quick-drafts`). */
 export const QuickDraftsInputSchema = z.object({ on: z.boolean() }).strict();
 export type QuickDraftsInput = z.infer<typeof QuickDraftsInputSchema>;
+
+/** T480 (D49): the vendors whose installed CLI can stand in for the bridge's bundled copy. */
+export const INSTALLED_CLI_VENDORS = ['claude', 'codex'] as const;
+export type InstalledCliVendor = (typeof INSTALLED_CLI_VENDORS)[number];
+
+/** T480: Settings' "Use the installed …" switch (`POST /api/settings/installed-cli`). */
+export const InstalledCliInputSchema = z
+  .object({ vendor: z.enum(INSTALLED_CLI_VENDORS), on: z.boolean() })
+  .strict();
+export type InstalledCliInput = z.infer<typeof InstalledCliInputSchema>;
 
 /** T454: Settings' "Let Jev decide" switch (`POST /api/settings/knowledge-wake`). */
 export const KnowledgeWakeInputSchema = z.object({ on: z.boolean() }).strict();

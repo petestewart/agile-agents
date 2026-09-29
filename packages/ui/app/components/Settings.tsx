@@ -44,12 +44,14 @@ import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import {
   type AutoCloseDefault,
   type DaemonHealth,
+  type InstalledCliRow,
   type KnowledgeWake,
   type QuickDrafts,
   type SessionIdle,
   getAutoCloseDefault,
   getClassifierKey,
   getHealth,
+  getInstalledCli,
   getKnowledgeWake,
   getPolicy,
   getQuickDrafts,
@@ -63,6 +65,7 @@ import {
   saveRepoSessionDefaults,
   saveTrackerSettings,
   setAutoCloseDefault,
+  setInstalledCli,
   setKnowledgeWake,
   setQuickDrafts,
   setSessionIdle,
@@ -725,6 +728,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
           <VendorFailureCard status={status} onSaved={setStatus} />
           <SessionIdleCard />
           <VendorModelsCard status={status} onRefreshed={setStatus} />
+          <InstalledCliCard />
           <UpdatesCard />
           {/* T436 (audit r6 #25): in the order they win: a project's default before its repositories'. */}
           {projects.length > 0 ? (
@@ -1042,6 +1046,69 @@ function VendorModelsCard({
           {note}
         </p>
       ) : null}
+      <FormError error={error} />
+    </SetCard>
+  );
+}
+
+/**
+ * T480 (D49): Claude Code and Codex run through ACP bridges that carry their
+ * own copy of the CLI. On (the default), a new session runs the one you
+ * installed instead, so its models and fixes are yours; off keeps the copy.
+ */
+function InstalledCliCard(): JSX.Element {
+  const [rows, setRows] = useState<InstalledCliRow[] | undefined>();
+  const [busy, setBusy] = useState<string | undefined>();
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    getInstalledCli()
+      .then((r) => setRows(r.vendors))
+      .catch((err: unknown) => setError(errorText(err)));
+  }, []);
+
+  async function toggle(vendor: InstalledCliRow['vendor'], on: boolean): Promise<void> {
+    setBusy(vendor);
+    setError(undefined);
+    try {
+      setRows((await setInstalledCli(vendor, on)).vendors);
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  return (
+    <SetCard
+      title="Installed agents"
+      icon="terminal"
+      description="Claude Code and Codex connect through a bridge that carries its own copy. With this on, new sessions run the copy you installed instead, so they have its models and updates. Sessions already running keep what they started with."
+      testid="settings-installed-cli"
+    >
+      {(rows ?? []).map((row) => (
+        <SetRow
+          key={row.vendor}
+          label={row.label}
+          hint={
+            <span data-testid={`settings-installed-cli-${row.vendor}`}>
+              {row.path !== undefined
+                ? row.on
+                  ? `Runs ${row.path}`
+                  : `Runs the bridge’s own copy (installed: ${row.path})`
+                : 'Not found on PATH: runs the bridge’s own copy'}
+            </span>
+          }
+        >
+          <Switch
+            label={`Use my installed ${row.label}`}
+            data-testid={`settings-installed-cli-switch-${row.vendor}`}
+            checked={row.on}
+            disabled={busy !== undefined}
+            onChange={(e) => void toggle(row.vendor, e.target.checked)}
+          />
+        </SetRow>
+      ))}
       <FormError error={error} />
     </SetCard>
   );

@@ -8,6 +8,7 @@ import {
   detectInstall,
   firstLine,
   parseVersion,
+  updaterEnv,
 } from './methods';
 import { bridgesOf } from './service';
 
@@ -213,5 +214,12 @@ describe('T481 the real runner', () => {
     });
     expect(missing.code).toBeNull();
     expect(missing.error).toBeDefined();
+  });
+});
+
+describe('T481: an updater never gets the classifier key', () => {
+  test('updaterEnv keeps the operator env and drops TYPESAFE_API_KEY', () => {
+    const env = updaterEnv({ HOME: '/h', PATH: '/bin', TYPESAFE_API_KEY: 'k' });
+    expect(env).toEqual({ HOME: '/h', PATH: '/bin' });
   });
 });

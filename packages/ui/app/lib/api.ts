@@ -632,6 +632,27 @@ export function setQuickDrafts(on: boolean): Promise<QuickDrafts> {
   return post('/api/settings/quick-drafts', { on }) as Promise<QuickDrafts>;
 }
 
+/** T480 (D49): one bridged agent's "use the installed CLI" switch, and what it finds on PATH. */
+export interface InstalledCliRow {
+  vendor: 'claude' | 'codex';
+  label: string;
+  on: boolean;
+  path?: string;
+}
+
+export function getInstalledCli(): Promise<{ vendors: InstalledCliRow[] }> {
+  return get<{ vendors: InstalledCliRow[] }>('/api/settings/installed-cli');
+}
+
+export function setInstalledCli(
+  vendor: InstalledCliRow['vendor'],
+  on: boolean,
+): Promise<{ vendors: InstalledCliRow[] }> {
+  return post('/api/settings/installed-cli', { vendor, on }) as Promise<{
+    vendors: InstalledCliRow[];
+  }>;
+}
+
 /** T454: Settings' "Let Jev decide" switch for accepted decisions (`knowledge_wake: jev`). */
 export interface KnowledgeWake {
   on: boolean;
