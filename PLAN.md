@@ -2960,7 +2960,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T481 Keep each vendor's CLI up to date: Off, Alert or Auto (D50)
 - **Priority:** P1
-- **Status:** In progress
+- **Status:** Done (the LIVE-CHECKLIST §15 run on a real machine is still Pete's)
 - **Owner:** manager
 - **Scope:** Pete (2026-09-29): "a regular check of some kind for any vendor harness with an automatic update feature … configured in settings. it can either be off/alert/auto. off does no version check. alert creates pop-up or 'needs you' that allows me to just click a button and have the new version … installed. auto installs the new version behind the scenes automatically. … existing sessions will be running on the old version and that's fine."
 - **Acceptance Criteria:**
@@ -2972,6 +2972,13 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   6. Updates run fixed argv, never through a shell and never with sudo, with a timeout. A permission error is reported, not retried. Running sessions are untouched.
   7. Settings also shows each ACP bridge's pinned version and the newest published one, as information only. A bridge moves by a code change (as T479 did), never by the updater.
 - **Validation Steps:** Unit tests with an injected command runner (no network, no real installs): install-method detection, version parsing, each mode's behaviour, a failed update, Off running nothing. HTTP route tests (same-origin). Settings and Needs me e2e. LIVE-CHECKLIST: one real Alert-mode update of a vendor that is behind.
+  - Built: `packages/daemon/src/harness/` (`methods.ts`: the runner, version parsing, and `UPDATE_METHODS`, the one table of vendor + method → detect, newest, update; `service.ts`: `HarnessUpdateService`). Methods, read from the realpath of the binary: Homebrew formula or cask (`<prefix>/Cellar|Caskroom/<name>/`: `brew info --json=v2`, `brew upgrade [--cask]`, the prefix's own `brew`); Claude's own installer (`~/.local/share/claude/`, `~/.claude/local/`: `claude update`, newest unknown); global npm (`<prefix>/lib/node_modules/<pkg>`: `npm view <pkg> version`, `npm install -g --prefix <prefix> <pkg>@latest`). Anything else (cursor-agent's and grok's installers, a bun global, the npx cache) is "Can't check <CLI> automatically; update it the way you installed it (<path>)". CLIs: claude, codex, gemini, cursor-agent, grok, pi, and pi-acp (its version from its npm package.json: it is an ACP server, never started to read one).
+  - State: the mode, a vendor's own mode and the dismissed version per CLI are `harness_updates` in config.yaml (`StateStore.setHarnessUpdateMode`, `setHarnessUpdateDismissed`); the last check per CLI is in memory. Needs me kind `harness_update` (no node; `harness: {id, label, failed?}`). Events type `harness_updated`, record-only, routed to nobody.
+  - Alert shows an item only for a known newer version; `claude update` (newest unknown) is offered only on Check now. Auto runs updates one at a time after the check and does not retry a version that failed. Updates: fixed argv, `Bun.spawn` with no shell, stdin closed, 10 min timeout then SIGKILL. Under `bun test` the daemon's runner runs nothing and schedules no check unless a test injects one.
+  - Routes: `GET/POST /api/settings/harness-updates`, `POST /api/harness-updates/check`, `POST /api/harness-updates/:harness/update|dismiss` (same-origin, actor human). `agile daemon status` prints one line per CLI.
+  - Tests: `harness/methods.test.ts` 10 (incl. the real runner's timeout, no shell), `harness/service.test.ts` 13, http T481 ×3, shared inbox/home-config +4, ui `lib/updates.test.ts` 3 and `lib/inbox.test.ts` +1, cli +1, e2e T481 (Settings mode switch, Check now, Needs me Update and Dismiss over a fake runner). Removing the Off guard fails "Off runs no command at all"; reading npm before Homebrew fails the gemini-cli detection tests.
+  - Validation (after merging `claude/phase-14` at 2ca9a0ab, T467): typecheck and lint clean; `bun test` 3575 pass, 3 skip, 0 fail; build, then control-room e2e 133/133; walkthrough 43 steps, 0 findings.
+- **Notes:** Branch T481-harness-updates. LIVE-CHECKLIST §15 (one Alert-mode and one Auto-mode update). The dismissed versions live in the home config beside the mode (no new home file).
 
 ### Ticket: T482 Model routing: the policy and the lock
 - **Priority:** P1

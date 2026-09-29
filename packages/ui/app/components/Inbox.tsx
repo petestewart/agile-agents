@@ -569,7 +569,9 @@ export function Inbox({
                           ? 'layers'
                           : section.kind === 'knowledge'
                             ? 'book-open'
-                            : 'circle-dashed'
+                            : section.kind === 'updates'
+                              ? 'download'
+                              : 'circle-dashed'
                       }
                       size={14}
                     />
@@ -667,7 +669,9 @@ function InboxRow({
   gone: boolean;
 }): JSX.Element {
   const title = item.kind === 'done' ? DONE_CARD_TITLE[doneCardOf(row)] : cardTitle(item);
-  const subject = path.at(-1) ?? (item.stream === undefined ? 'Knowledge' : 'Node');
+  // T481: a CLI update is about the CLI ("Claude Code"), not a node.
+  const subject =
+    item.harness?.label ?? path.at(-1) ?? (item.stream === undefined ? 'Knowledge' : 'Node');
   const parents = path.slice(0, -1);
   const agent = row?.live_agent?.vendor ?? row?.last_agent?.vendor;
   const line = inboxLine(item, row);
@@ -707,7 +711,13 @@ function InboxRow({
           <Icon name={finishedIdle ? 'check-circle' : inboxIcon(item)} size={15} />
         </span>
         <span className="cr-inbox-row-agent" data-testid="inbox-agent">
-          {agent !== undefined ? vendorLabel(agent) : item.stream === undefined ? 'Knowledge' : ''}
+          {agent !== undefined
+            ? vendorLabel(agent)
+            : item.kind === 'harness_update'
+              ? 'Update'
+              : item.stream === undefined
+                ? 'Knowledge'
+                : ''}
         </span>
         <button
           type="button"

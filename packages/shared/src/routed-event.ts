@@ -175,6 +175,20 @@ export const ROUTED_EVENT_PAYLOADS = {
     model: Str.optional(),
     reason: Str,
   }),
+  /**
+   * T481 (D50): a vendor's CLI was updated (Auto in the background, or an
+   * Update you pressed). `harness` is the CLI's id (`HARNESS_IDS`), `label`
+   * its name; `summary` says it in words ("Updated Claude Code to 2.3.1").
+   * It belongs to no node, so nobody is routed it. A record, not news: see
+   * `RECORD_ONLY_EVENT_TYPES`.
+   */
+  harness_updated: z.object({
+    harness: NonEmpty,
+    label: NonEmpty,
+    from: Str.optional(),
+    to: Str.optional(),
+    summary: NonEmpty,
+  }),
   /** T262: the ship check held delivery; the findings go back to the worker. */
   ship_findings: z.object({
     source: z.enum(['classifier', 'reviewer']),
@@ -200,6 +214,7 @@ export type RoutedEventPayload<T extends RoutedEventType> = z.infer<
 export const RECORD_ONLY_EVENT_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEventType>([
   'autonomy_applied',
   'agent_restarted',
+  'harness_updated',
 ]);
 
 const RoutedEventBaseSchema = z

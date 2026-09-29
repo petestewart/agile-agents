@@ -947,6 +947,8 @@ const EVENT_ICON: Partial<Record<RoutedEventType, IconName>> = {
   autonomy_applied: 'bot',
   // T456: a crashed agent started again, or another vendor in its place.
   agent_restarted: 'refresh',
+  // T481: a vendor CLI updated.
+  harness_updated: 'download',
 };
 
 const FAMILY_ICON: Record<EventFamily, IconName> = {

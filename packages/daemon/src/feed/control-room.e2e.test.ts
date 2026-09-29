@@ -65,6 +65,7 @@ import { DirectorService } from '../director';
 import { DocsService } from '../docs';
 import { RoutedEventService, emitTransitions, makeEmitter, routeAndEmit } from '../events';
 import { GateService } from '../gates';
+import { type CommandResult, HarnessUpdateService } from '../harness';
 import { HookService } from '../hook';
 import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
@@ -635,6 +636,8 @@ async function startCockpit(
     trackerLinks?: (streams: StreamService) => TrackerLinks;
     /** T367: the home folder the folder picker and clone see (`~`), instead of the real one. */
     userHome?: string;
+    /** T481: the vendor CLI updates, over an injected fake runner (nothing real runs). */
+    harness?: (store: StateStore, events: RoutedEventService) => HarnessUpdateService;
   } = {},
 ): Promise<Cockpit> {
   const home = mkdtempSync(join(tmpdir(), 'agile-cockpit-e2e-'));
@@ -668,6 +671,7 @@ async function startCockpit(
     contracts,
     emit: makeEmitter(events, streams),
   });
+  const harness = extra.harness?.(store, events);
   const inbox = new InboxService({
     streams,
     questions,
@@ -676,6 +680,7 @@ async function startCockpit(
     plans,
     contracts,
     proposals: autonomy,
+    ...(harness ? { harness } : {}),
   });
   const projects = new ProjectService(store, streams);
   // T300: no delivery wired, so a line to the Director stays pending (no session).
@@ -713,6 +718,7 @@ async function startCockpit(
     ...(extra.githubAuth ? { githubAuth: extra.githubAuth } : {}),
     ...(extra.trackerLinks ? { trackerLinks: extra.trackerLinks(streams) } : {}),
     ...(extra.userHome !== undefined ? { userHome: extra.userHome } : {}),
+    ...(harness ? { harnessUpdates: harness } : {}),
     feedPollIntervalMs: 50,
   });
   return {
@@ -10445,6 +10451,171 @@ describe('Auto-close (Playwright e2e, T478)', () => {
           .click();
         await waitUntil('on again', () => cockpit.streams.get(id).auto_close === true);
         await waitUntilAsync('Details follows', async () => details.isChecked());
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Vendor CLI updates (Playwright e2e, T481)', () => {
+  browserTest(
+    'Settings → Agents → Updates switches the mode; Check now fills the rows; a Needs me item updates and dismisses',
+    async () => {
+      // A fake machine: Claude Code from global npm (2.2.9, newest 2.3.1), Gemini CLI from
+      // Homebrew (0.32.1, newest 0.33.0). The runner answers; nothing real runs.
+      const ran: string[] = [];
+      let claude = '2.2.9';
+      const npm = '/usr/local/bin/npm';
+      const brew = '/opt/homebrew/bin/brew';
+      const claudeUpdate = `${npm} install -g --prefix /usr/local @anthropic-ai/claude-code@latest`;
+      const answer = (line: string): CommandResult => {
+        const out = (stdout: string): CommandResult => ({
+          code: 0,
+          stdout,
+          stderr: '',
+          timedOut: false,
+        });
+        if (line === '/usr/local/bin/claude --version') return out(`${claude} (Claude Code)\n`);
+        if (line === `${npm} view @anthropic-ai/claude-code version`) return out('2.3.1\n');
+        if (line === claudeUpdate) {
+          claude = '2.3.1';
+          return out('changed 1 package\n');
+        }
+        if (line === '/opt/homebrew/bin/gemini --version') return out('0.32.1\n');
+        if (line === `${brew} info --json=v2 gemini-cli`) {
+          return out(JSON.stringify({ formulae: [{ versions: { stable: '0.33.0' } }] }));
+        }
+        return { code: 127, stdout: '', stderr: `fake: ${line}`, timedOut: false };
+      };
+      const onPath: Record<string, string> = {
+        claude: '/usr/local/bin/claude',
+        gemini: '/opt/homebrew/bin/gemini',
+      };
+      const real: Record<string, string> = {
+        '/usr/local/bin/claude': '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js',
+        '/opt/homebrew/bin/gemini': '/opt/homebrew/Cellar/gemini-cli/0.32.1/bin/gemini',
+      };
+      const cockpit = await startCockpit({
+        harness: (store, events) =>
+          new HarnessUpdateService({
+            store,
+            events,
+            harnesses: ['claude', 'gemini', 'codex'],
+            which: (command) => onPath[command] ?? null,
+            realpath: (path) => real[path] ?? path,
+            exists: (path) => path === npm || path === brew,
+            run: async (argv) => {
+              ran.push(argv.join(' '));
+              return answer(argv.join(' '));
+            },
+          }),
+      });
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=agents`);
+        const card = '[data-testid="settings-updates"]';
+        await page.locator(card).waitFor();
+        const auto = page.locator('[data-testid="settings-updates-mode-auto"]');
+        const alert = page.locator('[data-testid="settings-updates-mode-alert"]');
+        await waitForAttr(
+          page,
+          '[data-testid="settings-updates-mode-alert"]',
+          'aria-checked',
+          'true',
+        );
+        // Nothing has run: the rows wait for a check.
+        await waitForText(page, '[data-testid="settings-updates-state-claude"]', 'Not checked yet');
+        expect(ran).toEqual([]);
+
+        // The mode is the home's, written through the store; Alert (the default) removes it.
+        await auto.click();
+        await waitUntil(
+          'auto saved',
+          () => cockpit.store.getHomeConfig().harness_updates?.mode === 'auto',
+        );
+        await waitForAttr(
+          page,
+          '[data-testid="settings-updates-mode-auto"]',
+          'aria-checked',
+          'true',
+        );
+        await alert.click();
+        await waitUntil(
+          'alert saved',
+          () => cockpit.store.getHomeConfig().harness_updates === undefined,
+        );
+        // A vendor's own mode.
+        await page.locator('[data-testid="settings-updates-vendor-codex"]').selectOption('off');
+        await waitUntil(
+          'codex off',
+          () => cockpit.store.getHomeConfig().harness_updates?.vendors?.codex === 'off',
+        );
+        expect(ran).toEqual([]);
+
+        // Check now: each row says what it found, in words.
+        await page.locator('[data-testid="settings-updates-check"]').click();
+        await waitForText(
+          page,
+          '[data-testid="settings-updates-state-claude"]',
+          'Update available',
+        );
+        await waitForText(page, '[data-testid="settings-updates-version-claude"]', '2.2.9 → 2.3.1');
+        await waitForText(
+          page,
+          '[data-testid="settings-updates-state-gemini"]',
+          'Update available',
+        );
+        await waitForText(page, '[data-testid="settings-updates-state-codex"]', 'Off');
+        expect(ran.some((line) => line.includes('install') || line.includes('upgrade'))).toBe(
+          false,
+        );
+        expect(
+          await page.locator(`${card} [data-testid="settings-updates-update-claude"]`).count(),
+        ).toBe(1);
+
+        // Needs me: one row per CLI behind, named by the CLI, with the version in words.
+        await page.goto(`${cockpit.base}/`);
+        const row = (id: string) => `[data-testid="inbox-row"][data-item="harness:${id}"]`;
+        await page.locator(row('claude')).waitFor();
+        expect(
+          await page.locator(`${row('claude')} [data-testid="inbox-subject"]`).textContent(),
+        ).toBe('Claude Code');
+        expect(
+          await page.locator(`${row('claude')} [data-testid="inbox-what"]`).textContent(),
+        ).toBe('Update available');
+        expect(
+          await page.locator(`${row('claude')} [data-testid="inbox-line"]`).textContent(),
+        ).toBe('Claude Code 2.3.1 is available (you have 2.2.9)');
+        await page.locator(row('gemini')).waitFor();
+
+        // Update runs the fixed argv through the route, says what happened, and the row leaves.
+        // (The tests' browser has Expand all on: each row shows its card.)
+        const claudeItem = page.locator('[data-testid="inbox-item"]', {
+          has: page.locator(row('claude')),
+        });
+        await claudeItem.locator('[data-testid="harness-update"]').click();
+        await waitUntil('the update ran', () => ran.includes(claudeUpdate));
+        await page.locator(row('claude')).waitFor({ state: 'detached' });
+        const events = cockpit.events.recent(10, (e) => e.type === 'harness_updated');
+        expect(events.map((e) => [e.by, e.payload.summary])).toEqual([
+          ['human', 'Updated Claude Code to 2.3.1'],
+        ]);
+
+        // Dismiss: gone until a newer version, remembered in the home config.
+        const geminiItem = page.locator('[data-testid="inbox-item"]', {
+          has: page.locator(row('gemini')),
+        });
+        await geminiItem.locator('[data-testid="harness-dismiss"]').click();
+        await page.locator(row('gemini')).waitFor({ state: 'detached' });
+        await waitUntil(
+          'dismissed',
+          () => cockpit.store.getHomeConfig().harness_updates?.dismissed?.gemini === '0.33.0',
+        );
+        expect(ran.some((line) => line.includes('upgrade'))).toBe(false);
       } finally {
         await teardown([page]);
         await cockpit.stop();

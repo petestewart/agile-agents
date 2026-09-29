@@ -179,6 +179,8 @@ export const EVENT_FAMILY: Record<RoutedEventType, EventFamily> = {
   external_changed: 'coordination',
   autonomy_applied: 'coordination',
   agent_restarted: 'coordination',
+  // T481: a vendor CLI updated; it is about no node.
+  harness_updated: 'coordination',
   knowledge_accepted: 'knowledge',
 };
 
@@ -201,6 +203,7 @@ export function eventFamily(type: string): EventFamily {
 export function eventTitle(event: Pick<RoutedEvent, 'type' | 'payload'>): string {
   if (event.type === 'autonomy_applied') return appliedTitle(event.payload);
   if (event.type === 'agent_restarted') return restartedTitle(event.payload);
+  if (event.type === 'harness_updated') return `Updated ${String(event.payload.label ?? 'a CLI')}`;
   const words = eventLabel(event).replace(/\b(pr|ci)\b/g, (w) => w.toUpperCase());
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
@@ -459,6 +462,8 @@ export function eventDetail(
         return str(p, 'summary');
       case 'agent_restarted':
         return `${vendorLabel(str(p, 'from') ?? '')} failed: ${str(p, 'reason') ?? 'no reason given'}`;
+      case 'harness_updated':
+        return str(p, 'summary');
       case 'external_changed':
         return [str(p, 'key'), str(p, 'summary')].filter(Boolean).join(': ');
       case 'ship_findings': {

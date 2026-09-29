@@ -9,6 +9,7 @@ import {
   branchName,
   cardOutcome,
   cardTitle,
+  cardTone,
   choiceIndexOfKey,
   choiceKey,
   choicesOf,
@@ -556,6 +557,45 @@ describe('groupNeedsMe (T364): project, then node, oldest first', () => {
 
   test('empty in, empty out', () => {
     expect(groupNeedsMe([], rows, projects)).toEqual([]);
+  });
+
+  test('T481: CLI updates are their own section, one group per CLI, named by the CLI', () => {
+    const update = (id: 'claude' | 'gemini', failed = false): InboxItem =>
+      item({
+        kind: 'harness_update',
+        id: `harness:${id}`,
+        stream: undefined,
+        stream_path: [],
+        context: `${id} is available`,
+        harness: {
+          id,
+          label: id === 'claude' ? 'Claude Code' : 'Gemini CLI',
+          ...(failed ? { failed: true as const } : {}),
+        },
+      });
+    const sections = groupNeedsMe(
+      [
+        update('claude'),
+        update('gemini', true),
+        item({ kind: 'rule_batch', id: 'seed', stream: undefined, stream_path: [] }),
+      ],
+      rows,
+      projects,
+    );
+    expect(sections.map((s) => [s.key, s.kind, s.label, s.count])).toEqual([
+      ['knowledge', 'knowledge', 'Knowledge', 1],
+      ['updates', 'updates', 'Updates', 2],
+    ]);
+    expect(sections[1]?.groups.map((g) => [g.key, g.path])).toEqual([
+      ['harness:claude', ['Claude Code']],
+      ['harness:gemini', ['Gemini CLI']],
+    ]);
+    expect(cardTitle(update('claude'))).toBe('Update available');
+    expect(cardTitle(update('gemini', true))).toBe('Update failed');
+    expect(cardTone(update('gemini', true))).toBe('red');
+    expect(itemCommand(update('claude'))).toBe('Update Claude Code');
+    expect(filterOf(update('claude'))).toBe('decisions');
+    expect(nodesOf([update('claude')])).toEqual([]);
   });
 });
 

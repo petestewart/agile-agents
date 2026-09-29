@@ -15,6 +15,8 @@ import {
   ClassifierKeyInputSchema,
   DEFAULT_SESSION_IDLE_MINUTES,
   DIRECTOR_NODE,
+  HarnessIdSchema,
+  HarnessUpdatesInputSchema,
   type HilDecision,
   type HilId,
   HilIdSchema,
@@ -90,6 +92,7 @@ import {
 } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
 import { isLoopbackUrl } from './github/rest';
+import { HarnessBusyError, type HarnessUpdateService } from './harness';
 import type { InboxService } from './inbox';
 import {
   KnowledgeAlreadyDecidedError,
@@ -242,6 +245,8 @@ export interface HttpServerOptions {
   autonomy?: AutonomyService;
   /** T321: the stream page's Link field. */
   trackerLinks?: TrackerLinks;
+  /** T481 (D50): Settings → Agents → Updates, and Needs me's update items. */
+  harnessUpdates?: HarnessUpdateService;
   /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
   /** Test hook: the operator's home folder for the folder picker and clone destinations (default `os.homedir()`). */
@@ -821,6 +826,60 @@ async function handleAutoCloseRoute(
     const config = await feed.store.setAutoCloseDefault(input.data.on, { by: 'human' });
     return jsonResponse({ on: config.auto_close === true });
   } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T481 (D50): keeping each vendor's CLI up to date. Settings → Agents →
+ * Updates, and the Update and Dismiss on a Needs me update item:
+ *
+ *   GET  /api/settings/harness-updates          the mode, each CLI's last check, the bridges
+ *   POST /api/settings/harness-updates          `{mode}` or `{vendor, mode | null}`; same-origin only
+ *   POST /api/harness-updates/check             Check now: runs the check, returns the status
+ *   POST /api/harness-updates/:harness/update   runs its update: `{ok, message, status}` (a failure is `ok: false`, in words)
+ *   POST /api/harness-updates/:harness/dismiss  hides its item until a newer version
+ *
+ * Every POST is same-origin only; the actor is the operator.
+ */
+async function handleHarnessUpdatesRoute(
+  req: Request,
+  url: URL,
+  harness: HarnessUpdateService | undefined,
+  sameOrigin: () => boolean,
+  noTimeout: () => void,
+): Promise<Response | undefined> {
+  const path = url.pathname;
+  const settings = path === '/api/settings/harness-updates';
+  const action = path.match(/^\/api\/harness-updates\/(?:check|([^/]+)\/(update|dismiss))$/);
+  if (!settings && !action) return undefined;
+  if (settings && req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!settings && req.method !== 'POST') return undefined;
+  if (!harness) return errorResponse(503, 'update checks are not available');
+  if (settings && req.method === 'GET') return jsonResponse(harness.status());
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  if (settings) {
+    const input = HarnessUpdatesInputSchema.safeParse(
+      await readJsonBody(req).catch(() => undefined),
+    );
+    if (!input.success) return errorResponse(400, formatZodError('harness-updates', input.error));
+    try {
+      return jsonResponse(await harness.setMode(input.data));
+    } catch (err) {
+      return errorResponse(400, messageOf(err));
+    }
+  }
+  // A check reads every CLI and an update may take minutes: no idle timeout on this request.
+  noTimeout();
+  const [, rawId, verb] = action as RegExpMatchArray;
+  if (rawId === undefined) return jsonResponse(await harness.check('manual'));
+  const id = HarnessIdSchema.safeParse(decodeURIComponent(rawId));
+  if (!id.success) return errorResponse(404, `no such CLI: ${rawId}`);
+  try {
+    if (verb === 'dismiss') return jsonResponse(await harness.dismiss(id.data));
+    return jsonResponse(await harness.update(id.data, { by: 'human' }));
+  } catch (err) {
+    if (err instanceof HarnessBusyError) return errorResponse(409, err.message);
     return errorResponse(400, messageOf(err));
   }
 }
@@ -2057,6 +2116,14 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (autoCloseRoute) return autoCloseRoute;
         const sessionIdleRoute = await handleSessionIdleRoute(req, url, feed, sameOrigin);
         if (sessionIdleRoute) return sessionIdleRoute;
+        const harnessRoute = await handleHarnessUpdatesRoute(
+          req,
+          url,
+          options.harnessUpdates,
+          sameOrigin,
+          () => srv.timeout(req, 0),
+        );
+        if (harnessRoute) return harnessRoute;
         const trashRoute = await handleTrashRoute(req, url, feed, sameOrigin);
         if (trashRoute) return trashRoute;
         const trackerRoute = await handleTrackerSettingsRoute(req, url, feed, sameOrigin);
@@ -2257,6 +2324,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
     };
     feed.remotes.onChange = repush;
     if (feed.mergeState) feed.mergeState.onChange = repush;
+    // T481: an update item comes and goes with a check or an update, not with the event log.
+    if (options.harnessUpdates) options.harnessUpdates.onChange = repush;
     try {
       feed.remotes.warm(Object.values(feed.store.getRepos()));
     } catch {
@@ -2307,6 +2376,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
       tailer?.stop();
       if (feed) feed.remotes.onChange = undefined;
       if (feed?.mergeState) feed.mergeState.onChange = undefined;
+      if (options.harnessUpdates) options.harnessUpdates.onChange = undefined;
       clearTimeout(remotePush);
       server.stop(true);
     },

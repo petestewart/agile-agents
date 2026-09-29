@@ -77,6 +77,8 @@ export const ROUTES: Record<RoutedEventType, readonly Rule[]> = {
   // T456: the node's own record (Events, its Activity). A switch is not a status
   // change, so the parent is not told; a spent list blocks it (child_status).
   agent_restarted: ['self'],
+  // T481 (D50): a vendor's CLI was updated. It is about no node: recorded in Events, routed to nobody.
+  harness_updated: [],
 };
 
 /** Types whose parties also bring their own ancestors (overlap: "both nodes, their ancestors"). */

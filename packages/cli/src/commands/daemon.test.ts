@@ -133,6 +133,48 @@ test('T221: daemon status says whether GitHub auth is available, never the token
   ).toContain('trackers: jira configured · linear not configured');
 });
 
+test('T481: daemon status prints one line per vendor CLI: its version, and a known update', () => {
+  const checked = '2026-09-29T10:00:00.000Z';
+  const cli = {
+    vendor: 'claude' as const,
+    mode: 'alert' as const,
+    found: true,
+    behind: false,
+    can_update: true,
+    checked_at: checked,
+  };
+  const out = formatDaemonStatus({
+    home: '/h/agile',
+    port: 4777,
+    socketPath: '/h/agile/agiled.sock',
+    pidPath: '/h/agile/agiled.pid',
+    logPath: '/h/agile/log/agiled.log',
+    running: true,
+    pid: 42,
+    harnesses: [
+      {
+        ...cli,
+        id: 'claude',
+        label: 'Claude Code',
+        version: '2.2.9',
+        latest: '2.3.1',
+        behind: true,
+      },
+      { ...cli, id: 'gemini', label: 'Gemini CLI', version: '0.32.1', latest: '0.32.1' },
+      { ...cli, id: 'codex', label: 'Codex', found: false },
+      { ...cli, id: 'grok', label: 'Grok CLI', mode: 'off' },
+      { ...cli, id: 'pi', label: 'Pi', checked_at: undefined },
+    ],
+  });
+  expect(out.split('\n').slice(-5)).toEqual([
+    'Claude Code: 2.2.9 · update available (2.3.1)',
+    'Gemini CLI: 0.32.1',
+    'Codex: not installed',
+    'Grok CLI: off (no update checks)',
+    'Pi: not checked yet',
+  ]);
+});
+
 test('T170: daemon status shows the resolved session default, never "default"', () => {
   const report = {
     home: '/h/agile',

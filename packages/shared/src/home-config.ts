@@ -15,6 +15,7 @@
 
 import { z } from 'zod';
 import { EffortSchema } from './effort';
+import { HarnessUpdatesConfigSchema } from './harness-updates';
 import { formatZodError } from './ids';
 import { PermissionPostureSchema } from './posture';
 import { VendorFailureSchema } from './session-defaults';
@@ -286,6 +287,11 @@ export const HomeConfigSchema = z
      * Absent = `DEFAULT_SESSION_IDLE_MINUTES`.
      */
     session_idle_minutes: z.number().int().min(1).max(MAX_SESSION_IDLE_MINUTES).optional(),
+    /**
+     * T481 (D50): keeping each vendor's CLI up to date: Off, Alert (absent)
+     * or Auto, a vendor's own mode, and the dismissed versions.
+     */
+    harness_updates: HarnessUpdatesConfigSchema.optional(),
     /** T243 (P11): routed-event settings. `wake_budget_per_hour` defaults to 20. */
     events: z
       .object({ wake_budget_per_hour: z.number().int().positive().optional() })

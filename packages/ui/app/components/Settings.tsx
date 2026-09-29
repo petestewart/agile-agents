@@ -11,7 +11,8 @@
  *    repo (`repos.yaml`) and per project (T379). An unset field inherits the
  *    next step, and says what ("Inherits Claude Opus 5.5"). T423: models by
  *    name, and each change saves at once, as the other sections' controls do.
- *    T456: If the agent fails (the home's `vendor_failure`).
+ *    T456: If the agent fails (the home's `vendor_failure`). T481: Updates
+ *    (`SettingsUpdates.tsx`): Off, Alert or Auto for each vendor's CLI.
  *  - **Repositories** — `SettingsRepos.tsx`: every repo with its icon,
  *    delivery and visibility; Add repository (`AddRepo.tsx`).
  *  - **Classifier** — T167: the TypeSafe API key, write-only (the daemon
@@ -97,6 +98,7 @@ import {
 } from './SettingsCard';
 import { PermissionsCard } from './SettingsPermissions';
 import { ReposSection } from './SettingsRepos';
+import { UpdatesCard } from './SettingsUpdates';
 import {
   Badge,
   Button,
@@ -727,6 +729,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
           <SessionIdleCard />
           <VendorModelsCard status={status} onRefreshed={setStatus} />
           <InstalledCliCard />
+          <UpdatesCard />
           {/* T436 (audit r6 #25): in the order they win: a project's default before its repositories'. */}
           {projects.length > 0 ? (
             <div className="cr-set-subhd" data-testid="settings-session-projects-heading">
