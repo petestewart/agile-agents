@@ -9,7 +9,8 @@
  * searchable within the project and defaults to the open node (T353: from
  * the first render). Repository picks the role: none is a Conversation, a
  * repo is Work on its own branch. "Start the agent now" is on, with the
- * model it will use named; Change picks another for this node.
+ * model it will use named; its chip picks another for this node (T487: the
+ * model picker, with favourites and search, and the effort chip beside it).
  * Cmd/Ctrl+Enter creates from anywhere in the form, Enter from the title
  * (T435: not Enter in the goal, which is a long description, often several
  * paragraphs — design/cockpit-ui.md §7).
@@ -19,7 +20,7 @@
  * repository, the Parent's hint says that node will coordinate it.
  */
 
-import type { SessionDefaultsStatus } from '@agile-agents/shared';
+import type { ResolvedSessionDefaults, SessionDefaultsStatus } from '@agile-agents/shared';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import {
   type QuickDrafts,
@@ -33,8 +34,8 @@ import {
   sayOnStream,
 } from '../lib/api';
 import { coordinatesIt, focusComposerOn } from '../lib/ask';
-import { agentLabel, sessionIdText } from '../lib/chat';
-import { resolvedFor } from '../lib/defaults';
+import { sessionIdText } from '../lib/chat';
+import { effortWord, modelChip, resolvedFor } from '../lib/defaults';
 import { useOptionalFeed } from '../lib/feed-context';
 import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
 import { type NewStreamPreset, isShortcut, useShell } from '../lib/shell';
@@ -49,7 +50,7 @@ import {
 import { lazyNamed } from './ErrorBoundary';
 import { Icon } from './Icon';
 import { type PickOption, PickerField } from './Pickers';
-import { type SessionChoice, SessionFields } from './SessionPicker';
+import { EffortChip, ModelChip, nextEffort } from './SessionPicker';
 import { ROLE_GLYPH } from './StreamTree';
 import {
   Button,
@@ -187,8 +188,9 @@ function NewStreamForm({
   // T478: closes itself when its goal is met; starts as Settings says (`undefined` until read).
   const [autoClose, setAutoClose] = useState<boolean | undefined>(undefined);
   const [session, setSession] = useState<SessionDefaultsStatus | undefined>(undefined);
-  // Set once "Change" is pressed: this node's own vendor, model and effort.
-  const [choice, setChoice] = useState<SessionChoice | undefined>(undefined);
+  // T487: a pick from the model chip (or a step of the effort chip): this node's own vendor,
+  // model and effort. `undefined` starts it on the resolved default.
+  const [picked, setPicked] = useState<ResolvedSessionDefaults | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   // T445 (audit r7 #11): a title is only promised when the cheap model is on and there.
@@ -262,12 +264,16 @@ function NewStreamForm({
   const resolved = session
     ? resolvedFor(session, repo || undefined, projectRow?.session)
     : undefined;
-  const custom =
-    choice !== undefined &&
-    resolved !== undefined &&
-    (choice.vendor !== resolved.vendor ||
-      choice.model.trim() !== (resolved.model ?? '') ||
-      choice.effort !== resolved.effort);
+  // T487: the chip names the pick when it differs from the default here, else the default; the
+  // ids on hover (T386), as the model line did.
+  const chip = resolved
+    ? (() => {
+        const state = modelChip({ fallback: resolved, ...(picked ? { chosen: picked } : {}) });
+        return { ...state, title: sessionIdText(state.shows) };
+      })()
+    : undefined;
+  const choice = chip?.pending;
+  const custom = choice !== undefined;
   const needsProject = parent === '' && projectId === undefined;
   // T435 (#3): a node with a repository under a work node makes that node coordinate it.
   const coordinates = repo !== '' ? coordinatesIt(parentRow) : undefined;
@@ -290,7 +296,7 @@ function NewStreamForm({
         auto_close: autoClose === true,
       });
       if (talkFirst && opener !== '') {
-        const model = choice?.model.trim();
+        const model = choice?.model;
         await sayOnStream(created.id, opener, {
           ...(start ? { start: true } : {}),
           ...(start && custom && choice
@@ -310,7 +316,7 @@ function NewStreamForm({
           }),
         );
       } else if (start && custom && choice) {
-        const model = choice.model.trim();
+        const model = choice.model;
         await attachSession(created.id, 'worker', {
           vendor: choice.vendor,
           effort: choice.effort,
@@ -434,17 +440,6 @@ function NewStreamForm({
       <span className="cr-pickfield-text">No repository</span>
     </>
   );
-
-  // T386: the model in words, as the composer and Running say it; the ids on hover.
-  const startsWith = choice
-    ? {
-        vendor: choice.vendor,
-        ...(choice.model.trim() !== '' ? { model: choice.model.trim() } : {}),
-        effort: choice.effort,
-      }
-    : resolved;
-  const modelName = startsWith ? agentLabel(startsWith) : 'the default model';
-  const modelIds = startsWith ? sessionIdText(startsWith) : undefined;
 
   return (
     <Dialog
@@ -707,26 +702,44 @@ function NewStreamForm({
             {start ? (
               <>
                 <Icon name="bot" size={14} />
-                <span title={modelIds}>
-                  <b>{modelName}</b>
-                </span>
-                {session && !choice ? (
-                  <button
-                    type="button"
-                    className="cr-link"
-                    data-testid="new-stream-model-change"
-                    onClick={() =>
-                      resolved &&
-                      setChoice({
-                        vendor: resolved.vendor,
-                        model: resolved.model ?? '',
-                        effort: resolved.effort,
-                      })
-                    }
-                  >
-                    Change
-                  </button>
-                ) : null}
+                {chip && resolved ? (
+                  <>
+                    <ModelChip
+                      status={session}
+                      chip={chip}
+                      fallback={resolved}
+                      onPick={setPicked}
+                      onReset={() => setPicked(undefined)}
+                      modelOnly
+                      testid="new-stream-model-chip"
+                      heading="Model its agent starts with"
+                      note="Its agent starts on this when the node is made. Nothing starts before you create it."
+                    />
+                    <EffortChip
+                      value={chip.shows.effort}
+                      vendor={chip.shows.vendor}
+                      chosen={choice !== undefined && choice.effort !== resolved.effort}
+                      onStep={() =>
+                        setPicked({ ...chip.shows, effort: nextEffort(chip.shows.effort) })
+                      }
+                      testid="new-stream-effort"
+                      title={`${effortWord(chip.shows.effort)} effort. Click for ${effortWord(nextEffort(chip.shows.effort))}.`}
+                    />
+                    {custom ? (
+                      <button
+                        type="button"
+                        className="cr-link"
+                        data-testid="new-stream-model-reset"
+                        title={`Back to ${sessionIdText(resolved)}, the default here`}
+                        onClick={() => setPicked(undefined)}
+                      >
+                        Use the default
+                      </button>
+                    ) : null}
+                  </>
+                ) : (
+                  <b>the default model</b>
+                )}
               </>
             ) : (
               <span className="cr-faint">
@@ -734,24 +747,6 @@ function NewStreamForm({
               </span>
             )}
           </div>
-          {start && choice && session ? (
-            <div className="cr-newnode-session">
-              <SessionFields
-                status={session}
-                value={choice}
-                onChange={setChoice}
-                testid="new-stream-session"
-              />
-              <button
-                type="button"
-                className="cr-link"
-                data-testid="new-stream-model-reset"
-                onClick={() => setChoice(undefined)}
-              >
-                Use the default
-              </button>
-            </div>
-          ) : null}
         </div>
         {error && (
           <p className="cr-error" role="alert" data-testid="new-stream-error">

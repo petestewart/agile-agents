@@ -15,8 +15,10 @@
  *    resolve to (the node's project, else its repo entry, else the home
  *    defaults, else the built-in), so Start with no edits attaches exactly
  *    the default.
+ *    T487: New node shows the same chip (with its own heading and note)
+ *    and `EffortChip` beside it; its pick goes on the new node's first start.
  *  - `SessionFields` — three selects (agent, model, effort) by name for
- *    Settings (with what each inherits) and New node.
+ *    Settings (with what each inherits).
  */
 
 import {
@@ -438,6 +440,9 @@ export function ModelChip({
   onReset,
   placement = 'top',
   modelOnly = false,
+  testid = 'composer-model',
+  heading = 'Model for your next message',
+  note,
 }: {
   status: SessionDefaultsStatus | undefined;
   chip: ModelChipState;
@@ -445,6 +450,12 @@ export function ModelChip({
   placement?: 'top' | 'bottom';
   /** T468: the model alone; the effort has its own chip (`EffortChip`). */
   modelOnly?: boolean;
+  /** T487: the chip's test id, when it is not the composer's (New node). */
+  testid?: string;
+  /** T487: the popover's heading, when the pick is not for a next message (New node). */
+  heading?: string;
+  /** T487: the note under the list, in place of the composer's. */
+  note?: string;
   /** The live agent's model, if one runs. */
   running?: ResolvedSessionDefaults;
   /** The default here. */
@@ -471,7 +482,7 @@ export function ModelChip({
     return (
       <span
         className="cr-model-chip"
-        data-testid="composer-model"
+        data-testid={testid}
         data-live={chip.state === 'live' ? 'true' : undefined}
         title={chip.title}
       >
@@ -483,14 +494,14 @@ export function ModelChip({
     <Popover
       align="start"
       placement={placement}
-      label="Model for your next message"
+      label={heading}
       testid="model-popover"
       className="cr-mpick-pop"
       trigger={(props) => (
         <button
           type="button"
           className="cr-model-chip"
-          data-testid="composer-model"
+          data-testid={testid}
           data-live={chip.state === 'live' ? 'true' : undefined}
           data-chosen={chip.state === 'chosen' ? 'true' : undefined}
           title={chip.title}
@@ -504,7 +515,7 @@ export function ModelChip({
       {() => (
         <div className="cr-mpick-panel">
           <div className="cr-mpick-hd">
-            <span className="cr-mpick-title">Model for your next message</span>
+            <span className="cr-mpick-title">{heading}</span>
             {chip.pending && (
               <button
                 type="button"
@@ -529,9 +540,11 @@ export function ModelChip({
             autoFocus
           />
           <p className="cr-mpick-note" data-testid="model-note">
-            {running
-              ? 'Nothing changes until you send: another model restarts the agent with your message.'
-              : 'Nothing starts until you send. After that it goes back to the default.'}
+            {note !== undefined
+              ? note
+              : running
+                ? 'Nothing changes until you send: another model restarts the agent with your message.'
+                : 'Nothing starts until you send. After that it goes back to the default.'}
           </p>
         </div>
       )}
@@ -677,7 +690,7 @@ export function SessionPicker({
   );
 }
 
-// ---------------------------------------------------------------- Settings and New node
+// ---------------------------------------------------------------- Settings
 
 /**
  * The three controls, by name: the agent, its model (the known ones, the
@@ -855,22 +868,31 @@ export function EffortChip({
   vendor,
   chosen,
   onStep,
+  testid = 'composer-effort',
+  title,
 }: {
   value: Effort;
   vendor: string;
   /** Not what runs (or the default): a pick for the next message. */
   chosen: boolean;
   onStep: () => void;
+  /** T487: the chip's test id, when it is not the composer's (New node). */
+  testid?: string;
+  /** T487: the tooltip, when the step is not for a next message (New node). */
+  title?: string;
 }): JSX.Element | null {
   if (!vendorTakesEffort(vendor)) return null;
   return (
     <button
       type="button"
       className="cr-effort-chip"
-      data-testid="composer-effort"
+      data-testid={testid}
       data-effort={value}
       data-chosen={chosen ? 'true' : undefined}
-      title={`${effortWord(value)} effort for your next message. Click or Shift+Tab for ${effortWord(nextEffort(value))}.`}
+      title={
+        title ??
+        `${effortWord(value)} effort for your next message. Click or Shift+Tab for ${effortWord(nextEffort(value))}.`
+      }
       onClick={onStep}
     >
       <Icon name="zap" size={12} />

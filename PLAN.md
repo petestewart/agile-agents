@@ -2982,11 +2982,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T487 New node picks its model with the model picker (favourites included)
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** manager
 - **Scope:** Left from T469: New node's **Change** control is `SessionFields`, three plain dropdowns per vendor. So it has no stars, no favourites view, no folds and no search, unlike the composer chip, Ask and Start with…, which use the model picker (`ModelChoice`).
 - **Acceptance Criteria:** New node's model choice is the model picker, with favourites, Show all, folds and type-ahead, and the effort chip beside it for a vendor with effort. What it creates is unchanged: the pick goes on the new node's first start, as today.
 - **Validation Steps:** The New node e2e picks a favourite and a non-favourite through search; the walkthrough still runs.
+  - Built: New node's model line under "Start the agent now" is the composer's `ModelChip` (`modelOnly`, so `ModelChoice` with T469's favourites, stars, Show all, folds and type-ahead) and `EffortChip` beside it (Claude only, T401); click steps low → medium → high → max. It names the resolved default until you pick (the ids on hover, as T386's line did), and "Use the default" shows once the pick differs. The pick is `modelChip`'s `pending` (a pick equal to the default is no pick) and goes the same way as before: `start: false` on create, then `attachSession(worker, {vendor, effort, model?})`, or with "No goal yet" on `sayOnStream`'s `session`. An untouched New node still starts through the create's own start on the resolved default. Talk/Work, "No goal yet", auto-close and the repo pickers are unchanged. `ModelChip` and `EffortChip` take optional `testid` (New node: `new-stream-model-chip`, `new-stream-effort`), `heading`/`note` and `title` (New node's popover says "Model its agent starts with"; no Shift+Tab in the tooltip). The Change button and `SessionFields` in New node are gone; `SessionFields` stays for Settings.
+  - Tests: control-room e2e T487 (favourites view shows the two starred models plus the default, pick starred Cursor grok-4.7, no effort chip for Cursor, Escape closes the list and not New node, create, first session is cursor/grok-4.7; a second New node starts on the default, typing on the list searches, Enter picks Claude Haiku 4.5 without submitting, the effort chip steps Low → Medium → High, first session is claude/claude-haiku-4-5/high). Updated T204 (the chip and effort chip name the default, ids on the chip's title, no reset) and T365 (steps the effort chip in place of the Change select; still asserts the session runs on high).
+  - Validation: typecheck and lint clean; full `bun test` 3606 pass, 3 skip, 0 fail; `bun run build` then control-room e2e 135/0; walkthrough 1/0 (it never drove the old selects).
+- **Notes:** Branch T487-new-node-model-picker.
 
 ### Ticket: T482 Model routing: the policy and the lock
 - **Priority:** P1
