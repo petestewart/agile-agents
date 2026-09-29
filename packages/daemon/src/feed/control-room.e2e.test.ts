@@ -7313,11 +7313,17 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
           'Work: writes code on its own branch in demo',
         );
         // T365: the agent starts by default, and the dialog names the model it will use.
+        // T487: on the model picker's chip, with the effort chip beside it; the ids on hover.
         expect(await page.locator('[data-testid="new-stream-start"]').isChecked()).toBe(true);
-        await waitForText(page, '[data-testid="new-stream-model"]', 'Claude Opus 5.5 · lowChange');
+        await waitForText(page, '[data-testid="new-stream-model-chip"]', 'Claude Opus 5.5');
+        await waitForText(page, '[data-testid="new-stream-effort"]', 'Low');
         expect(
-          await page.locator('[data-testid="new-stream-model"] span[title]').getAttribute('title'),
+          await page.locator('[data-testid="new-stream-model-chip"]').getAttribute('title'),
         ).toBe('claude/claude-opus-5-5 · low effort');
+        expect(
+          await page.locator('[data-testid="new-stream-model-chip"]').getAttribute('data-chosen'),
+        ).toBeNull();
+        expect(await page.locator('[data-testid="new-stream-model-reset"]').count()).toBe(0);
         // Cmd/Ctrl+Enter in the goal creates it.
         await page.locator('[data-testid="new-stream-goal"]').press('Control+Enter');
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
@@ -7342,7 +7348,7 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
   );
 
   browserTest(
-    "T365: New node's Change starts the agent with the picked effort",
+    "T365: New node's effort chip starts the agent with the picked effort",
     async () => {
       const cockpit = await startStreamCockpit([
         { steps: [{ type: 'tool_call', toolCallId: 'w-1', title: 'read' }, { type: 'hang' }] },
@@ -7359,9 +7365,16 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
         await page.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
         await page.locator('[data-testid="new-stream-open"]').click();
         await page.locator('[data-testid="new-stream-goal"]').fill('tidy the README');
-        await page.locator('[data-testid="new-stream-model-change"]').click();
-        await page.locator('[data-testid="new-stream-session-effort"]').selectOption('high');
-        await waitForText(page, '[data-testid="new-stream-model"]', 'Claude Opus 5.5 · high');
+        // T487: the effort chip beside the model chip steps low → medium → high.
+        await waitForText(page, '[data-testid="new-stream-effort"]', 'Low');
+        await page.locator('[data-testid="new-stream-effort"]').click();
+        await waitForText(page, '[data-testid="new-stream-effort"]', 'Medium');
+        await page.locator('[data-testid="new-stream-effort"]').click();
+        await waitForText(page, '[data-testid="new-stream-effort"]', 'High');
+        expect(
+          await page.locator('[data-testid="new-stream-effort"]').getAttribute('data-chosen'),
+        ).toBe('true');
+        await waitForText(page, '[data-testid="new-stream-model-chip"]', 'Claude Opus 5.5');
         await page.locator('[data-testid="new-stream-create"]').click();
         await page.locator('[data-testid="new-stream"]').waitFor({ state: 'detached' });
         const created = cockpit.streams.list().find((x) => x.title === 'tidy the README');
@@ -10414,6 +10427,164 @@ describe('Favourite models (Playwright e2e, T469)', () => {
           { vendor: 'cursor', model: 'sonnet-4.5' },
           { vendor: 'cursor', model: 'grok-4.7[context=256k,fast=true]' },
         ]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('New node picks its model with the model picker (Playwright e2e, T487)', () => {
+  browserTest(
+    "New node's chip is the model picker: a starred favourite starts the node on it, search and Enter pick a non-favourite, and the effort chip steps",
+    async () => {
+      const cockpit = await startStreamCockpit(
+        [
+          { steps: [{ type: 'agent_text', text: 'On it.' }, { type: 'hang' }] },
+          { steps: [{ type: 'agent_text', text: 'On it.' }, { type: 'hang' }] },
+        ],
+        (home) => {
+          // What an earlier Cursor session kept: its model list.
+          const dir = join(home, 'sessions', ulid());
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(
+            join(dir, SESSION_STATE_FILE),
+            JSON.stringify({
+              at: '2026-09-29T10:50:46.021Z',
+              vendor: 'cursor',
+              configOptions: [
+                {
+                  id: 'model',
+                  name: 'Model',
+                  category: 'model',
+                  type: 'select',
+                  currentValue: 'default[]',
+                  options: [
+                    { value: 'default[]', name: 'Auto' },
+                    { value: 'grok-4.7[context=256k,fast=true]', name: 'grok-4.7' },
+                  ],
+                },
+              ],
+              models: null,
+            }),
+          );
+          return new ModelCatalog({ home }).load();
+        },
+      );
+      let page: Page | undefined;
+      try {
+        const grok = 'grok-4.7[context=256k,fast=true]';
+        await cockpit.store.setFavouriteModel(
+          { vendor: 'claude', model: 'claude-sonnet-5-5' },
+          true,
+        );
+        await cockpit.store.setFavouriteModel({ vendor: 'cursor', model: grok }, true);
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const p = await openPage();
+        page = p;
+        const traffic = recordTraffic(p);
+        await p.goto(`${cockpit.base}/`);
+        const dialog = p.locator('[data-testid="new-stream"]');
+        const chip = p.locator('[data-testid="new-stream-model-chip"]');
+        const effort = p.locator('[data-testid="new-stream-effort"]');
+        const popover = p.locator('[data-testid="model-popover"]');
+        const rows = () =>
+          popover
+            .locator('[data-testid="model-option"]')
+            .evaluateAll((els) =>
+              els.map((e) => `${e.getAttribute('data-vendor')}/${e.getAttribute('data-model')}`),
+            );
+        const openNewNode = async (goal: string): Promise<void> => {
+          await p.locator(`[data-testid="stream-tree"] [data-stream="${shop.root}"]`).click();
+          await p.locator('[data-testid="new-stream-open"]').click();
+          await dialog.waitFor({ state: 'visible' });
+          await p.locator('[data-testid="new-stream-goal"]').fill(goal);
+          // Untouched, it names the default here.
+          await waitForText(p, '[data-testid="new-stream-model-chip"]', 'Claude Opus 5.5');
+          await waitForText(p, '[data-testid="new-stream-effort"]', 'Low');
+        };
+
+        // 1. A starred favourite, picked from the favourites view.
+        await openNewNode('price the basket');
+        await chip.click();
+        await popover.waitFor();
+        expect(await popover.locator('.cr-mpick-title').textContent()).toBe(
+          'Model its agent starts with',
+        );
+        // The favourites, and the default it would start on; Show all at the bottom.
+        expect(await rows()).toEqual([
+          'claude/claude-opus-5-5',
+          'claude/claude-sonnet-5-5',
+          `cursor/${grok}`,
+        ]);
+        expect(await popover.locator('[data-testid="model-show-all"]').isChecked()).toBe(false);
+        const grokRow = popover.locator(`[data-testid="model-option"][data-model="${grok}"]`);
+        expect(
+          await popover
+            .locator('.cr-mpick-item', {
+              has: p.locator(`[data-testid="model-option"][data-model="${grok}"]`),
+            })
+            .locator('[data-testid="model-star"]')
+            .getAttribute('aria-pressed'),
+        ).toBe('true');
+        await grokRow.click();
+        await waitForText(p, '[data-testid="new-stream-model-chip"]', 'Cursor · grok-4.7');
+        expect(await chip.getAttribute('data-chosen')).toBe('true');
+        // Cursor has no effort setting: no effort chip. The default is a click away.
+        expect(await effort.count()).toBe(0);
+        expect(await p.locator('[data-testid="new-stream-model-reset"]').count()).toBe(1);
+        // Escape closes the list, not New node.
+        await p.keyboard.press('Escape');
+        await popover.waitFor({ state: 'detached' });
+        expect(await dialog.isVisible()).toBe(true);
+        await p.locator('[data-testid="new-stream-create"]').click();
+        await dialog.waitFor({ state: 'detached' });
+        const first = cockpit.streams.list().find((x) => x.goal === 'price the basket');
+        await waitForRunningWorker(p, cockpit, first?.id ?? '', traffic);
+        const firstSessions = cockpit.streams.get(first?.id ?? '').sessions;
+        expect(firstSessions).toHaveLength(1);
+        expect(firstSessions[0]).toMatchObject({ role: 'worker', vendor: 'cursor', model: grok });
+
+        // 2. A second New node starts on the default again; type-ahead finds a non-favourite.
+        await openNewNode('weigh the parcels');
+        await chip.click();
+        await popover.waitFor();
+        // Typing on the list goes to the search, which looks past the favourites.
+        await p.keyboard.type('haiku');
+        expect(await popover.locator('[data-testid="model-search"]').inputValue()).toBe('haiku');
+        await waitUntilAsync('Haiku found', async () =>
+          Bun.deepEquals(await rows(), ['claude/claude-haiku-4-5']),
+        );
+        await p.keyboard.press('Enter');
+        await waitForText(p, '[data-testid="new-stream-model-chip"]', 'Claude Haiku 4.5');
+        // Enter picked it; it never submitted New node.
+        expect(await dialog.isVisible()).toBe(true);
+        expect(cockpit.streams.list().some((x) => x.goal === 'weigh the parcels')).toBe(false);
+        await p.keyboard.press('Escape');
+        await popover.waitFor({ state: 'detached' });
+        // 3. The effort chip beside it steps for Claude.
+        await effort.click();
+        await waitForText(p, '[data-testid="new-stream-effort"]', 'Medium');
+        await effort.click();
+        await waitForText(p, '[data-testid="new-stream-effort"]', 'High');
+        expect(await effort.getAttribute('data-chosen')).toBe('true');
+        expect(await chip.getAttribute('title')).toBe('claude/claude-haiku-4-5 · high effort');
+        await p.locator('[data-testid="new-stream-create"]').click();
+        await dialog.waitFor({ state: 'detached' });
+        const second = cockpit.streams.list().find((x) => x.goal === 'weigh the parcels');
+        await waitForRunningWorker(p, cockpit, second?.id ?? '', traffic);
+        const secondSessions = cockpit.streams.get(second?.id ?? '').sessions;
+        expect(secondSessions).toHaveLength(1);
+        expect(secondSessions[0]).toMatchObject({
+          role: 'worker',
+          vendor: 'claude',
+          model: 'claude-haiku-4-5',
+          effort: 'high',
+        });
       } finally {
         await teardown([page]);
         await cockpit.stop();

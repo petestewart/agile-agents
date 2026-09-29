@@ -2235,15 +2235,10 @@ input[type="checkbox"].cr-switch:focus-visible {
   margin-left: 2px;
   font-size: var(--text-sm);
 }
-.cr-newnode-session {
-  margin-left: 40px;
-}
-.cr-newnode-session .cr-sf {
-  margin-top: 8px;
-}
-.cr-newnode-session > .cr-link {
-  margin-top: 6px;
-  font-size: var(--text-sm);
+/* T487: the model picker's chip in New node; it may shrink, the effort chip keeps its size. */
+.cr-newnode-model > .cr-pop-wrap {
+  min-width: 0;
+  max-width: 100%;
 }
 .cr-newnode-keys {
   display: flex;
