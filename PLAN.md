@@ -2980,6 +2980,14 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   - Validation (after merging `claude/phase-14` at 2ca9a0ab, T467): typecheck and lint clean; `bun test` 3575 pass, 3 skip, 0 fail; build, then control-room e2e 133/133; walkthrough 43 steps, 0 findings.
 - **Notes:** Branch T481-harness-updates. LIVE-CHECKLIST §15 (one Alert-mode and one Auto-mode update). The dismissed versions live in the home config beside the mode (no new home file).
 
+### Ticket: T487 New node picks its model with the model picker (favourites included)
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** manager
+- **Scope:** Left from T469: New node's **Change** control is `SessionFields`, three plain dropdowns per vendor. So it has no stars, no favourites view, no folds and no search, unlike the composer chip, Ask and Start with…, which use the model picker (`ModelChoice`).
+- **Acceptance Criteria:** New node's model choice is the model picker, with favourites, Show all, folds and type-ahead, and the effort chip beside it for a vendor with effort. What it creates is unchanged: the pick goes on the new node's first start, as today.
+- **Validation Steps:** The New node e2e picks a favourite and a non-favourite through search; the walkthrough still runs.
+
 ### Ticket: T482 Model routing: the policy and the lock
 - **Priority:** P1
 - **Status:** Todo (design proposed in `design/model-routing.md`; waiting on Pete's MR1–MR6)
