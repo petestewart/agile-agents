@@ -1376,6 +1376,23 @@ option. To fill the "Accepts a model via ACP?" column, for each vendor:
       bridge's entries (Sonnet, Haiku), and a full id through "Other
       model…"; both run on the pick.
 
+### 12.1 The installed Claude Code and Codex (D49, T480)
+
+Settings → Agents → **Installed agents** shows, for Claude Code and Codex,
+the path found on PATH and a switch that is on by default.
+
+- [ ] With the switch on, start a Claude node. Its
+      `sessions/<id>/stderr.log` starts with "running your installed Claude
+      Code: <path>".
+- [ ] Its `session-state.json` model list matches what `/model` offers in
+      your own Claude Code (Sonnet 5.5 included).
+- [ ] A tool call a rule holds is still held: the hook still fires under
+      the installed CLI.
+- [ ] The same for Codex with its switch on: the stderr.log line names
+      your `codex`.
+- [ ] Turn a switch off and start a new node: stderr.log has no "running
+      your installed" line, and it runs the bridge's own copy.
+
 ## 13. **[vendor]** Auto-close when the goal is met (T478)
 
 The daemon closes a node set to auto-close only on the agent's `goal_met`

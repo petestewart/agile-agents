@@ -86,6 +86,7 @@ import { projectReadSettings } from '../permissions/posture';
 import type { AboutParent, BriefDoc, WipNode } from '../runner/brief';
 import { buildBrief, openWorkFor } from '../runner/brief';
 import type { CliInvocation } from '../runner/cli-bin';
+import { type InstalledCli, installedCliFor } from '../runner/installed-cli';
 import type { ModelCatalog } from '../runner/model-catalog';
 import {
   type AgentSessionHandle,
@@ -297,6 +298,8 @@ export interface AttachServiceOptions {
   knowledgeWake?: Pick<KnowledgeWakeJudge, 'approvedFor' | 'consider'>;
   /** T465 test seam: how long a resting session lives, in ms (default: the home's `session_idle_minutes`). */
   sessionIdleMs?: number;
+  /** T480 (D49) test seam: the installed CLI a vendor's bridge runs (default: PATH and the home's switch). */
+  installedCli?: (vendor: string) => InstalledCli | undefined;
   /** T467 (D46): each vendor's model list, kept from every session's `session/new` reply. */
   models?: Pick<ModelCatalog, 'record'>;
 }
@@ -1055,6 +1058,10 @@ export class AttachService {
           void this.onModelPicked(stream.id, sessionId, result);
         },
         sessionDir,
+        ...(() => {
+          const cli = this.installedCliFor(provider.id);
+          return cli !== undefined ? { installedCli: cli } : {};
+        })(),
         provider,
         readScope,
         // T457: a read the Ask posture held raises the same card as the hook tier's.
@@ -1389,6 +1396,17 @@ export class AttachService {
     await this.endResting(after.id, why).catch((err) =>
       console.error('ending a resting session failed:', err),
     );
+  }
+
+  /** T480 (D49): the installed CLI a new `vendor` session's bridge runs, if any. */
+  private installedCliFor(vendor: string): InstalledCli | undefined {
+    if (this.options.installedCli !== undefined) return this.options.installedCli(vendor);
+    try {
+      return installedCliFor(vendor, readHomeConfigFile(this.options.home));
+    } catch {
+      // An unreadable config: the bundled copy, as before.
+      return undefined;
+    }
   }
 
   /** T465: how long a finished turn's session is kept (the home's setting; a test's seam). */

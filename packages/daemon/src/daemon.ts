@@ -59,6 +59,7 @@ import { ProjectService, buildProjectRpcMethods } from './projects';
 import { QuestionService, buildQuestionRpcMethods, wireQuestionSupersession } from './questions';
 import { type RpcServerHandle, startRpcServer } from './rpc';
 import { missingVendorCommand, resolveCliBin } from './runner';
+import { installedCliFor } from './runner/installed-cli';
 import { ModelCatalog, sessionVendorIndex } from './runner/model-catalog';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
@@ -266,6 +267,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         home: config.home,
         vendorOfSession: sessionVendorIndex(streamService),
         ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
+        // T480 (D49): Refresh lists what the installed CLI offers, as a session would run.
+        installedCli: (vendor) => {
+          try {
+            return installedCliFor(vendor, readHomeConfigFile(config.home));
+          } catch {
+            return undefined;
+          }
+        },
       }).load()
     : undefined;
   // Attach and questions know about each other: the turn-end rule asks
