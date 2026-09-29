@@ -2902,6 +2902,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** attach test T467a (the file holds the reply as sent); `runner/session-state.test.ts` (configOptions, a model record, `models.currentModelId`, none). acp-client tests green; full `bun test` 3493/0.
 - **Notes:** Branch T467a-save-session-reply. Reading, not setting: D46's "measure first" still holds for how a model is set.
 
+### Ticket: T467b Write session-state.json for every vendor, and say how to get a daemon that does
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete ran ten sessions and found no `session-state.json` in any of them. His search of the code found no file by that name either, so his checkout or running daemon predates T467a (43099a46). There was also a real gap: the ACP client sent `_agile/session_state` only when the reply carried `modes`, `configOptions` or `models`. A vendor whose `session/new` reply has none of them (just a session id) wrote no file. That is the very case §12 needs to see.
+- **Acceptance Criteria:** Every `session/new` or `session/load` reply writes the file. Missing fields read `null`, and `keys` lists what the reply did carry. LIVE-CHECKLIST §12 starts with the steps to get a daemon that writes it: fetch, check out and pull `claude/phase-14`; check with `git grep`; build; restart the daemon. It also says old sessions have no file and a new node is needed.
+- **Validation Steps:** attach test T467b: a fake Cursor replying `{sessionId}` alone writes the file with `keys: ["sessionId"]`. It fails on the T467a code (no file within 5 s). Typecheck and lint are clean; the full `bun test` passes 3511/0.
+- **Notes:** Branch T467b-session-state-always.
+
 ### Ticket: T467 Models come from the vendor, set through ACP (D46)
 - **Priority:** P1
 - **Status:** Todo (measure first: LIVE-CHECKLIST §12)

@@ -406,7 +406,8 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     const r = asRecord(result);
     if (r === null) return;
     // T467a: `models` (ACP's model list and current model) travels too; a vendor may send only it.
-    if (r.modes === undefined && r.configOptions === undefined && r.models === undefined) return;
+    // T467b: sent for every reply, even one with none of the three: that absence is what
+    // LIVE-CHECKLIST §12 measures. `keys` names what the reply did carry.
     emitFrame({
       acp: 'notification',
       message: {
@@ -417,6 +418,7 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
           modes: r.modes ?? null,
           configOptions: r.configOptions ?? null,
           models: r.models ?? null,
+          keys: Object.keys(r).slice(0, 50),
         },
       },
     });
