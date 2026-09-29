@@ -13,6 +13,7 @@
 
 import { tmpdir } from 'node:os';
 import type { Stream } from '@agile-agents/shared';
+import { withoutDaemonSecrets } from '../secret-env';
 import type { StreamService } from './service';
 
 /** One model call: the prompt in, the reply's text out (`undefined` on any failure). */
@@ -84,6 +85,8 @@ export function claudeTitleRun(
         ],
         {
           cwd: tmpdir(),
+          // T486: the daemon's own env, less its secrets (the classifier key).
+          env: withoutDaemonSecrets(),
           stdin: 'ignore',
           stdout: 'pipe',
           stderr: 'ignore',

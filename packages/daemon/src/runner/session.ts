@@ -61,6 +61,7 @@ import {
   resolvePiAgentDir,
 } from '../pi';
 import { type WrapAgentCommandFn, wrapAgentCommand as defaultWrapAgentCommand } from '../sandbox';
+import { withoutDaemonSecrets } from '../secret-env';
 import { buildEvent } from '../store';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
@@ -556,6 +557,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     cmd: wrapped.command,
     args: [...wrapped.args, ...(modelContribution.args ?? []), ...(effortContribution.args ?? [])],
     cwd: worktreePath,
+    // T486: the daemon's own env, less its secrets (the classifier key).
+    env: withoutDaemonSecrets(),
     envOverrides: {
       ...provider.envOverrides,
       ...(installed?.env ?? {}),

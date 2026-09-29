@@ -3011,6 +3011,19 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Scope:** `design/model-routing.md` §7: budgets in weighted tokens (tokens × the model profile's cost), per session and per node. At 80% a chat line; at the cap the next turn waits and Needs me offers Raise the cap / Stop here. A vendor that reports no usage says so instead of estimating.
 - **Validation Steps:** After §16: unit tests on the weighting and cap, and an attach test that the capped node waits.
 
+### Ticket: T486 The classifier key never reaches a vendor's process
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found while reviewing T481. Every vendor spawn inherited the daemon's whole environment (`acp-client` `resolveAgentEnv` defaults to `process.env`), so when the operator supplied the TypeSafe key as `TYPESAFE_API_KEY`, every coding agent could read it with `env` and echo it into a thread, a file or a commit. That breaks D16 / design §6.1 (the key is the daemon's alone).
+- **Acceptance Criteria:** `packages/daemon/src/secret-env.ts` `withoutDaemonSecrets` (one list, `DAEMON_ONLY_ENV_NAMES`) builds the env for:
+  - node sessions and the Director (runner);
+  - Refresh models (the catalog probe);
+  - the quick drafts (`claude -p`);
+  - the CLI updater (T481).
+  `HOME`, `PATH` and vendor logins pass through untouched. `TYPESAFE_API_KEY` is the only daemon secret read from the environment; a key in `config.yaml` never enters the environment.
+- **Validation Steps:** `secret-env.test.ts`; attach test T486 (the fake agent reports `classifier_key: false` while the daemon's env has one; it fails without the fix). Typecheck and lint are clean; full `bun test` 3585/0 (the T481 e2e failed once on a stale UI build and passed after `bun run build`); control-room e2e 133/0; walkthrough 1/0.
+
 ### Ticket: T469 Favourite models, and a picker that folds
 - **Priority:** P2
 - **Status:** Todo

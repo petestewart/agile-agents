@@ -25,7 +25,7 @@ import {
   type HarnessInstallMethod,
   type SessionVendor,
 } from '@agile-agents/shared';
-import { TYPESAFE_API_KEY_ENV } from '../classifier/jev';
+import { withoutDaemonSecrets } from '../secret-env';
 
 // ---------------------------------------------------------------- running a command
 
@@ -49,16 +49,9 @@ export type CommandRunner = (
 /** What a command may print before the rest is dropped: only the first lines are ever read. */
 const OUTPUT_MAX_CHARS = 64 * 1024;
 
-/** Env names an updater never needs and never gets: the daemon's own secrets. */
-const UPDATER_ENV_DROP: readonly string[] = [TYPESAFE_API_KEY_ENV];
-
-/** The operator's environment without the daemon's own secrets. */
+/** The operator's environment without the daemon's own secrets (T486). */
 export function updaterEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [name, value] of Object.entries(env)) {
-    if (value !== undefined && !UPDATER_ENV_DROP.includes(name)) out[name] = value;
-  }
-  return out;
+  return withoutDaemonSecrets(env);
 }
 
 /**
