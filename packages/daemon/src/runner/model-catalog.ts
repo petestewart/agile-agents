@@ -39,6 +39,7 @@ import {
   isSessionVendor,
   ulid,
 } from '@agile-agents/shared';
+import type { InstalledCli } from './installed-cli';
 import { SESSION_STATE_FILE, saveSessionState } from './session';
 import { asRecord, vendorModelOption } from './vendor-models';
 
@@ -76,6 +77,8 @@ export interface ModelCatalogOptions {
   spawn?: typeof defaultSpawnSession;
   /** Test seam: the provider a vendor maps to (the fake-agent transport). */
   provider?: (vendor: SessionVendor) => AcpProviderConfig;
+  /** T480 (D49): the installed CLI a vendor's bridge runs (read at each Refresh). */
+  installedCli?: (vendor: SessionVendor) => InstalledCli | undefined;
   now?: () => Date;
 }
 
@@ -155,9 +158,11 @@ export class ModelCatalog {
     if (running !== undefined) return running;
     const provider = this.options.provider?.(vendor) ?? ACP_PROVIDERS[vendor];
     const session = ulid();
+    const installedCli = this.options.installedCli?.(vendor);
     const run = probeVendorState({
       provider,
       sessionDir: join(this.options.home, 'sessions', session),
+      ...(installedCli !== undefined ? { installedCli } : {}),
       ...(this.options.spawn !== undefined ? { spawn: this.options.spawn } : {}),
     })
       .then((state) => {
@@ -200,6 +205,8 @@ export interface ProbeOptions {
   sessionDir: string;
   spawn?: typeof defaultSpawnSession;
   timeoutMs?: number;
+  /** T480 (D49): the installed CLI the bridge runs, so the list is that CLI's. */
+  installedCli?: InstalledCli;
 }
 
 /**
@@ -216,7 +223,7 @@ export async function probeVendorState(opts: ProbeOptions): Promise<Record<strin
     cmd: provider.command,
     args: [...provider.args],
     cwd: sessionDir,
-    envOverrides: { ...provider.envOverrides },
+    envOverrides: { ...provider.envOverrides, ...(opts.installedCli?.env ?? {}) },
     clientCapabilities: provider.clientCapabilities,
     mcpServers: [],
     onStderr: (chunk) => {

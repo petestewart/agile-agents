@@ -65,6 +65,7 @@ import { buildEvent } from '../store';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { type CliInvocation, cliInvocationToShell, normalizeCliBin } from './cli-bin';
+import { type InstalledCli, installedCliForSpawn } from './installed-cli';
 import { currentValueOf, modelNameIn, vendorModelOption } from './vendor-models';
 
 /** `<sessionDir>/<name>` appender that never throws: diagnostics must not take a session down. */
@@ -135,6 +136,12 @@ export interface AgentSessionOptions {
    * when there was nothing to set.
    */
   onModel?: (result: ModelPickResult) => void;
+  /**
+   * T480 (D49): the operator's installed CLI for this vendor (`installedCliFor`),
+   * which the bridge runs instead of its bundled copy. Applied only to an
+   * unsandboxed session: a sandbox may not see or read the host's binary.
+   */
+  installedCli?: InstalledCli;
   /** `<home>/sessions/<session id>/`: stderr and output logs. */
   sessionDir: string;
   /** How to invoke the `agile` CLI for the hook and MCP commands. Defaults to `'agile'`. */
@@ -528,6 +535,17 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     stderrTail = (stderrTail + chunk).slice(-4000);
   };
 
+  // T480 (D49): the bridge runs the operator's installed CLI, not its bundled copy.
+  // A sandboxed session keeps the bundled one: the sandbox may not see the host's.
+  const installed = installedCliForSpawn(opts.installedCli, wrapped.backend);
+  if (installed !== undefined) {
+    stderrLog.append(`[agiled] running your installed ${installed.label}: ${installed.path}\n`);
+  } else if (opts.installedCli !== undefined) {
+    stderrLog.append(
+      `[agiled] sandboxed session: the bridge's bundled ${opts.installedCli.label} runs, not ${opts.installedCli.path}\n`,
+    );
+  }
+
   // D12: the vendor's model/effort levers come from the provider registry.
   // An unmapped vendor contributes nothing (attach writes "effort ignored").
   const modelContribution = provider.model?.(sessionRef.model) ?? {};
@@ -540,6 +558,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     cwd: worktreePath,
     envOverrides: {
       ...provider.envOverrides,
+      ...(installed?.env ?? {}),
       ...wrapped.envOverrides,
       ...modelContribution.env,
       ...effortContribution.env,
@@ -1056,6 +1075,30 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
    */
   async function openAndPickModel(): Promise<void> {
     try {
+      await openSession();
+    } catch (err) {
+      throw withInstalledHint(err);
+    }
+    if (stopRequested || settled) return;
+    reportAcpSession();
+    await applyPickedModel();
+  }
+
+  /**
+   * T480: a session that can't open while the bridge runs the operator's
+   * installed CLI says so, and where the switch is: a CLI far newer or older
+   * than the bridge is the likely cause, and the bundled copy the fix.
+   */
+  function withInstalledHint(err: unknown): unknown {
+    if (installed === undefined || err instanceof AuthRequiredError) return err;
+    const message = err instanceof Error ? err.message : String(err);
+    return new Error(
+      `${message} (it ran your installed ${installed.label} at ${installed.path}; Settings → Agents → Models can switch ${provider.label} back to the bridge's bundled copy)`,
+    );
+  }
+
+  async function openSession(): Promise<void> {
+    try {
       await spawned.open();
     } catch (err) {
       if (!(err instanceof AuthRequiredError) || provider.authMethods.length === 0) throw err;
@@ -1075,9 +1118,6 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       }
       if (!opened) throw lastErr;
     }
-    if (stopRequested || settled) return;
-    reportAcpSession();
-    await applyPickedModel();
   }
 
   /**

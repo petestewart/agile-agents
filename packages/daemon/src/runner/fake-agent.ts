@@ -104,7 +104,7 @@ export interface FakeAgentScript {
    * JSON-RPC error. Each call is logged (`logFile`).
    */
   setConfigOption?: 'honour' | 'ignore' | 'error';
-  /** T467: log `ANTHROPIC_MODEL` as the agent saw it at spawn (`{method: "spawn", ANTHROPIC_MODEL}`). */
+  /** T467: log `ANTHROPIC_MODEL` as the agent saw it at spawn (`{method: "spawn", ANTHROPIC_MODEL}`); T480: and the bridge overrides, when set. */
   logModelEnv?: boolean;
 }
 
@@ -128,7 +128,15 @@ function loadScript(): FakeAgentScript {
 const script = loadScript();
 if (script.stderrBanner !== undefined) process.stderr.write(`${script.stderrBanner}\n`);
 if (script.logModelEnv && import.meta.main) {
-  appendLog(script, { method: 'spawn', ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL ?? null });
+  appendLog(script, {
+    method: 'spawn',
+    ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL ?? null,
+    // T480: the bridge overrides, only when the daemon set them.
+    ...(process.env.CLAUDE_CODE_EXECUTABLE !== undefined
+      ? { CLAUDE_CODE_EXECUTABLE: process.env.CLAUDE_CODE_EXECUTABLE }
+      : {}),
+    ...(process.env.CODEX_PATH !== undefined ? { CODEX_PATH: process.env.CODEX_PATH } : {}),
+  });
 }
 /** `authenticate` method ids seen, for `requireAuthMethod`. */
 const authenticatedMethods = new Set<string>();

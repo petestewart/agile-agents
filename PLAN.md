@@ -2943,11 +2943,20 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T480 Run the installed Claude Code and Codex, not the bridges' bundled copies (D49)
 - **Priority:** P1
-- **Status:** Todo (after T467 merges: both touch the provider launch)
+- **Status:** Done (offline; LIVE-CHECKLIST §12.1 for the live run)
 - **Owner:** manager
 - **Scope:** Pete (2026-09-29): "no good reason for 2 different claude installations". `claude-agent-acp` bundles its own Claude Code (through `claude-agent-sdk`), and `codex-acp` bundles `@openai/codex`, so a model the operator's Claude Code already has (Sonnet 5.5) was missing until the bridge moved (T479). Both bridges take an override, checked in their dists: `CLAUDE_CODE_EXECUTABLE` (claude-agent-acp 0.84.0, `acp-agent.js`) and `CODEX_PATH` (codex-acp 1.10.0, README: "run a specific Codex executable instead of the bundled package dependency").
 - **Acceptance Criteria:** When `claude` or `codex` is on PATH, the session env sets the override to its resolved path. When it isn't, the bundled copy runs, as today. `agile daemon status` and Settings → Agents say which is used, with the path and `--version`. A start that fails with the installed CLI, where the bundled copy would work, says so in words on the thread. A per-vendor switch ("Use the installed Claude Code") is on by default. The Claude hook settings path is unchanged: the installed CLI reads the same `.claude/settings*.json`.
 - **Validation Steps:** Runner tests (the env carries the override when the binary resolves, none when it doesn't, and the switch turns it off). LIVE-CHECKLIST: Claude's §12 model list matches the installed Claude Code's `/model` list, and a hooked tool call is still held.
+- **Notes:** Branch T480-installed-cli.
+  - `runner/installed-cli.ts` finds `claude`/`codex` on PATH with `Bun.which` (the PATH path itself, so a native installer's symlink follows its updates) and builds `{CLAUDE_CODE_EXECUTABLE|CODEX_PATH: path}`.
+  - The runner adds it to the session env only when the session isn't sandboxed (`installedCliForSpawn`: a sandbox backend may not see the host's binary). stderr.log says which copy ran.
+  - A session that can't open while running the installed CLI says so in its failure, and names the switch.
+  - Wired through attach, the Director and Refresh models (`ModelCatalog.installedCli`), so the list Refresh reads is the installed CLI's.
+  - Home config `installed_cli: {claude?, codex?}`, absent = on. `store.setInstalledCli`, `GET/POST /api/settings/installed-cli` (same-origin), and a Settings → Agents **Installed agents** card.
+  - `agile daemon status` isn't changed: Settings shows the path.
+  - Tests: `installed-cli.test.ts` 5/0; the attach test (the bridge env and the stderr.log line); the http test (the switch; 400 for gemini; 403 cross-origin); the control-room e2e (the switch saves).
+  - Validation: typecheck and lint are clean; full `bun test` 3542/0 (one run failed the T467 e2e on a stale UI build and passed after `bun run build`); control-room e2e 132/0; walkthrough 1/0.
 
 ### Ticket: T481 Keep each vendor's CLI up to date: Off, Alert or Auto (D50)
 - **Priority:** P1

@@ -25,6 +25,7 @@ import {
   type DirectorRecord,
   type Event,
   type HomeConfig,
+  type InstalledCliVendor,
   KnowledgeIdSchema,
   type KnowledgeItem,
   type KnowledgePrincipal,
@@ -652,6 +653,31 @@ export class StateStore {
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { knowledge_wake: mode },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T480 (D49): use the installed CLI for `vendor` (on, the default, removes the vendor's key). */
+  async setInstalledCli(
+    vendor: InstalledCliVendor,
+    on: boolean,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      const current = mappingCopy(raw.installed_cli ?? {});
+      if (on) Reflect.deleteProperty(current, vendor);
+      else current[vendor] = false;
+      if (Object.keys(current).length > 0) raw.installed_cli = current;
+      else Reflect.deleteProperty(raw, 'installed_cli');
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { installed_cli: { [vendor]: on } },
       });
       return { result: validated, event };
     });

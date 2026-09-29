@@ -45,6 +45,7 @@ import type { RoutedEventService } from '../events/service';
 import { WakeBudget } from '../events/wake';
 import { directorReadScope } from '../permissions/visibility';
 import type { CliInvocation } from '../runner/cli-bin';
+import { type InstalledCli, installedCliFor } from '../runner/installed-cli';
 import { type AgentSessionHandle, startAgentSession } from '../runner/session';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
@@ -82,6 +83,8 @@ export interface DirectorServiceOptions {
   cliBin?: string | CliInvocation;
   /** Test seam: inject a fake `spawnSession`. */
   spawn?: typeof spawnSession;
+  /** T480 (D49) test seam: the installed CLI a vendor's bridge runs (default: PATH and the home's switch). */
+  installedCli?: (vendor: string) => InstalledCli | undefined;
   /** T467 (D46): each vendor's model list, kept from every session's `session/new` reply. */
   models?: { record(vendor: string, state: unknown, session?: string): void };
   /** Test seam: the provider the resolved vendor maps to. */
@@ -451,6 +454,13 @@ export class DirectorService {
       ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
       ...(this.options.socketPath !== undefined ? { socketPath: this.options.socketPath } : {}),
       ...(this.options.now !== undefined ? { now: this.options.now } : {}),
+      ...(() => {
+        const cli =
+          this.options.installedCli !== undefined
+            ? this.options.installedCli(provider.id)
+            : installedCliFor(provider.id, readHomeConfigFile(home));
+        return cli !== undefined ? { installedCli: cli } : {};
+      })(),
       ...(this.options.models !== undefined
         ? {
             onSessionState: (state: Record<string, unknown>) =>

@@ -10190,6 +10190,19 @@ describe('Models come from the vendor (Playwright e2e, T467)', () => {
             .map((s) => s.id)
             .sort(),
         ).toEqual([node.id, shop.root].sort());
+
+        // T480 (D49): the installed-agents switches; off keeps the bridge's own copy.
+        const codexSwitch = p.locator('[data-testid="settings-installed-cli-switch-codex"]');
+        await codexSwitch.waitFor();
+        expect(await codexSwitch.isChecked()).toBe(true);
+        await codexSwitch.click();
+        await waitUntil(
+          'codex switch saved',
+          () => cockpit.store.getHomeConfig().installed_cli?.codex === false,
+        );
+        expect(
+          (await p.locator('[data-testid="settings-installed-cli-codex"]').textContent()) ?? '',
+        ).not.toContain('Runs /');
       } finally {
         await teardown([page]);
         await cockpit.stop();

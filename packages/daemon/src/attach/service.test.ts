@@ -132,6 +132,8 @@ function buildAttachService(
   extra: Partial<ConstructorParameters<typeof AttachService>[0]> = {},
 ): AttachService {
   return new AttachService({
+    // T480: never the test machine's own `claude`/`codex` (a test passes one to check it).
+    installedCli: () => undefined,
     ...extra,
     store,
     streams,
@@ -3816,6 +3818,31 @@ describe('T467 (D46): models come from the vendor, set through ACP', () => {
     expect(sets()).toHaveLength(0);
     expect(modelOf(stream.id, session.id)).toBe('claude-sonnet-4-6');
     expect(threadBodies(stream.id).some((b) => b.includes('its own model'))).toBe(false);
+  }, 30_000);
+
+  test('T480 (D49): the bridge runs the installed CLI, and stderr.log says which', async () => {
+    const installed = {
+      vendor: 'claude' as const,
+      label: 'Claude Code',
+      path: '/usr/local/bin/claude',
+      env: { CLAUDE_CODE_EXECUTABLE: '/usr/local/bin/claude' },
+    };
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log(), logModelEnv: true }),
+      { installedCli: (vendor) => (vendor === 'claude' ? installed : undefined) },
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => prompts().length === 1);
+    expect(logLines()[0]).toMatchObject({
+      method: 'spawn',
+      CLAUDE_CODE_EXECUTABLE: '/usr/local/bin/claude',
+    });
+    await waitFor(() =>
+      readFileSync(join(home, 'sessions', session.id, 'stderr.log'), 'utf8').includes(
+        'running your installed Claude Code: /usr/local/bin/claude',
+      ),
+    );
   }, 30_000);
 
   test("a Claude pick from the bridge's own list goes through the option when it isn't current", async () => {

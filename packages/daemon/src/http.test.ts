@@ -1069,6 +1069,34 @@ describe('T160 cockpit routes', () => {
     });
   });
 
+  test('T480: GET/POST /api/settings/installed-cli switches a bridge to its bundled copy and back', async () => {
+    const post = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url('/api/settings/installed-cli'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    type Rows = { vendors: Array<{ vendor: string; on: boolean }> };
+    const ons = (r: Rows) => r.vendors.map((v) => [v.vendor, v.on]);
+    expect(ons((await (await fetch(url('/api/settings/installed-cli'))).json()) as Rows)).toEqual([
+      ['claude', true],
+      ['codex', true],
+    ]);
+    expect(ons((await (await post({ vendor: 'codex', on: false })).json()) as Rows)).toEqual([
+      ['claude', true],
+      ['codex', false],
+    ]);
+    expect(store.getHomeConfig().installed_cli).toEqual({ codex: false });
+    await post({ vendor: 'codex', on: true });
+    // On is the default: the key goes.
+    expect(store.getHomeConfig().installed_cli).toBeUndefined();
+    expect((await post({ vendor: 'gemini', on: false })).status).toBe(400);
+    expect(
+      (await post({ vendor: 'claude', on: false }, { origin: 'http://evil.example' })).status,
+    ).toBe(403);
+    expect(store.getHomeConfig().installed_cli).toBeUndefined();
+  });
+
   test('T454: GET/POST /api/settings/knowledge-wake lets Jev decide, or not', async () => {
     const post = (body: unknown, headers: Record<string, string> = {}) =>
       fetch(url('/api/settings/knowledge-wake'), {
