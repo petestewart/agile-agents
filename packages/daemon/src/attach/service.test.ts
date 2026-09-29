@@ -50,6 +50,7 @@ import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { wireQuestionSupersession } from '../questions/supersede';
 import type { FakeAgentScript } from '../runner/fake-agent';
+import { ModelCatalog } from '../runner/model-catalog';
 import { SESSION_STATE_FILE, missingVendorCommand } from '../runner/session';
 import { StateStore } from '../store';
 import { AutoClose } from '../streams/auto-close';
@@ -3683,5 +3684,221 @@ describe('T465 (D48): a finished turn keeps its session; an ended one resumes', 
     expect(streams.get(node.id).sessions).toHaveLength(1);
     expect(streams.get(node.id).agent.status).toBe('done');
     expect(threadBodies(node.id)).toContain('session ended: role changed to coordinating');
+  }, 30_000);
+});
+
+describe('T467 (D46): models come from the vendor, set through ACP', () => {
+  const log = () => join(scratch, 't467.jsonl');
+  const logLines = (): Array<Record<string, unknown> & { method: string }> =>
+    (existsSync(log()) ? readFileSync(log(), 'utf8') : '')
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l));
+  const methods = () => logLines().map((l) => l.method);
+  const prompts = () => logLines().filter((l) => l.method === 'session/prompt');
+  const sets = () => logLines().filter((l) => l.method === 'session/set_config_option');
+  /** Cursor's shape (LIVE-CHECKLIST §12): "Auto" is current, values carry their settings. */
+  const CURSOR_MODELS = {
+    current: 'default[]',
+    options: [
+      { value: 'default[]', name: 'Auto' },
+      { value: 'grok-4.7[context=256k,fast=true]', name: 'grok-4.7' },
+      { value: 'gpt-5.5[context=272k]', name: 'gpt-5.5' },
+    ],
+  };
+  const cursor = (extra: Partial<FakeAgentScript> = {}) =>
+    fakeProviderFor(ACP_PROVIDERS.cursor, {
+      ...SPEAKS,
+      logFile: log(),
+      requireAuthMethod: 'cursor_login',
+      modelOption: CURSOR_MODELS,
+      ...extra,
+    });
+  const modelOf = (streamId: string, session: string) =>
+    streams.get(streamId).sessions.find((s) => s.id === session)?.model;
+
+  test('a pick the vendor lists is set through its model option before the first prompt', async () => {
+    const models = new ModelCatalog({ home });
+    attachService = buildAttachService(cursor(), { models });
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id, {
+      vendor: 'cursor',
+      model: 'grok-4.7[context=256k,fast=true]',
+    });
+    await waitFor(() => prompts().length === 1);
+    // Authenticated, opened, then the model, then the brief: the first turn runs on the pick.
+    expect(methods()).toEqual([
+      'authenticate',
+      'session/set_mode',
+      'session/set_config_option',
+      'session/prompt',
+    ]);
+    expect(sets()[0]?.params).toEqual({
+      sessionId: 'fake-session-1',
+      configId: 'model',
+      value: 'grok-4.7[context=256k,fast=true]',
+    });
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(modelOf(stream.id, session.id)).toBe('grok-4.7[context=256k,fast=true]');
+    expect(threadBodies(stream.id).some((b) => b.includes('did not take'))).toBe(false);
+    // The file says what the vendor runs now; the catalog kept the vendor's list.
+    const saved = JSON.parse(
+      readFileSync(join(home, 'sessions', session.id, SESSION_STATE_FILE), 'utf8'),
+    ) as { vendor: string; source: string; configOptions: Array<{ currentValue: string }> };
+    expect(saved).toMatchObject({ vendor: 'cursor', source: 'session/set_config_option' });
+    expect(saved.configOptions[0]?.currentValue).toBe('grok-4.7[context=256k,fast=true]');
+    expect(models.get('cursor')?.options.map((o) => o.name)).toEqual([
+      'Auto',
+      'grok-4.7',
+      'gpt-5.5',
+    ]);
+    expect(models.get('cursor')?.current).toBe('grok-4.7[context=256k,fast=true]');
+  }, 30_000);
+
+  test('an ignored pick says so on the thread, and the session records what the vendor runs', async () => {
+    attachService = buildAttachService(cursor({ setConfigOption: 'ignore' }));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id, {
+      vendor: 'cursor',
+      model: 'gpt-5.5[context=272k]',
+    });
+    await waitFor(() => prompts().length === 1);
+    expect(sets()).toHaveLength(1);
+    await waitFor(() =>
+      threadBodies(stream.id).includes('Cursor kept its own model (Auto); it did not take gpt-5.5'),
+    );
+    await waitFor(() => modelOf(stream.id, session.id) === 'default[]');
+    // Never a failed session over it: the turn ran and finished.
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    const stderr = readFileSync(join(home, 'sessions', session.id, 'stderr.log'), 'utf8');
+    expect(stderr).toContain('did not take gpt-5.5');
+  }, 30_000);
+
+  test('a refused pick says why, and the session carries on', async () => {
+    attachService = buildAttachService(cursor({ setConfigOption: 'error' }));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id, {
+      vendor: 'cursor',
+      model: 'gpt-5.5[context=272k]',
+    });
+    await waitFor(() =>
+      threadBodies(stream.id).some((b) =>
+        b.startsWith('Cursor refused the model gpt-5.5 (cannot set model); it runs Auto'),
+      ),
+    );
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(prompts()).toHaveLength(1);
+    expect(modelOf(stream.id, session.id)).toBe('default[]');
+  }, 30_000);
+
+  test("Claude's ANTHROPIC_MODEL path is unchanged: a full id is not the bridge's to set", async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        ...SPEAKS,
+        logFile: log(),
+        logModelEnv: true,
+        // The bridge's list (LIVE-CHECKLIST §12): aliases, and the current model.
+        modelOption: {
+          current: 'claude-opus-5-5',
+          options: [
+            { value: 'default', name: 'Default (recommended)' },
+            { value: 'opus[1m]', name: 'Opus 5.5' },
+            { value: 'sonnet', name: 'Sonnet' },
+          ],
+        },
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id, { model: 'claude-sonnet-4-6' });
+    await waitFor(() => prompts().length === 1);
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(logLines()[0]).toEqual({ method: 'spawn', ANTHROPIC_MODEL: 'claude-sonnet-4-6' });
+    expect(sets()).toHaveLength(0);
+    expect(modelOf(stream.id, session.id)).toBe('claude-sonnet-4-6');
+    expect(threadBodies(stream.id).some((b) => b.includes('its own model'))).toBe(false);
+  }, 30_000);
+
+  test("a Claude pick from the bridge's own list goes through the option when it isn't current", async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        ...SPEAKS,
+        logFile: log(),
+        logModelEnv: true,
+        modelOption: {
+          current: 'default',
+          options: [
+            { value: 'default', name: 'Default (recommended)' },
+            { value: 'sonnet', name: 'Sonnet' },
+          ],
+        },
+      }),
+    );
+    const stream = await makeStream();
+    await attachService.attach(stream.id, { model: 'sonnet' });
+    await waitFor(() => prompts().length === 1);
+    // ANTHROPIC_MODEL as before, and the option as well: the bridge said it ran another.
+    expect(logLines()[0]).toEqual({ method: 'spawn', ANTHROPIC_MODEL: 'sonnet' });
+    expect(sets().map((s) => (s.params as { value?: string } | undefined)?.value)).toEqual([
+      'sonnet',
+    ]);
+  }, 30_000);
+
+  test('a vendor with no model option: nothing is set, nothing is said, the catalog stays empty', async () => {
+    const models = new ModelCatalog({ home });
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.gemini, { ...SPEAKS, logFile: log() }),
+      { models },
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id, {
+      vendor: 'gemini',
+      model: 'gemini-3-pro',
+    });
+    await waitFor(() => prompts().length === 1);
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(sets()).toHaveLength(0);
+    expect(modelOf(stream.id, session.id)).toBe('gemini-3-pro');
+    expect(models.all()).toEqual({});
+  }, 30_000);
+
+  test('a resumed session gets the pick too, after session/load and before the new message', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.codex, {
+        ...SPEAKS,
+        logFile: log(),
+        modelOption: {
+          current: 'gpt-6-astra',
+          options: [
+            { value: 'gpt-6-astra', name: 'GPT-6-Astra' },
+            { value: 'gpt-5.5', name: 'GPT-5.5' },
+          ],
+        },
+      }),
+      { deliveryDelayMs: 5, sessionIdleMs: 0 },
+    );
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const stream = await attachService.createNode('human', {
+      title: 'CSV parser',
+      goal: 'decide the dialect and implement it',
+      project: project.id,
+      start: false,
+    });
+    const { session } = await attachService.attach(stream.id, {
+      vendor: 'codex',
+      model: 'gpt-5.5',
+    });
+    await waitFor(() => streams.get(stream.id).sessions[0]?.status === 'stopped');
+    expect(modelOf(stream.id, session.id)).toBe('gpt-5.5');
+
+    await attachService.say(stream.id, 'pick it up again', { start: true });
+    await waitFor(() => prompts().length === 2);
+    await waitFor(() => threadBodies(stream.id).includes(RESUMED_LINE));
+    expect(methods().filter((m) => m !== 'session/set_mode')).toEqual([
+      'session/set_config_option',
+      'session/prompt',
+      'session/load',
+      'session/set_config_option',
+      'session/prompt',
+    ]);
   }, 30_000);
 });

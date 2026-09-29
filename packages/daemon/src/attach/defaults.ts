@@ -16,6 +16,7 @@ import {
   type SessionDefaultsPatch,
   type SessionDefaultsStatus,
   type SessionVendor,
+  type VendorModels,
   resolveSessionDefaults,
 } from '@agile-agents/shared';
 
@@ -49,6 +50,8 @@ export class SessionDefaultsService {
     private readonly store: SessionDefaultsStore,
     /** T437: why a vendor can't start here (its command isn't on PATH), or `undefined`. */
     private readonly missing?: (vendor: SessionVendor) => string | undefined,
+    /** T467 (D46): each vendor's own model list (`ModelCatalog.all`), read from memory. */
+    private readonly models?: () => Partial<Record<SessionVendor, VendorModels>>,
   ) {}
 
   status(): SessionDefaultsStatus {
@@ -72,6 +75,7 @@ export class SessionDefaultsService {
       repos,
       vendors: SESSION_VENDORS,
       known_models: KNOWN_MODEL_IDS,
+      ...(this.models !== undefined ? { vendor_models: this.models() } : {}),
       ...this.notInstalled(),
     };
   }

@@ -65,6 +65,7 @@ import { buildEvent } from '../store';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { type CliInvocation, cliInvocationToShell, normalizeCliBin } from './cli-bin';
+import { currentValueOf, modelNameIn, vendorModelOption } from './vendor-models';
 
 /** `<sessionDir>/<name>` appender that never throws: diagnostics must not take a session down. */
 function openLog(dir: string, name: string): { path: string; append: (chunk: string) => void } {
@@ -122,6 +123,18 @@ export interface AgentSessionOptions {
   onResume?: (result: { ok: true } | { ok: false; error: string }) => void;
   /** T465: the vendor's ACP session id, once it is known (recorded for a later resume). */
   onAcpSession?: (acpSessionId: string) => void;
+  /**
+   * T467: every reply the vendor sent about its session (`session/new`,
+   * `session/load`, `session/set_config_option`), as saved to
+   * `session-state.json`: the model catalog keeps the vendor's list from it.
+   */
+  onSessionState?: (state: Record<string, unknown>) => void;
+  /**
+   * T467 (D46): the picked model was set through the vendor's ACP model
+   * option before the first turn, or was not taken (and why). Not called
+   * when there was nothing to set.
+   */
+  onModel?: (result: ModelPickResult) => void;
   /** `<home>/sessions/<session id>/`: stderr and output logs. */
   sessionDir: string;
   /** How to invoke the `agile` CLI for the hook and MCP commands. Defaults to `'agile'`. */
@@ -362,19 +375,38 @@ export const SESSION_STATE_FILE = 'session-state.json';
  * T467a: keeps what the vendor said about its modes, config options and
  * models in `<sessionDir>/session-state.json`, so §12 can be measured
  * from the file rather than guessed. Best-effort, like the other logs;
- * never holds a credential (the reply carries none).
+ * never holds a credential (the reply carries none). T467: the file names
+ * its vendor, so the model catalog (`model-catalog.ts`) can read it back
+ * without the session's record. Returns what it wrote.
  */
-function saveSessionState(dir: string, params: Record<string, unknown> | null): void {
+export function saveSessionState(
+  dir: string,
+  params: Record<string, unknown> | null,
+  vendor?: string,
+): Record<string, unknown> {
+  const saved = {
+    at: new Date().toISOString(),
+    ...(vendor !== undefined ? { vendor } : {}),
+    ...(params ?? {}),
+  };
   try {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, SESSION_STATE_FILE),
-      `${JSON.stringify({ at: new Date().toISOString(), ...(params ?? {}) }, null, 2)}\n`,
-    );
+    writeFileSync(join(dir, SESSION_STATE_FILE), `${JSON.stringify(saved, null, 2)}\n`);
   } catch {
     // Diagnostics never take a session down.
   }
+  return saved;
 }
+
+/**
+ * T467 (D46): how a session's picked model went, once the session opened.
+ * `ok: true`: the vendor runs it (set through its ACP model option, or it
+ * already ran it). `ok: false`: it did not take; `line` says so in words
+ * and `actual`, when the vendor named one, is what it runs instead.
+ */
+export type ModelPickResult =
+  | { ok: true; model: string }
+  | { ok: false; picked: string; actual?: string; line: string };
 
 /** T461: at most this many advertised commands are kept per session. */
 const COMMANDS_MAX = 200;
@@ -549,6 +581,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   });
 
   let model = sessionRef.model;
+  /** T467: the vendor's last reply about its session, as saved (its model option is read from it). */
+  let lastState: Record<string, unknown> | null = null;
   let settled = false;
   /** T465: a `session/load` is replaying the old conversation: none of it is new output. */
   let replaying = false;
@@ -701,8 +735,25 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     }
 
     if (frame.acp === 'notification' && frame.message.method === '_agile/session_state') {
-      const p = asRecord(frame.message.params);
-      saveSessionState(opts.sessionDir, p);
+      let p = asRecord(frame.message.params);
+      // T467: a `session/set_config_option` reply carries only `configOptions`:
+      // the rest of what the vendor said stays as its last reply had it.
+      if (p?.source === 'session/set_config_option' && lastState !== null) {
+        const { at: _at, vendor: _vendor, ...before } = lastState;
+        p = {
+          ...before,
+          ...(p.configOptions !== null && p.configOptions !== undefined
+            ? { configOptions: p.configOptions }
+            : {}),
+          source: p.source,
+        };
+      }
+      lastState = saveSessionState(opts.sessionDir, p, provider.id);
+      try {
+        opts.onSessionState?.(lastState);
+      } catch {
+        // The catalog is bookkeeping: never the session's problem.
+      }
       const resolvedModel = modelFromSessionState(p);
       const vendorSessionId = p?.sessionId;
       if (resolvedModel !== undefined || typeof vendorSessionId === 'string') {
@@ -807,18 +858,55 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     onDelivered?: () => void,
   ): Promise<unknown> {
     inFlight += 1;
-    const runOnce = async (): Promise<unknown> => {
-      // T465: a resume's first turn knows its text once the old session has loaded (or not).
-      const body = await text;
-      // A turn queued behind a session that has since been stopped is not
-      // sent to a closed session (which would record a spurious failure).
-      if (stopRequested || settled)
-        throw new Error('session stopped before this turn was delivered');
+    // T467: a first turn's text may reject (its session never opened) while an earlier
+    // turn still runs; `runOnce` handles it, and this keeps it from reading as unhandled.
+    if (typeof text !== 'string') text.catch(() => {});
+    /** A failed turn stops the session, loudly (the vendor's reply, or a session that never opened). */
+    const failTurn = async (err: unknown): Promise<never> => {
+      const message = err instanceof Error ? err.message : String(err);
+      await store
+        .appendEvent(
+          buildEvent('agent_put', {
+            agent: sessionId as AgentId,
+            data: {
+              stream: ownerId,
+              warning: `prompt failed, stopping session: ${message}`,
+            },
+          }),
+        )
+        .catch(() => {
+          // Best effort: `finish()` recovers the state either way.
+        });
+      cancelBeforeClose();
+      spawned.close();
+      const said = err instanceof TurnFailedError ? err.said : undefined;
+      await finish(`prompt failed: ${message}`, false, true, undefined, said);
+      throw err;
+    };
+    const delivered = (): void => {
       try {
         onDelivered?.();
       } catch {
         // A throwing delivery callback must not fail the turn.
       }
+    };
+    const runOnce = async (): Promise<unknown> => {
+      // T465: a resume's first turn knows its text once the old session has loaded (or not).
+      // T467: a fresh one once its session opened and its model was set. A session
+      // that could not open fails this turn, as its prompt did before.
+      let body: string;
+      try {
+        body = await text;
+      } catch (err) {
+        if (stopRequested || settled) throw err;
+        delivered();
+        return failTurn(err);
+      }
+      // A turn queued behind a session that has since been stopped is not
+      // sent to a closed session (which would record a spurious failure).
+      if (stopRequested || settled)
+        throw new Error('session stopped before this turn was delivered');
+      delivered();
       try {
         // Refresh `last_seen`: a session idle for hours on a question makes
         // no tool calls, and the hook's stale check would drop its entry.
@@ -844,25 +932,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
         }
         return reply;
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        await store
-          .appendEvent(
-            buildEvent('agent_put', {
-              agent: sessionId as AgentId,
-              data: {
-                stream: ownerId,
-                warning: `prompt failed, stopping session: ${message}`,
-              },
-            }),
-          )
-          .catch(() => {
-            // Best effort: `finish()` recovers the state either way.
-          });
-        cancelBeforeClose();
-        spawned.close();
-        const said = err instanceof TurnFailedError ? err.said : undefined;
-        await finish(`prompt failed: ${message}`, false, true, undefined, said);
-        throw err;
+        return failTurn(err);
       }
     };
     const counted = async (): Promise<unknown> => {
@@ -892,6 +962,122 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       .catch(() => {
         // Reported through the prompt path if it matters.
       });
+  }
+
+  /** T467: tells the caller how the pick went; the reason also goes to stderr.log. */
+  function reportModel(result: ModelPickResult): void {
+    if (!result.ok) stderrLog.append(`[agiled] model: ${result.line}\n`);
+    try {
+      opts.onModel?.(result);
+    } catch {
+      // Bookkeeping only.
+    }
+  }
+
+  /**
+   * T467 (D46): sets the session's picked model through the vendor's ACP
+   * model option (`session/set_config_option`), once the session is open
+   * and before its first turn, and reads the reply back: the vendor's own
+   * `currentValue` says whether it took. Only a pick the vendor lists and
+   * doesn't already run is sent; Claude's full ids ride `ANTHROPIC_MODEL`
+   * (the provider's `model` switch) as before. Never fails the session.
+   */
+  async function applyPickedModel(): Promise<void> {
+    const pick = sessionRef.model;
+    const option = vendorModelOption(lastState);
+    // Nothing reported (Gemini, Pi), the vendor's own default, or already running it.
+    if (option === undefined || pick === provider.defaultModel || pick === option.current) return;
+    const current = option.current;
+    const runs = (value: string | undefined): string =>
+      value === undefined ? 'its own default' : modelNameIn(option, value);
+    const vendor = provider.label;
+    const listed = option.options.some((o) => o.value === pick);
+    if (!listed) {
+      // A vendor switch carries it (Claude's ANTHROPIC_MODEL): not this option's to set.
+      if (provider.model !== undefined) return;
+      reportModel({
+        ok: false,
+        picked: pick,
+        ...(current !== undefined ? { actual: current } : {}),
+        line: `${vendor} doesn't list ${pick} among its models; it runs ${runs(current)}`,
+      });
+      return;
+    }
+    const pickName = modelNameIn(option, pick);
+    if (option.configId === undefined) {
+      reportModel({
+        ok: false,
+        picked: pick,
+        ...(current !== undefined ? { actual: current } : {}),
+        line: `${vendor} lists ${pickName} but has no model option to set it through; it runs ${runs(current)}`,
+      });
+      return;
+    }
+    const configId = option.configId;
+    let after: string | undefined;
+    try {
+      const reply = asRecord(await spawned.setConfigOption(configId, pick));
+      after = currentValueOf(reply?.configOptions, configId);
+    } catch (err) {
+      const why = (err instanceof Error ? err.message : String(err)).slice(0, 200);
+      reportModel({
+        ok: false,
+        picked: pick,
+        ...(current !== undefined ? { actual: current } : {}),
+        line: `${vendor} refused the model ${pickName} (${why}); it runs ${runs(current)}`,
+      });
+      return;
+    }
+    if (after === pick) {
+      reportModel({ ok: true, model: pick });
+      return;
+    }
+    if (after === undefined) {
+      reportModel({
+        ok: false,
+        picked: pick,
+        line: `${vendor} did not say whether it took ${pickName}: its reply named no model`,
+      });
+      return;
+    }
+    reportModel({
+      ok: false,
+      picked: pick,
+      actual: after,
+      line: `${vendor} kept its own model (${runs(after)}); it did not take ${pickName}`,
+    });
+  }
+
+  /**
+   * T467: a fresh session's first turn waits for this: the session opened
+   * (authenticating first where the vendor asks for it, as the prompt path
+   * does) and the picked model set, so the brief runs on it. A session that
+   * can't open rejects, and the first turn fails with that, as its prompt did.
+   */
+  async function openAndPickModel(): Promise<void> {
+    try {
+      await spawned.open();
+    } catch (err) {
+      if (!(err instanceof AuthRequiredError) || provider.authMethods.length === 0) throw err;
+      let lastErr: unknown = err;
+      let opened = false;
+      for (const methodId of provider.authMethods) {
+        try {
+          await spawned.authenticate(methodId);
+          await spawned.open();
+          opened = true;
+          break;
+        } catch (retryErr) {
+          lastErr = retryErr;
+          if (!(retryErr instanceof AuthRequiredError)) throw retryErr;
+          // Still needs auth: try the next method id.
+        }
+      }
+      if (!opened) throw lastErr;
+    }
+    if (stopRequested || settled) return;
+    reportAcpSession();
+    await applyPickedModel();
   }
 
   /**
@@ -935,6 +1121,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       } catch {
         // Bookkeeping only.
       }
+      // T467: the loaded session runs the pick too.
+      await applyPickedModel();
       return resume.prompt;
     } catch (err) {
       replaying = false;
@@ -945,6 +1133,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       } catch {
         // Bookkeeping only.
       }
+      // T467: the fresh session the brief goes to gets the pick first.
+      await openAndPickModel();
       return brief;
     }
   }
@@ -965,8 +1155,14 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     );
   });
   if (opts.resume === undefined) {
+    // T467: the brief waits for the picked model to be set (`openAndPickModel`).
     void registered
-      .then(() => runPromptTurn(brief, opts.onBriefDelivered))
+      .then(() =>
+        runPromptTurn(
+          openAndPickModel().then(() => brief),
+          opts.onBriefDelivered,
+        ),
+      )
       .catch(() => {
         // `runPromptTurn` already stopped and recorded the failure.
       });

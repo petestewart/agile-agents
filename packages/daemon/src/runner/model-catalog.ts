@@ -31,123 +31,31 @@ import {
   spawnSession as defaultSpawnSession,
 } from '@agile-agents/acp-client';
 import {
+  SESSION_MODEL_MAX_CHARS,
   SESSION_VENDORS,
   type SessionVendor,
-  VENDOR_MODELS_MAX,
-  type VendorModel,
-  VendorModelSchema,
   type VendorModels,
   VendorModelsSchema,
   isSessionVendor,
   ulid,
 } from '@agile-agents/shared';
 import { SESSION_STATE_FILE, saveSessionState } from './session';
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
-
-/** A vendor's model option as its reply carried it. */
-export interface VendorModelOption {
-  /** The config option's id (`model`): what `session/set_config_option` takes. Absent for a `models` list. */
-  configId?: string;
-  /** The model the session runs now. */
-  current?: string;
-  options: VendorModel[];
-}
-
-/** One option entry, if it parses (a value, and a name, else the value). */
-function modelEntry(value: unknown, name: unknown, description: unknown): VendorModel | undefined {
-  if (typeof value !== 'string') return undefined;
-  const parsed = VendorModelSchema.safeParse({
-    value,
-    name: typeof name === 'string' && name.trim() !== '' ? name.slice(0, 200) : value.slice(0, 200),
-    ...(typeof description === 'string' && description !== ''
-      ? { description: description.slice(0, 300) }
-      : {}),
-  });
-  return parsed.success ? parsed.data : undefined;
-}
-
-/** A select's options, flattening ACP's grouped form (`{group, name, options: [...]}`). */
-function selectOptions(list: unknown): VendorModel[] {
-  const out: VendorModel[] = [];
-  const seen = new Set<string>();
-  const add = (items: unknown): void => {
-    if (!Array.isArray(items)) return;
-    for (const item of items) {
-      if (out.length >= VENDOR_MODELS_MAX) return;
-      const o = asRecord(item);
-      if (o === null) continue;
-      if (Array.isArray(o.options) && o.value === undefined) {
-        add(o.options);
-        continue;
-      }
-      const entry = modelEntry(o.value, o.name, o.description);
-      if (entry === undefined || seen.has(entry.value)) continue;
-      seen.add(entry.value);
-      out.push(entry);
-    }
-  };
-  add(list);
-  return out;
-}
-
-/**
- * The model option of a `session/new`/`session/load` reply (or a saved
- * session-state file): `configOptions`' model entry when it lists models,
- * else ACP's `models`. `undefined` when the reply names no list.
- */
-export function vendorModelOption(state: unknown): VendorModelOption | undefined {
-  const s = asRecord(state);
-  if (s === null) return undefined;
-  if (Array.isArray(s.configOptions)) {
-    for (const item of s.configOptions) {
-      const o = asRecord(item);
-      if (o === null || (o.category !== 'model' && o.id !== 'model')) continue;
-      const options = selectOptions(o.options);
-      if (options.length === 0) continue;
-      const current = typeof o.currentValue === 'string' ? o.currentValue : undefined;
-      return {
-        ...(typeof o.id === 'string' ? { configId: o.id } : {}),
-        ...(current !== undefined && current !== '' ? { current } : {}),
-        options,
-      };
-    }
-  }
-  const models = asRecord(s.models);
-  if (models !== null && Array.isArray(models.availableModels)) {
-    const options: VendorModel[] = [];
-    for (const item of models.availableModels) {
-      if (options.length >= VENDOR_MODELS_MAX) break;
-      const m = asRecord(item);
-      const entry = modelEntry(m?.modelId, m?.name, m?.description);
-      if (entry !== undefined && !options.some((o) => o.value === entry.value)) options.push(entry);
-    }
-    if (options.length > 0) {
-      const current =
-        typeof models.currentModelId === 'string' && models.currentModelId !== ''
-          ? models.currentModelId
-          : undefined;
-      return { ...(current !== undefined ? { current } : {}), options };
-    }
-  }
-  return undefined;
-}
-
-/** A model's name in its vendor's list, else its id. */
-export function modelNameIn(option: VendorModelOption | undefined, value: string): string {
-  return option?.options.find((o) => o.value === value)?.name ?? value;
-}
+import { asRecord, vendorModelOption } from './vendor-models';
 
 /** The catalog entry a reply makes, if it names a list and fits the schema. */
-function entryOf(state: unknown, at: string, session: string | undefined): VendorModels | undefined {
+function entryOf(
+  state: unknown,
+  at: string,
+  session: string | undefined,
+): VendorModels | undefined {
   const option = vendorModelOption(state);
   if (option === undefined) return undefined;
   const parsed = VendorModelsSchema.safeParse({
     options: option.options,
-    ...(option.current !== undefined ? { current: option.current } : {}),
+    // An id past the cap is never cut (a cut id names another model): it is left out.
+    ...(option.current !== undefined && option.current.length <= SESSION_MODEL_MAX_CHARS
+      ? { current: option.current }
+      : {}),
     at,
     ...(session !== undefined ? { session } : {}),
   });
@@ -264,6 +172,28 @@ export class ModelCatalog {
   }
 }
 
+/**
+ * T467: a session's vendor from the node records, for a session-state file
+ * written before files named their vendor. Built on first use (the
+ * catalog's start-up read), not per request.
+ */
+export function sessionVendorIndex(streams: {
+  list(options: { include_archived: boolean }): ReadonlyArray<{
+    sessions: ReadonlyArray<{ id: string; vendor: string }>;
+  }>;
+}): (sessionId: string) => string | undefined {
+  let index: Map<string, string> | undefined;
+  return (sessionId) => {
+    if (index === undefined) {
+      index = new Map();
+      for (const stream of streams.list({ include_archived: true })) {
+        for (const session of stream.sessions) index.set(session.id, session.vendor);
+      }
+    }
+    return index.get(sessionId);
+  };
+}
+
 export interface ProbeOptions {
   provider: AcpProviderConfig;
   /** Created if missing: the vendor's cwd, its stderr.log and its session-state.json. */
@@ -335,7 +265,12 @@ export async function probeVendorState(opts: ProbeOptions): Promise<Record<strin
       open(),
       new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () => reject(new Error(`no answer in ${Math.round((opts.timeoutMs ?? REFRESH_TIMEOUT_MS) / 1000)} s`)),
+          () =>
+            reject(
+              new Error(
+                `no answer in ${Math.round((opts.timeoutMs ?? REFRESH_TIMEOUT_MS) / 1000)} s`,
+              ),
+            ),
           opts.timeoutMs ?? REFRESH_TIMEOUT_MS,
         );
       }),

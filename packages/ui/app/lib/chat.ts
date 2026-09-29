@@ -38,9 +38,12 @@ const cap = (word: string): string => (word ? word[0]?.toUpperCase() + word.slic
 /**
  * A model id in words: `claude-opus-5-5` → "Claude Opus 5.5", `sonnet` →
  * "Claude Sonnet", the provider's own default → "Gemini default model".
- * Anything else reads as its id.
+ * Anything else reads as its id. T467: a vendor's settings in brackets
+ * are left off (Cursor's `grok-4.7[context=256k,fast=true]` → "grok-4.7";
+ * the tooltip keeps the whole id).
  */
-export function modelLabel(vendor: string, model: string | undefined): string {
+export function modelLabel(vendor: string, id: string | undefined): string {
+  const model = id?.replace(/\[[^\]]*\]$/, '');
   if (model === undefined || model === '' || model === 'default') {
     return `${vendorLabel(vendor)} default model`;
   }

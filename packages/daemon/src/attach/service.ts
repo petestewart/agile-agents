@@ -39,6 +39,7 @@ import {
   type Question,
   type ReposConfig,
   type RoutedEvent,
+  SESSION_MODEL_MAX_CHARS,
   type SessionRef,
   type SessionRole,
   type SessionStatus,
@@ -85,9 +86,11 @@ import { projectReadSettings } from '../permissions/posture';
 import type { AboutParent, BriefDoc, WipNode } from '../runner/brief';
 import { buildBrief, openWorkFor } from '../runner/brief';
 import type { CliInvocation } from '../runner/cli-bin';
+import type { ModelCatalog } from '../runner/model-catalog';
 import {
   type AgentSessionHandle,
   type ContextUsage,
+  type ModelPickResult,
   missingVendorCommand,
   startAgentSession,
 } from '../runner/session';
@@ -294,6 +297,8 @@ export interface AttachServiceOptions {
   knowledgeWake?: Pick<KnowledgeWakeJudge, 'approvedFor' | 'consider'>;
   /** T465 test seam: how long a resting session lives, in ms (default: the home's `session_idle_minutes`). */
   sessionIdleMs?: number;
+  /** T467 (D46): each vendor's model list, kept from every session's `session/new` reply. */
+  models?: Pick<ModelCatalog, 'record'>;
 }
 
 /** What delivery needs of the Director (`director/service.ts`). */
@@ -1040,6 +1045,15 @@ export class AttachService {
         onAcpSession: (acpSessionId: string) => {
           void this.setSessionAcpId(stream.id, sessionId, acpSessionId);
         },
+        ...(this.options.models !== undefined
+          ? {
+              onSessionState: (state: Record<string, unknown>) =>
+                this.options.models?.record(provider.id, state, sessionId),
+            }
+          : {}),
+        onModel: (result: ModelPickResult) => {
+          void this.onModelPicked(stream.id, sessionId, result);
+        },
         sessionDir,
         provider,
         readScope,
@@ -1405,6 +1419,39 @@ export class AttachService {
       .catch(() => {
         // The node is gone: nothing to resume.
       });
+  }
+
+  /**
+   * T467 (D46): a picked model the vendor did not take. The thread says so
+   * in words, and the session's record names what the vendor runs instead
+   * (so what shows, and what a later start keeps, is what really ran).
+   */
+  private async onModelPicked(
+    streamId: string,
+    sessionId: string,
+    result: ModelPickResult,
+  ): Promise<void> {
+    if (result.ok) return;
+    const actual = result.actual;
+    if (actual !== undefined) {
+      await this.options.store
+        .updateStream('daemon', streamId, (before) => ({
+          ...before,
+          sessions: before.sessions.map((s) =>
+            s.id === sessionId ? { ...s, model: actual.slice(0, SESSION_MODEL_MAX_CHARS) } : s,
+          ),
+        }))
+        .catch(() => {
+          // The node is gone: nothing to show.
+        });
+    }
+    await this.options.streams
+      .appendThread('daemon', streamId, {
+        kind: 'event',
+        body: result.line.slice(0, 800),
+        ref: sessionId,
+      })
+      .catch(() => {});
   }
 
   /** T465: the thread says whether the start resumed the earlier session, or why it started fresh. */

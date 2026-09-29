@@ -26,6 +26,11 @@ export const SESSION_VENDORS = ['claude', 'gemini', 'cursor', 'grok', 'pi', 'cod
 export const SessionVendorSchema = z.enum(SESSION_VENDORS);
 export type SessionVendor = z.infer<typeof SessionVendorSchema>;
 
+/** T467: whether `vendor` is one of `SESSION_VENDORS`. */
+export function isSessionVendor(vendor: string): vendor is SessionVendor {
+  return (SESSION_VENDORS as readonly string[]).includes(vendor);
+}
+
 /**
  * T401 (D12): the vendors whose adapter maps an effort level to something
  * (`ACP_PROVIDERS[v].effort`; a daemon test keeps the two in step). For any

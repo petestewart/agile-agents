@@ -79,6 +79,8 @@ const SEED_PROVENANCE = 'migration';
 import { ProjectService } from '../projects';
 import { QuestionService } from '../questions';
 import type { FakeAgentScript } from '../runner/fake-agent';
+import { ModelCatalog } from '../runner/model-catalog';
+import { SESSION_STATE_FILE } from '../runner/session';
 import { StateStore } from '../store';
 import { buildEvent } from '../store/events';
 import { type MoveCoordination, RepoInPlaceService, StreamService } from '../streams';
@@ -1642,7 +1644,11 @@ interface StreamCockpit {
  * substitution is the transport: every session is `fake-agent.ts` over
  * real ACP, the Nth attach running `scripts[N]`.
  */
-async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCockpit> {
+async function startStreamCockpit(
+  scripts: FakeAgentScript[],
+  /** T467: the model catalog over the new home (written to first, as a vendor's sessions would). */
+  withModels?: (home: string) => ModelCatalog,
+): Promise<StreamCockpit> {
   const home = mkdtempSync(join(tmpdir(), 'agile-stream-e2e-'));
   const scratch = mkdtempSync(join(tmpdir(), 'agile-stream-e2e-scratch-'));
   const repo = mkdtempSync(join(tmpdir(), 'agile-stream-e2e-repo-'));
@@ -1682,10 +1688,12 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
       envOverrides: { AGILE_FAKE_AGENT_SCRIPT: path },
     };
   });
+  const models = withModels?.(home);
   const attach = new AttachService({
     store,
     streams,
     home,
+    ...(models !== undefined ? { models } : {}),
     provider: (_vendor, fallback) => providers[spawned++] ?? fallback,
     docs,
     rules,
@@ -1740,6 +1748,7 @@ async function startStreamCockpit(scripts: FakeAgentScript[]): Promise<StreamCoc
     docs,
     // T379: the frame's projects, as the daemon wires them.
     projects: new ProjectService(store, streams),
+    ...(models !== undefined ? { models } : {}),
     feedPollIntervalMs: 50,
   });
   return {
@@ -10051,6 +10060,136 @@ describe('Model and effort are two chips (Playwright e2e, T468)', () => {
           model: 'claude-opus-5-5',
           effort: 'max',
         });
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Models come from the vendor (Playwright e2e, T467)', () => {
+  browserTest(
+    "the picker shows a vendor's own models by name, a pick starts the node on its value, and Settings refreshes a vendor",
+    async () => {
+      const cockpit = await startStreamCockpit(
+        [{ steps: [{ type: 'agent_text', text: 'On it.' }, { type: 'hang' }] }],
+        (home) => {
+          // What an earlier Cursor session kept: its session/new reply (LIVE-CHECKLIST §12's shape).
+          const dir = join(home, 'sessions', ulid());
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(
+            join(dir, SESSION_STATE_FILE),
+            JSON.stringify({
+              at: '2026-09-29T10:50:46.021Z',
+              vendor: 'cursor',
+              configOptions: [
+                {
+                  id: 'model',
+                  name: 'Model',
+                  category: 'model',
+                  type: 'select',
+                  currentValue: 'default[]',
+                  options: [
+                    { value: 'default[]', name: 'Auto' },
+                    { value: 'grok-4.7[context=256k,fast=true]', name: 'grok-4.7' },
+                  ],
+                },
+              ],
+              models: null,
+            }),
+          );
+          // Refresh spawns the fake agent, which reports a list of its own.
+          const refreshScript = join(home, 'refresh-script.json');
+          writeFileSync(
+            refreshScript,
+            JSON.stringify({
+              steps: [],
+              modelOption: {
+                current: 'gemini-3-pro',
+                options: [{ value: 'gemini-3-pro', name: 'Gemini 3 Pro' }],
+              },
+            } satisfies FakeAgentScript),
+          );
+          return new ModelCatalog({
+            home,
+            provider: (vendor) => ({
+              ...ACP_PROVIDERS[vendor],
+              command: 'bun',
+              args: [FAKE_AGENT_PATH],
+              envOverrides: { AGILE_FAKE_AGENT_SCRIPT: refreshScript },
+            }),
+          }).load();
+        },
+      );
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'Prices',
+          goal: 'g',
+          parent: shop.root,
+        });
+        const p = await openPage();
+        page = p;
+        await p.goto(`${cockpit.base}/?node=${node.id}`);
+        await waitForText(p, '[data-testid="composer-model"]', 'Claude Opus 5.5');
+        await p.locator('[data-testid="composer-model"]').click();
+        const popover = p.locator('[data-testid="model-popover"]');
+        const cursor = popover.locator('[role="group"][aria-label="Cursor"]');
+        await cursor.waitFor();
+        // The vendor's names, its values kept on the rows.
+        expect(
+          await cursor.locator('[data-testid="model-option"] .cr-mpick-name').allTextContents(),
+        ).toEqual(['Auto', 'grok-4.7']);
+        // A vendor that never reported its models: its default alone, and why.
+        const gemini = popover.locator('[data-testid="model-option"][data-vendor="gemini"]');
+        expect(await gemini.getAttribute('data-no-list')).toBe('true');
+        expect(await gemini.locator('.cr-mpick-tag').textContent()).toBe('No list yet');
+        expect(await gemini.getAttribute('title')).toContain(
+          "Gemini hasn't reported its models yet",
+        );
+        await cursor
+          .locator('[data-testid="model-option"][data-model="grok-4.7[context=256k,fast=true]"]')
+          .click();
+        await p.locator('[data-testid="composer-model"]').click();
+        await popover.waitFor({ state: 'detached' });
+        await waitForText(p, '[data-testid="composer-model"]', 'Cursor · grok-4.7');
+        const input = p.locator('[data-testid="composer-input"]');
+        await input.fill('start on the prices');
+        await input.press('Enter');
+        await waitUntil('started', () => cockpit.streams.get(node.id).sessions.length > 0);
+        expect(cockpit.streams.get(node.id).sessions[0]).toMatchObject({
+          vendor: 'cursor',
+          model: 'grok-4.7[context=256k,fast=true]',
+        });
+
+        // Settings → Agents: what each vendor reported, and Refresh for one that hasn't.
+        await p.goto(`${cockpit.base}/?view=settings&section=agents`);
+        const cursorRow = p.locator('[data-testid="settings-models-cursor"]');
+        await cursorRow.waitFor();
+        expect(await cursorRow.textContent()).toContain('2 models, running Auto');
+        await waitForText(
+          p,
+          '[data-testid="settings-models-gemini"]',
+          'No list yet: it hasn’t reported its models.',
+        );
+        await p.locator('[data-testid="settings-models-refresh-gemini"]').click();
+        await waitUntilAsync('gemini refreshed', async () =>
+          (
+            (await p.locator('[data-testid="settings-models-gemini"]').textContent()) ?? ''
+          ).startsWith('1 model, running Gemini 3 Pro'),
+        );
+        // No node, no repo: the refresh only kept the vendor's reply.
+        expect(
+          cockpit.streams
+            .list()
+            .map((s) => s.id)
+            .sort(),
+        ).toEqual([node.id, shop.root].sort());
       } finally {
         await teardown([page]);
         await cockpit.stop();

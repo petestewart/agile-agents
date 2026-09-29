@@ -59,6 +59,7 @@ import { ProjectService, buildProjectRpcMethods } from './projects';
 import { QuestionService, buildQuestionRpcMethods, wireQuestionSupersession } from './questions';
 import { type RpcServerHandle, startRpcServer } from './rpc';
 import { missingVendorCommand, resolveCliBin } from './runner';
+import { ModelCatalog, sessionVendorIndex } from './runner/model-catalog';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
 import {
@@ -258,6 +259,15 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(emitRouted ? { emit: emitRouted } : {}),
         })
       : undefined;
+  // T467 (D46): each vendor's model list, read once from the sessions'
+  // session-state files (newest first) and kept up to date as sessions open.
+  const modelCatalog = streamService
+    ? new ModelCatalog({
+        home: config.home,
+        vendorOfSession: sessionVendorIndex(streamService),
+        ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
+      }).load()
+    : undefined;
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
   const attachService =
@@ -289,6 +299,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           onWorkerTurnEnd: (id) => {
             void mainSync?.turnEnded(id).catch((err) => console.error('main sync failed:', err));
           },
+          ...(modelCatalog ? { models: modelCatalog } : {}),
           ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
         })
       : undefined;
@@ -307,6 +318,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           inbox: { list: () => inboxService?.list() ?? [] },
           ...(rulesService ? { knowledge: rulesService } : {}),
           ...(autonomyService ? { autonomy: autonomyService } : {}),
+          ...(modelCatalog ? { models: modelCatalog } : {}),
           ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
         })
       : undefined;
@@ -798,6 +810,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     quickDraftsAvailable: modelRun !== undefined,
     // T437: the model lists mark a vendor whose command isn't on PATH.
     vendorMissing: (vendor) => missingVendorCommand(ACP_PROVIDERS[vendor]),
+    ...(modelCatalog ? { models: modelCatalog } : {}),
     ...(prPoller ? { prCheck: (id: string) => prPoller.pollNow(id) } : {}),
     ...(attachService ? { attach: attachService } : {}),
     ...(routedEvents ? { events: routedEvents } : {}),

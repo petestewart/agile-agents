@@ -55,6 +55,7 @@ import {
   getSessionDefaults,
   getSessionIdle,
   getTrackerSettings,
+  refreshVendorModels,
   removeClassifierKey,
   saveClassifierKey,
   saveHomeSessionDefaults,
@@ -721,6 +722,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
           />
           <VendorFailureCard status={status} onSaved={setStatus} />
           <SessionIdleCard />
+          <VendorModelsCard status={status} onRefreshed={setStatus} />
           {/* T436 (audit r6 #25): in the order they win: a project's default before its repositories'. */}
           {projects.length > 0 ? (
             <div className="cr-set-subhd" data-testid="settings-session-projects-heading">
@@ -937,6 +939,106 @@ function VendorFailureCard({
           onChange={(e) => void save({ ...own, allow_hookless: e.target.checked })}
         />
       </SetRow>
+      <FormError error={error} />
+    </SetCard>
+  );
+}
+
+/** T467: "29 Sep, 10:50" for when a vendor last said what it has. */
+function reportedWhen(at: string): string {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return at;
+  return date.toLocaleString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/**
+ * T467 (D46): the models each agent offers, as it reported them when a
+ * session opened; the pickers list them. Refresh starts the agent with no
+ * message, keeps what it says it has, and stops it (no node, no repo).
+ */
+function VendorModelsCard({
+  status,
+  onRefreshed,
+}: {
+  status: SessionDefaultsStatus;
+  onRefreshed: (next: SessionDefaultsStatus) => void;
+}): JSX.Element | null {
+  const [busy, setBusy] = useState<SessionVendor | undefined>();
+  const [error, setError] = useState<string | undefined>();
+  const [note, setNote] = useState<string | undefined>();
+  // An older daemon has no lists to show.
+  if (status.vendor_models === undefined) return null;
+  const lists = status.vendor_models;
+  async function refresh(vendor: SessionVendor): Promise<void> {
+    setBusy(vendor);
+    setError(undefined);
+    setNote(undefined);
+    try {
+      const next = await refreshVendorModels(vendor);
+      onRefreshed(next);
+      if (!next.refreshed.listed) {
+        setNote(`${vendorLabel(vendor)} opened a session but listed no models.`);
+      }
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+  return (
+    <SetCard
+      title="Models"
+      icon="sparkles"
+      description="The models each agent offers, as it said when a session opened. The model pickers list these. An agent that hasn’t run here yet can be asked: Refresh starts it without a message and stops it again."
+      testid="settings-models"
+    >
+      {status.vendors.map((vendor) => {
+        const list = lists[vendor];
+        const missing = status.not_installed?.[vendor];
+        const current =
+          list?.current !== undefined
+            ? (list.options.find((o) => o.value === list.current)?.name ?? list.current)
+            : undefined;
+        const hint =
+          missing !== undefined
+            ? missing
+            : list === undefined
+              ? 'No list yet: it hasn’t reported its models.'
+              : `${list.options.length} ${list.options.length === 1 ? 'model' : 'models'}${
+                  current !== undefined ? `, running ${current}` : ''
+                } · ${reportedWhen(list.at)}`;
+        return (
+          <SetRow
+            key={vendor}
+            label={vendorLabel(vendor)}
+            hint={<span data-testid={`settings-models-${vendor}`}>{hint}</span>}
+          >
+            <Button
+              size="sm"
+              icon="refresh"
+              data-testid={`settings-models-refresh-${vendor}`}
+              busy={busy === vendor}
+              disabled={missing !== undefined || (busy !== undefined && busy !== vendor)}
+              title={
+                missing ?? `Start ${vendorLabel(vendor)} without a message and keep its model list`
+              }
+              onClick={() => void refresh(vendor)}
+            >
+              Refresh
+            </Button>
+          </SetRow>
+        );
+      })}
+      {note ? (
+        <p className="cr-set-muted" data-testid="settings-models-note">
+          {note}
+        </p>
+      ) : null}
       <FormError error={error} />
     </SetCard>
   );
