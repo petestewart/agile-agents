@@ -1421,3 +1421,43 @@ context is really kept. With a real Claude login:
       is what the thread in its brief holds.
 - [ ] Merge a Ready to merge node while its session is idle: the merge goes
       through, and the chat says the session ended because the node was merged.
+
+## 15. **[vendor]** Keeping each vendor's CLI up to date (D50, T481)
+
+The fake runner covers the mechanics offline; only a real machine shows the
+install method is read right and the update really runs. You need one
+vendor CLI that is behind (for example `npm install -g
+@anthropic-ai/claude-code@<an older version>`, or an older Homebrew
+`gemini-cli`). Running agents are never touched: try it with one running.
+
+- [ ] Settings → Agents → Updates reads **Alert**. Press **Check now**: each
+      installed CLI shows its version, the newest one and how it was installed
+      (Homebrew: gemini-cli, npm (global): @anthropic-ai/claude-code, its own
+      installer for Claude's native build). A CLI installed some other way
+      (cursor-agent, grok) says "Can't check <name> automatically; update it
+      the way you installed it (<path>)", with the path its binary resolves
+      to. Note any CLI whose method is read wrong.
+- [ ] `agile daemon status` prints one line per CLI, with "update available
+      (<version>)" for the one that is behind.
+- [ ] **Alert:** Needs me has "<CLI> <newest> is available (you have
+      <installed>)" under Updates. Press **Update**: it says "Updated <CLI>
+      to <newest>" and the row leaves; `<cli> --version` in a terminal agrees,
+      and Events has the line. A session that was running keeps working; the
+      next node you start runs the new version.
+- [ ] Put the CLI back behind, Check now, and press **Dismiss**: it leaves
+      Needs me and stays gone after another Check now. `config.yaml` has
+      `harness_updates.dismissed.<cli>: <version>`.
+- [ ] Make an update fail on purpose (a global npm prefix you can't write,
+      e.g. one owned by root): Update says "Couldn't update <CLI>: <the first
+      line npm printed>. Run: <the command>". Nothing asks for a password, and
+      it is not retried.
+- [ ] **Auto:** switch Updates to Auto, put a CLI behind again, and restart
+      the daemon (`agile daemon stop`, `agile daemon start`). About ten
+      seconds after it starts, the CLI updates with nothing in Needs me, and
+      Events shows "Updated <CLI>" with the daemon as the actor.
+- [ ] **Off:** switch to Off, put a CLI behind and restart the daemon: after
+      a minute nothing is in Needs me, the rows read Off, and Check now changes
+      nothing (no version is read).
+- [ ] The bridges row lists Claude's and Codex's npx bridges with their pinned
+      version and the newest published one. Nothing installs them.
+
