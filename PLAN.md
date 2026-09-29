@@ -59,6 +59,8 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D46** (2026-09-28, Pete): one way to choose a model, for every vendor (Claude included). The model list comes from the vendor (ACP's reply when a session opens), and the chosen model is set through that same ACP model option. A vendor-specific switch (Claude's `ANTHROPIC_MODEL`, a CLI flag) is a fallback only where a live run has measured that the ACP option is missing. A vendor with no way to set a model shows "default" in the picker, with the reason. Measured first (LIVE-CHECKLIST §12). (T467)
 - **D47** (2026-09-28, Pete): T471's Delete forever keeps a branch with unmerged commits unless the operator ticks "Also delete its branch"; a merged branch always goes. As built.
 - **D48** (2026-09-28, Pete): go ahead with T465. A finished turn no longer stops the vendor session: it stays alive and idle, so the next message reaches the same session and keeps its context and prompt cache. It ends on an idle timeout, a Stop or the daemon stopping, and an ended session resumes through ACP `session/load` where the vendor supports it. Narrows cockpit-design §2.3's "a finished turn stops the session".
+- **D49** (2026-09-29, Pete): one install per vendor. The daemon runs the vendor CLI the operator installed, not a second copy bundled inside an ACP bridge: Claude's bridge gets `CLAUDE_CODE_EXECUTABLE`, Codex's gets `CODEX_PATH`, pointing at the `claude`/`codex` on PATH, with the bundled copy only as the fallback when none is installed. Gemini, Cursor, Grok and Pi already run the installed CLI. The bridges stay pinned in code. (T480)
+- **D50** (2026-09-29, Pete): harness updates are a setting with three modes. **Off** does no version check. **Alert** checks regularly and puts an update in Needs me, with a button that installs it. **Auto** installs new versions in the background. Running sessions keep the version they started on; the next start uses the new one. (T481)
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -2931,6 +2933,29 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Scope:** Pete (2026-09-29): Sonnet 5.5 is in Claude Code but missing from the list Claude reported in §12. That list comes from the ACP bridge we pin, not from the installed Claude Code. `claude-agent-acp@0.81.1` bundles `claude-agent-sdk` 0.3.280, which doesn't know `claude-sonnet-5-5`; 0.84.0 bundles 0.3.284, which does.
 - **Acceptance Criteria:** The pin is 0.84.0. Everything the daemon relies on was re-checked in the 0.84.0 dist and is unchanged: `ANTHROPIC_MODEL`, `MAX_THINKING_TOKENS` through `resolveThinkingConfig`, `loadSession`, the session config-option setter, the six mode ids, and the default `settingSources` user/project/local that the hook settings file depends on. The built-in Claude list suggests `claude-sonnet-5-5`.
 - **Validation Steps:** acp-client tests (the pinned args) 146/0; typecheck and lint clean; full `bun test` 3511/0. Live: LIVE-CHECKLIST §12's Claude row should list Sonnet 5.5 after `npx` fetches 0.84.0 (the first start after the pull takes a little longer).
+
+### Ticket: T480 Run the installed Claude Code and Codex, not the bridges' bundled copies (D49)
+- **Priority:** P1
+- **Status:** Todo (after T467 merges: both touch the provider launch)
+- **Owner:** manager
+- **Scope:** Pete (2026-09-29): "no good reason for 2 different claude installations". `claude-agent-acp` bundles its own Claude Code (through `claude-agent-sdk`), and `codex-acp` bundles `@openai/codex`, so a model the operator's Claude Code already has (Sonnet 5.5) was missing until the bridge moved (T479). Both bridges take an override, checked in their dists: `CLAUDE_CODE_EXECUTABLE` (claude-agent-acp 0.84.0, `acp-agent.js`) and `CODEX_PATH` (codex-acp 1.10.0, README: "run a specific Codex executable instead of the bundled package dependency").
+- **Acceptance Criteria:** When `claude` or `codex` is on PATH, the session env sets the override to its resolved path. When it isn't, the bundled copy runs, as today. `agile daemon status` and Settings → Agents say which is used, with the path and `--version`. A start that fails with the installed CLI, where the bundled copy would work, says so in words on the thread. A per-vendor switch ("Use the installed Claude Code") is on by default. The Claude hook settings path is unchanged: the installed CLI reads the same `.claude/settings*.json`.
+- **Validation Steps:** Runner tests (the env carries the override when the binary resolves, none when it doesn't, and the switch turns it off). LIVE-CHECKLIST: Claude's §12 model list matches the installed Claude Code's `/model` list, and a hooked tool call is still held.
+
+### Ticket: T481 Keep each vendor's CLI up to date: Off, Alert or Auto (D50)
+- **Priority:** P1
+- **Status:** In progress
+- **Owner:** manager
+- **Scope:** Pete (2026-09-29): "a regular check of some kind for any vendor harness with an automatic update feature … configured in settings. it can either be off/alert/auto. off does no version check. alert creates pop-up or 'needs you' that allows me to just click a button and have the new version … installed. auto installs the new version behind the scenes automatically. … existing sessions will be running on the old version and that's fine."
+- **Acceptance Criteria:**
+  1. Settings → Agents → **Updates**: Off, Alert (the default) or Auto, kept in the home config. A vendor can override it.
+  2. For each installed vendor CLI (claude, codex, gemini, cursor-agent, grok, pi), the daemon finds the installed version (`--version`) and how it was installed, from where the binary resolves: Homebrew, a global npm package, or the vendor's own installer with its own update command. It then finds the newest version the same way. A vendor or install method it can't check says so in Settings, with how to update by hand. Nothing is guessed.
+  3. The check runs at daemon start and then daily, plus **Check now**. Off runs no check at all.
+  4. **Alert:** a Needs me item, "Claude Code 2.3.1 is available (you have 2.2.9)", with **Update**, which runs the update and reports the result in words. It can be dismissed until the next version.
+  5. **Auto:** the update runs in the background and leaves a line in Events. A failure becomes a Needs me item, with the command to run by hand.
+  6. Updates run fixed argv, never through a shell and never with sudo, with a timeout. A permission error is reported, not retried. Running sessions are untouched.
+  7. Settings also shows each ACP bridge's pinned version and the newest published one, as information only. A bridge moves by a code change (as T479 did), never by the updater.
+- **Validation Steps:** Unit tests with an injected command runner (no network, no real installs): install-method detection, version parsing, each mode's behaviour, a failed update, Off running nothing. HTTP route tests (same-origin). Settings and Needs me e2e. LIVE-CHECKLIST: one real Alert-mode update of a vendor that is behind.
 
 ### Ticket: T469 Favourite models, and a picker that folds
 - **Priority:** P2
