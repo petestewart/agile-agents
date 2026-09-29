@@ -2913,7 +2913,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T467 Models come from the vendor, set through ACP (D46)
 - **Priority:** P1
-- **Status:** Todo (measure first: LIVE-CHECKLIST §12)
+- **Status:** Todo (measured 2026-09-29: LIVE-CHECKLIST §12)
 - **Owner:** manager
 - **Scope:** Pete (2026-09-28): only Claude lists models; every other vendor shows "default model". `KNOWN_MODEL_IDS` is hand-written for Claude alone, and only Claude's adapter can set a model (`ANTHROPIC_MODEL`). That's left over from building, not a design: Claude's switch was the only one measured. ACP vendors report their models in `session/new`'s reply, which the daemon reads for the current model but otherwise discards.
 - **Acceptance Criteria (D46), for every vendor, Claude included:**
@@ -2921,6 +2921,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   2. The chosen model is set through that same ACP model option.
   3. A vendor-specific switch is a fallback only where the ACP option is missing, and only once a live run has measured that it's missing. Claude's `ANTHROPIC_MODEL` stays only if its bridge turns out not to support the ACP route.
   4. A vendor with no way to set a model shows "default" in the picker, with the reason.
+- **Measured (§12, 2026-09-29):** Claude, Codex, Cursor and Grok all send a `configOptions` entry with `category: "model"` (select: `currentValue`, `options[{value, name, description?}]`). That one shape is the list for every vendor. Claude and Codex also send a `category: "thought_level"` option for effort (`effort`, `reasoning_effort`), each with its own levels. Grok's list is short (one option, and the current value is not in it). Cursor's values carry their settings in brackets. Gemini's account was refused and Pi didn't run: they keep today's behaviour until measured.
 - **Validation Steps:** LIVE-CHECKLIST §12 filled in for each installed vendor before building. Then fake-agent tests (a vendor reporting a list; one accepting the ACP model option; one without it), and the picker e2e.
 
 ### Ticket: T469 Favourite models, and a picker that folds
