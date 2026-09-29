@@ -2957,6 +2957,37 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   7. Settings also shows each ACP bridge's pinned version and the newest published one, as information only. A bridge moves by a code change (as T479 did), never by the updater.
 - **Validation Steps:** Unit tests with an injected command runner (no network, no real installs): install-method detection, version parsing, each mode's behaviour, a failed update, Off running nothing. HTTP route tests (same-origin). Settings and Needs me e2e. LIVE-CHECKLIST: one real Alert-mode update of a vendor that is behind.
 
+### Ticket: T482 Model routing: the policy and the lock
+- **Priority:** P1
+- **Status:** Todo (design proposed in `design/model-routing.md`; waiting on Pete's MR1–MR6)
+- **Owner:** manager
+- **Scope:** Pete (2026-09-29): model choice is configurable per project or node, with inherit and choose as options, the operator's own parameters (free text and settings), a chooser that looks at the task being handed off, configurable effort, and choices lockable to a set of models and effort levels. Today no parent chooses: `add_child` and `start_node` carry no model, and a child resolves like any unpicked node (T464, then project, repo, home, built-in).
+- **Acceptance Criteria:** `design/model-routing.md` §3, §4 and §8: the policy schema (mode default/inherit/choose, quality priority, allowed models, effort ceiling, escalation, pinned rules, guidance, weights), resolved node → ancestors → project → home, stored human-only. Every routed pick is clamped to the allowed set and under the effort ceiling, with a chat line when a clamp changes it. An explicit pick wins (MR3). Settings, project and node UI; `agile policy`. Depends on T467.
+- **Validation Steps:** Shared resolution unit tests; attach tests (routed vs explicit, inherit, clamp, a node write by an agent refused); UI e2e.
+
+### Ticket: T483 Model routing: the chooser
+- **Priority:** P1
+- **Status:** Todo (after T482)
+- **Owner:** manager
+- **Scope:** `design/model-routing.md` §5: a one-shot quick-draft call scores spec clarity, verifiability, horizon, stakes and volume, and picks a model and effort from the allowed set, with the reason. Pinned rules, guidance, weights and quality priority feed it. Model profiles (tier, relative cost) live in the home config. The rule fallback applies when Quick drafts is off or the call fails.
+- **Acceptance Criteria:** A chat line with the pick and why; Details shows the scores, the resolved policy's source, and "Let the policy choose again"; Settings has Try it. A reply that fails the schema, or picks outside the lock, is clamped or falls back, and says so.
+- **Validation Steps:** Unit tests with an injected drafter (a valid reply, an invalid one, an outside pick, a timeout, drafts off); attach test that a routed start runs the chooser once and a later wake doesn't (MR5); e2e for Try it.
+
+### Ticket: T484 Model routing: escalation
+- **Priority:** P2
+- **Status:** Todo (after T482)
+- **Owner:** manager
+- **Scope:** `design/model-routing.md` §6: under "start cheap", step up the ladder (effort, then model, within the lock) at the next start when a merge is refused twice for the same reason, a turn stalls, or the agent calls `escalate {why}`; Details → Step up. At the top of the ladder, a Needs me card.
+- **Acceptance Criteria:** A thread line and a record-only event per step; "strongest first" never steps; a model change ends a resting session (T465).
+- **Validation Steps:** Unit tests per trigger with the fake agent; the ladder order; the top-of-ladder card.
+
+### Ticket: T485 Model routing: budget caps
+- **Priority:** P2
+- **Status:** Todo (measure first: LIVE-CHECKLIST §15, which vendors report turn token usage)
+- **Owner:** manager
+- **Scope:** `design/model-routing.md` §7: budgets in weighted tokens (tokens × the model profile's cost), per session and per node. At 80% a chat line; at the cap the next turn waits and Needs me offers Raise the cap / Stop here. A vendor that reports no usage says so instead of estimating.
+- **Validation Steps:** After §15: unit tests on the weighting and cap, and an attach test that the capped node waits.
+
 ### Ticket: T469 Favourite models, and a picker that folds
 - **Priority:** P2
 - **Status:** Todo
