@@ -1327,14 +1327,24 @@ from them.
 - [ ] If not: is there a vendor switch (an env variable or a flag) that works?
       Only then does T467 use one for that vendor.
 
+Measured 2026-09-29 by Pete (the `session/new` replies, `claude/phase-14` at
+ecd994c2). Every vendor that ran reports its models the same way: a
+`configOptions` entry with `category: "model"`, `type: "select"`, a
+`currentValue` and `options: [{value, name, description?}]`. Codex, Cursor and
+Grok also send ACP's `models` (`currentModelId`, `availableModels`); Claude
+sends `models: null`. Whether each vendor honours
+`session/set_config_option` for the model is not measured yet: T467 reads
+the option's value back from that call's reply and says so when a vendor
+ignores it.
+
 | Vendor | Reports a list? | Accepts a model via ACP? | Fallback switch (measured) |
 |--------|-----------------|--------------------------|-----------------------------|
-| Claude |                 |                          |                             |
-| Codex  |                 |                          |                             |
-| Gemini |                 |                          |                             |
-| Cursor |                 |                          |                             |
-| Grok   |                 |                          |                             |
-| Pi     |                 |                          |                             |
+| Claude | Yes: `configOptions` model, 6 options (`default`, `opus[1m]`, `claude-fable-5-1[1m]`, `sonnet`, `haiku`, `claude-sonnet-4-6`); `models: null`. Effort is its own option (`effort`, category `thought_level`: default, low, medium, high, max) | Not measured yet (T467 checks the reply) | `ANTHROPIC_MODEL` (in use today) |
+| Codex  | Yes: `configOptions` model, 5 options (`gpt-6-astra`, `gpt-5.6-sol`, `-terra`, `-luna`, `gpt-5.5`); `models` lists model × effort pairs (`gpt-6-astra[low]` …). Effort is `reasoning_effort` (thought_level: low … xhigh, max, ultra) | Not measured yet | None known |
+| Gemini | Not measured: the account was refused at `session/new` ("This client is no longer supported for Gemini Code Assist for individuals", tier `free-tier`) | — | — |
+| Cursor | Yes: `configOptions` model, 43 options across providers, current `default[]` ("Auto"); values carry their settings (`grok-4.7[context=256k,reasoning_effort=high,fast=true]`). `models` matches. No effort option (it is inside each value) | Not measured yet | None known |
+| Grok   | Yes, but thin: `configOptions` model lists only `grok-4.7`, while `currentValue` is `grok-4.5`. `models` matches, and puts effort in `availableModels[]._meta.reasoningEfforts` (xhigh, high, medium, low) | Not measured yet | None known |
+| Pi     | Not run (no file) | — | — |
 
 ## 13. **[vendor]** Auto-close when the goal is met (T478)
 
