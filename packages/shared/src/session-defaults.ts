@@ -68,6 +68,44 @@ export const KNOWN_MODEL_IDS: Readonly<Record<SessionVendor, readonly string[]>>
 export const SESSION_MODEL_MAX_CHARS = 200;
 
 /**
+ * T467 (D46): one model a vendor reported for itself in its `session/new`
+ * reply (its `configOptions` model option, else ACP's `models` list):
+ * `value` is the id a session is set to, `name` what the picker shows.
+ */
+export const VendorModelSchema = z
+  .object({
+    value: z.string().min(1).max(SESSION_MODEL_MAX_CHARS),
+    name: z.string().min(1).max(200),
+    description: z.string().max(300).optional(),
+  })
+  .strict();
+export type VendorModel = z.infer<typeof VendorModelSchema>;
+
+/** T467: at most this many models are kept per vendor (Cursor reported 43). */
+export const VENDOR_MODELS_MAX = 200;
+
+/**
+ * T467 (D46): a vendor's model list, as its most recent `session/new` (or
+ * `session/load`) reply reported it. `current` is the model that session
+ * ran on, which may be missing from `options` (Grok, LIVE-CHECKLIST §12).
+ */
+export const VendorModelsSchema = z
+  .object({
+    options: z.array(VendorModelSchema).max(VENDOR_MODELS_MAX),
+    current: z.string().min(1).max(SESSION_MODEL_MAX_CHARS).optional(),
+    /** When the vendor said it (the session-state file's `at`). */
+    at: z.string().min(1).max(64),
+    /** The session whose reply it was (a Refresh's too). */
+    session: z.string().min(1).max(64).optional(),
+  })
+  .strict();
+export type VendorModels = z.infer<typeof VendorModelsSchema>;
+
+/** T467: `POST /api/settings/models/refresh`: ask one vendor for its models. */
+export const RefreshModelsInputSchema = z.object({ vendor: SessionVendorSchema }).strict();
+export type RefreshModelsInput = z.infer<typeof RefreshModelsInputSchema>;
+
+/**
  * T456: vendors whose tool calls pass the daemon's pre-tool check (Claude's
  * `PreToolUse` hook, Pi's `agile` extension; design/spike-findings.md §B,
  * §C4). The others are gated by ACP permission (or a sandbox) only, a lower
@@ -257,6 +295,12 @@ export interface SessionDefaultsStatus {
   repos: Record<string, SessionDefaultsFields & { resolved: ResolvedSessionDefaults }>;
   vendors: readonly SessionVendor[];
   known_models: Readonly<Record<SessionVendor, readonly string[]>>;
+  /**
+   * T467 (D46): each vendor's own model list, from its most recent
+   * `session/new` reply; the pickers show it in place of `known_models`.
+   * A vendor that never reported one is absent.
+   */
+  vendor_models?: Readonly<Partial<Record<SessionVendor, VendorModels>>>;
   /** T437: vendors whose command isn't on the daemon's PATH, with why in words. Absent: all found (or an older daemon). */
   not_installed?: Readonly<Partial<Record<SessionVendor, string>>>;
 }
