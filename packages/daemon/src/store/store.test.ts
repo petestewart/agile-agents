@@ -189,6 +189,61 @@ describe('Policy singleton', () => {
   });
 });
 
+describe('favourite models (T469): favourite_models in config.yaml', () => {
+  test('a star is added once, at the end; an unstar removes it; the last one removes the key', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.setFavouriteModel({ vendor: 'codex', model: 'gpt-5.5' }, true, { by: 'human' });
+    await store.setFavouriteModel({ vendor: 'claude', model: 'claude-opus-5-5' }, true);
+    // Starred again: never doubled.
+    await store.setFavouriteModel({ vendor: 'codex', model: 'gpt-5.5' }, true);
+    // `default` is the vendor's own default, kept as no model.
+    await store.setFavouriteModel({ vendor: 'gemini', model: 'default' }, true);
+    expect(store.getHomeConfig().favourite_models).toEqual([
+      { vendor: 'codex', model: 'gpt-5.5' },
+      { vendor: 'claude', model: 'claude-opus-5-5' },
+      { vendor: 'gemini' },
+    ]);
+    // A fresh store reads the same file back.
+    expect(StateStore.open(stateRoot).getHomeConfig().favourite_models).toHaveLength(3);
+    const put = store.listEvents().find((e) => e.kind === 'home_config_put');
+    expect(put?.agent).toBe('human');
+    expect(put?.data).toEqual({ favourite_model: { vendor: 'codex', model: 'gpt-5.5', on: true } });
+
+    await store.setFavouriteModel({ vendor: 'codex', model: 'gpt-5.5' }, false);
+    await store.setFavouriteModel({ vendor: 'gemini' }, false);
+    // Unstarring one that isn't there changes nothing.
+    await store.setFavouriteModel({ vendor: 'cursor', model: 'auto' }, false);
+    expect(store.getHomeConfig().favourite_models).toEqual([
+      { vendor: 'claude', model: 'claude-opus-5-5' },
+    ]);
+    await store.setFavouriteModel({ vendor: 'claude', model: 'claude-opus-5-5' }, false);
+    expect(store.getHomeConfig().favourite_models).toBeUndefined();
+    expect(readFileSync(join(stateRoot, 'config.yaml'), 'utf8')).not.toContain('favourite_models');
+  });
+
+  test('a list over the limit is refused and nothing is written', async () => {
+    const store = StateStore.open(stateRoot);
+    for (let i = 0; i < 100; i++) {
+      await store.setFavouriteModel({ vendor: 'cursor', model: `m-${i}` }, true);
+    }
+    await expect(
+      store.setFavouriteModel({ vendor: 'cursor', model: 'one-more' }, true),
+    ).rejects.toThrow();
+    expect(store.getHomeConfig().favourite_models).toHaveLength(100);
+  });
+
+  test('a hand-edited list that is not a list is refused, never replaced', async () => {
+    const store = StateStore.open(stateRoot);
+    const path = join(stateRoot, 'config.yaml');
+    writeFileSync(path, 'port: 4600\nfavourite_models: claude\n');
+    const before = readFileSync(path, 'utf8');
+    await expect(store.setFavouriteModel({ vendor: 'claude' }, true)).rejects.toThrow(
+      /favourite_models/,
+    );
+    expect(readFileSync(path, 'utf8')).toBe(before);
+  });
+});
+
 /**
  * T140/T260: `knowledge/K-<ulid>.yaml`, and the two structural checks the
  * store is the one place to apply — the principal split (**D4**) and the

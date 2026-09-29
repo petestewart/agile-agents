@@ -18,7 +18,11 @@ import { EffortSchema } from './effort';
 import { HarnessUpdatesConfigSchema } from './harness-updates';
 import { formatZodError } from './ids';
 import { PermissionPostureSchema } from './posture';
-import { VendorFailureSchema } from './session-defaults';
+import {
+  FAVOURITE_MODELS_MAX,
+  FavouriteModelSchema,
+  VendorFailureSchema,
+} from './session-defaults';
 
 /** Built-in default HTTP port for the cockpit/API when `config.yaml` names none. */
 export const DEFAULT_DAEMON_PORT = 4600;
@@ -281,6 +285,11 @@ export const HomeConfigSchema = z
       .object({ claude: z.boolean().optional(), codex: z.boolean().optional() })
       .strict()
       .optional(),
+    /**
+     * T469: the models starred as favourites. With any, the model picker
+     * lists only these (and what runs), with a Show all switch.
+     */
+    favourite_models: z.array(FavouriteModelSchema).max(FAVOURITE_MODELS_MAX).optional(),
     /**
      * T465 (D48): how long an agent's session stays alive and idle after its
      * turn finished, in minutes, so the next message keeps its context.

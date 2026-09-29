@@ -9,6 +9,7 @@ import {
   validateClassifierConfig,
   validateHomeConfig,
 } from './home-config';
+import { FAVOURITE_MODELS_MAX, FavouriteModelInputSchema, favouriteKey } from './session-defaults';
 
 describe('classifier config (T150, cockpit design §6.2/§6.3)', () => {
   test('an absent block is the documented defaults', () => {
@@ -86,5 +87,59 @@ describe('T481 harness_updates (D50)', () => {
     expect(HarnessUpdatesInputSchema.safeParse({ mode: null, vendor: 'codex' }).success).toBe(true);
     expect(HarnessUpdatesInputSchema.safeParse({ mode: null }).success).toBe(false);
     expect(HarnessUpdatesInputSchema.safeParse({ mode: 'auto', extra: 1 }).success).toBe(false);
+  });
+});
+
+describe('T469 favourite_models', () => {
+  test('a list of {vendor, model?}; absent is none', () => {
+    expect(validateHomeConfig({}).favourite_models).toBeUndefined();
+    const config = validateHomeConfig({
+      favourite_models: [
+        { vendor: 'claude', model: 'claude-opus-5-5' },
+        { vendor: 'cursor', model: 'grok-4.7[context=256k,fast=true]' },
+        { vendor: 'gemini' },
+      ],
+    });
+    expect(config.favourite_models).toEqual([
+      { vendor: 'claude', model: 'claude-opus-5-5' },
+      { vendor: 'cursor', model: 'grok-4.7[context=256k,fast=true]' },
+      { vendor: 'gemini' },
+    ]);
+  });
+
+  test('strict: an unknown vendor, an extra key, an empty model or too many are refused', () => {
+    expect(() => validateHomeConfig({ favourite_models: [{ vendor: 'vim' }] })).toThrow();
+    expect(() =>
+      validateHomeConfig({ favourite_models: [{ vendor: 'claude', model: 'x', star: true }] }),
+    ).toThrow();
+    expect(() =>
+      validateHomeConfig({ favourite_models: [{ vendor: 'claude', model: '' }] }),
+    ).toThrow();
+    expect(() => validateHomeConfig({ favourite_models: { vendor: 'claude' } })).toThrow();
+    const many = Array.from({ length: FAVOURITE_MODELS_MAX + 1 }, (_, i) => ({
+      vendor: 'codex',
+      model: `gpt-${i}`,
+    }));
+    expect(() => validateHomeConfig({ favourite_models: many })).toThrow();
+  });
+
+  test('the star input: a vendor, a model or none, and on', () => {
+    expect(
+      FavouriteModelInputSchema.safeParse({ vendor: 'codex', model: 'gpt-5.5', on: true }).success,
+    ).toBe(true);
+    expect(FavouriteModelInputSchema.safeParse({ vendor: 'gemini', on: false }).success).toBe(true);
+    expect(FavouriteModelInputSchema.safeParse({ vendor: 'codex', model: 'gpt-5.5' }).success).toBe(
+      false,
+    );
+    expect(FavouriteModelInputSchema.safeParse({ vendor: 'vim', on: true }).success).toBe(false);
+    expect(
+      FavouriteModelInputSchema.safeParse({ vendor: 'codex', on: true, extra: 1 }).success,
+    ).toBe(false);
+  });
+
+  test("favouriteKey: `default` and no model are the vendor's own default", () => {
+    expect(favouriteKey({ vendor: 'claude', model: 'default' })).toBe('claude/');
+    expect(favouriteKey({ vendor: 'claude' })).toBe('claude/');
+    expect(favouriteKey({ vendor: 'claude', model: 'opus' })).toBe('claude/opus');
   });
 });

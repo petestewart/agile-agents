@@ -40,7 +40,7 @@ import type {
   VendorFailureSettings,
 } from '@agile-agents/shared';
 import { GATE_KINDS, resolveVendorFailure, vendorHasHooks } from '@agile-agents/shared';
-import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
+import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import {
   type AutoCloseDefault,
   type DaemonHealth,
@@ -73,9 +73,11 @@ import {
 } from '../lib/api';
 import { agentLabel, sessionIdText, vendorLabel } from '../lib/chat';
 import { foldedRepos, inheritingReposText, resolvedFor } from '../lib/defaults';
+import { pickerView } from '../lib/favourites';
 import { useOptionalFeed } from '../lib/feed-context';
 import { useOptionalShell } from '../lib/shell';
 import { type ThemeChoice, readTheme, saveTheme } from '../lib/theme';
+import { useFavouriteModels } from '../lib/use-favourites';
 import {
   type NotifyAccess,
   askNotifyAccess,
@@ -85,7 +87,7 @@ import {
   sendTestNotification,
 } from '../lib/use-notify';
 import { Icon, type IconName } from './Icon';
-import { type SessionChoice, SessionFields } from './SessionPicker';
+import { ModelStar, type SessionChoice, SessionFields } from './SessionPicker';
 import {
   FormError,
   SavedNote,
@@ -978,6 +980,9 @@ function VendorModelsCard({
   const [busy, setBusy] = useState<SessionVendor | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [note, setNote] = useState<string | undefined>();
+  // T469: the vendors whose models are open, to star.
+  const [open, setOpen] = useState<string[]>([]);
+  const favourites = useFavouriteModels(status);
   // An older daemon has no lists to show.
   if (status.vendor_models === undefined) return null;
   const lists = status.vendor_models;
@@ -1001,12 +1006,25 @@ function VendorModelsCard({
     <SetCard
       title="Models"
       icon="sparkles"
-      description="The models each agent offers, as it said when a session opened. The model pickers list these. An agent that hasn’t run here yet can be asked: Refresh starts it without a message and stops it again."
+      description="The models each agent offers, as it said when a session opened. The model pickers list these. An agent that hasn’t run here yet can be asked: Refresh starts it without a message and stops it again. Star the models you use: with any starred, the pickers show just those, with Show all for the rest."
       testid="settings-models"
     >
       {status.vendors.map((vendor) => {
         const list = lists[vendor];
         const missing = status.not_installed?.[vendor];
+        // T469: this vendor's models to star, a starred one it no longer lists too.
+        const rows = pickerView({
+          known: status.known_models,
+          vendors: [vendor],
+          lists,
+          favourites: favourites.filter((f) => f.vendor === vendor),
+          keep: [],
+          showAll: true,
+          query: '',
+          folded: [],
+        }).groups.flatMap((g) => g.rows);
+        const starred = rows.filter((r) => r.favourite).length;
+        const opened = open.includes(vendor);
         const current =
           list?.current !== undefined
             ? (list.options.find((o) => o.value === list.current)?.name ?? list.current)
@@ -1020,25 +1038,65 @@ function VendorModelsCard({
                   current !== undefined ? `, running ${current}` : ''
                 } · ${reportedWhen(list.at)}`;
         return (
-          <SetRow
-            key={vendor}
-            label={vendorLabel(vendor)}
-            hint={<span data-testid={`settings-models-${vendor}`}>{hint}</span>}
-          >
-            <Button
-              size="sm"
-              icon="refresh"
-              data-testid={`settings-models-refresh-${vendor}`}
-              busy={busy === vendor}
-              disabled={missing !== undefined || (busy !== undefined && busy !== vendor)}
-              title={
-                missing ?? `Start ${vendorLabel(vendor)} without a message and keep its model list`
+          <Fragment key={vendor}>
+            <SetRow
+              label={vendorLabel(vendor)}
+              hint={
+                <span data-testid={`settings-models-${vendor}`}>
+                  {hint}
+                  {starred > 0 ? ` · ${starred} starred` : ''}
+                </span>
               }
-              onClick={() => void refresh(vendor)}
             >
-              Refresh
-            </Button>
-          </SetRow>
+              <span className="cr-set-models-actions">
+                <Button
+                  size="sm"
+                  icon={opened ? 'chevron-down' : 'chevron-right'}
+                  data-testid={`settings-models-stars-${vendor}`}
+                  aria-expanded={opened}
+                  title={`Star ${vendorLabel(vendor)}’s models`}
+                  onClick={() =>
+                    setOpen(opened ? open.filter((v) => v !== vendor) : [...open, vendor])
+                  }
+                >
+                  Favourites
+                </Button>
+                <Button
+                  size="sm"
+                  icon="refresh"
+                  data-testid={`settings-models-refresh-${vendor}`}
+                  busy={busy === vendor}
+                  disabled={missing !== undefined || (busy !== undefined && busy !== vendor)}
+                  title={
+                    missing ??
+                    `Start ${vendorLabel(vendor)} without a message and keep its model list`
+                  }
+                  onClick={() => void refresh(vendor)}
+                >
+                  Refresh
+                </Button>
+              </span>
+            </SetRow>
+            {opened ? (
+              <div className="cr-set-models-list" data-testid={`settings-models-list-${vendor}`}>
+                {rows.map((row) => (
+                  <div
+                    key={`${row.vendor}/${row.model ?? ''}`}
+                    className="cr-mpick-item"
+                    data-testid="settings-model-row"
+                    data-model={row.model ?? ''}
+                    title={row.unlisted ?? sessionIdText({ vendor: row.vendor, model: row.model })}
+                  >
+                    <span className="cr-mpick-name">{row.label}</span>
+                    {row.unlisted !== undefined ? (
+                      <span className="cr-mpick-tag">{row.unlisted}</span>
+                    ) : null}
+                    <ModelStar row={row} onError={setError} />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </Fragment>
         );
       })}
       {note ? (
