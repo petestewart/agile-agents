@@ -92,6 +92,13 @@ export interface FakeAgentScript {
    * currentValue, options}`. Replaces the bare `model` entry.
    */
   modelOption?: { current: string; options: Array<{ value: string; name: string }> };
+  /**
+   * T488: an effort option, as Codex reports it (LIVE-CHECKLIST §12): a
+   * `configOptions` entry `{id, category: "thought_level", type: "select",
+   * currentValue, options}`, sent after the model entry. `session/set_config_option`
+   * answers it like the model's (`setConfigOption`).
+   */
+  effortOption?: { id: string; current: string; values: string[] };
   /** T467: ACP's `models` field (`{currentModelId, availableModels}`), sent beside `configOptions`. */
   models?: {
     currentModelId: string;
@@ -185,8 +192,24 @@ export const DEFAULT_FAKE_MODEL = 'fake/model-1';
 /** T467: the model the session runs now (`modelOption`'s, until a `session/set_config_option` takes). */
 let currentModel = script.modelOption?.current ?? script.model ?? DEFAULT_FAKE_MODEL;
 
+/** T488: the effort level the session runs now (`effortOption`'s, until a `session/set_config_option` takes). */
+let currentEffort = script.effortOption?.current;
+
 /** The `configOptions` of a `session/new`/`session/load` result. */
 function sessionConfigOptions(): Array<Record<string, unknown>> {
+  const effort =
+    script.effortOption !== undefined
+      ? [
+          {
+            id: script.effortOption.id,
+            name: 'Reasoning effort',
+            category: 'thought_level',
+            type: 'select',
+            currentValue: currentEffort,
+            options: script.effortOption.values.map((value) => ({ value, name: value })),
+          },
+        ]
+      : [];
   if (script.modelOption !== undefined) {
     return [
       {
@@ -197,9 +220,10 @@ function sessionConfigOptions(): Array<Record<string, unknown>> {
         currentValue: currentModel,
         options: script.modelOption.options,
       },
+      ...effort,
     ];
   }
-  return [{ id: 'model', name: 'Model', currentValue: currentModel }];
+  return [{ id: 'model', name: 'Model', currentValue: currentModel }, ...effort];
 }
 
 /** A `session/new`/`session/load` result. */
@@ -397,6 +421,14 @@ function handleLine(line: string): void {
         typeof params.value === 'string'
       ) {
         currentModel = params.value;
+      }
+      if (
+        script.setConfigOption !== 'ignore' &&
+        script.effortOption !== undefined &&
+        params?.configId === script.effortOption.id &&
+        typeof params.value === 'string'
+      ) {
+        currentEffort = params.value;
       }
       write({ id: message.id, result: { configOptions: sessionConfigOptions() } });
       return;

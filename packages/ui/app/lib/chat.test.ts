@@ -27,6 +27,7 @@ import {
   listWords,
   liveAgentOf,
   modelLabel,
+  noEffortLine,
   nodeTabs,
   oneLine,
   openQuestions,
@@ -98,10 +99,22 @@ describe('names', () => {
     expect(agentLabel({ vendor: 'gemini', model: 'gemini-2.5-pro', effort: 'low' })).toBe(
       'gemini-2.5-pro',
     );
-    expect(agentLabel({ vendor: 'codex', model: 'gpt-9', effort: 'max' })).toBe('Codex · gpt-9');
-    expect(sessionIdText({ vendor: 'codex', model: 'gpt-9', effort: 'max' })).toBe(
-      'codex/gpt-9 · max effort (ignored)',
+    expect(agentLabel({ vendor: 'cursor', model: 'gpt-9', effort: 'max' })).toBe('Cursor · gpt-9');
+    expect(sessionIdText({ vendor: 'cursor', model: 'gpt-9', effort: 'max' })).toBe(
+      'cursor/gpt-9 · max effort (ignored)',
     );
+    // T488: Codex takes effort through its own ACP option.
+    expect(agentLabel({ vendor: 'codex', model: 'gpt-9', effort: 'max' })).toBe(
+      'Codex · gpt-9 · max',
+    );
+    expect(sessionIdText({ vendor: 'codex', model: 'gpt-9', effort: 'max' })).toBe(
+      'codex/gpt-9 · max effort',
+    );
+    // T488: why a vendor offers no level, in words.
+    expect(noEffortLine('cursor')).toBe(
+      'Cursor sets effort as part of each model: pick the model with the effort you want',
+    );
+    expect(noEffortLine('gemini')).toBe('Gemini has no effort setting');
     expect(sessionIdText({ vendor: 'claude', model: 'opus', effort: 'max' })).toBe(
       'claude/opus · max effort',
     );

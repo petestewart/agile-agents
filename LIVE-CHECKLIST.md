@@ -1393,6 +1393,18 @@ the path found on PATH and a switch that is on by default.
 - [ ] Turn a switch off and start a new node: stderr.log has no "running
       your installed" line, and it runs the bridge's own copy.
 
+### 12.2 Codex's effort, and Cursor's (T488)
+- [ ] Codex node: the composer shows an effort chip. Step it to **High** and
+      send a message. No thread line about effort means Codex took it; check
+      `sessions/<id>/session-state.json`: the `reasoning_effort` entry's
+      `currentValue` reads `high` and `source` reads
+      `session/set_config_option`. A line "kept effort …" or "refused effort
+      …" means it did not. Write Yes or No.
+- [ ] Cursor node: the effort chip's place reads **In the model**, and its
+      tooltip says to pick the model with the effort wanted. Picking
+      `claude-opus-5-5[…effort=medium…]` vs another variant is how effort
+      changes there.
+
 ## 13. **[vendor]** Auto-close when the goal is met (T478)
 
 The daemon closes a node set to auto-close only on the agent's `goal_met`

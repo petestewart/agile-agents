@@ -36,7 +36,7 @@ import {
   threadBodyMaxFor,
   ulid,
 } from '@agile-agents/shared';
-import { resolveSessionSettings } from '../attach/resolve';
+import { providerTakesEffort, resolveSessionSettings } from '../attach/resolve';
 import { readHomeConfigFile } from '../config';
 import type { AutonomyService } from '../coordination/autonomy';
 import type { DeliveryTarget, SessionDelivery } from '../events/delivery';
@@ -424,7 +424,7 @@ export class DirectorService {
       model: settings.model,
       role: 'coordinator',
       status: 'starting',
-      ...(provider.effort !== undefined ? { effort: settings.effort } : {}),
+      ...(providerTakesEffort(provider) ? { effort: settings.effort } : {}),
     };
     if (!quiet) {
       await this.setSession(session);
@@ -469,6 +469,10 @@ export class DirectorService {
         : {}),
       // T467: a picked model the vendor did not take is said on the Director's thread.
       onModel: (result) => {
+        if (!result.ok) void this.append('daemon', 'event', result.line, sessionId).catch(() => {});
+      },
+      // T488: likewise a picked effort it did not take (Codex's ACP option).
+      onEffort: (result) => {
         if (!result.ok) void this.append('daemon', 'event', result.line, sessionId).catch(() => {});
       },
       onTurnEnd: (info) => {

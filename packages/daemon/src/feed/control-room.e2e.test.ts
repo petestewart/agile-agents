@@ -10558,8 +10558,13 @@ describe('New node picks its model with the model picker (Playwright e2e, T487)'
         await grokRow.click();
         await waitForText(p, '[data-testid="new-stream-model-chip"]', 'Cursor · grok-4.7');
         expect(await chip.getAttribute('data-chosen')).toBe('true');
-        // Cursor has no effort setting: no effort chip. The default is a click away.
-        expect(await effort.count()).toBe(0);
+        // T488: Cursor has no effort setting of its own: the chip's place says the
+        // effort is in the model, and isn't a button. The default is a click away.
+        expect(await effort.getAttribute('data-static')).toBe('true');
+        expect((await effort.textContent())?.trim()).toBe('In the model');
+        expect(await effort.getAttribute('title')).toBe(
+          'Cursor sets effort as part of each model: pick the model with the effort you want.',
+        );
         expect(await p.locator('[data-testid="new-stream-model-reset"]').count()).toBe(1);
         // Escape closes the list, not New node.
         await p.keyboard.press('Escape');
