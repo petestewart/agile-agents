@@ -90,6 +90,7 @@ const NEEDS_WORDS: Record<InboxItem['kind'], string[]> = {
   done: ['merge', 'ready', 'finished'],
   blocked: ['blocked', 'stuck', 'reply', 'unblock'],
   harness_update: ['update', 'upgrade', 'version', 'cli'],
+  model_stuck: ['stuck', 'model', 'stronger', 'escalate'],
 };
 
 /** "⌘K" on a Mac, "Ctrl K" elsewhere: for tooltips that name the shortcut. */

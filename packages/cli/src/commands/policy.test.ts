@@ -1,6 +1,8 @@
-import { describe, expect, test } from 'bun:test';
-import { builtinModelPolicy } from '@agile-agents/shared';
-import { parsePolicyValue, policyField, policyValueText } from './policy';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { builtinModelPolicy, ulid } from '@agile-agents/shared';
+import { parseArgs } from '../args';
+import { type TestDaemon, startTestDaemon } from '../test-support';
+import { parsePolicyValue, policyField, policyValueText, runPolicyStepUp } from './policy';
 
 describe('agile policy (T482)', () => {
   test('field names take - or _', () => {
@@ -32,5 +34,63 @@ describe('agile policy (T482)', () => {
     expect(policyValueText('presets', p)).toBe('any installed model');
     expect(policyValueText('mode', p)).toBe('choose');
     expect(policyValueText('guidance', p)).toBe('(none)');
+  });
+});
+
+describe('agile policy step-up (T484)', () => {
+  let daemon: TestDaemon;
+
+  beforeEach(async () => {
+    daemon = await startTestDaemon('agile-cli-step-up-');
+  });
+
+  afterEach(async () => {
+    await daemon.cleanup();
+  });
+
+  async function capture(run: () => Promise<number>): Promise<{ code: number; out: string }> {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      const code = await run();
+      return { code, out: lines.join('\n') };
+    } finally {
+      console.log = original;
+    }
+  }
+
+  test('the node’s next start runs one rung up; refused before its agent ran', async () => {
+    const node = await daemon.streamService.create('human', { title: 'Parser', goal: 'g' });
+    await expect(
+      runPolicyStepUp(daemon.socketPath, parseArgs(['--node', node.id]), false),
+    ).rejects.toThrow(/hasn’t started yet/);
+    await daemon.store.updateStream('daemon', node.id, (s) => ({
+      ...s,
+      sessions: [
+        {
+          id: ulid(),
+          vendor: 'claude',
+          model: 'claude-sonnet-5-5',
+          effort: 'medium',
+          role: 'worker',
+          status: 'stopped',
+        },
+      ],
+    }));
+    const { code, out } = await capture(() =>
+      runPolicyStepUp(daemon.socketPath, parseArgs(['--node', node.id]), false),
+    );
+    expect(code).toBe(0);
+    expect(out).toBe(
+      'agile policy step-up: Parser runs Claude Sonnet 5.5 · high at its next start',
+    );
+    expect(daemon.streamService.get(node.id).escalation?.pending).toMatchObject({
+      trigger: 'operator',
+      by: 'human',
+    });
+    await expect(runPolicyStepUp(daemon.socketPath, parseArgs([]), false)).rejects.toThrow(
+      /--node <id> is required/,
+    );
   });
 });

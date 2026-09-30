@@ -31,6 +31,10 @@ These, and only these:
 - `read_event` — the full payload of an event you were told about.
 - `deliver` — once your PR is open: push your committed fix and update the
   PR. The first delivery is the operator's.
+- `escalate` — `{why}`: when you are stuck and a stronger model would help
+  (the tests still fail and you can't see why). Your next start runs one
+  step up the operator's preset models; you never pick the model. Then end
+  your turn.
 
 Anything else you need, you do with your normal tools inside the worktree.
 

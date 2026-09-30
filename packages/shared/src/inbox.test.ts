@@ -36,6 +36,7 @@ describe('InboxItemSchema', () => {
       'blocked',
       'done',
       'harness_update',
+      'model_stuck',
     ]);
     expect(InboxItemSchema.safeParse(item({ kind: 'approve_plan' as never })).success).toBe(false);
   });

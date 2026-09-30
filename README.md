@@ -90,6 +90,7 @@ agile director say "What needs me today?"
 agile policy show --project P-…    # model choice: each setting and where it comes from
 agile policy set mode inherit --node <node>
 agile policy try "Rename getUser to fetchUser"   # the chooser's scores and pick; nothing starts
+agile policy step-up --node <node>   # its next start runs one rung up the preset models
 ```
 
 Every command takes `--json`.

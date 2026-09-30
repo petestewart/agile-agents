@@ -681,6 +681,7 @@ export const PICK_HOWS = [
   'pinned',
   'jev',
   'scores',
+  'escalation',
 ] as const;
 export const PickHowSchema = z.enum(PICK_HOWS);
 export type PickHow = z.infer<typeof PickHowSchema>;

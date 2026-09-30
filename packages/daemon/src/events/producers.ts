@@ -398,6 +398,11 @@ export function summarize(
     case 'harness_updated':
       // T481: a record about no node; `read_event` reads it, nobody is sent it.
       return String(p.summary);
+    case 'model_escalated':
+      // T484: a record; read by `read_event`, never delivered (RECORD_ONLY_EVENT_TYPES).
+      return p.step === 'up'
+        ? `Stepped up to ${String(p.to)}: ${String(p.reason)} on ${String(p.from)}.`
+        : `Stuck on the strongest preset model (${String(p.from)}): ${String(p.reason)}.`;
     case 'sibling_ask':
       if (node === p.sibling) {
         return `${name(event.subject)} asks you (${event.id}): ${String(p.question)}. Answer with \`reply_sibling\`.`;

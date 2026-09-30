@@ -43,6 +43,7 @@ import {
   decideRule,
   dismissFinished,
   dismissHarnessUpdate,
+  dismissModelStuck,
   getStreamDiff,
   getStreamPage,
   landStream,
@@ -128,6 +129,8 @@ function iconOf(item: InboxItem): IconName {
       return 'alert-triangle';
     case 'harness_update':
       return item.harness?.failed === true ? 'alert-circle' : 'download';
+    case 'model_stuck':
+      return 'alert-triangle';
   }
 }
 
@@ -999,6 +1002,51 @@ export function Card({
               disabled={locked}
               title={why('Hide it until a newer version is out')}
               onClick={() => act('dismiss', () => dismissHarnessUpdate(harness.id))}
+            >
+              Dismiss
+            </Button>
+          </div>
+        ) : null;
+      break;
+    }
+
+    case 'model_stuck': {
+      // T484 (§6): no rung left to step up to. Pick a stronger model with the chip, widen the
+      // preset models in Details → Model choice, or dismiss it.
+      const main = shown(fullText(item));
+      foldable = main.foldable;
+      body = (
+        <>
+          <Markdown className="context" text={main.text} testId="inbox-context" />
+          <p className="cr-set-muted" data-testid="model-stuck-hint">
+            Pick a stronger model with the model chip, or add one to the preset models in the node’s
+            Details → Model choice.
+          </p>
+        </>
+      );
+      const node = item.stream;
+      actions =
+        node !== undefined ? (
+          <div className="cr-actions">
+            {open !== undefined ? (
+              <Button
+                variant="primary"
+                size="sm"
+                icon="arrow-right"
+                data-testid="model-stuck-open"
+                disabled={locked}
+                onClick={open}
+              >
+                Open node
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              data-testid="model-stuck-dismiss"
+              busy={busy === 'dismiss'}
+              disabled={locked}
+              title={why('Hide it; the next time the work stalls here it comes back')}
+              onClick={() => act('dismiss', () => dismissModelStuck(node))}
             >
               Dismiss
             </Button>

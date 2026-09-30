@@ -67,6 +67,7 @@ import type { Classifier } from '../classifier';
 import { readHomeConfigFile } from '../config';
 import type { ContractService } from '../coordination/contracts';
 import type { PlanService } from '../coordination/plans';
+import { git } from '../delivery/git';
 import {
   type DeliveryTarget,
   REPLY_FIRST,
@@ -90,6 +91,7 @@ import type { RuleStatsOutcome } from '../knowledge/service';
 import { repoScriptChecks } from '../permissions/command';
 import { nodeReadScope } from '../permissions/policy-tables';
 import { projectReadSettings } from '../permissions/posture';
+import { type StartStep, escalationEndReason } from '../routing/escalation';
 import { CHOOSE_AGAIN_END_REASON, ModelPolicyService } from '../routing/policy';
 import type { AboutParent, BriefDoc, WipNode } from '../runner/brief';
 import { buildBrief, openWorkFor } from '../runner/brief';
@@ -861,6 +863,9 @@ export class AttachService {
     // T483: a routed pick under Choose asks the chooser (one Jev call, bounded by the
     // classifier's timeout) before anything spawns; explicit and kept picks never do.
     let pick: ModelPick | undefined;
+    // T484 (§6): a step up the ladder waiting for this start. An explicit pick wins
+    // over it (D53) and a choose-again sets it aside; both spend it.
+    let step: StartStep | undefined;
     if (routedStart) {
       const triple = { vendor: settings.vendor, model: settings.model, effort: settings.effort };
       const routing = this.routing();
@@ -871,14 +876,28 @@ export class AttachService {
           : 'worker';
       if (flagged) {
         pick = (await routing.pickForStart({ stream, explicit: triple, fallback: triple })).pick;
-      } else if (kept !== undefined) {
-        pick = (await routing.pickForStart({ stream, kept: triple, fallback: triple })).pick;
       } else {
-        pick = (await routing.pickForStart({ stream, fallback: triple, role: pinnedRole })).pick;
-        settings = resolveSessionSettings({
-          flags: { vendor: pick.vendor, model: pick.model, effort: pick.effort },
-          ...layers,
-        });
+        if (!repick && stream.escalation?.pending !== undefined) {
+          // One rung above what the node ran: its kept pick, else its record.
+          const from = kept !== undefined ? triple : (routing.escalation.current(stream) ?? triple);
+          step = routing.escalation.stepAtStart(stream, from);
+          if (step !== undefined && 'to' in step) {
+            pick = routing.escalation.stepPick(step, settings.effort);
+            settings = resolveSessionSettings({
+              flags: { vendor: pick.vendor, model: pick.model, effort: pick.effort },
+              ...layers,
+            });
+          }
+        }
+        if (pick === undefined && kept !== undefined) {
+          pick = (await routing.pickForStart({ stream, kept: triple, fallback: triple })).pick;
+        } else if (pick === undefined) {
+          pick = (await routing.pickForStart({ stream, fallback: triple, role: pinnedRole })).pick;
+          settings = resolveSessionSettings({
+            flags: { vendor: pick.vendor, model: pick.model, effort: pick.effort },
+            ...layers,
+          });
+        }
       }
     } else if (role === 'reviewer' && !flagged && options.carried === undefined) {
       // T483: a reviewer resolves as before, unless a pinned rule names `reviewer`.
@@ -1088,6 +1107,15 @@ export class AttachService {
       }
     }
     const recorded = await this.pushSession(stream.id, session);
+    // T484: a worker's quiet turns count from its worktree's HEAD at its first start.
+    if (role === 'worker' && worktreePath !== undefined && repoEntry !== undefined) {
+      const head = git(['rev-parse', 'HEAD'], worktreePath, repoEntry.path);
+      if (head.exitCode === 0 && head.stdout.trim() !== '') {
+        await this.routing()
+          .escalation.baseline(stream.id, head.stdout.trim().slice(0, 64))
+          .catch(() => undefined);
+      }
+    }
     await streams.appendThread('daemon', stream.id, {
       kind: 'event',
       body: `${role} attached: ${settings.vendor}/${settings.model} effort=${settings.effort}${
@@ -1100,7 +1128,7 @@ export class AttachService {
     // T483: a reviewer a pinned rule picked for says so too.
     const shown = pick ?? reviewerPick;
     const pickLine =
-      shown === undefined || shown.how === 'kept'
+      shown === undefined || shown.how === 'kept' || shown.how === 'escalation'
         ? undefined
         : shown.how === 'explicit'
           ? shown.note
@@ -1114,6 +1142,22 @@ export class AttachService {
         body: pickLine.slice(0, 800),
         ref: sessionId,
       });
+    }
+    // T484: the pending step is spent by this start: its line and record-only event, or,
+    // at the top of the ladder, the Needs me card. An explicit pick clears the card too.
+    if (routedStart) {
+      await this.routing()
+        .escalation.started(stream, {
+          ...(step !== undefined ? { step } : {}),
+          explicit: flagged,
+          ran: {
+            vendor: settings.vendor,
+            model: settings.model,
+            ...(providerTakesEffort(provider) ? { effort: settings.effort } : {}),
+          },
+          session: sessionId,
+        })
+        .catch((err) => console.error('escalation: the step was not recorded:', err));
     }
     await store.appendEvent(
       buildEvent('agent_put', {
@@ -1388,10 +1432,49 @@ export class AttachService {
     }
     if (isAgentRole(role)) {
       await this.rest(streamId, sessionId, role);
+      await this.escalationAfterTurn(streamId, sessionId, role, handle);
       return;
     }
     this.turnFinished.add(sessionId);
     handle.stop();
+  }
+
+  /**
+   * T484 (§6): what a finished turn tells the escalation watcher (a merge
+   * refusal's fix attempt, the context's fill, a quiet turn). A step now
+   * waiting, whenever it was asked (an `escalate` mid-turn too), ends the
+   * resting session: the model changes, so the next start is fresh (T465).
+   */
+  private async escalationAfterTurn(
+    streamId: string,
+    sessionId: string,
+    role: SessionRole,
+    handle: AgentSessionHandle,
+  ): Promise<void> {
+    try {
+      const escalation = this.routing().escalation;
+      const stream = this.options.streams.get(streamId);
+      const repoRoot =
+        stream.repo !== undefined ? this.options.store.getRepos()[stream.repo]?.path : undefined;
+      let head: string | undefined;
+      if (role === 'worker' && stream.worktree !== undefined && repoRoot !== undefined) {
+        const out = git(['rev-parse', 'HEAD'], stream.worktree, repoRoot);
+        if (out.exitCode === 0 && out.stdout.trim() !== '') head = out.stdout.trim().slice(0, 64);
+      }
+      const context = handle.contextUsage();
+      await escalation.turnEnded(streamId, {
+        session: sessionId,
+        worker: role === 'worker',
+        ...(context !== undefined ? { context } : {}),
+        ...(head !== undefined ? { head } : {}),
+      });
+      const pending = this.options.streams.get(streamId).escalation?.pending;
+      if (pending !== undefined) {
+        await this.endResting(streamId, escalationEndReason(pending.reason), sessionId);
+      }
+    } catch (err) {
+      console.error('escalation: the turn was not counted:', err);
+    }
   }
 
   /**
@@ -2009,6 +2092,12 @@ export class AttachService {
         }`.slice(0, 800),
         ref: sessionId,
       });
+      // T484 (§6): a failed turn whose retry and fallback (T456) are spent is a stall.
+      if (failedWords !== undefined && isAgentRole(role)) {
+        await this.routing()
+          .escalation.turnFailed(streamId, failedWords)
+          .catch((err) => console.error('escalation: the failed turn was not counted:', err));
+      }
     } catch {
       // The stream or home went away mid-session: nothing to record on.
       return;
@@ -2183,6 +2272,10 @@ export class AttachService {
           missingVendorCommand(resolveAcpProvider(v)) === undefined,
         ...(models?.all !== undefined ? { models: () => models.all?.() ?? {} } : {}),
         onChooseAgain: (id) => this.endResting(id, CHOOSE_AGAIN_END_REASON),
+        // T484: a step up ends a resting session; its line and event are recorded here.
+        endResting: (id, why) => this.endResting(id, why),
+        emitRouted: (input) =>
+          routeAndEmit(this.events, input, this.options.streams.list({ include_archived: true })),
         ...(this.options.classifier !== undefined ? { classifier: this.options.classifier } : {}),
         ...(this.options.plans !== undefined ? { plans: this.options.plans } : {}),
       });

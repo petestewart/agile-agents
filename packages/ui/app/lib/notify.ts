@@ -200,6 +200,8 @@ export function itemHeadline(item: InboxItem, lookup?: NodeLookup): string {
       return of('Blocked', node);
     case 'harness_update':
       return of(cardTitle(item), item.harness?.label);
+    case 'model_stuck':
+      return of('Stuck on the strongest model', node);
   }
 }
 

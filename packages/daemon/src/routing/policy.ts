@@ -5,8 +5,8 @@
  * layer's writes (the operator's), and stamps the projects that predate
  * model routing (D54). T483: a routed start under Choose (or a pinned rule
  * that names a topic) asks the chooser (`chooser.ts`) first, and Try it
- * reads a pasted task without starting anything. T484 adds the escalation
- * watcher.
+ * reads a pasted task without starting anything. T484: the escalation
+ * watcher (`escalation.ts`) and the ladder a step climbs.
  */
 
 import {
@@ -14,9 +14,11 @@ import {
   type ChooserOutcome,
   type ChooserTask,
   type Effort,
+  type LadderRung,
   type ModelPick,
   type ModelPickRecord,
   type ModelPickTriple,
+  type ModelPolicy,
   type ModelPolicyPartial,
   type ModelPolicyPatch,
   type ModelPolicyTryInput,
@@ -29,11 +31,13 @@ import {
   type ResolvedModelPolicy,
   SESSION_VENDORS,
   type SessionVendor,
+  type StepUpView,
   type Stream,
   type VendorModels,
   applyModelPolicyPatch,
   chooserNeed,
   effectiveModelProfiles,
+  escalationLadder,
   isAgentRole,
   liveChildrenOf,
   matchPinnedRule,
@@ -46,9 +50,11 @@ import {
 } from '@agile-agents/shared';
 import type { Classifier } from '../classifier';
 import type { PlanService } from '../coordination/plans';
+import type { EmitRouted } from '../events/producers';
 import type { StateStore } from '../store/store';
 import type { StreamService } from '../streams/service';
 import { type ChooserCall, ModelChooser } from './chooser';
+import { EscalationService } from './escalation';
 
 /**
  * D54: what a project that predates model routing is stamped with. Default,
@@ -90,6 +96,10 @@ export interface ModelPolicyServiceOptions {
    * says the chooser picks. Default: a classifier was given.
    */
   chooserReady?: () => boolean;
+  /** T484: records a step or a Needs me card as a `model_escalated` event. */
+  emitRouted?: EmitRouted;
+  /** T484 (T465): ends a node's resting session when its model will step up. */
+  endResting?: (node: string, why: string) => Promise<void>;
 }
 
 /** Why a resting session ended on a choose-again. */
@@ -123,6 +133,8 @@ export interface NodeModelPolicyView {
   pick?: ModelPickRecord;
   /** "Let the policy choose again" is waiting for the next start. */
   choose_again: boolean;
+  /** T484: Step up's next rung, a pending step, the Needs me card at the top. */
+  step_up: StepUpView;
 }
 
 /** What attach asks for one agent start. */
@@ -140,11 +152,20 @@ export interface StartPickInput {
 
 export class ModelPolicyService {
   readonly chooser: ModelChooser;
+  /** T484: the triggers, the pending step and the Needs me card (§6). */
+  readonly escalation: EscalationService;
 
   constructor(private readonly options: ModelPolicyServiceOptions) {
     this.chooser = new ModelChooser({
       ...(options.classifier !== undefined ? { classifier: options.classifier } : {}),
       ...(options.chooserTimeoutMs !== undefined ? { timeoutMs: options.chooserTimeoutMs } : {}),
+    });
+    this.escalation = new EscalationService({
+      store: options.store,
+      streams: options.streams,
+      policy: this,
+      ...(options.emitRouted !== undefined ? { emit: options.emitRouted } : {}),
+      ...(options.endResting !== undefined ? { endResting: options.endResting } : {}),
     });
   }
 
@@ -255,7 +276,20 @@ export class ModelPolicyService {
       resolved: this.resolveFor(stream),
       ...(stream.agent.pick !== undefined ? { pick: stream.agent.pick } : {}),
       choose_again: stream.human.choose_again === true,
+      step_up: this.escalation.view(stream),
     };
+  }
+
+  /** T484: the node's Step up (the operator's). */
+  async stepUp(id: string): Promise<NodeModelPolicyView> {
+    await this.escalation.stepUp(id);
+    return this.nodeView(id);
+  }
+
+  /** T484: the operator dismissed the node's "stuck on the strongest model" card. */
+  async dismissStuck(id: string): Promise<NodeModelPolicyView> {
+    await this.escalation.dismissStuck(id);
+    return this.nodeView(id);
   }
 
   async setHome(patch: ModelPolicyPatch, by = 'human'): Promise<HomeModelPolicyView> {
@@ -317,6 +351,34 @@ export class ModelPolicyService {
       }
     }
     return stamped;
+  }
+
+  /** Whether a vendor's command is installed here. */
+  isInstalled(vendor: string): boolean {
+    return (this.installedVendors() as readonly string[]).includes(vendor);
+  }
+
+  /**
+   * T484 (§6): the node's ladder: its presets (any installed model when
+   * there are none) by tier, then cost; each model's efforts up to the ceiling.
+   */
+  ladderFor(stream: Stream): {
+    ladder: LadderRung[];
+    policy: ModelPolicy;
+    profiles: Record<string, ModelProfile>;
+  } {
+    const { policy } = this.resolveFor(stream);
+    const profiles = effectiveModelProfiles(this.homeConfig().model_profiles);
+    return {
+      ladder: escalationLadder(policy, {
+        installed: this.installedVendors(),
+        models: this.catalog(),
+        profiles,
+        prefer: this.todayFor(stream).vendor,
+      }),
+      policy,
+      profiles,
+    };
   }
 
   /** The vendors installed here, in the registry's order. */
@@ -632,12 +694,21 @@ export class ModelPolicyService {
   /**
    * What a start with no pick would run on this node when that start is a
    * routed pick: the node never ran (or its last vendor is gone), or it
-   * waits on a choose-again. `undefined` when its kept pick would run (T464).
+   * waits on a choose-again, or (T484) a step up waits for its next start.
+   * `undefined` when its kept pick would run (T464).
    * The cockpit names it on "Starts the agent with …".
    */
   nextPick(stream: Stream): ModelPick | undefined {
     const installed = new Set(this.installedVendors());
     if (stream.human.choose_again !== true) {
+      // T484: a step waiting for the next start is what that start runs.
+      if (stream.escalation?.pending !== undefined) {
+        const from = this.escalation.current(stream);
+        const step = from !== undefined ? this.escalation.stepAtStart(stream, from) : undefined;
+        if (step !== undefined && 'to' in step) {
+          return this.escalation.stepPick(step, from?.effort ?? 'medium');
+        }
+      }
       for (let i = stream.sessions.length - 1; i >= 0; i--) {
         const s = stream.sessions[i];
         if (s === undefined || !isAgentRole(s.role)) continue;

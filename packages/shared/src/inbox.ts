@@ -35,6 +35,10 @@ import { QUESTION_OPTIONS_MAX, QuestionOptionSchema } from './question';
  * T481 (D50) adds `harness_update`: a vendor's CLI with a newer version (or,
  * in Auto, an update that failed). It belongs to no node; its `id` is
  * `harness:<id>` and `harness` names the CLI.
+ *
+ * T484 adds `model_stuck`: a node whose work stalled (or whose merge was
+ * refused twice) on the strongest preset model, so there is no rung left to
+ * step up to (design/model-routing.md §6). Its `id` is the node's.
  */
 export const INBOX_ITEM_KINDS = [
   'question',
@@ -47,6 +51,7 @@ export const INBOX_ITEM_KINDS = [
   'blocked',
   'done',
   'harness_update',
+  'model_stuck',
 ] as const;
 
 /** The kinds that may belong to no stream: a rule decision (§5.1), and T481's CLI update. */

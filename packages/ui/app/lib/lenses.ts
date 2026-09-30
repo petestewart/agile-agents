@@ -181,6 +181,8 @@ export const EVENT_FAMILY: Record<RoutedEventType, EventFamily> = {
   agent_restarted: 'coordination',
   // T481: a vendor CLI updated; it is about no node.
   harness_updated: 'coordination',
+  // T484: a node's model stepped up the ladder, or it is stuck on the strongest.
+  model_escalated: 'coordination',
   knowledge_accepted: 'knowledge',
 };
 
@@ -204,6 +206,7 @@ export function eventTitle(event: Pick<RoutedEvent, 'type' | 'payload'>): string
   if (event.type === 'autonomy_applied') return appliedTitle(event.payload);
   if (event.type === 'agent_restarted') return restartedTitle(event.payload);
   if (event.type === 'harness_updated') return `Updated ${String(event.payload.label ?? 'a CLI')}`;
+  if (event.type === 'model_escalated') return escalatedTitle(event.payload);
   const words = eventLabel(event).replace(/\b(pr|ci)\b/g, (w) => w.toUpperCase());
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
@@ -216,6 +219,15 @@ export function restartedTitle(payload: Record<string, unknown>): string {
   const from = vendorLabel(String(payload.from ?? ''));
   if (payload.action === 'retry') return `Started ${from} again`;
   return `Switched from ${from} to ${vendorLabel(String(payload.to ?? ''))}`;
+}
+
+/**
+ * T484: a node's model stepped up ("Stepped up to Claude Opus 5.5 · max"),
+ * or found at the top of the ladder ("Stuck on the strongest model").
+ */
+export function escalatedTitle(payload: Record<string, unknown>): string {
+  if (payload.step === 'up') return `Stepped up to ${String(payload.to ?? 'a stronger model')}`;
+  return 'Stuck on the strongest model';
 }
 
 // ---------------------------------------------------------------- what the agents did (T446)
@@ -464,6 +476,10 @@ export function eventDetail(
         return `${vendorLabel(str(p, 'from') ?? '')} failed: ${str(p, 'reason') ?? 'no reason given'}`;
       case 'harness_updated':
         return str(p, 'summary');
+      case 'model_escalated':
+        return p.step === 'up'
+          ? `${str(p, 'reason') ?? 'A step up'} on ${str(p, 'from') ?? 'its model'}`
+          : `${str(p, 'reason') ?? 'Stuck'} (on ${str(p, 'from') ?? 'its model'})`;
       case 'external_changed':
         return [str(p, 'key'), str(p, 'summary')].filter(Boolean).join(': ');
       case 'ship_findings': {

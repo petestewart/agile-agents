@@ -2,7 +2,7 @@
 
 Status: **decided** (proposed 2026-09-29; Pete settled MR1–MR6 on 2026-09-30,
 recorded as D51–D56 in PLAN.md). T482–T485 are built from this document;
-§11 says how T482 and T483 were built.
+§11 says how T482, T483 and T484 were built.
 §9 keeps the decisions as answered.
 
 ## 1. The problem
@@ -426,3 +426,82 @@ T483 follows §5, with these differences and additions:
   0.22–0.38, so the scores decided each time. The numbers are in PLAN.md's
   T483 notes.
 
+
+### T484 (escalation)
+
+T484 follows §6, with these differences and additions:
+
+- **Where it lives.** The ladder, one step up, the record and the words are
+  `packages/shared/src/model-escalation.ts` (`escalationLadder`, `nextRung`,
+  `EscalationStateSchema`, `steppedUpLine`, `stuckLine`); the watcher is
+  `routing/escalation.ts` (`EscalationService`, reached as
+  `ModelPolicyService.escalation`), so the daemon, the cockpit and the CLI
+  read one ladder.
+- **The ladder and a step.** The ladder lists every rung: the presets (any
+  installed model when there are none) by tier, then cost, then the order
+  they're listed in; within one model, its efforts from low up to the
+  ceiling; one rung for a vendor that takes no effort. A step is the next
+  effort on the same model; past the model's top, the next model **at the
+  effort the node ran on** (capped at the ceiling; medium when it came from a
+  vendor with no effort), so a step to a stronger model never lowers the
+  effort. With the default ceiling (max) that is Sonnet · medium → high → max
+  → Opus · max; with a ceiling of high it is §6's own example (Sonnet · high
+  → Opus · high). A model outside the presets (an explicit pick) steps to the
+  first preset ranked above it by tier then cost.
+- **Where the step waits.** `streams/<id>.yaml` `escalation` (top-level,
+  daemon-only like `delivery_state`: the store refuses an agent's, a
+  coordinator's, the Director's and a human's write). It holds the pending
+  step (trigger, reason in words, by `human`/`daemon`/`agent`), the Needs me
+  card (`stuck`), the last merge refusal and the quiet-turn count. A daemon
+  restart keeps all of it.
+- **The triggers, as built.**
+  - *A merge refused twice:* delivery's `onRefused` gives each refusal a key
+    (a ship check's rule, else its reason; a conflict per target). The same
+    key again after at least one agent turn ended in between is the trigger;
+    a different key starts again; twice with no turn between is not. A ship
+    check that routes to a gate isn't a refusal until the gate says no.
+  - *A failed turn (T460):* counted once T456's retry and fallback are spent
+    (under Start cheap too: a retry that worked was the remedy).
+  - *The context:* past 90% (not at it) at a turn's end, with no `goal_met` in
+    that session; once per session.
+  - *Quiet turns:* `QUIET_TURNS_MAX` = 3, a constant, not a policy field (the
+    policy's fields are what the operator trades). Counted only for a worker
+    with a worktree, where a commit shows as a new HEAD (baseline: the HEAD
+    at its first start); a `progress` call, a new commit or a met goal resets
+    it. Coordinators and conversations never count quiet turns. A turn that
+    ends on a question or a gate, or hands straight into a digest, isn't
+    counted.
+  - *Asked (D56):* `escalate {why}` (≤ 400 characters, `.strict()`: a model,
+    vendor or effort is refused) from a node's own agent (worker or
+    coordinator); a reviewer, the lessons pass and the Director are refused.
+    It writes "asks for a stronger model: …" on the thread and answers the
+    agent in words. The MCP allowlist needed nothing: the daemon's own verbs
+    pass by name (and T476's title forms) already.
+  - *The operator:* Details → **Step up**, `POST /api/streams/:id/step-up`
+    (same-origin, recorded `by: human`, a thread line naming the rung), and
+    `agile policy step-up --node N` (`policy.step_up`). Refused (409, a param
+    error) with why: under Strongest first, before the agent ever ran, at the
+    top, on a closed node.
+- **The Default model choice never escalates on its own** (D54: nothing
+  moves under running work in a project that predates routing); the
+  operator's Step up works there.
+- **At the start.** A pending step replaces the kept pick at the next routed
+  start and is spent by it; `agent.pick.how` is `escalation` ("stepped up:
+  <reason>"), and the "Stepped up to …" line replaces the "Model:" line. An
+  explicit pick wins and spends it (D53); a choose-again spends it too (the
+  policy picks afresh); a carried start (T456's retry, a role change) leaves
+  it for the next routed one. The composer's "Starts the agent with…" names
+  the step's rung.
+- **A model change ends a resting session** twice over: when a step is
+  recorded while the session rests, and at the end of any turn with a step
+  waiting (an `escalate` mid-turn): the session ends instead of resting.
+  Nothing changes mid-turn.
+- **The top of the ladder** (and every trigger under Strongest first): the
+  node's `escalation.stuck`, a thread line "<node> is stuck on the strongest
+  preset model: <reason>", a `model_stuck` Needs me item (filed under
+  Blocked; Open node, Dismiss) and a record-only `model_escalated` event
+  (`step: stuck`). Once until it is dismissed, a step clears it, or an
+  explicit pick runs (the operator chose).
+- **The event.** `model_escalated` (`step: up|stuck`, the trigger, the models
+  in words) is record-only like `agent_restarted`: routed to the node itself,
+  shown in Events and Activity, waking nobody.

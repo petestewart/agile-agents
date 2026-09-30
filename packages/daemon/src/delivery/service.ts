@@ -182,6 +182,12 @@ export interface DeliveryServiceOptions {
   onMainMoved?: (repo: string, mergedStream: string) => unknown;
   /** T340: poll the node's PR now (`PrPoller.pollNow`); used when a deliver finds it merged on GitHub. */
   refreshPr?: (streamId: string) => unknown;
+  /**
+   * T484 (design/model-routing.md §6): a merge was refused, by a ship check
+   * or the merge's conflicts. `key` names the reason (the same key twice is
+   * "the same reason"); `words` says it without ids. Its failure never fails the land.
+   */
+  onRefused?: (streamId: string, key: string, words: string) => unknown;
 }
 
 export class DeliveryService {
@@ -436,6 +442,11 @@ export class DeliveryService {
     }
     // A route waits on its gate; a deny (or a gateless route) ends the call.
     if (verdict.gate !== undefined) return { status: 'gated', gate: verdict.gate, line };
+    await this.refused(
+      stream.id,
+      `ship:${verdict.rule ?? verdict.reason}`,
+      `ship check: ${verdict.reason}`,
+    );
     return { status: 'refused', reason: verdict.reason, line, held: true };
   }
 
@@ -472,6 +483,13 @@ export class DeliveryService {
         : {}),
     });
     await streams.appendThread('daemon', stream.id, { kind: 'event', body: line });
+    await this.refused(
+      stream.id,
+      `conflict:${target}`,
+      merged.conflicts.length > 0
+        ? `the merge conflicted in ${merged.conflicts.slice(0, 5).join(', ')}${merged.conflicts.length > 5 ? ', …' : ''}`
+        : `the merge failed: ${merged.reason}`,
+    );
     if (lead !== undefined && lead.id !== stream.id) {
       const groupLine = `merge-together held: ${stream.title}: ${line}; nothing was merged`;
       await this.setDeliveryState(lead.id, {
@@ -482,6 +500,15 @@ export class DeliveryService {
       await streams.appendThread('daemon', lead.id, { kind: 'event', body: groupLine });
     }
     return { status: 'blocked', target, conflicts: merged.conflicts, line };
+  }
+
+  /** T484: tells the escalation watcher a merge was refused; never fails the land. */
+  private async refused(streamId: string, key: string, words: string): Promise<void> {
+    try {
+      await this.options.onRefused?.(streamId, key.slice(0, 300), words.slice(0, 400));
+    } catch (err) {
+      console.error('escalation: a refused merge was not counted:', err);
+    }
   }
 
   /** Marks one merged stream landed, removes its worktree, keeps its branch. */

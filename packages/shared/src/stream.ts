@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { UlidSchema, formatZodError } from './ids';
 import { KnowledgeIdSchema } from './knowledge';
+import { EscalationStateSchema } from './model-escalation';
 import { ModelPickRecordSchema, ModelPolicyPartialSchema } from './model-policy';
 import { PermissionPostureSchema } from './posture';
 import { AutonomySchema, DeliveryOverrideSchema, ProjectIdSchema } from './project';
@@ -546,6 +547,14 @@ export const StreamSchema = z
     delivery_state: DeliveryStateSchema.optional(),
     /** Daemon-only (§14.6). */
     touched: TouchedSummarySchema.optional(),
+    /**
+     * T484 (design/model-routing.md §6): a step up the model ladder waiting
+     * for the agent's next start, the Needs me card at the top of the ladder,
+     * and what the triggers count. Daemon-only: an agent, a coordinator, the
+     * Director and the operator's own writes are refused (Step up goes
+     * through the daemon).
+     */
+    escalation: EscalationStateSchema.optional(),
     agent: StreamAgentStateSchema,
     human: StreamHumanStateSchema,
     sessions: z.array(SessionRefSchema).default([]),
@@ -677,7 +686,7 @@ export function assertStreamWrite(
   return after;
 }
 
-const DAEMON_ONLY_FIELDS = ['delivery_state', 'touched'] as const;
+const DAEMON_ONLY_FIELDS = ['delivery_state', 'touched', 'escalation'] as const;
 
 /** T463: settings only the operator (or the daemon) may change: an agent never loosens its own checks. */
 const HUMAN_ONLY_FIELDS = ['rules_off', 'permissions', 'auto_close'] as const;

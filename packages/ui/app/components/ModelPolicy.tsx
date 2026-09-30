@@ -41,6 +41,7 @@ import {
   type ResolvedCriterionWeights,
   type SessionDefaultsStatus,
   type SessionVendor,
+  type StepUpView,
   type Stream,
 } from '@agile-agents/shared';
 import { useEffect, useRef, useState } from 'react';
@@ -57,6 +58,7 @@ import {
   setModelProfiles,
   setNodeModelPolicy,
   setProjectModelPolicy,
+  stepUpModel,
   tryModelPolicy,
 } from '../lib/api';
 import { agentLabel, sessionIdText } from '../lib/chat';
@@ -1119,6 +1121,63 @@ export function ModelChoiceCard(): JSX.Element {
 }
 
 /**
+ * T484 (design/model-routing.md §6): Step up, the one-click form of picking
+ * a stronger model: the next rung of the preset models, taken at the next
+ * start. Says what it would run, what waits, or why there is no step; and
+ * the Needs me card's reason when the node is stuck at the top.
+ */
+function StepUpRow({
+  view,
+  busy,
+  onStepUp,
+}: {
+  view: StepUpView;
+  busy: boolean;
+  onStepUp: () => void;
+}): JSX.Element {
+  const pending = view.pending;
+  return (
+    <div className="cr-dsec-actions" data-testid="details-step-up-row">
+      <Button
+        size="sm"
+        variant="ghost"
+        icon="arrow-up"
+        data-testid="details-step-up"
+        disabled={busy || pending !== undefined || view.blocked !== undefined}
+        title={
+          view.blocked ??
+          (view.next !== undefined
+            ? `The next start of this node’s agent runs ${view.next.words}`
+            : undefined)
+        }
+        onClick={onStepUp}
+      >
+        Step up
+      </Button>
+      {pending !== undefined ? (
+        <span className="cr-set-muted" data-testid="details-step-up-pending">
+          Steps up{pending.to !== undefined ? ` to ${pending.to}` : ''} at the next start:{' '}
+          {pending.reason}.
+        </span>
+      ) : view.blocked !== undefined ? (
+        <span className="cr-set-muted" data-testid="details-step-up-blocked">
+          {view.blocked}
+        </span>
+      ) : view.next !== undefined ? (
+        <span className="cr-set-muted" data-testid="details-step-up-next">
+          Next rung: {view.next.words}.
+        </span>
+      ) : null}
+      {view.stuck !== undefined ? (
+        <span className="cr-mpol-pick-note" data-testid="details-step-up-stuck">
+          Stuck on the strongest preset model ({view.stuck.model}): {view.stuck.reason}.
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * A node's Details → Model choice (a project root's is the project's):
  * each field "from Home", "from <project>" or "set here", how the node's
  * current model was picked, and Let the policy choose again.
@@ -1145,6 +1204,9 @@ export function ModelChoiceSection({
     stream.human.model_policy ?? null,
     stream.human.choose_again ?? null,
     stream.agent.pick ?? null,
+    // T484: a step waiting, spent, or the Needs me card.
+    stream.escalation?.pending ?? null,
+    stream.escalation?.stuck ?? null,
   ]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `stamp` is the dependency.
@@ -1244,6 +1306,13 @@ export function ModelChoiceSection({
           </span>
         ) : null}
       </div>
+      {node !== undefined ? (
+        <StepUpRow
+          view={node.step_up}
+          busy={busy}
+          onStepUp={() => void run(() => stepUpModel(stream.id))}
+        />
+      ) : null}
       {view !== undefined ? (
         <ModelPolicyFields
           view={view}

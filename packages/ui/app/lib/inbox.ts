@@ -53,6 +53,8 @@ export function cardTitle(item: InboxItem): string {
       return 'Blocked';
     case 'harness_update':
       return item.harness?.failed === true ? 'Update failed' : 'Update available';
+    case 'model_stuck':
+      return 'Stuck on the strongest model';
   }
 }
 
@@ -76,6 +78,8 @@ export function cardTone(item: InboxItem): CardTone {
       return 'red';
     case 'harness_update':
       return item.harness?.failed === true ? 'red' : 'blue';
+    case 'model_stuck':
+      return 'red';
   }
 }
 
@@ -570,7 +574,8 @@ export type RowLookup = (id: string | undefined) => Parameters<typeof doneCardOf
  */
 export function filterOf(item: InboxItem, rowOf?: RowLookup): Exclude<NeedsMeFilter, 'all'> {
   if (item.kind === 'question') return 'questions';
-  if (item.kind === 'blocked') return 'blocked';
+  // T484: stuck on the strongest model is blocked work, too.
+  if (item.kind === 'blocked' || item.kind === 'model_stuck') return 'blocked';
   if (item.kind === 'done')
     return doneCardOf(rowOf?.(item.stream)) === 'no_changes' ? 'finished' : 'merges';
   if (isLandGate(item)) return 'merges';
@@ -852,6 +857,8 @@ export function itemCommand(item: InboxItem, row?: Parameters<typeof doneCardOf>
       return `Unblock: ${node}`;
     case 'harness_update':
       return `Update ${item.harness?.label ?? 'a CLI'}`;
+    case 'model_stuck':
+      return `Stuck on the strongest model: ${node}`;
   }
 }
 
