@@ -22,10 +22,13 @@ const WORK: RoutedEventType[] = [
 const CONVERSATION: RoutedEventType[] = ['human_line', 'answer', 'knowledge_accepted'];
 
 describe('wakesRole (P11 table)', () => {
-  // T446, T456, T481: a record (`autonomy_applied`, `agent_restarted`, `harness_updated`) wakes
-  // nobody, a coordinator included.
+  // T446, T456, T481, T484: a record (`autonomy_applied`, `agent_restarted`, `harness_updated`,
+  // `model_escalated`) wakes nobody, a coordinator included.
   const record = (t: RoutedEventType) =>
-    t === 'autonomy_applied' || t === 'agent_restarted' || t === 'harness_updated';
+    t === 'autonomy_applied' ||
+    t === 'agent_restarted' ||
+    t === 'harness_updated' ||
+    t === 'model_escalated';
   const expected: Record<NodeRole, (t: RoutedEventType) => boolean> = {
     coordinating: (t) => !record(t),
     work: (t) => WORK.includes(t),

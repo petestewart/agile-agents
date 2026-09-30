@@ -39,6 +39,7 @@ import type {
   SessionDefaultsStatus,
   SessionFlags,
   SessionVendor,
+  StepUpView,
   Stream,
   StreamCreateInput,
   ThreadEntry,
@@ -861,6 +862,8 @@ export interface NodeModelPolicyPayload extends ModelPolicyPayload {
   node: { id: string; title: string; project?: string };
   pick?: ModelPickRecord;
   choose_again: boolean;
+  /** T484: Step up's next rung, a step waiting for the next start, the Needs me card. */
+  step_up: StepUpView;
 }
 
 async function put(path: string, body: unknown): Promise<unknown> {
@@ -918,6 +921,18 @@ export function setNodeModelPolicy(
 export function chooseModelAgain(id: string): Promise<NodeModelPolicyPayload> {
   return post(
     `/api/streams/${encodeURIComponent(id)}/choose-again`,
+  ) as Promise<NodeModelPolicyPayload>;
+}
+
+/** T484 (§6): Step up: the node's next start runs the next rung of its preset models. */
+export function stepUpModel(id: string): Promise<NodeModelPolicyPayload> {
+  return post(`/api/streams/${encodeURIComponent(id)}/step-up`) as Promise<NodeModelPolicyPayload>;
+}
+
+/** T484: dismiss the node's "stuck on the strongest model" card. */
+export function dismissModelStuck(id: string): Promise<NodeModelPolicyPayload> {
+  return post(
+    `/api/streams/${encodeURIComponent(id)}/dismiss-stuck`,
   ) as Promise<NodeModelPolicyPayload>;
 }
 

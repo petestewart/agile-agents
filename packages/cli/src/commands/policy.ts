@@ -1,5 +1,6 @@
 /**
- * `agile policy show|set|choose-again|try` (T482, T483, design/model-routing.md §4–§5):
+ * `agile policy show|set|choose-again|step-up|try` (T482, T483, T484,
+ * design/model-routing.md §4–§6):
  * model choice over the daemon's `policy.*` RPC, the same service as
  * Settings → Agents → Model choice and a node's Details. With neither
  * `--project` nor `--node` it is the home's (the default every project
@@ -39,6 +40,13 @@ interface PolicyView {
     note?: string;
   };
   choose_again?: boolean;
+  /** T484: Step up's next rung, a pending step, the Needs me card. */
+  step_up?: {
+    next?: { words: string };
+    pending?: { reason: string; to?: string };
+    stuck?: { reason: string; model: string };
+    blocked?: string;
+  };
 }
 
 function layerParams(args: ParsedArgs): { project?: string; node?: string } {
@@ -181,6 +189,17 @@ function printView(view: PolicyView, here: 'node' | 'project' | 'home'): void {
     );
   }
   if (view.choose_again === true) console.log('choose again: the next start picks afresh');
+  const step = view.step_up;
+  if (step?.pending !== undefined) {
+    console.log(
+      `step up: the next start runs ${step.pending.to ?? 'the next rung'} (${step.pending.reason})`,
+    );
+  } else if (step?.next !== undefined && here === 'node') {
+    console.log(`step up: would run ${step.next.words}`);
+  }
+  if (step?.stuck !== undefined) {
+    console.log(`stuck on the strongest preset model (${step.stuck.model}): ${step.stuck.reason}`);
+  }
 }
 
 export async function runPolicyShow(
@@ -236,6 +255,30 @@ export async function runPolicyChooseAgain(
   else
     console.log(
       `agile policy choose-again: ${view.node?.title ?? node} picks its model afresh at its next start`,
+    );
+  return 0;
+}
+
+/**
+ * `agile policy step-up --node N` (T484, design/model-routing.md §6): the
+ * node's next start runs one rung up its preset models (the next effort,
+ * then the next model). Refused at the top of the ladder, under Strongest
+ * first, and before its agent has started.
+ */
+export async function runPolicyStepUp(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const node = optionalString(args.options, 'node') ?? args.positionals[0];
+  if (node === undefined) throw new Error('agile policy step-up: --node <id> is required');
+  const view = await callRpc<PolicyView>(socketPath, 'policy.step_up', { node });
+  if (json) printJson(view);
+  else
+    console.log(
+      `agile policy step-up: ${view.node?.title ?? node} runs ${
+        view.step_up?.pending?.to ?? 'the next rung'
+      } at its next start`,
     );
   return 0;
 }

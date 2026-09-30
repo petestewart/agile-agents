@@ -43,6 +43,7 @@ import { makeEmitter } from '../events/producers';
 import { RoutedEventService } from '../events/service';
 import { stoppedByHuman } from '../events/wake';
 import { GateService } from '../gates/service';
+import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
 import { KnowledgeService } from '../knowledge/service';
 import { EMPTY_TREE_SHA } from '../permissions/git-env';
@@ -4433,4 +4434,357 @@ describe('T483: the chooser at a start (D52, D55)', () => {
     expect(modelLines(node.id)).toEqual(['Model: Claude Haiku 4.5 · low — pinned rule: reviewer']);
     expect(jev.choiceCalls).toHaveLength(0);
   }, 30_000);
+});
+
+describe('T484: escalation at a start (design/model-routing.md §6, D56)', () => {
+  const PRESETS = [
+    { vendor: 'claude' as const, model: 'claude-haiku-4-5' },
+    { vendor: 'claude' as const, model: 'claude-sonnet-5-5' },
+    { vendor: 'claude' as const, model: 'claude-opus-5-5' },
+  ];
+  const FULL_CONTEXT: FakeAgentScript = {
+    steps: [
+      { type: 'usage_update', used: 950, size: 1000 },
+      { type: 'agent_text', text: 'still reading' },
+      { type: 'end_turn' },
+    ],
+  };
+  let events: RoutedEventService;
+  /** The provider every start runs, switched between starts. */
+  let current: AcpProviderConfig;
+  let projects = 0;
+
+  function build(): AttachService {
+    events = new RoutedEventService(store);
+    const built = new AttachService({
+      installedCli: () => undefined,
+      store,
+      streams,
+      home,
+      events,
+      provider: () => current,
+      questions: { listOpen: () => questions.listOpen() },
+      gates: { list: () => gates.list() },
+    });
+    verbs = new VerbService({
+      store,
+      streams,
+      questions,
+      escalation: built.routing().escalation,
+    });
+    return built;
+  }
+
+  async function nodeUnder(policy: Record<string, unknown>, repoName?: string): Promise<Stream> {
+    projects += 1;
+    const project = await new ProjectService(store, streams).create({ name: `Ladder ${projects}` });
+    await store.updateProject(project.id, (p) => ({ ...p, model_policy: policy }));
+    return streams.create('human', {
+      title: 'Parser',
+      goal: 'parse the CSV',
+      project: project.id,
+      ...(repoName !== undefined ? { repo: repoName } : {}),
+    });
+  }
+
+  const last = (id: string) => streams.get(id).sessions.at(-1);
+  const stepLines = (id: string) => threadBodies(id).filter((b) => b.startsWith('Stepped up'));
+  const stepped = (id: string) =>
+    events
+      .activityFor(id)
+      .map((a) => a.event)
+      .filter((e) => e.type === 'model_escalated');
+  const finished = (id: string) => threadBodies(id).filter((b) => b === TURN_FINISHED_LINE).length;
+
+  /** Starts the node's next agent (a message with start) and waits for its turn to finish. */
+  async function nextStart(id: string, sessions: number): Promise<void> {
+    await attachService.say(id, 'carry on', { start: true });
+    await waitFor(
+      () => streams.get(id).sessions.length === sessions && streams.get(id).agent.status === 'done',
+    );
+  }
+
+  test('a failed turn (retries spent) steps up at the next start: the line, the event, the pick', async () => {
+    await store.setHomeSessionDefaults({ vendor_failure: { retry: false } });
+    current = fakeProviderFor(ACP_PROVIDERS.claude, {
+      steps: [{ type: 'agent_text', text: 'Something went wrong' }, { type: 'reject_prompt' }],
+    });
+    attachService = build();
+    const node = await nodeUnder({ mode: 'choose', presets: PRESETS, effort_ceiling: 'high' });
+    await attachService.attach(node.id);
+    await waitFor(() => streams.get(node.id).escalation?.pending !== undefined);
+    expect(last(node.id)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
+    expect(streams.get(node.id).escalation?.pending?.trigger).toBe('turn_failed');
+    // Recorded, not taken: nothing stepped yet.
+    expect(stepLines(node.id)).toEqual([]);
+
+    current = fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS);
+    await nextStart(node.id, 2);
+    expect(last(node.id)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'high' });
+    const [line] = stepLines(node.id);
+    expect(line?.startsWith('Stepped up to Claude Sonnet 5.5 · high: a turn failed (')).toBe(true);
+    expect(line?.endsWith(' on Claude Sonnet 5.5 · medium')).toBe(true);
+    expect(streams.get(node.id).agent.pick).toMatchObject({
+      how: 'escalation',
+      model: 'claude-sonnet-5-5',
+      effort: 'high',
+      session: last(node.id)?.id,
+    });
+    // Spent by that start.
+    expect(streams.get(node.id).escalation?.pending).toBeUndefined();
+    const [event] = stepped(node.id);
+    expect(event?.payload).toMatchObject({
+      step: 'up',
+      trigger: 'turn_failed',
+      from: 'Claude Sonnet 5.5 · medium',
+      to: 'Claude Sonnet 5.5 · high',
+    });
+    // Record-only: it woke nobody and waits in no queue.
+    expect(events.pendingFor(node.id).some((p) => p.event.type === 'model_escalated')).toBe(false);
+  }, 30_000);
+
+  test('the context past 90% without goal_met ends the resting session; the next start is one rung up', async () => {
+    current = fakeProviderFor(ACP_PROVIDERS.claude, FULL_CONTEXT);
+    attachService = build();
+    const node = await nodeUnder({ mode: 'choose', presets: PRESETS, effort_ceiling: 'medium' });
+    await attachService.attach(node.id);
+    // A model change ends a resting session (T465): the next start is fresh.
+    await waitFor(() => last(node.id)?.status === 'stopped');
+    expect(last(node.id)?.ended_reason).toContain('its model steps up at the next start');
+    expect(streams.get(node.id).escalation?.pending?.trigger).toBe('context_full');
+
+    current = fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS);
+    await nextStart(node.id, 2);
+    // Sonnet at the ceiling (medium): the next model, at medium.
+    expect(last(node.id)).toMatchObject({ model: 'claude-opus-5-5', effort: 'medium' });
+    expect(stepLines(node.id)).toEqual([
+      'Stepped up to Claude Opus 5.5 · medium: its context passed 90% before the goal was met on Claude Sonnet 5.5 · medium',
+    ]);
+    // A fresh session with the brief, not a resume of the old one.
+    expect(threadBodies(node.id)).not.toContain(RESUMED_LINE);
+  }, 30_000);
+
+  test('three quiet turns on a worker (no commit, no progress) step up', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: [] } });
+    current = fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS);
+    attachService = build();
+    const node = await nodeUnder({ mode: 'choose', presets: PRESETS }, 'demo');
+    await attachService.attach(node.id);
+    await waitFor(() => finished(node.id) === 1);
+    expect(streams.get(node.id).escalation?.quiet?.turns).toBe(1);
+    await attachService.say(node.id, 'anything?');
+    await waitFor(() => finished(node.id) === 2);
+    expect(streams.get(node.id).escalation?.pending).toBeUndefined();
+    await attachService.say(node.id, 'and now?');
+    await waitFor(() => last(node.id)?.status === 'stopped');
+    expect(streams.get(node.id).escalation?.pending?.trigger).toBe('quiet_turns');
+    await nextStart(node.id, 2);
+    expect(last(node.id)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'high' });
+    expect(stepLines(node.id)).toEqual([
+      'Stepped up to Claude Sonnet 5.5 · high: 3 turns passed with no commit and no progress on Claude Sonnet 5.5 · medium',
+    ]);
+  }, 30_000);
+
+  test('a merge refused twice by the same ship check, with a turn between, steps up', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: [] } });
+    current = fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS);
+    attachService = build();
+    const landing = new DeliveryService({
+      store,
+      streams,
+      diffRules: { check: () => ({ decision: 'deny', reason: 'the tests fail', rule: 'K-1' }) },
+      onRefused: (id, key, words) =>
+        attachService.routing().escalation.mergeRefused(id, key, words),
+    });
+    const node = await nodeUnder({ mode: 'choose', presets: PRESETS }, 'demo');
+    const first = await attachService.attach(node.id);
+    await waitFor(() => finished(node.id) === 1);
+    const wt = first.stream.worktree as string;
+    writeFileSync(join(wt, 'parser.ts'), 'export const parse = () => [];\n');
+    git(['add', 'parser.ts'], wt);
+    git(['commit', '-q', '-m', 'parser'], wt);
+
+    expect((await landing.land(node.id)).status).toBe('refused');
+    expect(streams.get(node.id).escalation?.refusal).toMatchObject({ key: 'ship:K-1', turns: 0 });
+    // Refused again at once, no turn between: not a step.
+    await landing.land(node.id);
+    expect(streams.get(node.id).escalation?.pending).toBeUndefined();
+    // A turn that tried to fix it, then the same refusal.
+    await attachService.say(node.id, 'the ship check says the tests fail');
+    await waitFor(() => finished(node.id) === 2);
+    await landing.land(node.id);
+    expect(streams.get(node.id).escalation?.pending).toMatchObject({
+      trigger: 'merge_refused',
+      reason: 'the merge was refused twice (ship check: the tests fail)',
+    });
+    await waitFor(() => last(node.id)?.status === 'stopped');
+    await nextStart(node.id, 2);
+    expect(last(node.id)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'high' });
+    expect(stepLines(node.id)).toEqual([
+      'Stepped up to Claude Sonnet 5.5 · high: the merge was refused twice (ship check: the tests fail) on Claude Sonnet 5.5 · medium',
+    ]);
+  }, 30_000);
+
+  test('`escalate` mid-turn changes nothing until the turn ends; the verb can’t name a model', async () => {
+    const sentinel = join(scratch, `escalate-${ulid()}`);
+    current = fakeProviderFor(ACP_PROVIDERS.claude, {
+      steps: [
+        { type: 'agent_text', text: 'trying the parser again' },
+        // The tool call closes the message, so it reaches the thread mid-turn.
+        { type: 'tool_call', toolCallId: 'read-1', title: 'read parser.ts' },
+        { type: 'wait_for_file', path: sentinel },
+        { type: 'end_turn' },
+      ],
+    });
+    attachService = build();
+    const node = await nodeUnder({ mode: 'choose', presets: PRESETS });
+    await attachService.attach(node.id);
+    await waitFor(() => threadBodies(node.id).includes('trying the parser again'));
+    const session = last(node.id)?.id as string;
+    await expect(
+      verbs.escalate({ session, why: 'stuck', model: 'claude-opus-5-5' }),
+    ).rejects.toThrow(/escalate/);
+    await expect(verbs.escalate({ session, why: 'stuck', effort: 'max' })).rejects.toThrow();
+    expect(streams.get(node.id).escalation).toBeUndefined();
+    const answer = await verbs.escalate({
+      session,
+      why: 'the tests still fail and I can’t see why',
+    });
+    expect(answer.result).toContain('next start');
+    expect(threadBodies(node.id)).toContain(
+      'asks for a stronger model: the tests still fail and I can’t see why',
+    );
+    expect(streams.get(node.id).escalation?.pending).toMatchObject({
+      trigger: 'asked',
+      by: 'agent',
+      session,
+    });
+    // Mid-turn: the session runs on, on its model.
+    expect(last(node.id)).toMatchObject({ id: session, status: 'running' });
+    writeFileSync(sentinel, '');
+    // The turn ends, and so does the session (the model changes).
+    await waitFor(() => last(node.id)?.status === 'stopped');
+    current = fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS);
+    await nextStart(node.id, 2);
+    expect(last(node.id)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'high' });
+    expect(stepLines(node.id)).toEqual([
+      'Stepped up to Claude Sonnet 5.5 · high: the agent asked: the tests still fail and I can’t see why on Claude Sonnet 5.5 · medium',
+    ]);
+  }, 30_000);
+
+  test('Step up ends a resting session, survives a daemon restart, and the next start takes it', async () => {
+    current = fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS);
+    attachService = build();
+    const node = await nodeUnder({ mode: 'choose', presets: PRESETS });
+    await attachService.attach(node.id);
+    await waitFor(() => isRestingSession(streams.get(node.id), last(node.id) as SessionRef));
+    const view = await attachService.routing().stepUp(node.id);
+    expect(view.step_up.pending).toMatchObject({ by: 'human', to: 'Claude Sonnet 5.5 · high' });
+    await waitFor(() => last(node.id)?.status === 'stopped');
+
+    // A restart: a new attach service (and policy service) over the same home.
+    await attachService.stopAll();
+    attachService = build();
+    await nextStart(node.id, 2);
+    expect(last(node.id)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'high' });
+    expect(stepLines(node.id)).toEqual([
+      'Stepped up to Claude Sonnet 5.5 · high: you asked for a stronger model on Claude Sonnet 5.5 · medium',
+    ]);
+    expect(stepped(node.id).map((e) => e.payload.trigger)).toEqual(['operator']);
+    // The step after it: the node runs Sonnet · high now.
+    expect(attachService.routing().nodeView(node.id).step_up.next?.words).toBe(
+      'Claude Sonnet 5.5 · max',
+    );
+  }, 30_000);
+
+  test('an explicit pick on the next start wins and clears the pending step (D53)', async () => {
+    current = fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS);
+    attachService = build();
+    const node = await nodeUnder({ mode: 'choose', presets: PRESETS });
+    await attachService.attach(node.id);
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    await attachService.routing().stepUp(node.id);
+    await attachService.attach(node.id, { model: 'claude-haiku-4-5', effort: 'low' });
+    await waitFor(
+      () =>
+        streams.get(node.id).sessions.length === 2 && streams.get(node.id).agent.status === 'done',
+    );
+    expect(last(node.id)).toMatchObject({ model: 'claude-haiku-4-5', effort: 'low' });
+    expect(streams.get(node.id).escalation?.pending).toBeUndefined();
+    expect(streams.get(node.id).agent.pick?.how).toBe('explicit');
+    expect(stepLines(node.id)).toEqual([]);
+    expect(stepped(node.id)).toEqual([]);
+  }, 30_000);
+
+  test('strongest first never steps: a stall goes to Needs me and the session keeps its model', async () => {
+    current = fakeProviderFor(ACP_PROVIDERS.claude, FULL_CONTEXT);
+    attachService = build();
+    const node = await nodeUnder({
+      mode: 'choose',
+      presets: PRESETS,
+      escalation: 'strongest_first',
+    });
+    await attachService.attach(node.id);
+    await waitFor(() => streams.get(node.id).escalation?.stuck !== undefined);
+    expect(last(node.id)).toMatchObject({ model: 'claude-opus-5-5', effort: 'high' });
+    expect(streams.get(node.id).escalation?.pending).toBeUndefined();
+    const inbox = new InboxService({ streams, questions, gates });
+    expect(inbox.list().filter((i) => i.kind === 'model_stuck')).toMatchObject([
+      {
+        stream: node.id,
+        context:
+          'Parser is stuck on the strongest preset model: its context passed 90% before the goal was met',
+      },
+    ]);
+    // Nothing waits, so the resting session isn't ended: the next line goes to it.
+    await waitFor(() => isRestingSession(streams.get(node.id), last(node.id) as SessionRef));
+    expect(streams.get(node.id).sessions).toHaveLength(1);
+    expect(stepped(node.id).map((e) => e.payload.step)).toEqual(['stuck']);
+  }, 30_000);
+
+  test('the top of the ladder: Needs me; an explicit pick then clears the card', async () => {
+    current = fakeProviderFor(ACP_PROVIDERS.claude, FULL_CONTEXT);
+    attachService = build();
+    const node = await nodeUnder({
+      mode: 'choose',
+      presets: [{ vendor: 'claude', model: 'claude-sonnet-5-5' }],
+      effort_ceiling: 'medium',
+    });
+    await attachService.attach(node.id);
+    await waitFor(() => streams.get(node.id).escalation?.stuck !== undefined);
+    expect(streams.get(node.id).escalation?.stuck).toMatchObject({
+      trigger: 'context_full',
+      model: 'Claude Sonnet 5.5 · medium',
+    });
+    expect(threadBodies(node.id)).toContain(
+      'Parser is stuck on the strongest preset model: its context passed 90% before the goal was met',
+    );
+    const inbox = new InboxService({ streams, questions, gates });
+    expect(inbox.list().some((i) => i.kind === 'model_stuck' && i.id === node.id)).toBe(true);
+    // The operator picks a stronger model with the chip: the card has done its job.
+    current = fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS);
+    await attachService.attach(node.id, { model: 'claude-opus-5-5' });
+    await waitFor(
+      () =>
+        streams.get(node.id).sessions.length === 2 && streams.get(node.id).agent.status === 'done',
+    );
+    expect(streams.get(node.id).escalation?.stuck).toBeUndefined();
+    expect(inbox.list().some((i) => i.kind === 'model_stuck')).toBe(false);
+  }, 30_000);
+
+  test('an agent, a coordinator or the Director can’t write the escalation record; the daemon can', async () => {
+    const node = await nodeUnder({ mode: 'choose', presets: PRESETS });
+    const pending = {
+      trigger: 'asked' as const,
+      reason: 'give me Opus',
+      by: 'agent' as const,
+      at: new Date().toISOString(),
+    };
+    for (const principal of ['agent', 'coordinator', 'director', 'human'] as const) {
+      await expect(
+        store.updateStream(principal, node.id, (s) => ({ ...s, escalation: { pending } })),
+      ).rejects.toThrow(/only the daemon may change escalation/);
+    }
+    expect(streams.get(node.id).escalation).toBeUndefined();
+  });
 });

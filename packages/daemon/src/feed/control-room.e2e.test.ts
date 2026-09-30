@@ -11059,6 +11059,152 @@ describe('Model choice (Playwright e2e, T482)', () => {
   );
 });
 
+describe('Model choice: escalation (Playwright e2e, T484)', () => {
+  const PRESETS = [
+    { vendor: 'claude' as const, model: 'claude-haiku-4-5' },
+    { vendor: 'claude' as const, model: 'claude-sonnet-5-5' },
+    { vendor: 'claude' as const, model: 'claude-opus-5-5' },
+  ];
+
+  browserTest(
+    'Details → Step up shows the step waiting, and the next start takes it with a line in the chat',
+    async () => {
+      const says: FakeAgentScript = {
+        steps: [{ type: 'agent_text', text: 'on it' }, { type: 'end_turn' }],
+      };
+      const cockpit = await startStreamCockpit([says, says]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        await cockpit.store.updateProject(shop.id, (p) => ({
+          ...p,
+          model_policy: { mode: 'choose', presets: PRESETS, effort_ceiling: 'high' },
+        }));
+        const node = await cockpit.attach.createNode('human', {
+          title: 'Parser',
+          goal: 'parse the CSV',
+          project: shop.id,
+        });
+        await waitUntil('picked', () => cockpit.streams.get(node.id).agent.pick?.how === 'rule');
+        await waitUntil('done', () => cockpit.streams.get(node.id).agent.status === 'done');
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        if (!(await page.locator('[data-testid="node-details"]').isVisible())) {
+          await page.locator('[data-testid="details-toggle"]').click();
+        }
+        await waitForContains(
+          page,
+          '[data-testid="details-step-up-next"]',
+          'Next rung: Claude Sonnet 5.5 · high',
+        );
+        await page.locator('[data-testid="details-step-up"]').click();
+        await waitForContains(
+          page,
+          '[data-testid="details-step-up-pending"]',
+          'Steps up to Claude Sonnet 5.5 · high at the next start: you asked for a stronger model',
+        );
+        expect(await page.locator('[data-testid="details-step-up"]').isDisabled()).toBe(true);
+        expect(cockpit.streams.get(node.id).escalation?.pending).toMatchObject({
+          trigger: 'operator',
+          by: 'human',
+        });
+        // The resting session ended (the model changes): the next message starts a fresh agent.
+        await waitUntil(
+          'the rest ended',
+          () => cockpit.streams.get(node.id).sessions.at(-1)?.status === 'stopped',
+        );
+        await cockpit.attach.say(node.id, 'carry on', { start: true });
+        await waitUntil('stepped', () => cockpit.streams.get(node.id).sessions.length === 2);
+        expect(cockpit.streams.get(node.id).sessions.at(-1)).toMatchObject({
+          model: 'claude-sonnet-5-5',
+          effort: 'high',
+        });
+        await waitForContains(
+          page,
+          '[data-testid="stream-page"]',
+          'Stepped up to Claude Sonnet 5.5 · high: you asked for a stronger model on Claude Sonnet 5.5 · medium',
+        );
+        await waitForContains(page, '[data-testid="details-model-pick"]', 'Stepped up the ladder');
+        await waitForContains(
+          page,
+          '[data-testid="details-step-up-next"]',
+          'Next rung: Claude Opus 5.5 · high',
+        );
+        expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'at the top of the ladder the node goes to Needs me with the reason; Dismiss clears it',
+    async () => {
+      const cockpit = await startStreamCockpit([
+        {
+          steps: [
+            { type: 'usage_update', used: 950, size: 1000 },
+            { type: 'agent_text', text: 'still reading' },
+            { type: 'end_turn' },
+          ],
+        },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        await cockpit.store.updateProject(shop.id, (p) => ({
+          ...p,
+          model_policy: {
+            mode: 'choose',
+            presets: [{ vendor: 'claude', model: 'claude-sonnet-5-5' }],
+            effort_ceiling: 'medium',
+          },
+        }));
+        const node = await cockpit.attach.createNode('human', {
+          title: 'Parser',
+          goal: 'parse the CSV',
+          project: shop.id,
+        });
+        await waitUntil(
+          'stuck',
+          () => cockpit.streams.get(node.id).escalation?.stuck !== undefined,
+        );
+        page = await openPage();
+        await page.goto(`${cockpit.base}/`);
+        const row = `[data-testid="inbox-row"][data-row-kind="model_stuck"][data-item="${node.id}"]`;
+        await page.locator(row).waitFor();
+        expect(await page.locator(`${row} [data-testid="inbox-what"]`).textContent()).toBe(
+          'Stuck on the strongest model',
+        );
+        const item = page.locator('[data-testid="inbox-item"]', { has: page.locator(row) });
+        await waitForContains(
+          page,
+          `[data-testid="inbox-item"]:has(${row}) [data-testid="inbox-context"]`,
+          'Parser is stuck on the strongest preset model: its context passed 90% before the goal was met',
+        );
+        await item.locator('[data-testid="model-stuck-dismiss"]').click();
+        await page.locator(row).waitFor({ state: 'detached' });
+        await waitUntil(
+          'dismissed',
+          () => cockpit.streams.get(node.id).escalation?.stuck === undefined,
+        );
+        expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 /** T483: Jev's answers for a clear, checkable, short, low-stakes one-off: Sonnet at 0.82. */
 const CHOOSER_CLEAR = (() => {
   const one = (n: string, confidence = 0.9) => ({

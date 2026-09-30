@@ -62,6 +62,18 @@ export type ProgressInput = z.infer<typeof ProgressInputSchema>;
 export const GoalMetInputSchema = z.object({ session: Session, summary: Body }).strict();
 export type GoalMetInput = z.infer<typeof GoalMetInputSchema>;
 
+/**
+ * T484 (D56, design/model-routing.md §6): the agent asks to step up the
+ * model ladder at its next start. It says why and nothing else: an agent can
+ * ask for a stronger model but never names one (strict: a `model`, `vendor`
+ * or `effort` is refused).
+ */
+export const ESCALATE_WHY_MAX_CHARS = 400;
+export const EscalateInputSchema = z
+  .object({ session: Session, why: z.string().trim().min(1).max(ESCALATE_WHY_MAX_CHARS) })
+  .strict();
+export type EscalateInput = z.infer<typeof EscalateInputSchema>;
+
 export const FindingInputSchema = z
   .object({
     session: Session,
@@ -316,6 +328,7 @@ export const AGENT_VERBS = [
   'restart_node',
   'propose_repo',
   'goal_met',
+  'escalate',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -350,6 +363,7 @@ export const AGENT_VERB_SCHEMAS = {
   restart_node: RestartNodeInputSchema,
   propose_repo: ProposeRepoInputSchema,
   goal_met: GoalMetInputSchema,
+  escalate: EscalateInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -407,6 +421,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Propose adding a registered repo to this node ({repo: its name, why: what needs changing there}). Use it when the work needs changes in a repo this node doesn’t work in (one of the repos your brief lists), rather than asking the human to add it by hand. It changes nothing by itself: the human adds it with one click, which turns this node into work on it (or adds a part).',
   goal_met:
     'Report that this node’s whole goal is done ({summary: what was done, one line}). Call it once, as your last step, only when nothing is left to do, fix or ask; never after a partial step or when you stop to ask. A node set to auto-close then closes itself if there is nothing to merge.',
+  escalate:
+    'Ask for a stronger model at your next start ({why: what you tried and why it isn’t enough, one line}), e.g. when the tests still fail and you can’t see why. You can’t name the model: the next rung of the operator’s preset models is taken when this node’s agent next starts, never mid-turn. Finish or stop your turn after asking.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

@@ -1560,3 +1560,31 @@ Needs a Claude login; Codex or Cursor makes the preset checks sharper.
       node: its line ends "(no classifier key)", and Details shows no scores.
 - [ ] `agile policy try "<task>"` prints the same line, the scores, the
       confidence and what decided.
+
+**Escalation (D56, T484).** Needs a Claude login; a project on Choose with
+Start cheap and three Claude presets (Haiku 4.5, Sonnet 5.5, Opus 5.5).
+
+- [ ] A node that ran on Sonnet 5.5 · medium: Details → Model choice reads
+      "Next rung: Claude Sonnet 5.5 · high". **Step up**: it reads "Steps up to
+      Claude Sonnet 5.5 · high at the next start: you asked for a stronger
+      model", and the resting session ended ("its model steps up at the next
+      start"). Send a message: the chat reads "Stepped up to Claude Sonnet
+      5.5 · high: you asked for a stronger model on Claude Sonnet 5.5 ·
+      medium", and Events and the node's Activity have one "Stepped up to …"
+      record that woke nobody.
+- [ ] Ask the agent to call `escalate` with a reason (for a Claude session:
+      "call the agile escalate tool with why = 'testing escalation'"). The
+      thread reads "asks for a stronger model: …"; nothing changes until its
+      turn ends; then the session ends and the next message starts one rung up.
+      Ask it to pass a model too: the call is refused.
+- [ ] Merge a node whose ship check refuses (a `ship` knowledge item it
+      breaks), send it one message to fix it, and merge again with the same
+      refusal: the next start steps up ("the merge was refused twice …").
+- [ ] At the top (Opus 5.5 at the ceiling), trigger it again (Step up is
+      disabled there and says why; use `escalate`): Needs me has "Stuck on the
+      strongest model" with "<node> is stuck on the strongest preset model:
+      <reason>". Dismiss clears it; picking a model on the chip does too.
+- [ ] Switch the project to **Strongest first**: Step up is disabled and says
+      Strongest first never steps; an `escalate` goes straight to Needs me.
+- [ ] `agile policy step-up --node <id>` prints the rung the next start runs;
+      on a node that never ran it's refused with why.

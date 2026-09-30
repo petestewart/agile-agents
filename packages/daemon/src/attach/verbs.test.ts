@@ -506,3 +506,93 @@ describe('lookupPath (T263)', () => {
     expect(lookupPath('./', undefined)).toBe('.');
   });
 });
+
+describe('escalate (T484, D56)', () => {
+  test('only a node’s own agent may ask; it says why, never which model; without the watcher it refuses', async () => {
+    const asked: Array<{ node: string; session: string; why: string }> = [];
+    const progressed: string[] = [];
+    verbs = new VerbService({
+      store,
+      streams,
+      questions: new QuestionService(store, streams),
+      rules,
+      escalation: {
+        asked: async (node, session, why) => {
+          asked.push({ node, session, why });
+          return 'Recorded.';
+        },
+        progressed: async (node) => {
+          progressed.push(node);
+        },
+      },
+    });
+    const { session, stream } = await attach();
+    expect(await verbs.escalate({ session, why: 'the tests still fail' })).toEqual({
+      result: 'Recorded.',
+    });
+    expect(asked).toEqual([{ node: stream.id, session, why: 'the tests still fail' }]);
+    expect(streams.readThread(stream.id, { limit: 10 }).entries.at(-1)?.body).toBe(
+      'asks for a stronger model: the tests still fail',
+    );
+    // The verb takes `why` alone: a model (or vendor, or effort) is refused before anything runs.
+    await expect(verbs.escalate({ session, why: 'x', model: 'claude-opus-5-5' })).rejects.toThrow(
+      /escalate/,
+    );
+    await expect(verbs.escalate({ session, why: 'x'.repeat(401) })).rejects.toThrow(/escalate/);
+    expect(asked).toHaveLength(1);
+    // A progress call is counted (a turn with one isn't quiet).
+    await verbs.progress({ session, text: 'parser done' });
+    expect(progressed).toEqual([stream.id]);
+
+    // A reviewer can't ask.
+    const reviewer = ulid();
+    await store.putAgent(reviewer as AgentId, {
+      vendor: 'claude',
+      model: 'sonnet',
+      stream: stream.id,
+      last_seen: new Date().toISOString(),
+      role: 'reviewer',
+    });
+    await expect(verbs.escalate({ session: reviewer, why: 'x' })).rejects.toThrow(
+      'a reviewer session cannot ask for a stronger model',
+    );
+    // Nor the Director: it has no node.
+    const director = ulid();
+    await store.putAgent(director as AgentId, {
+      vendor: 'claude',
+      model: 'sonnet',
+      last_seen: new Date().toISOString(),
+      role: 'coordinator',
+    });
+    await store.putDirector({
+      thread: DIRECTOR_NODE,
+      created_at: new Date().toISOString(),
+      session: {
+        id: director,
+        vendor: 'claude',
+        model: 'sonnet',
+        role: 'coordinator',
+        status: 'running',
+      },
+    });
+    await expect(verbs.escalate({ session: director, why: 'x' })).rejects.toThrow(
+      'the Director has no node',
+    );
+    expect(asked).toHaveLength(1);
+
+    // With no watcher wired, it says so.
+    verbs = new VerbService({
+      store,
+      streams,
+      questions: new QuestionService(store, streams),
+      rules,
+    });
+    await expect(verbs.escalate({ session, why: 'x' })).rejects.toThrow('not available');
+  });
+
+  test('the worker’s brief tells of it', () => {
+    const brief = readFileSync(join(import.meta.dir, '..', '..', 'briefs', 'worker.md'), 'utf8');
+    expect(brief).toContain('`escalate`');
+    expect(brief).toContain('you never pick the model');
+  });
+});

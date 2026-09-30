@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import { DIRECTOR_NODE } from './director';
 import { ULID_PATTERN, UlidSchema } from './ids';
+import { EscalationTriggerSchema } from './model-escalation';
 import { AutonomyProposalIdSchema, CoordinatorActionSchema } from './plan';
 import { AutonomySchema, ProjectIdSchema } from './project';
 
@@ -189,6 +190,20 @@ export const ROUTED_EVENT_PAYLOADS = {
     to: Str.optional(),
     summary: NonEmpty,
   }),
+  /**
+   * T484 (design/model-routing.md §6): a node's model stepped up the ladder
+   * at its agent's start (`up`), or a trigger found it at the top of the
+   * ladder (or under Strongest first) and it went to Needs me (`stuck`).
+   * `from`/`to` are models in words ("Claude Sonnet 5.5 · high"); `reason` is
+   * the trigger's, in words. A record, not news: see `RECORD_ONLY_EVENT_TYPES`.
+   */
+  model_escalated: z.object({
+    step: z.enum(['up', 'stuck']),
+    trigger: EscalationTriggerSchema,
+    from: NonEmpty,
+    to: Str.optional(),
+    reason: NonEmpty,
+  }),
   /** T262: the ship check held delivery; the findings go back to the worker. */
   ship_findings: z.object({
     source: z.enum(['classifier', 'reviewer']),
@@ -215,6 +230,7 @@ export const RECORD_ONLY_EVENT_TYPES: ReadonlySet<RoutedEventType> = new Set<Rou
   'autonomy_applied',
   'agent_restarted',
   'harness_updated',
+  'model_escalated',
 ]);
 
 const RoutedEventBaseSchema = z

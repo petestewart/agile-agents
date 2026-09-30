@@ -3,6 +3,7 @@
  * over the same `ModelPolicyService` as the cockpit's routes. The home layer
  * when neither is named. A write is the operator's (`human`). T483:
  * `policy.try` for `agile policy try "<task text>"` (Settings' Try it).
+ * T484: `policy.step_up` for `agile policy step-up --node N` (Details → Step up).
  */
 
 import {
@@ -15,6 +16,7 @@ import {
 import { RpcParamError, paramErrors, requireObject, requireStreamId } from '../gates/rpc';
 import type { RpcMethodHandler } from '../rpc';
 import { NotFoundError } from '../store/store';
+import { StepUpRefusedError } from './escalation';
 import type { ModelPolicyService } from './policy';
 
 const asParamErrors = paramErrors(NotFoundError);
@@ -86,6 +88,12 @@ export function buildModelPolicyRpcMethods(
     'policy.choose_again': async (params) => {
       const node = requireStreamId(requireObject(params).node, 'node');
       return asParamErrors(() => service.chooseAgain(node));
+    },
+
+    /** T484: Step up: the node's next start runs the next rung (the operator's). */
+    'policy.step_up': async (params) => {
+      const node = requireStreamId(requireObject(params).node, 'node');
+      return paramErrors(NotFoundError, StepUpRefusedError)(() => service.stepUp(node));
     },
   };
 }

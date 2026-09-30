@@ -1273,6 +1273,97 @@ describe('T160 cockpit routes', () => {
     expect((await fetch(url(`/api/streams/${ulid()}/model-policy`))).status).toBe(404);
   });
 
+  test('T484: Step up and the stuck card’s Dismiss are same-origin POSTs; a refusal is a 409', async () => {
+    const post = (path: string, headers: Record<string, string> = {}) =>
+      fetch(url(path), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+      });
+    const evil = { origin: 'http://evil.example' };
+    const project = await new ProjectService(store, streams).create({ name: 'shop' });
+    await store.updateProject(project.id, (p) => ({
+      ...p,
+      model_policy: {
+        mode: 'choose',
+        presets: [
+          { vendor: 'claude', model: 'claude-sonnet-5-5' },
+          { vendor: 'claude', model: 'claude-opus-5-5' },
+        ],
+        effort_ceiling: 'high',
+      },
+    }));
+    const node = await streams.create('human', { title: 'Part', goal: 'g', project: project.id });
+    const stepUp = `/api/streams/${node.id}/step-up`;
+    // Its agent never ran: nothing to step up from.
+    const never = await post(stepUp);
+    expect(never.status).toBe(409);
+    expect(((await never.json()) as { error: string }).error).toContain('hasn’t started');
+    await store.updateStream('daemon', node.id, (s) => ({
+      ...s,
+      sessions: [
+        {
+          id: ulid(),
+          vendor: 'claude',
+          model: 'claude-sonnet-5-5',
+          effort: 'high',
+          role: 'worker',
+          status: 'stopped',
+        },
+      ],
+    }));
+    type View = {
+      step_up: {
+        next?: { words: string };
+        pending?: { to?: string; by: string };
+        blocked?: string;
+      };
+    };
+    const shown = (await (await fetch(url(`/api/streams/${node.id}/model-policy`))).json()) as View;
+    expect(shown.step_up.next?.words).toBe('Claude Opus 5.5 · high');
+    expect((await post(stepUp, evil)).status).toBe(403);
+    expect(streams.get(node.id).escalation).toBeUndefined();
+    expect((await fetch(url(stepUp))).status).not.toBe(200);
+    const stepped = (await (await post(stepUp)).json()) as View;
+    expect(stepped.step_up.pending).toMatchObject({ by: 'human', to: 'Claude Opus 5.5 · high' });
+    expect(streams.get(node.id).escalation?.pending?.trigger).toBe('operator');
+    expect((await post(`/api/streams/${ulid()}/step-up`)).status).toBe(404);
+
+    // On the strongest (Opus at the ceiling): the top, a 409 with why.
+    await store.updateStream('daemon', node.id, (s) => {
+      const { escalation: _e, ...rest } = s;
+      return {
+        ...rest,
+        escalation: {
+          stuck: {
+            trigger: 'asked',
+            reason: 'the agent asked: stuck',
+            model: 'Claude Opus 5.5 · high',
+            at: new Date().toISOString(),
+          },
+        },
+        sessions: [
+          ...s.sessions,
+          {
+            id: ulid(),
+            vendor: 'claude',
+            model: 'claude-opus-5-5',
+            effort: 'high',
+            role: 'worker',
+            status: 'stopped',
+          },
+        ],
+      };
+    });
+    const top = await post(stepUp);
+    expect(top.status).toBe(409);
+    expect(((await top.json()) as { error: string }).error).toContain('top of the ladder');
+    const dismiss = `/api/streams/${node.id}/dismiss-stuck`;
+    expect((await post(dismiss, evil)).status).toBe(403);
+    expect(streams.get(node.id).escalation?.stuck).toBeDefined();
+    expect((await post(dismiss)).status).toBe(200);
+    expect(streams.get(node.id).escalation).toBeUndefined();
+  });
+
   test('T483: Try it is same-origin, validated and starts nothing; guidance, weights and pinned rules save', async () => {
     const send = (
       path: string,

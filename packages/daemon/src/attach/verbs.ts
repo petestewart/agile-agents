@@ -24,6 +24,7 @@ import {
   type ThreadEntry,
   formatKnowledgeScope,
   formatZodError,
+  isAgentRole,
   isConversationNode,
   liveChildrenOf,
   nodeRole,
@@ -43,6 +44,7 @@ import type { EmitRouted } from '../events/producers';
 import { type KnowledgeService, worktreeRelativePaths } from '../knowledge/service';
 import { canReadRepo } from '../permissions/visibility';
 import type { QuestionService } from '../questions/service';
+import type { EscalationService } from '../routing/escalation';
 import { NotFoundError, type StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { type TestRunOutput, runTestRun } from '../tools/test-run';
@@ -142,6 +144,11 @@ export interface VerbServiceOptions {
   proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
   /** T303: a finding was recorded (the Director's norm watch looks for repeats). */
   onFinding?: () => void;
+  /**
+   * T484 (D56): the escalation watcher: `escalate` records a step for the
+   * next start, and a `progress` call keeps a turn from counting as quiet.
+   */
+  escalation?: Pick<EscalationService, 'asked' | 'progressed'>;
 }
 
 /** `source.finding`: the named sources (T303), and a tell/review item's examples (T260). */
@@ -263,6 +270,12 @@ export class VerbService {
     const { session, text } = validateVerbInput('progress', input);
     const caller = this.caller(session);
     await this.options.streams.update('agent', caller.stream, { agent: { progress: text } });
+    // T484: a turn with a progress call isn't quiet.
+    if (isAgentRole(caller.role)) {
+      await this.options.escalation
+        ?.progressed(caller.stream)
+        .catch((err) => console.error('escalation: progress not counted:', err));
+    }
     return this.options.streams.appendThread(
       'agent',
       caller.stream,
@@ -292,6 +305,35 @@ export class VerbService {
       { kind: 'line', body: `goal met: ${summary}`.slice(0, 800) },
       session,
     );
+  }
+
+  /**
+   * T484 (D56, design/model-routing.md §6): the node's own agent asks to
+   * step up the model ladder at its next start. It says why; it never names
+   * a model (the verb takes nothing else), and the step stays within the
+   * operator's preset models and effort ceiling. A line on the thread, then
+   * the watcher's answer in words.
+   */
+  async escalate(input: unknown): Promise<{ result: string }> {
+    const { session, why } = validateVerbInput('escalate', input);
+    if (this.isDirector(session)) {
+      throw new Error('escalate: the Director has no node to step up; its model is the operator’s');
+    }
+    const caller = this.caller(session);
+    if (!isAgentRole(caller.role)) {
+      throw new Error(
+        `escalate: a ${caller.role} session cannot ask for a stronger model; only a node's own agent can`,
+      );
+    }
+    const escalation = this.options.escalation;
+    if (escalation === undefined) throw new Error('escalate: model choice is not available here');
+    await this.options.streams.appendThread(
+      'agent',
+      caller.stream,
+      { kind: 'line', body: `asks for a stronger model: ${why}`.slice(0, 800) },
+      session,
+    );
+    return { result: await escalation.asked(caller.stream, session, why) };
   }
 
   /** A finding goes to the thread (the narrative) and to `agent.findings` (the list the cockpit groups), §4.2. */
@@ -892,5 +934,6 @@ export function verbHandlers(
     restart_node: (input) => service.restartNode(input),
     propose_repo: (input) => service.proposeRepo(input),
     goal_met: (input) => service.goalMet(input),
+    escalate: (input) => service.escalate(input),
   };
 }

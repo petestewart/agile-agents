@@ -79,6 +79,8 @@ export const ROUTES: Record<RoutedEventType, readonly Rule[]> = {
   agent_restarted: ['self'],
   // T481 (D50): a vendor's CLI was updated. It is about no node: recorded in Events, routed to nobody.
   harness_updated: [],
+  // T484: a node's model stepped up (or it is stuck on the strongest): its own record, like a restart.
+  model_escalated: ['self'],
 };
 
 /** Types whose parties also bring their own ancestors (overlap: "both nodes, their ancestors"). */

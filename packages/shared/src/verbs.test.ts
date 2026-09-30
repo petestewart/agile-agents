@@ -67,6 +67,7 @@ describe('agent verbs', () => {
       'restart_node',
       'propose_repo',
       'goal_met',
+      'escalate',
     ]);
     for (const verb of AGENT_VERBS) {
       expect(AGENT_VERB_SCHEMAS[verb]).toBeDefined();

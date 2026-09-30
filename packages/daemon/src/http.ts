@@ -115,7 +115,7 @@ import {
   parseAnswerParams,
   sayAndAnswer,
 } from './questions';
-import { CHOOSE_AGAIN_END_REASON, ModelPolicyService } from './routing';
+import { CHOOSE_AGAIN_END_REASON, ModelPolicyService, StepUpRefusedError } from './routing';
 import { installedCliStatus } from './runner/installed-cli';
 import type { ModelCatalog } from './runner/model-catalog';
 import {
@@ -601,6 +601,9 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
             ? {
                 onChooseAgain: (id: string) =>
                   options.attach?.endResting(id, CHOOSE_AGAIN_END_REASON) ?? Promise.resolve(),
+                // T484: a Step up ends a resting session too.
+                endResting: (id: string, why: string) =>
+                  options.attach?.endResting(id, why) ?? Promise.resolve(),
               }
             : {}),
           ...(options.chooserClassifier ? { classifier: options.chooserClassifier } : {}),
@@ -1160,6 +1163,9 @@ async function handleFavouriteModelsRoute(
  *   GET  /api/streams/:id/model-policy      the node's own, resolved with sources, its pick
  *   PUT  /api/streams/:id/model-policy      a patch (`null` inherits again)
  *   POST /api/streams/:id/choose-again      "Let the policy choose again" (D55)
+ *   POST /api/streams/:id/step-up           T484: Step up, the next rung at the next start (409 when
+ *                                           there is none: the top, Strongest first, never started)
+ *   POST /api/streams/:id/dismiss-stuck     T484: dismiss the "stuck on the strongest model" card
  *   GET  /api/model-policy/preview          `?project&parent&repo`: what a new node there starts on
  *   POST /api/model-policy/try              T483 Try it: `{text, project?, node?}` → the scores and the
  *                                           pick, nothing started (it may call Jev)
@@ -1216,12 +1222,17 @@ async function handleModelPolicyRoute(
     }
   }
   const project = path.match(/^\/api\/projects\/([^/]+)\/model-policy$/);
-  const node = path.match(/^\/api\/streams\/([^/]+)\/(model-policy|choose-again)$/);
+  const node = path.match(
+    /^\/api\/streams\/([^/]+)\/(model-policy|choose-again|step-up|dismiss-stuck)$/,
+  );
   if (!home && !profiles && !project && !node) return undefined;
   const again = node?.[2] === 'choose-again';
-  const write = again ? 'POST' : 'PUT';
+  const stepUp = node?.[2] === 'step-up';
+  const dismissStuck = node?.[2] === 'dismiss-stuck';
+  const action = again || stepUp || dismissStuck;
+  const write = action ? 'POST' : 'PUT';
   if (req.method !== 'GET' && req.method !== write) return undefined;
-  if (again && req.method === 'GET') return undefined;
+  if (action && req.method === 'GET') return undefined;
   if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
   const routing = feed.routing;
   if (!routing) return errorResponse(503, 'model choice is not available');
@@ -1251,6 +1262,12 @@ async function handleModelPolicyRoute(
     if (again && nodeId !== undefined) {
       return jsonResponse(await routing.chooseAgain(nodeId));
     }
+    if (stepUp && nodeId !== undefined) {
+      return jsonResponse(await routing.stepUp(nodeId));
+    }
+    if (dismissStuck && nodeId !== undefined) {
+      return jsonResponse(await routing.dismissStuck(nodeId));
+    }
     const body = await readJsonBody(req).catch(() => undefined);
     if (profiles) {
       const input = ModelProfilesPatchSchema.safeParse(body);
@@ -1268,6 +1285,7 @@ async function handleModelPolicyRoute(
     );
   } catch (err) {
     if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
+    if (err instanceof StepUpRefusedError) return errorResponse(409, messageOf(err));
     return errorResponse(400, messageOf(err));
   }
 }

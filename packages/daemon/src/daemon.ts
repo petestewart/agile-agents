@@ -309,6 +309,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           // T465: a resting session ends, so the next start lets the policy pick (declared below).
           onChooseAgain: async (id: string): Promise<void> =>
             attachService?.endResting(id, CHOOSE_AGAIN_END_REASON),
+          // T484: a step up ends a resting session (T465) and is recorded as a routed event.
+          endResting: async (id: string, why: string): Promise<void> =>
+            attachService?.endResting(id, why),
+          ...(emitRouted ? { emitRouted } : {}),
           // T483: the chooser asks the daemon's classifier tier, bounded by its timeout.
           classifier,
           chooserTimeoutMs: () => config.classifier.timeout_ms,
@@ -508,6 +512,13 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(mainSync ? { onMainMoved: (repo, id) => mainSync.mainMoved(repo, id) } : {}),
           // T340: a deliver that finds the PR merged on GitHub records it at once.
           refreshPr: (id: string): Promise<unknown> | undefined => prPoller?.pollNow(id),
+          // T484: a merge refused twice for the same reason steps the node's model up.
+          ...(modelPolicy
+            ? {
+                onRefused: (id: string, key: string, words: string) =>
+                  modelPolicy.escalation.mergeRefused(id, key, words),
+              }
+            : {}),
         })
       : undefined;
   // T478: auto-close reads the branch through landing's preflight and the worktree by git.
@@ -586,6 +597,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
                 },
               }
             : {}),
+          // T484 (D56): `escalate`, and the quiet-turn count's `progress`.
+          ...(modelPolicy ? { escalation: modelPolicy.escalation } : {}),
           // The three-proposal cap.
           proposalLimit: {
             assertCanPropose: (caller) => lessonsService?.assertCanPropose(caller),

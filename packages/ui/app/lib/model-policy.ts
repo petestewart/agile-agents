@@ -140,6 +140,7 @@ const HOW_WORDS: Record<PickHow, string> = {
   pinned: 'A pinned rule',
   jev: 'Chosen by Jev',
   scores: 'Chosen by the scores',
+  escalation: 'Stepped up the ladder',
 };
 
 /** How the node's current model was picked, in a line: "Claude Sonnet 5.5 · medium — start cheap: …". */
@@ -238,6 +239,7 @@ export function pickSourceWords(pick: Pick<ModelPickRecord, 'how' | 'base'>): st
     pinned: 'a pinned rule',
     jev: 'Jev',
     scores: 'the scores',
+    escalation: 'a step up',
   };
   return pick.how === 'clamp' && pick.base !== undefined
     ? `${one[pick.base]}, then clamped into the preset models`

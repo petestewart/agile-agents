@@ -949,6 +949,8 @@ const EVENT_ICON: Partial<Record<RoutedEventType, IconName>> = {
   agent_restarted: 'refresh',
   // T481: a vendor CLI updated.
   harness_updated: 'download',
+  // T484: a node's model stepped up the ladder (or is stuck at its top).
+  model_escalated: 'arrow-up',
 };
 
 const FAMILY_ICON: Record<EventFamily, IconName> = {
@@ -966,6 +968,7 @@ const EVENT_TONE: Partial<Record<RoutedEventType, 'red' | 'amber' | 'purple' | '
   pr_behind: 'amber',
   ship_findings: 'amber',
   agent_restarted: 'amber',
+  model_escalated: 'amber',
   pr_merged: 'purple',
   child_delivered: 'purple',
   dependency_satisfied: 'green',

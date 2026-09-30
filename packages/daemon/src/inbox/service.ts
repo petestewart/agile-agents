@@ -24,6 +24,7 @@ import {
   isRestingSession,
   liveChildrenOf,
   partsOf,
+  stuckLine,
 } from '@agile-agents/shared';
 import type { AutonomyService } from '../coordination/autonomy';
 import type { ContractService } from '../coordination/contracts';
@@ -176,6 +177,8 @@ export class InboxService {
     for (const stream of byId.values()) {
       const item = this.streamItem(stream, byId);
       if (item) items.push(item);
+      const stuck = this.stuckItem(stream, byId);
+      if (stuck) items.push(stuck);
     }
     // T481: derived like the rest, from the harness service's last check.
     for (const item of this.deps.harness?.inboxItems() ?? []) items.push(item);
@@ -309,6 +312,28 @@ export class InboxService {
       stream: stream.id,
       stream_path: this.path(stream, byId),
       ts: stream.agent.updated_at,
+      context: inboxContext(text),
+      ...withDetail(text),
+    };
+  }
+
+  /**
+   * T484 (design/model-routing.md §6): a node that stalled on the strongest
+   * preset model, with no rung left to step up to (or under Strongest first).
+   * Derived from its record's `escalation.stuck`; gone once you pick a model
+   * or dismiss it, or the node closes.
+   */
+  private stuckItem(stream: Stream, byId: Map<string, Stream>): InboxItem | undefined {
+    const stuck = stream.escalation?.stuck;
+    if (stuck === undefined || stream.archived === true) return undefined;
+    if (stream.human.status === 'closed' || stream.human.status === 'landed') return undefined;
+    const text = stuckLine(stream.title, stuck.reason);
+    return {
+      kind: 'model_stuck',
+      id: stream.id,
+      stream: stream.id,
+      stream_path: this.path(stream, byId),
+      ts: stuck.at,
       context: inboxContext(text),
       ...withDetail(text),
     };
