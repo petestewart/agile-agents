@@ -105,7 +105,11 @@ describe('effort mapping', () => {
 
 describe('T401: the vendors that take effort', () => {
   test("the cockpit's list is the registry's: every provider with an effort mapping, no other", () => {
-    const mapped = SESSION_VENDORS.filter((vendor) => ACP_PROVIDERS[vendor].effort !== undefined);
+    // T488: a spawn mapping (Claude) or the vendor's own ACP effort option (Codex).
+    const mapped = SESSION_VENDORS.filter(
+      (vendor) =>
+        ACP_PROVIDERS[vendor].effort !== undefined || ACP_PROVIDERS[vendor].effortOption === true,
+    );
     expect([...EFFORT_VENDORS].sort()).toEqual([...mapped].sort());
   });
 });

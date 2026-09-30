@@ -67,7 +67,12 @@ import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { type CliInvocation, cliInvocationToShell, normalizeCliBin } from './cli-bin';
 import { type InstalledCli, installedCliForSpawn } from './installed-cli';
-import { currentValueOf, modelNameIn, vendorModelOption } from './vendor-models';
+import {
+  currentValueOf,
+  modelNameIn,
+  vendorEffortOption,
+  vendorModelOption,
+} from './vendor-models';
 
 /** `<sessionDir>/<name>` appender that never throws: diagnostics must not take a session down. */
 function openLog(dir: string, name: string): { path: string; append: (chunk: string) => void } {
@@ -137,6 +142,12 @@ export interface AgentSessionOptions {
    * when there was nothing to set.
    */
   onModel?: (result: ModelPickResult) => void;
+  /**
+   * T488: the picked effort was set through the vendor's ACP effort option
+   * (Codex) before the first turn, or was not taken (and why). Not called
+   * when there was nothing to set, or for a vendor with a spawn mapping.
+   */
+  onEffort?: (result: EffortPickResult) => void;
   /**
    * T480 (D49): the operator's installed CLI for this vendor (`installedCliFor`),
    * which the bridge runs instead of its bundled copy. Applied only to an
@@ -414,6 +425,14 @@ export function saveSessionState(
  */
 export type ModelPickResult =
   | { ok: true; model: string }
+  | { ok: false; picked: string; actual?: string; line: string };
+
+/**
+ * T488: how a session's picked effort went, for a vendor that takes it as
+ * an ACP config option. `ok: false`: `line` says in words what it runs.
+ */
+export type EffortPickResult =
+  | { ok: true; effort: string }
   | { ok: false; picked: string; actual?: string; line: string };
 
 /** T461: at most this many advertised commands are kept per session. */
@@ -1004,6 +1023,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
    * doesn't already run is sent; Claude's full ids ride `ANTHROPIC_MODEL`
    * (the provider's `model` switch) as before. Never fails the session.
    */
+  /** T488: the newest `configOptions` a `session/set_config_option` reply carried (a model change can change the effort list). */
+  let latestConfigOptions: unknown;
+
   async function applyPickedModel(): Promise<void> {
     const pick = sessionRef.model;
     const option = vendorModelOption(lastState);
@@ -1039,6 +1061,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     let after: string | undefined;
     try {
       const reply = asRecord(await spawned.setConfigOption(configId, pick));
+      if (Array.isArray(reply?.configOptions)) latestConfigOptions = reply.configOptions;
       after = currentValueOf(reply?.configOptions, configId);
     } catch (err) {
       const why = (err instanceof Error ? err.message : String(err)).slice(0, 200);
@@ -1070,6 +1093,79 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     });
   }
 
+  function reportEffort(result: EffortPickResult): void {
+    if (!result.ok) stderrLog.append(`[agiled] effort: ${result.line}\n`);
+    try {
+      opts.onEffort?.(result);
+    } catch {
+      // Bookkeeping only.
+    }
+  }
+
+  /**
+   * T488: sets the session's picked effort through the vendor's ACP effort
+   * option (`category: "thought_level"`), after the model (whose reply may
+   * list other levels) and before the first turn, and reads the reply back.
+   * Only for a provider with `effortOption` (Codex): Claude's rides its spawn
+   * env. A level the vendor doesn't list, or already runs, isn't sent. Never
+   * fails the session.
+   */
+  async function applyPickedEffort(): Promise<void> {
+    const pick = sessionRef.effort;
+    if (provider.effortOption !== true || pick === undefined) return;
+    const vendor = provider.label;
+    const option = vendorEffortOption(
+      latestConfigOptions ?? (lastState !== null ? lastState.configOptions : undefined),
+    );
+    if (option === undefined) {
+      reportEffort({
+        ok: false,
+        picked: pick,
+        line: `${vendor} reported no effort setting, so effort ${pick} was not set`,
+      });
+      return;
+    }
+    const current = option.current;
+    const runs = current === undefined ? 'its own default' : current;
+    if (pick === current) return;
+    if (!option.values.includes(pick)) {
+      reportEffort({
+        ok: false,
+        picked: pick,
+        ...(current !== undefined ? { actual: current } : {}),
+        line: `${vendor} doesn't offer effort ${pick}; it runs ${runs}`,
+      });
+      return;
+    }
+    let after: string | undefined;
+    try {
+      const reply = asRecord(await spawned.setConfigOption(option.configId, pick));
+      after = currentValueOf(reply?.configOptions, option.configId);
+    } catch (err) {
+      const why = (err instanceof Error ? err.message : String(err)).slice(0, 200);
+      reportEffort({
+        ok: false,
+        picked: pick,
+        ...(current !== undefined ? { actual: current } : {}),
+        line: `${vendor} refused effort ${pick} (${why}); it runs ${runs}`,
+      });
+      return;
+    }
+    if (after === pick) {
+      reportEffort({ ok: true, effort: pick });
+      return;
+    }
+    reportEffort({
+      ok: false,
+      picked: pick,
+      ...(after !== undefined ? { actual: after } : {}),
+      line:
+        after === undefined
+          ? `${vendor} did not say whether it took effort ${pick}`
+          : `${vendor} kept effort ${after}; it did not take ${pick}`,
+    });
+  }
+
   /**
    * T467: a fresh session's first turn waits for this: the session opened
    * (authenticating first where the vendor asks for it, as the prompt path
@@ -1085,6 +1181,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     if (stopRequested || settled) return;
     reportAcpSession();
     await applyPickedModel();
+    if (stopRequested || settled) return;
+    await applyPickedEffort();
   }
 
   /**

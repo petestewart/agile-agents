@@ -123,3 +123,32 @@ export function currentValueOf(configOptions: unknown, configId: string): string
 export function modelNameIn(option: VendorModelOption | undefined, value: string): string {
   return option?.options.find((o) => o.value === value)?.name ?? value;
 }
+
+/** T488: a vendor's effort option as its reply carried it (Codex's `reasoning_effort`). */
+export interface VendorEffortOption {
+  /** What `session/set_config_option` takes (`reasoning_effort`). */
+  configId: string;
+  /** The level the session runs now. */
+  current?: string;
+  /** The levels the vendor lists, as its values. */
+  values: string[];
+}
+
+/**
+ * T488: the effort option of a reply's `configOptions`: the entry with
+ * `category: "thought_level"` (Claude's `effort`, Codex's
+ * `reasoning_effort`, LIVE-CHECKLIST §12). `undefined` when there is none.
+ */
+export function vendorEffortOption(configOptions: unknown): VendorEffortOption | undefined {
+  if (!Array.isArray(configOptions)) return undefined;
+  for (const item of configOptions) {
+    const o = asRecord(item);
+    if (o === null || o.category !== 'thought_level' || typeof o.id !== 'string') continue;
+    const values = selectOptions(o.options).map((entry) => entry.value);
+    if (values.length === 0) continue;
+    const current =
+      typeof o.currentValue === 'string' && o.currentValue !== '' ? o.currentValue : undefined;
+    return { configId: o.id, ...(current !== undefined ? { current } : {}), values };
+  }
+  return undefined;
+}

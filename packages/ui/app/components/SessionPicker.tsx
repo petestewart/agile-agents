@@ -33,7 +33,14 @@ import {
 } from '@agile-agents/shared';
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react';
 import { getSessionDefaults, setFavouriteModel } from '../lib/api';
-import { agentLabel, modelLabel, sessionIdText, vendorLabel } from '../lib/chat';
+import {
+  agentLabel,
+  effortInModel,
+  modelLabel,
+  noEffortLine,
+  sessionIdText,
+  vendorLabel,
+} from '../lib/chat';
 import {
   type ModelChipState,
   type ModelRef,
@@ -417,7 +424,7 @@ export function ModelChoice({
           />
         ) : (
           <span className="cr-mpick-noeffort" data-testid={`${testid}-no-effort`}>
-            {vendorLabel(value.vendor)} has no effort setting.
+            {noEffortLine(value.vendor)}.
           </span>
         )}
       </div>
@@ -747,7 +754,7 @@ export function SessionFields({
   // T401: a vendor with no effort setting never gets the level; say so rather than offer it.
   const noEffort = vendorTakesEffort(vendor)
     ? undefined
-    : `${vendorLabel(vendor)} has no effort setting; the level is not used`;
+    : `${noEffortLine(vendor)}; the level is not used`;
   const shown = typing ? OTHER : value.model.trim();
   return (
     <div className="cr-sf" data-testid={testid}>
@@ -881,7 +888,21 @@ export function EffortChip({
   /** T487: the tooltip, when the step is not for a next message (New node). */
   title?: string;
 }): JSX.Element | null {
-  if (!vendorTakesEffort(vendor)) return null;
+  if (!vendorTakesEffort(vendor)) {
+    // T488: Cursor's effort is in its model ids; say so where the chip would be.
+    if (!effortInModel(vendor)) return null;
+    return (
+      <span
+        className="cr-effort-chip"
+        data-static="true"
+        data-testid={testid}
+        title={`${noEffortLine(vendor)}.`}
+      >
+        <Icon name="zap" size={12} />
+        In the model
+      </span>
+    );
+  }
   return (
     <button
       type="button"

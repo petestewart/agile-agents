@@ -99,6 +99,15 @@ export interface AcpProviderConfig {
    */
   effort?: (level: AcpEffortLevel) => AcpSpawnContribution;
   /**
+   * T488: the vendor takes an effort level through its own ACP config
+   * option, the `configOptions` entry with `category: "thought_level"`,
+   * set with `session/set_config_option` before the first turn and read
+   * back, like a T467 model pick. Codex reports `reasoning_effort` (low,
+   * medium, high, xhigh, max, ultra; LIVE-CHECKLIST §12), which holds D12's
+   * four levels. A level the vendor doesn't list is never sent.
+   */
+  effortOption?: boolean;
+  /**
    * D12: how this vendor is asked to run a specific model. Same rule as
    * `effort` — config, not a code path, and `undefined` where no mechanism
    * is measured.
@@ -251,8 +260,10 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
   }),
   codex: freezeProvider({
     id: 'codex',
-    // No measured effort or model mapping — see `AcpProviderConfig.effort`.
+    // No spawn-time effort or model mapping. T467 sets its model and T488
+    // its effort through its ACP config options (`effortOption`).
     defaultModel: 'default',
+    effortOption: true,
     label: 'Codex',
     // `@agentclientprotocol/codex-acp` 1.10.0 (design/spike-findings.md §D,
     // §C2, §C3): raises **zero** permission requests in `agent`,

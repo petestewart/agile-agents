@@ -2998,6 +2998,18 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   - Validation: typecheck and lint clean; full `bun test` 3606 pass, 3 skip, 0 fail; `bun run build` then control-room e2e 135/0; walkthrough 1/0 (it never drove the old selects).
 - **Notes:** Branch T487-new-node-model-picker.
 
+### Ticket: T488 Codex's effort, and Cursor's effort in its model
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-30): Codex and Cursor show no effort chip. T401 offered effort only where a spawn-time mapping existed (Claude's `MAX_THINKING_TOKENS`). Pete's §12 replies show Codex reports its own effort option, `reasoning_effort` (`category: "thought_level"`, values low, medium, high, xhigh, max, ultra), and Cursor has none: its effort is part of each model id (`claude-opus-5-5[…,effort=medium,…]`, `gpt-5.6-sol[…,reasoning=medium,…]`).
+- **Acceptance Criteria:** Codex gets the effort chip and picker levels; its level is set with `session/set_config_option` after the model and before the first turn, and read back. A level it keeps, refuses or doesn't list says so on the thread and never fails the session; the session records the level it runs. Cursor's chip place reads "In the model" (not a button) and the pickers say "Cursor sets effort as part of each model: pick the model with the effort you want". Claude is unchanged. D12's four levels stay (Codex lists all four; its xhigh and ultra aren't offered).
+- **Validation Steps:** Attach tests with the fake agent in Codex's shape; the T401 parity test; UI label tests; the New node e2e for Cursor's hint; full suite.
+  - Built: `AcpProviderConfig.effortOption` (Codex `true`); `EFFORT_VENDORS` = claude, codex, and `EFFORT_IN_MODEL_VENDORS` = cursor in shared; `providerTakesEffort` for attach, resume and the Director (no "effort … ignored by codex" line any more); the runner's `applyPickedEffort` after `applyPickedModel`, reading the model reply's `configOptions` first (a model change can change the levels), `vendorEffortOption` in `vendor-models.ts`; `onEffort` reports a refusal to the node's or the Director's thread and records a D12 level the vendor kept. UI: `noEffortLine`/`effortInModel` in `lib/chat.ts`; `EffortChip` renders a static "In the model" chip for Cursor; the picker's no-effort text uses the same words. The fake agent gained `effortOption`.
+  - Tests: attach T488 (set after the model and before the prompt, recorded, no ignored line; the current level not sent; kept → line and recorded level; refused → line, the turn runs; an unlisted level not sent; Cursor still "effort high ignored by cursor"). Four of the six fail with `applyPickedEffort` disabled. T401 parity test counts `effortOption`. `chat.test.ts`: Codex labels carry effort, Cursor's don't, `noEffortLine`. Control-room e2e T487 asserts Cursor's static chip and its title.
+  - Validation: typecheck and lint clean; `bun run build`, then full `bun test` 3612 pass, 3 skip, 0 fail (e2e included). Live check: LIVE-CHECKLIST §12.2.
+- **Notes:** Branch T488-vendor-effort. Unverified against real Codex: whether `reasoning_effort` set over ACP changes the turn (§12.2).
+
 ### Ticket: T482 Model routing: the policy and the lock
 - **Priority:** P1
 - **Status:** Todo (decided: D51–D56, `design/model-routing.md`)

@@ -7,6 +7,7 @@
  */
 
 import {
+  EFFORT_IN_MODEL_VENDORS,
   type InboxItem,
   type SessionRef,
   type ThreadEntry,
@@ -31,6 +32,18 @@ const VENDOR_LABEL: Record<string, string> = {
 /** `claude` → "Claude"; an unknown vendor keeps its id, capitalised. */
 export function vendorLabel(vendor: string): string {
   return VENDOR_LABEL[vendor] ?? (vendor ? vendor[0]?.toUpperCase() + vendor.slice(1) : 'Agent');
+}
+
+/** T488: whether `vendor` builds effort into each model instead of a setting of its own (Cursor). */
+export function effortInModel(vendor: string): boolean {
+  return (EFFORT_IN_MODEL_VENDORS as readonly string[]).includes(vendor);
+}
+
+/** T401, T488: why a vendor offers no effort level, in words. */
+export function noEffortLine(vendor: string): string {
+  return effortInModel(vendor)
+    ? `${vendorLabel(vendor)} sets effort as part of each model: pick the model with the effort you want`
+    : `${vendorLabel(vendor)} has no effort setting`;
 }
 
 const cap = (word: string): string => (word ? word[0]?.toUpperCase() + word.slice(1) : word);

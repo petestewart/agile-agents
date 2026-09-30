@@ -3689,6 +3689,142 @@ describe('T465 (D48): a finished turn keeps its session; an ended one resumes', 
   }, 30_000);
 });
 
+describe("T488: Codex's effort goes through its own ACP option", () => {
+  const log = () => join(scratch, 't488.jsonl');
+  const logLines = (): Array<Record<string, unknown> & { method: string }> =>
+    (existsSync(log()) ? readFileSync(log(), 'utf8') : '')
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l));
+  const prompts = () => logLines().filter((l) => l.method === 'session/prompt');
+  const sets = () =>
+    logLines()
+      .filter((l) => l.method === 'session/set_config_option')
+      .map((l) => l.params as { sessionId: string; configId: string; value: string });
+  /** Codex's shape (LIVE-CHECKLIST §12): `reasoning_effort`, category `thought_level`. */
+  const CODEX_EFFORT = {
+    id: 'reasoning_effort',
+    current: 'low',
+    values: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  };
+  const codex = (extra: Partial<FakeAgentScript> = {}) =>
+    fakeProviderFor(ACP_PROVIDERS.codex, {
+      ...SPEAKS,
+      logFile: log(),
+      modelOption: {
+        current: 'gpt-6-astra',
+        options: [
+          { value: 'gpt-6-astra', name: 'GPT-6-Astra' },
+          { value: 'gpt-5.5', name: 'GPT-5.5' },
+        ],
+      },
+      effortOption: CODEX_EFFORT,
+      ...extra,
+    });
+  const sessionOf = (streamId: string, session: string) =>
+    streams.get(streamId).sessions.find((s) => s.id === session);
+
+  test('the picked level is set before the first prompt, after the model, and recorded', async () => {
+    attachService = buildAttachService(codex());
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id, {
+      vendor: 'codex',
+      model: 'gpt-5.5',
+      effort: 'high',
+    });
+    await waitFor(() => prompts().length === 1);
+    expect(sets()).toEqual([
+      { sessionId: 'fake-session-1', configId: 'model', value: 'gpt-5.5' },
+      { sessionId: 'fake-session-1', configId: 'reasoning_effort', value: 'high' },
+    ]);
+    const order = logLines().map((l) => l.method);
+    expect(order.lastIndexOf('session/set_config_option')).toBeLessThan(
+      order.indexOf('session/prompt'),
+    );
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(sessionOf(stream.id, session.id)?.effort).toBe('high');
+    // Codex takes effort now: no "effort … ignored by codex" line.
+    expect(threadBodies(stream.id).some((b) => b.includes('ignored by codex'))).toBe(false);
+    expect(
+      threadBodies(stream.id).some((b) => /did not take|refused effort|doesn't offer/.test(b)),
+    ).toBe(false);
+  }, 30_000);
+
+  test('the level it already runs is not sent', async () => {
+    attachService = buildAttachService(codex());
+    const stream = await makeStream();
+    await attachService.attach(stream.id, { vendor: 'codex', model: 'gpt-6-astra', effort: 'low' });
+    await waitFor(() => prompts().length === 1);
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(sets()).toEqual([]);
+  }, 30_000);
+
+  test('a level the vendor kept says so, and the session records what it runs', async () => {
+    attachService = buildAttachService(codex({ setConfigOption: 'ignore' }));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id, {
+      vendor: 'codex',
+      model: 'gpt-6-astra',
+      effort: 'max',
+    });
+    await waitFor(() =>
+      threadBodies(stream.id).includes('Codex kept effort low; it did not take max'),
+    );
+    await waitFor(() => sessionOf(stream.id, session.id)?.effort === 'low');
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(prompts()).toHaveLength(1);
+  }, 30_000);
+
+  test('a refusal says why, and the session carries on', async () => {
+    attachService = buildAttachService(codex({ setConfigOption: 'error' }));
+    const stream = await makeStream();
+    await attachService.attach(stream.id, {
+      vendor: 'codex',
+      model: 'gpt-6-astra',
+      effort: 'medium',
+    });
+    await waitFor(() =>
+      threadBodies(stream.id).some((b) =>
+        b.startsWith('Codex refused effort medium (cannot set reasoning_effort); it runs low'),
+      ),
+    );
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(prompts()).toHaveLength(1);
+  }, 30_000);
+
+  test('a level it does not list is not sent, and the thread says what it runs', async () => {
+    attachService = buildAttachService(
+      codex({
+        effortOption: { id: 'reasoning_effort', current: 'medium', values: ['low', 'medium'] },
+      }),
+    );
+    const stream = await makeStream();
+    await attachService.attach(stream.id, { vendor: 'codex', model: 'gpt-6-astra', effort: 'max' });
+    await waitFor(() =>
+      threadBodies(stream.id).includes("Codex doesn't offer effort max; it runs medium"),
+    );
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(sets()).toEqual([]);
+  }, 30_000);
+
+  test('Cursor still has no effort: the level is recorded as ignored, never sent', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.cursor, {
+        ...SPEAKS,
+        logFile: log(),
+        requireAuthMethod: 'cursor_login',
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id, { vendor: 'cursor', effort: 'high' });
+    await waitFor(() => prompts().length === 1);
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(threadBodies(stream.id)).toContain('effort high ignored by cursor');
+    expect(sets()).toEqual([]);
+    expect(sessionOf(stream.id, session.id)?.effort).toBeUndefined();
+  }, 30_000);
+});
+
 describe('T467 (D46): models come from the vendor, set through ACP', () => {
   const log = () => join(scratch, 't467.jsonl');
   const logLines = (): Array<Record<string, unknown> & { method: string }> =>
