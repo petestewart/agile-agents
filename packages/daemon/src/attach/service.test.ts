@@ -51,7 +51,7 @@ import { QuestionService } from '../questions/service';
 import { wireQuestionSupersession } from '../questions/supersede';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { ModelCatalog } from '../runner/model-catalog';
-import { SESSION_STATE_FILE, missingVendorCommand } from '../runner/session';
+import { SESSION_STATE_FILE, USAGE_LOG_FILE, missingVendorCommand } from '../runner/session';
 import { StateStore } from '../store';
 import { AutoClose } from '../streams/auto-close';
 import { RepoInPlaceService } from '../streams/repo-in-place';
@@ -251,6 +251,42 @@ describe('attach on a stream with no repo (a planning conversation)', () => {
     const saved = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
     expect(saved).toMatchObject({ modes: null, configOptions: null, models: null });
     expect(saved.keys).toEqual(['sessionId']);
+  });
+
+  test('T485a: what the vendor reports about token usage is kept raw in usage.jsonl', async () => {
+    await attachService.stopAll();
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          { type: 'agent_text', text: 'done' },
+          { type: 'usage_update', used: 1200, size: 200_000 },
+          {
+            type: 'end_turn',
+            usage: { inputTokens: 900, outputTokens: 300, totalTokens: 1200 },
+          },
+        ],
+      }),
+    );
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    const file = join(home, 'sessions', session.id, USAGE_LOG_FILE);
+    await waitFor(
+      () => existsSync(file) && readFileSync(file, 'utf8').includes('"kind":"turn_end"'),
+    );
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(lines.map((l) => l.kind)).toEqual(['usage_update', 'turn_end']);
+    expect(lines[0]).toMatchObject({
+      update: { sessionUpdate: 'usage_update', used: 1200, size: 200_000 },
+    });
+    expect(lines[1]).toMatchObject({
+      stopReason: 'end_turn',
+      replyKeys: ['stopReason', 'usage'],
+      usage: { inputTokens: 900, outputTokens: 300, totalTokens: 1200 },
+    });
+    expect(typeof lines[1]?.at).toBe('string');
   });
 });
 

@@ -3046,9 +3046,20 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** A thread line and a record-only event per step; "strongest first" never steps; a model change ends a resting session (T465).
 - **Validation Steps:** Unit tests per trigger with the fake agent; the ladder order; the top-of-ladder card.
 
+### Ticket: T485a Record what each vendor reports about token usage
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** D51: budgets are built only after measuring which vendors report turn token usage (LIVE-CHECKLIST §16). The daemon kept only the context window's fill from `usage_update` (T411, in memory), and dropped the prompt reply's other fields, so there was nothing to measure with.
+- **Acceptance Criteria:** Each session writes `sessions/<id>/usage.jsonl`: every `usage_update` raw, and one `turn_end` line per turn with the prompt reply's keys and its `usage`/`_meta` when present. Capped (2,000 lines, 4,000 characters a line). LIVE-CHECKLIST §16 says how to collect it.
+- **Validation Steps:** Attach test with the fake agent reporting both; full suite.
+  - Built: `acp-client`'s turn-end marker carries the prompt reply's `replyKeys`, `usage` and `_meta`; the runner's `recordUsage` writes `usage.jsonl` (`USAGE_LOG_FILE`). The fake agent's `end_turn` step takes `usage`.
+  - Tests: attach T485a (a `usage_update` line with the raw update, then a `turn_end` line with `replyKeys` and `usage`).
+- **Notes:** Branch T485a-usage-record. §16 was cited by the routing design and T485 before it existed; this adds it.
+
 ### Ticket: T485 Model routing: budget caps
 - **Priority:** P2
-- **Status:** Todo (measure first: LIVE-CHECKLIST §16, which vendors report turn token usage)
+- **Status:** Todo (measure first: LIVE-CHECKLIST §16 with T485a's `usage.jsonl`, which vendors report turn token usage)
 - **Owner:** manager
 - **Scope:** `design/model-routing.md` §7 (D51): budgets in weighted tokens (tokens × the model profile's cost), per session and per node. At 80% a chat line; at the cap the next turn waits and Needs me offers Raise the cap / Stop here. A vendor that reports no usage says so instead of estimating.
 - **Validation Steps:** After §16: unit tests on the weighting and cap, and an attach test that the capped node waits.

@@ -854,20 +854,29 @@ export function spawnSession(opts: SpawnSessionOptions): SpawnedSession {
     };
     emitFrame({ acp: 'notification', message: echo });
 
-    const recordTurnEnd = (stopReason: string | null) => {
+    // T485a: the prompt reply's `usage` (and `_meta`), when a vendor sends
+    // them, ride the marker so the daemon can record what each vendor reports.
+    const recordTurnEnd = (stopReason: string | null, reply?: Record<string, unknown> | null) => {
+      const extra: Record<string, unknown> = {};
+      if (reply !== undefined && reply !== null) {
+        extra.replyKeys = Object.keys(reply).slice(0, 20);
+        if (reply.usage !== undefined) extra.usage = reply.usage;
+        if (reply._meta !== undefined) extra._meta = reply._meta;
+      }
       emitFrame({
         acp: 'notification',
         message: {
           jsonrpc: '2.0',
           method: ACP_TURN_ENDED_METHOD,
-          params: { sessionId, stopReason },
+          params: { sessionId, stopReason, ...extra },
         },
       });
     };
     sendRequest('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }).then(
       (result) => {
-        const stopReason = asRecord(result)?.stopReason;
-        recordTurnEnd(typeof stopReason === 'string' ? stopReason : null);
+        const reply = asRecord(result);
+        const stopReason = reply?.stopReason;
+        recordTurnEnd(typeof stopReason === 'string' ? stopReason : null, reply);
       },
       () => {
         // The turn-end marker above already carries "failed"; the settled
