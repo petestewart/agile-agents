@@ -1,11 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import { DEFAULT_MODEL_PROFILES, resolveModelPolicy } from '@agile-agents/shared';
 import {
+  confidenceWords,
   isPreset,
+  moveRule,
   pickLine,
+  pickSourceWords,
+  pinnedRuleWords,
   presetsWords,
   profileRows,
   qualityWords,
+  scoreRows,
   setHere,
   sourceWords,
   togglePreset,
@@ -56,11 +61,11 @@ describe('model choice words (T482)', () => {
         model: 'claude-sonnet-5-5',
         effort: 'medium',
         how: 'rule',
-        why: 'start cheap: the cheapest balanced preset model (no chooser yet)',
+        why: 'start cheap: the cheapest balanced preset model (no classifier key)',
         at: 'now',
       }),
     ).toBe(
-      'Claude Sonnet 5.5 · medium — start cheap: the cheapest balanced preset model (no chooser yet)',
+      'Claude Sonnet 5.5 · medium — start cheap: the cheapest balanced preset model (no classifier key)',
     );
     expect(
       pickLine({ vendor: 'codex', model: 'gpt-5.5', how: 'explicit', why: 'your pick', at: 'now' }),
@@ -75,5 +80,41 @@ describe('model choice words (T482)', () => {
     expect(rows[0]?.profile.tier).toBe('strongest');
     expect(rows.find((r) => r.key === 'claude/sonnet')?.own).toBe(true);
     expect(rows.at(-1)?.vendor).toBe('codex');
+  });
+});
+
+describe('the chooser in words (T483)', () => {
+  test('the five scores, one decimal each, in order', () => {
+    const rows = scoreRows({ clarity: 4.62, verifiability: 4, horizon: 1.5, stakes: 2, volume: 5 });
+    expect(rows.map((r) => `${r.label} ${r.value}`)).toEqual([
+      'Clarity 4.6',
+      'Verifiability 4.0',
+      'Horizon 1.5',
+      'Stakes 2.0',
+      'Volume 5.0',
+    ]);
+  });
+
+  test('confidence says whether it decided', () => {
+    expect(confidenceWords(0.82)).toBe('0.82: sure enough to decide');
+    expect(confidenceWords(0.41)).toBe('0.41: not sure, so the scores decided');
+  });
+
+  test('where a pick came from, a clamp naming its route', () => {
+    expect(pickSourceWords({ how: 'jev' })).toBe('Jev');
+    expect(pickSourceWords({ how: 'scores' })).toBe('the scores');
+    expect(pickSourceWords({ how: 'clamp', base: 'jev' })).toBe(
+      'Jev, then clamped into the preset models',
+    );
+  });
+
+  test('a pinned rule in words, and reordering', () => {
+    const rule = {
+      when: { role: 'coordinator' as const, topic: 'security' as const },
+      pick: { vendor: 'claude' as const, model: 'claude-opus-5-5', effort: 'high' as const },
+    };
+    expect(pinnedRuleWords(rule)).toBe('coordinator + security work → Claude Opus 5.5 · high');
+    expect(moveRule(['a', 'b', 'c'], 2, -1)).toEqual(['a', 'c', 'b']);
+    expect(moveRule(['a', 'b'], 0, -1)).toEqual(['a', 'b']);
   });
 });

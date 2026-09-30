@@ -1,0 +1,28 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "model": {
+      "type": "choice",
+      "choice": "claude/claude-sonnet-5-5",
+      "confidence": 0.82,
+      "probabilities": {
+        "claude/claude-sonnet-5-5": 0.88,
+        "claude/claude-haiku-4-5": 0.12,
+        "claude/claude-opus-5-5": 0
+      }
+    },
+    "clarity": {
+      "type": "choice",
+      "choice": "5",
+      "confidence": 0.85,
+      "probabilities": { "1": 0, "3": 0.1, "5": 0.9 }
+    },
+    "stakes": {
+      "type": "choice",
+      "choice": "3",
+      "confidence": 0.33,
+      "probabilities": { "1": 0.3, "3": 0.4, "5": 0.3 }
+    }
+  },
+  "usage": { "input_tokens": 512, "output_tokens": 24 }
+}

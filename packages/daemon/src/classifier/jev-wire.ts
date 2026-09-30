@@ -13,8 +13,26 @@
  * A Noul has no `confidence`; per D14 the value is read raw.
  * Unverified: the spelling of a rule's `criteria` field
  * (`JEV_CRITERIA_FIELD`, the one place to fix it).
+ *
+ * T483 (model-routing §5): the **choice** primitive, checked against the
+ * live API on 2026-09-30 (`__fixtures__/jev-choice-*.json`, one of them a
+ * whole live reply):
+ *
+ *  - request questions `{ type: 'choice', instructions, criteria: { <option>:
+ *    <description>, … } }` (at most 255 options; several questions in one
+ *    call are evaluated side by side);
+ *  - answers `{ type: 'choice', choice: '<option>', confidence: 0.82,
+ *    probabilities: { <option>: 0.88, … } }`.
  */
 
+import {
+  type ChoiceAnswer,
+  type ChoiceQuestion,
+  JevChoiceAnswerSchema,
+  type JevChoiceQuestion,
+  JevChoiceQuestionSchema,
+  formatZodError,
+} from '@agile-agents/shared';
 import { ClassifierUnavailableError } from './types';
 import type { Answer, Noul } from './types';
 
@@ -103,4 +121,83 @@ export function parseJevResponse(body: unknown, questions: Noul[]): Answer[] {
     }
     return { id: question.id, probability };
   });
+}
+
+// ---------------------------------------------------------------- choice (T483)
+
+export interface JevChoiceRequest {
+  state: string;
+  model: string;
+  questions: Record<string, JevChoiceQuestion>;
+}
+
+/**
+ * One call, N choice questions, keyed by id. A duplicate id or a question
+ * that fails the schema (one option, more than 255) is refused before
+ * anything is sent.
+ */
+export function buildJevChoiceRequest(
+  state: string,
+  questions: readonly ChoiceQuestion[],
+  model = JEV_MODEL,
+): JevChoiceRequest {
+  const map: Record<string, JevChoiceQuestion> = {};
+  for (const question of questions) {
+    if (map[question.id] !== undefined) {
+      throw new ClassifierUnavailableError(
+        'bad_response',
+        `duplicate classifier question id "${question.id}"`,
+      );
+    }
+    const parsed = JevChoiceQuestionSchema.safeParse({
+      type: 'choice',
+      instructions: question.instructions,
+      criteria: question.options,
+    });
+    if (!parsed.success) {
+      throw new ClassifierUnavailableError(
+        'bad_response',
+        formatZodError(`choice question "${question.id}"`, parsed.error),
+      );
+    }
+    map[question.id] = parsed.data;
+  }
+  return { state, model, questions: map };
+}
+
+/**
+ * One `ChoiceAnswer` per question, in order. A missing answer, or one that
+ * fails `JevChoiceAnswerSchema` (no choice, a confidence outside 0–1, a
+ * probability that isn't a number), is a `bad_response`, never defaulted.
+ */
+export function parseJevChoiceResponse(
+  body: unknown,
+  questions: readonly ChoiceQuestion[],
+): ChoiceAnswer[] {
+  if (!isRecord(body) || !isRecord(body.answers)) {
+    throw new ClassifierUnavailableError(
+      'bad_response',
+      'classifier response has no "answers" object',
+    );
+  }
+  const answers = body.answers;
+  return questions
+    .map((question) => {
+      const raw = answers[question.id];
+      if (!isRecord(raw)) {
+        throw new ClassifierUnavailableError(
+          'bad_response',
+          `classifier response has no answer for "${question.id}"`,
+        );
+      }
+      const parsed = JevChoiceAnswerSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new ClassifierUnavailableError(
+          'bad_response',
+          formatZodError(`classifier answer for "${question.id}"`, parsed.error),
+        );
+      }
+      return { id: question.id, ...parsed.data };
+    })
+    .map(({ type: _type, ...answer }) => answer);
 }

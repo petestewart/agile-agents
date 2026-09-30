@@ -10,21 +10,35 @@
  *    is the project's), each field "from Home" or "set here", with Let the
  *    policy choose again and how the current model was picked.
  *
+ * T483 adds the chooser's controls: pinned rules, guidance, criterion
+ * weights, and Settings' **Try it** (a pasted task's scores and pick,
+ * nothing started); a node's Details shows the scores behind its pick.
+ *
  * Every change saves at once. The pure half is `lib/model-policy.ts`.
  */
 
 import {
+  type ChooserScores,
+  type ChooserTopic,
+  type CriterionWeights,
   EFFORT_LEVELS,
   type Effort,
   MODEL_ESCALATIONS,
+  MODEL_POLICY_GUIDANCE_MAX_CHARS,
   MODEL_POLICY_MODES,
   MODEL_TIERS,
   type ModelEscalation,
   type ModelPolicyField,
   type ModelPolicyMode,
   type ModelPolicyPatch,
+  type ModelPolicyTryResult,
   type ModelProfile,
+  PINNED_RULE_ROLES,
+  PINNED_RULE_TOPICS,
+  type PinnedRule,
   type PresetModel,
+  ROUTING_CRITERIA,
+  type ResolvedCriterionWeights,
   type SessionDefaultsStatus,
   type SessionVendor,
   type Stream,
@@ -43,10 +57,13 @@ import {
   setModelProfiles,
   setNodeModelPolicy,
   setProjectModelPolicy,
+  tryModelPolicy,
 } from '../lib/api';
 import { agentLabel, sessionIdText } from '../lib/chat';
 import { pickerView } from '../lib/favourites';
 import {
+  CRITERION_HINTS,
+  CRITERION_WORDS,
   EFFORT_WORDS,
   ESCALATION_HINTS,
   ESCALATION_WORDS,
@@ -55,13 +72,18 @@ import {
   type ModelPolicyView,
   type PolicyLayer,
   TIER_WORDS,
+  confidenceWords,
   favouritePresets,
   isPreset,
+  moveRule,
   pickHowWords,
   pickLine,
+  pickSourceWords,
+  pinnedRuleWords,
   presetsWords,
   profileRows,
   qualityWords,
+  scoreRows,
   setHere,
   sourceWords,
   togglePreset,
@@ -442,6 +464,484 @@ export function ModelPolicyFields({
           }))}
         />
       </SetRow>
+      <SetRow
+        label="Pinned rules"
+        hint={<>These bypass the chooser: the first that matches picks. {src('pinned_rules')}</>}
+        testid={`${testid}-pinned-row`}
+        stack
+      >
+        <PinnedRulesField
+          rules={p.pinned_rules}
+          presets={p.presets}
+          disabled={busy}
+          testid={`${testid}-pinned`}
+          onChange={(pinned_rules) => void save({ pinned_rules })}
+        />
+      </SetRow>
+      <SetRow
+        label="Guidance"
+        hint={
+          <>Jev reads this as written when it picks a model, like a prompt. {src('guidance')}</>
+        }
+        testid={`${testid}-guidance-row`}
+        stack
+      >
+        <GuidanceField
+          value={p.guidance}
+          disabled={busy}
+          testid={`${testid}-guidance`}
+          onCommit={(guidance) => void save({ guidance })}
+        />
+      </SetRow>
+      <SetRow
+        label="Criterion weights"
+        hint={<>How much each score counts, 0 (ignored) to 3; 1 is normal. {src('weights')}</>}
+        testid={`${testid}-weights-row`}
+        stack
+      >
+        <WeightsField
+          weights={p.weights}
+          disabled={busy}
+          testid={`${testid}-weights`}
+          onChange={(weights) => void save({ weights })}
+        />
+      </SetRow>
+    </div>
+  );
+}
+
+const ROLE_WORDS: Record<(typeof PINNED_RULE_ROLES)[number], string> = {
+  coordinator: 'Coordinator',
+  worker: 'Worker',
+  reviewer: 'Reviewer',
+  conversation: 'Conversation',
+};
+
+const TOPIC_WORDS: Record<(typeof PINNED_RULE_TOPICS)[number], string> = {
+  architecture: 'Architecture',
+  migration: 'Migration',
+  security: 'Security',
+};
+
+/** The models a pinned rule may pick: the presets first, then every model the agents list. */
+function ruleModelOptions(
+  presets: readonly PresetModel[],
+  status: SessionDefaultsStatus | undefined,
+): Array<{ key: string; vendor: SessionVendor; model: string; label: string }> {
+  const out: Array<{ key: string; vendor: SessionVendor; model: string; label: string }> = [];
+  const seen = new Set<string>();
+  const add = (vendor: SessionVendor, model: string) => {
+    const key = `${vendor}/${model}`;
+    if (seen.has(key) || model === 'default') return;
+    seen.add(key);
+    out.push({ key, vendor, model, label: agentLabel({ vendor, model }) });
+  };
+  for (const p of presets) add(p.vendor, p.model);
+  if (status !== undefined) {
+    for (const vendor of status.vendors) {
+      const listed = status.vendor_models?.[vendor]?.options.map((o) => o.value);
+      for (const model of listed ?? status.known_models[vendor] ?? []) add(vendor, model);
+    }
+  }
+  return out;
+}
+
+/** T483: pinned rules, in order: when (a role, a label, a topic) → a model and effort. */
+function PinnedRulesField({
+  rules,
+  presets,
+  disabled,
+  testid,
+  onChange,
+}: {
+  rules: readonly PinnedRule[];
+  presets: readonly PresetModel[];
+  disabled: boolean;
+  testid: string;
+  onChange: (next: PinnedRule[]) => void;
+}): JSX.Element {
+  const [adding, setAdding] = useState(false);
+  const [status, setStatus] = useState<SessionDefaultsStatus | undefined>();
+  const [error, setError] = useState<string | undefined>();
+  const [role, setRole] = useState('');
+  const [label, setLabel] = useState('');
+  const [topic, setTopic] = useState('');
+  const [model, setModel] = useState('');
+  const [effort, setEffort] = useState('');
+  useEffect(() => {
+    if (!adding || status !== undefined) return;
+    getSessionDefaults()
+      .then(setStatus)
+      .catch((err: unknown) => setError(errorText(err)));
+  }, [adding, status]);
+  const options = ruleModelOptions(presets, status);
+  const chosen = options.find((o) => o.key === model) ?? options[0];
+  const canAdd = (role !== '' || label.trim() !== '' || topic !== '') && chosen !== undefined;
+  function add(): void {
+    if (!canAdd || chosen === undefined) return;
+    const rule: PinnedRule = {
+      when: {
+        ...(role !== '' ? { role: role as NonNullable<PinnedRule['when']['role']> } : {}),
+        ...(label.trim() !== '' ? { label: label.trim() } : {}),
+        ...(topic !== '' ? { topic: topic as NonNullable<PinnedRule['when']['topic']> } : {}),
+      },
+      pick: {
+        vendor: chosen.vendor,
+        model: chosen.model,
+        ...(effort !== '' ? { effort: effort as Effort } : {}),
+      },
+    };
+    onChange([...rules, rule]);
+    setAdding(false);
+    setRole('');
+    setLabel('');
+    setTopic('');
+    setEffort('');
+  }
+  return (
+    <div className="cr-mpol-rules" data-testid={testid}>
+      {rules.length === 0 ? (
+        <p className="cr-set-muted" data-testid={`${testid}-none`}>
+          None: the mode decides every routed pick.
+        </p>
+      ) : (
+        rules.map((rule, i) => (
+          <div
+            // biome-ignore lint/suspicious/noArrayIndexKey: rules are ordered and may repeat.
+            key={i}
+            className="cr-mpol-rule"
+            data-testid={`${testid}-rule`}
+          >
+            <span className="cr-mpol-rule-words">
+              {i + 1}. {pinnedRuleWords(rule)}
+            </span>
+            <button
+              type="button"
+              className="cr-link"
+              disabled={disabled || i === 0}
+              title="Move up"
+              aria-label={`Move rule ${i + 1} up`}
+              onClick={() => onChange(moveRule(rules, i, -1))}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="cr-link"
+              disabled={disabled || i === rules.length - 1}
+              title="Move down"
+              aria-label={`Move rule ${i + 1} down`}
+              onClick={() => onChange(moveRule(rules, i, 1))}
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              className="cr-link"
+              disabled={disabled}
+              data-testid={`${testid}-remove`}
+              aria-label={`Remove rule ${i + 1}`}
+              onClick={() => onChange(rules.filter((_, j) => j !== i))}
+            >
+              Remove
+            </button>
+          </div>
+        ))
+      )}
+      {adding ? (
+        <div className="cr-mpol-rule-form" data-testid={`${testid}-form`}>
+          <span>When</span>
+          <select
+            aria-label="Role"
+            value={role}
+            data-testid={`${testid}-role`}
+            onChange={(e) => setRole(e.target.value)}
+          >
+            <option value="">any role</option>
+            {PINNED_RULE_ROLES.map((r) => (
+              <option key={r} value={r}>
+                {ROLE_WORDS[r]}
+              </option>
+            ))}
+          </select>
+          <input
+            type="text"
+            aria-label="Label"
+            placeholder="label"
+            value={label}
+            maxLength={40}
+            data-testid={`${testid}-label`}
+            onChange={(e) => setLabel(e.target.value)}
+          />
+          <select
+            aria-label="Topic"
+            value={topic}
+            data-testid={`${testid}-topic`}
+            onChange={(e) => setTopic(e.target.value)}
+          >
+            <option value="">any topic</option>
+            {PINNED_RULE_TOPICS.map((t) => (
+              <option key={t} value={t}>
+                {TOPIC_WORDS[t]}
+              </option>
+            ))}
+          </select>
+          <span>pick</span>
+          <select
+            aria-label="Model"
+            value={chosen?.key ?? ''}
+            data-testid={`${testid}-model`}
+            onChange={(e) => setModel(e.target.value)}
+          >
+            {options.map((o) => (
+              <option key={o.key} value={o.key}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Effort"
+            value={effort}
+            data-testid={`${testid}-effort`}
+            onChange={(e) => setEffort(e.target.value)}
+          >
+            <option value="">medium (default)</option>
+            {EFFORT_LEVELS.map((level) => (
+              <option key={level} value={level}>
+                {EFFORT_WORDS[level]}
+              </option>
+            ))}
+          </select>
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={disabled || !canAdd}
+            data-testid={`${testid}-save`}
+            title={canAdd ? 'Add this rule at the end' : 'Name a role, a label or a topic'}
+            onClick={add}
+          >
+            Add
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setAdding(false)}>
+            Cancel
+          </Button>
+        </div>
+      ) : (
+        <div>
+          <Button
+            size="sm"
+            icon="plus"
+            disabled={disabled}
+            data-testid={`${testid}-add`}
+            onClick={() => setAdding(true)}
+          >
+            Add rule
+          </Button>
+        </div>
+      )}
+      <FormError error={error} />
+    </div>
+  );
+}
+
+/** T483: the guidance, free text up to 2,000 characters, saved on Save. */
+function GuidanceField({
+  value,
+  disabled,
+  testid,
+  onCommit,
+}: {
+  value: string;
+  disabled: boolean;
+  testid: string;
+  onCommit: (next: string) => void;
+}): JSX.Element {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const changed = draft !== value;
+  return (
+    <div className="cr-mpol-guidance">
+      <textarea
+        aria-label="Guidance"
+        value={draft}
+        maxLength={MODEL_POLICY_GUIDANCE_MAX_CHARS}
+        disabled={disabled}
+        placeholder="For example: Anything touching billing gets Opus. Prefer Codex for Rust."
+        data-testid={testid}
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <div className="cr-mpol-guidance-foot">
+        <span data-testid={`${testid}-count`}>
+          {draft.length} / {MODEL_POLICY_GUIDANCE_MAX_CHARS}
+        </span>
+        <span>
+          {changed ? (
+            <>
+              <Button size="sm" variant="ghost" onClick={() => setDraft(value)}>
+                Discard
+              </Button>{' '}
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={disabled}
+                data-testid={`${testid}-save`}
+                onClick={() => onCommit(draft)}
+              >
+                Save guidance
+              </Button>
+            </>
+          ) : null}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+const WEIGHT_LEVELS = ['0', '1', '2', '3'] as const;
+
+/** T483: one weight per criterion, 0–3. */
+function WeightsField({
+  weights,
+  disabled,
+  testid,
+  onChange,
+}: {
+  weights: ResolvedCriterionWeights;
+  disabled: boolean;
+  testid: string;
+  onChange: (next: CriterionWeights) => void;
+}): JSX.Element {
+  return (
+    <div className="cr-mpol-weights" data-testid={testid}>
+      {ROUTING_CRITERIA.map((c) => (
+        <div key={c} className="cr-mpol-weight" title={CRITERION_HINTS[c]}>
+          <span>{CRITERION_WORDS[c]}</span>
+          <Segmented<(typeof WEIGHT_LEVELS)[number]>
+            label={`Weight of ${CRITERION_WORDS[c]}`}
+            testid={`${testid}-${c}`}
+            value={String(weights[c]) as (typeof WEIGHT_LEVELS)[number]}
+            onChange={(w) => onChange({ ...weights, [c]: Number(w) })}
+            items={WEIGHT_LEVELS.map((w) => ({
+              id: w,
+              label: w,
+              testid: `${testid}-${c}-${w}`,
+              disabled,
+            }))}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** T483: the five scores, and Jev's confidence and the topic when there are. */
+export function ChooserScoresView({
+  scores,
+  topic,
+  confidence,
+  testid,
+}: {
+  scores: ChooserScores;
+  topic?: ChooserTopic | undefined;
+  confidence?: number | undefined;
+  testid: string;
+}): JSX.Element {
+  return (
+    <>
+      <ul className="cr-mpol-scores" data-testid={`${testid}-scores`}>
+        {scoreRows(scores).map((row) => (
+          <li
+            key={row.criterion}
+            className="cr-mpol-score"
+            title={row.hint}
+            data-testid={`${testid}-score`}
+            data-criterion={row.criterion}
+          >
+            <span className="cr-mpol-score-label">{row.label}</span>
+            <span className="cr-mpol-score-value">{row.value}</span>
+          </li>
+        ))}
+      </ul>
+      {confidence !== undefined || (topic !== undefined && topic !== 'none') ? (
+        <p className="cr-mpol-reading" data-testid={`${testid}-confidence`}>
+          {confidence !== undefined ? <>Jev’s confidence {confidenceWords(confidence)}</> : null}
+          {confidence !== undefined && topic !== undefined && topic !== 'none' ? ' · ' : null}
+          {topic !== undefined && topic !== 'none' ? <>Topic: {topic}</> : null}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+/** T483 Try it: paste a task, see the scores and the pick; nothing starts. */
+function TryIt({ testid }: { testid: string }): JSX.Element {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [result, setResult] = useState<ModelPolicyTryResult | undefined>();
+  async function run(): Promise<void> {
+    if (text.trim() === '') return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      setResult(await tryModelPolicy(text));
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="cr-mpol-try" data-testid={testid}>
+      <SetRow
+        label="Try it"
+        hint="Paste a task: see the scores and the pick this policy would make, without starting anything. It asks Jev."
+        stack
+      >
+        <textarea
+          aria-label="A task to try"
+          value={text}
+          maxLength={4000}
+          placeholder="Rename getUser to fetchUser across the API; the tests must pass."
+          data-testid={`${testid}-text`}
+          onChange={(e) => setText(e.target.value)}
+        />
+        <div>
+          <Button
+            size="sm"
+            icon="sparkles"
+            busy={busy}
+            disabled={text.trim() === ''}
+            data-testid={`${testid}-run`}
+            onClick={() => void run()}
+          >
+            Try it
+          </Button>
+        </div>
+      </SetRow>
+      {result !== undefined ? (
+        <div data-testid={`${testid}-result`} data-how={result.pick.how}>
+          <p className="cr-mpol-try-line" data-testid={`${testid}-line`}>
+            {result.line}
+          </p>
+          <p className="cr-mpol-reading" data-testid={`${testid}-source`}>
+            Decided by {pickSourceWords(result.pick)}
+            {result.failed !== undefined ? ` (${result.failed.words})` : null}
+            {result.mode !== 'choose'
+              ? `. The mode here is ${MODE_WORDS[result.mode]}, so a start wouldn’t use this pick.`
+              : null}
+          </p>
+          {result.scores !== undefined ? (
+            <ChooserScoresView
+              scores={result.scores}
+              topic={result.topic}
+              confidence={result.confidence}
+              testid={testid}
+            />
+          ) : null}
+        </div>
+      ) : null}
+      <FormError error={error} />
     </div>
   );
 }
@@ -564,9 +1064,11 @@ export function ModelChoiceCard(): JSX.Element {
       }
     >
       <p className="cr-set-muted" data-testid="settings-model-choice-note">
-        Choose picks by a simple rule for now: under Start cheap the cheapest balanced preset model
-        at medium effort, under Strongest first the strongest. Picking with Jev comes next; it will
-        need the classifier key, and without one Choose keeps using this rule.
+        Choose needs the classifier key (Settings → Rules): Jev reads each task and picks the model
+        and effort. When Jev isn’t sure, the scores decide by the rule. Without a key, or when Jev
+        doesn’t answer, Choose uses a fixed rule instead (under Start cheap the cheapest balanced
+        preset model at medium effort, under Strongest first the strongest) and the node’s chat says
+        why.
       </p>
       {view === undefined && error === undefined ? (
         <span className="cr-set-muted">
@@ -610,6 +1112,7 @@ export function ModelChoiceCard(): JSX.Element {
             : null}
         </div>
       ) : null}
+      {view !== undefined ? <TryIt testid="settings-model-try" /> : null}
       <FormError error={error} />
     </SetCard>
   );
@@ -697,10 +1200,27 @@ export function ModelChoiceSection({
       }
     >
       {pick !== undefined ? (
-        <p className="cr-mpol-pick" data-testid="details-model-pick" data-how={pick.how}>
-          <span className="cr-mpol-pick-how">{pickHowWords(pick.how)}:</span> {pickLine(pick)}
-          {pick.note !== undefined ? <span className="cr-mpol-pick-note"> {pick.note}</span> : null}
-        </p>
+        <>
+          <p className="cr-mpol-pick" data-testid="details-model-pick" data-how={pick.how}>
+            <span className="cr-mpol-pick-how">{pickHowWords(pick.how)}:</span> {pickLine(pick)}
+            {pick.note !== undefined ? (
+              <span className="cr-mpol-pick-note"> {pick.note}</span>
+            ) : null}
+          </p>
+          {pick.scores !== undefined ? (
+            <>
+              <p className="cr-mpol-reading" data-testid="details-model-source">
+                Decided by {pickSourceWords(pick)}
+              </p>
+              <ChooserScoresView
+                scores={pick.scores}
+                topic={pick.topic}
+                confidence={pick.confidence}
+                testid="details-model"
+              />
+            </>
+          ) : null}
+        </>
       ) : (
         <p className="cr-set-muted" data-testid="details-model-pick">
           Its agent hasn’t started yet: the policy picks at its first start.

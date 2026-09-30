@@ -53,6 +53,7 @@ import {
   type StreamPrincipal,
   type ThreadEntry,
   isAgentRole,
+  isConversationNode,
   liveChildrenOf,
   nodeRole,
   partsOf,
@@ -62,6 +63,7 @@ import {
   ulid,
   validateStreamCreateInput,
 } from '@agile-agents/shared';
+import type { Classifier } from '../classifier';
 import { readHomeConfigFile } from '../config';
 import type { ContractService } from '../coordination/contracts';
 import type { PlanService } from '../coordination/plans';
@@ -323,6 +325,8 @@ export interface AttachServiceOptions {
   models?: Pick<ModelCatalog, 'record'> & Partial<Pick<ModelCatalog, 'all'>>;
   /** T482: the model policy (default: one over `store` and `streams`). */
   routing?: ModelPolicyService;
+  /** T483: the classifier the default policy's chooser asks (absent: "no classifier key"). */
+  classifier?: Classifier;
 }
 
 /** What delivery needs of the Director (`director/service.ts`). */
@@ -853,20 +857,39 @@ export class AttachService {
     });
     // T482: the policy's say. Explicit and kept picks run as resolved; a routed pick is
     // made here, once, at the node's first start (or after a choose-again), then clamped.
+    let reviewerPick: ModelPick | undefined;
+    // T483: a routed pick under Choose asks the chooser (one Jev call, bounded by the
+    // classifier's timeout) before anything spawns; explicit and kept picks never do.
     let pick: ModelPick | undefined;
     if (routedStart) {
       const triple = { vendor: settings.vendor, model: settings.model, effort: settings.effort };
       const routing = this.routing();
+      const pinnedRole = coordinates
+        ? 'coordinator'
+        : isConversationNode(stream, all)
+          ? 'conversation'
+          : 'worker';
       if (flagged) {
-        pick = routing.pickForStart({ stream, explicit: triple, fallback: triple }).pick;
+        pick = (await routing.pickForStart({ stream, explicit: triple, fallback: triple })).pick;
       } else if (kept !== undefined) {
-        pick = routing.pickForStart({ stream, kept: triple, fallback: triple }).pick;
+        pick = (await routing.pickForStart({ stream, kept: triple, fallback: triple })).pick;
       } else {
-        pick = routing.pickForStart({ stream, fallback: triple }).pick;
+        pick = (await routing.pickForStart({ stream, fallback: triple, role: pinnedRole })).pick;
         settings = resolveSessionSettings({
           flags: { vendor: pick.vendor, model: pick.model, effort: pick.effort },
           ...layers,
         });
+      }
+    } else if (role === 'reviewer' && !flagged && options.carried === undefined) {
+      // T483: a reviewer resolves as before, unless a pinned rule names `reviewer`.
+      const triple = { vendor: settings.vendor, model: settings.model, effort: settings.effort };
+      const pinned = await this.routing().pickForReviewer(stream, triple);
+      if (pinned !== undefined) {
+        settings = resolveSessionSettings({
+          flags: { vendor: pinned.vendor, model: pinned.model, effort: pinned.effort },
+          ...layers,
+        });
+        reviewerPick = pinned;
       }
     }
     const provider = this.options.provider
@@ -1074,13 +1097,15 @@ export class AttachService {
     });
     // T482: a routed pick says what it chose and why; an explicit pick outside the
     // preset models says it runs as picked (D53). A kept pick says nothing new.
+    // T483: a reviewer a pinned rule picked for says so too.
+    const shown = pick ?? reviewerPick;
     const pickLine =
-      pick === undefined || pick.how === 'kept'
+      shown === undefined || shown.how === 'kept'
         ? undefined
-        : pick.how === 'explicit'
-          ? pick.note
+        : shown.how === 'explicit'
+          ? shown.note
           : routedPickLine(
-              { ...pick, vendor: settings.vendor, model: settings.model },
+              { ...shown, vendor: settings.vendor, model: settings.model },
               this.routing().catalogModels(),
             );
     if (pickLine !== undefined) {
@@ -2158,6 +2183,8 @@ export class AttachService {
           missingVendorCommand(resolveAcpProvider(v)) === undefined,
         ...(models?.all !== undefined ? { models: () => models.all?.() ?? {} } : {}),
         onChooseAgain: (id) => this.endResting(id, CHOOSE_AGAIN_END_REASON),
+        ...(this.options.classifier !== undefined ? { classifier: this.options.classifier } : {}),
+        ...(this.options.plans !== undefined ? { plans: this.options.plans } : {}),
       });
     }
     return this.routingService;
@@ -2476,6 +2503,10 @@ function pickRecord(
     ...(pick.base !== undefined ? { base: pick.base } : {}),
     why: pick.why.slice(0, 300),
     ...(pick.note !== undefined ? { note: pick.note.slice(0, 500) } : {}),
+    // T483: the chooser's reading, when it read the task.
+    ...(pick.scores !== undefined ? { scores: pick.scores } : {}),
+    ...(pick.topic !== undefined ? { topic: pick.topic } : {}),
+    ...(pick.confidence !== undefined ? { confidence: pick.confidence } : {}),
     session,
     at,
   };

@@ -6,6 +6,8 @@
  */
 
 import {
+  type ChoiceAnswer,
+  type ChoiceQuestion,
   type KnowledgeItem,
   type RuleCriteria,
   classifierCheckOf,
@@ -49,13 +51,21 @@ export interface ClassifierCallInfo {
   error?: string;
 }
 
+export type { ChoiceAnswer, ChoiceQuestion };
+
 /**
  * §6.2: one call per state, N questions, one `Answer` per `Noul` in order.
  * Throws `ClassifierUnavailableError` when it can't ask at all; the caller
  * applies §6.4's fail policy.
+ *
+ * T483 (model-routing §5): `choose` is the same call with Jev's **choice**
+ * primitive: each question names its options, and each answer carries the
+ * chosen option, a confidence and every option's probability. It throws the
+ * same `ClassifierUnavailableError`s.
  */
 export interface Classifier {
   ask(state: string, questions: Noul[]): Promise<Answer[]>;
+  choose(state: string, questions: ChoiceQuestion[]): Promise<ChoiceAnswer[]>;
 }
 
 /**

@@ -10,7 +10,12 @@ import { trackerStatus } from '@agile-agents/shared';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
 import { Bus, buildBusRpcMethods } from './bus';
-import { type Classifier, ClassifierKeyService, JevClassifier } from './classifier';
+import {
+  type Classifier,
+  ClassifierKeyService,
+  JevClassifier,
+  TYPESAFE_API_KEY_ENV,
+} from './classifier';
 import {
   type AgileConfig,
   type DiscoverConfigOptions,
@@ -304,6 +309,15 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           // T465: a resting session ends, so the next start lets the policy pick (declared below).
           onChooseAgain: async (id: string): Promise<void> =>
             attachService?.endResting(id, CHOOSE_AGAIN_END_REASON),
+          // T483: the chooser asks the daemon's classifier tier, bounded by its timeout.
+          classifier,
+          chooserTimeoutMs: () => config.classifier.timeout_ms,
+          // A preview says "Jev picks" only when a start could ask it (never the key itself).
+          chooserReady: () =>
+            config.classifier.provider !== 'off' &&
+            (config.classifier.api_key !== undefined ||
+              (process.env[TYPESAFE_API_KEY_ENV] ?? '') !== ''),
+          ...(planService ? { plans: planService } : {}),
         })
       : undefined;
   // Attach and questions know about each other: the turn-end rule asks

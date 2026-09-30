@@ -21,6 +21,7 @@ import type {
   ModelPickRecord,
   ModelPolicyPartial,
   ModelPolicyPatch,
+  ModelPolicyTryResult,
   ModelProfile,
   ModelProfilesPatch,
   PermissionPosture,
@@ -918,6 +919,14 @@ export function chooseModelAgain(id: string): Promise<NodeModelPolicyPayload> {
   return post(
     `/api/streams/${encodeURIComponent(id)}/choose-again`,
   ) as Promise<NodeModelPolicyPayload>;
+}
+
+/** T483 Try it: a pasted task's scores and pick under the home's policy; nothing starts. */
+export function tryModelPolicy(
+  text: string,
+  where: { project?: string; node?: string } = {},
+): Promise<ModelPolicyTryResult> {
+  return post('/api/model-policy/try', { text, ...where }) as Promise<ModelPolicyTryResult>;
 }
 
 /** T482: what a node made here with no model would start on (New node's line). */

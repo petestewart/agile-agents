@@ -1654,6 +1654,8 @@ async function startStreamCockpit(
   scripts: FakeAgentScript[],
   /** T467: the model catalog over the new home (written to first, as a vendor's sessions would). */
   withModels?: (home: string) => ModelCatalog,
+  /** T483: the classifier the model chooser asks (attach's starts and Settings' Try it). */
+  chooser?: FakeClassifier,
 ): Promise<StreamCockpit> {
   const home = mkdtempSync(join(tmpdir(), 'agile-stream-e2e-'));
   const scratch = mkdtempSync(join(tmpdir(), 'agile-stream-e2e-scratch-'));
@@ -1700,6 +1702,7 @@ async function startStreamCockpit(
     streams,
     home,
     ...(models !== undefined ? { models } : {}),
+    ...(chooser !== undefined ? { classifier: chooser } : {}),
     provider: (_vendor, fallback) => providers[spawned++] ?? fallback,
     docs,
     rules,
@@ -1755,6 +1758,7 @@ async function startStreamCockpit(
     // T379: the frame's projects, as the daemon wires them.
     projects: new ProjectService(store, streams),
     ...(models !== undefined ? { models } : {}),
+    ...(chooser !== undefined ? { chooserClassifier: chooser } : {}),
     feedPollIntervalMs: 50,
   });
   return {
@@ -11045,6 +11049,176 @@ describe('Model choice (Playwright e2e, T482)', () => {
         await waitUntil('marked', () => cockpit.streams.get(node.id).human.choose_again === true);
         await page.locator('[data-testid="details-choose-again-waiting"]').waitFor();
         expect(await page.locator('[data-testid="details-choose-again"]').isDisabled()).toBe(true);
+        expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+/** T483: Jev's answers for a clear, checkable, short, low-stakes one-off: Sonnet at 0.82. */
+const CHOOSER_CLEAR = (() => {
+  const one = (n: string, confidence = 0.9) => ({
+    choice: n,
+    confidence,
+    probabilities: { [n]: 1 },
+  });
+  return {
+    clarity: { choice: '5', confidence: 0.85, probabilities: { '3': 0.1, '5': 0.9 } },
+    verifiability: one('5'),
+    horizon: one('1'),
+    stakes: one('1'),
+    volume: one('1'),
+    topic: one('none'),
+    model: {
+      choice: 'claude/claude-sonnet-5-5',
+      confidence: 0.82,
+      probabilities: { 'claude/claude-sonnet-5-5': 0.88, 'claude/claude-haiku-4-5': 0.12 },
+    },
+    effort: one('medium', 0.7),
+  };
+})();
+
+describe('Model choice: the chooser (Playwright e2e, T483)', () => {
+  browserTest(
+    'Settings saves guidance, weights and a pinned rule; Try it shows the scores and the pick',
+    async () => {
+      const jev = new FakeClassifier([], { choice: CHOOSER_CLEAR });
+      const cockpit = await startStreamCockpit([], undefined, jev);
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=agents`);
+        await page.locator('[data-testid="settings-model-choice"]').waitFor();
+        const policy = () => cockpit.store.getHomeConfig().model_policy ?? {};
+        // It says up front that Choose needs the key, and what happens without one.
+        const note = await page.locator('[data-testid="settings-model-choice-note"]').innerText();
+        expect(note).toContain('classifier key');
+        expect(note).toContain('Without a key');
+
+        // Guidance: saved on Save, at most 2,000 characters.
+        const guidance = 'Anything touching billing gets Opus.';
+        await page.locator('[data-testid="settings-model-policy-guidance"]').fill(guidance);
+        await page.locator('[data-testid="settings-model-policy-guidance-save"]').click();
+        await waitUntil('guidance saved', () => policy().guidance === guidance);
+        await waitForContains(page, '[data-testid="settings-model-policy-guidance-row"]', 'Reset');
+
+        // A criterion weight saves on click.
+        await page.locator('[data-testid="settings-model-policy-weights-stakes-3"]').click();
+        await waitUntil('weight saved', () => policy().weights?.stakes === 3);
+
+        // A pinned rule: coordinator → Opus 5.5 · high.
+        await page.locator('[data-testid="settings-model-policy-pinned-add"]').click();
+        await page
+          .locator('[data-testid="settings-model-policy-pinned-role"]')
+          .selectOption('coordinator');
+        await page
+          .locator('[data-testid="settings-model-policy-pinned-model"]')
+          .selectOption('claude/claude-opus-5-5');
+        await page
+          .locator('[data-testid="settings-model-policy-pinned-effort"]')
+          .selectOption('high');
+        await page.locator('[data-testid="settings-model-policy-pinned-save"]').click();
+        await waitUntil('rule saved', () => (policy().pinned_rules ?? []).length === 1);
+        expect(policy().pinned_rules?.[0]).toEqual({
+          when: { role: 'coordinator' },
+          pick: { vendor: 'claude', model: 'claude-opus-5-5', effort: 'high' },
+        });
+        await waitForContains(
+          page,
+          '[data-testid="settings-model-policy-pinned-rule"]',
+          'coordinator → Claude Opus 5.5 · high',
+        );
+
+        // Try it: the scores and the pick, nothing started.
+        await page
+          .locator('[data-testid="settings-model-try-text"]')
+          .fill('Rename getUser to fetchUser\nAcross the API; the tests must pass.');
+        await page.locator('[data-testid="settings-model-try-run"]').click();
+        await waitForContains(
+          page,
+          '[data-testid="settings-model-try-line"]',
+          'Model: Claude Sonnet 5.5 · medium — well specified and covered by tests; short, low stakes',
+        );
+        expect(await page.locator('[data-testid="settings-model-try-score"]').count()).toBe(5);
+        expect(
+          await page
+            .locator('[data-testid="settings-model-try-score"][data-criterion="clarity"]')
+            .innerText(),
+        ).toContain('4.8');
+        expect(
+          await page.locator('[data-testid="settings-model-try-confidence"]').innerText(),
+        ).toContain('0.82');
+        expect(await page.locator('[data-testid="settings-model-try-source"]').innerText()).toBe(
+          'Decided by Jev',
+        );
+        expect(jev.choiceCalls).toHaveLength(1);
+        expect(jev.choiceCalls[0]?.state).toContain('Task: Rename getUser to fetchUser');
+        // The guidance reached Jev's model question.
+        expect(jev.choiceCalls[0]?.questions.find((q) => q.id === 'model')?.instructions).toContain(
+          guidance,
+        );
+        expect(cockpit.streams.list()).toHaveLength(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a node Jev picked for shows the five scores, the confidence and the source in Details',
+    async () => {
+      const jev = new FakeClassifier([], { choice: CHOOSER_CLEAR });
+      const cockpit = await startStreamCockpit(
+        [{ steps: [{ type: 'agent_text', text: 'on it' }, { type: 'end_turn' }] }],
+        undefined,
+        jev,
+      );
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.attach.createNode('human', {
+          title: 'Rename getUser',
+          goal: 'Rename it and its call sites; the tests must pass.',
+          project: shop.id,
+        });
+        await waitUntil('picked', () => cockpit.streams.get(node.id).agent.pick?.how === 'jev');
+        expect(cockpit.streams.get(node.id).sessions[0]?.model).toBe('claude-sonnet-5-5');
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        // The chat line names the pick and why, in words.
+        await waitForContains(
+          page,
+          '[data-testid="stream-page"]',
+          'Model: Claude Sonnet 5.5 · medium — well specified and covered by tests; short, low stakes',
+        );
+        if (!(await page.locator('[data-testid="node-details"]').isVisible())) {
+          await page.locator('[data-testid="details-toggle"]').click();
+        }
+        await page.locator('[data-testid="details-model-scores"]').waitFor();
+        expect(await page.locator('[data-testid="details-model-score"]').count()).toBe(5);
+        expect(
+          await page
+            .locator('[data-testid="details-model-score"][data-criterion="clarity"]')
+            .innerText(),
+        ).toContain('4.8');
+        expect(
+          await page.locator('[data-testid="details-model-confidence"]').innerText(),
+        ).toContain('0.82: sure enough to decide');
+        expect(await page.locator('[data-testid="details-model-source"]').innerText()).toBe(
+          'Decided by Jev',
+        );
+        expect(await page.locator('[data-testid="details-model-pick"]').innerText()).toContain(
+          'Chosen by Jev',
+        );
         expect(cockpit.attachErrors).toEqual([]);
       } finally {
         await teardown([page]);

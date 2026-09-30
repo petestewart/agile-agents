@@ -1273,6 +1273,57 @@ describe('T160 cockpit routes', () => {
     expect((await fetch(url(`/api/streams/${ulid()}/model-policy`))).status).toBe(404);
   });
 
+  test('T483: Try it is same-origin, validated and starts nothing; guidance, weights and pinned rules save', async () => {
+    const send = (
+      path: string,
+      body: unknown,
+      method = 'PUT',
+      headers: Record<string, string> = {},
+    ) =>
+      fetch(url(path), {
+        method,
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const evil = { origin: 'http://evil.example' };
+    const tryIt = '/api/model-policy/try';
+    expect((await send(tryIt, { text: 'Rename a thing' }, 'POST', evil)).status).toBe(403);
+    expect((await send(tryIt, { text: '' }, 'POST')).status).toBe(400);
+    expect((await send(tryIt, { text: 'x', extra: 1 }, 'POST')).status).toBe(400);
+    expect((await fetch(url(tryIt))).status).not.toBe(200);
+    const before = streams.list().length;
+    const tried = (await (await send(tryIt, { text: 'Rename a thing' }, 'POST')).json()) as {
+      pick: { how: string };
+      line: string;
+      failed?: { reason: string };
+    };
+    // This server has no classifier: the rule decides, and the result says why.
+    expect(tried.failed?.reason).toBe('no_key');
+    expect(tried.pick.how).toBe('rule');
+    expect(tried.line).toContain('(no classifier key)');
+    expect(streams.list()).toHaveLength(before);
+
+    // The chooser's settings: guidance, weights and pinned rules, same-origin and validated.
+    const home = '/api/settings/model-policy';
+    const guidance = 'Anything touching billing gets Opus.';
+    expect((await send(home, { guidance }, 'PUT', evil)).status).toBe(403);
+    expect((await send(home, { guidance })).status).toBe(200);
+    expect((await send(home, { guidance: 'x'.repeat(2001) })).status).toBe(400);
+    expect((await send(home, { weights: { stakes: 3, volume: 0 } })).status).toBe(200);
+    expect((await send(home, { weights: { stakes: 4 } })).status).toBe(400);
+    const rule = {
+      when: { role: 'coordinator' as const, topic: 'security' as const },
+      pick: { vendor: 'claude' as const, model: 'claude-opus-5-5', effort: 'high' as const },
+    };
+    expect((await send(home, { pinned_rules: [rule] })).status).toBe(200);
+    expect((await send(home, { pinned_rules: [{ when: {}, pick: rule.pick }] })).status).toBe(400);
+    expect(store.getHomeConfig().model_policy).toEqual({
+      guidance,
+      weights: { stakes: 3, volume: 0 },
+      pinned_rules: [rule],
+    });
+  });
+
   test('T465: GET/POST /api/settings/session-idle is the idle session timeout; 30 removes the key', async () => {
     const post = (body: unknown, headers: Record<string, string> = {}) =>
       fetch(url('/api/settings/session-idle'), {
