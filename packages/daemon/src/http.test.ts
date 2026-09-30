@@ -1185,6 +1185,94 @@ describe('T160 cockpit routes', () => {
     expect(await read()).toBeUndefined();
   });
 
+  test('T482: model choice routes: home, profiles, project and node; writes are same-origin and the human’s', async () => {
+    const send = (
+      path: string,
+      body: unknown,
+      method = 'PUT',
+      headers: Record<string, string> = {},
+    ) =>
+      fetch(url(path), {
+        method,
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const evil = { origin: 'http://evil.example' };
+    type View = {
+      policy: Record<string, unknown>;
+      resolved: { policy: Record<string, unknown>; sources: Record<string, { from: string }> };
+      profiles?: Record<string, { tier: string; cost: number }>;
+      choose_again?: boolean;
+    };
+
+    // The home: what ships (D54) until set.
+    const shipped = (await (await fetch(url('/api/settings/model-policy'))).json()) as View;
+    expect(shipped.policy).toEqual({});
+    expect(shipped.resolved.policy.mode).toBe('choose');
+    expect(shipped.resolved.sources.mode?.from).toBe('built-in');
+    expect(shipped.profiles?.['claude/claude-haiku-4-5']).toEqual({ tier: 'fast', cost: 0.3 });
+    expect((await send('/api/settings/model-policy', { quality: 80 }, 'PUT', evil)).status).toBe(
+      403,
+    );
+    expect(store.getHomeConfig().model_policy).toBeUndefined();
+    const set = (await (await send('/api/settings/model-policy', { quality: 80 })).json()) as View;
+    expect(set.policy).toEqual({ quality: 80 });
+    expect(set.resolved.sources.quality?.from).toBe('home');
+    expect(store.getHomeConfig().model_policy).toEqual({ quality: 80 });
+    expect((await send('/api/settings/model-policy', { quality: 101 })).status).toBe(400);
+    expect((await send('/api/settings/model-policy', { allowed: [] })).status).toBe(400);
+    const put = store
+      .listEvents()
+      .filter((e) => e.kind === 'home_config_put')
+      .at(-1);
+    expect(put?.agent).toBe('human');
+    await send('/api/settings/model-policy', { quality: null });
+    expect(store.getHomeConfig().model_policy).toBeUndefined();
+
+    // Profiles.
+    expect(
+      (
+        await send(
+          '/api/settings/model-profiles',
+          { 'codex/gpt-5.5': { tier: 'fast', cost: 0.5 } },
+          'PUT',
+          evil,
+        )
+      ).status,
+    ).toBe(403);
+    const profiled = (await (
+      await send('/api/settings/model-profiles', { 'codex/gpt-5.5': { tier: 'fast', cost: 0.5 } })
+    ).json()) as View;
+    expect(profiled.profiles?.['codex/gpt-5.5']).toEqual({ tier: 'fast', cost: 0.5 });
+    expect(
+      (await send('/api/settings/model-profiles', { 'nope/x': { tier: 'fast', cost: 1 } })).status,
+    ).toBe(400);
+
+    // A project: new ones inherit everything (`{}`).
+    const project = await new ProjectService(store, streams).create({ name: 'shop' });
+    expect(store.getProject(project.id).model_policy).toEqual({});
+    const path = `/api/projects/${project.id}/model-policy`;
+    expect((await send(path, { mode: 'inherit' }, 'PUT', evil)).status).toBe(403);
+    const projected = (await (await send(path, { mode: 'inherit' })).json()) as View;
+    expect(projected.policy).toEqual({ mode: 'inherit' });
+    expect(projected.resolved.sources.mode?.from).toBe('project');
+    expect((await fetch(url('/api/projects/P-nope/model-policy'))).status).toBe(400);
+
+    // A node, and choose again.
+    const node = await streams.create('human', { title: 'Part', goal: 'g', project: project.id });
+    const nodePath = `/api/streams/${node.id}/model-policy`;
+    expect((await send(nodePath, { effort_ceiling: 'medium' }, 'PUT', evil)).status).toBe(403);
+    const noded = (await (await send(nodePath, { effort_ceiling: 'medium' })).json()) as View;
+    expect(noded.resolved.policy.effort_ceiling).toBe('medium');
+    expect(noded.resolved.sources.mode?.from).toBe('project');
+    expect(streams.get(node.id).human.model_policy).toEqual({ effort_ceiling: 'medium' });
+    const again = `/api/streams/${node.id}/choose-again`;
+    expect((await send(again, {}, 'POST', evil)).status).toBe(403);
+    expect(((await (await send(again, {}, 'POST')).json()) as View).choose_again).toBe(true);
+    expect(streams.get(node.id).human.choose_again).toBe(true);
+    expect((await fetch(url(`/api/streams/${ulid()}/model-policy`))).status).toBe(404);
+  });
+
   test('T465: GET/POST /api/settings/session-idle is the idle session timeout; 30 removes the key', async () => {
     const post = (body: unknown, headers: Record<string, string> = {}) =>
       fetch(url('/api/settings/session-idle'), {

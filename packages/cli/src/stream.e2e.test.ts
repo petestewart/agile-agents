@@ -307,6 +307,8 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
 describe('agile attach (T130) on a no-repo stream, against the fake driver', () => {
   test('prints the session line, records it, streams output onto the thread, and refuses a second attach', async () => {
     const stream = await newStream('Plan the migration');
+    // T482: `agile attach` with no flag is a routed pick; under Default it is the default.
+    expect((await cli(['policy', 'set', 'mode', 'default'])).code).toBe(0);
 
     const attached = await cli(['attach', stream.id]);
     expect(attached.code).toBe(0);
@@ -392,6 +394,11 @@ describe('agile attach (T130) on a no-repo stream, against the fake driver', () 
 
 describe('agile node new starts the agent (T204)', () => {
   test('a conversation node starts a session; --no-start starts none', async () => {
+    // T482 (D54): the project inherits the home's model choice; Default here, so the default runs.
+    expect((await cli(['policy', 'set', 'mode', 'default', '--project', projectId])).code).toBe(0);
+    const shownPolicy = await cli(['policy', 'show', '--project', projectId]);
+    expect(shownPolicy.out).toContain('mode');
+    expect(shownPolicy.out).toContain('default  (set here)');
     const started = await cli([
       'node',
       'new',

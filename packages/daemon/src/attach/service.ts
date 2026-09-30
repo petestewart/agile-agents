@@ -32,8 +32,11 @@ import {
   type AgentCommand,
   DEFAULT_SESSION_IDLE_MINUTES,
   DIRECTOR_NODE,
+  type Effort,
   type HilRequest,
   type KnowledgeItem,
+  type ModelPick,
+  type ModelPickRecord,
   type NodeRole,
   type Plan,
   type Question,
@@ -53,6 +56,7 @@ import {
   nodeRole,
   partsOf,
   resolveVendorFailure,
+  routedPickLine,
   slashCommandOf,
   ulid,
   validateStreamCreateInput,
@@ -83,6 +87,7 @@ import type { RuleStatsOutcome } from '../knowledge/service';
 import { repoScriptChecks } from '../permissions/command';
 import { nodeReadScope } from '../permissions/policy-tables';
 import { projectReadSettings } from '../permissions/posture';
+import { CHOOSE_AGAIN_END_REASON, ModelPolicyService } from '../routing/policy';
 import type { AboutParent, BriefDoc, WipNode } from '../runner/brief';
 import { buildBrief, openWorkFor } from '../runner/brief';
 import type { CliInvocation } from '../runner/cli-bin';
@@ -243,6 +248,13 @@ export interface AttachOptions extends AttachFlags {
   briefAppendix?: string;
   /** T336: pending events handed over in the brief (a wake), so no digest repeats them. */
   wake?: readonly RoutedEvent[];
+  /**
+   * T482: the daemon carries the node's agent over to a new session with
+   * these flags (a role change, a crash's retry or fallback), and says why.
+   * Neither the operator's pick nor a routed one: the policy is not asked.
+   * Without it, any flag is the operator's explicit pick (D53).
+   */
+  carried?: string;
 }
 
 /** `detach: true`: the human pulled the plug, not a shutdown. */
@@ -301,7 +313,9 @@ export interface AttachServiceOptions {
   /** T480 (D49) test seam: the installed CLI a vendor's bridge runs (default: PATH and the home's switch). */
   installedCli?: (vendor: string) => InstalledCli | undefined;
   /** T467 (D46): each vendor's model list, kept from every session's `session/new` reply. */
-  models?: Pick<ModelCatalog, 'record'>;
+  models?: Pick<ModelCatalog, 'record'> & Partial<Pick<ModelCatalog, 'all'>>;
+  /** T482: the model policy (default: one over `store` and `streams`). */
+  routing?: ModelPolicyService;
 }
 
 /** What delivery needs of the Director (`director/service.ts`). */
@@ -722,6 +736,7 @@ export class AttachService {
           ...(was?.vendor !== undefined ? { vendor: was.vendor } : {}),
           ...(was?.model !== undefined ? { model: was.model } : {}),
           ...(was?.effort !== undefined ? { effort: was.effort } : {}),
+          carried: `restarted in its new role (${why})`,
         });
         body = `${why}: restarted its agent as ${role === 'coordinator' ? 'the coordinator' : 'a worker'}`;
       } catch (err) {
@@ -802,22 +817,51 @@ export class AttachService {
 
     const project =
       stream.project === undefined ? undefined : projectSession(store, stream.project);
+    // T482 (D53, D55): an agent start is the operator's explicit pick (any flag),
+    // a carried one (the daemon restarting it, `carried`), or routed (anything else).
+    const agentStart = isAgentRole(role);
+    const flagged =
+      options.vendor !== undefined || options.model !== undefined || options.effort !== undefined;
+    const routedStart = agentStart && options.carried === undefined;
+    // "Let the policy choose again" sets the kept pick aside for this start.
+    const repick = routedStart && stream.human.choose_again === true;
     // T464: a node that has run starts again on its last agent's vendor, model and effort;
     // the defaults choose only for a node that never ran (or whose vendor is gone).
     const kept =
-      isAgentRole(role) && options.vendor === undefined && options.model === undefined
+      agentStart && options.vendor === undefined && options.model === undefined && !repick
         ? lastAgentSession(stream, (v) => this.installed(v as SessionVendor))
         : undefined;
-    const settings = resolveSessionSettings({
+    const layers = {
+      ...(project !== undefined ? { project } : {}),
+      ...(repoEntry !== undefined ? { repo: repoEntry } : {}),
+      home: readHomeConfigFile(this.options.home),
+    };
+    let settings = resolveSessionSettings({
       flags: {
         vendor: options.vendor ?? kept?.vendor,
         model: options.model ?? kept?.model,
         effort: options.effort ?? kept?.effort,
       },
-      ...(project !== undefined ? { project } : {}),
-      ...(repoEntry !== undefined ? { repo: repoEntry } : {}),
-      home: readHomeConfigFile(this.options.home),
+      ...layers,
     });
+    // T482: the policy's say. Explicit and kept picks run as resolved; a routed pick is
+    // made here, once, at the node's first start (or after a choose-again), then clamped.
+    let pick: ModelPick | undefined;
+    if (routedStart) {
+      const triple = { vendor: settings.vendor, model: settings.model, effort: settings.effort };
+      const routing = this.routing();
+      if (flagged) {
+        pick = routing.pickForStart({ stream, explicit: triple, fallback: triple }).pick;
+      } else if (kept !== undefined) {
+        pick = routing.pickForStart({ stream, kept: triple, fallback: triple }).pick;
+      } else {
+        pick = routing.pickForStart({ stream, fallback: triple }).pick;
+        settings = resolveSessionSettings({
+          flags: { vendor: pick.vendor, model: pick.model, effort: pick.effort },
+          ...layers,
+        });
+      }
+    }
     const provider = this.options.provider
       ? this.options.provider(settings.vendor, settings.provider)
       : settings.provider;
@@ -1000,9 +1044,18 @@ export class AttachService {
           status: 'working',
           // T437: an earlier failure's line is not this session's news.
           ...(isFailureProgress(stream.agent.progress) ? { progress: undefined } : {}),
+          // T482 (§8): what this start runs, and why.
+          pick: pickRecord(stream, settings, provider, sessionId, pick, options.carried),
         },
         ...(stream.land_conflict ? { land_conflict: null } : {}),
       });
+      // D55: the choose-again is spent by this start.
+      if (repick) {
+        await store.updateStream('daemon', stream.id, (s) => {
+          const { choose_again: _spent, ...human } = s.human;
+          return { ...s, human };
+        });
+      }
     }
     const recorded = await this.pushSession(stream.id, session);
     await streams.appendThread('daemon', stream.id, {
@@ -1012,6 +1065,24 @@ export class AttachService {
       }`,
       ref: sessionId,
     });
+    // T482: a routed pick says what it chose and why; an explicit pick outside the
+    // preset models says it runs as picked (D53). A kept pick says nothing new.
+    const pickLine =
+      pick === undefined || pick.how === 'kept'
+        ? undefined
+        : pick.how === 'explicit'
+          ? pick.note
+          : routedPickLine(
+              { ...pick, vendor: settings.vendor, model: settings.model },
+              this.routing().catalogModels(),
+            );
+    if (pickLine !== undefined) {
+      await streams.appendThread('daemon', stream.id, {
+        kind: 'event',
+        body: pickLine.slice(0, 800),
+        ref: sessionId,
+      });
+    }
     await store.appendEvent(
       buildEvent('agent_put', {
         agent: sessionId,
@@ -1941,6 +2012,9 @@ export class AttachService {
         try {
           const { session } = await this.attach(streamId, {
             vendor: attempt.vendor,
+            carried: attempt.retry
+              ? 'retried once after a crash'
+              : `switched to ${to} after a crash (the vendor fallback)`,
             ...(attempt.retry ? { model: crashed.model } : {}),
             ...(attempt.retry && crashed.effort !== undefined ? { effort: crashed.effort } : {}),
             briefAppendix: crashHandover({
@@ -2022,6 +2096,28 @@ export class AttachService {
     } catch {
       return vendor;
     }
+  }
+
+  private routingService: ModelPolicyService | undefined;
+
+  /** T482: the model policy service (the daemon's, or one over this service's store). */
+  routing(): ModelPolicyService {
+    if (this.options.routing !== undefined) return this.options.routing;
+    if (this.routingService === undefined) {
+      const models = this.options.models;
+      this.routingService = new ModelPolicyService({
+        store: this.options.store,
+        streams: this.options.streams,
+        // A test's transport seam (`provider`) is stateful; the policy never calls it.
+        installed: (v) =>
+          this.options.spawn !== undefined ||
+          this.options.provider !== undefined ||
+          missingVendorCommand(resolveAcpProvider(v)) === undefined,
+        ...(models?.all !== undefined ? { models: () => models.all?.() ?? {} } : {}),
+        onChooseAgain: (id) => this.endResting(id, CHOOSE_AGAIN_END_REASON),
+      });
+    }
+    return this.routingService;
   }
 
   /** T456: attach's own not-installed check (T437), asked before a fallback is tried. */
@@ -2295,6 +2391,51 @@ export function lastAgentSession(
     if (s !== undefined && isAgentRole(s.role)) return installed(s.vendor) ? s : undefined;
   }
   return undefined;
+}
+
+/**
+ * T482 (§8): the node's `agent.pick` for this start. A routed or explicit
+ * pick records how; a kept one keeps the record it came from (so Details
+ * still says how the model was first picked); a carried start (a role
+ * change, a crash) keeps it when the model is the same, else says why.
+ */
+function pickRecord(
+  stream: Stream,
+  settings: { vendor: string; model: string; effort: Effort },
+  provider: Pick<AcpProviderConfig, 'effort'>,
+  session: string,
+  pick: ModelPick | undefined,
+  carried: string | undefined,
+): ModelPickRecord {
+  const ran = {
+    vendor: settings.vendor,
+    model: settings.model,
+    ...(provider.effort !== undefined ? { effort: settings.effort } : {}),
+  };
+  const before = stream.agent.pick;
+  const same = before !== undefined && before.vendor === ran.vendor && before.model === ran.model;
+  if ((pick === undefined || pick.how === 'kept') && same && before !== undefined) {
+    return { ...before, ...ran, session };
+  }
+  const at = new Date().toISOString();
+  if (pick === undefined) {
+    return {
+      ...ran,
+      how: 'default',
+      why: (carried ?? 'started by the daemon').slice(0, 300),
+      session,
+      at,
+    };
+  }
+  return {
+    ...ran,
+    how: pick.how,
+    ...(pick.base !== undefined ? { base: pick.base } : {}),
+    why: pick.why.slice(0, 300),
+    ...(pick.note !== undefined ? { note: pick.note.slice(0, 500) } : {}),
+    session,
+    at,
+  };
 }
 
 /** T460b: a held call as the agent knows it: its tool and path or command. */

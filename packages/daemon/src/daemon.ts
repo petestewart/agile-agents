@@ -64,6 +64,7 @@ import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
 import { ProjectService, buildProjectRpcMethods } from './projects';
 import { QuestionService, buildQuestionRpcMethods, wireQuestionSupersession } from './questions';
+import { CHOOSE_AGAIN_END_REASON, ModelPolicyService, buildModelPolicyRpcMethods } from './routing';
 import { type RpcServerHandle, startRpcServer } from './rpc';
 import { missingVendorCommand, resolveCliBin } from './runner';
 import { installedCliFor } from './runner/installed-cli';
@@ -290,9 +291,24 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         },
       }).load()
     : undefined;
+  // T482: the model policy (node → ancestors → project → home → built-in), and the lock.
+  const modelPolicy: ModelPolicyService | undefined =
+    store && streamService
+      ? new ModelPolicyService({
+          store,
+          streams: streamService,
+          ...(modelCatalog ? { models: () => modelCatalog.all() } : {}),
+          ...(options.spawn === undefined
+            ? { installed: (vendor) => missingVendorCommand(ACP_PROVIDERS[vendor]) === undefined }
+            : {}),
+          // T465: a resting session ends, so the next start lets the policy pick (declared below).
+          onChooseAgain: async (id: string): Promise<void> =>
+            attachService?.endResting(id, CHOOSE_AGAIN_END_REASON),
+        })
+      : undefined;
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
-  const attachService =
+  const attachService: AttachService | undefined =
     store && streamService
       ? new AttachService({
           store,
@@ -322,6 +338,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             void mainSync?.turnEnded(id).catch((err) => console.error('main sync failed:', err));
           },
           ...(modelCatalog ? { models: modelCatalog } : {}),
+          ...(modelPolicy ? { routing: modelPolicy } : {}),
           ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
         })
       : undefined;
@@ -611,6 +628,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       console.error('agiled: could not end sessions left by the last run:', err);
     }
   }
+  // T482 (D54): projects that predate model routing keep Default, stamped once, before any start.
+  if (modelPolicy) {
+    try {
+      await modelPolicy.stampExistingProjects();
+    } catch (err) {
+      console.error('agiled: could not stamp the projects’ model choice:', err);
+    }
+  }
   // T243: nodes left with pending events are considered for wake/delivery now.
   attachService?.wakePending();
 
@@ -766,6 +791,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
               })
             : {}),
           ...(projectService ? buildProjectRpcMethods(projectService) : {}),
+          ...(modelPolicy ? buildModelPolicyRpcMethods(modelPolicy) : {}),
           ...(trackerLinks ? buildTrackerRpcMethods(trackerLinks) : {}),
           ...(directorService ? buildDirectorRpcMethods(directorService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
@@ -835,6 +861,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     gates: gateService,
     streams: streamService,
     ...(projectService ? { projects: projectService } : {}),
+    ...(modelPolicy ? { routing: modelPolicy } : {}),
     ...(directorService ? { director: directorService } : {}),
     questions: questionService,
     inbox: inboxService,

@@ -15,6 +15,7 @@ import type {
   EventDeliveryStatus,
   HilRequest,
   InboxItem,
+  ModelPick,
   NodeRole,
   PermissionPosture,
   ProjectSessionDefaults,
@@ -249,6 +250,8 @@ export interface StreamPagePayload {
   docs: StreamDoc[];
   land?: LandPreflight;
   rollup?: { merged: number; total: number };
+  /** T482: what a start with no pick would run when the policy picks (absent: the kept pick). */
+  next_pick?: ModelPick;
 }
 
 /** T245: mirror of `events/service.ts`'s `ActivityEntry` (`GET /api/streams/:id/activity`). */

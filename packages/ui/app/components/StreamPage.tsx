@@ -106,6 +106,7 @@ import { TabBoundary, lazyNamed } from './ErrorBoundary';
 import { Icon, type IconName } from './Icon';
 import { Card } from './Inbox';
 import { Markdown } from './Markdown';
+import { ModelChoiceSection } from './ModelPolicy';
 import { useRepoList } from './NewStream';
 import {
   AboutSection,
@@ -632,7 +633,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const kept = byDefaults
     ? keptChoice(stream.sessions, byDefaults.effort, defaults?.not_installed)
     : undefined;
-  const resolved = kept ?? byDefaults;
+  // T482: a start the policy picks for (a node that never ran, or a choose-again) runs its pick.
+  const routed = page.next_pick;
+  const resolved = routed
+    ? { vendor: routed.vendor, model: routed.model, effort: routed.effort }
+    : (kept ?? byDefaults);
   // T423: what the live agent runs, and the chip: the next message's model (a pick lasts one
   // message). It picks only where a line starts (or restarts) the agent; elsewhere it only names
   // what runs. Picking never starts anything by itself.
@@ -2025,6 +2030,15 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             busy={busy}
             canReview={liveReviewer === undefined}
             {...(hasCommits ? { onReview: () => setPicker('reviewer') } : {})}
+          />
+          {/* T482: who picks this node's model at a start, and how it was picked. */}
+          <ModelChoiceSection
+            key={`model-choice:${stream.id}`}
+            stream={stream}
+            {...((rootOf?.id ?? stream.project) !== undefined
+              ? { projectId: (rootOf?.id ?? stream.project) as string }
+              : {})}
+            isRoot={rootOf !== undefined}
           />
           {/* T413: every child, by the status words used everywhere; a root's Overview lists them. */}
           {!projectRoot && <ChildCards parent={stream.id} cards={cockpit?.cards ?? []} />}

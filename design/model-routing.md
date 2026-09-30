@@ -297,3 +297,46 @@ estimate.
 
 T482 is the base for the rest. T483 and T484 can be built side by side after it.
 T485 waits on its measurement.
+
+## 11. As built (T482)
+
+T482 follows §3, §4 and §8, with these differences and additions:
+
+- **The built-in step is what ships (D54).** §4 says a field resolves to
+  "built-in (`mode: default`)". Since D54 makes Choose the shipped home
+  default, the built-in step *is* D54's default: Choose, quality 50, Start
+  cheap, effort ceiling Max, the favourites as the preset models (any
+  installed model when there are none), no pinned rules, every weight 1.
+  Below the home it reads "from Home" in the cockpit.
+- **The stamp keeps presets off too.** A project that predates T482 is stamped
+  `{mode: default, presets: []}`, not just `mode: default`: with favourites
+  set, the home's presets would otherwise clamp its default model, and D54
+  says nothing moves under running work. New projects get `model_policy: {}`.
+  The migration's Unfiled project is stamped the same way.
+- **A project's root is the project.** On a root node, Details → Model choice
+  edits the project's `model_policy`; a root's own `human.model_policy` is
+  not read.
+- **Carried starts.** The daemon restarting a node's agent with the model it
+  had (a role change, T361) or on another vendor after a crash (T456) is
+  neither explicit nor routed: the policy is not asked and nothing is clamped
+  (the crash fallback is its own setting). `agent.pick` says why.
+- **Reviewers and the lessons session** resolve as before; the policy governs
+  a node's agent (worker or coordinator) only. Pinned rules that name
+  `reviewer` wait for T483.
+- **What a start will run is named.** The composer's "Starts the agent with…"
+  and New node's model chip show the routed pick a start would make
+  (`next_pick` on the node page, `GET /api/model-policy/preview` for New
+  node), so the cockpit never names a model the policy won't run.
+- **Choose before the chooser.** Until T483, Choose is §5's "Without Jev" rule
+  (start cheap: the cheapest balanced preset at medium, else the cheapest of
+  any tier; strongest first: the highest tier, then the highest cost, at high
+  effort). The thread line says "(no chooser yet)".
+- **Let the policy choose again** (`human.choose_again`) also ends a resting
+  session (T465), so the next message starts a new agent on the new pick.
+- **`agile policy`** goes over the daemon's socket RPC (`policy.show`,
+  `policy.set`, `policy.choose_again`), like every other CLI verb; the
+  cockpit uses `GET/PUT /api/settings/model-policy`, `/model-profiles`,
+  `/api/projects/:id/model-policy`, `/api/streams/:id/model-policy` and
+  `POST /api/streams/:id/choose-again`.
+- **Guidance, weights and pinned rules** are validated, stored, resolved and
+  settable with `agile policy set`; their cockpit controls come with T483.

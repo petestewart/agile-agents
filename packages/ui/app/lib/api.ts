@@ -17,12 +17,19 @@ import type {
   HarnessUpdateMode,
   HarnessUpdateResult,
   HarnessUpdatesStatus,
+  ModelPick,
+  ModelPickRecord,
+  ModelPolicyPartial,
+  ModelPolicyPatch,
+  ModelProfile,
+  ModelProfilesPatch,
   PermissionPosture,
   Plan,
   Policy,
   Project,
   ProjectSessionDefaults,
   RepoRemote,
+  ResolvedModelPolicy,
   RoutedEvent,
   KnowledgeItem as Rule,
   KnowledgeCreateInput as RuleCreateInput,
@@ -834,4 +841,94 @@ export function updateHarness(id: HarnessId): Promise<HarnessUpdateResult> {
 /** T481: hides a CLI's update item until a newer version is out. */
 export function dismissHarnessUpdate(id: HarnessId): Promise<HarnessStatus> {
   return post(`/api/harness-updates/${encodeURIComponent(id)}/dismiss`) as Promise<HarnessStatus>;
+}
+
+/** T482: a layer's model choice: what it sets itself, and the whole policy resolved with sources. */
+export interface ModelPolicyPayload {
+  policy: ModelPolicyPartial;
+  resolved: ResolvedModelPolicy;
+}
+
+/** T482: the home's model choice, with the model profiles (shipped, and the home's own). */
+export interface HomeModelPolicyPayload extends ModelPolicyPayload {
+  profiles: Record<string, ModelProfile>;
+  own_profiles: Record<string, ModelProfile>;
+}
+
+/** T482: a node's model choice, and how its current model was picked. */
+export interface NodeModelPolicyPayload extends ModelPolicyPayload {
+  node: { id: string; title: string; project?: string };
+  pick?: ModelPickRecord;
+  choose_again: boolean;
+}
+
+async function put(path: string, body: unknown): Promise<unknown> {
+  const res = await fetch(path, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const payload = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(payload.error ?? `${path} failed (${res.status})`);
+  return payload;
+}
+
+export function getHomeModelPolicy(): Promise<HomeModelPolicyPayload> {
+  return get<HomeModelPolicyPayload>('/api/settings/model-policy');
+}
+
+export function setHomeModelPolicy(patch: ModelPolicyPatch): Promise<HomeModelPolicyPayload> {
+  return put('/api/settings/model-policy', patch) as Promise<HomeModelPolicyPayload>;
+}
+
+export function setModelProfiles(patch: ModelProfilesPatch): Promise<HomeModelPolicyPayload> {
+  return put('/api/settings/model-profiles', patch) as Promise<HomeModelPolicyPayload>;
+}
+
+export function getProjectModelPolicy(id: string): Promise<ModelPolicyPayload> {
+  return get<ModelPolicyPayload>(`/api/projects/${encodeURIComponent(id)}/model-policy`);
+}
+
+export function setProjectModelPolicy(
+  id: string,
+  patch: ModelPolicyPatch,
+): Promise<ModelPolicyPayload> {
+  return put(
+    `/api/projects/${encodeURIComponent(id)}/model-policy`,
+    patch,
+  ) as Promise<ModelPolicyPayload>;
+}
+
+export function getNodeModelPolicy(id: string): Promise<NodeModelPolicyPayload> {
+  return get<NodeModelPolicyPayload>(`/api/streams/${encodeURIComponent(id)}/model-policy`);
+}
+
+export function setNodeModelPolicy(
+  id: string,
+  patch: ModelPolicyPatch,
+): Promise<NodeModelPolicyPayload> {
+  return put(
+    `/api/streams/${encodeURIComponent(id)}/model-policy`,
+    patch,
+  ) as Promise<NodeModelPolicyPayload>;
+}
+
+/** T482 (D55): "Let the policy choose again": the node's next start picks its model afresh. */
+export function chooseModelAgain(id: string): Promise<NodeModelPolicyPayload> {
+  return post(
+    `/api/streams/${encodeURIComponent(id)}/choose-again`,
+  ) as Promise<NodeModelPolicyPayload>;
+}
+
+/** T482: what a node made here with no model would start on (New node's line). */
+export function previewNewNodeModel(where: {
+  project?: string;
+  parent?: string;
+  repo?: string;
+}): Promise<ModelPick> {
+  const q = new URLSearchParams();
+  if (where.project) q.set('project', where.project);
+  if (where.parent) q.set('parent', where.parent);
+  if (where.repo) q.set('repo', where.repo);
+  return get<ModelPick>(`/api/model-policy/preview?${q.toString()}`);
 }

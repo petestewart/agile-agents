@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { ULID_PATTERN, UlidSchema, formatZodError } from './ids';
+import { ModelPolicyPartialSchema } from './model-policy';
 import { PermissionPostureSchema, ReadRootsSchema } from './posture';
 import { VendorFailureSchema } from './session-defaults';
 
@@ -86,6 +87,12 @@ export const ProjectSchema = z
     permissions: PermissionPostureSchema.optional(),
     /** T457: dirs an "Always for this project" answer let every node here read. */
     read_roots: ReadRootsSchema.optional(),
+    /**
+     * T482 (D54): this project's model choice, field by field over the home's.
+     * `{}` (a project made since T482) inherits every field; a project that
+     * existed before was stamped `{mode: default}` once. Absent = not stamped yet.
+     */
+    model_policy: ModelPolicyPartialSchema.optional(),
     /** Like a stream's: hidden from `list` by default, nothing moves on disk. */
     archived: z.literal(true).optional(),
     created_at: z.string().min(1),

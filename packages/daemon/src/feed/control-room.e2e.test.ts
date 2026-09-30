@@ -2249,10 +2249,12 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
         await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
         await page.locator('[data-testid="node-status"]', { hasText: 'Not started' }).waitFor();
         await page.locator('[data-testid="chat-empty"]').waitFor();
+        // T482 (D54): a new project's first start is the model policy's pick (Choose: the
+        // cheapest balanced model, medium), and the hint names exactly what will run.
         await waitForText(
           page,
           '[data-testid="composer-hint"]',
-          'Starts the agent with Claude Opus 5.5 · low.',
+          'Starts the agent with Claude Sonnet 5.5 · medium.',
         );
         await page.locator('[data-testid="composer-input"]').fill('SEND-STARTS profile the export');
         await page.locator('[data-testid="composer-send"]').click();
@@ -2267,7 +2269,11 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
           .waitFor();
         const sessions = cockpit.streams.get(node.id).sessions;
         expect(sessions).toHaveLength(1);
-        expect(sessions[0]).toMatchObject({ role: 'worker', model: 'claude-opus-5-5' });
+        expect(sessions[0]).toMatchObject({
+          role: 'worker',
+          model: 'claude-sonnet-5-5',
+          effort: 'medium',
+        });
         await waitUntil('the prompt log', () => existsSync(promptLog));
         const prompts = readFileSync(promptLog, 'utf8');
         // One turn, its brief carrying the line (T361: not a second prompt with it).
@@ -2338,6 +2344,8 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
           steps: [{ type: 'agent_text', text: 'SECOND-REPLY switched' }, { type: 'end_turn' }],
         },
       ]);
+      // T482 (D54): these check the chip against the default: Default, and no preset models (a lock).
+      await cockpit.store.setHomeModelPolicy({ mode: 'default', presets: [] });
       let page: Page | undefined;
       try {
         const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
@@ -2627,6 +2635,8 @@ describe('session defaults (Playwright e2e, T170)', () => {
       const cockpit = await startStreamCockpit([
         { steps: [{ type: 'tool_call', toolCallId: 'w-1', title: 'read' }, { type: 'hang' }] },
       ]);
+      // T482 (D54): these check the chip against the default: Default, and no preset models (a lock).
+      await cockpit.store.setHomeModelPolicy({ mode: 'default', presets: [] });
       let page: Page | undefined;
       try {
         const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
@@ -2813,10 +2823,12 @@ describe('session defaults (Playwright e2e, T170)', () => {
       const cockpit = await startStreamCockpit([{ steps: [{ type: 'hang' }] }]);
       let page: Page | undefined;
       try {
-        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
-          name: 'shop',
-          repos: ['demo'],
-        });
+        // T482 (D54): the project's defaults run under the Default model choice.
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create(
+          { name: 'shop', repos: ['demo'] },
+          'human',
+          { modelPolicy: { mode: 'default' } },
+        );
         const stream = await cockpit.streams.create('human', {
           title: 'project defaults',
           goal: 'g',
@@ -7278,6 +7290,8 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
       const cockpit = await startStreamCockpit([
         { steps: [{ type: 'tool_call', toolCallId: 'w-1', title: 'read' }, { type: 'hang' }] },
       ]);
+      // T482 (D54): these check the chip against the default: Default, and no preset models (a lock).
+      await cockpit.store.setHomeModelPolicy({ mode: 'default', presets: [] });
       let page: Page | undefined;
       try {
         const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
@@ -7353,6 +7367,8 @@ describe('New stream starts the agent (Playwright e2e, T204)', () => {
       const cockpit = await startStreamCockpit([
         { steps: [{ type: 'tool_call', toolCallId: 'w-1', title: 'read' }, { type: 'hang' }] },
       ]);
+      // T482 (D54): these check the chip against the default: Default, and no preset models (a lock).
+      await cockpit.store.setHomeModelPolicy({ mode: 'default', presets: [] });
       let page: Page | undefined;
       try {
         const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
@@ -10038,6 +10054,8 @@ describe('Model and effort are two chips (Playwright e2e, T468)', () => {
       const cockpit = await startStreamCockpit([
         { steps: [{ type: 'agent_text', text: 'On it.' }, { type: 'hang' }] },
       ]);
+      // T482 (D54): these check the chip against the default: Default, and no preset models (a lock).
+      await cockpit.store.setHomeModelPolicy({ mode: 'default', presets: [] });
       let page: Page | undefined;
       try {
         const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
@@ -10142,6 +10160,8 @@ describe('Models come from the vendor (Playwright e2e, T467)', () => {
           }).load();
         },
       );
+      // T482 (D54): these check the chip against the default: Default, and no preset models (a lock).
+      await cockpit.store.setHomeModelPolicy({ mode: 'default', presets: [] });
       let page: Page | undefined;
       try {
         const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
@@ -10265,6 +10285,8 @@ describe('Favourite models (Playwright e2e, T469)', () => {
           return new ModelCatalog({ home }).load();
         },
       );
+      // T482 (D54): these check the chip against the default: Default, and no preset models (a lock).
+      await cockpit.store.setHomeModelPolicy({ mode: 'default', presets: [] });
       let page: Page | undefined;
       try {
         // A favourite starred when Cursor still listed it.
@@ -10473,6 +10495,8 @@ describe('New node picks its model with the model picker (Playwright e2e, T487)'
           return new ModelCatalog({ home }).load();
         },
       );
+      // T482 (D54): these check the chip against the default: Default, and no preset models (a lock).
+      await cockpit.store.setHomeModelPolicy({ mode: 'default', presets: [] });
       let page: Page | undefined;
       try {
         const grok = 'grok-4.7[context=256k,fast=true]';
@@ -10827,6 +10851,196 @@ describe('Auto-close (Playwright e2e, T478)', () => {
           .click();
         await waitUntil('on again', () => cockpit.streams.get(id).auto_close === true);
         await waitUntilAsync('Details follows', async () => details.isChecked());
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+/** T482: waits until `selector`'s text contains `text`. */
+async function waitForContains(page: Page, selector: string, text: string): Promise<void> {
+  const locator = page.locator(selector);
+  await waitUntilAsync(`${selector} to contain ${JSON.stringify(text)}`, async () =>
+    ((await locator.textContent()) ?? '').includes(text),
+  );
+}
+
+describe('Model choice (Playwright e2e, T482)', () => {
+  browserTest(
+    'Settings → Agents → Model choice saves each field on change, presets from the picker and the favourites',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        await cockpit.store.setFavouriteModel(
+          { vendor: 'claude', model: 'claude-haiku-4-5' },
+          true,
+        );
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=agents`);
+        const card = page.locator('[data-testid="settings-model-choice"]');
+        await card.waitFor();
+        const policy = () => cockpit.store.getHomeConfig().model_policy ?? {};
+        const f = '[data-testid="settings-model-policy"]';
+        // What ships (D54): Choose, Start cheap, built in.
+        await waitForAttr(
+          page,
+          `${f} [data-testid="settings-model-policy-mode-choose"]`,
+          'aria-checked',
+          'true',
+        );
+        expect(
+          await page.locator('[data-testid="settings-model-policy-mode-source"]').innerText(),
+        ).toContain('built in');
+        expect(await card.innerText()).toContain('Preset models');
+        expect((await card.innerText()).toLowerCase()).not.toContain('allowed');
+        expect(
+          await page.locator('[data-testid="settings-model-choice-note"]').innerText(),
+        ).toContain('Jev');
+
+        // Mode, escalation and the effort ceiling save on click.
+        await page.locator('[data-testid="settings-model-policy-mode-inherit"]').click();
+        await waitUntil('mode saved', () => policy().mode === 'inherit');
+        await waitForContains(
+          page,
+          '[data-testid="settings-model-policy-mode-source"]',
+          'set here',
+        );
+        await page
+          .locator('[data-testid="settings-model-policy-escalation-strongest_first"]')
+          .click();
+        await waitUntil('escalation saved', () => policy().escalation === 'strongest_first');
+        await page.locator('[data-testid="settings-model-policy-effort-high"]').click();
+        await waitUntil('ceiling saved', () => policy().effort_ceiling === 'high');
+
+        // The quality slider saves once it rests.
+        await page.locator('[data-testid="settings-model-policy-quality"]').fill('80');
+        await waitUntil('quality saved', () => policy().quality === 80);
+        await waitForContains(
+          page,
+          '[data-testid="settings-model-policy-quality-words"]',
+          'Favor quality',
+        );
+
+        // Preset models: "Use my favourites", then a model from the picker.
+        const presets = '[data-testid="settings-model-policy-presets"]';
+        expect(
+          await page
+            .locator(`${presets} [data-testid="settings-model-policy-presets-now"]`)
+            .innerText(),
+        ).toContain('Claude Haiku 4.5');
+        await page.locator('[data-testid="settings-model-policy-presets-favourites"]').click();
+        await waitUntil(
+          'favourites saved',
+          () =>
+            JSON.stringify(policy().presets) ===
+            JSON.stringify([{ vendor: 'claude', model: 'claude-haiku-4-5' }]),
+        );
+        await page.locator('[data-testid="settings-model-policy-presets-change"]').click();
+        await page
+          .locator('[data-testid="model-preset-option"][data-model="claude/claude-sonnet-5-5"]')
+          .click();
+        await waitUntil('a preset added', () => (policy().presets ?? []).length === 2);
+        expect(policy().presets?.[1]).toEqual({ vendor: 'claude', model: 'claude-sonnet-5-5' });
+
+        // Reset goes back to what ships.
+        await page.locator('[data-testid="settings-model-policy-mode-clear"]').click();
+        await waitUntil('mode reset', () => policy().mode === undefined);
+        await waitForAttr(
+          page,
+          '[data-testid="settings-model-policy-mode-choose"]',
+          'aria-checked',
+          'true',
+        );
+
+        // A model profile: the tier saves on change.
+        await page.locator('[data-testid="settings-model-profiles-toggle"]').click();
+        const haiku = page.locator(
+          '[data-testid="model-profile"][data-model="claude/claude-haiku-4-5"]',
+        );
+        await haiku.locator('[data-testid="model-profile-tier"]').selectOption('balanced');
+        await waitUntil(
+          'profile saved',
+          () =>
+            cockpit.store.getHomeConfig().model_profiles?.['claude/claude-haiku-4-5']?.tier ===
+            'balanced',
+        );
+        const put = cockpit.store
+          .listEvents()
+          .filter((e) => e.kind === 'home_config_put')
+          .at(-1);
+        expect(put?.agent).toBe('human');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a node’s Details say how its model was picked, set a field here, and Let the policy choose again',
+    async () => {
+      const cockpit = await startStreamCockpit([
+        { steps: [{ type: 'agent_text', text: 'on it' }, { type: 'end_turn' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        // A routed first start: the home's Choose picks the cheapest balanced model.
+        const node = await cockpit.attach.createNode('human', {
+          title: 'Parser',
+          goal: 'parse the CSV',
+          project: shop.id,
+        });
+        await waitUntil('picked', () => cockpit.streams.get(node.id).agent.pick?.how === 'rule');
+        expect(cockpit.streams.get(node.id).sessions[0]?.model).toBe('claude-sonnet-5-5');
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        if (!(await page.locator('[data-testid="node-details"]').isVisible())) {
+          await page.locator('[data-testid="details-toggle"]').click();
+        }
+        const section = page.locator('[data-testid="details-model-choice"]');
+        await section.waitFor();
+        await waitForContains(
+          page,
+          '[data-testid="details-model-pick"]',
+          'Claude Sonnet 5.5 · medium',
+        );
+        expect(await page.locator('[data-testid="details-model-pick"]').innerText()).toContain(
+          'Chosen by the policy’s rule',
+        );
+        await waitForContains(
+          page,
+          '[data-testid="details-model-policy-mode-source"]',
+          'from Home',
+        );
+
+        // Set here, then back to inherited.
+        await page.locator('[data-testid="details-model-policy-mode-default"]').click();
+        await waitUntil(
+          'set on the node',
+          () => cockpit.streams.get(node.id).human.model_policy?.mode === 'default',
+        );
+        await waitForContains(page, '[data-testid="details-model-policy-mode-source"]', 'set here');
+        await page.locator('[data-testid="details-model-policy-mode-clear"]').click();
+        await waitUntil(
+          'inherited again',
+          () => cockpit.streams.get(node.id).human.model_policy === undefined,
+        );
+
+        // Let the policy choose again.
+        await page.locator('[data-testid="details-choose-again"]').click();
+        await waitUntil('marked', () => cockpit.streams.get(node.id).human.choose_again === true);
+        await page.locator('[data-testid="details-choose-again-waiting"]').waitFor();
+        expect(await page.locator('[data-testid="details-choose-again"]').isDisabled()).toBe(true);
+        expect(cockpit.attachErrors).toEqual([]);
       } finally {
         await teardown([page]);
         await cockpit.stop();

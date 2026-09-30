@@ -5,7 +5,7 @@
  * own route: it runs git and is only wanted when its tab is open.
  */
 
-import type { KnowledgeItem, Stream, ThreadEntry } from '@agile-agents/shared';
+import type { KnowledgeItem, ModelPick, Stream, ThreadEntry } from '@agile-agents/shared';
 import type { DeliveryService, LandPreflight } from '../delivery/service';
 import type { Doc, DocsService } from '../docs/service';
 import type { KnowledgeService } from '../knowledge/service';
@@ -33,6 +33,12 @@ export interface StreamPagePayload {
   land?: LandPreflight;
   /** T322: a linked node's roll-up, nodes merged of those counting toward its issue. */
   rollup?: { merged: number; total: number };
+  /**
+   * T482: what a start with no pick would run when that start is a routed
+   * pick (the node never ran, or waits on a choose-again); absent when its
+   * kept pick would run.
+   */
+  next_pick?: ModelPick;
 }
 
 export interface StreamPageSources {
@@ -40,6 +46,8 @@ export interface StreamPageSources {
   rules?: KnowledgeService;
   docs?: DocsService;
   landing?: DeliveryService;
+  /** T482: the routed pick a start with no pick would make. */
+  nextPick?: (stream: Stream) => ModelPick | undefined;
 }
 
 export function buildStreamPage(sources: StreamPageSources, id: string): StreamPagePayload {
@@ -86,5 +94,14 @@ export function buildStreamPage(sources: StreamPageSources, id: string): StreamP
     docs: sources.docs?.docsForStream(id) ?? [],
     ...(sources.landing ? { land: sources.landing.preflight(id) } : {}),
     ...(rollup ? { rollup } : {}),
+    ...(() => {
+      try {
+        const next = sources.nextPick?.(stream);
+        return next !== undefined ? { next_pick: next } : {};
+      } catch {
+        // A preview only: an unreadable layer leaves the page as it was.
+        return {};
+      }
+    })(),
   };
 }

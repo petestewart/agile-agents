@@ -29,7 +29,10 @@ import {
   KnowledgeTestInputSchema,
   KnowledgeWakeInputSchema,
   MESSAGE_BODY_MAX_CHARS,
+  ModelPolicyPatchSchema,
+  ModelProfilesPatchSchema,
   PermissionsInputSchema,
+  ProjectIdSchema,
   type QuestionId,
   QuestionIdSchema,
   QuickDraftsInputSchema,
@@ -111,6 +114,7 @@ import {
   parseAnswerParams,
   sayAndAnswer,
 } from './questions';
+import { CHOOSE_AGAIN_END_REASON, ModelPolicyService } from './routing';
 import { installedCliStatus } from './runner/installed-cli';
 import type { ModelCatalog } from './runner/model-catalog';
 import {
@@ -207,6 +211,8 @@ export interface HttpServerOptions {
   streams?: StreamService;
   /** T208: `GET/POST /api/projects` and the cockpit frame's projects. */
   projects?: ProjectService;
+  /** T482: the model policy routes (default: one over `store` and `streams`). */
+  routing?: ModelPolicyService;
   /** T300: `GET /api/director`, `POST /api/director/say`. */
   director?: DirectorService;
   /** The rules routes (`/api/rules...`). */
@@ -498,6 +504,8 @@ interface FeedContext {
   gates: GateService;
   streams?: StreamService;
   projects?: ProjectService;
+  /** T482: model choice (home, project, node) and "Let the policy choose again". */
+  routing?: ModelPolicyService;
   director?: DirectorService;
   questions?: QuestionService;
   inbox?: InboxService;
@@ -575,8 +583,28 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
         },
       })
     : undefined;
+  // T482: the daemon's policy service, or one over this store (a test's server).
+  const routing =
+    options.routing ??
+    (streams
+      ? new ModelPolicyService({
+          store,
+          streams,
+          ...(options.models ? { models: () => options.models?.all() ?? {} } : {}),
+          ...(options.vendorMissing
+            ? { installed: (v) => options.vendorMissing?.(v) === undefined }
+            : {}),
+          ...(options.attach
+            ? {
+                onChooseAgain: (id: string) =>
+                  options.attach?.endResting(id, CHOOSE_AGAIN_END_REASON) ?? Promise.resolve(),
+              }
+            : {}),
+        })
+      : undefined);
   return {
     ...(trash ? { trash } : {}),
+    ...(routing ? { routing } : {}),
     store: options.store,
     gates: options.gates,
     streams: options.streams,
@@ -1111,6 +1139,113 @@ async function handleFavouriteModelsRoute(
     await feed.store.setFavouriteModel(ref, on, { by: 'human' });
     return jsonResponse(sessionDefaults(feed).status());
   } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T482 (design/model-routing.md §4, D54): model choice, per layer.
+ *
+ *   GET  /api/settings/model-policy         the home's own fields, resolved with sources, the profiles
+ *   PUT  /api/settings/model-policy         `ModelPolicyPatchSchema` (a field, or `null` for what ships)
+ *   GET  /api/settings/model-profiles       the same view
+ *   PUT  /api/settings/model-profiles       `{"vendor/model": {tier, cost} | null}`
+ *   GET  /api/projects/:id/model-policy     the project's own fields, resolved with sources
+ *   PUT  /api/projects/:id/model-policy     a patch (`null` inherits the home's again)
+ *   GET  /api/streams/:id/model-policy      the node's own, resolved with sources, its pick
+ *   PUT  /api/streams/:id/model-policy      a patch (`null` inherits again)
+ *   POST /api/streams/:id/choose-again      "Let the policy choose again" (D55)
+ *   GET  /api/model-policy/preview          `?project&parent&repo`: what a new node there starts on
+ *
+ * Every write is same-origin only and the operator's (`human`).
+ */
+async function handleModelPolicyRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  const path = url.pathname;
+  const home = path === '/api/settings/model-policy';
+  const profiles = path === '/api/settings/model-profiles';
+  // New node's line: what a node made there with no model would start on.
+  if (path === '/api/model-policy/preview' && req.method === 'GET') {
+    if (!feed?.routing) return errorResponse(503, 'model choice is not available');
+    const q = url.searchParams;
+    const parent = q.get('parent') ?? undefined;
+    const projectParam = q.get('project') ?? undefined;
+    if (parent !== undefined && !UlidSchema.safeParse(parent).success) {
+      return errorResponse(400, `invalid node id: ${parent}`);
+    }
+    if (projectParam !== undefined && !ProjectIdSchema.safeParse(projectParam).success) {
+      return errorResponse(400, `invalid project id: ${projectParam}`);
+    }
+    try {
+      return jsonResponse(
+        feed.routing.previewNew({
+          ...(parent !== undefined ? { parent } : {}),
+          ...(projectParam !== undefined ? { project: projectParam } : {}),
+          ...(q.get('repo') ? { repo: q.get('repo') as string } : {}),
+        }),
+      );
+    } catch (err) {
+      if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
+      return errorResponse(400, messageOf(err));
+    }
+  }
+  const project = path.match(/^\/api\/projects\/([^/]+)\/model-policy$/);
+  const node = path.match(/^\/api\/streams\/([^/]+)\/(model-policy|choose-again)$/);
+  if (!home && !profiles && !project && !node) return undefined;
+  const again = node?.[2] === 'choose-again';
+  const write = again ? 'POST' : 'PUT';
+  if (req.method !== 'GET' && req.method !== write) return undefined;
+  if (again && req.method === 'GET') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  const routing = feed.routing;
+  if (!routing) return errorResponse(503, 'model choice is not available');
+  let projectId: string | undefined;
+  let nodeId: string | undefined;
+  if (project) {
+    const id = ProjectIdSchema.safeParse(decodeURIComponent(project[1] ?? ''));
+    if (!id.success) return errorResponse(400, `invalid project id: ${project[1]}`);
+    projectId = id.data;
+  }
+  if (node) {
+    const id = UlidSchema.safeParse(decodeURIComponent(node[1] ?? ''));
+    if (!id.success) return errorResponse(400, `invalid node id: ${node[1]}`);
+    nodeId = id.data;
+  }
+  try {
+    if (req.method === 'GET') {
+      return jsonResponse(
+        projectId !== undefined
+          ? routing.projectView(projectId)
+          : nodeId !== undefined
+            ? routing.nodeView(nodeId)
+            : routing.homeView(),
+      );
+    }
+    if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+    if (again && nodeId !== undefined) {
+      return jsonResponse(await routing.chooseAgain(nodeId));
+    }
+    const body = await readJsonBody(req).catch(() => undefined);
+    if (profiles) {
+      const input = ModelProfilesPatchSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('model profiles', input.error));
+      return jsonResponse(await routing.setProfiles(input.data, 'human'));
+    }
+    const input = ModelPolicyPatchSchema.safeParse(body);
+    if (!input.success) return errorResponse(400, formatZodError('model policy', input.error));
+    return jsonResponse(
+      projectId !== undefined
+        ? await routing.setProject(projectId, input.data)
+        : nodeId !== undefined
+          ? await routing.setNode(nodeId, input.data)
+          : await routing.setHome(input.data, 'human'),
+    );
+  } catch (err) {
+    if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
     return errorResponse(400, messageOf(err));
   }
 }
@@ -1719,6 +1854,7 @@ async function handleStreamRoute(
             ...(feed.rules ? { rules: feed.rules } : {}),
             ...(feed.docs ? { docs: feed.docs } : {}),
             ...(feed.landing ? { landing: feed.landing } : {}),
+            ...(feed.routing ? { nextPick: (s: Stream) => feed.routing?.nextPick(s) } : {}),
           },
           id,
         ),
@@ -2139,6 +2275,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         if (draftsRoute) return draftsRoute;
         const knowledgeWakeRoute = await handleKnowledgeWakeRoute(req, url, feed, sameOrigin);
         if (knowledgeWakeRoute) return knowledgeWakeRoute;
+        const modelPolicyRoute = await handleModelPolicyRoute(req, url, feed, sameOrigin);
+        if (modelPolicyRoute) return modelPolicyRoute;
         const favouritesRoute = await handleFavouriteModelsRoute(req, url, feed, sameOrigin);
         if (favouritesRoute) return favouritesRoute;
         const autoCloseRoute = await handleAutoCloseRoute(req, url, feed, sameOrigin);
