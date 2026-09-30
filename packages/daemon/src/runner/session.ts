@@ -19,6 +19,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   ACP_PROVIDERS,
+  ACP_TURN_ENDED_METHOD,
   type AcpProviderConfig,
   type AgentEvent,
   AuthRequiredError,
@@ -435,6 +436,12 @@ export type EffortPickResult =
   | { ok: true; effort: string }
   | { ok: false; picked: string; actual?: string; line: string };
 
+/** T485a: the per-session record of what the vendor reports about token usage. */
+export const USAGE_LOG_FILE = 'usage.jsonl';
+/** T485a: at most this many lines per session, each at most this long (an oversized line is dropped). */
+const USAGE_LOG_MAX_LINES = 2000;
+const USAGE_LOG_LINE_MAX_CHARS = 4000;
+
 /** T461: at most this many advertised commands are kept per session. */
 const COMMANDS_MAX = 200;
 
@@ -548,6 +555,17 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
 
   const stderrLog = openLog(opts.sessionDir, 'stderr.log');
   const outputLog = openLog(opts.sessionDir, 'output.log');
+  // T485a (D51): what the vendor reports about token usage, kept raw so
+  // LIVE-CHECKLIST §16 can measure it before any budget is built.
+  const usageLog = openLog(opts.sessionDir, USAGE_LOG_FILE);
+  let usageLines = 0;
+  const recordUsage = (kind: string, data: Record<string, unknown>): void => {
+    if (usageLines >= USAGE_LOG_MAX_LINES) return;
+    const line = JSON.stringify({ at: new Date().toISOString(), kind, ...data });
+    if (line.length > USAGE_LOG_LINE_MAX_CHARS) return;
+    usageLines += 1;
+    usageLog.append(`${line}\n`);
+  };
   // The tail of the vendor's stderr, so a vendor failure can be named.
   let stderrTail = '';
   const onStderr = (chunk: string) => {
@@ -769,6 +787,16 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     }
 
     const frame = event.event;
+    // T485a: a turn's end, with the prompt reply's usage when the vendor sent one.
+    if (frame.acp === 'notification' && frame.message.method === ACP_TURN_ENDED_METHOD) {
+      const p = asRecord(frame.message.params);
+      recordUsage('turn_end', {
+        stopReason: p?.stopReason ?? null,
+        replyKeys: Array.isArray(p?.replyKeys) ? p.replyKeys : [],
+        ...(p?.usage !== undefined ? { usage: p.usage } : {}),
+        ...(p?._meta !== undefined ? { _meta: p._meta } : {}),
+      });
+    }
     if (frame.acp === 'request' && frame.method === 'session/request_permission') {
       const params = frame.params as AcpPermissionRequestParams;
       void responder.handleRequest(frame.id, params);
@@ -845,7 +873,10 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       // Bookkeeping updates are not message boundaries (a `usage_update`
       // between two chunks once split one message in two). Only a real turn
       // item closes the streaming message.
-      if (kind === 'usage_update') context = contextUsageOf(update) ?? context;
+      if (kind === 'usage_update') {
+        context = contextUsageOf(update) ?? context;
+        if (update !== null) recordUsage('usage_update', { update });
+      }
       if (kind === 'available_commands_update') commands = advertisedCommands(update);
       if (typeof kind === 'string' && NON_BOUNDARY_UPDATES.includes(kind)) return;
       flushOutput();
