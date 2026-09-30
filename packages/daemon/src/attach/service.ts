@@ -32,6 +32,7 @@ import {
   type AgentCommand,
   DEFAULT_SESSION_IDLE_MINUTES,
   DIRECTOR_NODE,
+  EffortSchema,
   type HilRequest,
   type KnowledgeItem,
   type NodeRole,
@@ -91,6 +92,7 @@ import type { ModelCatalog } from '../runner/model-catalog';
 import {
   type AgentSessionHandle,
   type ContextUsage,
+  type EffortPickResult,
   type ModelPickResult,
   missingVendorCommand,
   startAgentSession,
@@ -106,7 +108,12 @@ import {
   retryWontHelp,
   turnFailureWords,
 } from './fallback';
-import { type AttachFlags, effortIgnoredLine, resolveSessionSettings } from './resolve';
+import {
+  type AttachFlags,
+  effortIgnoredLine,
+  providerTakesEffort,
+  resolveSessionSettings,
+} from './resolve';
 
 /** A live session already exists in this role (one worker and one reviewer at most). RPC: -32602. */
 export class StreamBusyError extends Error {
@@ -872,12 +879,12 @@ export class AttachService {
       model: settings.model,
       role,
       status: 'starting',
-      ...(provider.effort !== undefined ? { effort: settings.effort } : {}),
+      ...(providerTakesEffort(provider) ? { effort: settings.effort } : {}),
       ...(worktreePath !== undefined ? { worktree: worktreePath } : {}),
     };
 
     // D12: a vendor with no effort mapping still starts; the thread says the level was ignored.
-    if (provider.effort === undefined) {
+    if (!providerTakesEffort(provider)) {
       await streams.appendThread('daemon', stream.id, {
         kind: 'event',
         body: effortIgnoredLine(settings.vendor, settings.effort),
@@ -1056,6 +1063,9 @@ export class AttachService {
           : {}),
         onModel: (result: ModelPickResult) => {
           void this.onModelPicked(stream.id, sessionId, result);
+        },
+        onEffort: (result: EffortPickResult) => {
+          void this.onEffortPicked(stream.id, sessionId, result);
         },
         sessionDir,
         ...(() => {
@@ -1457,6 +1467,39 @@ export class AttachService {
           ...before,
           sessions: before.sessions.map((s) =>
             s.id === sessionId ? { ...s, model: actual.slice(0, SESSION_MODEL_MAX_CHARS) } : s,
+          ),
+        }))
+        .catch(() => {
+          // The node is gone: nothing to show.
+        });
+    }
+    await this.options.streams
+      .appendThread('daemon', streamId, {
+        kind: 'event',
+        body: result.line.slice(0, 800),
+        ref: sessionId,
+      })
+      .catch(() => {});
+  }
+
+  /**
+   * T488: a picked effort the vendor did not take. The thread says so in
+   * words, and the session's record names the level it runs when that is
+   * one of D12's (so a later start keeps what really ran).
+   */
+  private async onEffortPicked(
+    streamId: string,
+    sessionId: string,
+    result: EffortPickResult,
+  ): Promise<void> {
+    if (result.ok) return;
+    const actual = EffortSchema.safeParse(result.actual);
+    if (actual.success) {
+      await this.options.store
+        .updateStream('daemon', streamId, (before) => ({
+          ...before,
+          sessions: before.sessions.map((s) =>
+            s.id === sessionId ? { ...s, effort: actual.data } : s,
           ),
         }))
         .catch(() => {
@@ -2336,7 +2379,7 @@ export function resumableSession(
   stream: Pick<Stream, 'sessions'>,
   role: SessionRole,
   settings: { vendor: string; model: string; effort: string },
-  provider: Pick<AcpProviderConfig, 'loadSession' | 'effort'>,
+  provider: Pick<AcpProviderConfig, 'loadSession' | 'effort' | 'effortOption'>,
 ): SessionRef | undefined {
   if (!provider.loadSession || !isAgentRole(role)) return undefined;
   const last = lastAgentSession(stream, () => true);
@@ -2347,7 +2390,7 @@ export function resumableSession(
     last.acp_session_id === undefined ||
     last.vendor !== settings.vendor ||
     last.model !== settings.model ||
-    (provider.effort !== undefined && last.effort !== settings.effort)
+    (providerTakesEffort(provider) && last.effort !== settings.effort)
   ) {
     return undefined;
   }

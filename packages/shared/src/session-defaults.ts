@@ -32,12 +32,22 @@ export function isSessionVendor(vendor: string): vendor is SessionVendor {
 }
 
 /**
- * T401 (D12): the vendors whose adapter maps an effort level to something
- * (`ACP_PROVIDERS[v].effort`; a daemon test keeps the two in step). For any
- * other the level is recorded but never sent ("effort … ignored by …"), so
- * the cockpit leaves it out of labels.
+ * T401 (D12): the vendors whose adapter maps an effort level to something:
+ * a spawn-time mapping (`ACP_PROVIDERS[v].effort`, Claude) or, since T488,
+ * the vendor's own ACP effort option (`effortOption`, Codex). A daemon
+ * test keeps the list and the registry in step. For any other the level is
+ * recorded but never sent ("effort … ignored by …"), so the cockpit leaves
+ * it out of labels.
  */
-export const EFFORT_VENDORS: readonly SessionVendor[] = ['claude'];
+export const EFFORT_VENDORS: readonly SessionVendor[] = ['claude', 'codex'];
+
+/**
+ * T488: vendors with no effort setting of their own that build it into
+ * each model instead: Cursor lists `claude-opus-5-5[…,effort=medium,…]` and
+ * `gpt-5.6-sol[…,reasoning=medium,…]` (LIVE-CHECKLIST §12). The cockpit
+ * says to pick the model with the effort wanted.
+ */
+export const EFFORT_IN_MODEL_VENDORS: readonly SessionVendor[] = ['cursor'];
 
 /** T401: whether `vendor` does anything with an effort level. */
 export function vendorTakesEffort(vendor: string): boolean {

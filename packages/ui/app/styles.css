@@ -11045,6 +11045,14 @@ div.cr-lens-ev:hover {
   color: var(--text);
   background: var(--bg-hover);
 }
+.cr-effort-chip[data-static="true"] {
+  cursor: default;
+  border-style: dashed;
+}
+.cr-effort-chip[data-static="true"]:hover {
+  color: var(--text-muted);
+  background: transparent;
+}
 .cr-effort-chip[data-chosen="true"] {
   color: var(--accent-fg);
   background: var(--accent-weak);
