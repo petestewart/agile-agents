@@ -2998,6 +2998,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `subprocess-env.test.ts` T486b (fails without the change); typecheck, lint; the delivery, worktree, sandbox and tools tests.
 - **Notes:** Branch T486b-sandboxed-env. PR #12 itself targets `main`, which the stacked phase branches replace; its vendor-session part is T486 here.
 
+### Ticket: T492 The fake agent's log is append-only; tests read complete lines
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** CI red on f4075901 (T486b's merge; the change didn't touch it): T467's "a Claude pick from the bridge's own list goes through the option when it isn't current" failed with `JSON Parse error: Unterminated string` in its `logLines()`. Root cause: the fake agent logged by reading the whole file and writing it back (`writeFileSync(prior + line)`), which truncates first, so a test reading the log at that moment saw a cut or partial file. Any test reading a fake-agent log could hit it.
+- **Acceptance Criteria:** The fake agent appends each line with one `appendFileSync`; every test that parses a JSONL log takes only newline-terminated lines (`.split('\n').slice(0, -1)`), so a line still being written is never parsed.
+- **Validation Steps:** The failing test and its describe pass; typecheck, lint; build then full `bun test` 3747 pass, 3 skip, 0 fail.
+- **Notes:** Branch T492-fake-agent-log. Readers changed: attach/service.test.ts (14), model-catalog, route-band, walkthrough and control-room e2e.
+
 ### Ticket: T487 New node picks its model with the model picker (favourites included)
 - **Priority:** P2
 - **Status:** Done

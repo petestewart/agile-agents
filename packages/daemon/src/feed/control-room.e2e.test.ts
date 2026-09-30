@@ -13434,6 +13434,7 @@ describe('slash commands in the composer (Playwright e2e, T461)', () => {
           .waitFor();
         const sent = readFileSync(promptLog, 'utf8')
           .split('\n')
+          .slice(0, -1)
           .filter((l) => l.includes('"session/prompt"'))
           .map(
             (l) =>
