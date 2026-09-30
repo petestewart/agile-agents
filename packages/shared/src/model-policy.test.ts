@@ -306,7 +306,8 @@ describe('pickModel (T482)', () => {
       }),
     );
     expect(pick).toMatchObject({ vendor: 'codex', model: 'gpt-5.5', how: 'inherit' });
-    expect(routedPickLine(pick)).toBe('Model: gpt-5.5 — inherited from Billing');
+    // T488: Codex takes effort, so its line names the level.
+    expect(routedPickLine(pick)).toBe('Model: gpt-5.5 · medium — inherited from Billing');
   });
 
   test('inherit with no parent pick resolves as Default, and says why', () => {
@@ -408,7 +409,9 @@ describe('pickModel (T482)', () => {
     const pick = pickModel(
       input({
         policy: policy({ mode: 'inherit', presets: [], effort_ceiling: 'low' }),
-        parent: { vendor: 'codex', model: 'gpt-5.5', effort: 'high', title: 'Root' },
+        // T488: Cursor has no effort setting (Codex now does).
+        parent: { vendor: 'cursor', model: 'gpt-5.5', effort: 'high', title: 'Root' },
+        installed: ['claude', 'cursor'],
       }),
     );
     expect(pick.how).toBe('inherit');

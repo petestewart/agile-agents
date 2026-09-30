@@ -1490,3 +1490,27 @@ vendor CLI that is behind (for example `npm install -g
 - [ ] The bridges row lists Claude's and Codex's npx bridges with their pinned
       version and the newest published one. Nothing installs them.
 
+
+## 17. **[vendor]** Model choice: the policy and the preset models (D53–D55, T482)
+Needs a Claude login; Codex or Cursor makes the preset checks sharper.
+
+- [ ] Settings → Agents → **Model choice**: it reads Choose, quality 50,
+      Start cheap, with your favourites as the preset models (or Any model
+      when you have none). An existing project's root Details → Model choice
+      reads **Default**, "set here", and its root's thread has one line
+      saying model choice stayed at Default (D54).
+- [ ] New project, then a node with a goal, sent without touching the model
+      chip. The chat's first lines name the pick and why ("Model: … —
+      …"); the composer's "Starts the agent with…" named the same model
+      before you sent.
+- [ ] Send the same node another message later (or after the idle timeout):
+      it keeps the model, and no new "Model:" line appears (D55).
+- [ ] Details → **Let the policy choose again**, then send a message: a new
+      "Model:" line, and the resting session ended first.
+- [ ] Pick a model that isn't a preset on the composer's chip and send: it
+      runs, and the chat reads "Running <model>, as you picked. Routed picks
+      here use this project's preset models." Nothing reads as refused.
+- [ ] Set the project's Effort ceiling to Low: a new node's routed pick runs
+      at low, and its line says the ceiling changed it.
+- [ ] `agile policy show --project <id>` prints the same values and where
+      each comes from.
