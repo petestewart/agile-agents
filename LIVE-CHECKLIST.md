@@ -1514,3 +1514,28 @@ Needs a Claude login; Codex or Cursor makes the preset checks sharper.
       at low, and its line says the ceiling changed it.
 - [ ] `agile policy show --project <id>` prints the same values and where
       each comes from.
+
+**The chooser (D52, T483).** Needs the classifier key (Settings → Rules, or
+`TYPESAFE_API_KEY`) and a Claude login.
+
+- [ ] Settings → Agents → Model choice says up front that Choose needs the
+      classifier key, and what happens without it.
+- [ ] **Try it**: paste "Rename getUser to fetchUser across the API; the tests
+      must pass." It shows the five scores, Jev's confidence and a pick
+      ("Model: Claude Sonnet 5.5 · medium — well specified and covered by
+      tests; short, low stakes" or close). Paste "Make the app better": the
+      pick is stronger and the words say open-ended. Nothing starts.
+- [ ] A new node with a well-specified goal, sent without touching the chip:
+      the chat's "Model:" line gives the reason in words (never ids or
+      numbers), and Details → Model choice shows the five scores, the
+      confidence and "Decided by Jev" (or "the scores" when Jev wasn't sure).
+      The composer said "the model Jev picks (… if it can't)" before you sent.
+- [ ] Add a pinned rule (Settings → Pinned rules → Add rule: Coordinator →
+      Opus 5.5 · high). A project root's agent starts on it, and its line
+      reads "pinned rule: coordinator".
+- [ ] Set guidance ("Anything touching billing gets Opus.") and try a billing
+      task in Try it: the pick leans to Opus.
+- [ ] Remove the key (Settings → Rules → Remove, and no env key), start a new
+      node: its line ends "(no classifier key)", and Details shows no scores.
+- [ ] `agile policy try "<task>"` prints the same line, the scores, the
+      confidence and what decided.
