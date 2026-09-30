@@ -6,6 +6,7 @@
  */
 
 import {
+  type ModelPolicyPartial,
   type Project,
   type ProjectUpdateInput,
   type StreamPrincipal,
@@ -35,8 +36,16 @@ export class ProjectService {
     }
   }
 
-  /** Creates the root stream, then the record that points at it. */
-  async create(rawInput: unknown, principal: StreamPrincipal = 'human'): Promise<Project> {
+  /**
+   * Creates the root stream, then the record that points at it. T482 (D54):
+   * a new project's `model_policy` is `{}`, inheriting the home's model
+   * choice; `options.modelPolicy` sets another (the migration's Default).
+   */
+  async create(
+    rawInput: unknown,
+    principal: StreamPrincipal = 'human',
+    options: { modelPolicy?: ModelPolicyPartial } = {},
+  ): Promise<Project> {
     const input = validateProjectCreateInput(rawInput);
     this.assertReposKnown(input.repos);
     // Fail fast before minting a root; the store re-checks under its mutex.
@@ -49,6 +58,7 @@ export class ProjectService {
         name: input.name,
         root: root.id,
         repos: [...new Set(input.repos)],
+        model_policy: options.modelPolicy ?? {},
         created_at: new Date().toISOString(),
       });
     } catch (err) {

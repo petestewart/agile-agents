@@ -26,6 +26,7 @@ export * from './repos';
 export * from './home-config';
 export * from './verbs';
 export * from './session-defaults';
+export * from './model-policy';
 export * from './harness-updates';
 export * from './project';
 export * from './routed-event';

@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { UlidSchema, formatZodError } from './ids';
 import { KnowledgeIdSchema } from './knowledge';
+import { ModelPickRecordSchema, ModelPolicyPartialSchema } from './model-policy';
 import { PermissionPostureSchema } from './posture';
 import { AutonomySchema, DeliveryOverrideSchema, ProjectIdSchema } from './project';
 
@@ -270,6 +271,11 @@ export const StreamAgentStateSchema = z
       })
       .strict()
       .optional(),
+    /**
+     * T482 (design/model-routing.md §8): what the node's agent last started
+     * on and why (explicit, kept, inherit, default, rule, clamp). The daemon's.
+     */
+    pick: ModelPickRecordSchema.optional(),
     updated_at: z.string().min(1),
   })
   .strict();
@@ -287,6 +293,18 @@ export const StreamHumanStateSchema = z
      * until the agent finishes again (a newer `agent.updated_at`).
      */
     dismissed_at: z.string().min(1).optional(),
+    /**
+     * T482: this node's model choice, field by field over its ancestors',
+     * its project's and the home's. Human-only, as the whole `human` half is:
+     * the store refuses an agent, coordinator or Director write.
+     */
+    model_policy: ModelPolicyPartialSchema.optional(),
+    /**
+     * T482 (D55): "Let the policy choose again": the next start of the
+     * node's agent makes a routed pick instead of keeping its last one.
+     * The daemon clears it at that start.
+     */
+    choose_again: z.literal(true).optional(),
   })
   .strict();
 export type StreamHumanState = z.infer<typeof StreamHumanStateSchema>;

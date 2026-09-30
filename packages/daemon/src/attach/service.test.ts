@@ -1587,6 +1587,8 @@ describe('T464: a node keeps the model it ran on', () => {
       effort: 'high',
     });
 
+    // T482: under the Default model choice, a node's first start takes the default.
+    await store.setHomeModelPolicy({ mode: 'default' });
     const fresh = await makeStream();
     await attachService.attach(fresh.id);
     await waitFor(() => streams.get(fresh.id).agent.status === 'done');
@@ -1924,7 +1926,10 @@ describe('T242: routed events reach the session as digests', () => {
 describe('T204: creating a node starts its agent (P5)', () => {
   async function makeProject(session?: { model?: string; effort?: 'high' }) {
     const projects = new ProjectService(store, streams);
-    const project = await projects.create({ name: 'Shop' });
+    // T482 (D54): these check the Default resolution (P5), not a routed Choose.
+    const project = await projects.create({ name: 'Shop' }, 'human', {
+      modelPolicy: { mode: 'default' },
+    });
     if (session !== undefined) await projects.update(project.id, { session });
     return project;
   }
@@ -4080,5 +4085,179 @@ describe('T467 (D46): models come from the vendor, set through ACP', () => {
       'session/set_config_option',
       'session/prompt',
     ]);
+  }, 30_000);
+});
+
+describe('T482: model routing at a start (the policy and the lock)', () => {
+  const PRESETS = [
+    { vendor: 'claude' as const, model: 'claude-haiku-4-5' },
+    { vendor: 'claude' as const, model: 'claude-sonnet-5-5' },
+    { vendor: 'claude' as const, model: 'claude-opus-5-5' },
+  ];
+
+  async function projectWith(policy: Record<string, unknown>) {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    await store.updateProject(project.id, (p) => ({ ...p, model_policy: policy }));
+    return project;
+  }
+
+  function lastSession(id: string): SessionRef | undefined {
+    return streams.get(id).sessions.at(-1);
+  }
+
+  function modelLines(id: string): string[] {
+    return threadBodies(id).filter((b) => b.startsWith('Model: ') || b.startsWith('Running '));
+  }
+
+  test('a routed first start is the policy’s pick; a later start keeps it; choose again picks afresh', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
+    const project = await projectWith({ mode: 'choose', presets: PRESETS });
+    const node = await streams.create('human', { title: 'Parser', goal: 'g', project: project.id });
+
+    // First start, no pick: routed. Choose (no chooser yet): the cheapest balanced preset, medium.
+    await attachService.attach(node.id);
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    expect(lastSession(node.id)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
+    expect(modelLines(node.id)).toEqual([
+      'Model: Claude Sonnet 5.5 · medium — start cheap: the cheapest balanced preset model (no chooser yet)',
+    ]);
+    expect(streams.get(node.id).agent.pick).toMatchObject({
+      vendor: 'claude',
+      model: 'claude-sonnet-5-5',
+      effort: 'medium',
+      how: 'rule',
+      session: lastSession(node.id)?.id,
+    });
+
+    // The policy changes; a later start (a wake, a line) keeps the node's pick (D55).
+    await store.updateProject(project.id, (p) => ({
+      ...p,
+      model_policy: { mode: 'choose', presets: PRESETS, escalation: 'strongest_first' },
+    }));
+    await attachService.startWithPending(node.id);
+    await waitFor(
+      () =>
+        streams.get(node.id).sessions.length === 2 && streams.get(node.id).agent.status === 'done',
+    );
+    expect(lastSession(node.id)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
+    expect(modelLines(node.id)).toHaveLength(1);
+    // The record still says how the model was first picked.
+    expect(streams.get(node.id).agent.pick?.how).toBe('rule');
+
+    // Let the policy choose again: the next start picks afresh, once.
+    await streams.chooseModelAgain(node.id);
+    expect(streams.get(node.id).human.choose_again).toBe(true);
+    await attachService.attach(node.id);
+    await waitFor(
+      () =>
+        streams.get(node.id).sessions.length === 3 && streams.get(node.id).agent.status === 'done',
+    );
+    expect(lastSession(node.id)).toMatchObject({ model: 'claude-opus-5-5', effort: 'high' });
+    expect(streams.get(node.id).human.choose_again).toBeUndefined();
+    expect(modelLines(node.id).at(-1)).toBe(
+      'Model: Claude Opus 5.5 · high — strongest first: the strongest preset model (no chooser yet)',
+    );
+  }, 30_000);
+
+  test('choose again ends a resting session, so the next message starts on a fresh routed pick', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
+    const project = await projectWith({ mode: 'default', presets: [] });
+    const node = await streams.create('human', { title: 'Parser', goal: 'g', project: project.id });
+    await attachService.attach(node.id);
+    await waitFor(() => isRestingSession(streams.get(node.id), lastSession(node.id) as SessionRef));
+    expect(lastSession(node.id)?.model).toBe('claude-opus-5-5');
+
+    await store.updateProject(project.id, (p) => ({
+      ...p,
+      model_policy: { mode: 'choose', presets: PRESETS },
+    }));
+    await attachService.routing().chooseAgain(node.id);
+    await waitFor(() => lastSession(node.id)?.status === 'stopped');
+    expect(lastSession(node.id)?.ended_reason ?? threadBodies(node.id).join('\n')).toContain(
+      'choose again',
+    );
+    await attachService.say(node.id, 'carry on', { start: true });
+    await waitFor(() => streams.get(node.id).sessions.length === 2);
+    expect(lastSession(node.id)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
+    expect(streams.get(node.id).human.choose_again).toBeUndefined();
+  }, 30_000);
+
+  test('an explicit pick wins, outside the presets too, and says it runs as picked (D53)', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
+    const project = await projectWith({
+      mode: 'choose',
+      presets: [{ vendor: 'claude', model: 'claude-sonnet-5-5' }],
+      effort_ceiling: 'low',
+    });
+    const node = await streams.create('human', { title: 'Parser', goal: 'g', project: project.id });
+    await attachService.attach(node.id, { model: 'claude-opus-4-8', effort: 'max' });
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    expect(lastSession(node.id)).toMatchObject({ model: 'claude-opus-4-8', effort: 'max' });
+    expect(modelLines(node.id)).toEqual([
+      'Running Claude Opus 4.8, as you picked. Routed picks here use this project’s preset models.',
+    ]);
+    expect(streams.get(node.id).agent.pick).toMatchObject({ how: 'explicit', why: 'your pick' });
+
+    // Inside the presets: no line at all.
+    const inside = await streams.create('human', { title: 'Two', goal: 'g', project: project.id });
+    await attachService.attach(inside.id, { model: 'claude-sonnet-5-5' });
+    await waitFor(() => streams.get(inside.id).agent.status === 'done');
+    expect(modelLines(inside.id)).toEqual([]);
+  }, 30_000);
+
+  test('inherit copies the parent’s current pick, under the effort ceiling', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
+    const project = await projectWith({ mode: 'inherit', presets: [], effort_ceiling: 'medium' });
+    const parent = await streams.create('human', {
+      title: 'Billing',
+      goal: 'g',
+      project: project.id,
+    });
+    await attachService.attach(parent.id, { model: 'claude-haiku-4-5', effort: 'high' });
+    await waitFor(() => streams.get(parent.id).agent.status === 'done');
+    const child = await streams.create('human', {
+      title: 'Invoices',
+      goal: 'g',
+      project: project.id,
+      parent: parent.id,
+    });
+    await attachService.attach(child.id);
+    await waitFor(() => streams.get(child.id).agent.status === 'done');
+    expect(lastSession(child.id)).toMatchObject({ model: 'claude-haiku-4-5', effort: 'medium' });
+    expect(streams.get(child.id).agent.pick).toMatchObject({ how: 'clamp', base: 'inherit' });
+    expect(modelLines(child.id)).toEqual([
+      'Model: Claude Haiku 4.5 · medium — inherited from Billing, clamped. Effort high is over the ceiling, so medium.',
+    ]);
+  }, 30_000);
+
+  test('Default resolves as today, clamped into the presets; a carried restart asks no policy', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS));
+    const project = await projectWith({
+      mode: 'default',
+      presets: [{ vendor: 'claude', model: 'claude-sonnet-5-5' }],
+    });
+    const node = await streams.create('human', { title: 'Parser', goal: 'g', project: project.id });
+    await attachService.attach(node.id);
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    // The built-in default (Opus 5.5 · low) isn't a preset: the nearest one runs.
+    expect(lastSession(node.id)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'low' });
+    expect(modelLines(node.id)).toEqual([
+      'Model: Claude Sonnet 5.5 · low — the Default setting, clamped. Claude Opus 5.5 isn’t a preset model, so Claude Sonnet 5.5 instead.',
+    ]);
+    // A daemon restart of the agent (a role change, a crash) carries its model, unasked.
+    await attachService.attach(node.id, {
+      model: 'claude-opus-5-5',
+      carried: 'restarted in its new role',
+    });
+    await waitFor(
+      () =>
+        streams.get(node.id).sessions.length === 2 && streams.get(node.id).agent.status === 'done',
+    );
+    expect(lastSession(node.id)?.model).toBe('claude-opus-5-5');
+    expect(modelLines(node.id)).toHaveLength(1);
+    expect(streams.get(node.id).agent.pick).toMatchObject({
+      how: 'default',
+      why: 'restarted in its new role',
+    });
   }, 30_000);
 });

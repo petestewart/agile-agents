@@ -624,7 +624,9 @@ async function setupWorld(): Promise<World> {
   const config = existsSync(configPath) ? readFileSync(configPath, 'utf8').trimEnd() : '';
   writeFileSync(
     configPath,
-    `${config}\ngithub:\n  api_url: ${gh.apiUrl}\n  gh_command: ${join(bin, 'gh')}\n`,
+    // T482 (D54): the checklist's steps start nodes on the default model, so model
+    // choice here is Default with no preset models (Settings → Model choice changes it).
+    `${config}\ngithub:\n  api_url: ${gh.apiUrl}\n  gh_command: ${join(bin, 'gh')}\nmodel_policy:\n  mode: default\n  presets: []\n`,
   );
 
   const ledger = join(root, 'Projects', 'ledger-lite');

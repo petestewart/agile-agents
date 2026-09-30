@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { EffortSchema } from './effort';
 import { HarnessUpdatesConfigSchema } from './harness-updates';
 import { formatZodError } from './ids';
+import { ModelPolicyPartialSchema, ModelProfilesSchema } from './model-policy';
 import { PermissionPostureSchema } from './posture';
 import {
   FAVOURITE_MODELS_MAX,
@@ -290,6 +291,18 @@ export const HomeConfigSchema = z
      * lists only these (and what runs), with a Show all switch.
      */
     favourite_models: z.array(FavouriteModelSchema).max(FAVOURITE_MODELS_MAX).optional(),
+    /**
+     * T482 (D54): the home's model choice, the default every project inherits
+     * field by field (Settings → Agents → Model choice). A field left out
+     * reads what ships: Choose, quality 50, Start cheap, the favourites as
+     * the preset models, no pinned rules.
+     */
+    model_policy: ModelPolicyPartialSchema.optional(),
+    /**
+     * T482: each model's tier and relative cost, keyed `vendor/model`, over
+     * the shipped ones (`DEFAULT_MODEL_PROFILES`). Only the operator sets them.
+     */
+    model_profiles: ModelProfilesSchema.optional(),
     /**
      * T465 (D48): how long an agent's session stays alive and idle after its
      * turn finished, in minutes, so the next message keeps its context.

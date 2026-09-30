@@ -67,6 +67,8 @@ export * from './events';
 export * from './gates';
 
 export * from './projects';
+// T482: model routing's policy and lock (design/model-routing.md).
+export * from './routing';
 export * from './streams';
 
 export * from './knowledge';

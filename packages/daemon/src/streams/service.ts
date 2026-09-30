@@ -8,6 +8,7 @@
 
 import {
   type KnowledgeItem,
+  type ModelPolicyPatch,
   type PermissionPosture,
   type Stream,
   type StreamCreateInput,
@@ -16,6 +17,7 @@ import {
   type ThreadAuthor,
   type ThreadEntry,
   type ThreadEntryKind,
+  applyModelPolicyPatch,
   liveChildrenOf,
   nodeRole,
   threadBodyMaxFor,
@@ -429,6 +431,50 @@ export class StreamService {
           : posture === 'ask'
             ? 'permissions here: Ask (a read outside the registered repos asks the operator first)'
             : "permissions here: the project's setting again",
+    });
+    return after;
+  }
+
+  /**
+   * T482: this node's model choice, field by field (`null` inherits again).
+   * The operator's alone: written as `human`, so the store refuses the same
+   * write from an agent, a coordinator or the Director. It applies at the
+   * node's next routed pick, never to a model already running (D55).
+   */
+  async setModelPolicy(id: string, patch: ModelPolicyPatch): Promise<Stream> {
+    const before = this.get(id);
+    const own = applyModelPolicyPatch(before.human.model_policy, patch);
+    if (JSON.stringify(own) === JSON.stringify(before.human.model_policy ?? {})) return before;
+    const after = await this.store.updateStream('human', id, (s) => {
+      const { model_policy: _drop, ...human } = s.human;
+      return {
+        ...s,
+        human: Object.keys(own).length > 0 ? { ...human, model_policy: own } : human,
+      };
+    });
+    const changed = Object.keys(patch).map((field) => field.replace(/_/g, ' '));
+    await this.appendThread('daemon', id, {
+      kind: 'event',
+      body: `model choice here: ${changed.join(', ')} changed by the operator; it applies at the next start that picks a model`,
+    });
+    return after;
+  }
+
+  /**
+   * T482 (D55): "Let the policy choose again": the node's kept pick is set
+   * aside, and its agent's next start makes a routed pick. The daemon clears
+   * the mark at that start.
+   */
+  async chooseModelAgain(id: string): Promise<Stream> {
+    const before = this.get(id);
+    if (before.human.choose_again === true) return before;
+    const after = await this.store.updateStream('human', id, (s) => ({
+      ...s,
+      human: { ...s.human, choose_again: true },
+    }));
+    await this.appendThread('daemon', id, {
+      kind: 'event',
+      body: 'the operator asked the model policy to choose again: the next start of this node’s agent picks its model afresh',
     });
     return after;
   }

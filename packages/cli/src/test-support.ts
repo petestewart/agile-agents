@@ -37,6 +37,7 @@ import {
   buildHookRpcMethods,
   buildInboxRpcMethods,
   buildKnowledgeRpcMethods,
+  buildModelPolicyRpcMethods,
   buildProjectRpcMethods,
   buildQuestionRpcMethods,
   buildStateRpcMethods,
@@ -220,6 +221,8 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
         reply: { say: (id, body) => attachService.say(id, body), questions: questionService },
       }),
       ...buildProjectRpcMethods(new ProjectService(store, streamService)),
+      // T482: `agile policy`, over the attach service's own policy service.
+      ...buildModelPolicyRpcMethods(attachService.routing()),
       ...buildInboxRpcMethods(
         new InboxService({
           streams: streamService,

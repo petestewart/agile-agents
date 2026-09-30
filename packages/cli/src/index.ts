@@ -40,6 +40,7 @@ import {
   runKnowledgeTest,
 } from './commands/knowledge';
 import { runLand } from './commands/land';
+import { runPolicyChooseAgain, runPolicySet, runPolicyShow } from './commands/policy';
 import { runProjectList, runProjectNew, runProjectSet, runProjectShow } from './commands/project';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runRepoAdd, runRepoList, runRepoSet } from './commands/repo';
@@ -134,6 +135,12 @@ function usage(): string {
     '  tail --node <id> --events  the node\u2019s routed events: reason, delivery status, session or digest (--follow)',
     '  tail --director            the Director\u2019s thread (--follow)',
     '  director say "<line>"      a line to the Director; its reply lands on its thread',
+    '  policy show [--project <P-id> | --node <id>]   model choice: each field, its value and where it comes from',
+    '  policy set <field> <value> [--project <P-id> | --node <id>]   the home when neither; `inherit` clears it there',
+    '                             fields: mode default|inherit|choose · quality 0-100 · presets vendor/model,…|any',
+    '                             effort_ceiling low|medium|high|max · escalation start_cheap|strongest_first',
+    '                             guidance "<text>" · weights clarity=2,stakes=3 · pinned_rules <JSON>',
+    '  policy choose-again --node <id>   the node\u2019s next start picks its model afresh',
     '  tracker status             Jira/Linear: base URL, email, whether each token is set (never the token)',
     '  tracker set jira|linear [--base-url <url>] [--email <addr>|--no-email] [--no-token]',
     '                             token read from stdin or a no-echo prompt, never an argument',
@@ -302,6 +309,16 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'status') return await runTrackerStatus(socketPath, json);
         if (sub === 'set') return await runTrackerSet(socketPath, parseArgs(restArgv), json);
         if (sub === 'clear') return await runTrackerClear(socketPath, parseArgs(restArgv), json);
+        console.error(usage());
+        return 1;
+      }
+
+      // T482: model choice (design/model-routing.md §4).
+      case 'policy': {
+        const policyArgs = parseArgs(restArgv);
+        if (sub === 'show') return await runPolicyShow(socketPath, policyArgs, json);
+        if (sub === 'set') return await runPolicySet(socketPath, policyArgs, json);
+        if (sub === 'choose-again') return await runPolicyChooseAgain(socketPath, policyArgs, json);
         console.error(usage());
         return 1;
       }

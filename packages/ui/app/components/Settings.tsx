@@ -87,6 +87,7 @@ import {
   sendTestNotification,
 } from '../lib/use-notify';
 import { Icon, type IconName } from './Icon';
+import { ModelChoiceCard } from './ModelPolicy';
 import { ModelStar, type SessionChoice, SessionFields } from './SessionPicker';
 import {
   FormError,
@@ -727,6 +728,7 @@ function AgentsSection({ onOpenRepos }: { onOpenRepos: () => void }): JSX.Elemen
             resolved={status.resolved}
             save={async (patch) => setStatus(await saveHomeSessionDefaults(patch))}
           />
+          <ModelChoiceCard />
           <VendorFailureCard status={status} onSaved={setStatus} />
           <SessionIdleCard />
           <VendorModelsCard status={status} onRefreshed={setStatus} />

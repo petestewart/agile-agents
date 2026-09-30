@@ -31,6 +31,7 @@ import {
   getQuickDrafts,
   getSessionDefaults,
   listRepos,
+  previewNewNodeModel,
   sayOnStream,
 } from '../lib/api';
 import { coordinatesIt, focusComposerOn } from '../lib/ask';
@@ -261,9 +262,26 @@ function NewStreamForm({
   const repo = repoPick ?? defaultRepo;
   const outline = useMemo(() => projectOutline(rows, projectId), [rows, projectId]);
   const parentRow = parent ? rows.find((r) => r.id === parent) : undefined;
-  const resolved = session
-    ? resolvedFor(session, repo || undefined, projectRow?.session)
-    : undefined;
+  // T482: the first start is the model policy's pick (Default: the resolved default).
+  const [routed, setRouted] = useState<ResolvedSessionDefaults | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    previewNewNodeModel({
+      ...(parent ? { parent } : projectId !== undefined ? { project: projectId } : {}),
+      ...(repo ? { repo } : {}),
+    })
+      .then((pick) => {
+        if (alive) setRouted({ vendor: pick.vendor, model: pick.model, effort: pick.effort });
+      })
+      .catch(() => {
+        if (alive) setRouted(undefined);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [parent, projectId, repo]);
+  const resolved =
+    routed ?? (session ? resolvedFor(session, repo || undefined, projectRow?.session) : undefined);
   // T487: the chip names the pick when it differs from the default here, else the default; the
   // ids on hover (T386), as the model line did.
   const chip = resolved

@@ -36,6 +36,10 @@ import {
   type KnowledgeWakeMode,
   type LegacyRule,
   LegacyRuleIdSchema,
+  type ModelPolicyPatch,
+  ModelPolicyPatchSchema,
+  type ModelProfilesPatch,
+  ModelProfilesPatchSchema,
   type PermissionPosture,
   type Policy,
   type Project,
@@ -53,6 +57,7 @@ import {
   type ThreadEntry,
   type TrackerSystem,
   UlidSchema,
+  applyModelPolicyPatch,
   assertKnowledgeAcceptable,
   assertKnowledgeWrite,
   assertNoStreamCycle,
@@ -857,6 +862,68 @@ export class StateStore {
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { permissions: posture },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /**
+   * T482 (D54): the home's model choice in `<home>/config.yaml`
+   * (`model_policy`), field by field: absent = unchanged, `null` = back to
+   * what ships. The key goes when nothing is set.
+   */
+  async setHomeModelPolicy(
+    patch: ModelPolicyPatch,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    const valid = ModelPolicyPatchSchema.parse(patch);
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      // A hand-edited block that isn't one is refused (naming the key), never replaced.
+      if (raw.model_policy !== undefined) validateHomeConfig(raw);
+      const next = applyModelPolicyPatch(
+        raw.model_policy as Parameters<typeof applyModelPolicyPatch>[0],
+        valid,
+      );
+      if (Object.keys(next).length > 0) raw.model_policy = next;
+      else Reflect.deleteProperty(raw, 'model_policy');
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { model_policy: Object.keys(valid) },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /**
+   * T482: model profiles (`model_profiles`, keyed `vendor/model`): a profile
+   * sets one, `null` removes it (so the shipped one, or none, applies).
+   */
+  async setModelProfiles(
+    patch: ModelProfilesPatch,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    const valid = ModelProfilesPatchSchema.parse(patch);
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (raw.model_profiles !== undefined) validateHomeConfig(raw);
+      const profiles = mappingCopy(raw.model_profiles);
+      for (const [key, profile] of Object.entries(valid)) {
+        if (profile === null) Reflect.deleteProperty(profiles, key);
+        else profiles[key] = profile;
+      }
+      if (Object.keys(profiles).length > 0) raw.model_profiles = profiles;
+      else Reflect.deleteProperty(raw, 'model_profiles');
+      const validated = validateHomeConfig(raw);
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { model_profiles: Object.keys(valid) },
       });
       return { result: validated, event };
     });
