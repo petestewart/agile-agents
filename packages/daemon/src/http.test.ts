@@ -1415,6 +1415,61 @@ describe('T160 cockpit routes', () => {
     });
   });
 
+  test('T490: the vendor order and a role’s own order save on every layer, same-origin and validated', async () => {
+    const send = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(path), {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const evil = { origin: 'http://evil.example' };
+    type View = {
+      policy: Record<string, unknown>;
+      resolved: {
+        policy: { vendor_order: string[]; vendor_order_by_role: Record<string, string[]> };
+        sources: Record<string, { from: string }>;
+      };
+    };
+    const home = '/api/settings/model-policy';
+    expect((await send(home, { vendor_order: ['claude', 'codex'] }, evil)).status).toBe(403);
+    expect(store.getHomeConfig().model_policy?.vendor_order).toBeUndefined();
+    const set = (await (await send(home, { vendor_order: ['claude', 'codex'] })).json()) as View;
+    expect(set.resolved.policy.vendor_order).toEqual(['claude', 'codex']);
+    expect((await send(home, { vendor_order: ['claude', 'claude'] })).status).toBe(400);
+    expect((await send(home, { vendor_order: ['openai'] })).status).toBe(400);
+    expect((await send(home, { vendor_order_by_role: { tester: ['codex'] } })).status).toBe(400);
+    const byRole = { reviewer: ['codex' as const, 'claude' as const] };
+    expect((await send(home, { vendor_order_by_role: byRole })).status).toBe(200);
+    expect(store.getHomeConfig().model_policy).toEqual({
+      vendor_order: ['claude', 'codex'],
+      vendor_order_by_role: byRole,
+    });
+    // A vendor-only pinned rule saves.
+    const rule = { when: { role: 'reviewer' }, pick: { vendor: 'codex' } };
+    expect((await send(home, { pinned_rules: [rule] })).status).toBe(200);
+
+    // A project and a node inherit it, and set their own.
+    const project = await new ProjectService(store, streams).create({ name: 'orders' });
+    const projectPath = `/api/projects/${project.id}/model-policy`;
+    const inherited = (await (await fetch(url(projectPath))).json()) as View;
+    expect(inherited.resolved.policy.vendor_order).toEqual(['claude', 'codex']);
+    expect(inherited.resolved.sources.vendor_order?.from).toBe('home');
+    expect((await send(projectPath, { vendor_order: ['codex'] }, evil)).status).toBe(403);
+    const own = (await (await send(projectPath, { vendor_order: ['codex'] })).json()) as View;
+    expect(own.resolved.sources.vendor_order?.from).toBe('project');
+    const node = await streams.create('human', { title: 'Part', goal: 'g', project: project.id });
+    const nodePath = `/api/streams/${node.id}/model-policy`;
+    const worker = { worker: ['claude' as const] };
+    expect((await send(nodePath, { vendor_order_by_role: worker }, evil)).status).toBe(403);
+    const noded = (await (await send(nodePath, { vendor_order_by_role: worker })).json()) as View;
+    expect(noded.resolved.policy.vendor_order_by_role).toEqual(worker);
+    expect(noded.resolved.policy.vendor_order).toEqual(['codex']);
+    expect(streams.get(node.id).human.model_policy).toEqual({ vendor_order_by_role: worker });
+    // `null` inherits again.
+    await send(nodePath, { vendor_order_by_role: null });
+    expect(streams.get(node.id).human.model_policy).toBeUndefined();
+  });
+
   test('T465: GET/POST /api/settings/session-idle is the idle session timeout; 30 removes the key', async () => {
     const post = (body: unknown, headers: Record<string, string> = {}) =>
       fetch(url('/api/settings/session-idle'), {

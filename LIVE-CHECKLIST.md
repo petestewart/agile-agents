@@ -1588,3 +1588,35 @@ Start cheap and three Claude presets (Haiku 4.5, Sonnet 5.5, Opus 5.5).
       Strongest first never steps; an `escalate` goes straight to Needs me.
 - [ ] `agile policy step-up --node <id>` prints the rung the next start runs;
       on a node that never ran it's refused with why.
+
+**Tier first and the vendor order (D57, D59, T490).** Needs the classifier key,
+a Claude login and a Codex login; a project on Choose with Start cheap and five
+presets (Claude Haiku 4.5, Sonnet 5.5, Opus 5.5; Codex GPT-5.6 Sol, GPT-6 Astra).
+
+- [ ] Settings → Agents → Model choice → **When models tie, prefer** lists the
+      installed vendors and reads "No preference". Move Codex to the top: it
+      reads "Codex, then Claude" and "Reset" shows beside it. **No
+      preference** clears it again.
+- [ ] Set it to Claude, then Codex. **Try it** with "Rename getUser to fetchUser
+      across the API; the tests must pass.": it shows "Balanced tier, by Jev
+      (0.9x). In the tier: Claude before Codex." and the line names Claude
+      Sonnet 5.5. Switch the order to Codex first and try again: the same tier,
+      GPT-5.6 Sol, "Codex before Claude". Jev's confidence is the tier's (T483's
+      split between Sonnet and Sol, 0.22–0.38, is gone).
+- [ ] **By role** → Reviews → "Its own order", Codex first; Code stays "Same as
+      above". On a node, **Ask an agent to review** without choosing a model: the
+      reviewer runs GPT-5.6 Sol (or GPT-6 Astra for a hard task), its chat line
+      ends "Codex before Claude", and Details → Model choice (the node's own
+      pick) is unchanged. Start the node's own agent: it runs Claude.
+- [ ] Pick a model for the review explicitly (Claude Opus 5.5): it runs that,
+      and no "Model:" line about the policy appears (D53).
+- [ ] Add a pinned rule **Reviewer → Any Codex model (the tier decides)**, then
+      take Codex out of the presets: a review runs Claude, and its line says the
+      rule names Codex, which has no preset model here, so it didn't apply.
+- [ ] A project's and a node's Details → Model choice show both rows, "from
+      Home" until set, "set here" after; a node's new pick shows "Balanced tier,
+      by Jev (0.xx)" and why that model under the pick.
+- [ ] `agile policy set vendor_order claude,codex` and `agile policy set
+      vendor_order_by_role.reviewer codex,claude` show in `agile policy show`;
+      `agile policy try "<task>"` prints the tier, how it was decided, the
+      confidence and "in the tier".

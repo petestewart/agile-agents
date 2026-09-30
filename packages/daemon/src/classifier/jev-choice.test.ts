@@ -4,14 +4,16 @@
  * manager checked against the live API on 2026-09-30 (the rename's `model`
  * and `clarity` answers as seen; the `stakes` probabilities are filled in
  * around its seen choice and confidence). `jev-choice-live-response.json`
- * is one whole reply recorded from T483's live run. The adapter tests
- * inject `fetch`.
+ * is one whole reply recorded from T490's live run (the float-to-cents
+ * migration, five presets across Claude and Codex, the `tier` question). The
+ * adapter tests inject `fetch`.
  */
 
 import { describe, expect, test } from 'bun:test';
 import {
   type ChoiceQuestion,
   type ClassifierConfig,
+  DEFAULT_MODEL_PROFILES,
   builtinModelPolicy,
   chooserQuestions,
   readChooserAnswers,
@@ -98,40 +100,39 @@ describe('the choice wire shape (T483)', () => {
         probabilities: { '1': 0.3, '3': 0.4, '5': 0.3 },
       },
     ]);
-    // The unsure stakes still reads as a score: the weighted mean, 3.0.
+    // The wire answers are read by id: a `tier` answer reads the same way a `model` one did.
     const reading = readChooserAnswers(
       [
         { id: 'topic', instructions: 't', options: { none: 'n', security: 's' } },
-        {
-          id: 'model',
-          instructions: 'm',
-          options: recordedRequest.questions.model?.criteria ?? {},
-        },
+        { id: 'tier', instructions: 't', options: { balanced: 'b', strongest: 's' } },
       ],
       [
         { id: 'topic', choice: 'none', confidence: 1, probabilities: { none: 1 } },
-        ...answers.filter((a) => a.id === 'model'),
+        { id: 'tier', choice: 'balanced', confidence: 0.82, probabilities: { balanced: 0.88 } },
       ],
     );
-    expect(reading.model).toEqual({ key: 'claude/claude-sonnet-5-5', confidence: 0.82 });
+    expect(reading.tier).toEqual({ tier: 'balanced', confidence: 0.82 });
   });
 
-  test('a live reply (2026-09-30, the float-to-cents migration, three Claude presets) reads whole', () => {
-    // Recorded from a real call (T483's live run): answers only, no request, no key.
+  test('a live reply (2026-09-30, T490: the float-to-cents migration, five mixed presets) reads whole', () => {
+    // Recorded from a real call (T490's live run): answers only, no request, no key.
     const questions = chooserQuestions({
       policy: builtinModelPolicy(),
       candidates: [
         { vendor: 'claude', model: 'claude-haiku-4-5' },
         { vendor: 'claude', model: 'claude-sonnet-5-5' },
         { vendor: 'claude', model: 'claude-opus-5-5' },
+        { vendor: 'codex', model: 'gpt-5.6-sol' },
+        { vendor: 'codex', model: 'gpt-6-astra' },
       ],
-      profiles: {},
+      profiles: DEFAULT_MODEL_PROFILES,
       need: 'full',
     });
     const reading = readChooserAnswers(questions, parseJevChoiceResponse(liveResponse, questions));
     expect(reading.topic).toBe('migration');
-    expect(reading.model).toEqual({ key: 'claude/claude-opus-5-5', confidence: 0.77 });
-    expect(reading.effort?.level).toBe('high');
+    // Jev leaned balanced (0.62 against strongest's 0.38) but wasn't sure: the scores decide.
+    expect(reading.tier).toEqual({ tier: 'balanced', confidence: 0.42 });
+    expect(reading.effort?.level).toBe('medium');
     expect(reading.scores?.stakes).toBe(5);
     expect(reading.scores?.horizon).toBeGreaterThan(4);
   });

@@ -20,17 +20,20 @@ import {
   type ChooserReading,
   type ChooserScores,
   type ChooserTopic,
-  MODEL_KEY_PATTERN,
+  type InTier,
+  MODEL_TIERS,
   type ModelPolicy,
   type ModelProfile,
+  type ModelTier,
   type PickCatalogModel,
   type PickHow,
   type PresetModel,
   ROUTING_CRITERIA,
   type RoutingCriterion,
-  modelKey,
+  type TierBy,
   modelWords,
   profileOf,
+  tiersPresent,
 } from './model-policy';
 import { ProjectIdSchema } from './project';
 import { vendorTakesEffort } from './session-defaults';
@@ -248,7 +251,7 @@ export const TOPIC_QUESTION: { instructions: string; options: Record<ChooserTopi
   },
 };
 
-/** §5's default rule, written into the `model` question. */
+/** §5's default rule, written into the `tier` question (T483: the `model` question). */
 export const DEFAULT_CHOOSER_RULE =
   'Use a balanced model when the task is well specified and checkable. Use the strongest preset model when it is ambiguous, high-stakes or long-horizon. Use the fastest when it is high-volume and checkable. Quality priority moves the thresholds: toward speed, a balanced model needs clarity and verifiability of only 3; toward quality, 4.';
 
@@ -278,21 +281,33 @@ function weightsText(weights: ModelPolicy['weights']): string {
   return `Weigh the criteria by these weights (0 ignores one, 1 is normal, 3 counts it most): ${list}.`;
 }
 
-/** A preset model as an option: its name, tier, relative cost and the vendor's own words. */
-export function modelOptionText(
-  preset: PresetModel,
+/** T490 (D57): what each tier means, for the `tier` question's options. */
+export const TIER_OPTION_WORDS: Record<ModelTier, string> = {
+  fast: 'Fast: the quickest, cheapest models, for simple, checkable work, above all when many similar parts start at once.',
+  balanced:
+    'Balanced: capable everyday models, for work that is well specified and can be checked by tests, a build or a typecheck.',
+  strongest:
+    'Strongest: the most capable and costliest models, for ambiguous, high-stakes or long-horizon work.',
+};
+
+/**
+ * A tier as an option: what it means, and the preset models in it with
+ * their relative cost ("Here: Claude Sonnet 5.5 (cost 1), GPT-5.6 Sol (cost 1).").
+ */
+export function tierOptionText(
+  tier: ModelTier,
+  candidates: readonly PresetModel[],
   profiles: Readonly<Record<string, ModelProfile>>,
   models?: Readonly<Partial<Record<string, readonly PickCatalogModel[]>>>,
 ): string {
-  const profile = profileOf(preset.vendor, preset.model, profiles);
-  const listed = models?.[preset.vendor]?.find((m) => m.value === preset.model);
-  const name = modelWords(preset.vendor, preset.model, models);
-  const said =
-    listed?.description !== undefined && listed.description !== '' ? ` ${listed.description}` : '';
-  return clip(
-    `${name}: ${profile.tier} tier, relative cost ${profile.cost}.${said}`,
-    JEV_CHOICE_OPTION_MAX_CHARS,
-  );
+  const here = candidates
+    .filter((c) => profileOf(c.vendor, c.model, profiles).tier === tier)
+    .slice(0, 12)
+    .map(
+      (c) =>
+        `${modelWords(c.vendor, c.model, models)} (cost ${profileOf(c.vendor, c.model, profiles).cost})`,
+    );
+  return clip(`${TIER_OPTION_WORDS[tier]} Here: ${here.join(', ')}.`, JEV_CHOICE_OPTION_MAX_CHARS);
 }
 
 export interface ChooserQuestionsInput {
@@ -305,13 +320,14 @@ export interface ChooserQuestionsInput {
   need: 'topic' | 'full';
 }
 
-/** The ids of §5's questions. */
-export const CHOOSER_QUESTION_IDS = [...ROUTING_CRITERIA, 'topic', 'model', 'effort'] as const;
+/** The ids of §5's questions (T490: `tier` in place of T483's `model`). */
+export const CHOOSER_QUESTION_IDS = [...ROUTING_CRITERIA, 'topic', 'tier', 'effort'] as const;
 
 /**
- * §5's questions for one call: the five criteria (1–5), `topic`, `model`
- * (the candidates, keyed `vendor/model`, under Start cheap) and `effort` (the
- * levels up to the ceiling, when a candidate's vendor takes effort).
+ * §5's questions for one call: the five criteria (1–5), `topic`, `tier`
+ * (T490, D57: only the tiers the candidates have, asked under Start cheap
+ * when there are at least two) and `effort` (the levels up to the ceiling,
+ * when a candidate's vendor takes effort).
  */
 export function chooserQuestions(input: ChooserQuestionsInput): ChoiceQuestion[] {
   const topic: ChoiceQuestion = {
@@ -331,15 +347,16 @@ export function chooserQuestions(input: ChooserQuestionsInput): ChoiceQuestion[]
     policy.guidance.trim() !== ''
       ? ` The operator's guidance, to follow as written: ${policy.guidance.trim()}`
       : '';
-  const models = input.candidates.slice(0, JEV_CHOICE_OPTIONS_MAX);
-  // Strongest first always runs the strongest preset model (§3): Jev isn't asked which.
-  if (policy.escalation === 'start_cheap' && models.length >= 2) {
+  const tiers = tiersPresent(input.candidates, input.profiles);
+  // Strongest first always runs the strongest preset model (§3): Jev isn't asked which tier.
+  if (policy.escalation === 'start_cheap' && tiers.length >= 2) {
     const options: Record<string, string> = {};
-    for (const m of models)
-      options[modelKey(m.vendor, m.model)] = modelOptionText(m, input.profiles, input.models);
+    for (const tier of tiers) {
+      options[tier] = tierOptionText(tier, input.candidates, input.profiles, input.models);
+    }
     questions.push({
-      id: 'model',
-      instructions: `Which model should run this task? The rule: ${DEFAULT_CHOOSER_RULE} ${qualityText(
+      id: 'tier',
+      instructions: `Which tier of model should run this task? The rule: ${DEFAULT_CHOOSER_RULE} ${qualityText(
         policy.quality,
       )} ${weightsText(policy.weights)}${guidance}`,
       options,
@@ -393,9 +410,7 @@ export function scoreOf(answer: ChoiceAnswer, options: readonly string[]): numbe
 
 /**
  * Jev's answers as a reading. Every question asked must have an answer; a
- * topic or effort outside its options is a bad answer. A `model` outside
- * the candidates is kept (the clamp moves it and says so) as long as it
- * reads `vendor/model`.
+ * topic, tier or effort outside its options is a bad answer.
  */
 export function readChooserAnswers(
   questions: readonly ChoiceQuestion[],
@@ -423,13 +438,14 @@ export function readChooserAnswers(
     }
     reading.scores = scores;
   }
-  const modelQ = asked.get('model');
-  if (modelQ !== undefined) {
-    const a = answer(modelQ);
-    if (!MODEL_KEY_PATTERN.test(a.choice)) {
-      throw new ChooserReadError(`"${a.choice}" is not a vendor/model`);
+  const tierQ = asked.get('tier');
+  if (tierQ !== undefined) {
+    const a = answer(tierQ);
+    const tier = MODEL_TIERS.find((t) => t === a.choice);
+    if (tier === undefined || tierQ.options[tier] === undefined) {
+      throw new ChooserReadError(`"${a.choice}" is not a tier it was asked`);
     }
-    reading.model = { key: a.choice, confidence: a.confidence };
+    reading.tier = { tier, confidence: a.confidence };
   }
   const effortQ = asked.get('effort');
   if (effortQ !== undefined) {
@@ -460,7 +476,14 @@ export interface ModelPolicyTryResult {
   line: string;
   scores?: ChooserScores;
   topic?: ChooserTopic;
+  /** T490: Jev's confidence in its tier. */
   confidence?: number;
+  /** T490 (D57, D59): the tier, how it was decided, and why this model in it. */
+  tier?: ModelTier;
+  tier_by?: TierBy;
+  in_tier?: InTier;
+  /** T490: the vendor order that broke ties (a worker's), in words. */
+  vendor_order?: string;
   /** Why there was no reading. */
   failed?: { reason: 'no_key' | 'no_answer'; words: string };
   /** How long the Jev call took. */

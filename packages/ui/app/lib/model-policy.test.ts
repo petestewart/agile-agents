@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { DEFAULT_MODEL_PROFILES, resolveModelPolicy } from '@agile-agents/shared';
 import {
   confidenceWords,
+  installedVendors,
   isPreset,
   moveRule,
   pickLine,
@@ -13,7 +14,10 @@ import {
   scoreRows,
   setHere,
   sourceWords,
+  tierLine,
   togglePreset,
+  vendorOrderRows,
+  vendorOrderText,
 } from './model-policy';
 
 describe('model choice words (T482)', () => {
@@ -116,5 +120,43 @@ describe('the chooser in words (T483)', () => {
     expect(pinnedRuleWords(rule)).toBe('coordinator + security work → Claude Opus 5.5 · high');
     expect(moveRule(['a', 'b', 'c'], 2, -1)).toEqual(['a', 'c', 'b']);
     expect(moveRule(['a', 'b'], 0, -1)).toEqual(['a', 'b']);
+  });
+});
+
+describe('tier first and the vendor order (T490)', () => {
+  test('the order control lists the order, then the other installed vendors', () => {
+    expect(vendorOrderRows([], ['claude', 'codex'])).toEqual(['claude', 'codex']);
+    expect(vendorOrderRows(['codex'], ['claude', 'codex', 'gemini'])).toEqual([
+      'codex',
+      'claude',
+      'gemini',
+    ]);
+    expect(vendorOrderText(['claude', 'codex'])).toBe('Claude, then Codex');
+    expect(vendorOrderText([])).toBe('No preference');
+    expect(
+      installedVendors({ vendors: ['claude', 'codex', 'gemini'], not_installed: { gemini: 'x' } }),
+    ).toEqual(['claude', 'codex']);
+  });
+
+  test('the tier in words: how it was decided, Jev’s confidence, why that model', () => {
+    expect(
+      tierLine({
+        tier: 'balanced',
+        tier_by: 'jev',
+        confidence: 0.82,
+        in_tier: { words: 'Claude before Codex' },
+      }),
+    ).toBe('Balanced tier, by Jev (0.82). In the tier: Claude before Codex.');
+    expect(tierLine({ tier: 'strongest', tier_by: 'scores', confidence: 0.36 })).toBe(
+      'Strongest tier, by the scores (Jev wasn’t sure) (0.36).',
+    );
+    expect(tierLine({ tier: 'fast', tier_by: 'pinned' })).toBe('Fast tier, by a pinned rule.');
+    expect(tierLine({})).toBeUndefined();
+  });
+
+  test('a pinned rule naming only a vendor', () => {
+    expect(pinnedRuleWords({ when: { role: 'reviewer' }, pick: { vendor: 'codex' } })).toBe(
+      'reviewer → any Codex model',
+    );
   });
 });

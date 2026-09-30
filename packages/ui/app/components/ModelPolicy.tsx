@@ -14,6 +14,10 @@
  * weights, and Settings' **Try it** (a pasted task's scores and pick,
  * nothing started); a node's Details shows the scores behind its pick.
  *
+ * T490 (D57, D59): Jev picks a tier; **When models tie, prefer** (the
+ * vendor order) and **By role** pick the model inside it. Details and Try it
+ * show the tier, how it was decided and why that model.
+ *
  * Every change saves at once. The pure half is `lib/model-policy.ts`.
  */
 
@@ -43,6 +47,8 @@ import {
   type SessionVendor,
   type StepUpView,
   type Stream,
+  VENDOR_ORDER_ROLES,
+  type VendorOrderByRole,
 } from '@agile-agents/shared';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -61,7 +67,7 @@ import {
   stepUpModel,
   tryModelPolicy,
 } from '../lib/api';
-import { agentLabel, sessionIdText } from '../lib/chat';
+import { agentLabel, sessionIdText, vendorLabel } from '../lib/chat';
 import { pickerView } from '../lib/favourites';
 import {
   CRITERION_HINTS,
@@ -74,8 +80,11 @@ import {
   type ModelPolicyView,
   type PolicyLayer,
   TIER_WORDS,
+  VENDOR_ORDER_ROLE_HINTS,
+  VENDOR_ORDER_ROLE_WORDS,
   confidenceWords,
   favouritePresets,
+  installedVendors,
   isPreset,
   moveRule,
   pickHowWords,
@@ -88,7 +97,10 @@ import {
   scoreRows,
   setHere,
   sourceWords,
+  tierLine,
   togglePreset,
+  vendorOrderRows,
+  vendorOrderText,
 } from '../lib/model-policy';
 import { useFavouriteModels } from '../lib/use-favourites';
 import { DetailSection } from './NodeDetails';
@@ -356,6 +368,7 @@ export function ModelPolicyFields({
   testid: string;
 }): JSX.Element {
   const p = view.resolved.policy;
+  const installed = useInstalledVendors();
   const src = (field: ModelPolicyField) => (
     <Source
       view={view}
@@ -421,6 +434,45 @@ export function ModelPolicyFields({
           disabled={busy}
           testid={`${testid}-presets`}
           onChange={(presets) => void save({ presets })}
+        />
+      </SetRow>
+      <SetRow
+        label="When models tie, prefer"
+        hint={
+          <>
+            Jev picks a tier; inside it, the first of these vendors with a preset model runs, then
+            the cheaper model. {src('vendor_order')}
+          </>
+        }
+        testid={`${testid}-vendor-order-row`}
+        stack
+      >
+        <VendorOrderField
+          order={p.vendor_order ?? []}
+          installed={installed ?? []}
+          disabled={busy}
+          testid={`${testid}-vendor-order`}
+          onChange={(vendor_order) => void save({ vendor_order })}
+        />
+      </SetRow>
+      <SetRow
+        label="By role"
+        hint={
+          <>
+            A role may prefer its own vendors: reviews on one, code on another.{' '}
+            {src('vendor_order_by_role')}
+          </>
+        }
+        testid={`${testid}-vendor-roles-row`}
+        stack
+      >
+        <VendorOrderByRoleField
+          byRole={p.vendor_order_by_role ?? {}}
+          order={p.vendor_order ?? []}
+          installed={installed ?? []}
+          disabled={busy}
+          testid={`${testid}-vendor-roles`}
+          onChange={(vendor_order_by_role) => void save({ vendor_order_by_role })}
         />
       </SetRow>
       <SetRow
@@ -512,6 +564,165 @@ export function ModelPolicyFields({
   );
 }
 
+/** T490: the vendors installed here, for the order controls (loaded once per panel). */
+function useInstalledVendors(): string[] | undefined {
+  const [vendors, setVendors] = useState<string[] | undefined>();
+  useEffect(() => {
+    let live = true;
+    getSessionDefaults()
+      .then((status) => live && setVendors(installedVendors(status)))
+      .catch(() => live && setVendors([]));
+    return () => {
+      live = false;
+    };
+  }, []);
+  return vendors;
+}
+
+/**
+ * T490 (D59): the vendors in the order a tie inside a tier goes to, with
+ * up and down to reorder; "No preference" clears it. Moving a vendor with
+ * no order set makes the order the list as shown.
+ */
+function VendorOrderField({
+  order,
+  installed,
+  disabled,
+  testid,
+  onChange,
+}: {
+  order: readonly string[];
+  installed: readonly string[];
+  disabled: boolean;
+  testid: string;
+  onChange: (next: SessionVendor[]) => void;
+}): JSX.Element {
+  const rows = vendorOrderRows(order, installed);
+  const none = order.length === 0;
+  const move = (i: number, by: -1 | 1) => onChange(moveRule(rows, i, by) as SessionVendor[]);
+  return (
+    <div className="cr-mpol-vendors" data-testid={testid} data-order={order.join(',')}>
+      <p className="cr-mpol-presets-now" data-testid={`${testid}-now`}>
+        {vendorOrderText(order)}
+        {none && rows.length > 1
+          ? ': a tie goes to the cheaper model, then the one listed first. Move a vendor to set an order.'
+          : null}
+      </p>
+      {rows.map((vendor, i) => (
+        <div
+          key={vendor}
+          className="cr-mpol-rule"
+          data-testid={`${testid}-vendor`}
+          data-vendor={vendor}
+        >
+          <span className="cr-mpol-rule-words">
+            {none ? null : `${i + 1}. `}
+            {vendorLabel(vendor)}
+          </span>
+          <button
+            type="button"
+            className="cr-link"
+            disabled={disabled || i === 0}
+            title="Prefer it sooner"
+            aria-label={`Prefer ${vendorLabel(vendor)} sooner`}
+            data-testid={`${testid}-up`}
+            onClick={() => move(i, -1)}
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            className="cr-link"
+            disabled={disabled || i === rows.length - 1}
+            title="Prefer it later"
+            aria-label={`Prefer ${vendorLabel(vendor)} later`}
+            data-testid={`${testid}-down`}
+            onClick={() => move(i, 1)}
+          >
+            ↓
+          </button>
+        </div>
+      ))}
+      {!none ? (
+        <div>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={disabled}
+            data-testid={`${testid}-none`}
+            title="No vendor comes first: a tie goes to the cheaper model"
+            onClick={() => onChange([])}
+          >
+            No preference
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** T490 (D59): per role, "Same as above" or its own vendor order. */
+function VendorOrderByRoleField({
+  byRole,
+  order,
+  installed,
+  disabled,
+  testid,
+  onChange,
+}: {
+  byRole: VendorOrderByRole;
+  order: readonly string[];
+  installed: readonly string[];
+  disabled: boolean;
+  testid: string;
+  onChange: (next: VendorOrderByRole) => void;
+}): JSX.Element {
+  return (
+    <div className="cr-mpol-roles" data-testid={testid}>
+      {VENDOR_ORDER_ROLES.map((role) => {
+        const own = byRole[role];
+        const words = VENDOR_ORDER_ROLE_WORDS[role];
+        return (
+          <div
+            key={role}
+            className="cr-mpol-role"
+            data-testid={`${testid}-${role}`}
+            data-own={own !== undefined ? 'yes' : 'no'}
+          >
+            <div className="cr-mpol-role-head" title={VENDOR_ORDER_ROLE_HINTS[role]}>
+              <span className="cr-mpol-role-name">{words}</span>
+              <select
+                aria-label={`Vendor order for ${words}`}
+                value={own === undefined ? 'same' : 'own'}
+                disabled={disabled}
+                data-testid={`${testid}-${role}-mode`}
+                onChange={(e) => {
+                  const next: VendorOrderByRole = { ...byRole };
+                  if (e.target.value === 'same') delete next[role];
+                  else next[role] = vendorOrderRows(order, installed) as SessionVendor[];
+                  onChange(next);
+                }}
+              >
+                <option value="same">Same as above ({vendorOrderText(order)})</option>
+                <option value="own">Its own order</option>
+              </select>
+            </div>
+            {own !== undefined ? (
+              <VendorOrderField
+                order={own}
+                installed={installed}
+                disabled={disabled}
+                testid={`${testid}-${role}-order`}
+                onChange={(list) => onChange({ ...byRole, [role]: list })}
+              />
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 const ROLE_WORDS: Record<(typeof PINNED_RULE_ROLES)[number], string> = {
   coordinator: 'Coordinator',
   worker: 'Worker',
@@ -525,13 +736,27 @@ const TOPIC_WORDS: Record<(typeof PINNED_RULE_TOPICS)[number], string> = {
   security: 'Security',
 };
 
-/** The models a pinned rule may pick: the presets first, then every model the agents list. */
+/**
+ * The models a pinned rule may pick: T490 first a vendor alone (the tier
+ * decides the model), then the presets, then every model the agents list.
+ */
 function ruleModelOptions(
   presets: readonly PresetModel[],
   status: SessionDefaultsStatus | undefined,
-): Array<{ key: string; vendor: SessionVendor; model: string; label: string }> {
-  const out: Array<{ key: string; vendor: SessionVendor; model: string; label: string }> = [];
+): Array<{ key: string; vendor: SessionVendor; model?: string; label: string }> {
+  const out: Array<{ key: string; vendor: SessionVendor; model?: string; label: string }> = [];
   const seen = new Set<string>();
+  const vendors = new Set<SessionVendor>(presets.map((p) => p.vendor));
+  if (status !== undefined) {
+    for (const v of installedVendors(status)) vendors.add(v as SessionVendor);
+  }
+  for (const vendor of vendors) {
+    out.push({
+      key: `${vendor}/*`,
+      vendor,
+      label: `Any ${vendorLabel(vendor)} model (the tier decides)`,
+    });
+  }
   const add = (vendor: SessionVendor, model: string) => {
     const key = `${vendor}/${model}`;
     if (seen.has(key) || model === 'default') return;
@@ -589,7 +814,7 @@ function PinnedRulesField({
       },
       pick: {
         vendor: chosen.vendor,
-        model: chosen.model,
+        ...(chosen.model !== undefined ? { model: chosen.model } : {}),
         ...(effort !== '' ? { effort: effort as Effort } : {}),
       },
     };
@@ -866,7 +1091,9 @@ export function ChooserScoresView({
       </ul>
       {confidence !== undefined || (topic !== undefined && topic !== 'none') ? (
         <p className="cr-mpol-reading" data-testid={`${testid}-confidence`}>
-          {confidence !== undefined ? <>Jev’s confidence {confidenceWords(confidence)}</> : null}
+          {confidence !== undefined ? (
+            <>Jev’s confidence in the tier {confidenceWords(confidence)}</>
+          ) : null}
           {confidence !== undefined && topic !== undefined && topic !== 'none' ? ' · ' : null}
           {topic !== undefined && topic !== 'none' ? <>Topic: {topic}</> : null}
         </p>
@@ -926,6 +1153,14 @@ function TryIt({ testid }: { testid: string }): JSX.Element {
           <p className="cr-mpol-try-line" data-testid={`${testid}-line`}>
             {result.line}
           </p>
+          {tierLine(result) !== undefined ? (
+            <p className="cr-mpol-reading" data-testid={`${testid}-tier`} data-tier={result.tier}>
+              {tierLine(result)}
+              {result.vendor_order !== undefined
+                ? ` The vendor order: ${result.vendor_order === 'no preference' ? 'no preference' : result.vendor_order}.`
+                : null}
+            </p>
+          ) : null}
           <p className="cr-mpol-reading" data-testid={`${testid}-source`}>
             Decided by {pickSourceWords(result.pick)}
             {result.failed !== undefined ? ` (${result.failed.words})` : null}
@@ -1066,11 +1301,12 @@ export function ModelChoiceCard(): JSX.Element {
       }
     >
       <p className="cr-set-muted" data-testid="settings-model-choice-note">
-        Choose needs the classifier key (Settings → Rules): Jev reads each task and picks the model
-        and effort. When Jev isn’t sure, the scores decide by the rule. Without a key, or when Jev
-        doesn’t answer, Choose uses a fixed rule instead (under Start cheap the cheapest balanced
-        preset model at medium effort, under Strongest first the strongest) and the node’s chat says
-        why.
+        Choose needs the classifier key (Settings → Rules): Jev reads each task and picks a tier
+        (fast, balanced or strongest) and an effort; your vendor order, then the cost, picks the
+        preset model in that tier. When Jev isn’t sure, the scores decide the tier by the rule.
+        Without a key, or when Jev doesn’t answer, Choose uses a fixed rule instead (under Start
+        cheap a balanced preset model at medium effort, under Strongest first the strongest) and the
+        node’s chat says why.
       </p>
       {view === undefined && error === undefined ? (
         <span className="cr-set-muted">
@@ -1269,6 +1505,11 @@ export function ModelChoiceSection({
               <span className="cr-mpol-pick-note"> {pick.note}</span>
             ) : null}
           </p>
+          {tierLine(pick) !== undefined ? (
+            <p className="cr-mpol-reading" data-testid="details-model-tier" data-tier={pick.tier}>
+              {tierLine(pick)}
+            </p>
+          ) : null}
           {pick.scores !== undefined ? (
             <>
               <p className="cr-mpol-reading" data-testid="details-model-source">

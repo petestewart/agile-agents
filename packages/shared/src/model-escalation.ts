@@ -158,13 +158,19 @@ export interface LadderInput {
   profiles?: Readonly<Record<string, ModelProfile>>;
   /** With no presets, the default's vendor first on a tie (as a routed pick). */
   prefer?: string;
+  /**
+   * T490 (D59): the node's vendor order: two models of one tier and cost
+   * climb in this order (a vendor it names first; the others after).
+   */
+  vendorOrder?: readonly string[];
 }
 
 /**
  * §6's ladder: the preset models (any installed model when there are none)
- * by tier (fast, balanced, strongest), then cost, then the order they're
- * listed in; within one model, its effort levels from low up to the ceiling
- * (one rung for a vendor that takes no effort).
+ * by tier (fast, balanced, strongest), then cost, then (T490) the vendor
+ * order, then the order they're listed in; within one model, its effort
+ * levels from low up to the ceiling (one rung for a vendor that takes no
+ * effort).
  */
 export function escalationLadder(
   policy: Pick<ModelPolicy, 'presets' | 'effort_ceiling'>,
@@ -176,6 +182,11 @@ export function escalationLadder(
     ...(input.models !== undefined ? { models: input.models } : {}),
     ...(input.prefer !== undefined ? { prefer: input.prefer } : {}),
   });
+  const order = input.vendorOrder ?? [];
+  const rank = (vendor: string) => {
+    const at = order.indexOf(vendor);
+    return at < 0 ? order.length : at;
+  };
   const seen = new Set<string>();
   const rows = candidates
     .filter((c) => {
@@ -186,7 +197,11 @@ export function escalationLadder(
     })
     .map((c, order) => ({ c, order, p: profileOf(c.vendor, c.model, profiles) }))
     .sort(
-      (a, b) => tierRank(a.p.tier) - tierRank(b.p.tier) || a.p.cost - b.p.cost || a.order - b.order,
+      (a, b) =>
+        tierRank(a.p.tier) - tierRank(b.p.tier) ||
+        a.p.cost - b.p.cost ||
+        rank(a.c.vendor) - rank(b.c.vendor) ||
+        a.order - b.order,
     );
   const ceiling = effortRank(policy.effort_ceiling);
   const out: LadderRung[] = [];

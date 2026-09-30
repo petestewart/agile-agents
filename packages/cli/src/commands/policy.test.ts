@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { builtinModelPolicy, ulid } from '@agile-agents/shared';
 import { parseArgs } from '../args';
 import { type TestDaemon, startTestDaemon } from '../test-support';
-import { parsePolicyValue, policyField, policyValueText, runPolicyStepUp } from './policy';
+import {
+  parsePolicyValue,
+  policyField,
+  policyRole,
+  policyValueText,
+  runPolicySet,
+  runPolicyStepUp,
+  withRoleOrder,
+} from './policy';
 
 describe('agile policy (T482)', () => {
   test('field names take - or _', () => {
@@ -92,5 +100,93 @@ describe('agile policy step-up (T484)', () => {
     await expect(runPolicyStepUp(daemon.socketPath, parseArgs([]), false)).rejects.toThrow(
       /--node <id> is required/,
     );
+  });
+});
+
+describe('agile policy set vendor_order (T490, D59)', () => {
+  let daemon: TestDaemon;
+
+  beforeEach(async () => {
+    daemon = await startTestDaemon('agile-cli-vendor-order-');
+  });
+
+  afterEach(async () => {
+    await daemon.cleanup();
+  });
+
+  test('the fields parse; a role is named after a dot', () => {
+    expect(policyField('vendor-order')).toBe('vendor_order');
+    expect(policyField('vendor_order_by_role.reviewer')).toBe('vendor_order_by_role');
+    expect(policyRole('vendor_order_by_role.reviewer')).toBe('reviewer');
+    expect(policyRole('vendor_order')).toBeUndefined();
+    expect(() => policyRole('vendor_order_by_role.tester')).toThrow(/not a role/);
+    expect(() => policyRole('quality.reviewer')).toThrow(/only vendor_order_by_role/);
+    expect(parsePolicyValue('vendor_order', 'claude, Codex')).toEqual(['claude', 'codex']);
+    expect(parsePolicyValue('vendor_order', 'none')).toEqual([]);
+    expect(parsePolicyValue('vendor_order', 'inherit')).toBeNull();
+    expect(() => parsePolicyValue('vendor_order', 'claude,openai')).toThrow(/not a vendor/);
+    expect(() => parsePolicyValue('vendor_order', 'claude,claude')).toThrow(/once/);
+    expect(() => parsePolicyValue('vendor_order_by_role', 'codex')).toThrow(/name a role/);
+    expect(withRoleOrder({ worker: ['claude'] }, 'reviewer', 'codex,claude')).toEqual({
+      worker: ['claude'],
+      reviewer: ['codex', 'claude'],
+    });
+    expect(withRoleOrder({ reviewer: ['codex'] }, 'reviewer', 'same')).toBeNull();
+    const p = {
+      ...builtinModelPolicy(),
+      vendor_order: ['claude' as const, 'codex' as const],
+      vendor_order_by_role: { reviewer: ['codex' as const, 'claude' as const] },
+    };
+    expect(policyValueText('vendor_order', p)).toBe('Claude, then Codex');
+    expect(policyValueText('vendor_order_by_role', p)).toBe('reviewer: Codex, then Claude');
+    expect(policyValueText('vendor_order_by_role', builtinModelPolicy())).toBe(
+      'same as vendor_order for every role',
+    );
+  });
+
+  test('over the socket: the order, then one role’s own, merged into the layer', async () => {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      await runPolicySet(daemon.socketPath, parseArgs(['vendor_order', 'claude,codex']), false);
+      await runPolicySet(
+        daemon.socketPath,
+        parseArgs(['vendor_order_by_role.reviewer', 'codex,claude']),
+        false,
+      );
+      await runPolicySet(
+        daemon.socketPath,
+        parseArgs(['vendor_order_by_role.worker', 'claude']),
+        false,
+      );
+    } finally {
+      console.log = original;
+    }
+    expect(daemon.store.getHomeConfig().model_policy).toEqual({
+      vendor_order: ['claude', 'codex'],
+      vendor_order_by_role: { reviewer: ['codex', 'claude'], worker: ['claude'] },
+    });
+    expect(lines.join('\n')).toContain('reviewer: Codex, then Claude');
+    // `same` takes one role out; the last one out inherits the field again.
+    await runPolicySet(daemon.socketPath, parseArgs(['vendor_order_by_role.worker', 'same']), true);
+    await runPolicySet(
+      daemon.socketPath,
+      parseArgs(['vendor_order_by_role.reviewer', 'same']),
+      true,
+    );
+    expect(daemon.store.getHomeConfig().model_policy).toEqual({
+      vendor_order: ['claude', 'codex'],
+    });
+    // A node's own, beside its project's.
+    const node = await daemon.streamService.create('human', { title: 'Parser', goal: 'g' });
+    await runPolicySet(
+      daemon.socketPath,
+      parseArgs(['vendor_order_by_role.reviewer', 'codex', '--node', node.id]),
+      true,
+    );
+    expect(daemon.streamService.get(node.id).human.model_policy).toEqual({
+      vendor_order_by_role: { reviewer: ['codex'] },
+    });
   });
 });

@@ -50,6 +50,45 @@ describe('the ladder (T484, design/model-routing.md §6)', () => {
     ]);
   });
 
+  test('T490 (D59): a tie of tier and cost climbs in the vendor order', () => {
+    const presets = [
+      { vendor: 'claude' as const, model: 'claude-sonnet-5-5' },
+      { vendor: 'codex' as const, model: 'gpt-5.6-sol' },
+      { vendor: 'claude' as const, model: 'claude-opus-5-5' },
+      { vendor: 'codex' as const, model: 'gpt-6-astra' },
+    ];
+    const models = (vendorOrder?: string[]) => [
+      ...new Set(
+        escalationLadder(policy({ presets, effort_ceiling: 'low' }), {
+          installed: ['claude', 'codex'],
+          ...(vendorOrder !== undefined ? { vendorOrder } : {}),
+        }).map((r) => r.model),
+      ),
+    ];
+    expect(models()).toEqual([
+      'claude-sonnet-5-5',
+      'gpt-5.6-sol',
+      'claude-opus-5-5',
+      'gpt-6-astra',
+    ]);
+    expect(models(['codex', 'claude'])).toEqual([
+      'gpt-5.6-sol',
+      'claude-sonnet-5-5',
+      'gpt-6-astra',
+      'claude-opus-5-5',
+    ]);
+    // Cost still comes first: a cheaper model of a later vendor stays lower.
+    const cheap = escalationLadder(policy({ presets, effort_ceiling: 'low' }), {
+      installed: ['claude', 'codex'],
+      vendorOrder: ['codex'],
+      profiles: {
+        ...DEFAULT_MODEL_PROFILES,
+        'claude/claude-sonnet-5-5': { tier: 'balanced', cost: 0.5 },
+      },
+    });
+    expect(cheap[0]?.model).toBe('claude-sonnet-5-5');
+  });
+
   test('within a tier the cheaper model is lower; a tie keeps the listed order', () => {
     const profiles = {
       ...DEFAULT_MODEL_PROFILES,
