@@ -143,6 +143,8 @@ function usage(): string {
     '  director say "<line>"      a line to the Director; its reply lands on its thread',
     '  policy show [--project <P-id> | --node <id>]   model choice: each field, its value and where it comes from',
     '  policy set <field> <value> [--project <P-id> | --node <id>]   the home when neither; `inherit` clears it there',
+    '  policy set vendor_order claude,codex   which vendor wins a tie inside a tier (`none`: no preference)',
+    '  policy set vendor_order_by_role.<role> codex,claude   a role\u2019s own order (worker, coordinator, conversation, reviewer; `same` clears)',
     '                             fields: mode default|inherit|choose · quality 0-100 · presets vendor/model,…|any',
     '                             effort_ceiling low|medium|high|max · escalation start_cheap|strongest_first',
     '                             guidance "<text>" · weights clarity=2,stakes=3 · pinned_rules <JSON>',

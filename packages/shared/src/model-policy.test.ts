@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { HomeConfigSchema } from './home-config';
+import { chooserQuestions, readChooserAnswers } from './model-chooser';
 import {
   DEFAULT_MODEL_PROFILES,
   type ModelPolicy,
@@ -11,6 +12,9 @@ import {
   PinnedRuleSchema,
   applyModelPolicyPatch,
   builtinModelPolicy,
+  chooserNeed,
+  matchPinnedRule,
+  modelForTier,
   modelWords,
   pickModel,
   policySourceWords,
@@ -18,6 +22,11 @@ import {
   resolveModelPolicy,
   routedPickLine,
   ruleFallbackPick,
+  scoresRulePick,
+  scoresTier,
+  tiersPresent,
+  vendorOrderFor,
+  vendorOrderWords,
 } from './model-policy';
 import { ProjectSchema } from './project';
 import { StreamHumanStateSchema, assertStreamWrite } from './stream';
@@ -49,6 +58,8 @@ describe('model policy schemas (T482)', () => {
       ],
       guidance: 'Anything touching billing gets Opus.',
       weights: { clarity: 2, verifiability: 1, horizon: 0, stakes: 3, volume: 1 },
+      vendor_order: ['claude', 'codex'],
+      vendor_order_by_role: { reviewer: ['codex', 'claude'] },
     };
     expect(ModelPolicySchema.safeParse(whole).success).toBe(true);
     expect(ModelPolicySchema.safeParse({ ...whole, extra: 1 }).success).toBe(false);
@@ -323,15 +334,17 @@ describe('pickModel (T482)', () => {
     expect(routedPickLine(pick)).toBe('Model: Claude Opus 5.5 · low — the Default setting');
   });
 
-  test('choose, start cheap: the cheapest balanced preset at medium', () => {
+  test('choose, start cheap: a balanced preset at medium', () => {
     const pick = pickModel(input({ policy: policy({ mode: 'choose', presets }) }));
     expect(pick).toMatchObject({
       vendor: 'claude',
       model: 'claude-sonnet-5-5',
       effort: 'medium',
       how: 'rule',
+      tier: 'balanced',
+      tier_by: 'rule',
     });
-    expect(pick.why).toMatch(/cheapest balanced/);
+    expect(pick.why).toBe('start cheap: balanced (without Jev)');
   });
 
   test('choose, start cheap with no balanced preset: the cheapest of any tier', () => {
@@ -435,5 +448,264 @@ describe('pickModel (T482)', () => {
     );
     expect(pick.vendor).toBe('claude');
     expect(pick.how).toBe('rule');
+  });
+});
+
+describe('T490: tier first (D57) and the vendor order (D59)', () => {
+  const MIXED = [
+    { vendor: 'claude' as const, model: 'claude-haiku-4-5' },
+    { vendor: 'claude' as const, model: 'claude-sonnet-5-5' },
+    { vendor: 'claude' as const, model: 'claude-opus-5-5' },
+    { vendor: 'codex' as const, model: 'gpt-5.6-sol' },
+    { vendor: 'codex' as const, model: 'gpt-6-astra' },
+  ];
+  const P = DEFAULT_MODEL_PROFILES;
+  const CLEAR = { clarity: 5, verifiability: 5, horizon: 1, stakes: 1, volume: 1 };
+  const reading = (tier: 'fast' | 'balanced' | 'strongest', confidence: number) => ({
+    ok: true as const,
+    reading: { scores: CLEAR, topic: 'none' as const, tier: { tier, confidence } },
+  });
+
+  test('the new fields are strict, validated and human-only on a node', () => {
+    expect(ModelPolicyPartialSchema.safeParse({ vendor_order: ['claude', 'codex'] }).success).toBe(
+      true,
+    );
+    expect(ModelPolicyPartialSchema.safeParse({ vendor_order: ['claude', 'claude'] }).success).toBe(
+      false,
+    );
+    expect(ModelPolicyPartialSchema.safeParse({ vendor_order: ['openai'] }).success).toBe(false);
+    expect(
+      ModelPolicyPartialSchema.safeParse({ vendor_order_by_role: { reviewer: ['codex'] } }).success,
+    ).toBe(true);
+    expect(
+      ModelPolicyPartialSchema.safeParse({ vendor_order_by_role: { tester: ['codex'] } }).success,
+    ).toBe(false);
+    expect(ModelPolicyPatchSchema.safeParse({ vendor_order: null }).success).toBe(true);
+    expect(
+      PinnedRuleSchema.safeParse({ when: { role: 'reviewer' }, pick: { vendor: 'codex' } }).success,
+    ).toBe(true);
+    const before = {
+      id: '01J00000000000000000000000',
+      title: 't',
+      created_at: 'now',
+      agent: { status: 'idle' as const, updated_at: 'now' },
+      human: { status: 'open' as const },
+      sessions: [],
+    };
+    const after = {
+      ...before,
+      human: {
+        ...before.human,
+        model_policy: {
+          vendor_order: ['codex' as const],
+          vendor_order_by_role: { reviewer: ['claude' as const] },
+        },
+      },
+    };
+    expect(StreamHumanStateSchema.safeParse(after.human).success).toBe(true);
+    for (const who of ['agent', 'coordinator', 'director'] as const) {
+      expect(() => assertStreamWrite(who, before, after)).toThrow(/may not change human/);
+    }
+    expect(assertStreamWrite('human', before, after)).toBe(after);
+  });
+
+  test('the fields resolve field by field; a role’s own order is over the global one', () => {
+    const { policy: resolved, sources } = resolveModelPolicy({
+      node: { vendor_order_by_role: { reviewer: ['codex'] } },
+      project: { policy: { vendor_order: ['claude', 'codex'] } },
+    });
+    expect(resolved.vendor_order).toEqual(['claude', 'codex']);
+    expect(sources.vendor_order.from).toBe('project');
+    expect(sources.vendor_order_by_role.from).toBe('node');
+    expect(vendorOrderFor(resolved, 'reviewer')).toEqual(['codex']);
+    expect(vendorOrderFor(resolved, 'worker')).toEqual(['claude', 'codex']);
+    expect(vendorOrderFor(builtinModelPolicy(), 'worker')).toEqual([]);
+    expect(vendorOrderWords(['claude', 'codex'])).toBe('Claude, then Codex');
+    expect(vendorOrderWords([])).toBe('no preference');
+  });
+
+  test('the tier question: only the tiers the candidates have; none when they have one', () => {
+    const ids = (candidates: typeof MIXED) =>
+      chooserQuestions({ policy: builtinModelPolicy(), candidates, profiles: P, need: 'full' });
+    const all = ids(MIXED).find((q) => q.id === 'tier');
+    expect(Object.keys(all?.options ?? {})).toEqual(['fast', 'balanced', 'strongest']);
+    const two = ids(MIXED.filter((m) => m.model !== 'claude-haiku-4-5')).find(
+      (q) => q.id === 'tier',
+    );
+    expect(Object.keys(two?.options ?? {})).toEqual(['balanced', 'strongest']);
+    // Sonnet and Sol are both balanced: no tier question.
+    const one = ids([MIXED[1], MIXED[3]] as typeof MIXED);
+    expect(one.map((q) => q.id)).not.toContain('tier');
+    expect(tiersPresent([MIXED[1], MIXED[3]] as typeof MIXED, P)).toEqual(['balanced']);
+    // The tier answer reads as a tier with its confidence.
+    const qs = ids(MIXED);
+    const answers = qs.map((q) => ({
+      id: q.id,
+      choice:
+        q.id === 'tier'
+          ? 'strongest'
+          : q.id === 'topic'
+            ? 'none'
+            : q.id === 'effort'
+              ? 'high'
+              : '3',
+      confidence: 0.7,
+      probabilities: {},
+    }));
+    expect(readChooserAnswers(qs, answers).tier).toEqual({ tier: 'strongest', confidence: 0.7 });
+  });
+
+  test('the model inside a tier: the vendor order, then cost, then the listed order', () => {
+    expect(modelForTier('balanced', MIXED, P, { vendorOrder: ['claude', 'codex'] })).toEqual({
+      preset: MIXED[1] as (typeof MIXED)[number],
+      wanted: 'balanced',
+      tier: 'balanced',
+      by: 'vendor_order',
+      words: 'Claude before Codex',
+    });
+    expect(modelForTier('strongest', MIXED, P, { vendorOrder: ['codex'] })?.preset).toEqual(
+      MIXED[4],
+    );
+    // No order: the listed order when the costs tie …
+    expect(modelForTier('balanced', MIXED, P)).toMatchObject({
+      preset: MIXED[1],
+      by: 'listed',
+      words: 'no vendor preferred, so the one listed first',
+    });
+    // … the cheapest when they don't.
+    const cheapSol = { ...P, 'codex/gpt-5.6-sol': { tier: 'balanced' as const, cost: 0.8 } };
+    expect(modelForTier('balanced', MIXED, cheapSol)).toMatchObject({
+      preset: MIXED[3],
+      by: 'cost',
+      words: 'the cheapest balanced preset model',
+    });
+    // The vendor order comes before cost; a vendor it doesn't name comes after those it does.
+    expect(modelForTier('balanced', MIXED, cheapSol, { vendorOrder: ['claude'] })?.preset).toEqual(
+      MIXED[1],
+    );
+    expect(modelForTier('fast', MIXED, P)).toMatchObject({ preset: MIXED[0], by: 'only' });
+    expect(modelForTier('fast', MIXED, P)?.words).toBeUndefined();
+  });
+
+  test('a tier with no preset falls back to the nearest tier, and says so', () => {
+    const noFast = MIXED.filter((m) => m.model !== 'claude-haiku-4-5');
+    expect(modelForTier('fast', noFast, P, { vendorOrder: ['codex'] })).toMatchObject({
+      wanted: 'fast',
+      tier: 'balanced',
+      preset: { model: 'gpt-5.6-sol' },
+    });
+    const pick = pickModel(
+      input({
+        policy: policy({ mode: 'choose', presets: noFast, vendor_order: ['codex', 'claude'] }),
+        installed: ['claude', 'codex'],
+        chooser: {
+          ok: true,
+          reading: { scores: { ...CLEAR, volume: 5 }, topic: 'none' },
+        },
+      }),
+    );
+    // The scores call for fast (high volume); there is none, so balanced, by the vendor order.
+    expect(pick).toMatchObject({ model: 'gpt-5.6-sol', tier: 'fast', tier_by: 'scores' });
+    expect(pick.why).toContain('no fast preset model, so balanced; Codex before Claude');
+  });
+
+  test('the tier: Jev’s from 0.5, else the scores’ rule; the model by the role’s order', () => {
+    const base = policy({
+      mode: 'choose',
+      presets: MIXED,
+      vendor_order: ['claude', 'codex'],
+      vendor_order_by_role: { reviewer: ['codex', 'claude'] },
+    });
+    const sure = pickModel(
+      input({ policy: base, installed: ['claude', 'codex'], chooser: reading('strongest', 0.5) }),
+    );
+    expect(sure).toMatchObject({ model: 'claude-opus-5-5', how: 'jev', tier: 'strongest' });
+    expect(sure.why).toBe(
+      'strongest (Jev 0.50): well specified and covered by tests; short, low stakes; Claude before Codex',
+    );
+    const unsure = pickModel(
+      input({ policy: base, installed: ['claude', 'codex'], chooser: reading('strongest', 0.49) }),
+    );
+    expect(unsure).toMatchObject({ model: 'claude-sonnet-5-5', how: 'scores', tier: 'balanced' });
+    expect(scoresTier(CLEAR, base)).toBe('balanced');
+    expect(scoresRulePick(base, CLEAR, MIXED, P, ['codex'])).toMatchObject({
+      vendor: 'codex',
+      model: 'gpt-5.6-sol',
+      tier: 'balanced',
+      effort: 'medium',
+    });
+    const reviewer = pickModel(
+      input({
+        policy: base,
+        installed: ['claude', 'codex'],
+        chooser: reading('balanced', 0.9),
+        task: { role: 'reviewer' },
+      }),
+    );
+    expect(reviewer).toMatchObject({ vendor: 'codex', model: 'gpt-5.6-sol' });
+    // No key: the rule as a tier, then the order.
+    const ruled = ruleFallbackPick(base, MIXED, P, ['codex']);
+    expect(ruled).toMatchObject({ model: 'gpt-5.6-sol', tier: 'balanced', tier_by: 'rule' });
+    // Strongest first: the highest tier, the vendor order, then the most capable.
+    const strongest = ruleFallbackPick(policy({ escalation: 'strongest_first' }), MIXED, P, [
+      'codex',
+    ]);
+    expect(strongest).toMatchObject({ model: 'gpt-6-astra', effort: 'high' });
+    expect(strongest?.why).toBe(
+      'strongest first: the strongest preset model (without Jev); Codex before Claude',
+    );
+  });
+
+  test('a pinned rule may name only a vendor: it matches only where that vendor has a preset', () => {
+    const rule = { when: { role: 'reviewer' as const }, pick: { vendor: 'codex' as const } };
+    expect(
+      matchPinnedRule([rule], { role: 'reviewer' }, undefined, ['claude', 'codex'])?.index,
+    ).toBe(0);
+    expect(matchPinnedRule([rule], { role: 'reviewer' }, undefined, ['claude'])).toBeUndefined();
+    // It needs Jev's tier, under any mode.
+    const def = policy({ mode: 'default', pinned_rules: [rule] });
+    expect(chooserNeed(def, { role: 'reviewer' }, ['codex'])).toBe('full');
+    expect(chooserNeed(def, { role: 'reviewer' }, ['claude'])).toBe('none');
+    const pick = pickModel(
+      input({
+        policy: policy({ mode: 'choose', presets: MIXED, pinned_rules: [rule] }),
+        installed: ['claude', 'codex'],
+        chooser: reading('strongest', 0.9),
+        task: { role: 'reviewer' },
+      }),
+    );
+    expect(pick).toMatchObject({
+      vendor: 'codex',
+      model: 'gpt-6-astra',
+      how: 'pinned',
+      tier: 'strongest',
+      tier_by: 'jev',
+    });
+    expect(pick.why).toStartWith('pinned rule: reviewer → Codex; strongest (Jev 0.90)');
+    const none = pickModel(
+      input({
+        policy: policy({ mode: 'choose', presets: MIXED.slice(0, 3), pinned_rules: [rule] }),
+        installed: ['claude', 'codex'],
+        chooser: reading('strongest', 0.9),
+        task: { role: 'reviewer' },
+      }),
+    );
+    expect(none).toMatchObject({ vendor: 'claude', model: 'claude-opus-5-5', how: 'jev' });
+    expect(none.note).toBe(
+      'The pinned rule for reviewer names Codex, which has no preset model here, so it didn’t apply.',
+    );
+    // A pinned model records its own tier, decided by the rule.
+    const pinnedModel = pickModel(
+      input({
+        policy: policy({
+          presets: MIXED,
+          pinned_rules: [
+            { when: { role: 'coordinator' }, pick: { vendor: 'claude', model: 'claude-opus-5-5' } },
+          ],
+        }),
+        task: { role: 'coordinator' },
+      }),
+    );
+    expect(pinnedModel).toMatchObject({ tier: 'strongest', tier_by: 'pinned' });
   });
 });

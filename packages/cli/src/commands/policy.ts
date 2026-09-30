@@ -1,5 +1,5 @@
 /**
- * `agile policy show|set|choose-again|step-up|try` (T482, T483, T484,
+ * `agile policy show|set|choose-again|step-up|try` (T482, T483, T484, T490,
  * design/model-routing.md §4–§6):
  * model choice over the daemon's `policy.*` RPC, the same service as
  * Settings → Agents → Model choice and a node's Details. With neither
@@ -19,7 +19,11 @@ import {
   type PolicySource,
   ROUTING_CRITERIA,
   type ResolvedModelPolicy,
+  SESSION_VENDORS,
+  VENDOR_ORDER_ROLES,
+  type VendorOrderRole,
   policySourceWords,
+  vendorOrderWords,
 } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { optionalString, requirePositional } from '../args';
@@ -61,9 +65,27 @@ function layerParams(args: ParsedArgs): { project?: string; node?: string } {
   };
 }
 
-/** `effort-ceiling` and `effort_ceiling` both name the field. */
+/**
+ * T490: `vendor_order_by_role.reviewer` names one role's own vendor order;
+ * `undefined` when `raw` names no role.
+ */
+export function policyRole(raw: string): VendorOrderRole | undefined {
+  const [field = '', role] = raw.replace(/-/g, '_').split('.');
+  if (role === undefined) return undefined;
+  if (field !== 'vendor_order_by_role') {
+    throw new Error(`agile policy set: ${raw}: only vendor_order_by_role takes a role`);
+  }
+  if (!(VENDOR_ORDER_ROLES as readonly string[]).includes(role)) {
+    throw new Error(
+      `agile policy set: ${role} is not a role (one of ${VENDOR_ORDER_ROLES.join(', ')})`,
+    );
+  }
+  return role as VendorOrderRole;
+}
+
+/** `effort-ceiling` and `effort_ceiling` both name the field (T490: `vendor_order_by_role.<role>` too). */
 export function policyField(raw: string): ModelPolicyField {
-  const field = raw.replace(/-/g, '_');
+  const field = raw.replace(/-/g, '_').split('.')[0] ?? '';
   if (!(MODEL_POLICY_FIELDS as readonly string[]).includes(field)) {
     throw new Error(
       `agile policy set: unknown field ${raw} (one of ${MODEL_POLICY_FIELDS.join(', ')})`,
@@ -140,9 +162,58 @@ export function parsePolicyValue(field: ModelPolicyField, raw: string): unknown 
       } catch {
         throw new Error('agile policy set pinned_rules: a JSON list of {when, pick}');
       }
+    case 'vendor_order':
+      return parseVendorOrder(value);
+    case 'vendor_order_by_role':
+      throw new Error(
+        'agile policy set vendor_order_by_role.<role> <vendors>: name a role (worker, coordinator, conversation, reviewer)',
+      );
     default:
       return raw;
   }
+}
+
+/**
+ * T490 (D59): a vendor order, `claude,codex` (the first preferred on a tie);
+ * `none` for no preference.
+ */
+export function parseVendorOrder(raw: string): string[] {
+  const value = raw.trim();
+  if (value === 'none' || value === '') return [];
+  const vendors = value
+    .split(',')
+    .map((v) => v.trim().toLowerCase())
+    .filter(Boolean);
+  for (const vendor of vendors) {
+    if (!(SESSION_VENDORS as readonly string[]).includes(vendor)) {
+      throw new Error(
+        `agile policy set vendor_order: ${vendor} is not a vendor (one of ${SESSION_VENDORS.join(', ')})`,
+      );
+    }
+  }
+  if (new Set(vendors).size !== vendors.length) {
+    throw new Error('agile policy set vendor_order: name each vendor once');
+  }
+  return vendors;
+}
+
+/**
+ * T490: one role's order merged into what the layer sets itself: `inherit`
+ * or `same` takes the role out (it uses `vendor_order` again); the field
+ * inherits again when no role is left.
+ */
+export function withRoleOrder(
+  own: ModelPolicyPartial['vendor_order_by_role'],
+  role: VendorOrderRole,
+  raw: string,
+): ModelPolicyPartial['vendor_order_by_role'] | null {
+  const value = raw.trim();
+  const next: Record<string, string[]> = { ...(own ?? {}) };
+  if (value === 'inherit' || value === 'same') delete next[role];
+  else next[role] = parseVendorOrder(value);
+  return Object.keys(next).length === 0
+    ? null
+    : (next as ModelPolicyPartial['vendor_order_by_role']);
 }
 
 /** A resolved field's value in words. */
@@ -160,6 +231,15 @@ export function policyValueText(field: ModelPolicyField, policy: ModelPolicy): s
       return policy.guidance === '' ? '(none)' : JSON.stringify(policy.guidance);
     case 'weights':
       return ROUTING_CRITERIA.map((c) => `${c} ${policy.weights[c]}`).join(' · ');
+    case 'vendor_order':
+      return vendorOrderWords(policy.vendor_order);
+    case 'vendor_order_by_role': {
+      const rows = VENDOR_ORDER_ROLES.flatMap((role) => {
+        const own = policy.vendor_order_by_role[role];
+        return own !== undefined ? [`${role}: ${vendorOrderWords(own)}`] : [];
+      });
+      return rows.length === 0 ? 'same as vendor_order for every role' : rows.join(' · ');
+    }
     default:
       return String(policy[field]);
   }
@@ -224,14 +304,24 @@ export async function runPolicySet(
   args: ParsedArgs,
   json: boolean,
 ): Promise<number> {
-  const field = policyField(requirePositional(args, 0, 'field'));
+  const named = requirePositional(args, 0, 'field');
+  const field = policyField(named);
+  const role = policyRole(named);
   requirePositional(args, 1, 'value');
   // The guidance is free text: every word after the field.
   const raw = args.positionals.slice(1).join(' ');
   const layer = layerParams(args);
+  let value: unknown;
+  if (role !== undefined) {
+    // T490: one role's order, merged into what this layer sets itself.
+    const before = await callRpc<PolicyView>(socketPath, 'policy.show', layer);
+    value = withRoleOrder(before.policy.vendor_order_by_role, role, raw);
+  } else {
+    value = parsePolicyValue(field, raw);
+  }
   const view = await callRpc<PolicyView>(socketPath, 'policy.set', {
     ...layer,
-    patch: { [field]: parsePolicyValue(field, raw) },
+    patch: { [field]: value },
   });
   if (json) printJson(view);
   else
@@ -310,11 +400,20 @@ export async function runPolicyTry(
   }
   console.log(result.line);
   const fields: Array<[string, string]> = [];
-  if (result.scores !== undefined) fields.push(['scores', scoresText(result.scores)]);
-  if (result.topic !== undefined) fields.push(['topic', result.topic]);
+  // T490 (D57): the tier first, how it was decided, and Jev's confidence in it.
+  if (result.tier !== undefined) {
+    fields.push([
+      'tier',
+      `${result.tier}${result.tier_by !== undefined ? ` (${result.tier_by})` : ''}`,
+    ]);
+  }
   if (result.confidence !== undefined) {
     fields.push(['confidence', result.confidence.toFixed(2)]);
   }
+  if (result.in_tier?.words !== undefined) fields.push(['in the tier', result.in_tier.words]);
+  if (result.vendor_order !== undefined) fields.push(['vendor order', result.vendor_order]);
+  if (result.scores !== undefined) fields.push(['scores', scoresText(result.scores)]);
+  if (result.topic !== undefined) fields.push(['topic', result.topic]);
   fields.push(['decided by', result.pick.how + (result.pick.base ? ` (${result.pick.base})` : '')]);
   if (result.failed !== undefined) fields.push(['without Jev', result.failed.words]);
   if (result.mode !== 'choose') {

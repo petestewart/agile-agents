@@ -4156,7 +4156,7 @@ describe('T482: model routing at a start (the policy and the lock)', () => {
     await waitFor(() => streams.get(node.id).agent.status === 'done');
     expect(lastSession(node.id)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
     expect(modelLines(node.id)).toEqual([
-      'Model: Claude Sonnet 5.5 · medium — start cheap: the cheapest balanced preset model (no classifier key)',
+      'Model: Claude Sonnet 5.5 · medium — start cheap: balanced (no classifier key)',
     ]);
     expect(streams.get(node.id).agent.pick).toMatchObject({
       vendor: 'claude',
@@ -4318,10 +4318,11 @@ describe('T483: the chooser at a start (D52, D55)', () => {
     stakes: one('1'),
     volume: one('1'),
     topic: one('none'),
-    model: {
-      choice: 'claude/claude-sonnet-5-5',
+    // T490 (D57): Jev answers the tier.
+    tier: {
+      choice: 'balanced',
       confidence: 0.82,
-      probabilities: { 'claude/claude-sonnet-5-5': 0.88, 'claude/claude-haiku-4-5': 0.12 },
+      probabilities: { balanced: 0.88, fast: 0.12 },
     },
     effort: one('medium', 0.7),
   };
@@ -4359,11 +4360,14 @@ describe('T483: the chooser at a start (D52, D55)', () => {
       effort: 'medium',
     });
     expect(modelLines(node.id)).toEqual([
-      'Model: Claude Sonnet 5.5 · medium — well specified and covered by tests; short, low stakes',
+      'Model: Claude Sonnet 5.5 · medium — balanced (Jev 0.82): well specified and covered by tests; short, low stakes',
     ]);
     expect(streams.get(node.id).agent.pick).toMatchObject({
       how: 'jev',
       confidence: 0.82,
+      tier: 'balanced',
+      tier_by: 'jev',
+      in_tier: { by: 'only' },
       topic: 'none',
       scores: { clarity: 5, verifiability: 5, horizon: 1, stakes: 1, volume: 1 },
     });
@@ -4398,7 +4402,7 @@ describe('T483: the chooser at a start (D52, D55)', () => {
     await attachService.attach(node.id);
     await waitFor(() => streams.get(node.id).agent.status === 'done');
     expect(modelLines(node.id)).toEqual([
-      'Model: Claude Sonnet 5.5 · medium — start cheap: the cheapest balanced preset model (no classifier key)',
+      'Model: Claude Sonnet 5.5 · medium — start cheap: balanced (no classifier key)',
     ]);
     expect(streams.get(node.id).agent.pick?.scores).toBeUndefined();
 
@@ -4433,6 +4437,119 @@ describe('T483: the chooser at a start (D52, D55)', () => {
     });
     expect(modelLines(node.id)).toEqual(['Model: Claude Haiku 4.5 · low — pinned rule: reviewer']);
     expect(jev.choiceCalls).toHaveLength(0);
+  }, 30_000);
+});
+
+describe('T490: a reviewer routed by role, the vendor order (D57, D59)', () => {
+  const MIXED = [
+    { vendor: 'claude' as const, model: 'claude-haiku-4-5' },
+    { vendor: 'claude' as const, model: 'claude-sonnet-5-5' },
+    { vendor: 'claude' as const, model: 'claude-opus-5-5' },
+    { vendor: 'codex' as const, model: 'gpt-5.6-sol' },
+    { vendor: 'codex' as const, model: 'gpt-6-astra' },
+  ];
+  const one = (n: string, confidence = 0.9) => ({
+    choice: n,
+    confidence,
+    probabilities: { [n]: 1 },
+  });
+  const CLEAR = {
+    clarity: one('5'),
+    verifiability: one('5'),
+    horizon: one('1'),
+    stakes: one('1'),
+    volume: one('1'),
+    topic: one('none'),
+    tier: one('balanced', 0.82),
+    effort: one('medium', 0.7),
+  };
+  let projects = 0;
+
+  async function nodeIn(policy: Record<string, unknown>): Promise<Stream> {
+    projects += 1;
+    const project = await new ProjectService(store, streams).create({ name: `Tiers ${projects}` });
+    await store.updateProject(project.id, (p) => ({ ...p, model_policy: policy }));
+    return streams.create('human', { title: 'Parser', goal: 'g', project: project.id });
+  }
+
+  test('a reviewer with no pick runs the reviewer order’s model in Jev’s tier; the worker the worker’s', async () => {
+    const jev = new FakeClassifier([], { choice: CLEAR });
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS), {
+      classifier: jev,
+    });
+    const node = await nodeIn({
+      mode: 'choose',
+      presets: MIXED,
+      vendor_order: ['claude', 'codex'],
+      vendor_order_by_role: { reviewer: ['codex', 'claude'] },
+    });
+    await attachService.attach(node.id, { role: 'reviewer' });
+    await waitFor(() => threadBodies(node.id).some((b) => b.startsWith('review finished')));
+    expect(streams.get(node.id).sessions[0]).toMatchObject({
+      role: 'reviewer',
+      vendor: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'medium',
+    });
+    expect(threadBodies(node.id).filter((b) => b.startsWith('Model: '))).toEqual([
+      'Model: gpt-5.6-sol · medium — balanced (Jev 0.82): well specified and covered by tests; short, low stakes; Codex before Claude',
+    ]);
+    expect(jev.choiceCalls).toHaveLength(1);
+    expect(jev.choiceCalls[0]?.state).toContain('Role: a reviewer');
+    // A reviewer's pick is not the node's: `agent.pick` is left alone.
+    expect(streams.get(node.id).agent.pick).toBeUndefined();
+
+    // The node's own worker follows the worker order: Claude.
+    await attachService.attach(node.id);
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    expect(streams.get(node.id).sessions.at(-1)).toMatchObject({
+      role: 'worker',
+      vendor: 'claude',
+      model: 'claude-sonnet-5-5',
+    });
+    expect(streams.get(node.id).agent.pick).toMatchObject({
+      how: 'jev',
+      tier: 'balanced',
+      in_tier: { by: 'vendor_order', words: 'Claude before Codex' },
+    });
+  }, 30_000);
+
+  test('an explicit reviewer pick wins, never asks Jev, and says nothing about the policy', async () => {
+    const jev = new FakeClassifier([], { choice: CLEAR });
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS), {
+      classifier: jev,
+    });
+    const node = await nodeIn({
+      mode: 'choose',
+      presets: MIXED,
+      vendor_order_by_role: { reviewer: ['codex'] },
+    });
+    await attachService.attach(node.id, {
+      role: 'reviewer',
+      vendor: 'claude',
+      model: 'claude-opus-5-5',
+    });
+    await waitFor(() => threadBodies(node.id).some((b) => b.startsWith('review finished')));
+    expect(streams.get(node.id).sessions[0]).toMatchObject({
+      role: 'reviewer',
+      vendor: 'claude',
+      model: 'claude-opus-5-5',
+    });
+    expect(jev.choiceCalls).toHaveLength(0);
+    expect(threadBodies(node.id).filter((b) => b.startsWith('Model: '))).toEqual([]);
+  }, 30_000);
+
+  test('under Default a reviewer resolves as before: no Jev call, no line', async () => {
+    const jev = new FakeClassifier([], { choice: CLEAR });
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS), {
+      classifier: jev,
+    });
+    const node = await nodeIn({ mode: 'default', presets: [] });
+    await attachService.attach(node.id, { role: 'reviewer' });
+    await waitFor(() => threadBodies(node.id).some((b) => b.startsWith('review finished')));
+    expect(streams.get(node.id).sessions[0]).toMatchObject({ role: 'reviewer', vendor: 'claude' });
+    expect(jev.choiceCalls).toHaveLength(0);
+    expect(threadBodies(node.id).filter((b) => b.startsWith('Model: '))).toEqual([]);
   }, 30_000);
 });
 

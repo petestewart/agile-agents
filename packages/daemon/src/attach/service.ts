@@ -900,7 +900,8 @@ export class AttachService {
         }
       }
     } else if (role === 'reviewer' && !flagged && options.carried === undefined) {
-      // T483: a reviewer resolves as before, unless a pinned rule names `reviewer`.
+      // T490 (D59): a reviewer with no pick is routed as the `reviewer` role (its pinned rules,
+      // its vendor order, the tier); under Default it resolves as before. An explicit pick wins.
       const triple = { vendor: settings.vendor, model: settings.model, effort: settings.effort };
       const pinned = await this.routing().pickForReviewer(stream, triple);
       if (pinned !== undefined) {
@@ -1125,7 +1126,7 @@ export class AttachService {
     });
     // T482: a routed pick says what it chose and why; an explicit pick outside the
     // preset models says it runs as picked (D53). A kept pick says nothing new.
-    // T483: a reviewer a pinned rule picked for says so too.
+    // T483, T490: a routed reviewer says so too.
     const shown = pick ?? reviewerPick;
     const pickLine =
       shown === undefined || shown.how === 'kept' || shown.how === 'escalation'
@@ -2600,6 +2601,10 @@ function pickRecord(
     ...(pick.scores !== undefined ? { scores: pick.scores } : {}),
     ...(pick.topic !== undefined ? { topic: pick.topic } : {}),
     ...(pick.confidence !== undefined ? { confidence: pick.confidence } : {}),
+    // T490: the tier, how it was decided, and why this model in it.
+    ...(pick.tier !== undefined ? { tier: pick.tier } : {}),
+    ...(pick.tier_by !== undefined ? { tier_by: pick.tier_by } : {}),
+    ...(pick.in_tier !== undefined ? { in_tier: pick.in_tier } : {}),
     session,
     at,
   };
