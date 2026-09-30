@@ -17,7 +17,8 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 export type FakeAgentStep =
-  | { type: 'usage_update'; used: number; size?: number }
+  /** T489: `extra` fields ride the update as sent (a `cost`, a rate-limit field). */
+  | { type: 'usage_update'; used: number; size?: number; extra?: Record<string, unknown> }
   | { type: 'tool_call'; toolCallId: string; kind?: string; title?: string; status?: string }
   | { type: 'tool_call_update'; toolCallId: string; status: string }
   | {
@@ -29,7 +30,13 @@ export type FakeAgentStep =
     }
   /** One `agent_message_chunk`: what `session.prompt()` returns as `reply.text`. */
   | { type: 'agent_text'; text: string }
-  | { type: 'end_turn'; stopReason?: string; usage?: Record<string, unknown> }
+  | {
+      type: 'end_turn';
+      stopReason?: string;
+      usage?: Record<string, unknown>;
+      /** T489: the prompt reply's `_meta` (a vendor's rate-limit or plan fields). */
+      _meta?: Record<string, unknown>;
+    }
   | { type: 'hang' }
   /** Blocks until `path` exists: end a turn after something outside happened, without a racy sleep. */
   | { type: 'wait_for_file'; path: string; timeoutMs?: number }
@@ -111,6 +118,8 @@ export interface FakeAgentScript {
    * JSON-RPC error. Each call is logged (`logFile`).
    */
   setConfigOption?: 'honour' | 'ignore' | 'error';
+  /** T489: how the effort option's `session/set_config_option` is answered; default `setConfigOption`'s. */
+  setEffortOption?: 'honour' | 'ignore' | 'error';
   /** T486: log whether the classifier key reached the agent (`{method: "spawn-secrets", classifier_key}`), never its value. */
   logSecretEnv?: boolean;
   /** T467: log `ANTHROPIC_MODEL` as the agent saw it at spawn (`{method: "spawn", ANTHROPIC_MODEL}`); T480: and the bridge overrides, when set. */
@@ -247,7 +256,12 @@ async function runScript(promptRequestId: number | string): Promise<void> {
       case 'usage_update':
         notify('session/update', {
           sessionId,
-          update: { sessionUpdate: 'usage_update', used: step.used, size: step.size ?? 200_000 },
+          update: {
+            sessionUpdate: 'usage_update',
+            used: step.used,
+            size: step.size ?? 200_000,
+            ...(step.extra ?? {}),
+          },
         });
         break;
       case 'tool_call':
@@ -297,6 +311,7 @@ async function runScript(promptRequestId: number | string): Promise<void> {
           result: {
             stopReason: step.stopReason ?? 'end_turn',
             ...(step.usage !== undefined ? { usage: step.usage } : {}),
+            ...(step._meta !== undefined ? { _meta: step._meta } : {}),
           },
         });
         return;
@@ -415,22 +430,21 @@ function handleLine(line: string): void {
     case 'session/set_config_option': {
       appendLog(script, { method: 'session/set_config_option', params: message.params });
       const params = message.params as { configId?: string; value?: string } | undefined;
-      if (script.setConfigOption === 'error') {
+      const isEffort =
+        script.effortOption !== undefined && params?.configId === script.effortOption.id;
+      const answer = (isEffort ? script.setEffortOption : undefined) ?? script.setConfigOption;
+      if (answer === 'error') {
         write({
           id: message.id,
           error: { code: -32602, message: `cannot set ${params?.configId ?? 'option'}` },
         });
         return;
       }
-      if (
-        script.setConfigOption !== 'ignore' &&
-        params?.configId === 'model' &&
-        typeof params.value === 'string'
-      ) {
+      if (answer !== 'ignore' && params?.configId === 'model' && typeof params.value === 'string') {
         currentModel = params.value;
       }
       if (
-        script.setConfigOption !== 'ignore' &&
+        answer !== 'ignore' &&
         script.effortOption !== undefined &&
         params?.configId === script.effortOption.id &&
         typeof params.value === 'string'

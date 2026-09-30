@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ACP_PROVIDERS } from '@agile-agents/acp-client';
 import {
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_DENY_AT,
@@ -21,6 +22,7 @@ import {
   type SessionDefaultsStatus,
   type SessionVendor,
   type Stream,
+  type VendorChecksStatus,
   type VendorFailureSettings,
   type VendorModels,
   classifierQuestion,
@@ -44,6 +46,7 @@ import { runInit } from './init';
 import { KnowledgeService } from './knowledge';
 import { ProjectService } from './projects';
 import { QuestionService } from './questions';
+import { VendorCheckService } from './runner/vendor-check';
 import { type DirListing, RepoRemoteCache, StateStore } from './store';
 import { buildEvent } from './store/events';
 import { StreamService, TitleNamer } from './streams';
@@ -2779,4 +2782,137 @@ describe('T481 harness update routes (D50)', () => {
     const check = await fetch(`${base}/api/harness-updates/check`, { method: 'POST' });
     expect(check.status).toBe(503);
   });
+});
+
+describe('T489 vendor self-check routes (D58)', () => {
+  let home: string;
+  let scratch: string;
+  let cockpit: HttpServerHandle;
+  let store: StateStore;
+  let checks: VendorCheckService;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'agile-http-vendor-checks-'));
+    scratch = mkdtempSync(join(tmpdir(), 'agile-http-vendor-checks-scratch-'));
+    const init = runInit(home);
+    store = StateStore.open(init.stateRoot);
+    const streams = new StreamService(store);
+    const questions = new QuestionService(store, streams);
+    const gates = new GateService(store);
+    const script = join(scratch, 'script.json');
+    writeFileSync(
+      script,
+      JSON.stringify({
+        steps: [{ type: 'end_turn', usage: { inputTokens: 9, outputTokens: 1 } }],
+        setConfigOption: 'ignore',
+        modelOption: {
+          current: 'default[]',
+          options: [
+            { value: 'default[]', name: 'Auto' },
+            { value: 'grok-4.7', name: 'grok-4.7' },
+          ],
+        },
+      }),
+    );
+    checks = new VendorCheckService({
+      home,
+      store,
+      vendors: ['claude', 'cursor', 'gemini'],
+      missing: (v) =>
+        v === 'gemini' ? 'Gemini CLI can’t start: `gemini` is not on PATH.' : undefined,
+      // The fake agent, never a vendor.
+      provider: (v) => ({
+        ...ACP_PROVIDERS[v],
+        command: 'bun',
+        args: [join(import.meta.dir, 'runner', 'fake-agent.ts')],
+        envOverrides: { AGILE_FAKE_AGENT_SCRIPT: script },
+        authMethods: [],
+      }),
+    });
+    cockpit = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot: init.stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates,
+      streams,
+      questions,
+      vendorChecks: checks,
+      feedPollIntervalMs: 20,
+    });
+  });
+
+  afterEach(async () => {
+    await cockpit.stop();
+    await checks.settled();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  const url = (path: string) => `http://127.0.0.1:${cockpit.port}${path}`;
+  const post = (path: string, body: unknown = {}, headers: Record<string, string> = {}) =>
+    fetch(url(path), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+  const evil = { origin: 'http://evil.example' };
+
+  test('GET the rows; the auto/manual switch in the home config, as the operator; 403 cross-origin; 400', async () => {
+    const got = (await (
+      await fetch(url('/api/settings/vendor-checks'))
+    ).json()) as VendorChecksStatus;
+    expect(got.mode).toBe('auto');
+    expect(got.vendors.map((v) => [v.vendor, v.installed, v.last === undefined])).toEqual([
+      ['claude', true, true],
+      ['cursor', true, true],
+      ['gemini', false, true],
+    ]);
+    expect((await post('/api/settings/vendor-checks', { mode: 'manual' }, evil)).status).toBe(403);
+    expect(store.getHomeConfig().vendor_checks).toBeUndefined();
+    const manual = (await (
+      await post('/api/settings/vendor-checks', { mode: 'manual' })
+    ).json()) as VendorChecksStatus;
+    expect(manual.mode).toBe('manual');
+    expect(store.getHomeConfig().vendor_checks).toBe('manual');
+    const put = store
+      .listEvents()
+      .filter((e) => e.kind === 'home_config_put')
+      .at(-1);
+    expect(put?.agent).toBe('human');
+    await post('/api/settings/vendor-checks', { mode: 'auto' });
+    expect(store.getHomeConfig().vendor_checks).toBeUndefined();
+    expect((await post('/api/settings/vendor-checks', { mode: 'weekly' })).status).toBe(400);
+    expect((await post('/api/settings/vendor-checks', { mode: 'auto', x: 1 })).status).toBe(400);
+  });
+
+  test('run: 403 cross-origin; one vendor or all installed, at once with the running state; 409 not installed', async () => {
+    expect((await post('/api/settings/vendor-checks/run', {}, evil)).status).toBe(403);
+    expect(checks.status().running).toBe(false);
+    expect((await post('/api/settings/vendor-checks/run', { vendor: 'gemini' })).status).toBe(409);
+    expect((await post('/api/settings/vendor-checks/run', { vendor: 'openai' })).status).toBe(400);
+    const one = (await (
+      await post('/api/settings/vendor-checks/run', { vendor: 'cursor' })
+    ).json()) as VendorChecksStatus;
+    expect(one.running).toBe(true);
+    const row = one.vendors.find((v) => v.vendor === 'cursor');
+    expect(row?.running === true || row?.queued === true).toBe(true);
+    await checks.settled();
+    const all = (await (
+      await post('/api/settings/vendor-checks/run', {})
+    ).json()) as VendorChecksStatus;
+    expect(all.vendors.filter((v) => v.running || v.queued).map((v) => v.vendor)).toEqual([
+      'claude',
+      'cursor',
+    ]);
+    await checks.settled();
+    const after = (await (
+      await fetch(url('/api/settings/vendor-checks'))
+    ).json()) as VendorChecksStatus;
+    expect(after.running).toBe(false);
+    const cursor = after.vendors.find((v) => v.vendor === 'cursor')?.last;
+    expect(cursor).toMatchObject({ by: 'human', reason: 'manual', model: { outcome: 'kept' } });
+    expect(cursor?.usage?.reply_usage_fields).toEqual(['inputTokens', 'outputTokens']);
+  }, 30_000);
 });

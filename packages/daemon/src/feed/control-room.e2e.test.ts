@@ -36,6 +36,7 @@ import {
   type KnowledgeItem as Rule,
   SEND_UP_MAX_CHARS,
   START_ON_GOAL,
+  type SessionVendor,
   type Stream,
   classifierQuestion,
   examplesOf,
@@ -82,6 +83,7 @@ import { QuestionService } from '../questions';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { ModelCatalog } from '../runner/model-catalog';
 import { SESSION_STATE_FILE } from '../runner/session';
+import { VendorCheckService } from '../runner/vendor-check';
 import { StateStore } from '../store';
 import { buildEvent } from '../store/events';
 import { type MoveCoordination, RepoInPlaceService, StreamService } from '../streams';
@@ -638,6 +640,8 @@ async function startCockpit(
     userHome?: string;
     /** T481: the vendor CLI updates, over an injected fake runner (nothing real runs). */
     harness?: (store: StateStore, events: RoutedEventService) => HarnessUpdateService;
+    /** T489: the vendor self-check, over the fake agent (never a vendor). */
+    vendorChecks?: (store: StateStore, home: string) => VendorCheckService;
   } = {},
 ): Promise<Cockpit> {
   const home = mkdtempSync(join(tmpdir(), 'agile-cockpit-e2e-'));
@@ -672,6 +676,7 @@ async function startCockpit(
     emit: makeEmitter(events, streams),
   });
   const harness = extra.harness?.(store, events);
+  const vendorChecks = extra.vendorChecks?.(store, home);
   const inbox = new InboxService({
     streams,
     questions,
@@ -719,6 +724,7 @@ async function startCockpit(
     ...(extra.trackerLinks ? { trackerLinks: extra.trackerLinks(streams) } : {}),
     ...(extra.userHome !== undefined ? { userHome: extra.userHome } : {}),
     ...(harness ? { harnessUpdates: harness } : {}),
+    ...(vendorChecks ? { vendorChecks } : {}),
     feedPollIntervalMs: 50,
   });
   return {
@@ -739,6 +745,7 @@ async function startCockpit(
     base: `http://127.0.0.1:${http.port}`,
     async stop() {
       await http.stop();
+      await vendorChecks?.settled();
       rmSync(home, { recursive: true, force: true });
     },
   };
@@ -11531,6 +11538,181 @@ describe('Vendor CLI updates (Playwright e2e, T481)', () => {
           () => cockpit.store.getHomeConfig().harness_updates?.dismissed?.gemini === '0.33.0',
         );
         expect(ran.some((line) => line.includes('upgrade'))).toBe(false);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('The vendor self-check (Playwright e2e, T489)', () => {
+  browserTest(
+    'Settings → Agents → Vendors: the table, the switch, Check all running one at a time, then the results',
+    async () => {
+      const cockpit = await startCockpit({
+        vendorChecks: (store, home) => {
+          // Claude takes its model; Cursor keeps its own. Each turn takes a moment, so
+          // the running state shows. The fake agent, never a vendor.
+          const scripts: Partial<Record<SessionVendor, FakeAgentScript>> = {
+            claude: {
+              modelOption: {
+                current: 'default',
+                options: [
+                  { value: 'default', name: 'Default (recommended)' },
+                  { value: 'sonnet', name: 'Sonnet' },
+                ],
+              },
+              effortOption: {
+                id: 'effort',
+                current: 'default',
+                values: ['default', 'low', 'high'],
+              },
+              steps: [
+                { type: 'delay', ms: 2500 },
+                { type: 'usage_update', used: 900, size: 200000 },
+                { type: 'end_turn', usage: { inputTokens: 900, outputTokens: 2 } },
+              ],
+            },
+            cursor: {
+              modelOption: {
+                current: 'default[]',
+                options: [
+                  { value: 'default[]', name: 'Auto' },
+                  { value: 'grok-4.7', name: 'grok-4.7' },
+                ],
+              },
+              setConfigOption: 'ignore',
+              steps: [
+                { type: 'delay', ms: 500 },
+                {
+                  type: 'end_turn',
+                  _meta: { rateLimits: { weekly: { usedPercent: 40 } } },
+                },
+              ],
+            },
+          };
+          return new VendorCheckService({
+            home,
+            store,
+            vendors: ['claude', 'cursor', 'gemini'],
+            missing: (v) =>
+              v === 'gemini'
+                ? 'Gemini CLI can’t start: `gemini` is not on the daemon’s PATH.'
+                : undefined,
+            cliVersion: (v) => (v === 'claude' ? '2.3.1' : undefined),
+            provider: (v) => {
+              const path = join(home, `vendor-check-${v}.json`);
+              writeFileSync(path, JSON.stringify(scripts[v] ?? { steps: [] }));
+              return {
+                ...ACP_PROVIDERS[v],
+                command: 'bun',
+                args: [FAKE_AGENT_PATH],
+                envOverrides: { AGILE_FAKE_AGENT_SCRIPT: path },
+              };
+            },
+          });
+        },
+      });
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=agents`);
+        await page.locator('[data-testid="settings-vendors"]').waitFor();
+        // One row per vendor, in words; nothing checked yet.
+        await waitForText(page, '[data-testid="settings-vendors-state-claude"]', 'Not checked yet');
+        await waitForText(page, '[data-testid="settings-vendors-version-claude"]', '2.3.1');
+        await waitForText(page, '[data-testid="settings-vendors-when-gemini"]', 'Not installed');
+        expect(
+          await page.locator('[data-testid="settings-vendors-check-gemini"]').isDisabled(),
+        ).toBe(true);
+        await waitForAttr(
+          page,
+          '[data-testid="settings-vendors-mode-auto"]',
+          'aria-checked',
+          'true',
+        );
+
+        // The switch is the home's, written through the store; Automatic (the default) removes it.
+        await page.locator('[data-testid="settings-vendors-mode-manual"]').click();
+        await waitUntil(
+          'manual saved',
+          () => cockpit.store.getHomeConfig().vendor_checks === 'manual',
+        );
+        await page.locator('[data-testid="settings-vendors-mode-auto"]').click();
+        await waitUntil(
+          'auto saved',
+          () => cockpit.store.getHomeConfig().vendor_checks === undefined,
+        );
+
+        // Check all: running, one at a time, then each row's results.
+        await page.locator('[data-testid="settings-vendors-check-all"]').click();
+        await waitForText(
+          page,
+          '[data-testid="settings-vendors-running"]',
+          'Checking, one agent at a time…',
+        );
+        await waitForText(page, '[data-testid="settings-vendors-state-claude"]', 'Checking');
+        await waitForText(page, '[data-testid="settings-vendors-state-cursor"]', 'Waiting');
+        await waitForText(page, '[data-testid="settings-vendors-state-claude"]', 'Checked', 20000);
+        await waitForText(
+          page,
+          '[data-testid="settings-vendors-state-cursor"]',
+          'Keeps its own model',
+          20000,
+        );
+        await waitForText(page, '[data-testid="settings-vendors-running"]', '');
+        await waitForAttr(page, '[data-testid="settings-vendors-model-claude"]', 'data-mark', '✓');
+        await waitForAttr(page, '[data-testid="settings-vendors-effort-claude"]', 'data-mark', '✓');
+        await waitForAttr(page, '[data-testid="settings-vendors-resume-claude"]', 'data-mark', '✓');
+        await waitForText(
+          page,
+          '[data-testid="settings-vendors-usage-claude"]',
+          'inputTokens, outputTokens, used, size',
+        );
+        await waitForAttr(page, '[data-testid="settings-vendors-model-cursor"]', 'data-mark', '✗');
+        expect(
+          await page
+            .locator('[data-testid="settings-vendors-model-cursor"]')
+            .getAttribute('aria-label'),
+        ).toBe('Model: kept its own (default[]); didn’t take grok-4.7');
+        await waitForAttr(page, '[data-testid="settings-vendors-resume-cursor"]', 'data-mark', '—');
+        await waitForText(
+          page,
+          '[data-testid="settings-vendors-limits-cursor"]',
+          'Plan and rate limits it reported: rateLimits.weekly.usedPercent: 40',
+        );
+        // No ids in the primary text: the rows name the vendor, never the probe session.
+        const text = (await page.locator('[data-testid="settings-vendors"]').textContent()) ?? '';
+        expect(text).not.toMatch(/[0-9A-HJKMNP-TV-Z]{26}/);
+
+        // One row's Check runs that vendor alone.
+        await page.locator('[data-testid="settings-vendors-check-cursor"]').click();
+        await waitForText(
+          page,
+          '[data-testid="settings-vendors-running"]',
+          'Checking, one agent at a time…',
+        );
+        const cursorWhen = await page
+          .locator('[data-testid="settings-vendors-when-cursor"]')
+          .textContent();
+        expect(['Waiting', 'Checking…']).toContain(cursorWhen ?? '');
+        await waitForText(
+          page,
+          '[data-testid="settings-vendors-state-cursor"]',
+          'Keeps its own model',
+          20000,
+        );
+        await waitForText(page, '[data-testid="settings-vendors-running"]', '');
+        expect(
+          await page.locator('[data-testid="settings-vendors-when-claude"]').textContent(),
+        ).toMatch(/^Checked /);
+        await waitForText(
+          page,
+          '[data-testid="settings-vendors-left-out-cursor"]',
+          'Model choice leaves Cursor out: a model picked for it doesn’t take.',
+        );
       } finally {
         await teardown([page]);
         await cockpit.stop();

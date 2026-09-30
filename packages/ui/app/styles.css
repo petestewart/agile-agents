@@ -8541,6 +8541,59 @@ div.cr-ov-ev:hover {
 .cr-set-bridges code {
   overflow-wrap: anywhere;
 }
+
+/* T489: Agents → Vendors: one row per vendor's self-check, then Check all. */
+.cr-set-vendors {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+.cr-set-vendors-row {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.cr-set-vendors-row:first-child {
+  border-top: none;
+}
+.cr-set-vendors-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
+}
+.cr-set-vendors-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 6px 0 0;
+  font-size: var(--text-sm);
+}
+.cr-set-vendors-fact {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+}
+.cr-set-vendors-fact dt {
+  color: var(--text-muted);
+}
+.cr-set-vendors-fact dd {
+  margin: 0;
+}
+.cr-set-vendors-fact dd[data-mark="✓"] {
+  color: var(--green);
+}
+.cr-set-vendors-fact dd[data-mark="✗"] {
+  color: var(--red);
+}
+.cr-set-vendors-usage dd {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
 .cr-set-sf-labels > span:nth-child(1) {
   grid-area: lv;
 }

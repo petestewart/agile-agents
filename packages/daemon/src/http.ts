@@ -57,6 +57,8 @@ import {
   StreamWaitRequestSchema,
   TrashPurgeRequestSchema,
   UlidSchema,
+  VendorCheckModeInputSchema,
+  VendorCheckRunInputSchema,
   formatZodError,
   liveChildrenOf,
   nodeRole,
@@ -118,6 +120,7 @@ import {
 import { CHOOSE_AGAIN_END_REASON, ModelPolicyService, StepUpRefusedError } from './routing';
 import { installedCliStatus } from './runner/installed-cli';
 import type { ModelCatalog } from './runner/model-catalog';
+import { type VendorCheckService, VendorNotInstalledError } from './runner/vendor-check';
 import {
   CloneError,
   DirListError,
@@ -257,6 +260,8 @@ export interface HttpServerOptions {
   trackerLinks?: TrackerLinks;
   /** T481 (D50): Settings → Agents → Updates, and Needs me's update items. */
   harnessUpdates?: HarnessUpdateService;
+  /** T489 (D58): Settings → Agents → Vendors, the vendor self-check. */
+  vendorChecks?: VendorCheckService;
   /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
   /** Test hook: the operator's home folder for the folder picker and clone destinations (default `os.homedir()`). */
@@ -917,6 +922,53 @@ async function handleHarnessUpdatesRoute(
     return jsonResponse(await harness.update(id.data, { by: 'human' }));
   } catch (err) {
     if (err instanceof HarnessBusyError) return errorResponse(409, err.message);
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T489 (D58): the vendor self-check. Settings → Agents → Vendors:
+ *
+ *   GET  /api/settings/vendor-checks       the switch, one row per vendor with its latest result
+ *   POST /api/settings/vendor-checks       `{mode: auto|manual}`: the automatic trigger's switch
+ *   POST /api/settings/vendor-checks/run   `{vendor?}`: Check (one vendor) or Check all; returns
+ *                                          at once with the running state (the page polls)
+ *
+ * Every POST is same-origin only; the actor is the operator. A named vendor
+ * that isn't installed is 409, in words.
+ */
+async function handleVendorChecksRoute(
+  req: Request,
+  url: URL,
+  checks: VendorCheckService | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  const path = url.pathname;
+  const settings = path === '/api/settings/vendor-checks';
+  const run = path === '/api/settings/vendor-checks/run';
+  if (!settings && !run) return undefined;
+  if (settings && req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (run && req.method !== 'POST') return undefined;
+  if (!checks) return errorResponse(503, 'vendor checks are not available');
+  if (settings && req.method === 'GET') return jsonResponse(checks.status());
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  if (settings) {
+    const input = VendorCheckModeInputSchema.safeParse(
+      await readJsonBody(req).catch(() => undefined),
+    );
+    if (!input.success) return errorResponse(400, formatZodError('vendor-checks', input.error));
+    try {
+      return jsonResponse(await checks.setMode(input.data.mode));
+    } catch (err) {
+      return errorResponse(400, messageOf(err));
+    }
+  }
+  const input = VendorCheckRunInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('vendor-checks run', input.error));
+  try {
+    return jsonResponse(checks.start(input.data.vendor, { reason: 'manual', by: 'human' }));
+  } catch (err) {
+    if (err instanceof VendorNotInstalledError) return errorResponse(409, err.message);
     return errorResponse(400, messageOf(err));
   }
 }
@@ -2331,6 +2383,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           () => srv.timeout(req, 0),
         );
         if (harnessRoute) return harnessRoute;
+        const vendorChecksRoute = await handleVendorChecksRoute(
+          req,
+          url,
+          options.vendorChecks,
+          sameOrigin,
+        );
+        if (vendorChecksRoute) return vendorChecksRoute;
         const trashRoute = await handleTrashRoute(req, url, feed, sameOrigin);
         if (trashRoute) return trashRoute;
         const trackerRoute = await handleTrackerSettingsRoute(req, url, feed, sameOrigin);

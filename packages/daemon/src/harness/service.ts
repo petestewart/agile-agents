@@ -131,6 +131,15 @@ export interface HarnessUpdateDeps {
   checkTimeoutMs?: number;
   updateTimeoutMs?: number;
   onError?: (err: unknown) => void;
+  /**
+   * T489 (D58): the vendor CLI versions a check read (`check`), or the one an
+   * update installed (`update`): the vendor self-check runs for a version it
+   * has none for. Pi's adapter (`pi-acp`) is not a vendor CLI and is left out.
+   */
+  onVersions?: (
+    versions: Array<{ vendor: SessionVendor; version: string }>,
+    reason: 'check' | 'update',
+  ) => void;
 }
 
 /** What one CLI's last check found, and what happened to its last update. */
@@ -306,6 +315,13 @@ export class HarnessUpdateService {
     );
     this.checkedAt = at;
     this.changed();
+    this.noteVersions(
+      this.ids.flatMap((id) => {
+        const version = this.entries.get(id)?.version;
+        return version !== undefined ? [{ id, version }] : [];
+      }),
+      'check',
+    );
     const autos = this.ids.filter(
       (id) => harnessModeOf(config, id) === 'auto' && this.wantsAuto(id, config),
     );
@@ -500,6 +516,7 @@ export class HarnessUpdateService {
     entry.failure = undefined;
     entry.offer = undefined;
     if (to !== undefined && to !== from) {
+      this.noteVersions([{ id, version: to }], 'update');
       await this.deps.events
         ?.emit({
           type: 'harness_updated',
@@ -516,6 +533,22 @@ export class HarnessUpdateService {
         .catch((err) => this.deps.onError?.(err));
     }
     return this.settle(id, { ok: true, message });
+  }
+
+  /** T489: hands the vendor CLIs' versions to `onVersions` (never Pi's adapter). */
+  private noteVersions(
+    versions: Array<{ id: HarnessId; version: string }>,
+    reason: 'check' | 'update',
+  ): void {
+    const vendors = versions
+      .filter((v) => v.id !== 'pi-acp')
+      .map((v) => ({ vendor: HARNESSES[v.id].vendor, version: v.version }));
+    if (vendors.length === 0 || this.deps.onVersions === undefined) return;
+    try {
+      this.deps.onVersions(vendors, reason);
+    } catch (err) {
+      this.deps.onError?.(err);
+    }
   }
 
   private settle(id: HarnessId, result: { ok: boolean; message: string }): HarnessUpdateResult {
