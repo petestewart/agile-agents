@@ -1491,6 +1491,27 @@ vendor CLI that is behind (for example `npm install -g
       version and the newest published one. Nothing installs them.
 
 
+## 16. **[vendor]** What each vendor reports about token usage (D51, T485a)
+Budgets (T485) count weighted tokens, so first: which vendors report usage,
+and in what field. Nothing is estimated. Since T485a every session keeps
+`sessions/<id>/usage.jsonl`: one `usage_update` line per update the vendor
+sent (raw), and one `turn_end` line per turn with the prompt reply's keys and
+its `usage`/`_meta` when present.
+
+- [ ] For each vendor you can log in to (Claude, Codex, Cursor, Grok; Gemini
+      and Pi if they run), start a node, send one short message, wait for the
+      reply, and send `sessions/<id>/usage.jsonl` (the node's Details names
+      the session).
+- [ ] Fill the table. "Per turn" means a number that grows with each turn,
+      not only the context window's fill.
+
+| Vendor | `usage_update` fields | reply `usage` fields | `cost`? | Per turn? |
+|---|---|---|---|---|
+| Claude | | | | |
+| Codex | | | | |
+| Cursor | | | | |
+| Grok | | | | |
+
 ## 17. **[vendor]** Model choice: the policy and the preset models (D53–D55, T482)
 Needs a Claude login; Codex or Cursor makes the preset checks sharper.
 

@@ -29,7 +29,7 @@ export type FakeAgentStep =
     }
   /** One `agent_message_chunk`: what `session.prompt()` returns as `reply.text`. */
   | { type: 'agent_text'; text: string }
-  | { type: 'end_turn'; stopReason?: string }
+  | { type: 'end_turn'; stopReason?: string; usage?: Record<string, unknown> }
   | { type: 'hang' }
   /** Blocks until `path` exists: end a turn after something outside happened, without a racy sleep. */
   | { type: 'wait_for_file'; path: string; timeoutMs?: number }
@@ -291,7 +291,14 @@ async function runScript(promptRequestId: number | string): Promise<void> {
         break;
       }
       case 'end_turn':
-        write({ id: promptRequestId, result: { stopReason: step.stopReason ?? 'end_turn' } });
+        write({
+          id: promptRequestId,
+          // T485a: a vendor may report the turn's token usage on the reply.
+          result: {
+            stopReason: step.stopReason ?? 'end_turn',
+            ...(step.usage !== undefined ? { usage: step.usage } : {}),
+          },
+        });
         return;
       case 'reject_prompt':
         write({
