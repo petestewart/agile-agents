@@ -14,7 +14,7 @@
  *   else, so a test can `kill -9` it even if the handshake never completes.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 export type FakeAgentStep =
   | { type: 'usage_update'; used: number; size?: number }
@@ -119,8 +119,9 @@ export interface FakeAgentScript {
 
 function appendLog(script: FakeAgentScript, line: Record<string, unknown>): void {
   if (!script.logFile) return;
-  const prior = existsSync(script.logFile) ? readFileSync(script.logFile, 'utf8') : '';
-  writeFileSync(script.logFile, `${prior}${JSON.stringify(line)}\n`);
+  // T492: one append, never a read-and-rewrite: a test reading the log while
+  // the agent wrote it saw the file truncated, or a line cut in half.
+  appendFileSync(script.logFile, `${JSON.stringify(line)}\n`);
 }
 
 const DEFAULT_SCRIPT: FakeAgentScript = {
