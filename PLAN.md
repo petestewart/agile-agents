@@ -2989,6 +2989,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   - Validation (after merging `claude/phase-14` at 2ca9a0ab, T467): typecheck and lint clean; `bun test` 3575 pass, 3 skip, 0 fail; build, then control-room e2e 133/133; walkthrough 43 steps, 0 findings.
 - **Notes:** Branch T481-harness-updates. LIVE-CHECKLIST §15 (one Alert-mode and one Auto-mode update). The dismissed versions live in the home config beside the mode (no new home file).
 
+### Ticket: T486b The sandboxed subprocess env drops the daemon's secrets too
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found in https://github.com/petestewart/agile-agents/pull/12 (T178 on `main`, a separate session's fix for the same leak as T486). T486 scrubbed every vendor spawn, but `sandboxedSubprocessEnv` (test runs, the sandbox probe, worktree and delivery git) still spread the daemon's whole env, and a test run or a git hook runs code an agent wrote.
+- **Acceptance Criteria:** `sandboxedSubprocessEnv` builds from `withoutDaemonSecrets()`; `PATH` and the rest pass through; the daemon keeps its own copy.
+- **Validation Steps:** `subprocess-env.test.ts` T486b (fails without the change); typecheck, lint; the delivery, worktree, sandbox and tools tests.
+- **Notes:** Branch T486b-sandboxed-env. PR #12 itself targets `main`, which the stacked phase branches replace; its vendor-session part is T486 here.
+
 ### Ticket: T487 New node picks its model with the model picker (favourites included)
 - **Priority:** P2
 - **Status:** Done
