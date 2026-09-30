@@ -1340,6 +1340,7 @@ describe('ask → answer → continue (T137)', () => {
     await waitFor(() => existsSync(log) && readFileSync(log, 'utf8').includes('semicolon'));
     const prompts = readFileSync(log, 'utf8')
       .split('\n')
+      .slice(0, -1)
       .filter((line) => line.includes('"session/prompt"'));
     expect(prompts.length).toBe(2);
     expect(prompts[1]).toContain('semicolon');
@@ -1734,6 +1735,7 @@ describe('say — the stream page composer (T161)', () => {
     await waitFor(() => streams.get(stream.id).agent.status === 'done');
     const prompts = readFileSync(log, 'utf8')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'));
     expect(prompts.length).toBe(2);
     expect(prompts[1]).toContain(
@@ -1786,6 +1788,7 @@ describe('say — the stream page composer (T161)', () => {
     await waitFor(() => streams.get(stream.id).agent.status === 'done');
     const sent = readFileSync(log, 'utf8')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'))
       .map(
         (l) => (JSON.parse(l) as { params: { prompt: { text: string }[] } }).params.prompt[0]?.text,
@@ -1882,6 +1885,7 @@ describe('say — the stream page composer (T161)', () => {
           existsSync(log) &&
           readFileSync(log, 'utf8')
             .split('\n')
+            .slice(0, -1)
             .filter((l) => l.includes('"session/prompt"')).length === 2,
       );
       release();
@@ -1927,6 +1931,7 @@ describe('T242: routed events reach the session as digests', () => {
     await waitFor(() => streams.get(stream.id).agent.status === 'done');
     const prompts = readFileSync(log, 'utf8')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'));
     expect(prompts.length).toBe(2);
     expect(prompts[1]).toContain('3 things arrived for you');
@@ -2062,6 +2067,7 @@ describe('T243: the wake policy (P11)', () => {
   const prompts = (log: string) =>
     (existsSync(log) ? readFileSync(log, 'utf8') : '')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'));
 
   test('a human line wakes a finished node, and the woken session gets it', async () => {
@@ -2270,6 +2276,7 @@ describe('T351, T453: accepting a decision wakes the conversation it came from (
   const prompts = (log: string) =>
     (existsSync(log) ? readFileSync(log, 'utf8') : '')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'));
   const TEXT = 'Amounts in exported JSON are integer cents, never floats';
 
@@ -2390,6 +2397,7 @@ describe('T454: with knowledge_wake on, Jev decides which other conversations wa
   const prompts = (log: string) =>
     (existsSync(log) ? readFileSync(log, 'utf8') : '')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'));
   const TEXT = 'Amounts in exported JSON are integer cents, never floats';
   /** Jev's two values: "is the decision relevant?" and "is the conversation stale?". */
@@ -2579,6 +2587,7 @@ describe('T280: the coordinator role (P20)', () => {
     await waitFor(() =>
       (existsSync(log) ? readFileSync(log, 'utf8') : '')
         .split('\n')
+        .slice(0, -1)
         .some((l) => l.includes('"session/prompt"') && l.includes('stuck on auth')),
     );
     expect(threadBodies(node.id)).toContain('woken by child status');
@@ -2641,6 +2650,7 @@ describe('T280: the coordinator role (P20)', () => {
     await waitFor(() =>
       (existsSync(log) ? readFileSync(log, 'utf8') : '')
         .split('\n')
+        .slice(0, -1)
         .some((l) => l.includes('"session/prompt"') && l.includes('cart shipped')),
     );
     expect(threadBodies(root.id)).toContain('woken by child status');
@@ -2652,6 +2662,7 @@ describe('T280: the coordinator role (P20)', () => {
     const prompts = () =>
       (existsSync(log) ? readFileSync(log, 'utf8') : '')
         .split('\n')
+        .slice(0, -1)
         .filter((l) => l.includes('"session/prompt"'));
     // T465: its session ends at once, and a vendor that can't load one starts from the brief.
     attachService = buildAttachService(
@@ -3104,6 +3115,7 @@ describe('T361: a message starts a node with no live agent', () => {
   const prompts = (log: string) =>
     (existsSync(log) ? readFileSync(log, 'utf8') : '')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'));
 
   test('a never-started node starts, and the line is in its first prompt, once', async () => {
@@ -3304,6 +3316,7 @@ describe('T465 (D48): a finished turn keeps its session; an ended one resumes', 
   const logLines = () =>
     (existsSync(log()) ? readFileSync(log(), 'utf8') : '')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.trim() !== '');
   const prompts = () => logLines().filter((l) => l.includes('"session/prompt"'));
   const loads = () => logLines().filter((l) => l.includes('"session/load"'));
@@ -3736,7 +3749,8 @@ describe("T488: Codex's effort goes through its own ACP option", () => {
   const logLines = (): Array<Record<string, unknown> & { method: string }> =>
     (existsSync(log()) ? readFileSync(log(), 'utf8') : '')
       .split('\n')
-      .filter((l) => l.trim() !== '')
+      // T492: complete lines only; the agent may be mid-write.
+      .slice(0, -1)
       .map((l) => JSON.parse(l));
   const prompts = () => logLines().filter((l) => l.method === 'session/prompt');
   const sets = () =>
@@ -3872,7 +3886,8 @@ describe('T467 (D46): models come from the vendor, set through ACP', () => {
   const logLines = (): Array<Record<string, unknown> & { method: string }> =>
     (existsSync(log()) ? readFileSync(log(), 'utf8') : '')
       .split('\n')
-      .filter((l) => l.trim() !== '')
+      // T492: complete lines only; the agent may be mid-write.
+      .slice(0, -1)
       .map((l) => JSON.parse(l));
   const methods = () => logLines().map((l) => l.method);
   const prompts = () => logLines().filter((l) => l.method === 'session/prompt');
@@ -4156,7 +4171,7 @@ describe('T482: model routing at a start (the policy and the lock)', () => {
     await waitFor(() => streams.get(node.id).agent.status === 'done');
     expect(lastSession(node.id)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
     expect(modelLines(node.id)).toEqual([
-      'Model: Claude Sonnet 5.5 · medium — start cheap: the cheapest balanced preset model (no classifier key)',
+      'Model: Claude Sonnet 5.5 · medium — start cheap: balanced (no classifier key)',
     ]);
     expect(streams.get(node.id).agent.pick).toMatchObject({
       vendor: 'claude',
@@ -4318,10 +4333,11 @@ describe('T483: the chooser at a start (D52, D55)', () => {
     stakes: one('1'),
     volume: one('1'),
     topic: one('none'),
-    model: {
-      choice: 'claude/claude-sonnet-5-5',
+    // T490 (D57): Jev answers the tier.
+    tier: {
+      choice: 'balanced',
       confidence: 0.82,
-      probabilities: { 'claude/claude-sonnet-5-5': 0.88, 'claude/claude-haiku-4-5': 0.12 },
+      probabilities: { balanced: 0.88, fast: 0.12 },
     },
     effort: one('medium', 0.7),
   };
@@ -4359,11 +4375,14 @@ describe('T483: the chooser at a start (D52, D55)', () => {
       effort: 'medium',
     });
     expect(modelLines(node.id)).toEqual([
-      'Model: Claude Sonnet 5.5 · medium — well specified and covered by tests; short, low stakes',
+      'Model: Claude Sonnet 5.5 · medium — balanced (Jev 0.82): well specified and covered by tests; short, low stakes',
     ]);
     expect(streams.get(node.id).agent.pick).toMatchObject({
       how: 'jev',
       confidence: 0.82,
+      tier: 'balanced',
+      tier_by: 'jev',
+      in_tier: { by: 'only' },
       topic: 'none',
       scores: { clarity: 5, verifiability: 5, horizon: 1, stakes: 1, volume: 1 },
     });
@@ -4398,7 +4417,7 @@ describe('T483: the chooser at a start (D52, D55)', () => {
     await attachService.attach(node.id);
     await waitFor(() => streams.get(node.id).agent.status === 'done');
     expect(modelLines(node.id)).toEqual([
-      'Model: Claude Sonnet 5.5 · medium — start cheap: the cheapest balanced preset model (no classifier key)',
+      'Model: Claude Sonnet 5.5 · medium — start cheap: balanced (no classifier key)',
     ]);
     expect(streams.get(node.id).agent.pick?.scores).toBeUndefined();
 
@@ -4433,6 +4452,119 @@ describe('T483: the chooser at a start (D52, D55)', () => {
     });
     expect(modelLines(node.id)).toEqual(['Model: Claude Haiku 4.5 · low — pinned rule: reviewer']);
     expect(jev.choiceCalls).toHaveLength(0);
+  }, 30_000);
+});
+
+describe('T490: a reviewer routed by role, the vendor order (D57, D59)', () => {
+  const MIXED = [
+    { vendor: 'claude' as const, model: 'claude-haiku-4-5' },
+    { vendor: 'claude' as const, model: 'claude-sonnet-5-5' },
+    { vendor: 'claude' as const, model: 'claude-opus-5-5' },
+    { vendor: 'codex' as const, model: 'gpt-5.6-sol' },
+    { vendor: 'codex' as const, model: 'gpt-6-astra' },
+  ];
+  const one = (n: string, confidence = 0.9) => ({
+    choice: n,
+    confidence,
+    probabilities: { [n]: 1 },
+  });
+  const CLEAR = {
+    clarity: one('5'),
+    verifiability: one('5'),
+    horizon: one('1'),
+    stakes: one('1'),
+    volume: one('1'),
+    topic: one('none'),
+    tier: one('balanced', 0.82),
+    effort: one('medium', 0.7),
+  };
+  let projects = 0;
+
+  async function nodeIn(policy: Record<string, unknown>): Promise<Stream> {
+    projects += 1;
+    const project = await new ProjectService(store, streams).create({ name: `Tiers ${projects}` });
+    await store.updateProject(project.id, (p) => ({ ...p, model_policy: policy }));
+    return streams.create('human', { title: 'Parser', goal: 'g', project: project.id });
+  }
+
+  test('a reviewer with no pick runs the reviewer order’s model in Jev’s tier; the worker the worker’s', async () => {
+    const jev = new FakeClassifier([], { choice: CLEAR });
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS), {
+      classifier: jev,
+    });
+    const node = await nodeIn({
+      mode: 'choose',
+      presets: MIXED,
+      vendor_order: ['claude', 'codex'],
+      vendor_order_by_role: { reviewer: ['codex', 'claude'] },
+    });
+    await attachService.attach(node.id, { role: 'reviewer' });
+    await waitFor(() => threadBodies(node.id).some((b) => b.startsWith('review finished')));
+    expect(streams.get(node.id).sessions[0]).toMatchObject({
+      role: 'reviewer',
+      vendor: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'medium',
+    });
+    expect(threadBodies(node.id).filter((b) => b.startsWith('Model: '))).toEqual([
+      'Model: gpt-5.6-sol · medium — balanced (Jev 0.82): well specified and covered by tests; short, low stakes; Codex before Claude',
+    ]);
+    expect(jev.choiceCalls).toHaveLength(1);
+    expect(jev.choiceCalls[0]?.state).toContain('Role: a reviewer');
+    // A reviewer's pick is not the node's: `agent.pick` is left alone.
+    expect(streams.get(node.id).agent.pick).toBeUndefined();
+
+    // The node's own worker follows the worker order: Claude.
+    await attachService.attach(node.id);
+    await waitFor(() => streams.get(node.id).agent.status === 'done');
+    expect(streams.get(node.id).sessions.at(-1)).toMatchObject({
+      role: 'worker',
+      vendor: 'claude',
+      model: 'claude-sonnet-5-5',
+    });
+    expect(streams.get(node.id).agent.pick).toMatchObject({
+      how: 'jev',
+      tier: 'balanced',
+      in_tier: { by: 'vendor_order', words: 'Claude before Codex' },
+    });
+  }, 30_000);
+
+  test('an explicit reviewer pick wins, never asks Jev, and says nothing about the policy', async () => {
+    const jev = new FakeClassifier([], { choice: CLEAR });
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS), {
+      classifier: jev,
+    });
+    const node = await nodeIn({
+      mode: 'choose',
+      presets: MIXED,
+      vendor_order_by_role: { reviewer: ['codex'] },
+    });
+    await attachService.attach(node.id, {
+      role: 'reviewer',
+      vendor: 'claude',
+      model: 'claude-opus-5-5',
+    });
+    await waitFor(() => threadBodies(node.id).some((b) => b.startsWith('review finished')));
+    expect(streams.get(node.id).sessions[0]).toMatchObject({
+      role: 'reviewer',
+      vendor: 'claude',
+      model: 'claude-opus-5-5',
+    });
+    expect(jev.choiceCalls).toHaveLength(0);
+    expect(threadBodies(node.id).filter((b) => b.startsWith('Model: '))).toEqual([]);
+  }, 30_000);
+
+  test('under Default a reviewer resolves as before: no Jev call, no line', async () => {
+    const jev = new FakeClassifier([], { choice: CLEAR });
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS), {
+      classifier: jev,
+    });
+    const node = await nodeIn({ mode: 'default', presets: [] });
+    await attachService.attach(node.id, { role: 'reviewer' });
+    await waitFor(() => threadBodies(node.id).some((b) => b.startsWith('review finished')));
+    expect(streams.get(node.id).sessions[0]).toMatchObject({ role: 'reviewer', vendor: 'claude' });
+    expect(jev.choiceCalls).toHaveLength(0);
+    expect(threadBodies(node.id).filter((b) => b.startsWith('Model: '))).toEqual([]);
   }, 30_000);
 });
 

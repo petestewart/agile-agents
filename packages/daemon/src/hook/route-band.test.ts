@@ -217,6 +217,7 @@ function prompts(): string[] {
   if (!existsSync(promptLog)) return [];
   return readFileSync(promptLog, 'utf8')
     .split('\n')
+    .slice(0, -1)
     .filter((line) => line.includes('"session/prompt"'));
 }
 

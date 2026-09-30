@@ -11,7 +11,6 @@
 
 import {
   CHOOSER_FAILURE_WORDS,
-  type ChooserOutcome,
   type ChooserTask,
   type Effort,
   type LadderRung,
@@ -39,14 +38,16 @@ import {
   effectiveModelProfiles,
   escalationLadder,
   isAgentRole,
+  isConversationNode,
   liveChildrenOf,
-  matchPinnedRule,
   pickModel,
   presetCandidates,
   resolveModelPolicy,
   resolveSessionDefaults,
   routedPickLine,
   taskFromText,
+  vendorOrderFor,
+  vendorOrderWords,
 } from '@agile-agents/shared';
 import type { Classifier } from '../classifier';
 import type { PlanService } from '../coordination/plans';
@@ -105,6 +106,11 @@ export interface ModelPolicyServiceOptions {
    * last self-check says a model pick doesn't take (`vendorsLeftOut`).
    */
   leftOut?: () => ReadonlyMap<SessionVendor, string>;
+}
+
+/** The distinct vendors of the candidates, for the pinned rules that name only a vendor. */
+function vendorsOf(candidates: readonly { vendor: string }[]): string[] {
+  return [...new Set(candidates.map((c) => c.vendor))];
 }
 
 /** Why a resting session ended on a choose-again. */
@@ -380,10 +386,28 @@ export class ModelPolicyService {
         models: this.catalog(),
         profiles,
         prefer: this.todayFor(stream).vendor,
+        // T490 (D59): ties climb in the node's own role's vendor order.
+        vendorOrder: vendorOrderFor(policy, this.agentRoleOf(stream)),
       }),
       policy,
       profiles,
     };
+  }
+
+  /**
+   * T490: the role a node's agent runs as, for its vendor order: a
+   * coordinator when its last agent session coordinated, a conversation,
+   * else a worker.
+   */
+  private agentRoleOf(stream: Stream): PinnedRole {
+    const last = [...stream.sessions].reverse().find((s) => isAgentRole(s.role));
+    if (last?.role === 'coordinator') return 'coordinator';
+    try {
+      if (isConversationNode(stream, this.options.streams.list())) return 'conversation';
+    } catch {
+      // No list: a worker.
+    }
+    return 'worker';
   }
 
   /** The vendors installed here, in the registry's order. */
@@ -540,13 +564,14 @@ export class ModelPolicyService {
     const base = this.pickInputs(input.stream, input.fallback, resolved.policy);
     let chooser: ChooserCall | undefined;
     if (input.explicit === undefined && input.kept === undefined) {
-      const need = chooserNeed(resolved.policy, task);
+      const { candidates } = presetCandidates(resolved.policy, {
+        installed: base.installed,
+        models: base.models,
+        prefer: input.fallback.vendor,
+      });
+      // T490: a pinned rule naming only a vendor with no preset model here doesn't apply.
+      const need = chooserNeed(resolved.policy, task, vendorsOf(candidates));
       if (need !== 'none') {
-        const { candidates } = presetCandidates(resolved.policy, {
-          installed: base.installed,
-          models: base.models,
-          prefer: input.fallback.vendor,
-        });
         chooser = await this.chooser.read({
           task: this.taskFor(input.stream, role),
           policy: resolved.policy,
@@ -578,48 +603,15 @@ export class ModelPolicyService {
   }
 
   /**
-   * T483: a reviewer's start with no pick. Reviewers resolve as before
-   * (T482), unless a pinned rule names `reviewer`: then that rule's pick
-   * runs, clamped. `undefined` when none matches.
+   * T490 (D59): a reviewer's start with no pick is routed like any other
+   * start, as the `reviewer` role: its pinned rules, its vendor order, and
+   * the tier from the chooser under Choose. An explicit pick never comes
+   * here (D53). `undefined` when the policy leaves it as before (Default,
+   * or Inherit with no parent model): the reviewer resolves as it did.
    */
   async pickForReviewer(stream: Stream, fallback: ModelPickTriple): Promise<ModelPick | undefined> {
-    const resolved = this.resolveFor(stream);
-    const task = {
-      role: 'reviewer' as const,
-      ...(stream.labels !== undefined ? { labels: stream.labels } : {}),
-    };
-    if (!resolved.policy.pinned_rules.some((r) => r.when.role === 'reviewer')) return undefined;
-    const base = this.pickInputs(stream, fallback);
-    let outcome: ChooserOutcome | undefined;
-    if (chooserNeed(resolved.policy, task) === 'topic') {
-      const { candidates } = presetCandidates(resolved.policy, {
-        installed: base.installed,
-        models: base.models,
-        prefer: fallback.vendor,
-      });
-      outcome = (
-        await this.chooser.read({
-          task: this.taskFor(stream, 'reviewer'),
-          policy: resolved.policy,
-          candidates,
-          profiles: base.profiles,
-          models: base.models,
-          need: 'topic',
-        })
-      ).outcome;
-    }
-    const topic = outcome?.ok === true ? outcome.reading.topic : undefined;
-    if (matchPinnedRule(resolved.policy.pinned_rules, task, topic) === undefined) return undefined;
-    return pickModel({
-      policy: resolved.policy,
-      fallback,
-      installed: base.installed,
-      models: base.models,
-      profiles: base.profiles,
-      inProject: base.inProject,
-      task,
-      ...(outcome !== undefined ? { chooser: outcome } : {}),
-    });
+    const { pick } = await this.pickForStart({ stream, fallback, role: 'reviewer' });
+    return pick.how === 'default' ? undefined : pick;
   }
 
   /** A pick with no chooser call: what the cockpit names before a start (Choose reads as the rule). */
@@ -643,7 +635,13 @@ export class ModelPolicyService {
     });
     const pick = withLeftOut(picked, base.leftOut);
     const ready = this.options.chooserReady?.() ?? this.options.classifier !== undefined;
-    return ready && chooserNeed(resolved.policy, task) === 'full' && pick.how !== 'pinned'
+    const { candidates } = presetCandidates(resolved.policy, {
+      installed: base.installed,
+      models: base.models,
+      prefer: fallback.vendor,
+    });
+    // A pinned rule that names a model decides with no Jev call; one naming only a vendor asks the tier.
+    return ready && chooserNeed(resolved.policy, task, vendorsOf(candidates)) === 'full'
       ? { ...pick, chooses: true }
       : pick;
   }
@@ -724,6 +722,10 @@ export class ModelPolicyService {
       ...(pick.scores !== undefined ? { scores: pick.scores } : {}),
       ...(pick.topic !== undefined ? { topic: pick.topic } : {}),
       ...(pick.confidence !== undefined ? { confidence: pick.confidence } : {}),
+      ...(pick.tier !== undefined ? { tier: pick.tier } : {}),
+      ...(pick.tier_by !== undefined ? { tier_by: pick.tier_by } : {}),
+      ...(pick.in_tier !== undefined ? { in_tier: pick.in_tier } : {}),
+      vendor_order: vendorOrderWords(vendorOrderFor(policy, 'worker')),
       ...(call.outcome.ok
         ? {}
         : {

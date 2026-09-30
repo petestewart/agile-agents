@@ -2,7 +2,8 @@
 
 Status: **decided** (proposed 2026-09-29; Pete settled MR1–MR6 on 2026-09-30,
 recorded as D51–D56 in PLAN.md). T482–T485 are built from this document;
-§11 says how T482, T483 and T484 were built.
+§11 says how T482, T483, T484 and T490 were built (§12's tier first and
+vendor order, D57 and D59).
 §9 keeps the decisions as answered.
 
 ## 1. The problem
@@ -573,6 +574,99 @@ T484 follows §6, with these differences and additions:
 - **The daemon stopping** stops a running check's vendor; the check ends
   with that in its errors, and nothing queued starts one. "The model took"
   is the vendor's own read-back, which is the best ACP offers (§12).
+
+### T490 (tier first, the vendor order)
+
+T490 builds §12's tier first (D57) and vendor order (D59), with these
+differences and additions:
+
+- **Where it lives.** The tier question, its reading and Try it's result are
+  `model-chooser.ts` (`tier` replaces T483's `model` question;
+  `CHOOSER_QUESTION_IDS`, `TIER_OPTION_WORDS`, `tierOptionText`); the pick is
+  still `pickModel` in `model-policy.ts`, through `tierPick` (the tier, then
+  the model) and `modelForTier` (the model inside a tier). `scoresTier` is the
+  rule over the scores as a tier; `scoresRulePick` and `ruleFallbackPick`
+  yield the tier first. `candidateForTier` is gone (`modelForTier` replaces
+  it).
+- **The question.** Asked under Start cheap when the candidates have two or
+  more tiers; its options are only those tiers, fast to strongest, each in
+  words with the preset models in it and their relative cost ("Balanced: …
+  Here: Claude Sonnet 5.5 (cost 1), GPT-5.6 Sol (cost 1)."). The
+  instructions carry the default rule, the quality priority, the weights and
+  the guidance, as the `model` question did. A tier outside the options is a
+  bad answer ("Jev didn't answer"). The `effort` question is unchanged.
+- **The tier.** Jev's when its confidence is at least 0.5 (its effort
+  applies then, as its model's did); below, the rule over the scores. When
+  the presets have one tier, it isn't asked: that tier, recorded as `only`
+  (`how: scores`; Jev's effort applies at its own confidence of 0.5 or more).
+  With no reading (no key, no answer), §5's rule as a tier: balanced, else
+  the tier of the cheapest preset. Strongest first: the highest tier present.
+- **The model inside the tier** (`modelForTier`): the vendor order (the
+  vendors it names first, in its order; the others after, as equals), then
+  the lowest cost, then the order the presets are listed in. Under
+  Strongest first the highest cost wins after the vendor order ("the
+  strongest preset model", §3), not the lowest. A tier with no preset model
+  (an answer the scores give, e.g. fast with no fast preset) falls back to
+  the nearest tier as before, and the line says "no fast preset model, so
+  balanced".
+- **The vendor order.** Two policy fields, `.strict()`, resolved field by
+  field like the others and human-only on a node (`human.model_policy`):
+  `vendor_order` (each vendor once; empty: no preference) and
+  `vendor_order_by_role` (`worker`, `coordinator`, `conversation`,
+  `reviewer`, each its own order over `vendor_order`). The by-role object is
+  one field: a layer that sets it sets every role it names, and a role it
+  leaves out uses `vendor_order` (the Settings words: "Same as above"). The
+  role is the start's: a node's agent (worker, coordinator or conversation)
+  or a reviewer.
+- **Pinned rules may name only a vendor** (`pick: {vendor}`, an optional
+  effort). Its tier comes from Jev or the rule (`tierPick` over that
+  vendor's candidates), so it asks for the whole reading under any mode. A
+  rule whose vendor has no candidate doesn't match; the next rule or the
+  mode decides and the pick's note says "the pinned rule for reviewer names
+  Codex, which has no preset model here, so it didn't apply".
+- **Reviewers.** `pickForReviewer` is `pickForStart` with the `reviewer`
+  role, so a review started with no model follows the reviewer order,
+  pinned rules and the tier. Under Default (and Inherit with no parent
+  model) it resolves as before, with no line. An explicit pick wins (D53)
+  and never asks. A reviewer's pick writes its "Model:" line on the thread;
+  `agent.pick` stays the node's agent's.
+- **Escalation.** The ladder sorts by tier, then cost, then the node's
+  role's vendor order, then the listed order: cost still comes first, the
+  vendor order breaks a tie of both (`LadderInput.vendorOrder`; the node's
+  role is its last agent session's).
+- **What is recorded.** `agent.pick` (and Try it) gains `tier` (the one
+  decided; the model's own may be the nearest), `tier_by` (`jev`, `scores`,
+  `rule`, `pinned`, `only`) and `in_tier` (`by`: `only`, `vendor_order`,
+  `cost`, `listed`, with words). `confidence` is now Jev's in its tier.
+- **The line.** "Model: Claude Sonnet 5.5 · medium — balanced (Jev 0.82):
+  well specified and covered by tests; short, low stakes; Claude before
+  Codex"; "… — Jev wasn't sure (0.42), so strongest by the scores: …";
+  "… — start cheap: balanced (no classifier key); Codex before Claude";
+  "… — pinned rule: reviewer → Codex; balanced (Jev 0.82): …". Why this
+  model is said only when there was a choice between vendors or costs
+  ("Claude before Codex", "the cheapest balanced preset model", "no vendor
+  preferred, so the one listed first"); one vendor's equal models say
+  nothing.
+- **Settings and Details.** Model choice gains **When models tie, prefer**
+  (the installed vendors with up and down; moving one with no order set
+  saves the list as shown; **No preference** clears it) and **By role**
+  (Code, Coordinating, Conversations, Reviews: "Same as above (…)" or "Its
+  own order"), each with its source on a project's and a node's Details.
+  Details and Try it show "Balanced tier, by Jev (0.82). In the tier: Claude
+  before Codex." A pinned rule may pick "Any Codex model (the tier decides)".
+- **CLI.** `agile policy set vendor_order claude,codex` (`none`: no
+  preference; `inherit` clears) and `agile policy set
+  vendor_order_by_role.reviewer codex,claude` (`same` takes the role out;
+  merged into what the layer sets, over the same `policy.set` RPC); `agile
+  policy try` prints the tier, how it was decided, the confidence and "in the
+  tier".
+- **Measured live (2026-09-30).** The five mixed presets of T483's run, with
+  the vendor order Claude, then Codex, and again Codex, then Claude: the
+  rename came back balanced at 0.97 and 0.98, the vague "Make the app better"
+  strongest at 0.94 twice, and the money migration leaned balanced (0.62
+  against strongest's 0.38) at 0.42 and 0.36, so the scores gave strongest
+  (stakes 5, horizon 4.4). The vendor order chose Sonnet 5.5 or GPT-5.6 Sol,
+  Opus 5.5 or GPT-6 Astra each time. The numbers are in PLAN.md's T490 notes.
 
 ## 12. After T484: tier first, the vendor order, the self-check, rationing (Pete, 2026-09-30)
 

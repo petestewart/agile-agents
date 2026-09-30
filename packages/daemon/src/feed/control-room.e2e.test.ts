@@ -11212,7 +11212,7 @@ describe('Model choice: escalation (Playwright e2e, T484)', () => {
   );
 });
 
-/** T483: Jev's answers for a clear, checkable, short, low-stakes one-off: Sonnet at 0.82. */
+/** T483: Jev's answers for a clear, checkable, short, low-stakes one-off; T490: the balanced tier at 0.82. */
 const CHOOSER_CLEAR = (() => {
   const one = (n: string, confidence = 0.9) => ({
     choice: n,
@@ -11226,10 +11226,10 @@ const CHOOSER_CLEAR = (() => {
     stakes: one('1'),
     volume: one('1'),
     topic: one('none'),
-    model: {
-      choice: 'claude/claude-sonnet-5-5',
+    tier: {
+      choice: 'balanced',
       confidence: 0.82,
-      probabilities: { 'claude/claude-sonnet-5-5': 0.88, 'claude/claude-haiku-4-5': 0.12 },
+      probabilities: { balanced: 0.88, fast: 0.12 },
     },
     effort: one('medium', 0.7),
   };
@@ -11294,7 +11294,7 @@ describe('Model choice: the chooser (Playwright e2e, T483)', () => {
         await waitForContains(
           page,
           '[data-testid="settings-model-try-line"]',
-          'Model: Claude Sonnet 5.5 · medium — well specified and covered by tests; short, low stakes',
+          'Model: Claude Sonnet 5.5 · medium — balanced (Jev 0.82): well specified and covered by tests; short, low stakes',
         );
         expect(await page.locator('[data-testid="settings-model-try-score"]').count()).toBe(5);
         expect(
@@ -11310,8 +11310,8 @@ describe('Model choice: the chooser (Playwright e2e, T483)', () => {
         );
         expect(jev.choiceCalls).toHaveLength(1);
         expect(jev.choiceCalls[0]?.state).toContain('Task: Rename getUser to fetchUser');
-        // The guidance reached Jev's model question.
-        expect(jev.choiceCalls[0]?.questions.find((q) => q.id === 'model')?.instructions).toContain(
+        // The guidance reached Jev's tier question (T490).
+        expect(jev.choiceCalls[0]?.questions.find((q) => q.id === 'tier')?.instructions).toContain(
           guidance,
         );
         expect(cockpit.streams.list()).toHaveLength(0);
@@ -11351,7 +11351,7 @@ describe('Model choice: the chooser (Playwright e2e, T483)', () => {
         await waitForContains(
           page,
           '[data-testid="stream-page"]',
-          'Model: Claude Sonnet 5.5 · medium — well specified and covered by tests; short, low stakes',
+          'Model: Claude Sonnet 5.5 · medium — balanced (Jev 0.82): well specified and covered by tests; short, low stakes',
         );
         if (!(await page.locator('[data-testid="node-details"]').isVisible())) {
           await page.locator('[data-testid="details-toggle"]').click();
@@ -11372,7 +11372,116 @@ describe('Model choice: the chooser (Playwright e2e, T483)', () => {
         expect(await page.locator('[data-testid="details-model-pick"]').innerText()).toContain(
           'Chosen by Jev',
         );
+        // T490: the tier, how it was decided and Jev's confidence in it.
+        expect(await page.locator('[data-testid="details-model-tier"]').innerText()).toContain(
+          'Balanced tier, by Jev (0.82).',
+        );
+        // The vendor order rows show on a node too, inherited from Home.
+        expect(
+          await page
+            .locator('[data-testid="details-model-policy-vendor-order-source"]')
+            .innerText(),
+        ).toContain('from Home');
+        expect(
+          await page
+            .locator('[data-testid="details-model-policy-vendor-order-by-role-source"]')
+            .innerText(),
+        ).toContain('from Home');
         expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Model choice: tier first and the vendor order (Playwright e2e, T490)', () => {
+  browserTest(
+    'Settings orders the vendors and a role’s own; Try it shows the tier and why that model',
+    async () => {
+      const jev = new FakeClassifier([], { choice: CHOOSER_CLEAR });
+      const cockpit = await startStreamCockpit([], undefined, jev);
+      let page: Page | undefined;
+      try {
+        await cockpit.store.setHomeModelPolicy(
+          {
+            presets: [
+              { vendor: 'claude', model: 'claude-sonnet-5-5' },
+              { vendor: 'codex', model: 'gpt-5.6-sol' },
+              { vendor: 'claude', model: 'claude-opus-5-5' },
+            ],
+          },
+          { by: 'human' },
+        );
+        const policy = () => cockpit.store.getHomeConfig().model_policy ?? {};
+        const tid = (id: string) => `[data-testid="${id}"]`;
+        const order = 'settings-model-policy-vendor-order';
+        const row = (list: string, vendor: string) =>
+          `${tid(`${list}-vendor`)}[data-vendor="${vendor}"]`;
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=agents`);
+        await page.locator(row(order, 'codex')).waitFor();
+        expect(await page.locator(tid(`${order}-now`)).innerText()).toContain('No preference');
+        // Codex up to the top, one step at a time: each move saves the order as shown.
+        for (let step = 0; step < 10; step++) {
+          const at = (policy().vendor_order ?? []).indexOf('codex');
+          if (at === 0) break;
+          await page.locator(`${row(order, 'codex')} ${tid(`${order}-up`)}`).click();
+          await waitUntil('codex moved up', () => {
+            const next = (policy().vendor_order ?? []).indexOf('codex');
+            return next >= 0 && (at < 0 || next < at);
+          });
+        }
+        expect(policy().vendor_order?.[0]).toBe('codex');
+        expect(policy().vendor_order?.[1]).toBe('claude');
+        await waitForContains(page, tid(`${order}-now`), 'Codex, then Claude');
+        await waitForContains(page, tid(`${order}-source`), 'Reset');
+
+        // Try it: the tier, Jev's confidence in it, and why that model in the tier.
+        await page.locator(tid('settings-model-try-text')).fill('Rename getUser');
+        await page.locator(tid('settings-model-try-run')).click();
+        await waitForContains(
+          page,
+          tid('settings-model-try-tier'),
+          'Balanced tier, by Jev (0.82). In the tier: Codex before Claude.',
+        );
+        const line = await page.locator(tid('settings-model-try-line')).innerText();
+        expect(line).toContain('balanced (Jev 0.82)');
+        expect(line).toContain('gpt-5.6-sol');
+        const tierQ = jev.choiceCalls.at(-1)?.questions.find((q) => q.id === 'tier');
+        expect(Object.keys(tierQ?.options ?? {})).toEqual(['balanced', 'strongest']);
+
+        // By role: Reviews gets its own order, then Claude first in it.
+        const roles = 'settings-model-policy-vendor-roles';
+        await page.locator(tid(`${roles}-reviewer-mode`)).selectOption('own');
+        await waitUntil(
+          'the reviewer order saved',
+          () => policy().vendor_order_by_role?.reviewer?.[0] === 'codex',
+        );
+        const reviewer = `${roles}-reviewer-order`;
+        await page.locator(`${row(reviewer, 'claude')} ${tid(`${reviewer}-up`)}`).click();
+        await waitUntil(
+          'claude first for reviews',
+          () => policy().vendor_order_by_role?.reviewer?.[0] === 'claude',
+        );
+        expect(policy().vendor_order?.[0]).toBe('codex');
+        expect(await page.locator(tid(`${roles}-worker`)).getAttribute('data-own')).toBe('no');
+        expect(
+          await page.locator(`${tid(`${roles}-worker-mode`)} option[value="same"]`).innerText(),
+        ).toContain('Same as above (Codex, then Claude');
+
+        // No preference clears the tie order; the reviewer's own stays.
+        await page.locator(tid(`${order}-none`)).click();
+        await waitUntil('no preference', () => (policy().vendor_order ?? ['x']).length === 0);
+        expect(policy().vendor_order_by_role?.reviewer?.[0]).toBe('claude');
+        await page.locator(tid(`${roles}-reviewer-mode`)).selectOption('same');
+        await waitUntil(
+          'reviews same as above',
+          () => policy().vendor_order_by_role?.reviewer === undefined,
+        );
+        expect(cockpit.streams.list()).toHaveLength(0);
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -13616,6 +13725,7 @@ describe('slash commands in the composer (Playwright e2e, T461)', () => {
           .waitFor();
         const sent = readFileSync(promptLog, 'utf8')
           .split('\n')
+          .slice(0, -1)
           .filter((l) => l.includes('"session/prompt"'))
           .map(
             (l) =>

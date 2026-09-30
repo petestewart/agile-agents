@@ -9367,6 +9367,42 @@ div.cr-ov-ev:hover {
   gap: 6px;
   width: 100%;
 }
+/* T490 (D59): the vendor order, and a role's own. */
+.cr-mpol-vendors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  max-width: 360px;
+}
+.cr-mpol-roles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.cr-mpol-role {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cr-mpol-role > .cr-mpol-vendors {
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+.cr-mpol-role-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+.cr-mpol-role-name {
+  min-width: 110px;
+}
+.cr-mpol-role-head select {
+  max-width: 100%;
+}
 .cr-mpol-rule {
   display: flex;
   align-items: center;

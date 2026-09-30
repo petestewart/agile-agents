@@ -261,8 +261,8 @@ describe('ModelCatalog.refresh (T467)', () => {
     expect(new ModelCatalog({ home }).load().get('cursor')?.options).toEqual(listed?.options);
     // Authenticated, never prompted.
     const methods = readFileSync(log, 'utf8')
-      .trim()
       .split('\n')
+      .slice(0, -1)
       .map((l) => (JSON.parse(l) as { method: string }).method);
     expect(methods).toEqual(['authenticate']);
   }, 20_000);

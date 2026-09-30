@@ -24,12 +24,15 @@ import {
   ROUTING_CRITERIA,
   type ResolvedModelPolicy,
   type RoutingCriterion,
+  type SessionDefaultsStatus,
+  type TierBy,
+  type VendorOrderRole,
   favouriteKey,
   favouritesAsPresets,
   policySourceWords,
 } from '@agile-agents/shared';
 import type { FavouriteModel } from '@agile-agents/shared';
-import { sessionLabel } from './chat';
+import { sessionLabel, vendorLabel } from './chat';
 
 /** A layer's model choice as the daemon sends it: what it sets, and the whole resolved. */
 export interface ModelPolicyView {
@@ -50,7 +53,7 @@ export const MODE_HINTS: Record<ModelPolicyMode, string> = {
   default: 'A node starts on its project’s, repository’s or the global default model, as before.',
   inherit: 'A node starts on the model its parent node runs now.',
   choose:
-    'Jev reads the task and picks from the preset models: a model and an effort, with the scores behind them.',
+    'Jev reads the task and picks a tier (fast, balanced or strongest) and an effort, with the scores behind them; the vendor order picks the preset model in that tier.',
 };
 
 export const ESCALATION_WORDS: Record<ModelEscalation, string> = {
@@ -59,7 +62,8 @@ export const ESCALATION_WORDS: Record<ModelEscalation, string> = {
 };
 
 export const ESCALATION_HINTS: Record<ModelEscalation, string> = {
-  start_cheap: 'Begin on the cheapest balanced preset model, at medium effort.',
+  start_cheap:
+    'Begin on a balanced preset model at medium effort, and step up when the work stalls.',
   strongest_first: 'Begin on the strongest preset model, at high effort, and stay there.',
 };
 
@@ -219,7 +223,7 @@ export function scoreRows(
   }));
 }
 
-/** T483: Jev's confidence in its model choice: "0.82 — sure enough to decide" / "0.41 — not sure". */
+/** T483, T490: Jev's confidence in its tier: "0.82: sure enough to decide" / "0.41: not sure, …". */
 export function confidenceWords(confidence: number): string {
   const n = confidence.toFixed(2);
   return confidence >= CHOOSER_CONFIDENCE_MIN
@@ -255,11 +259,17 @@ export function pinnedRuleWords(rule: PinnedRule): string {
   ]
     .filter((w): w is string => w !== undefined)
     .join(' + ');
-  const pick = sessionLabel({
-    vendor: rule.pick.vendor,
-    model: rule.pick.model,
-    ...(rule.pick.effort !== undefined ? { effort: rule.pick.effort } : {}),
-  });
+  // T490: a rule naming only a vendor lets the tier pick its model.
+  const pick =
+    rule.pick.model === undefined
+      ? `any ${vendorLabel(rule.pick.vendor)} model${
+          rule.pick.effort !== undefined ? ` · ${rule.pick.effort}` : ''
+        }`
+      : sessionLabel({
+          vendor: rule.pick.vendor,
+          model: rule.pick.model,
+          ...(rule.pick.effort !== undefined ? { effort: rule.pick.effort } : {}),
+        });
   return `${when} → ${pick}`;
 }
 
@@ -271,4 +281,75 @@ export function moveRule<T>(list: readonly T[], index: number, by: -1 | 1): T[] 
   const [item] = next.splice(index, 1);
   if (item !== undefined) next.splice(to, 0, item);
   return next;
+}
+
+// ---------------------------------------------------------------- T490: tier first, the vendor order
+
+/** T490 (D59): the roles that may have their own vendor order, as Settings names them. */
+export const VENDOR_ORDER_ROLE_WORDS: Record<VendorOrderRole, string> = {
+  worker: 'Code',
+  coordinator: 'Coordinating',
+  conversation: 'Conversations',
+  reviewer: 'Reviews',
+};
+
+/** What each role is, for its row's title. */
+export const VENDOR_ORDER_ROLE_HINTS: Record<VendorOrderRole, string> = {
+  worker: 'A node’s agent writing code on its branch',
+  coordinator: 'A coordinator planning the parts and starting their agents',
+  conversation: 'A conversation: it talks and researches, with no repository',
+  reviewer: 'A reviewer started without a model picked (Ask an agent to review)',
+};
+
+/** The vendors installed here, as Settings → Agents lists them (the daemon's order). */
+export function installedVendors(
+  status: Pick<SessionDefaultsStatus, 'vendors' | 'not_installed'>,
+): string[] {
+  return status.vendors.filter((v) => status.not_installed?.[v] === undefined);
+}
+
+/**
+ * The order control's rows: the order's vendors first, in its order, then
+ * the other installed vendors (a vendor the order leaves out comes after
+ * those it names).
+ */
+export function vendorOrderRows(order: readonly string[], installed: readonly string[]): string[] {
+  return [...order, ...installed.filter((v) => !order.includes(v))];
+}
+
+/** A vendor order in words: "Claude, then Codex", or "No preference". */
+export function vendorOrderText(order: readonly string[]): string {
+  return order.length === 0 ? 'No preference' : order.map(vendorLabel).join(', then ');
+}
+
+/** T490: how the tier was decided, in words. */
+export const TIER_BY_WORDS: Record<TierBy, string> = {
+  jev: 'Jev',
+  scores: 'the scores (Jev wasn’t sure)',
+  rule: 'the rule',
+  pinned: 'a pinned rule',
+  only: 'the only tier in the preset models',
+};
+
+/**
+ * T490: the tier line for Details and Try it: "Balanced tier, by Jev
+ * (0.82). In the tier: Claude before Codex." `undefined` with no tier.
+ */
+export function tierLine(pick: {
+  tier?: ModelProfile['tier'] | undefined;
+  tier_by?: TierBy | undefined;
+  confidence?: number | undefined;
+  in_tier?: { words?: string | undefined } | undefined;
+}): string | undefined {
+  if (pick.tier === undefined) return undefined;
+  const by =
+    pick.tier_by !== undefined
+      ? `, by ${TIER_BY_WORDS[pick.tier_by]}${
+          pick.confidence !== undefined && (pick.tier_by === 'jev' || pick.tier_by === 'scores')
+            ? ` (${pick.confidence.toFixed(2)})`
+            : ''
+        }`
+      : '';
+  const inTier = pick.in_tier?.words !== undefined ? ` In the tier: ${pick.in_tier.words}.` : '';
+  return `${TIER_WORDS[pick.tier]} tier${by}.${inTier}`;
 }

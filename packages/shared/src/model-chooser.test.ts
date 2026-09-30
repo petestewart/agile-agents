@@ -15,6 +15,7 @@ import {
 } from './model-chooser';
 import {
   type ChooserScores,
+  DEFAULT_MODEL_PROFILES,
   type ModelPolicy,
   builtinModelPolicy,
   chooserNeed,
@@ -114,12 +115,17 @@ describe('what Jev is asked (T483)', () => {
     });
   });
 
-  test('the questions: five scales, the topic, the model (start cheap), the effort', () => {
+  test('the questions: five scales, the topic, the tier (start cheap), the effort', () => {
     const candidates = [
       { vendor: 'claude' as const, model: 'claude-sonnet-5-5' },
       { vendor: 'claude' as const, model: 'claude-opus-5-5' },
     ];
-    const full = chooserQuestions({ policy: POLICY, candidates, profiles: {}, need: 'full' });
+    const full = chooserQuestions({
+      policy: POLICY,
+      candidates,
+      profiles: DEFAULT_MODEL_PROFILES,
+      need: 'full',
+    });
     expect(full.map((q) => q.id)).toEqual([
       'clarity',
       'verifiability',
@@ -127,9 +133,10 @@ describe('what Jev is asked (T483)', () => {
       'stakes',
       'volume',
       'topic',
-      'model',
+      'tier',
       'effort',
     ]);
+    expect(Object.keys(full[6]?.options ?? {})).toEqual(['balanced', 'strongest']);
     expect(Object.keys(full[0]?.options ?? {})).toEqual(['1', '2', '3', '4', '5']);
     expect(Object.keys(full[5]?.options ?? {})).toEqual([
       'architecture',
@@ -151,7 +158,7 @@ describe('what Jev is asked (T483)', () => {
         { vendor: 'claude', model: 'claude-sonnet-5-5' },
         { vendor: 'claude', model: 'claude-opus-5-5' },
       ],
-      profiles: {},
+      profiles: DEFAULT_MODEL_PROFILES,
       need: 'full',
     });
     const answer = (id: string, choice: string) => ({
@@ -163,13 +170,13 @@ describe('what Jev is asked (T483)', () => {
     const answers = [
       ...['clarity', 'verifiability', 'horizon', 'stakes', 'volume'].map((c) => answer(c, '4')),
       answer('topic', 'none'),
-      answer('model', 'claude/claude-sonnet-5-5'),
+      answer('tier', 'balanced'),
       answer('effort', 'medium'),
     ];
     expect(readChooserAnswers(questions, answers)).toEqual({
       scores: { clarity: 4, verifiability: 4, horizon: 4, stakes: 4, volume: 4 },
       topic: 'none',
-      model: { key: 'claude/claude-sonnet-5-5', confidence: 0.9 },
+      tier: { tier: 'balanced', confidence: 0.9 },
       effort: { level: 'medium', confidence: 0.9 },
     });
     expect(() => readChooserAnswers(questions, answers.slice(1))).toThrow(
@@ -181,10 +188,18 @@ describe('what Jev is asked (T483)', () => {
     expect(() =>
       readChooserAnswers(questions, [
         ...answers.slice(0, 6),
-        answer('model', 'sonnet'),
+        answer('tier', 'claude/claude-sonnet-5-5'),
         answers[7] as never,
       ]),
-    ).toThrow(/vendor\/model/);
+    ).toThrow(/not a tier it was asked/);
+    // A tier the presets don't have was never asked, so it can't be the answer.
+    expect(() =>
+      readChooserAnswers(questions, [
+        ...answers.slice(0, 6),
+        answer('tier', 'fast'),
+        answers[7] as never,
+      ]),
+    ).toThrow(/not a tier it was asked/);
   });
 
   test('what a routed start needs from Jev', () => {
