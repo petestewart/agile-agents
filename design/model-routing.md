@@ -505,3 +505,46 @@ T484 follows §6, with these differences and additions:
 - **The event.** `model_escalated` (`step: up|stuck`, the trigger, the models
   in words) is record-only like `agent_restarted`: routed to the node itself,
   shown in Events and Activity, waking nobody.
+
+## 12. After T484: tier first, the vendor order, the self-check, rationing (Pete, 2026-09-30)
+
+**Tier first (D57).** With presets from two vendors, T483's `model` question
+split Jev's confidence between near-equivalent models (Sonnet 5.5 and GPT-5.6
+Sol), so it never reached 0.5 and the scores always decided. Jev now answers
+**which tier** (fast, balanced, strongest; only the tiers the presets have).
+Those don't overlap, so the confidence means something. Inside the tier, the
+model is the preset chosen by the vendor order, then the lowest cost.
+
+**The vendor order (D59).** The operator lists vendors in the order to prefer
+on a tie ("Claude, then Codex"), and may give a role its own order: reviews
+prefer Codex, code prefers Claude. Roles are worker (code), coordinator,
+conversation and reviewer. A pinned rule may name a vendor alone ("reviewer →
+Codex"); the tier then comes from Jev or the rule. A reviewer started with no
+pick is routed like any other start.
+
+**The vendor self-check (D58).** The facts routing depends on (does a vendor
+take the model it's given, does effort take, does it report usage, does resume
+work) can only be measured with the operator's logins. The daemon measures them
+itself: per vendor, a session with no node, a model and an effort set and read
+back, one tiny prompt, a resume where supported, and the usage and rate-limit
+fields it sent. The result is kept per vendor and CLI version, in the probe
+session's own dir, and shown in Settings → Agents. It runs on **Check vendors**,
+`agile vendors check`, and after a CLI update. Choose leaves out a vendor that
+ignores model picks. A check costs one tiny turn per vendor. "The model took" is
+the vendor's own report, which is the best ACP offers.
+
+**Rationing across subscriptions (T491, after T489).** If one subscription has
+less left this week, routing should lean away from it. Two sources, measured
+before anything is built:
+
+1. What a vendor reports about its own plan limits. Some CLIs show plan usage
+   (Codex's `/status` shows its 5-hour and weekly limits); whether any of it
+   reaches ACP is what T489 records.
+2. The daemon's own count: weighted tokens per vendor over a rolling seven
+   days, from `usage.jsonl` (T485a), against an allowance the operator sets per
+   vendor in Settings.
+
+A vendor past 80% of its allowance moves to the end of the vendor order for
+routed picks; one past 100% is left out of routed picks, and the chat says so.
+Explicit picks are never blocked, only warned. When every vendor is out, the
+node goes to Needs me.
