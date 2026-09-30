@@ -61,6 +61,12 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D48** (2026-09-28, Pete): go ahead with T465. A finished turn no longer stops the vendor session: it stays alive and idle, so the next message reaches the same session and keeps its context and prompt cache. It ends on an idle timeout, a Stop or the daemon stopping, and an ended session resumes through ACP `session/load` where the vendor supports it. Narrows cockpit-design §2.3's "a finished turn stops the session".
 - **D49** (2026-09-29, Pete): one install per vendor. The daemon runs the vendor CLI the operator installed, not a second copy bundled inside an ACP bridge: Claude's bridge gets `CLAUDE_CODE_EXECUTABLE`, Codex's gets `CODEX_PATH`, pointing at the `claude`/`codex` on PATH, with the bundled copy only as the fallback when none is installed. Gemini, Cursor, Grok and Pi already run the installed CLI. The bridges stay pinned in code. (T480)
 - **D50** (2026-09-29, Pete): harness updates are a setting with three modes. **Off** does no version check. **Alert** checks regularly and puts an update in Needs me, with a button that installs it. **Auto** installs new versions in the background. Running sessions keep the version they started on; the next start uses the new one. (T481)
+- **D51** (2026-09-30, Pete, MR1): a model-routing budget is counted in **weighted tokens** (tokens × the model profile's relative cost), per session and per node, and built only after LIVE-CHECKLIST §16 measures which vendors report usage. (T485)
+- **D52** (2026-09-30, Pete, MR2): the chooser is **Jev**, using TypeSafe's choice primitive: one call scores the five criteria, reads the topic, and picks the model and effort from the preset models, with a confidence. Below 0.5 confidence, or with no key or a failed call, the rule fallback decides and the chat says why. (T483)
+- **D53** (2026-09-30, Pete, MR3): the operator's explicit pick always wins; the lock binds agents, the chooser and escalation. The set is called **preset models**, and a pick outside it reads "Running <model>, as you picked", never as refused. (T482)
+- **D54** (2026-09-30, Pete, MR4): new projects default to `choose`, quality 50, `start cheap`, presets = favourites, no pinned rules, and that default is a setting (Settings → Agents → Model choice). Projects that existed before T482 are stamped `default` once and change only when the operator changes them. (T482)
+- **D55** (2026-09-30, Pete, MR5): a routed pick is made once, when the node's agent first starts, and again only on escalation or "Let the policy choose again"; never silently on a later wake (T464 stands). (T482, T483)
+- **D56** (2026-09-30, Pete, MR6): an agent may ask to step up with `escalate {why}`; it can never pick its own model. (T484)
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -2994,25 +3000,25 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T482 Model routing: the policy and the lock
 - **Priority:** P1
-- **Status:** Todo (design proposed in `design/model-routing.md`; waiting on Pete's MR1–MR6)
+- **Status:** Todo (decided: D51–D56, `design/model-routing.md`)
 - **Owner:** manager
 - **Scope:** Pete (2026-09-29): model choice is configurable per project or node, with inherit and choose as options, the operator's own parameters (free text and settings), a chooser that looks at the task being handed off, configurable effort, and choices lockable to a set of models and effort levels. Today no parent chooses: `add_child` and `start_node` carry no model, and a child resolves like any unpicked node (T464, then project, repo, home, built-in).
-- **Acceptance Criteria:** `design/model-routing.md` §3, §4 and §8: the policy schema (mode default/inherit/choose, quality priority, allowed models, effort ceiling, escalation, pinned rules, guidance, weights), resolved node → ancestors → project → home, stored human-only. Every routed pick is clamped to the allowed set and under the effort ceiling, with a chat line when a clamp changes it. An explicit pick wins (MR3). Settings, project and node UI; `agile policy`. Depends on T467.
+- **Acceptance Criteria:** `design/model-routing.md` §3, §4 and §8: the policy schema (mode default/inherit/choose, quality priority, preset models, effort ceiling, escalation, pinned rules, guidance, weights), resolved node → ancestors → project → home, stored human-only. Every routed pick is clamped to the presets and under the effort ceiling, with a chat line when a clamp changes it. An explicit pick wins and reads "Running <model>, as you picked" (D53). The home default is edited in Settings → Agents → Model choice, and projects that existed before are stamped `default` once (D54). Project and node UI; `agile policy`. Depends on T467.
 - **Validation Steps:** Shared resolution unit tests; attach tests (routed vs explicit, inherit, clamp, a node write by an agent refused); UI e2e.
 
 ### Ticket: T483 Model routing: the chooser
 - **Priority:** P1
 - **Status:** Todo (after T482)
 - **Owner:** manager
-- **Scope:** `design/model-routing.md` §5: a one-shot quick-draft call scores spec clarity, verifiability, horizon, stakes and volume, and picks a model and effort from the allowed set, with the reason. Pinned rules, guidance, weights and quality priority feed it. Model profiles (tier, relative cost) live in the home config. The rule fallback applies when Quick drafts is off or the call fails.
+- **Scope:** `design/model-routing.md` §5 (D52): one Jev call with the choice primitive scores spec clarity, verifiability, horizon, stakes and volume, reads the topic, and picks a model and effort from the preset models, with a confidence. Pinned rules, guidance, weights and quality priority feed it. Model profiles (tier, relative cost) live in the home config. The rule fallback applies below 0.5 confidence, with no key, or when the call fails.
 - **Acceptance Criteria:** A chat line with the pick and why; Details shows the scores, the resolved policy's source, and "Let the policy choose again"; Settings has Try it. A reply that fails the schema, or picks outside the lock, is clamped or falls back, and says so.
-- **Validation Steps:** Unit tests with an injected drafter (a valid reply, an invalid one, an outside pick, a timeout, drafts off); attach test that a routed start runs the chooser once and a later wake doesn't (MR5); e2e for Try it.
+- **Validation Steps:** Unit tests with a fake choice classifier (a confident reply, a low-confidence one, an invalid one, an outside pick, a timeout, no key); the wire mapping against a recorded live reply; attach test that a routed start runs the chooser once and a later wake doesn't (D55); e2e for Try it; one real Jev run.
 
 ### Ticket: T484 Model routing: escalation
 - **Priority:** P2
 - **Status:** Todo (after T482)
 - **Owner:** manager
-- **Scope:** `design/model-routing.md` §6: under "start cheap", step up the ladder (effort, then model, within the lock) at the next start when a merge is refused twice for the same reason, a turn stalls, or the agent calls `escalate {why}`; Details → Step up. At the top of the ladder, a Needs me card.
+- **Scope:** `design/model-routing.md` §6 (D56): under "start cheap", step up the ladder (effort, then model, within the presets) at the next start when a merge is refused twice for the same reason, a turn stalls, or the agent calls `escalate {why}`; Details → Step up. At the top of the ladder, a Needs me card.
 - **Acceptance Criteria:** A thread line and a record-only event per step; "strongest first" never steps; a model change ends a resting session (T465).
 - **Validation Steps:** Unit tests per trigger with the fake agent; the ladder order; the top-of-ladder card.
 
@@ -3020,7 +3026,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Priority:** P2
 - **Status:** Todo (measure first: LIVE-CHECKLIST §16, which vendors report turn token usage)
 - **Owner:** manager
-- **Scope:** `design/model-routing.md` §7: budgets in weighted tokens (tokens × the model profile's cost), per session and per node. At 80% a chat line; at the cap the next turn waits and Needs me offers Raise the cap / Stop here. A vendor that reports no usage says so instead of estimating.
+- **Scope:** `design/model-routing.md` §7 (D51): budgets in weighted tokens (tokens × the model profile's cost), per session and per node. At 80% a chat line; at the cap the next turn waits and Needs me offers Raise the cap / Stop here. A vendor that reports no usage says so instead of estimating.
 - **Validation Steps:** After §16: unit tests on the weighting and cap, and an attach test that the capped node waits.
 
 ### Ticket: T486 The classifier key never reaches a vendor's process

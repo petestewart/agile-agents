@@ -1,8 +1,8 @@
 # Model routing: who picks a node's model, and how
 
-Status: **proposed** (2026-09-29). Nothing here is built yet. The open
-decisions are MR1–MR6 in §9. Once Pete confirms them they become D-entries
-in PLAN.md, and T482–T485 are built from this document.
+Status: **decided** (proposed 2026-09-29; Pete settled MR1–MR6 on 2026-09-30,
+recorded as D51–D56 in PLAN.md). T482–T485 are built from this document.
+§9 keeps the decisions as answered.
 
 ## 1. The problem
 
@@ -47,9 +47,9 @@ and rarely touched.
 |---|---|---|
 | **Mode** | `default` · `inherit` · `choose` | `default`: today's resolution (§1). `inherit`: a routed pick copies the parent node's current pick. `choose`: the chooser decides (§5). |
 | **Quality priority** | slider 0–100, "Favor speed & cost" → "Favor quality" (default 50) | The one trade-off the chooser weighs everything against. It's clearer than an "intelligence level": the operator knows their trade-offs better than what a task needs. |
-| **Allowed models** | a set of vendor/model pairs; empty means any installed model | The lock. No routed pick, chooser output or escalation leaves the set. Once T469 exists, "my favourites" is one click. |
+| **Preset models** | a set of vendor/model pairs; empty means any installed model | The lock. No routed pick, chooser output or escalation leaves the presets. "My favourites" (T469) is one click. |
 | **Effort ceiling** | low · medium · high · max (per vendor, where the vendor has effort) | The highest effort a routed pick may use. |
-| **Escalation** | `start cheap` · `strongest first` | `start cheap`: begin at the cheapest model the task scores allow, and step up when checks fail or the work stalls (§6). `strongest first`: pick the strongest allowed model and stay there. |
+| **Escalation** | `start cheap` · `strongest first` | `start cheap`: begin at the cheapest model the task scores allow, and step up when checks fail or the work stalls (§6). `strongest first`: pick the strongest preset model and stay there. |
 | **Budget cap** | per session, and per node | Measured first (§7, MR1). |
 | **Pinned rules** | an ordered list: *when* → *pick* | These bypass scoring. The *when* is a node's role (coordinator/planning, reviewer, conversation, worker), a label, or the chooser's own reading of "architecture", "migration" or "security". Examples: "coordinator → Opus 5.5 · high", "reviewer → Sonnet 5.5 · medium". |
 | **Guidance** | free text, ≤ 2,000 characters | Read by the chooser as written, like a prompt. For example: "Anything touching billing gets Opus. Prefer Codex for Rust." |
@@ -58,7 +58,7 @@ and rarely touched.
 **Model profiles.** The chooser needs to know which models are cheap and which
 are strong, and the vendors don't report that. T467 gives each model a name
 and a vendor description ("Fastest for quick answers"), but no price and no
-tier. Each allowed model therefore gets a small profile in the home config:
+tier. Each preset model therefore gets a small profile in the home config:
 
 - `tier`: fast, balanced or strongest;
 - `cost`: a relative weight, e.g. Sonnet 1, Opus 2, Haiku 0.3.
@@ -71,7 +71,13 @@ editable data, not code.
 
 ## 4. Where the policy lives, and how it resolves
 
-- Home: `config.yaml` `model_policy` (the default for everything).
+- Home: `config.yaml` `model_policy`, edited in Settings → Agents → **Model
+  choice** (MR4, D54). It is the default every project inherits, field by field,
+  unless it sets its own. What ships: `choose`, quality 50, `start cheap`,
+  presets = favourites (any installed model when there are none), no pinned
+  rules. A project that existed before T482 is stamped `mode: default` once, with
+  a line on its root's thread, so nothing moves under running work; the operator
+  changes it in the project's Details.
 - Project: `projects/<id>.yaml` `model_policy`, next to its `session`
   defaults (P5).
 - Node: `streams/<id>.yaml` `human.model_policy`. It is a human-only field,
@@ -86,8 +92,9 @@ in `packages/shared`, `.strict()`.
 **Precedence of the pick itself**
 
 1. An explicit pick always wins. The lock binds agents, not the operator.
-   A pick outside the allowed set is still honoured, and the chat says "outside
-   this project's allowed models". (MR3)
+   A pick outside the presets runs as picked, and the chat line says so in a
+   way that can't read as refused: "Running Opus 5.5, as you picked. Routed
+   picks here use this project's preset models." (MR3, D53)
 2. The node's own last pick (T464) holds while the node keeps running. A
    routed pick is made once, when the node's agent first starts, and again only
    on an escalation or when the operator clears the node's pick (Details →
@@ -95,74 +102,88 @@ in `packages/shared`, `.strict()`.
 3. Pinned rules, in order. The first match wins.
 4. Mode: `inherit` copies the parent's current pick; `choose` runs §5; `default`
    resolves as today.
-5. Clamp: the result is forced into the allowed set and under the effort
+5. Clamp: the result is forced into the presets and under the effort
    ceiling. When a clamp changes it, the chat says so.
 
 ## 5. The chooser
 
-**What it is.** A one-shot call to the quick-draft model, the same mechanism
-that titles nodes (T414 and D41: `claude -p --model haiku --tools ""`, a timeout,
-never under `bun test`, off with Quick drafts). It runs no tools and writes no
-files; it returns one JSON object, which a `packages/shared` zod schema
-validates. When Quick drafts is off, the call fails or times out, or the reply
-doesn't validate, the **rule fallback** decides instead (below), and the chat
-says so.
+**What it is (MR2, D52).** One Jev call (TypeSafe `systemone`) using its
+**choice** primitive: each question names a fixed set of options, and Jev
+returns the chosen option, the probability of every option and a confidence
+from 0 to 1 (<https://docs.typesafe.ai/primitives/choice>). All the questions
+go in one request; they are evaluated side by side, so asking seven barely
+costs more than asking one. It needs the classifier key (D16). It sees only the
+text below, never credentials, the thread or file contents, and it goes through
+the same scrubber as a rule check.
 
-**What it sees.** The task and the policy, nothing else:
+**What it is asked.** The `state` is the task and the policy:
 
 - the task: title, goal, role, repo, parent's title and goal;
 - the parent's plan entry for this part, when there is one;
 - how many siblings are starting now (volume);
-- the policy: quality priority, guidance text, pinned rules, criterion weights;
-- the allowed models, each with its tier, cost and vendor description.
+- the guidance text, the quality priority and the criterion weights.
 
-It never sees credentials, the thread or file contents.
+The questions:
 
-**What it scores.** Each criterion from 1 to 5. The scores are shown to the
-operator, so the decision can be read and argued with.
+| Id | Options | Asks |
+|---|---|---|
+| `clarity` | 1–5, each described | How well specified is the task? 1 open-ended, 5 well defined with acceptance stated. |
+| `verifiability` | 1–5 | Can a test, build or typecheck prove it? |
+| `horizon` | 1–5 | A quick fix (1) or a multi-hour, many-step job (5)? |
+| `stakes` | 1–5 | Easily undone (1), or security, a data migration, architecture or money (5)? |
+| `volume` | 1–5 | A one-off (1), or one of many similar parts starting at once (5)? |
+| `topic` | architecture · migration · security · none | For pinned rules that name a topic. |
+| `model` | the preset models, keyed `vendor/model` | Which model should run it? Each option is described by its name, tier, relative cost and the vendor's own description. The instructions carry the default rule (below), the quality priority and the guidance text. |
+| `effort` | the effort levels up to the ceiling | Asked only when a preset model has effort. |
 
-| Criterion | Low (1) | High (5) | Pushes toward |
-|---|---|---|---|
-| **Spec clarity** | open-ended | well-defined, acceptance stated | clear → cheaper |
-| **Verifiability** | nothing can prove it | a test, build or typecheck proves it | checkable → cheaper |
-| **Horizon** | a quick fix | a multi-hour, many-step job | long → stronger |
-| **Stakes** | easily undone | security, data migration, architecture, money | high → stronger |
-| **Volume** | a one-off | many similar parts at once | high → cheaper |
+A score is the probability-weighted mean of its options, so "4.6" shows how
+sure Jev was, not only its top answer.
 
-**What it returns.**
+**How the pick is made.**
 
-```json
-{ "scores": { "clarity": 4, "verifiability": 5, "horizon": 2, "stakes": 2, "volume": 1 },
-  "pick": { "vendor": "claude", "model": "claude-sonnet-5-5", "effort": "medium" },
-  "reason": "Well specified and covered by the test suite; short and low-stakes." }
-```
+1. Pinned rules first (§4 step 3), using the role, the labels and `topic`.
+2. Jev's `model` choice, when its confidence is at least 0.5. Its `effort`
+   choice applies when the model's vendor has effort.
+3. Below 0.5, the **rule fallback** decides from the scores instead, and the
+   chat line says "Jev wasn't sure; chose by the scores".
+4. The clamp (§4 step 5) runs last on every path.
 
-The daemon then checks the pick. It must be an allowed model, at or under the
-effort ceiling, and an installed vendor. If it isn't, the daemon clamps it
-(§4, step 5) and records both what the chooser said and what ran.
-
-**The default rule.** This is what the chooser prompt states, and the whole of
-the rule fallback. "Use a balanced model when the task is well specified and
-checkable. Use the strongest allowed model when it's ambiguous, high-stakes or
+**The default rule.** It is written into the `model` question and is the whole
+of the rule fallback. "Use a balanced model when the task is well specified and
+checkable. Use the strongest preset model when it's ambiguous, high-stakes or
 long-horizon. Use the fastest when it's high-volume and checkable. Quality
 priority moves the thresholds: toward speed, a balanced model needs clarity and
 verifiability of only 3; toward quality, 4." Effort follows the same scores:
 long-horizon or high-stakes work goes one level up, and nothing goes above the
 ceiling.
 
+**Without Jev.** With no classifier key, or when the call fails (401, 429, a
+timeout, a reply that fails the schema), there are no scores. The rule
+fallback then picks without them: under `start cheap`, the cheapest balanced
+preset at medium effort; under `strongest first`, the strongest preset. The
+chat line names the reason ("no classifier key", "Jev didn't answer"), and
+Settings → Model choice says up front that choosing needs the key.
+
+The request and reply are schemas in `packages/shared`; the wire mapping sits
+beside the Noul mapping in `classifier/jev-wire.ts`. Checked against the live
+API on 2026-09-30: a well-specified rename with six siblings came back
+`model: claude/claude-sonnet-5-5` at confidence 0.82 (Sonnet 0.88, Haiku 0.12,
+Opus 0), `clarity` 5 at 0.85.
+
 **What the operator sees.**
 
 - One line in the node's chat when the agent starts: "Chose Sonnet 5.5 ·
   medium — well specified and covered by tests; short, low stakes." A pinned
   rule or a clamp says so instead.
-- The node's Details shows the five scores, the policy it resolved from and
-  where (node, project or home), and **Let the policy choose again**.
+- The node's Details shows the five scores, Jev's confidence, the policy it
+  resolved from and where (node, project or home), and **Let the policy choose
+  again**.
 - Settings shows the policy, with a **Try it** box: paste a task and see the
   scores and the pick, without starting anything.
 
 ## 6. Escalation
 
-Only under `start cheap`. The **ladder** is the allowed models ordered by tier
+Only under `start cheap`. The **ladder** is the preset models ordered by tier
 then cost, and within one model, its effort levels up to the ceiling. One step
 up means the next effort level on the same model first, then the next model.
 
@@ -190,7 +211,7 @@ not a verdict, and the operator decides what they mean.
 An escalation is a thread line ("Stepped up to Opus 5.5 · high: the tests
 failed twice on Sonnet 5.5") and a record-only event in Events and Activity.
 The top of the ladder can't step up. Instead the node goes to Needs me:
-"<node> is stuck on the strongest allowed model", with the reason. A model
+"<node> is stuck on the strongest preset model", with the reason. A model
 change ends a resting session (T465); the next start is fresh and gets the
 thread and the brief.
 
@@ -204,7 +225,7 @@ means nothing there, and no vendor has been seen reporting price over ACP.
 What ACP can carry is token usage. `usage_update` gives context `used`/`size`
 today, and some vendors may add per-turn token counts or `cost`.
 
-**Proposal (MR1):** a budget is in **weighted tokens**, the tokens a session
+**Decided (MR1, D51):** a budget is in **weighted tokens**, the tokens a session
 used times its model's profile `cost`. Caps are per session and per node. At
 80% the chat says so; at the cap, the next turn doesn't start and the node goes
 to Needs me with **Raise the cap** / **Stop here**.
@@ -217,7 +238,7 @@ estimate.
 ## 8. Where it fits in the code
 
 - `packages/shared`: `ModelPolicySchema` (the §3 fields),
-  `ModelProfileSchema`, `ChooserReplySchema`, and the resolution (§4) as a pure
+  `ModelProfileSchema`, the chooser's scores and pick record, and the resolution (§4) as a pure
   function beside `resolveSessionSettings`, so the CLI, the cockpit and attach
   resolve it the same way.
 - `packages/daemon/src/attach/service.ts`, where T464's `kept` and
@@ -226,7 +247,7 @@ estimate.
   choice knows who is starting the node.
 - `packages/daemon/src/routing/` (new, beside `delivery/` and `knowledge/`):
   - the policy service: resolution, clamp, pinned rules;
-  - the chooser: the quick-draft call, the reply check, the rule fallback;
+  - the chooser: the Jev choice call, the reply check, the rule fallback;
   - the escalation watcher: it subscribes to the merge refusals, turn failures
     and context readings that delivery, T456 and T411 already produce.
 - The node record: `agent.pick` (what ran and why: chooser, rule, inherit,
@@ -240,34 +261,36 @@ estimate.
 - CLI: `agile policy show|set [--project P|--node N]`, and `agile policy try
   "<task text>"`.
 
-## 9. Open decisions (for Pete)
+## 9. Decisions (Pete, 2026-09-30)
 
-- **MR1 · Budget unit.** Weighted tokens, per session and per node, measured
-  first (§7). A dollar figure only where a vendor reports cost.
-- **MR2 · The chooser model.** The quick-draft model (Haiku today), with the
-  rule fallback when it's off or fails. No agent session and no Jev: Jev
-  answers yes/no questions, and this is a choice among options.
-- **MR3 · Explicit picks and the lock.** The operator's explicit pick always
-  wins, with a visible note when it's outside the allowed set. The lock binds
-  agents, the chooser and escalation.
-- **MR4 · Default for new projects.** `choose`, quality 50, `start cheap`,
-  allowed = favourites once T469 exists (any installed model before that), with
-  no pinned rules. Existing projects keep `default` until changed, so nothing
-  moves under running work.
-- **MR5 · When a routed pick is made.** Once, when the node's agent first starts,
-  then on escalation or a "choose again". Never silently on a later wake (T464
-  stands).
-- **MR6 · `escalate` verb.** An agent may ask to step up; it can't pick its own
-  model.
+- **MR1 · Budget unit (D51).** Weighted tokens, per session and per node,
+  measured first (§7).
+- **MR2 · The chooser (D52).** Jev, with its choice primitive (§5). Pete
+  corrected the proposal, which said Jev only answered yes/no. The rule
+  fallback covers no key and a failed call.
+- **MR3 · Explicit picks and the lock (D53).** The operator's explicit pick
+  always wins. The lock binds agents, the chooser and escalation. The set is
+  called **preset models**, and the note on a pick outside it says the pick is
+  running (§4), so it never reads as refused.
+- **MR4 · Default for new projects (D54).** `choose`, quality 50, `start cheap`,
+  presets = favourites, no pinned rules. The default is a setting: Settings →
+  Agents → Model choice. Existing projects are stamped `default` until changed.
+- **MR5 · When a routed pick is made (D55).** Once, when the node's agent first
+  starts, then on escalation or a "choose again". Never silently on a later wake
+  (T464 stands).
+- **MR6 · `escalate` verb (D56).** An agent may ask to step up; it can't pick
+  its own model.
 
 ## 10. Tickets (after the decisions)
 
 - **T482 Policy and lock.** The schemas, the resolution (§4), `inherit` and
-  `default`, the allowed set and effort ceiling enforced on every routed pick,
-  and the Settings, project and node UI. Depends on T467's catalog.
-- **T483 The chooser.** Scores, pick and reason; pinned rules; guidance; weights;
-  quality priority; model profiles; the rule fallback; Try it; the chat line and
-  Details scores.
+  `default`, the presets and effort ceiling enforced on every routed pick, the
+  home default in Settings and the one-time stamp of existing projects, and the
+  project and node UI. Depends on T467's catalog.
+- **T483 The chooser.** The Jev choice call (scores, `topic`, `model`,
+  `effort`), the confidence threshold, pinned rules, guidance, weights, quality
+  priority, model profiles, the rule fallback, Try it, the chat line and Details
+  scores.
 - **T484 Escalation.** The ladder, the triggers in §6, `escalate`, Step up, and
   the Needs me card at the top of the ladder.
 - **T485 Budget.** LIVE-CHECKLIST §16 first, then the caps (§7).
