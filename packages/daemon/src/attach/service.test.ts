@@ -1340,6 +1340,7 @@ describe('ask → answer → continue (T137)', () => {
     await waitFor(() => existsSync(log) && readFileSync(log, 'utf8').includes('semicolon'));
     const prompts = readFileSync(log, 'utf8')
       .split('\n')
+      .slice(0, -1)
       .filter((line) => line.includes('"session/prompt"'));
     expect(prompts.length).toBe(2);
     expect(prompts[1]).toContain('semicolon');
@@ -1734,6 +1735,7 @@ describe('say — the stream page composer (T161)', () => {
     await waitFor(() => streams.get(stream.id).agent.status === 'done');
     const prompts = readFileSync(log, 'utf8')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'));
     expect(prompts.length).toBe(2);
     expect(prompts[1]).toContain(
@@ -1786,6 +1788,7 @@ describe('say — the stream page composer (T161)', () => {
     await waitFor(() => streams.get(stream.id).agent.status === 'done');
     const sent = readFileSync(log, 'utf8')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'))
       .map(
         (l) => (JSON.parse(l) as { params: { prompt: { text: string }[] } }).params.prompt[0]?.text,
@@ -1882,6 +1885,7 @@ describe('say — the stream page composer (T161)', () => {
           existsSync(log) &&
           readFileSync(log, 'utf8')
             .split('\n')
+            .slice(0, -1)
             .filter((l) => l.includes('"session/prompt"')).length === 2,
       );
       release();
@@ -1927,6 +1931,7 @@ describe('T242: routed events reach the session as digests', () => {
     await waitFor(() => streams.get(stream.id).agent.status === 'done');
     const prompts = readFileSync(log, 'utf8')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'));
     expect(prompts.length).toBe(2);
     expect(prompts[1]).toContain('3 things arrived for you');
@@ -2062,6 +2067,7 @@ describe('T243: the wake policy (P11)', () => {
   const prompts = (log: string) =>
     (existsSync(log) ? readFileSync(log, 'utf8') : '')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'));
 
   test('a human line wakes a finished node, and the woken session gets it', async () => {
@@ -2270,6 +2276,7 @@ describe('T351, T453: accepting a decision wakes the conversation it came from (
   const prompts = (log: string) =>
     (existsSync(log) ? readFileSync(log, 'utf8') : '')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'));
   const TEXT = 'Amounts in exported JSON are integer cents, never floats';
 
@@ -2390,6 +2397,7 @@ describe('T454: with knowledge_wake on, Jev decides which other conversations wa
   const prompts = (log: string) =>
     (existsSync(log) ? readFileSync(log, 'utf8') : '')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'));
   const TEXT = 'Amounts in exported JSON are integer cents, never floats';
   /** Jev's two values: "is the decision relevant?" and "is the conversation stale?". */
@@ -2579,6 +2587,7 @@ describe('T280: the coordinator role (P20)', () => {
     await waitFor(() =>
       (existsSync(log) ? readFileSync(log, 'utf8') : '')
         .split('\n')
+        .slice(0, -1)
         .some((l) => l.includes('"session/prompt"') && l.includes('stuck on auth')),
     );
     expect(threadBodies(node.id)).toContain('woken by child status');
@@ -2641,6 +2650,7 @@ describe('T280: the coordinator role (P20)', () => {
     await waitFor(() =>
       (existsSync(log) ? readFileSync(log, 'utf8') : '')
         .split('\n')
+        .slice(0, -1)
         .some((l) => l.includes('"session/prompt"') && l.includes('cart shipped')),
     );
     expect(threadBodies(root.id)).toContain('woken by child status');
@@ -2652,6 +2662,7 @@ describe('T280: the coordinator role (P20)', () => {
     const prompts = () =>
       (existsSync(log) ? readFileSync(log, 'utf8') : '')
         .split('\n')
+        .slice(0, -1)
         .filter((l) => l.includes('"session/prompt"'));
     // T465: its session ends at once, and a vendor that can't load one starts from the brief.
     attachService = buildAttachService(
@@ -3104,6 +3115,7 @@ describe('T361: a message starts a node with no live agent', () => {
   const prompts = (log: string) =>
     (existsSync(log) ? readFileSync(log, 'utf8') : '')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.includes('"session/prompt"'));
 
   test('a never-started node starts, and the line is in its first prompt, once', async () => {
@@ -3304,6 +3316,7 @@ describe('T465 (D48): a finished turn keeps its session; an ended one resumes', 
   const logLines = () =>
     (existsSync(log()) ? readFileSync(log(), 'utf8') : '')
       .split('\n')
+      .slice(0, -1)
       .filter((l) => l.trim() !== '');
   const prompts = () => logLines().filter((l) => l.includes('"session/prompt"'));
   const loads = () => logLines().filter((l) => l.includes('"session/load"'));
@@ -3736,7 +3749,8 @@ describe("T488: Codex's effort goes through its own ACP option", () => {
   const logLines = (): Array<Record<string, unknown> & { method: string }> =>
     (existsSync(log()) ? readFileSync(log(), 'utf8') : '')
       .split('\n')
-      .filter((l) => l.trim() !== '')
+      // T492: complete lines only; the agent may be mid-write.
+      .slice(0, -1)
       .map((l) => JSON.parse(l));
   const prompts = () => logLines().filter((l) => l.method === 'session/prompt');
   const sets = () =>
@@ -3872,7 +3886,8 @@ describe('T467 (D46): models come from the vendor, set through ACP', () => {
   const logLines = (): Array<Record<string, unknown> & { method: string }> =>
     (existsSync(log()) ? readFileSync(log(), 'utf8') : '')
       .split('\n')
-      .filter((l) => l.trim() !== '')
+      // T492: complete lines only; the agent may be mid-write.
+      .slice(0, -1)
       .map((l) => JSON.parse(l));
   const methods = () => logLines().map((l) => l.method);
   const prompts = () => logLines().filter((l) => l.method === 'session/prompt');

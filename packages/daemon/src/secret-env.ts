@@ -9,8 +9,10 @@
  * Every vendor spawn builds its env from this: node sessions and the
  * Director (`runner/session.ts`), Refresh models (`runner/model-catalog.ts`),
  * the quick drafts (`streams/titles.ts`) and the CLI updater
- * (`harness/methods.ts`). `HOME`, `PATH` and the vendors' own login
- * variables pass through untouched.
+ * (`harness/methods.ts`). T486b: so does every non-vendor subprocess
+ * (`sandboxedSubprocessEnv`: test runs, sandbox probes, worktree and
+ * delivery git, whose hooks run code an agent wrote). `HOME`, `PATH` and the
+ * vendors' own login variables pass through untouched.
  */
 
 import { TYPESAFE_API_KEY_ENV } from './classifier/jev';

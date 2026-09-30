@@ -292,12 +292,17 @@ function spawnFake(opts: SpawnSessionOptions) {
 function prompts(run: AgentRun): string[] {
   const log = join(run.dir, 'log.jsonl');
   if (!existsSync(log)) return [];
-  return readFileSync(log, 'utf8')
-    .split('\n')
-    .filter((l) => l.trim() !== '')
-    .map((l) => JSON.parse(l) as { method: string; params?: { prompt?: Array<{ text?: string }> } })
-    .filter((l) => l.method === 'session/prompt')
-    .map((l) => (l.params?.prompt ?? []).map((p) => p.text ?? '').join('\n'));
+  return (
+    readFileSync(log, 'utf8')
+      .split('\n')
+      // T492: complete lines only; the agent may be mid-write.
+      .slice(0, -1)
+      .map(
+        (l) => JSON.parse(l) as { method: string; params?: { prompt?: Array<{ text?: string }> } },
+      )
+      .filter((l) => l.method === 'session/prompt')
+      .map((l) => (l.params?.prompt ?? []).map((p) => p.text ?? '').join('\n'))
+  );
 }
 
 function openTurn(run: AgentRun): number | undefined {
