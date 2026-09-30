@@ -13,7 +13,7 @@
  *   else, so a test can `kill -9` it even if the handshake never completes.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 export type FakeAgentStep =
   | { type: 'usage_update'; used: number; size?: number }
@@ -57,6 +57,12 @@ export interface FakeAgentScript {
   model?: string;
   /** Written to stderr once at startup, for testing the per-session stderr log. */
   stderrBanner?: string;
+  /**
+   * One line per process, appended at startup: the *names* in its env as a
+   * sorted JSON array, i.e. what a vendor spawned in its place could read.
+   * Never the values, so a test log never holds a secret.
+   */
+  envLogFile?: string;
 }
 
 function appendLog(script: FakeAgentScript, line: Record<string, unknown>): void {
@@ -78,6 +84,9 @@ function loadScript(): FakeAgentScript {
 /** Loaded once; `handleLine` needs it too. */
 const script = loadScript();
 if (script.stderrBanner !== undefined) process.stderr.write(`${script.stderrBanner}\n`);
+if (script.envLogFile !== undefined) {
+  appendFileSync(script.envLogFile, `${JSON.stringify(Object.keys(process.env).sort())}\n`);
+}
 /** `authenticate` method ids seen, for `requireAuthMethod`. */
 const authenticatedMethods = new Set<string>();
 

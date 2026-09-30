@@ -7,15 +7,40 @@
  * `HOME`, `npm_config_cache` and the `XDG_*` dirs point under
  * `<repoRoot>/.agile-daemon-cache/<name>/`, one namespace per kind of
  * caller, all created eagerly. `PATH` and the rest of `process.env`
- * (including a preset `GIT_CONFIG_GLOBAL`) pass through unchanged.
+ * (including a preset `GIT_CONFIG_GLOBAL`) pass through unchanged, less
+ * the daemon-only names.
  *
  * Vendor sessions never use this: their CLI needs the real `HOME` for its
- * login.
+ * login. They get `withoutDaemonOnlyEnv` instead.
  */
 
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { TYPESAFE_API_KEY_ENV } from './classifier/jev';
+
+/**
+ * Env names only the daemon itself may hold (§6.1): the TypeSafe key is
+ * the daemon's own dependency, not an agent's. Dropped from every vendor
+ * session's env and from `sandboxedSubprocessEnv` (test runs and git
+ * hooks run agent-written code): an agent that can run `env` must never
+ * read it. The one list, so no spawn path can drift.
+ */
+export const DAEMON_ONLY_ENV_NAMES: readonly string[] = [TYPESAFE_API_KEY_ENV];
+
+/**
+ * `env` (default `process.env`) less `DAEMON_ONLY_ENV_NAMES` and unset
+ * entries. `HOME`, `PATH` and a vendor's own login env pass through.
+ */
+export function withoutDaemonOnlyEnv(
+  env: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value !== undefined && !DAEMON_ONLY_ENV_NAMES.includes(name)) out[name] = value;
+  }
+  return out;
+}
 
 /** The daemon's host-local scratch space under `repoRoot` (gitignored). */
 export const DAEMON_CACHE_DIR = '.agile-daemon-cache';
@@ -33,7 +58,7 @@ export function sandboxedSubprocessEnv(repoRoot: string, name: string): Record<s
     mkdirSync(dir, { recursive: true });
   }
   return {
-    ...process.env,
+    ...withoutDaemonOnlyEnv(),
     HOME: home,
     npm_config_cache: npmCache,
     XDG_CACHE_HOME: xdgCache,

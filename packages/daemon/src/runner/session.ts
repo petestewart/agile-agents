@@ -51,6 +51,7 @@ import { type WrapAgentCommandFn, wrapAgentCommand as defaultWrapAgentCommand } 
 import { buildEvent } from '../store';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
+import { withoutDaemonOnlyEnv } from '../subprocess-env';
 import { type CliInvocation, cliInvocationToShell, normalizeCliBin } from './cli-bin';
 
 /** `<sessionDir>/<name>` appender that never throws: diagnostics must not take a session down. */
@@ -336,6 +337,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     cmd: wrapped.command,
     args: [...wrapped.args, ...(modelContribution.args ?? []), ...(effortContribution.args ?? [])],
     cwd: worktreePath,
+    // The daemon's env less its own secrets (§6.1): the vendor keeps
+    // `HOME`, `PATH` and its login, never the classifier key.
+    env: withoutDaemonOnlyEnv(),
     envOverrides: {
       ...provider.envOverrides,
       ...wrapped.envOverrides,

@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
 import type { HilId, Policy, Question, Stream } from '@agile-agents/shared';
+import { TYPESAFE_API_KEY_ENV } from '../classifier/jev';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { LandingService } from '../landing/service';
@@ -840,6 +841,41 @@ describe('say — the stream page composer (T161)', () => {
     } finally {
       release();
       store.updateStream = original;
+    }
+  }, 30_000);
+});
+
+describe('the vendor env keeps the daemon-only secrets out (T178)', () => {
+  test('neither a worker nor a reviewer can read TYPESAFE_API_KEY; HOME, PATH and the session vars reach both', async () => {
+    // A dummy, never a real key: the daemon holds it, the vendor must not.
+    const previous = process.env[TYPESAFE_API_KEY_ENV];
+    process.env[TYPESAFE_API_KEY_ENV] = 'test-dummy-not-a-key';
+    try {
+      const envLog = join(scratch, 'vendor-env.jsonl');
+      attachService = buildAttachService(
+        fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS_THEN_HANGS, envLogFile: envLog }),
+      );
+      await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+      const stream = await makeStream('demo');
+      await attachService.attach(stream.id);
+      await attachService.attach(stream.id, { role: 'reviewer' });
+
+      // Only newline-terminated lines: a spawn's line is complete once written.
+      const spawned = () =>
+        existsSync(envLog) ? readFileSync(envLog, 'utf8').split('\n').slice(0, -1) : [];
+      await waitFor(() => spawned().length === 2);
+      for (const line of spawned()) {
+        const names = JSON.parse(line) as string[];
+        expect(names).not.toContain(TYPESAFE_API_KEY_ENV);
+        expect(names).toEqual(
+          expect.arrayContaining(['HOME', 'PATH', 'AGILE_AGENT', 'AGILE_STREAM']),
+        );
+      }
+      // The daemon's own copy is untouched: the classifier still reads it.
+      expect(process.env[TYPESAFE_API_KEY_ENV]).toBe('test-dummy-not-a-key');
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(process.env, TYPESAFE_API_KEY_ENV);
+      else process.env[TYPESAFE_API_KEY_ENV] = previous;
     }
   }, 30_000);
 });

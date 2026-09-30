@@ -2,11 +2,17 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { TYPESAFE_API_KEY_ENV } from './classifier/jev';
 import {
   DAEMON_CACHE_DIR,
+  DAEMON_ONLY_ENV_NAMES,
   sandboxedSubprocessEnv,
   sandboxedSubprocessEnvOrTemp,
+  withoutDaemonOnlyEnv,
 } from './subprocess-env';
+
+/** A dummy, never a real key. */
+const DUMMY_KEY = 'test-dummy-not-a-key';
 
 let repoRoot: string;
 
@@ -139,6 +145,62 @@ describe('sandboxedSubprocessEnvOrTemp (review round 1 B2 fix)', () => {
       expect(existsSync(injectedBase)).toBe(true);
     } finally {
       rmSync(injectedBase, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('withoutDaemonOnlyEnv (T178)', () => {
+  test('the classifier key is a daemon-only name', () => {
+    expect(DAEMON_ONLY_ENV_NAMES).toContain(TYPESAFE_API_KEY_ENV);
+  });
+
+  test("drops every daemon-only name and keeps HOME, PATH and a vendor's own login env", () => {
+    const input: Record<string, string | undefined> = {
+      HOME: '/home/operator',
+      PATH: '/usr/local/bin:/usr/bin',
+      CLAUDE_CONFIG_DIR: '/home/operator/.claude',
+      GEMINI_API_KEY: 'vendor-login-dummy',
+      UNSET_ONE: undefined,
+    };
+    for (const name of DAEMON_ONLY_ENV_NAMES) input[name] = DUMMY_KEY;
+
+    const env = withoutDaemonOnlyEnv(input);
+
+    for (const name of DAEMON_ONLY_ENV_NAMES) expect(Object.keys(env)).not.toContain(name);
+    expect(env).toEqual({
+      HOME: '/home/operator',
+      PATH: '/usr/local/bin:/usr/bin',
+      CLAUDE_CONFIG_DIR: '/home/operator/.claude',
+      GEMINI_API_KEY: 'vendor-login-dummy',
+    });
+    // The caller's env is read, never edited: the daemon keeps its copy.
+    expect(input[TYPESAFE_API_KEY_ENV]).toBe(DUMMY_KEY);
+  });
+
+  test('defaults to process.env', () => {
+    const previous = process.env[TYPESAFE_API_KEY_ENV];
+    process.env[TYPESAFE_API_KEY_ENV] = DUMMY_KEY;
+    try {
+      const env = withoutDaemonOnlyEnv();
+      expect(Object.keys(env)).not.toContain(TYPESAFE_API_KEY_ENV);
+      expect(env.PATH).toBe(process.env.PATH);
+      expect(env.HOME).toBe(process.env.HOME);
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(process.env, TYPESAFE_API_KEY_ENV);
+      else process.env[TYPESAFE_API_KEY_ENV] = previous;
+    }
+  });
+
+  test('sandboxedSubprocessEnv drops them too: a test run or a git hook is agent-written code', () => {
+    const previous = process.env[TYPESAFE_API_KEY_ENV];
+    process.env[TYPESAFE_API_KEY_ENV] = DUMMY_KEY;
+    try {
+      const env = sandboxedSubprocessEnv(repoRoot, 'test-run');
+      expect(Object.keys(env)).not.toContain(TYPESAFE_API_KEY_ENV);
+      expect(env.PATH).toBe(process.env.PATH);
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(process.env, TYPESAFE_API_KEY_ENV);
+      else process.env[TYPESAFE_API_KEY_ENV] = previous;
     }
   });
 });
