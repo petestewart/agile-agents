@@ -30,6 +30,7 @@ import {
   KnowledgeWakeInputSchema,
   MESSAGE_BODY_MAX_CHARS,
   ModelPolicyPatchSchema,
+  ModelPolicyTryInputSchema,
   ModelProfilesPatchSchema,
   PermissionsInputSchema,
   ProjectIdSchema,
@@ -70,7 +71,7 @@ import {
   UnknownVendorError,
   UnregisteredRepoError,
 } from './attach';
-import type { ClassifierKeyService } from './classifier';
+import type { Classifier, ClassifierKeyService } from './classifier';
 import {
   type AutonomyService,
   ProposalClosedError,
@@ -213,6 +214,8 @@ export interface HttpServerOptions {
   projects?: ProjectService;
   /** T482: the model policy routes (default: one over `store` and `streams`). */
   routing?: ModelPolicyService;
+  /** T483: the classifier the default policy's chooser (Try it) asks; absent reads as no key. */
+  chooserClassifier?: Classifier;
   /** T300: `GET /api/director`, `POST /api/director/say`. */
   director?: DirectorService;
   /** The rules routes (`/api/rules...`). */
@@ -600,6 +603,8 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
                   options.attach?.endResting(id, CHOOSE_AGAIN_END_REASON) ?? Promise.resolve(),
               }
             : {}),
+          ...(options.chooserClassifier ? { classifier: options.chooserClassifier } : {}),
+          ...(options.plans ? { plans: options.plans } : {}),
         })
       : undefined);
   return {
@@ -1156,6 +1161,8 @@ async function handleFavouriteModelsRoute(
  *   PUT  /api/streams/:id/model-policy      a patch (`null` inherits again)
  *   POST /api/streams/:id/choose-again      "Let the policy choose again" (D55)
  *   GET  /api/model-policy/preview          `?project&parent&repo`: what a new node there starts on
+ *   POST /api/model-policy/try              T483 Try it: `{text, project?, node?}` → the scores and the
+ *                                           pick, nothing started (it may call Jev)
  *
  * Every write is same-origin only and the operator's (`human`).
  */
@@ -1188,6 +1195,21 @@ async function handleModelPolicyRoute(
           ...(q.get('repo') ? { repo: q.get('repo') as string } : {}),
         }),
       );
+    } catch (err) {
+      if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
+      return errorResponse(400, messageOf(err));
+    }
+  }
+  // T483 Try it: a pasted task's scores and pick, without starting anything.
+  if (path === '/api/model-policy/try') {
+    if (req.method !== 'POST') return undefined;
+    if (!feed?.routing) return errorResponse(503, 'model choice is not available');
+    if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+    const body = await readJsonBody(req).catch(() => undefined);
+    const input = ModelPolicyTryInputSchema.safeParse(body);
+    if (!input.success) return errorResponse(400, formatZodError('try', input.error));
+    try {
+      return jsonResponse(await feed.routing.tryTask(input.data));
     } catch (err) {
       if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
       return errorResponse(400, messageOf(err));

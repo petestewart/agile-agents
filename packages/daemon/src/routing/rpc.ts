@@ -1,11 +1,13 @@
 /**
  * T482: `policy.*` RPC for `agile policy show|set [--project P | --node N]`,
  * over the same `ModelPolicyService` as the cockpit's routes. The home layer
- * when neither is named. A write is the operator's (`human`).
+ * when neither is named. A write is the operator's (`human`). T483:
+ * `policy.try` for `agile policy try "<task text>"` (Settings' Try it).
  */
 
 import {
   ModelPolicyPatchSchema,
+  ModelPolicyTryInputSchema,
   ModelProfilesPatchSchema,
   ProjectIdSchema,
   formatZodError,
@@ -70,6 +72,14 @@ export function buildModelPolicyRpcMethods(
             ? service.setNode(layer.node, patch.data)
             : service.setHome(patch.data),
       );
+    },
+
+    /** T483: a task's scores and pick under the layer's policy, as Choose would; nothing starts. */
+    'policy.try': async (params) => {
+      const p = requireObject(params);
+      const input = ModelPolicyTryInputSchema.safeParse({ ...p, ...layerOf(p) });
+      if (!input.success) throw new RpcParamError(formatZodError('policy try', input.error));
+      return asParamErrors<unknown>(() => service.tryTask(input.data));
     },
 
     /** "Let the policy choose again" for a node. */

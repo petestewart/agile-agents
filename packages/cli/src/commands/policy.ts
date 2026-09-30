@@ -1,5 +1,5 @@
 /**
- * `agile policy show|set|choose-again` (T482, design/model-routing.md §4):
+ * `agile policy show|set|choose-again|try` (T482, T483, design/model-routing.md §4–§5):
  * model choice over the daemon's `policy.*` RPC, the same service as
  * Settings → Agents → Model choice and a node's Details. With neither
  * `--project` nor `--node` it is the home's (the default every project
@@ -14,6 +14,7 @@ import {
   type ModelPolicy,
   type ModelPolicyField,
   type ModelPolicyPartial,
+  type ModelPolicyTryResult,
   type PolicySource,
   ROUTING_CRITERIA,
   type ResolvedModelPolicy,
@@ -236,5 +237,46 @@ export async function runPolicyChooseAgain(
     console.log(
       `agile policy choose-again: ${view.node?.title ?? node} picks its model afresh at its next start`,
     );
+  return 0;
+}
+
+/** The five scores in one line: "clarity 4.6 · verifiability 4.2 · …". */
+export function scoresText(scores: NonNullable<ModelPolicyTryResult['scores']>): string {
+  return ROUTING_CRITERIA.map((c) => `${c} ${scores[c].toFixed(1)}`).join(' · ');
+}
+
+/**
+ * `agile policy try "<task text>" [--project P | --node N]` (T483): the
+ * chooser's scores and pick for a pasted task under that layer's policy, as
+ * Choose would; nothing starts. It may call Jev.
+ */
+export async function runPolicyTry(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  requirePositional(args, 0, 'task text');
+  const text = args.positionals.join(' ');
+  const result = await callRpc<ModelPolicyTryResult>(socketPath, 'policy.try', {
+    ...layerParams(args),
+    text,
+  });
+  if (json) {
+    printJson(result);
+    return 0;
+  }
+  console.log(result.line);
+  const fields: Array<[string, string]> = [];
+  if (result.scores !== undefined) fields.push(['scores', scoresText(result.scores)]);
+  if (result.topic !== undefined) fields.push(['topic', result.topic]);
+  if (result.confidence !== undefined) {
+    fields.push(['confidence', result.confidence.toFixed(2)]);
+  }
+  fields.push(['decided by', result.pick.how + (result.pick.base ? ` (${result.pick.base})` : '')]);
+  if (result.failed !== undefined) fields.push(['without Jev', result.failed.words]);
+  if (result.mode !== 'choose') {
+    fields.push(['note', `the mode here is ${result.mode}: a start would not use this pick`]);
+  }
+  printFields(fields);
   return 0;
 }

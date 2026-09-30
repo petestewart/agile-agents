@@ -3,20 +3,28 @@
  * It resolves a node's policy (node → ancestors → project → home →
  * built-in), makes a start's pick with the shared `pickModel`, keeps each
  * layer's writes (the operator's), and stamps the projects that predate
- * model routing (D54). T483 adds the chooser beside it; T484 the escalation
+ * model routing (D54). T483: a routed start under Choose (or a pinned rule
+ * that names a topic) asks the chooser (`chooser.ts`) first, and Try it
+ * reads a pasted task without starting anything. T484 adds the escalation
  * watcher.
  */
 
 import {
+  CHOOSER_FAILURE_WORDS,
+  type ChooserOutcome,
+  type ChooserTask,
   type Effort,
   type ModelPick,
   type ModelPickRecord,
   type ModelPickTriple,
   type ModelPolicyPartial,
   type ModelPolicyPatch,
+  type ModelPolicyTryInput,
+  type ModelPolicyTryResult,
   type ModelProfile,
   type ModelProfilesPatch,
   type PickCatalogModel,
+  type PinnedRole,
   type Project,
   type ResolvedModelPolicy,
   SESSION_VENDORS,
@@ -24,14 +32,23 @@ import {
   type Stream,
   type VendorModels,
   applyModelPolicyPatch,
+  chooserNeed,
   effectiveModelProfiles,
   isAgentRole,
+  liveChildrenOf,
+  matchPinnedRule,
   pickModel,
+  presetCandidates,
   resolveModelPolicy,
   resolveSessionDefaults,
+  routedPickLine,
+  taskFromText,
 } from '@agile-agents/shared';
+import type { Classifier } from '../classifier';
+import type { PlanService } from '../coordination/plans';
 import type { StateStore } from '../store/store';
 import type { StreamService } from '../streams/service';
+import { type ChooserCall, ModelChooser } from './chooser';
 
 /**
  * D54: what a project that predates model routing is stamped with. Default,
@@ -49,7 +66,10 @@ export const STAMP_LINE =
 
 export interface ModelPolicyServiceOptions {
   store: StateStore;
-  streams: Pick<StreamService, 'get' | 'appendThread' | 'setModelPolicy' | 'chooseModelAgain'>;
+  streams: Pick<
+    StreamService,
+    'get' | 'list' | 'appendThread' | 'setModelPolicy' | 'chooseModelAgain'
+  >;
   /** T467: each vendor's model list (names, and what "any installed model" means). */
   models?: () => Readonly<Partial<Record<SessionVendor, VendorModels>>>;
   /** Whether a vendor's command is installed here (default: every vendor). */
@@ -59,6 +79,17 @@ export interface ModelPolicyServiceOptions {
    * starts an agent (and the policy picks) instead of waking the old one.
    */
   onChooseAgain?: (node: string) => Promise<void>;
+  /** T483: the classifier tier the chooser asks (read per call). Absent: "no classifier key". */
+  classifier?: Classifier | (() => Classifier | undefined);
+  /** T483: how long a start waits for Jev (default: the classifier's timeout). */
+  chooserTimeoutMs?: number | (() => number);
+  /** T483: the parent's approved plan entry for a part, for the chooser's task. */
+  plans?: Pick<PlanService, 'childView'>;
+  /**
+   * T483: whether a start can ask Jev now (a key is loaded), so a preview
+   * says the chooser picks. Default: a classifier was given.
+   */
+  chooserReady?: () => boolean;
 }
 
 /** Why a resting session ended on a choose-again. */
@@ -103,10 +134,19 @@ export interface StartPickInput {
   kept?: ModelPickTriple;
   /** Today's resolution with no flags: the `default` mode's pick. */
   fallback: ModelPickTriple;
+  /** T483: the role the pinned rules match (the node's agent: worker, coordinator or conversation). */
+  role?: PinnedRole;
 }
 
 export class ModelPolicyService {
-  constructor(private readonly options: ModelPolicyServiceOptions) {}
+  readonly chooser: ModelChooser;
+
+  constructor(private readonly options: ModelPolicyServiceOptions) {
+    this.chooser = new ModelChooser({
+      ...(options.classifier !== undefined ? { classifier: options.classifier } : {}),
+      ...(options.chooserTimeoutMs !== undefined ? { timeoutMs: options.chooserTimeoutMs } : {}),
+    });
+  }
 
   private projectOf(id: string | undefined): Project | undefined {
     if (id === undefined) return undefined;
@@ -290,7 +330,11 @@ export class ModelPolicyService {
     const out: Partial<Record<SessionVendor, PickCatalogModel[]>> = {};
     for (const [vendor, list] of Object.entries(lists) as Array<[SessionVendor, VendorModels]>) {
       if (list === undefined) continue;
-      out[vendor] = list.options.map((o) => ({ value: o.value, name: o.name }));
+      out[vendor] = list.options.map((o) => ({
+        value: o.value,
+        name: o.name,
+        ...(o.description !== undefined ? { description: o.description } : {}),
+      }));
     }
     return out;
   }
@@ -318,27 +362,271 @@ export class ModelPolicyService {
     return undefined;
   }
 
+  /** The pick's inputs every start shares. */
+  private pickInputs(stream: Stream, fallback: ModelPickTriple) {
+    const home = this.homeConfig();
+    const models = this.catalog();
+    const installed = this.installedVendors();
+    const profiles = effectiveModelProfiles(home.model_profiles);
+    return { home, models, installed, profiles, fallback, inProject: stream.project !== undefined };
+  }
+
+  /**
+   * T483 (§5): the chooser's task for a node: its title and goal, role,
+   * repo, labels, its parent's title and goal, the parent's plan entry for
+   * it, and the siblings starting now (running, or not started yet).
+   */
+  taskFor(stream: Stream, role: PinnedRole): ChooserTask {
+    let parent: Stream | undefined;
+    if (stream.parent !== undefined) {
+      try {
+        parent = this.options.streams.get(stream.parent);
+      } catch {
+        parent = undefined;
+      }
+    }
+    let plan: readonly string[] | undefined;
+    try {
+      plan = this.options.plans?.childView(stream)?.owns;
+    } catch {
+      plan = undefined;
+    }
+    const siblings =
+      parent !== undefined
+        ? liveChildrenOf(parent.id, this.options.streams.list())
+            .filter((s) => s.id !== stream.id && s.helper_of === undefined)
+            .filter(
+              (s) => s.agent.status === 'working' || !s.sessions.some((x) => isAgentRole(x.role)),
+            )
+        : [];
+    return {
+      title: stream.title,
+      ...(stream.goal !== undefined ? { goal: stream.goal } : {}),
+      role,
+      ...(stream.repo !== undefined ? { repo: stream.repo } : {}),
+      ...(stream.labels !== undefined && stream.labels.length > 0 ? { labels: stream.labels } : {}),
+      ...(parent !== undefined
+        ? {
+            parent: {
+              title: parent.title,
+              ...(parent.goal !== undefined ? { goal: parent.goal } : {}),
+            },
+          }
+        : {}),
+      ...(plan !== undefined && plan.length > 0 ? { plan } : {}),
+      ...(parent !== undefined
+        ? { siblings: { count: siblings.length, titles: siblings.map((s) => s.title) } }
+        : {}),
+    };
+  }
+
   /**
    * One agent start's pick (§4's precedence), and the words for its thread
    * line and record. Explicit and kept picks pass through; a routed one is
-   * made here.
+   * made here: the chooser is asked first when the policy needs it (Choose,
+   * or a pinned rule that names a topic), once per routed start (D55).
    */
-  pickForStart(input: StartPickInput): { pick: ModelPick; resolved: ResolvedModelPolicy } {
+  async pickForStart(
+    input: StartPickInput,
+  ): Promise<{ pick: ModelPick; resolved: ResolvedModelPolicy; chooser?: ChooserCall }> {
     const resolved = this.resolveFor(input.stream);
-    const home = this.homeConfig();
     const parent = this.parentPick(input.stream);
+    const role = input.role ?? 'worker';
+    const task = {
+      role,
+      ...(input.stream.labels !== undefined ? { labels: input.stream.labels } : {}),
+    };
+    const base = this.pickInputs(input.stream, input.fallback);
+    let chooser: ChooserCall | undefined;
+    if (input.explicit === undefined && input.kept === undefined) {
+      const need = chooserNeed(resolved.policy, task);
+      if (need !== 'none') {
+        const { candidates } = presetCandidates(resolved.policy, {
+          installed: base.installed,
+          models: base.models,
+          prefer: input.fallback.vendor,
+        });
+        chooser = await this.chooser.read({
+          task: this.taskFor(input.stream, role),
+          policy: resolved.policy,
+          candidates,
+          profiles: base.profiles,
+          models: base.models,
+          need,
+        });
+      }
+    }
     const pick = pickModel({
       policy: resolved.policy,
       ...(input.explicit !== undefined ? { explicit: input.explicit } : {}),
       ...(input.kept !== undefined ? { kept: input.kept } : {}),
       ...(parent !== undefined ? { parent } : {}),
       fallback: input.fallback,
-      installed: this.installedVendors(),
-      models: this.catalog(),
-      profiles: effectiveModelProfiles(home.model_profiles),
-      inProject: input.stream.project !== undefined,
+      installed: base.installed,
+      models: base.models,
+      profiles: base.profiles,
+      inProject: base.inProject,
+      task,
+      ...(chooser !== undefined ? { chooser: chooser.outcome } : {}),
     });
-    return { pick, resolved };
+    return { pick, resolved, ...(chooser !== undefined ? { chooser } : {}) };
+  }
+
+  /**
+   * T483: a reviewer's start with no pick. Reviewers resolve as before
+   * (T482), unless a pinned rule names `reviewer`: then that rule's pick
+   * runs, clamped. `undefined` when none matches.
+   */
+  async pickForReviewer(stream: Stream, fallback: ModelPickTriple): Promise<ModelPick | undefined> {
+    const resolved = this.resolveFor(stream);
+    const task = {
+      role: 'reviewer' as const,
+      ...(stream.labels !== undefined ? { labels: stream.labels } : {}),
+    };
+    if (!resolved.policy.pinned_rules.some((r) => r.when.role === 'reviewer')) return undefined;
+    const base = this.pickInputs(stream, fallback);
+    let outcome: ChooserOutcome | undefined;
+    if (chooserNeed(resolved.policy, task) === 'topic') {
+      const { candidates } = presetCandidates(resolved.policy, {
+        installed: base.installed,
+        models: base.models,
+        prefer: fallback.vendor,
+      });
+      outcome = (
+        await this.chooser.read({
+          task: this.taskFor(stream, 'reviewer'),
+          policy: resolved.policy,
+          candidates,
+          profiles: base.profiles,
+          models: base.models,
+          need: 'topic',
+        })
+      ).outcome;
+    }
+    const topic = outcome?.ok === true ? outcome.reading.topic : undefined;
+    if (matchPinnedRule(resolved.policy.pinned_rules, task, topic) === undefined) return undefined;
+    return pickModel({
+      policy: resolved.policy,
+      fallback,
+      installed: base.installed,
+      models: base.models,
+      profiles: base.profiles,
+      inProject: base.inProject,
+      task,
+      ...(outcome !== undefined ? { chooser: outcome } : {}),
+    });
+  }
+
+  /** A pick with no chooser call: what the cockpit names before a start (Choose reads as the rule). */
+  private previewPick(stream: Stream, fallback: ModelPickTriple): ModelPick {
+    const resolved = this.resolveFor(stream);
+    const parent = this.parentPick(stream);
+    const base = this.pickInputs(stream, fallback);
+    const task = {
+      role: 'worker' as const,
+      ...(stream.labels !== undefined ? { labels: stream.labels } : {}),
+    };
+    const pick = pickModel({
+      policy: resolved.policy,
+      ...(parent !== undefined ? { parent } : {}),
+      fallback,
+      installed: base.installed,
+      models: base.models,
+      profiles: base.profiles,
+      inProject: base.inProject,
+      task,
+    });
+    const ready = this.options.chooserReady?.() ?? this.options.classifier !== undefined;
+    return ready && chooserNeed(resolved.policy, task) === 'full' && pick.how !== 'pinned'
+      ? { ...pick, chooses: true }
+      : pick;
+  }
+
+  /** Today's resolution for a node with no flags (project, repo, home, built-in). */
+  private todayFor(stream: Pick<Stream, 'project' | 'repo'>): ModelPickTriple {
+    const home = this.homeConfig();
+    const project = this.projectOf(stream.project);
+    const repo = stream.repo !== undefined ? this.options.store.getRepos()[stream.repo] : undefined;
+    const today = resolveSessionDefaults({
+      ...(project?.session !== undefined ? { project: project.session } : {}),
+      ...(repo !== undefined ? { repo } : {}),
+      home,
+    });
+    return { vendor: today.vendor, model: today.model ?? 'default', effort: today.effort };
+  }
+
+  /**
+   * T483 Try it: a pasted task read by the chooser and picked for, under
+   * the policy of the home (or a project's, or a node's), as Choose would,
+   * without starting anything. It may call Jev: that is the point.
+   */
+  async tryTask(input: ModelPolicyTryInput): Promise<ModelPolicyTryResult> {
+    const home = this.homeConfig();
+    let resolved: ResolvedModelPolicy;
+    let where: Pick<Stream, 'project' | 'repo'> = {};
+    if (input.node !== undefined) {
+      const stream = this.options.streams.get(input.node);
+      resolved = this.resolveFor(stream);
+      where = {
+        ...(stream.project !== undefined ? { project: stream.project } : {}),
+        ...(stream.repo !== undefined ? { repo: stream.repo } : {}),
+      };
+    } else if (input.project !== undefined) {
+      resolved = this.projectView(input.project).resolved;
+      where = { project: input.project };
+    } else {
+      resolved = this.homeView().resolved;
+    }
+    const policy = { ...resolved.policy, mode: 'choose' as const };
+    const fallback = this.todayFor(where);
+    const models = this.catalog();
+    const installed = this.installedVendors();
+    const profiles = effectiveModelProfiles(home.model_profiles);
+    const { candidates } = presetCandidates(policy, { installed, models, prefer: fallback.vendor });
+    const task = taskFromText(input.text);
+    const call = await this.chooser.read({
+      task,
+      policy,
+      candidates,
+      profiles,
+      models,
+      need: 'full',
+    });
+    const pick = pickModel({
+      policy,
+      fallback,
+      installed,
+      models,
+      profiles,
+      inProject: where.project !== undefined,
+      task: { role: 'worker' },
+      chooser: call.outcome,
+    });
+    return {
+      mode: resolved.policy.mode,
+      pick: {
+        vendor: pick.vendor,
+        model: pick.model,
+        effort: pick.effort,
+        how: pick.how,
+        ...(pick.base !== undefined ? { base: pick.base } : {}),
+        why: pick.why,
+        ...(pick.note !== undefined ? { note: pick.note } : {}),
+      },
+      line: routedPickLine(pick, models),
+      ...(pick.scores !== undefined ? { scores: pick.scores } : {}),
+      ...(pick.topic !== undefined ? { topic: pick.topic } : {}),
+      ...(pick.confidence !== undefined ? { confidence: pick.confidence } : {}),
+      ...(call.outcome.ok
+        ? {}
+        : {
+            failed: {
+              reason: call.outcome.reason,
+              words: CHOOSER_FAILURE_WORDS[call.outcome.reason],
+            },
+          }),
+      latency_ms: call.latency_ms,
+    };
   }
 
   /**
@@ -357,18 +645,7 @@ export class ModelPolicyService {
         break;
       }
     }
-    const home = this.homeConfig();
-    const project = this.projectOf(stream.project);
-    const repo = stream.repo !== undefined ? this.options.store.getRepos()[stream.repo] : undefined;
-    const today = resolveSessionDefaults({
-      ...(project?.session !== undefined ? { project: project.session } : {}),
-      ...(repo !== undefined ? { repo } : {}),
-      home,
-    });
-    return this.pickForStart({
-      stream,
-      fallback: { vendor: today.vendor, model: today.model ?? 'default', effort: today.effort },
-    }).pick;
+    return this.previewPick(stream, this.todayFor(stream));
   }
 
   /**

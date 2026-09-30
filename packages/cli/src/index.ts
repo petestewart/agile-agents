@@ -40,7 +40,7 @@ import {
   runKnowledgeTest,
 } from './commands/knowledge';
 import { runLand } from './commands/land';
-import { runPolicyChooseAgain, runPolicySet, runPolicyShow } from './commands/policy';
+import { runPolicyChooseAgain, runPolicySet, runPolicyShow, runPolicyTry } from './commands/policy';
 import { runProjectList, runProjectNew, runProjectSet, runProjectShow } from './commands/project';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runRepoAdd, runRepoList, runRepoSet } from './commands/repo';
@@ -141,6 +141,7 @@ function usage(): string {
     '                             effort_ceiling low|medium|high|max · escalation start_cheap|strongest_first',
     '                             guidance "<text>" · weights clarity=2,stakes=3 · pinned_rules <JSON>',
     '  policy choose-again --node <id>   the node\u2019s next start picks its model afresh',
+    '  policy try "<task text>" [--project <P-id> | --node <id>]   the chooser\u2019s scores and pick for a task; nothing starts',
     '  tracker status             Jira/Linear: base URL, email, whether each token is set (never the token)',
     '  tracker set jira|linear [--base-url <url>] [--email <addr>|--no-email] [--no-token]',
     '                             token read from stdin or a no-echo prompt, never an argument',
@@ -319,6 +320,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'show') return await runPolicyShow(socketPath, policyArgs, json);
         if (sub === 'set') return await runPolicySet(socketPath, policyArgs, json);
         if (sub === 'choose-again') return await runPolicyChooseAgain(socketPath, policyArgs, json);
+        if (sub === 'try') return await runPolicyTry(socketPath, policyArgs, json);
         console.error(usage());
         return 1;
       }

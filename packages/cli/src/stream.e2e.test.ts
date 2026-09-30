@@ -589,3 +589,46 @@ describe('agile tail --node <id> --events (T248)', () => {
     expect((await cli(['tail', '--stream', quiet.id])).out).toContain('stream_created');
   });
 });
+
+describe('agile policy try (T483)', () => {
+  test('a task’s scores and pick over the socket; nothing starts; no key says so', async () => {
+    const before = JSON.parse((await cli(['stream', 'list', '--json'])).out) as unknown[];
+    const keyless = await cli(['policy', 'try', 'Rename getUser to fetchUser']);
+    expect(keyless.code).toBe(0);
+    expect(keyless.out).toContain(
+      'Model: Claude Sonnet 5.5 · medium — start cheap: the cheapest balanced preset model (no classifier key)',
+    );
+    expect(keyless.out).toContain('without Jev  no classifier key');
+
+    const one = (n: string) => ({ choice: n, confidence: 0.9, probabilities: { [n]: 1 } });
+    daemon.classifier.setScript([], {
+      choice: {
+        clarity: one('5'),
+        verifiability: one('4'),
+        horizon: one('1'),
+        stakes: one('2'),
+        volume: one('1'),
+        topic: one('none'),
+        model: one('claude/claude-haiku-4-5'),
+        effort: one('low'),
+      },
+    });
+    const scored = await cli(['policy', 'try', 'Rename', 'getUser', '--project', projectId]);
+    expect(scored.code).toBe(0);
+    expect(scored.out.split('\n')[0]).toBe(
+      'Model: Claude Haiku 4.5 · low — well specified and covered by tests; short, low stakes',
+    );
+    expect(scored.out).toContain(
+      'clarity 5.0 · verifiability 4.0 · horizon 1.0 · stakes 2.0 · volume 1.0',
+    );
+    expect(scored.out).toContain('confidence  0.90');
+    expect(scored.out).toContain('decided by  jev');
+    expect(daemon.classifier.choiceCalls.at(-1)?.state).toContain('Task: Rename getUser');
+    const json = JSON.parse((await cli(['policy', 'try', 'Rename getUser', '--json'])).out) as {
+      scores: Record<string, number>;
+    };
+    expect(json.scores.clarity).toBe(5);
+    const after = JSON.parse((await cli(['stream', 'list', '--json'])).out) as unknown[];
+    expect(after).toHaveLength(before.length);
+  });
+});

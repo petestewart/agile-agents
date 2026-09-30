@@ -619,6 +619,13 @@ export class HookService {
                   'the classifier tier is off for this stream',
                 ),
               ),
+            choose: () =>
+              Promise.reject(
+                new ClassifierUnavailableError(
+                  'not_configured',
+                  'the classifier tier is off for this stream',
+                ),
+              ),
           };
     const outcome = await decideClassifierTier({
       rules,

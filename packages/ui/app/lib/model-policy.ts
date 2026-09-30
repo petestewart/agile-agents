@@ -9,6 +9,8 @@
  */
 
 import {
+  CHOOSER_CONFIDENCE_MIN,
+  type ChooserScores,
   type Effort,
   type ModelEscalation,
   type ModelPickRecord,
@@ -17,8 +19,11 @@ import {
   type ModelPolicyPartial,
   type ModelProfile,
   type PickHow,
+  type PinnedRule,
   type PresetModel,
+  ROUTING_CRITERIA,
   type ResolvedModelPolicy,
+  type RoutingCriterion,
   favouriteKey,
   favouritesAsPresets,
   policySourceWords,
@@ -45,7 +50,7 @@ export const MODE_HINTS: Record<ModelPolicyMode, string> = {
   default: 'A node starts on its project’s, repository’s or the global default model, as before.',
   inherit: 'A node starts on the model its parent node runs now.',
   choose:
-    'The policy picks from the preset models. For now by a simple rule (below); picking with Jev comes next.',
+    'Jev reads the task and picks from the preset models: a model and an effort, with the scores behind them.',
 };
 
 export const ESCALATION_WORDS: Record<ModelEscalation, string> = {
@@ -132,6 +137,9 @@ const HOW_WORDS: Record<PickHow, string> = {
   default: 'The Default setting',
   rule: 'Chosen by the policy’s rule',
   clamp: 'Moved into the preset models',
+  pinned: 'A pinned rule',
+  jev: 'Chosen by Jev',
+  scores: 'Chosen by the scores',
 };
 
 /** How the node's current model was picked, in a line: "Claude Sonnet 5.5 · medium — start cheap: …". */
@@ -178,4 +186,87 @@ export function profileRows(
         rank[a.profile.tier] - rank[b.profile.tier] ||
         a.model.localeCompare(b.model),
     );
+}
+
+/** T483: the five criteria as Details and Try it name them. */
+export const CRITERION_WORDS: Record<RoutingCriterion, string> = {
+  clarity: 'Clarity',
+  verifiability: 'Verifiability',
+  horizon: 'Horizon',
+  stakes: 'Stakes',
+  volume: 'Volume',
+};
+
+/** T483: what each criterion's 1 and 5 mean, for its title. */
+export const CRITERION_HINTS: Record<RoutingCriterion, string> = {
+  clarity: '1 open-ended · 5 well defined with acceptance stated',
+  verifiability: '1 only a person can tell · 5 a test, build or typecheck proves it',
+  horizon: '1 a quick fix · 5 a multi-hour, many-step job',
+  stakes: '1 easily undone · 5 security, a data migration, architecture or money',
+  volume: '1 a one-off · 5 one of many similar parts starting at once',
+};
+
+/** T483: the five scores as rows, one decimal each. */
+export function scoreRows(
+  scores: ChooserScores,
+): Array<{ criterion: RoutingCriterion; label: string; value: string; hint: string }> {
+  return ROUTING_CRITERIA.map((criterion) => ({
+    criterion,
+    label: CRITERION_WORDS[criterion],
+    value: scores[criterion].toFixed(1),
+    hint: CRITERION_HINTS[criterion],
+  }));
+}
+
+/** T483: Jev's confidence in its model choice: "0.82 — sure enough to decide" / "0.41 — not sure". */
+export function confidenceWords(confidence: number): string {
+  const n = confidence.toFixed(2);
+  return confidence >= CHOOSER_CONFIDENCE_MIN
+    ? `${n}: sure enough to decide`
+    : `${n}: not sure, so the scores decided`;
+}
+
+/** T483: where a pick came from, one word each (`how`, and `base` under a clamp). */
+export function pickSourceWords(pick: Pick<ModelPickRecord, 'how' | 'base'>): string {
+  const one: Record<PickHow, string> = {
+    explicit: 'your pick',
+    kept: 'kept',
+    inherit: 'inherited',
+    default: 'Default',
+    rule: 'the rule',
+    clamp: 'clamped',
+    pinned: 'a pinned rule',
+    jev: 'Jev',
+    scores: 'the scores',
+  };
+  return pick.how === 'clamp' && pick.base !== undefined
+    ? `${one[pick.base]}, then clamped into the preset models`
+    : one[pick.how];
+}
+
+/** T483: a pinned rule in words: "coordinator → Claude Opus 5.5 · high". */
+export function pinnedRuleWords(rule: PinnedRule): string {
+  const when = [
+    rule.when.role,
+    rule.when.label !== undefined ? `label “${rule.when.label}”` : undefined,
+    rule.when.topic !== undefined ? `${rule.when.topic} work` : undefined,
+  ]
+    .filter((w): w is string => w !== undefined)
+    .join(' + ');
+  const pick = sessionLabel({
+    vendor: rule.pick.vendor,
+    model: rule.pick.model,
+    ...(rule.pick.effort !== undefined ? { effort: rule.pick.effort } : {}),
+  });
+  return `${when} → ${pick}`;
+}
+
+/** T483: a list with one rule moved up (-1) or down (+1). */
+export function moveRule<T>(list: readonly T[], index: number, by: -1 | 1): T[] {
+  const to = index + by;
+  if (to < 0 || to >= list.length) return [...list];
+  const next = [...list];
+  const [item] = next.splice(index, 1);
+  if (item !== undefined) next.splice(to, 0, item);
+  return next;
 }

@@ -1,0 +1,101 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "clarity": {
+      "type": "choice",
+      "choice": "3",
+      "confidence": 0.48,
+      "probabilities": {
+        "1": 0,
+        "2": 0.05,
+        "3": 0.59,
+        "4": 0.27,
+        "5": 0.09
+      }
+    },
+    "verifiability": {
+      "type": "choice",
+      "choice": "3",
+      "confidence": 0.43,
+      "probabilities": {
+        "1": 0.09,
+        "2": 0.16,
+        "3": 0.54,
+        "4": 0.19,
+        "5": 0.02
+      }
+    },
+    "horizon": {
+      "type": "choice",
+      "choice": "5",
+      "confidence": 0.58,
+      "probabilities": {
+        "1": 0,
+        "2": 0.01,
+        "3": 0.04,
+        "4": 0.29,
+        "5": 0.66
+      }
+    },
+    "stakes": {
+      "type": "choice",
+      "choice": "5",
+      "confidence": 1,
+      "probabilities": {
+        "1": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 1
+      }
+    },
+    "volume": {
+      "type": "choice",
+      "choice": "1",
+      "confidence": 0.46,
+      "probabilities": {
+        "1": 0.57,
+        "2": 0.33,
+        "3": 0.06,
+        "4": 0.03,
+        "5": 0.01
+      }
+    },
+    "topic": {
+      "type": "choice",
+      "choice": "migration",
+      "confidence": 1,
+      "probabilities": {
+        "none": 0,
+        "security": 0,
+        "architecture": 0,
+        "migration": 1
+      }
+    },
+    "model": {
+      "type": "choice",
+      "choice": "claude/claude-opus-5-5",
+      "confidence": 0.77,
+      "probabilities": {
+        "claude/claude-opus-5-5": 0.85,
+        "claude/claude-haiku-4-5": 0,
+        "claude/claude-sonnet-5-5": 0.15
+      }
+    },
+    "effort": {
+      "type": "choice",
+      "choice": "high",
+      "confidence": 0.94,
+      "probabilities": {
+        "medium": 0.01,
+        "max": 0.03,
+        "low": 0,
+        "high": 0.96
+      }
+    }
+  },
+  "usage": {
+    "input_tokens": 1657,
+    "output_tokens": 414
+  }
+}

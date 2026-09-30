@@ -405,10 +405,283 @@ export function policySourceWords(source: PolicySource, here: 'node' | 'project'
   }
 }
 
+// ---------------------------------------------------------------- the chooser's reading (T483)
+
+/** §5's `topic` question: a pinned rule's topics, or none of them. */
+export const CHOOSER_TOPICS = [...PINNED_RULE_TOPICS, 'none'] as const;
+export const ChooserTopicSchema = z.enum(CHOOSER_TOPICS);
+export type ChooserTopic = z.infer<typeof ChooserTopicSchema>;
+
+/** One criterion's score: the probability-weighted mean of its options, 1–5. */
+const ScoreSchema = z.number().min(1).max(5);
+
+/** §5's five scores. */
+export const ChooserScoresSchema = z
+  .object({
+    clarity: ScoreSchema,
+    verifiability: ScoreSchema,
+    horizon: ScoreSchema,
+    stakes: ScoreSchema,
+    volume: ScoreSchema,
+  })
+  .strict();
+export type ChooserScores = z.infer<typeof ChooserScoresSchema>;
+
+/** D52: Jev's `model` choice decides from this confidence up; below it, the rule over the scores. */
+export const CHOOSER_CONFIDENCE_MIN = 0.5;
+
+/** What one chooser call read. `scores` and `model` are absent on a topic-only call. */
+export interface ChooserReading {
+  scores?: ChooserScores;
+  topic: ChooserTopic;
+  /** Jev's `model` choice (`vendor/model`) and its confidence, 0–1. */
+  model?: { key: string; confidence: number };
+  /** Jev's `effort` choice, when it was asked. */
+  effort?: { level: Effort; confidence: number };
+}
+
+/** Why there is no reading: no key (or the tier is off), or the call failed (401, 429, timeout, a bad reply). */
+export const CHOOSER_FAILURES = ['no_key', 'no_answer'] as const;
+export type ChooserFailure = (typeof CHOOSER_FAILURES)[number];
+
+/** The chat line's words for a failure (§5 "Without Jev"). */
+export const CHOOSER_FAILURE_WORDS: Record<ChooserFailure, string> = {
+  no_key: 'no classifier key',
+  no_answer: 'Jev didn’t answer',
+};
+
+/** The chooser's outcome for one start: a reading, or why there is none. */
+export type ChooserOutcome =
+  | { ok: true; reading: ChooserReading }
+  | { ok: false; reason: ChooserFailure; detail?: string };
+
+/** The role a pinned rule matches: the node's agent's, or a reviewer's. */
+export type PinnedRole = (typeof PINNED_RULE_ROLES)[number];
+
+/** What the pinned rules look at, besides the chooser's topic. */
+export interface PickTask {
+  role?: PinnedRole;
+  labels?: readonly string[];
+}
+
+function sameLabel(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/** A rule's role and label (not its topic) match the task. A rule naming `reviewer` matches only a reviewer. */
+function staticMatch(rule: PinnedRule, task: PickTask): boolean {
+  const { role, label } = rule.when;
+  if (role !== undefined && role !== task.role) return false;
+  if (role === undefined && task.role === 'reviewer') return false;
+  if (label !== undefined && !(task.labels ?? []).some((l) => sameLabel(l, label))) return false;
+  return true;
+}
+
+/**
+ * §4 step 3: the first pinned rule that matches, in order. Every field a
+ * rule's `when` names must match (a role, a label, the chooser's topic). A
+ * topic rule needs the chooser's topic; with none it doesn't match.
+ */
+export function matchPinnedRule(
+  rules: readonly PinnedRule[],
+  task: PickTask,
+  topic?: ChooserTopic,
+): { rule: PinnedRule; index: number } | undefined {
+  for (const [index, rule] of rules.entries()) {
+    if (!staticMatch(rule, task)) continue;
+    if (rule.when.topic !== undefined && rule.when.topic !== topic) continue;
+    return { rule, index };
+  }
+  return undefined;
+}
+
+/**
+ * What a routed start needs from Jev: nothing (a role or label rule
+ * decides first, or the mode isn't Choose and no rule names a topic), only
+ * the `topic` (a topic rule under Inherit or Default), or the whole reading.
+ */
+export function chooserNeed(
+  policy: Pick<ModelPolicy, 'mode' | 'pinned_rules'>,
+  task: PickTask,
+): 'none' | 'topic' | 'full' {
+  let topic = false;
+  for (const rule of policy.pinned_rules) {
+    if (!staticMatch(rule, task)) continue;
+    if (rule.when.topic === undefined) {
+      // This rule decides unless an earlier topic rule does.
+      if (!topic) return 'none';
+      break;
+    }
+    topic = true;
+  }
+  if (task.role === 'reviewer') return topic ? 'topic' : 'none';
+  if (policy.mode === 'choose') return 'full';
+  return topic ? 'topic' : 'none';
+}
+
+/** A pinned rule's `when` in words: "coordinator", "label billing", "security work". */
+export function pinnedWhenWords(when: PinnedRule['when']): string {
+  const parts: string[] = [];
+  if (when.role !== undefined) parts.push(when.role);
+  if (when.label !== undefined) parts.push(`label ${when.label}`);
+  if (when.topic !== undefined) parts.push(`${when.topic} work`);
+  return parts.join(', ');
+}
+
+/**
+ * A criterion's score after its weight (§3, 0–3): the distance from the
+ * middle (3) counts `weight` times, kept within 1–5. A weight of 0 leaves
+ * the criterion out (`undefined`).
+ */
+export function weightedScore(score: number, weight: number): number | undefined {
+  if (weight <= 0) return undefined;
+  return Math.min(5, Math.max(1, 3 + (score - 3) * weight));
+}
+
+/** §5's bar for "well specified" and "checkable": 3 toward speed, 4 toward quality. */
+export function scoreBar(quality: number): number {
+  return 3 + Math.min(100, Math.max(0, quality)) / 100;
+}
+
+/** What the scores say, after the weights and the quality priority. */
+export interface ScoreReading {
+  tier: ModelTier;
+  /** Long-horizon or high-stakes: effort goes one level up. */
+  stepUp: boolean;
+}
+
+/**
+ * §5's default rule over the scores: a balanced model when the task is well
+ * specified and checkable (each at least the bar); the strongest when it's
+ * ambiguous, high-stakes or long-horizon; the fastest when it's also one of
+ * many similar parts. The bar moves with the quality priority.
+ */
+export function readScores(
+  scores: ChooserScores,
+  policy: Pick<ModelPolicy, 'quality' | 'weights'>,
+): ScoreReading {
+  const w = (c: RoutingCriterion) => weightedScore(scores[c], policy.weights[c]);
+  const bar = scoreBar(policy.quality);
+  const clarity = w('clarity');
+  const verifiability = w('verifiability');
+  const horizon = w('horizon');
+  const stakes = w('stakes');
+  const volume = w('volume');
+  const high = (v: number | undefined) => v !== undefined && v >= 4;
+  const stepUp = high(horizon) || high(stakes);
+  const clear = clarity === undefined || clarity >= bar;
+  const checkable = verifiability === undefined || verifiability >= bar;
+  if (!clear || !checkable || stepUp) return { tier: 'strongest', stepUp };
+  return { tier: high(volume) ? 'fast' : 'balanced', stepUp };
+}
+
+function oneUp(effort: Effort): Effort {
+  return EFFORT_LEVELS[Math.min(EFFORT_LEVELS.length - 1, effortRank(effort) + 1)] ?? effort;
+}
+
+/** The scores' effort: medium, one level up for long-horizon or high-stakes work (the clamp caps it). */
+export function scoresEffort(reading: ScoreReading): Effort {
+  return reading.stepUp ? oneUp('medium') : 'medium';
+}
+
+const TIER_SEARCH: Record<ModelTier, readonly ModelTier[]> = {
+  strongest: ['strongest', 'balanced', 'fast'],
+  balanced: ['balanced', 'strongest', 'fast'],
+  fast: ['fast', 'balanced', 'strongest'],
+};
+
+/** The candidate for a tier: the strongest's most capable (highest cost), else the cheapest; the nearest tier when none. */
+export function candidateForTier(
+  tier: ModelTier,
+  candidates: readonly PresetModel[],
+  profiles: Readonly<Record<string, ModelProfile>>,
+): { preset: PresetModel; tier: ModelTier } | undefined {
+  const rows = candidates.map((c, order) => ({
+    c,
+    order,
+    p: profileOf(c.vendor, c.model, profiles),
+  }));
+  for (const want of TIER_SEARCH[tier]) {
+    const inTier = rows.filter((r) => r.p.tier === want);
+    const best = [...inTier].sort((a, b) =>
+      want === 'strongest'
+        ? b.p.cost - a.p.cost || a.order - b.order
+        : a.p.cost - b.p.cost || a.order - b.order,
+    )[0];
+    if (best !== undefined) return { preset: best.c, tier: want };
+  }
+  return undefined;
+}
+
+/**
+ * §5 step 3, the rule fallback with scores: the tier the scores call for,
+ * its preset, and the scores' effort. `undefined` with no candidates.
+ */
+export function scoresRulePick(
+  policy: ModelPolicy,
+  scores: ChooserScores,
+  candidates: readonly PresetModel[],
+  profiles: Readonly<Record<string, ModelProfile>>,
+): { vendor: string; model: string; effort: Effort; tier: ModelTier } | undefined {
+  const reading = readScores(scores, policy);
+  const found = candidateForTier(reading.tier, candidates, profiles);
+  if (found === undefined) return undefined;
+  return {
+    vendor: found.preset.vendor,
+    model: found.preset.model,
+    effort: scoresEffort(reading),
+    tier: reading.tier,
+  };
+}
+
+function band(score: number): 'low' | 'mid' | 'high' {
+  if (score >= 3.75) return 'high';
+  if (score <= 2.25) return 'low';
+  return 'mid';
+}
+
+/**
+ * The scores in words, never numbers or ids: "well specified and covered by
+ * tests; short, low stakes". A topic other than none is named.
+ */
+export function scoresWords(scores: ChooserScores, topic?: ChooserTopic): string {
+  const clarity = { high: 'well specified', mid: 'partly specified', low: 'open-ended' }[
+    band(scores.clarity)
+  ];
+  const checks = {
+    high: 'covered by tests',
+    mid: 'partly checkable',
+    low: 'hard to check',
+  }[band(scores.verifiability)];
+  const horizon = { low: 'short', mid: 'medium length', high: 'long' }[band(scores.horizon)];
+  const stakes = { low: 'low stakes', mid: 'moderate stakes', high: 'high stakes' }[
+    band(scores.stakes)
+  ];
+  const parts = [`${clarity} and ${checks}`, `${horizon}, ${stakes}`];
+  if (band(scores.volume) === 'high') parts.push('one of many similar parts');
+  if (topic !== undefined && topic !== 'none') parts.push(`touches ${topic}`);
+  return parts.join('; ');
+}
+
 // ---------------------------------------------------------------- the pick
 
-/** How a session's pick was made (`agent.pick.how`). */
-export const PICK_HOWS = ['explicit', 'kept', 'inherit', 'default', 'rule', 'clamp'] as const;
+/**
+ * How a session's pick was made (`agent.pick.how`). T483: `pinned` (a
+ * pinned rule), `jev` (the chooser's model choice, confident), `scores`
+ * (Jev wasn't sure: the rule over its scores); `rule` is the rule with no
+ * scores (no key, no answer) or Strongest first.
+ */
+export const PICK_HOWS = [
+  'explicit',
+  'kept',
+  'inherit',
+  'default',
+  'rule',
+  'clamp',
+  'pinned',
+  'jev',
+  'scores',
+] as const;
 export const PickHowSchema = z.enum(PICK_HOWS);
 export type PickHow = z.infer<typeof PickHowSchema>;
 
@@ -426,6 +699,15 @@ export interface ModelPick extends ModelPickTriple {
   why: string;
   /** What the operator should know: a clamp, or an explicit pick outside the presets. */
   note?: string;
+  /**
+   * T483: a preview only (`next_pick`): the start will ask Jev, so this is
+   * the pick without it (no key, no answer), not the one that will run.
+   */
+  chooses?: true;
+  /** T483: the chooser's scores, topic and model confidence, when it read the task. */
+  scores?: ChooserScores;
+  topic?: ChooserTopic;
+  confidence?: number;
 }
 
 /**
@@ -441,6 +723,10 @@ export const ModelPickRecordSchema = z
     base: PickHowSchema.optional(),
     why: z.string().min(1).max(300),
     note: z.string().min(1).max(500).optional(),
+    /** T483: the chooser's reading: the five scores, the topic, Jev's confidence in its model choice. */
+    scores: ChooserScoresSchema.optional(),
+    topic: ChooserTopicSchema.optional(),
+    confidence: z.number().min(0).max(1).optional(),
     session: UlidSchema.optional(),
     at: z.string().min(1),
   })
@@ -451,6 +737,8 @@ export type ModelPickRecord = z.infer<typeof ModelPickRecordSchema>;
 export interface PickCatalogModel {
   value: string;
   name?: string;
+  /** The vendor's own words for it (T467), for the chooser. */
+  description?: string;
 }
 
 export interface PickModelInput {
@@ -471,6 +759,13 @@ export interface PickModelInput {
   profiles?: Readonly<Record<string, ModelProfile>>;
   /** The node is in a project: the note says "this project's preset models". */
   inProject?: boolean;
+  /** T483: what the pinned rules look at (the role, the labels). */
+  task?: PickTask;
+  /**
+   * T483: the chooser's outcome for this start (a reading, or why none).
+   * Absent: no chooser was asked (a preview), and Choose reads as the rule.
+   */
+  chooser?: ChooserOutcome;
 }
 
 const TIER_RANK: Record<ModelTier, number> = { fast: 0, balanced: 1, strongest: 2 };
@@ -620,9 +915,11 @@ function nearestPreset(
  * 1. an explicit pick wins, never clamped; outside the presets, a note says
  *    it runs as picked (D53, never as refused);
  * 2. the node's kept last pick (T464) holds;
- * 3. (T483: pinned rules);
+ * 3. the pinned rules, in order (the role, the labels, the chooser's topic);
  * 4. the mode: `inherit` copies the parent's current pick, `default`
- *    resolves as today, `choose` uses the rule fallback until T483's chooser;
+ *    resolves as today, `choose` is §5: Jev's model choice when its
+ *    confidence is at least 0.5 (its effort too), else the rule over its
+ *    scores, else (no key, no answer) the rule without scores;
  * 5. every routed pick is clamped into the presets and under the effort
  *    ceiling; a clamp that changed something says so.
  */
@@ -660,18 +957,80 @@ export function pickModel(input: PickModelInput): ModelPick {
   let base: { vendor: string; model: string; effort: Effort; why: string };
   let how: Exclude<PickHow, 'clamp' | 'explicit' | 'kept'>;
   let extra: string | undefined;
-  if (policy.mode === 'inherit' && input.parent !== undefined) {
+  const reading = input.chooser?.ok === true ? input.chooser.reading : undefined;
+  const read: Pick<ModelPick, 'scores' | 'topic' | 'confidence'> = {
+    ...(reading?.scores !== undefined ? { scores: reading.scores } : {}),
+    ...(reading !== undefined ? { topic: reading.topic } : {}),
+    ...(reading?.model !== undefined ? { confidence: reading.model.confidence } : {}),
+  };
+  // Jev's own model is kept to what it was asked about (a vendor not installed never runs).
+  let toCandidates = false;
+  const pinned = matchPinnedRule(policy.pinned_rules, input.task ?? {}, reading?.topic);
+  const jevModel = reading?.model !== undefined ? splitModelKey(reading.model.key) : undefined;
+  if (pinned !== undefined) {
+    const { vendor, model, effort } = pinned.rule.pick;
+    base = {
+      vendor,
+      model,
+      effort: effort ?? 'medium',
+      why: `pinned rule: ${pinnedWhenWords(pinned.rule.when)}`,
+    };
+    how = 'pinned';
+  } else if (policy.mode === 'inherit' && input.parent !== undefined) {
     const { title, ...parent } = input.parent;
     base = { ...parent, why: `inherited from ${title ?? 'its parent'}` };
     how = 'inherit';
   } else if (policy.mode === 'choose') {
     const ruled = ruleFallbackPick(policy, candidates, profiles);
-    if (ruled !== undefined) {
-      base = { ...ruled, why: `${ruled.why} (no chooser yet)` };
-      how = 'rule';
-    } else {
+    const scores = reading?.scores;
+    const confident =
+      reading?.model !== undefined && reading.model.confidence >= CHOOSER_CONFIDENCE_MIN;
+    const effortOf = (fallback: Effort) =>
+      reading?.effort !== undefined && confident ? reading.effort.level : fallback;
+    if (ruled === undefined) {
       base = { ...input.fallback, why: 'the Default setting (no model to choose from)' };
       how = 'default';
+    } else if (scores !== undefined && policy.escalation === 'strongest_first') {
+      // §3: Strongest first runs the strongest preset model; Jev's effort applies.
+      base = {
+        ...ruled,
+        effort:
+          reading?.effort !== undefined && reading.effort.confidence >= CHOOSER_CONFIDENCE_MIN
+            ? reading.effort.level
+            : ruled.effort,
+        why: `${ruled.why}; ${scoresWords(scores, reading?.topic)}`,
+      };
+      how = 'rule';
+    } else if (scores !== undefined && confident && jevModel !== undefined) {
+      const byScores = scoresEffort(readScores(scores, policy));
+      base = {
+        ...jevModel,
+        effort: vendorTakesEffort(jevModel.vendor) ? effortOf(byScores) : byScores,
+        why: scoresWords(scores, reading?.topic),
+      };
+      how = 'jev';
+      toCandidates = true;
+    } else if (scores !== undefined) {
+      const byScores = scoresRulePick(policy, scores, candidates, profiles);
+      base =
+        byScores !== undefined
+          ? {
+              vendor: byScores.vendor,
+              model: byScores.model,
+              effort: byScores.effort,
+              why: `Jev wasn’t sure; chose by the scores: ${scoresWords(scores, reading?.topic)}`,
+            }
+          : { ...ruled, why: ruled.why };
+      how = 'scores';
+    } else {
+      const reason =
+        input.chooser === undefined
+          ? 'without Jev'
+          : input.chooser.ok
+            ? 'Jev didn’t score it'
+            : CHOOSER_FAILURE_WORDS[input.chooser.reason];
+      base = { ...ruled, why: `${ruled.why} (${reason})` };
+      how = 'rule';
     }
   } else {
     base = { ...input.fallback, why: 'the Default setting' };
@@ -682,7 +1041,7 @@ export function pickModel(input: PickModelInput): ModelPick {
   // 5. The clamp.
   const changes: string[] = [];
   let { vendor, model, effort } = base;
-  if (locked && !inPresets({ vendor, model }, candidates)) {
+  if ((locked || toCandidates) && !inPresets({ vendor, model }, candidates)) {
     const near = nearestPreset({ vendor, model }, candidates, profiles);
     if (near !== undefined) {
       changes.push(`${words({ vendor, model })} isn’t a preset model, so ${words(near)} instead`);
@@ -707,9 +1066,27 @@ export function pickModel(input: PickModelInput): ModelPick {
       base: how,
       why: `${base.why}, clamped`,
       ...(why !== undefined ? { note: why } : {}),
+      ...read,
     };
   }
-  return { vendor, model, effort, how, why: base.why, ...(why !== undefined ? { note: why } : {}) };
+  return {
+    vendor,
+    model,
+    effort,
+    how,
+    why: base.why,
+    ...(why !== undefined ? { note: why } : {}),
+    ...read,
+  };
+}
+
+/** `claude/claude-sonnet-5-5` → its vendor and model; `undefined` when it isn't one. */
+export function splitModelKey(key: string): { vendor: string; model: string } | undefined {
+  if (!MODEL_KEY_PATTERN.test(key)) return undefined;
+  const at = key.indexOf('/');
+  const vendor = key.slice(0, at);
+  if (!isSessionVendor(vendor)) return undefined;
+  return { vendor, model: key.slice(at + 1) };
 }
 
 /** The thread line a routed start writes: "Model: Claude Sonnet 5.5 · medium — inherited from Billing". */

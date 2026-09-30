@@ -1,7 +1,8 @@
 # Model routing: who picks a node's model, and how
 
 Status: **decided** (proposed 2026-09-29; Pete settled MR1–MR6 on 2026-09-30,
-recorded as D51–D56 in PLAN.md). T482–T485 are built from this document.
+recorded as D51–D56 in PLAN.md). T482–T485 are built from this document;
+§11 says how T482 and T483 were built.
 §9 keeps the decisions as answered.
 
 ## 1. The problem
@@ -298,7 +299,9 @@ estimate.
 T482 is the base for the rest. T483 and T484 can be built side by side after it.
 T485 waits on its measurement.
 
-## 11. As built (T482)
+## 11. As built
+
+### T482
 
 T482 follows §3, §4 and §8, with these differences and additions:
 
@@ -340,3 +343,86 @@ T482 follows §3, §4 and §8, with these differences and additions:
   `POST /api/streams/:id/choose-again`.
 - **Guidance, weights and pinned rules** are validated, stored, resolved and
   settable with `agile policy set`; their cockpit controls come with T483.
+
+### T483 (the chooser)
+
+T483 follows §5, with these differences and additions:
+
+- **Where it lives.** The questions, the task's `state`, the reading of the
+  answers and Try it's input are `packages/shared/src/model-chooser.ts`
+  (with the wire schemas `JevChoiceQuestionSchema`, `JevChoiceAnswerSchema`);
+  the pick (pinned rules, the threshold, the rule over the scores, the
+  clamp) stays in `pickModel` in `model-policy.ts`, so the daemon, the CLI
+  and Try it pick the same way. The wire mapping is `buildJevChoiceRequest`
+  and `parseJevChoiceResponse` beside the Noul mapping in
+  `classifier/jev-wire.ts`; `Classifier.choose` sends it with the same key,
+  base URL, scrubber and timeout as a rule check. The daemon's chooser is
+  `routing/chooser.ts`: one call, bounded by the classifier's timeout, and
+  it never throws.
+- **The state is the task; the policy is in the instructions.** The `state`
+  is the title, goal, role, repo, labels, the parent's title and goal, the
+  parent's approved plan entry (the paths it gives this part) and the
+  siblings starting now (live siblings that are working or never started,
+  with up to ten titles). The quality priority, the weights and the
+  guidance go in the `model` question's instructions with the default rule,
+  and the quality priority and guidance in the `effort` question's.
+- **Scores.** Each is the probability-weighted mean of the numbered
+  options it was asked, renormalised over those options (probabilities that
+  don't sum to 1, or name an option not asked, still read); with no usable
+  probability, the chosen option itself. A missing answer, a topic or
+  effort outside its options, or a `model` that isn't `vendor/model` fails
+  the reading: "Jev didn't answer". A `model` that is a well-formed key but
+  not a candidate goes to the clamp, which moves it and says so.
+- **The rule over the scores** (step 3). A weight scales a criterion's
+  distance from the middle (3), kept within 1–5; a weight of 0 leaves it
+  out. The bar for "well specified" and "checkable" is `3 + quality/100`
+  (3 toward speed, 4 toward quality). Balanced when clarity and
+  verifiability both reach the bar and neither horizon nor stakes is 4 or
+  more; the fastest when that holds and volume is 4 or more; else the
+  strongest. The tier's preset is the cheapest (the strongest: the costliest),
+  else the nearest tier. Effort is medium, one level up for long-horizon or
+  high-stakes work; the clamp caps it.
+- **Strongest first** runs the strongest preset (§3), so Jev isn't asked
+  the `model` question; its `effort` answer applies when its own confidence
+  is at least 0.5, and the line gives the scores in words.
+- **Pinned rules** match every field their `when` names (role, label
+  ignoring case, topic). A role or label rule that matches before any topic
+  rule decides with no Jev call. A topic rule needs Jev's `topic`: under
+  Choose it comes with the full call; under Inherit or Default only the
+  `topic` question is asked. A pinned pick with no effort runs at medium.
+  The roles: `coordinator` (a coordinating node or a project root),
+  `conversation`, `worker`, and `reviewer`, which governs reviewer starts
+  only: a review started with no pick runs a matching `reviewer` rule's
+  pick (clamped, with a line), and otherwise resolves as before.
+- **What is recorded.** `agent.pick.how` gains `pinned`, `jev` and
+  `scores` (`rule` is the rule without scores, or Strongest first); a clamp
+  keeps the route in `base`. The record carries `scores`, `topic` and
+  `confidence` (Jev's, in its model choice) whenever Jev read the task.
+- **The chat line** is `routedPickLine`: "Model: Claude Sonnet 5.5 · medium —
+  well specified and covered by tests; short, low stakes" (Jev decided);
+  "… — Jev wasn't sure; chose by the scores: …"; "… — start cheap: the
+  cheapest balanced preset model (no classifier key)" or "(Jev didn't
+  answer)"; "… — pinned rule: coordinator".
+- **Previews don't call Jev.** The composer's "Starts the agent with…" and
+  Details name the pick without Jev; when a start will ask Jev (Choose, a key
+  loaded), the node page's `next_pick` carries `chooses: true` and the
+  cockpit reads "the model Jev picks (Claude Sonnet 5.5 · medium if it
+  can't)". New node's chip still names the pick without Jev.
+- **Try it** (`POST /api/model-policy/try`, same-origin; `policy.try`;
+  `agile policy try "<task>" [--project P | --node N]`) reads the text (its
+  first line the title, the rest the goal) as a worker's task under that
+  layer's policy, as Choose would even when the mode there is another, and
+  says so. It calls Jev when there is a key, and starts nothing.
+- **Settings and Details.** Settings → Model choice gains Pinned rules (add,
+  reorder, remove), Guidance (≤ 2,000 characters, saved on Save), Criterion
+  weights (0–3 each) and Try it, and says up front that Choose needs the
+  classifier key and what happens without it. The same fields show on a
+  project's and a node's Details with their sources. A node's Details show
+  the five scores, Jev's confidence and what decided.
+- **Measured live (2026-09-30).** With three Claude presets, Jev decided all
+  four test tasks at confidence 0.52–0.81. With five presets across Claude
+  and Codex, its confidence split between near-equivalent models of the two
+  vendors (Sonnet 5.5 and GPT-5.6 Sol, 0.36 and 0.47) and stayed at
+  0.22–0.38, so the scores decided each time. The numbers are in PLAN.md's
+  T483 notes.
+

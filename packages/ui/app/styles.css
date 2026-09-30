@@ -9308,6 +9308,110 @@ div.cr-ov-ev:hover {
   padding-left: 0;
   padding-right: 0;
 }
+.cr-mpol-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.cr-mpol-rule {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+.cr-mpol-rule-words {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cr-mpol-rule-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 0 6px 12px;
+  border-left: 2px solid var(--border);
+}
+.cr-mpol-rule-form input[type="text"] {
+  max-width: 140px;
+}
+.cr-mpol-rule-form select {
+  max-width: 100%;
+}
+.cr-mpol-guidance {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.cr-mpol-guidance textarea,
+.cr-mpol-try textarea {
+  width: 100%;
+  min-height: 72px;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+}
+.cr-mpol-guidance-foot {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.cr-mpol-weights {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+.cr-mpol-weight {
+  display: grid;
+  grid-template-columns: minmax(90px, 140px) auto;
+  gap: 8px;
+  align-items: center;
+}
+.cr-mpol-try {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.cr-mpol-try-line {
+  margin: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.cr-mpol-scores {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+.cr-mpol-score {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.cr-mpol-score-label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.cr-mpol-score-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.cr-mpol-reading {
+  margin: 0 0 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
 
 /* ==== Lenses ==== */
 /* Repos, Running, Dependencies and Events (T368): one centred column, rows not boxes. */

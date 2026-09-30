@@ -653,7 +653,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const pending = chip?.pending;
   // What a start by the header's Start agent runs: what the node last ran, else the default.
   // A line starts with the chip's pick.
-  const defaultLabel = resolved ? agentLabel(resolved) : undefined;
+  // T483: under Choose with a key, Jev picks at the start; the routed pick is only its fallback.
+  const defaultLabel = resolved
+    ? routed?.chooses === true
+      ? `the model Jev picks (${agentLabel(resolved)} if it can’t)`
+      : agentLabel(resolved)
+    : undefined;
   const startWith = pending && !liveAgent ? agentLabel(pending) : defaultLabel;
   const statusInput: StatusInput = row ?? {
     agent_status: stream.agent.status,
