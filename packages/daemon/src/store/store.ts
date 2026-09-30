@@ -21,6 +21,7 @@ import {
   DEFAULT_HARNESS_UPDATE_MODE,
   DEFAULT_PERMISSION_POSTURE,
   DEFAULT_SESSION_IDLE_MINUTES,
+  DEFAULT_VENDOR_CHECK_MODE,
   DIRECTOR_NODE,
   type Delivery,
   type DirectorRecord,
@@ -57,6 +58,7 @@ import {
   type ThreadEntry,
   type TrackerSystem,
   UlidSchema,
+  type VendorCheckMode,
   applyModelPolicyPatch,
   assertKnowledgeAcceptable,
   assertKnowledgeWrite,
@@ -776,6 +778,27 @@ export class StateStore {
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { session_idle_minutes: minutes },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T489 (D58): the vendor self-check's automatic trigger (`auto`, the default, removes the key). */
+  async setVendorCheckMode(
+    mode: VendorCheckMode,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (mode === DEFAULT_VENDOR_CHECK_MODE) Reflect.deleteProperty(raw, 'vendor_checks');
+      else raw.vendor_checks = mode;
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { vendor_checks: mode },
       });
       return { result: validated, event };
     });

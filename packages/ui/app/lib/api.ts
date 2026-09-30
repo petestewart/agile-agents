@@ -46,6 +46,8 @@ import type {
   TrackerSettings,
   TrackerSettingsInput,
   TrackerSettingsStatus,
+  VendorCheckMode,
+  VendorChecksStatus,
 } from '@agile-agents/shared';
 import type {
   ActivityEntry,
@@ -843,6 +845,26 @@ export function updateHarness(id: HarnessId): Promise<HarnessUpdateResult> {
 /** T481: hides a CLI's update item until a newer version is out. */
 export function dismissHarnessUpdate(id: HarnessId): Promise<HarnessStatus> {
   return post(`/api/harness-updates/${encodeURIComponent(id)}/dismiss`) as Promise<HarnessStatus>;
+}
+
+// ---------------------------------------------------------------- T489: the vendor self-check
+
+/** T489 (D58): Settings → Agents → Vendors: the switch and each vendor's latest check. */
+export function getVendorChecks(): Promise<VendorChecksStatus> {
+  return get('/api/settings/vendor-checks');
+}
+
+/** T489: Automatic (after an update or a new version) or only when asked. */
+export function setVendorCheckMode(mode: VendorCheckMode): Promise<VendorChecksStatus> {
+  return post('/api/settings/vendor-checks', { mode }) as Promise<VendorChecksStatus>;
+}
+
+/** T489: Check one vendor, or Check all; returns at once with the running state. */
+export function runVendorChecks(vendor?: SessionVendor): Promise<VendorChecksStatus> {
+  return post(
+    '/api/settings/vendor-checks/run',
+    vendor !== undefined ? { vendor } : {},
+  ) as Promise<VendorChecksStatus>;
 }
 
 /** T482: a layer's model choice: what it sets itself, and the whole policy resolved with sources. */

@@ -507,6 +507,74 @@ T484 follows §6, with these differences and additions:
   in words) is record-only like `agent_restarted`: routed to the node itself,
   shown in Events and Activity, waking nobody.
 
+### T489 (the vendor self-check, D58)
+
+§12's self-check, as built:
+
+- **One probe session per vendor** (`runner/vendor-check.ts`,
+  `runVendorCheck`), opened the way T467's Refresh opens one: no node, no
+  repo, the probe's own session dir as its cwd, `withoutDaemonSecrets()`
+  (T486), the installed CLI (T480), no MCP servers. Every tool call the vendor
+  asks for is refused and client file reads and writes are refused; the
+  prompt needs none. Authentication runs first where the vendor asks for it
+  (Cursor, Grok).
+- **The model**: a listed model other than the current one, preferring one
+  that isn't the vendor's default or Auto, set through T467's own code path
+  (`setModelThroughOption`, which the runner's `applyPickedModel` now calls
+  too) and read back from the reply: `honoured`, `kept` (with what it read
+  back), `refused` (the error in words), `unclear` (the reply named none) or
+  `not_applicable` (no list, or nothing else listed).
+- **The effort**: where the reply (or the model's reply) has a
+  `thought_level` option, the cheapest D12 level it lists other than the
+  current, through T488's path (`setEffortThroughOption`), read back the same
+  way. Measured for every vendor that reports the option (Claude too), not
+  only the ones the runner sets it for.
+- **The prompt**: exactly one, "Reply with the single word OK.", bounded
+  (90 s). The session's `usage.jsonl` is written as T485a's is and read back:
+  the `usage_update` field names, the reply's keys and `usage` fields, any
+  `cost`, whether the turn's token counts and the context fill arrived.
+  Fields in `usage_update`, the reply's `usage`/`_meta` and the session
+  reply's `_meta` whose names read as a rate limit or plan usage are kept
+  with their values (at most 20, each value cut to 200 characters); a name or
+  value that looks like a credential never is.
+- **The resume**: where the provider is set up for `session/load` (Claude,
+  Codex, Grok, Pi), the vendor is stopped and started again with a load of
+  the same ACP session id; no second prompt. Cursor and Gemini read "not
+  supported here".
+- **Not logged in**: an `AuthRequiredError`, or a failure whose words read as
+  a login refusal (T460's rule), stops the check with T460's words and how to
+  log in ("… then check it again").
+- **The result** is `self-check.json` beside the probe's
+  `session-state.json` (`VendorCheckResultSchema`, `packages/shared`):
+  vendor, CLI version (T481's last read), the pinned bridge, each outcome,
+  started/finished, why it ran (`manual`, `update`, `new_version`), who ran
+  it, errors in words. No new home dir. A check's session replies also feed
+  the model catalog, so a check refreshes the vendor's list too.
+- **The service** (`VendorCheckService`) runs checks one at a time, keeps the
+  latest result per vendor (read back from the session dirs at start), and is
+  exposed as `GET /api/settings/vendor-checks`, `POST
+  /api/settings/vendor-checks` (`{mode}`), `POST
+  /api/settings/vendor-checks/run` (`{vendor?}`, returns at once with the
+  running state), and `vendors.status`/`vendors.check` for `agile vendors`
+  and `agile vendors check [vendor]` (which waits for the results).
+- **The automatic trigger** is the home switch `vendor_checks: auto |
+  manual` (absent = auto, Settings → Agents → Vendors). T481's harness
+  service hands over each vendor CLI version it read (`check`) or installed
+  (`update`); a vendor whose latest check is on another version is checked,
+  at most once per version per daemon run. Under `bun test` the daemon's
+  service refuses to spawn anything unless a test injects the fake agent,
+  and the trigger isn't wired.
+- **Routing**: `vendorCapabilities` is the pure view; `vendorsLeftOut` names
+  the vendors whose last check `kept` its own model or `refused` the pick.
+  Under Choose, `ModelPolicyService` leaves them out of the candidates for a
+  start, the cockpit's preview and Try it, and the pick's why ends "left out
+  Cursor: its last check kept its own model". Nothing changes with no check
+  on file, under Default or Inherit, for an explicit or kept pick, or when
+  leaving them out would leave no preset model.
+- **The daemon stopping** stops a running check's vendor; the check ends
+  with that in its errors, and nothing queued starts one. "The model took"
+  is the vendor's own read-back, which is the best ACP offers (§12).
+
 ### T490 (tier first, the vendor order)
 
 T490 builds §12's tier first (D57) and vendor order (D59), with these
@@ -625,7 +693,7 @@ fields it sent. The result is kept per vendor and CLI version, in the probe
 session's own dir, and shown in Settings → Agents. It runs on **Check vendors**,
 `agile vendors check`, and after a CLI update. Choose leaves out a vendor that
 ignores model picks. A check costs one tiny turn per vendor. "The model took" is
-the vendor's own report, which is the best ACP offers.
+the vendor's own report, which is the best ACP offers. Built by T489 (§11).
 
 **Rationing across subscriptions (T491, after T489).** If one subscription has
 less left this week, routing should lean away from it. Two sources, measured

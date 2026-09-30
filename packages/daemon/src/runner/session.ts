@@ -69,6 +69,8 @@ import type { StreamService } from '../streams/service';
 import { type CliInvocation, cliInvocationToShell, normalizeCliBin } from './cli-bin';
 import { type InstalledCli, installedCliForSpawn } from './installed-cli';
 import {
+  type VendorEffortOption,
+  type VendorModelOption,
   currentValueOf,
   modelNameIn,
   vendorEffortOption,
@@ -442,6 +444,176 @@ export const USAGE_LOG_FILE = 'usage.jsonl';
 const USAGE_LOG_MAX_LINES = 2000;
 const USAGE_LOG_LINE_MAX_CHARS = 4000;
 
+/**
+ * T485a: a session's `usage.jsonl` writer: one JSON line per call (`at`,
+ * `kind`, the data), capped at `USAGE_LOG_MAX_LINES`; a line past
+ * `USAGE_LOG_LINE_MAX_CHARS` is dropped. T489: the vendor self-check's
+ * probe session writes it the same way.
+ */
+export function usageRecorder(
+  sessionDir: string,
+): (kind: string, data: Record<string, unknown>) => void {
+  const usageLog = openLog(sessionDir, USAGE_LOG_FILE);
+  let usageLines = 0;
+  return (kind, data) => {
+    if (usageLines >= USAGE_LOG_MAX_LINES) return;
+    const line = JSON.stringify({ at: new Date().toISOString(), kind, ...data });
+    if (line.length > USAGE_LOG_LINE_MAX_CHARS) return;
+    usageLines += 1;
+    usageLog.append(`${line}\n`);
+  };
+}
+
+/**
+ * T467/T488 as measured by T489: how setting one ACP config option went.
+ * `honoured`: the reply read back the value set. `kept`: it read back
+ * another. `refused`: the call failed. `unclear`: the reply named none.
+ */
+export type ConfigOptionOutcome = 'honoured' | 'kept' | 'refused' | 'unclear';
+
+/** T467/T489: a model set through a vendor's ACP model option, and what its reply read back. */
+export interface ModelOptionSet {
+  outcome: ConfigOptionOutcome | 'no_option';
+  result: ModelPickResult;
+  /** What the reply read back, when it named one. */
+  after?: string;
+  /** The reply's `configOptions` (a model change can change the effort list). */
+  configOptions?: unknown;
+  /** Why the call failed, for `refused`. */
+  error?: string;
+}
+
+/**
+ * T467 (D46): sets `pick` (a model `option` lists) through the vendor's ACP
+ * model option (`session/set_config_option`) and reads the reply back: the
+ * vendor's own `currentValue` says whether it took. The runner's model pick
+ * (`applyPickedModel`) and the vendor self-check (T489) both set a model
+ * through this. Never throws: a refusal is an outcome, in words.
+ */
+export async function setModelThroughOption(
+  session: Pick<SpawnedSession, 'setConfigOption'>,
+  vendor: string,
+  option: VendorModelOption,
+  pick: string,
+): Promise<ModelOptionSet> {
+  const current = option.current;
+  const runs = (value: string | undefined): string =>
+    value === undefined ? 'its own default' : modelNameIn(option, value);
+  const pickName = modelNameIn(option, pick);
+  if (option.configId === undefined) {
+    return {
+      outcome: 'no_option',
+      result: {
+        ok: false,
+        picked: pick,
+        ...(current !== undefined ? { actual: current } : {}),
+        line: `${vendor} lists ${pickName} but has no model option to set it through; it runs ${runs(current)}`,
+      },
+    };
+  }
+  const configId = option.configId;
+  let after: string | undefined;
+  let configOptions: unknown;
+  try {
+    const reply = asRecord(await session.setConfigOption(configId, pick));
+    if (Array.isArray(reply?.configOptions)) configOptions = reply.configOptions;
+    after = currentValueOf(reply?.configOptions, configId);
+  } catch (err) {
+    const why = (err instanceof Error ? err.message : String(err)).slice(0, 200);
+    return {
+      outcome: 'refused',
+      error: why,
+      result: {
+        ok: false,
+        picked: pick,
+        ...(current !== undefined ? { actual: current } : {}),
+        line: `${vendor} refused the model ${pickName} (${why}); it runs ${runs(current)}`,
+      },
+    };
+  }
+  const withOptions = configOptions !== undefined ? { configOptions } : {};
+  if (after === pick) {
+    return { outcome: 'honoured', after, result: { ok: true, model: pick }, ...withOptions };
+  }
+  if (after === undefined) {
+    return {
+      outcome: 'unclear',
+      ...withOptions,
+      result: {
+        ok: false,
+        picked: pick,
+        line: `${vendor} did not say whether it took ${pickName}: its reply named no model`,
+      },
+    };
+  }
+  return {
+    outcome: 'kept',
+    after,
+    ...withOptions,
+    result: {
+      ok: false,
+      picked: pick,
+      actual: after,
+      line: `${vendor} kept its own model (${runs(after)}); it did not take ${pickName}`,
+    },
+  };
+}
+
+/** T488/T489: an effort level set through a vendor's ACP effort option, and what its reply read back. */
+export interface EffortOptionSet {
+  outcome: ConfigOptionOutcome;
+  result: EffortPickResult;
+  after?: string;
+  error?: string;
+}
+
+/**
+ * T488: sets `pick` (a level `option` lists) through the vendor's ACP
+ * effort option (`category: "thought_level"`) and reads the reply back. The
+ * runner's effort pick (`applyPickedEffort`) and the vendor self-check
+ * (T489) both set effort through this. Never throws.
+ */
+export async function setEffortThroughOption(
+  session: Pick<SpawnedSession, 'setConfigOption'>,
+  vendor: string,
+  option: VendorEffortOption,
+  pick: string,
+): Promise<EffortOptionSet> {
+  const current = option.current;
+  const runs = current === undefined ? 'its own default' : current;
+  let after: string | undefined;
+  try {
+    const reply = asRecord(await session.setConfigOption(option.configId, pick));
+    after = currentValueOf(reply?.configOptions, option.configId);
+  } catch (err) {
+    const why = (err instanceof Error ? err.message : String(err)).slice(0, 200);
+    return {
+      outcome: 'refused',
+      error: why,
+      result: {
+        ok: false,
+        picked: pick,
+        ...(current !== undefined ? { actual: current } : {}),
+        line: `${vendor} refused effort ${pick} (${why}); it runs ${runs}`,
+      },
+    };
+  }
+  if (after === pick) return { outcome: 'honoured', after, result: { ok: true, effort: pick } };
+  return {
+    outcome: after === undefined ? 'unclear' : 'kept',
+    ...(after !== undefined ? { after } : {}),
+    result: {
+      ok: false,
+      picked: pick,
+      ...(after !== undefined ? { actual: after } : {}),
+      line:
+        after === undefined
+          ? `${vendor} did not say whether it took effort ${pick}`
+          : `${vendor} kept effort ${after}; it did not take ${pick}`,
+    },
+  };
+}
+
 /** T461: at most this many advertised commands are kept per session. */
 const COMMANDS_MAX = 200;
 
@@ -557,15 +729,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   const outputLog = openLog(opts.sessionDir, 'output.log');
   // T485a (D51): what the vendor reports about token usage, kept raw so
   // LIVE-CHECKLIST §16 can measure it before any budget is built.
-  const usageLog = openLog(opts.sessionDir, USAGE_LOG_FILE);
-  let usageLines = 0;
-  const recordUsage = (kind: string, data: Record<string, unknown>): void => {
-    if (usageLines >= USAGE_LOG_MAX_LINES) return;
-    const line = JSON.stringify({ at: new Date().toISOString(), kind, ...data });
-    if (line.length > USAGE_LOG_LINE_MAX_CHARS) return;
-    usageLines += 1;
-    usageLog.append(`${line}\n`);
-  };
+  const recordUsage = usageRecorder(opts.sessionDir);
   // The tail of the vendor's stderr, so a vendor failure can be named.
   let stderrTail = '';
   const onStderr = (chunk: string) => {
@@ -1078,50 +1242,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       });
       return;
     }
-    const pickName = modelNameIn(option, pick);
-    if (option.configId === undefined) {
-      reportModel({
-        ok: false,
-        picked: pick,
-        ...(current !== undefined ? { actual: current } : {}),
-        line: `${vendor} lists ${pickName} but has no model option to set it through; it runs ${runs(current)}`,
-      });
-      return;
-    }
-    const configId = option.configId;
-    let after: string | undefined;
-    try {
-      const reply = asRecord(await spawned.setConfigOption(configId, pick));
-      if (Array.isArray(reply?.configOptions)) latestConfigOptions = reply.configOptions;
-      after = currentValueOf(reply?.configOptions, configId);
-    } catch (err) {
-      const why = (err instanceof Error ? err.message : String(err)).slice(0, 200);
-      reportModel({
-        ok: false,
-        picked: pick,
-        ...(current !== undefined ? { actual: current } : {}),
-        line: `${vendor} refused the model ${pickName} (${why}); it runs ${runs(current)}`,
-      });
-      return;
-    }
-    if (after === pick) {
-      reportModel({ ok: true, model: pick });
-      return;
-    }
-    if (after === undefined) {
-      reportModel({
-        ok: false,
-        picked: pick,
-        line: `${vendor} did not say whether it took ${pickName}: its reply named no model`,
-      });
-      return;
-    }
-    reportModel({
-      ok: false,
-      picked: pick,
-      actual: after,
-      line: `${vendor} kept its own model (${runs(after)}); it did not take ${pickName}`,
-    });
+    const set = await setModelThroughOption(spawned, vendor, option, pick);
+    if (set.configOptions !== undefined) latestConfigOptions = set.configOptions;
+    reportModel(set.result);
   }
 
   function reportEffort(result: EffortPickResult): void {
@@ -1168,33 +1291,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       });
       return;
     }
-    let after: string | undefined;
-    try {
-      const reply = asRecord(await spawned.setConfigOption(option.configId, pick));
-      after = currentValueOf(reply?.configOptions, option.configId);
-    } catch (err) {
-      const why = (err instanceof Error ? err.message : String(err)).slice(0, 200);
-      reportEffort({
-        ok: false,
-        picked: pick,
-        ...(current !== undefined ? { actual: current } : {}),
-        line: `${vendor} refused effort ${pick} (${why}); it runs ${runs}`,
-      });
-      return;
-    }
-    if (after === pick) {
-      reportEffort({ ok: true, effort: pick });
-      return;
-    }
-    reportEffort({
-      ok: false,
-      picked: pick,
-      ...(after !== undefined ? { actual: after } : {}),
-      line:
-        after === undefined
-          ? `${vendor} did not say whether it took effort ${pick}`
-          : `${vendor} kept effort ${after}; it did not take ${pick}`,
-    });
+    reportEffort((await setEffortThroughOption(spawned, vendor, option, pick)).result);
   }
 
   /**

@@ -68,6 +68,7 @@ import {
 } from './commands/stream';
 import { runDirectorTail, runNodeEvents, runTail } from './commands/tail';
 import { runTrackerClear, runTrackerSet, runTrackerStatus } from './commands/tracker';
+import { runVendors, runVendorsCheck } from './commands/vendors';
 
 export const PACKAGE_NAME = '@agile-agents/cli';
 
@@ -151,6 +152,8 @@ function usage(): string {
     '  policy choose-again --node <id>   the node\u2019s next start picks its model afresh',
     '  policy step-up --node <id>   the node\u2019s next start runs one rung up its preset models (effort, then model)',
     '  policy try "<task text>" [--project <P-id> | --node <id>]   the chooser\u2019s scores and pick for a task; nothing starts',
+    '  vendors                    each vendor\u2019s latest self-check: version, model, effort, usage, resume, rate limits',
+    '  vendors check [vendor]     run the self-check (every installed vendor, or one): one session and one tiny prompt each',
     '  tracker status             Jira/Linear: base URL, email, whether each token is set (never the token)',
     '  tracker set jira|linear [--base-url <url>] [--email <addr>|--no-email] [--no-token]',
     '                             token read from stdin or a no-echo prompt, never an argument',
@@ -319,6 +322,14 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'status') return await runTrackerStatus(socketPath, json);
         if (sub === 'set') return await runTrackerSet(socketPath, parseArgs(restArgv), json);
         if (sub === 'clear') return await runTrackerClear(socketPath, parseArgs(restArgv), json);
+        console.error(usage());
+        return 1;
+      }
+
+      // T489 (D58): the vendor self-check.
+      case 'vendors': {
+        if (sub === undefined) return await runVendors(socketPath, json);
+        if (sub === 'check') return await runVendorsCheck(socketPath, restArgv[0], json);
         console.error(usage());
         return 1;
       }

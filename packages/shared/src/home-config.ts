@@ -24,6 +24,7 @@ import {
   FavouriteModelSchema,
   VendorFailureSchema,
 } from './session-defaults';
+import { VendorCheckModeSchema } from './vendor-check';
 
 /** Built-in default HTTP port for the cockpit/API when `config.yaml` names none. */
 export const DEFAULT_DAEMON_PORT = 4600;
@@ -314,6 +315,12 @@ export const HomeConfigSchema = z
      * or Auto, a vendor's own mode, and the dismissed versions.
      */
     harness_updates: HarnessUpdatesConfigSchema.optional(),
+    /**
+     * T489 (D58): whether the daemon checks a vendor by itself after a CLI
+     * update or on a CLI version it has no check for (`auto`, absent), or
+     * only on Check vendors / `agile vendors check` (`manual`).
+     */
+    vendor_checks: VendorCheckModeSchema.optional(),
     /** T243 (P11): routed-event settings. `wake_budget_per_hour` defaults to 20. */
     events: z
       .object({ wake_budget_per_hour: z.number().int().positive().optional() })

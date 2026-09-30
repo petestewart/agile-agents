@@ -1346,6 +1346,14 @@ ignores it.
 | Grok   | Yes, but thin: `configOptions` model lists only `grok-4.7`, while `currentValue` is `grok-4.5`. `models` matches, and puts effort in `availableModels[]._meta.reasoningEfforts` (xhigh, high, medium, low) | Not measured yet | None known |
 | Pi     | Not run (no file) | — | — |
 
+**Since T489** the daemon measures the "Accepts a model via ACP?" column
+itself (D58): Settings → Agents → **Vendors** → **Check all** (or `agile
+vendors check`) sets a listed model other than the current one through the
+same ACP option and reads it back; the row's **Model** reads ✓ (took), ✗
+(kept its own, or refused: the tooltip says which) or — (no list). Copy each
+vendor's mark into the column; the steps below stay as the fallback when the
+check can't run.
+
 **Since T467** the pickers list each vendor's own models (its most recent
 `session/new` reply; `session-state.json` now also names its `vendor`), and
 a picked model is set through ACP (`session/set_config_option`, config id
@@ -1394,6 +1402,12 @@ the path found on PATH and a switch that is on by default.
       your installed" line, and it runs the bridge's own copy.
 
 ### 12.2 Codex's effort, and Cursor's (T488)
+
+Since T489 the vendor self-check measures this too: Settings → Agents →
+Vendors, **Effort** reads ✓ when the vendor took a different level through its
+`thought_level` option, ✗ when it kept its own or refused, — when it reports
+none (Cursor). The steps below are the fallback.
+
 - [ ] Codex node: the composer shows an effort chip. Step it to **High** and
       send a message. No thread line about effort means Codex took it; check
       `sessions/<id>/session-state.json`: the `reasoning_effort` entry's
@@ -1428,7 +1442,10 @@ call, so this needs a real agent to show it calls it at the right moment.
 ## 14. **[vendor]** A finished turn keeps its session; an ended one resumes (D48, T465)
 
 The fake agent covers the mechanics offline; only a real vendor shows the
-context is really kept. With a real Claude login:
+context is really kept. Since T489 the vendor self-check measures whether each
+vendor's `session/load` works at all (Settings → Agents → Vendors, **Resume**:
+✓, ✗ with why, or — where the provider isn't set up for it); whether the
+context is really kept is still these steps. With a real Claude login:
 
 - [ ] Start a node and tell it a detail it can't find in the repo ("the
       codeword is pelican"). When its turn finishes, the node reads Replied or
@@ -1498,6 +1515,13 @@ and in what field. Nothing is estimated. Since T485a every session keeps
 sent (raw), and one `turn_end` line per turn with the prompt reply's keys and
 its `usage`/`_meta` when present.
 
+- [ ] Since T489 the vendor self-check fills this table: Settings → Agents →
+      Vendors → **Check all** (or `agile vendors check`, then `agile vendors
+      --json`). Each row's **Usage** lists the `usage_update` fields and the
+      reply's `usage` fields, any `cost`, and any rate-limit or plan fields
+      the vendor sent (for T491); the probe session's own
+      `sessions/<id>/usage.jsonl` and `self-check.json` hold the rest. The
+      manual steps stay as the fallback:
 - [ ] For each vendor you can log in to (Claude, Codex, Cursor, Grok; Gemini
       and Pi if they run), start a node, send one short message, wait for the
       reply, and send `sessions/<id>/usage.jsonl` (the node's Details names

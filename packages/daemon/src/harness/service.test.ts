@@ -441,3 +441,40 @@ describe('T481 HarnessUpdateService', () => {
     s.stop();
   });
 });
+
+describe('T489 the versions the vendor self-check follows', () => {
+  test('a check hands over each vendor CLI version it read; an update, the version it installed', async () => {
+    pete(m);
+    let installed = '2.2.9';
+    m.answers.set('/usr/local/bin/claude --version', () => ok(`${installed} (Claude Code)\n`));
+    m.answers.set(CLAUDE_UPDATE, () => {
+      installed = '2.3.1';
+      return ok('changed 3 packages in 4s\n');
+    });
+    const seen: Array<[string, Array<{ vendor: string; version: string }>]> = [];
+    const s = new HarnessUpdateService({
+      store,
+      run: runnerOf(m),
+      which: (command) => m.onPath[command] ?? null,
+      realpath: (path) => m.real[path] ?? path,
+      exists: (path) => m.exists.includes(path),
+      events,
+      bridges: [],
+      harnesses: ['claude', 'gemini', 'codex'],
+      onVersions: (versions, reason) => seen.push([reason, versions]),
+    });
+    services.push(s);
+    await s.check('scheduled');
+    expect(seen).toEqual([
+      [
+        'check',
+        [
+          { vendor: 'claude', version: '2.2.9' },
+          { vendor: 'gemini', version: '0.32.1' },
+        ],
+      ],
+    ]);
+    await s.update('claude', { by: 'human' });
+    expect(seen[1]).toEqual(['update', [{ vendor: 'claude', version: '2.3.1' }]]);
+  });
+});

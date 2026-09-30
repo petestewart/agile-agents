@@ -101,6 +101,11 @@ export interface ModelPolicyServiceOptions {
   emitRouted?: EmitRouted;
   /** T484 (T465): ends a node's resting session when its model will step up. */
   endResting?: (node: string, why: string) => Promise<void>;
+  /**
+   * T489 (D58): the vendors Choose leaves out, with why in words: those whose
+   * last self-check says a model pick doesn't take (`vendorsLeftOut`).
+   */
+  leftOut?: () => ReadonlyMap<SessionVendor, string>;
 }
 
 /** The distinct vendors of the candidates, for the pinned rules that name only a vendor. */
@@ -449,12 +454,46 @@ export class ModelPolicyService {
   }
 
   /** The pick's inputs every start shares. */
-  private pickInputs(stream: Stream, fallback: ModelPickTriple) {
+  private pickInputs(stream: Stream, fallback: ModelPickTriple, policy?: ModelPolicy) {
     const home = this.homeConfig();
     const models = this.catalog();
-    const installed = this.installedVendors();
+    const { installed, leftOut } = this.routableVendors(policy, models, fallback.vendor);
     const profiles = effectiveModelProfiles(home.model_profiles);
-    return { home, models, installed, profiles, fallback, inProject: stream.project !== undefined };
+    return {
+      home,
+      models,
+      installed,
+      profiles,
+      fallback,
+      inProject: stream.project !== undefined,
+      leftOut,
+    };
+  }
+
+  /**
+   * T489 (D58): under Choose, the installed vendors less those whose last
+   * self-check says a model pick doesn't take, and why for each one that was
+   * a candidate. Nothing changes with no check on file, or when leaving them
+   * out would leave no preset model (or no candidate at all).
+   */
+  private routableVendors(
+    policy: ModelPolicy | undefined,
+    models: Partial<Record<SessionVendor, PickCatalogModel[]>>,
+    prefer: string,
+  ): { installed: SessionVendor[]; leftOut: string[] } {
+    const installed = this.installedVendors();
+    const out = policy?.mode === 'choose' ? this.options.leftOut?.() : undefined;
+    if (policy === undefined || out === undefined || out.size === 0) {
+      return { installed, leftOut: [] };
+    }
+    const kept = installed.filter((v) => !out.has(v));
+    const before = presetCandidates(policy, { installed, models, prefer });
+    const after = presetCandidates(policy, { installed: kept, models, prefer });
+    const dropped = [...out].filter(([v]) => before.candidates.some((c) => c.vendor === v));
+    if (dropped.length === 0 || after.candidates.length === 0 || after.locked !== before.locked) {
+      return { installed, leftOut: [] };
+    }
+    return { installed: kept, leftOut: dropped.map(([, why]) => why) };
   }
 
   /**
@@ -522,7 +561,7 @@ export class ModelPolicyService {
       role,
       ...(input.stream.labels !== undefined ? { labels: input.stream.labels } : {}),
     };
-    const base = this.pickInputs(input.stream, input.fallback);
+    const base = this.pickInputs(input.stream, input.fallback, resolved.policy);
     let chooser: ChooserCall | undefined;
     if (input.explicit === undefined && input.kept === undefined) {
       const { candidates } = presetCandidates(resolved.policy, {
@@ -556,7 +595,11 @@ export class ModelPolicyService {
       task,
       ...(chooser !== undefined ? { chooser: chooser.outcome } : {}),
     });
-    return { pick, resolved, ...(chooser !== undefined ? { chooser } : {}) };
+    return {
+      pick: withLeftOut(pick, base.leftOut),
+      resolved,
+      ...(chooser !== undefined ? { chooser } : {}),
+    };
   }
 
   /**
@@ -575,12 +618,12 @@ export class ModelPolicyService {
   private previewPick(stream: Stream, fallback: ModelPickTriple): ModelPick {
     const resolved = this.resolveFor(stream);
     const parent = this.parentPick(stream);
-    const base = this.pickInputs(stream, fallback);
+    const base = this.pickInputs(stream, fallback, resolved.policy);
     const task = {
       role: 'worker' as const,
       ...(stream.labels !== undefined ? { labels: stream.labels } : {}),
     };
-    const pick = pickModel({
+    const picked = pickModel({
       policy: resolved.policy,
       ...(parent !== undefined ? { parent } : {}),
       fallback,
@@ -590,6 +633,7 @@ export class ModelPolicyService {
       inProject: base.inProject,
       task,
     });
+    const pick = withLeftOut(picked, base.leftOut);
     const ready = this.options.chooserReady?.() ?? this.options.classifier !== undefined;
     const { candidates } = presetCandidates(resolved.policy, {
       installed: base.installed,
@@ -640,7 +684,7 @@ export class ModelPolicyService {
     const policy = { ...resolved.policy, mode: 'choose' as const };
     const fallback = this.todayFor(where);
     const models = this.catalog();
-    const installed = this.installedVendors();
+    const { installed, leftOut } = this.routableVendors(policy, models, fallback.vendor);
     const profiles = effectiveModelProfiles(home.model_profiles);
     const { candidates } = presetCandidates(policy, { installed, models, prefer: fallback.vendor });
     const task = taskFromText(input.text);
@@ -652,7 +696,7 @@ export class ModelPolicyService {
       models,
       need: 'full',
     });
-    const pick = pickModel({
+    const picked = pickModel({
       policy,
       fallback,
       installed,
@@ -662,6 +706,7 @@ export class ModelPolicyService {
       task: { role: 'worker' },
       chooser: call.outcome,
     });
+    const pick = withLeftOut(picked, leftOut);
     return {
       mode: resolved.policy.mode,
       pick: {
@@ -748,4 +793,10 @@ export class ModelPolicyService {
   catalogModels(): Partial<Record<SessionVendor, PickCatalogModel[]>> {
     return this.catalog();
   }
+}
+
+/** T489 (D58): a routed pick's why names the vendors Choose left out after their self-check. */
+function withLeftOut(pick: ModelPick, leftOut: readonly string[]): ModelPick {
+  if (leftOut.length === 0 || pick.how === 'explicit' || pick.how === 'kept') return pick;
+  return { ...pick, why: `${pick.why}; ${leftOut.join('; ')}` };
 }

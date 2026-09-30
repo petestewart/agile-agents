@@ -260,3 +260,35 @@ describe('T478: auto-close, as the daemon wires it', () => {
     expect(streams.get(changed).human.status).toBe('open');
   });
 });
+
+describe('T489: the vendor self-check in the daemon', () => {
+  test('wired to the socket and the cockpit; under bun test it never runs a real vendor', async () => {
+    runInit(home);
+    handle = await startDaemon({ port: 0, socketPath: join(repo, '.agile-daemon.sock') });
+    const status = await call(handle.rpc.socketPath, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'vendors.status',
+    });
+    const result = ('result' in status ? status.result : undefined) as {
+      mode: string;
+      vendors: Array<{ vendor: string }>;
+    };
+    expect(result.mode).toBe('auto');
+    expect(result.vendors.map((v) => v.vendor).sort()).toEqual(
+      ['claude', 'codex', 'cursor', 'gemini', 'grok', 'pi'].sort(),
+    );
+    const got = await fetch(`http://127.0.0.1:${handle.http.port}/api/settings/vendor-checks`);
+    expect(got.status).toBe(200);
+    // Installed or not on this machine, a check here spawns nothing: it is refused.
+    const checked = await call(handle.rpc.socketPath, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'vendors.check',
+      params: { vendor: 'claude' },
+    });
+    expect('error' in checked).toBe(true);
+    const error = 'error' in checked ? checked.error : undefined;
+    expect(error?.message).toMatch(/never runs a real vendor under bun test|not on the/);
+  });
+});

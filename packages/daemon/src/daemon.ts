@@ -74,6 +74,11 @@ import { type RpcServerHandle, startRpcServer } from './rpc';
 import { missingVendorCommand, resolveCliBin } from './runner';
 import { installedCliFor } from './runner/installed-cli';
 import { ModelCatalog, sessionVendorIndex } from './runner/model-catalog';
+import {
+  VendorCheckService,
+  buildVendorCheckRpcMethods,
+  vendorsLeftOut,
+} from './runner/vendor-check';
 import { StateStore, buildStateRpcMethods } from './store';
 import { migrateHome } from './store/migrate';
 import {
@@ -296,6 +301,37 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         },
       }).load()
     : undefined;
+  // T489 (D58): the vendor self-check. Its latest result per vendor is read from the
+  // probe sessions' `self-check.json` files; a check also refreshes the model catalog.
+  // Under `bun test` it never spawns a real vendor: without the fake spawn it refuses.
+  const underTestSpawn = process.env.NODE_ENV === 'test' && options.spawn === undefined;
+  const vendorChecks: VendorCheckService | undefined = store
+    ? new VendorCheckService({
+        home: config.home,
+        store,
+        ...(options.spawn !== undefined
+          ? { spawn: options.spawn, missing: () => undefined }
+          : underTestSpawn
+            ? {
+                spawn: () => {
+                  throw new Error('the vendor self-check never runs a real vendor under bun test');
+                },
+              }
+            : {}),
+        installedCli: (vendor) => {
+          try {
+            return installedCliFor(vendor, readHomeConfigFile(config.home));
+          } catch {
+            return undefined;
+          }
+        },
+        // T481's last read of the vendor's CLI (declared below; read at each check).
+        cliVersion: (vendor): string | undefined => harnessUpdates?.statusOf(vendor).version,
+        onSessionState: (vendor, state, session) => modelCatalog?.record(vendor, state, session),
+        onError: (err) =>
+          console.error(`vendor checks: ${err instanceof Error ? err.message : String(err)}`),
+      }).load()
+    : undefined;
   // T482: the model policy (node → ancestors → project → home → built-in), and the lock.
   const modelPolicy: ModelPolicyService | undefined =
     store && streamService
@@ -313,6 +349,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           endResting: async (id: string, why: string): Promise<void> =>
             attachService?.endResting(id, why),
           ...(emitRouted ? { emitRouted } : {}),
+          // T489 (D58): Choose leaves out a vendor whose last self-check kept its own model.
+          ...(vendorChecks ? { leftOut: () => vendorsLeftOut(vendorChecks.capabilities()) } : {}),
           // T483: the chooser asks the daemon's classifier tier, bounded by its timeout.
           classifier,
           chooserTimeoutMs: () => config.classifier.timeout_ms,
@@ -416,7 +454,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // T481 (D50): each vendor's CLI kept up to date (Off, Alert or Auto). Its checks start
   // after startup (`start()` below); under `bun test` nothing runs unless a test injects a runner.
   const underTest = process.env.NODE_ENV === 'test';
-  const harnessUpdates = store
+  const harnessUpdates: HarnessUpdateService | undefined = store
     ? new HarnessUpdateService({
         store,
         run: options.harnessRunner ?? (underTest ? offlineCommandRunner : bunCommandRunner),
@@ -424,6 +462,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         bridges: bridgesOf(ACP_PROVIDERS),
         onError: (err) =>
           console.error(`harness updates: ${err instanceof Error ? err.message : String(err)}`),
+        // T489: a new CLI version (read by a check, or installed by an update) gets a self-check.
+        ...(vendorChecks && !underTestSpawn
+          ? {
+              onVersions: (versions, reason) => {
+                vendorChecks.noteVersions(versions, reason === 'update' ? 'update' : 'new_version');
+              },
+            }
+          : {}),
       })
     : undefined;
 
@@ -819,6 +865,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             : {}),
           ...(projectService ? buildProjectRpcMethods(projectService) : {}),
           ...(modelPolicy ? buildModelPolicyRpcMethods(modelPolicy) : {}),
+          ...(vendorChecks ? buildVendorCheckRpcMethods(vendorChecks) : {}),
           ...(trackerLinks ? buildTrackerRpcMethods(trackerLinks) : {}),
           ...(directorService ? buildDirectorRpcMethods(directorService) : {}),
           ...(inboxService ? buildInboxRpcMethods(inboxService) : {}),
@@ -902,6 +949,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     // T437: the model lists mark a vendor whose command isn't on PATH.
     vendorMissing: (vendor) => missingVendorCommand(ACP_PROVIDERS[vendor]),
     ...(modelCatalog ? { models: modelCatalog } : {}),
+    ...(vendorChecks ? { vendorChecks } : {}),
     ...(prPoller ? { prCheck: (id: string) => prPoller.pollNow(id) } : {}),
     ...(attachService ? { attach: attachService } : {}),
     ...(routedEvents ? { events: routedEvents } : {}),
@@ -992,6 +1040,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       try {
         if (gateTimer) clearInterval(gateTimer);
         harnessUpdates?.stop();
+        vendorChecks?.stop();
         overlapTracker?.stop();
         prPoller?.stop();
         trackerLinks?.stop();
