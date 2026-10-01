@@ -125,7 +125,26 @@ export function parseDraftText(value: unknown): string | undefined {
 /** Each node's composer draft (T436 #11). */
 export const composerDrafts = new KeptDrafts<string>('agile.drafts', parseDraftText);
 
-type DraftUpdate = string | ((before: string) => string);
+export type DraftUpdate = string | ((before: string) => string);
+
+/**
+ * One id's text draft after an edit: `next` as typed, or worked out from
+ * what is kept. Kept as typed (a space is a keystroke too); only an empty
+ * box keeps nothing.
+ */
+export function updateDraft(kept: KeptDrafts<string>, id: string, next: DraftUpdate): void {
+  const value = typeof next === 'function' ? next(kept.get(id) ?? '') : next;
+  kept.set(id, value === '' ? undefined : value);
+}
+
+/** One id's text draft in `kept`, read again whenever it changes. */
+function useKeptText(kept: KeptDrafts<string>, id: string): string {
+  return useSyncExternalStore(
+    kept.subscribe,
+    () => kept.get(id) ?? '',
+    () => kept.get(id) ?? '',
+  );
+}
 
 /**
  * A node's composer draft and its setter. The setter stays bound to the
@@ -133,12 +152,7 @@ type DraftUpdate = string | ((before: string) => string);
  * that node's draft, not the one now on screen.
  */
 export function useComposerDraft(node: string): [string, (next: DraftUpdate) => void] {
-  const draft = useSyncExternalStore(
-    composerDrafts.subscribe,
-    () => composerDrafts.get(node) ?? '',
-    () => composerDrafts.get(node) ?? '',
-  );
-  return [draft, useDraftSetter(node)];
+  return [useKeptText(composerDrafts, node), useDraftSetter(node)];
 }
 
 /**
@@ -147,14 +161,7 @@ export function useComposerDraft(node: string): [string, (next: DraftUpdate) => 
  * so a keystroke re-renders only the composer that shows it.
  */
 export function useDraftSetter(node: string): (next: DraftUpdate) => void {
-  return useCallback(
-    (next: DraftUpdate) => {
-      const value = typeof next === 'function' ? next(composerDrafts.get(node) ?? '') : next;
-      // Kept as typed (a space is a keystroke too); only an empty box keeps nothing.
-      composerDrafts.set(node, value === '' ? undefined : value);
-    },
-    [node],
-  );
+  return useCallback((next: DraftUpdate) => updateDraft(composerDrafts, node, next), [node]);
 }
 
 /** A node's draft, and a new one for it: for a message prepared off its page (a card's Add to message). */
@@ -164,6 +171,24 @@ export function draftOf(node: string): string {
 
 export function setDraftOf(node: string, text: string): void {
   composerDrafts.set(node, text === '' ? undefined : text);
+}
+
+// ---------------------------------------------------------------- a question's answer
+
+/**
+ * T499: each question card's half-written answer, by question id, kept as
+ * the composer's draft is (across a re-render, a trip elsewhere in the
+ * cockpit and a reload). Sending the answer clears it.
+ */
+export const answerDrafts = new KeptDrafts<string>('agile.answer-drafts', parseDraftText);
+
+/** T499: a question's kept answer and its setter, bound to that question as the composer's is to its node. */
+export function useAnswerDraft(question: string): [string, (next: DraftUpdate) => void] {
+  const setter = useCallback(
+    (next: DraftUpdate) => updateDraft(answerDrafts, question, next),
+    [question],
+  );
+  return [useKeptText(answerDrafts, question), setter];
 }
 
 // ---------------------------------------------------------------- a project's settings

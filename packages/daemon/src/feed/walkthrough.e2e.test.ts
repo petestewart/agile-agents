@@ -997,9 +997,10 @@ test.skipIf(!RUN)(
       await checkText('a question card', q.locator('.kind'), 'Question');
       await checkText('the question text', q, /pretty JSON or one line/);
       const input = q.locator('[data-testid="answer-input"]');
+      // T499: the card's own answer box, one "Reply…" line until it is focused.
       check(
-        'answer placeholder "Answer in your own words…"',
-        (await input.getAttribute('placeholder')) === 'Answer in your own words…',
+        'answer placeholder "Reply…"',
+        (await input.getAttribute('placeholder')) === 'Reply…',
         (await input.getAttribute('placeholder')) ?? '',
       );
       const contractId = (await readPlanContracts(C))[0] ?? '';

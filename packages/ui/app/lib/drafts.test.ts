@@ -1,7 +1,15 @@
 /** T436 (audit r6 #11, #22): drafts kept per id in this tab's storage, across a reload. */
 
 import { describe, expect, test } from 'bun:test';
-import { KeptDrafts, type StorageLike, parseDraftText, parseProjectDraft } from './drafts';
+import {
+  KeptDrafts,
+  type StorageLike,
+  answerDrafts,
+  composerDrafts,
+  parseDraftText,
+  parseProjectDraft,
+  updateDraft,
+} from './drafts';
 
 /** A `sessionStorage` stand-in: one tab's, shared by the "page loads" made from it. */
 function fakeStorage(): StorageLike & { data: Map<string, string> } {
@@ -81,6 +89,34 @@ describe('KeptDrafts', () => {
     });
     unreadable.set('N1', 'and here');
     expect(unreadable.get('N1')).toBe('and here');
+  });
+});
+
+describe("a question card's answer (T499)", () => {
+  test('each question keeps its own half-written answer, across a reload', () => {
+    const storage = fakeStorage();
+    const before = new KeptDrafts('agile.answer-drafts', parseDraftText, () => storage);
+    updateDraft(before, 'Q-1', 'semicolon, beca');
+    updateDraft(before, 'Q-2', '> quote every field?\n\n');
+    updateDraft(before, 'Q-2', (was) => `${was}only when needed`);
+    const after = new KeptDrafts('agile.answer-drafts', parseDraftText, () => storage);
+    expect(after.get('Q-1')).toBe('semicolon, beca');
+    expect(after.get('Q-2')).toBe('> quote every field?\n\nonly when needed');
+  });
+
+  test('an emptied box keeps nothing; a space is a keystroke and stays', () => {
+    const kept = new KeptDrafts('k', parseDraftText, () => fakeStorage());
+    updateDraft(kept, 'Q-1', 'a ');
+    expect(kept.get('Q-1')).toBe('a ');
+    updateDraft(kept, 'Q-1', '');
+    expect(kept.ids()).toEqual([]);
+  });
+
+  test('answers and the composer are kept apart', () => {
+    expect(answerDrafts).not.toBe(composerDrafts);
+    answerDrafts.set('N1', 'an answer');
+    expect(composerDrafts.get('N1')).toBeUndefined();
+    answerDrafts.set('N1', undefined);
   });
 });
 

@@ -10,7 +10,8 @@
  *  - **Chat** (any other node's first tab): the goal, the thread as a conversation,
  *    "<Agent> is working…", then whatever needs you on this node (questions,
  *    gates, plans, proposals, proposed knowledge) as decision cards right
- *    above the composer. With a question open the composer answers it.
+ *    above the composer. T499: a question is answered in its own card; the
+ *    composer sends messages only, and Quote puts selected text in either.
  *    Sending to a node whose agent isn't running starts it (T361).
  *  - **Changes / Plan / Activity / Knowledge / Docs** — only where they apply.
  *  - **Details** (`NodeDetails`, a panel on the right): Delivery, Agent,
@@ -31,7 +32,6 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   addRepoToStream,
-  answerQuestion,
   archiveStream,
   attachSession,
   closeStream,
@@ -55,14 +55,12 @@ import {
   agentLabel,
   agentName,
   agentStateText,
-  answerTarget,
   chatAuthor,
   chatVariant,
   detailsOpenFrom,
   headerActions,
   liveAgentOf,
   nodeTabs,
-  oneLine,
   openQuestions,
   proposedNext,
   questionIdOfRef,
@@ -90,6 +88,7 @@ import {
 import { useFeed } from '../lib/feed-context';
 import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
 import { proposalLineAction } from '../lib/inbox';
+import { withQuote } from '../lib/quote';
 import { appendToDraft, roomAfter, useReview } from '../lib/review';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
@@ -97,10 +96,18 @@ import { type StatusInput, ownStatusKey, partsSummary } from '../lib/status';
 import { groupSteps, turnStartedAt } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
 import { splitRepos, titleFromGoal } from '../lib/tree';
-import { ChatScroll, ContextMeter, MessageList, StepsFold, Thinking, useSteps } from './Chat';
+import {
+  ChatScroll,
+  ContextMeter,
+  MessageList,
+  QuoteSelection,
+  StepsFold,
+  Thinking,
+  useSteps,
+} from './Chat';
 import { type NodeCommands, useNodeCommands } from './CommandPalette';
 import { type ComposerHandle, DraftComposer } from './Composer';
-import { addReviewToDraft, useMergeAsk } from './DecisionCard';
+import { addReviewToDraft, quoteIntoAnswer, useMergeAsk } from './DecisionCard';
 import { DeliveryPanel, isMergeable, outcomeTone, useDelivery } from './Delivery';
 import { TabBoundary, lazyNamed } from './ErrorBoundary';
 import { Icon, type IconName } from './Icon';
@@ -132,7 +139,6 @@ import {
   EmptyState,
   Field,
   IconButton,
-  Menu,
   type MenuItem,
   RepoIcon,
   Tabs,
@@ -403,14 +409,14 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   // T422 (D42): Turn into work's dialog.
   const [turning, setTurning] = useState(false);
   const [tangentQuestion, setTangentQuestion] = useState('');
-  // Which open question Send answers: an id, 'message' (a plain line), or undefined (the oldest).
-  const [answerChoice, setAnswerChoice] = useState<string | undefined>(undefined);
   const [trackerOpen, setTrackerOpen] = useState(false);
   const [defaults, setDefaults] = useState<SessionDefaultsStatus | undefined>(undefined);
   // T423: the composer chip's pick for the next message only (undefined: the default, or what runs).
   const [nextSession, setNextSession] = useState<ResolvedSessionDefaults | undefined>(undefined);
   const [detailsOpen, setDetailsOpen] = useDetailsOpen();
   const composer = useRef<ComposerHandle>(null);
+  // T499: the chat, where a selection offers Quote.
+  const chatRef = useRef<HTMLDivElement>(null);
   // T393: review comments on the Changes tab (counted on its tab).
   const reviewCount = useReview(id).comments.length;
   // T392: the agent's steps, live.
@@ -469,7 +475,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     setLinkChoice('');
     setBranching(undefined);
     setTangentQuestion('');
-    setAnswerChoice(undefined);
     setTrackerOpen(false);
     setNextSession(undefined);
     getSessionDefaults()
@@ -523,15 +528,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     onDeliveryChanged,
     onDeliveryResult,
   );
-
-  const questionIds = openQuestions(cockpit?.inbox ?? [], id)
-    .map((q) => q.id)
-    .join(',');
-  // A question arrives or goes: the composer goes back to answering the oldest.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `questionIds` is the trigger.
-  useEffect(() => {
-    setAnswerChoice(undefined);
-  }, [questionIds]);
 
   const act = useCallback(
     async (fn: () => Promise<unknown>, after?: () => void): Promise<void> => {
@@ -624,8 +620,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const queuedLines = new Set(live.flatMap((s) => s.queued ?? []));
   const cards = needsYou(cockpit?.inbox ?? [], stream.id, row?.nothing_to_merge === true);
   const questions = openQuestions(cockpit?.inbox ?? [], stream.id);
-  const answering = answerTarget(questions, answerChoice);
-  const answeringItem = questions.find((q) => q.id === answering);
   const name = agentName(stream.sessions);
   const byDefaults = defaults ? resolvedFor(defaults, stream.repo, project?.session) : undefined;
   // T464: a node that has run starts again on what it last ran; the defaults choose only for
@@ -670,7 +664,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const intent = sendIntent({
     open,
     merged,
-    ...(answering !== undefined ? { answering } : {}),
     ...(liveAgent ? { live: { name: vendorLabel(liveAgent.vendor), working: agentWorking } } : {}),
     waitingForPlan,
     canStart: lineStarts,
@@ -827,9 +820,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             effort: pending.effort,
           }
         : undefined;
-      if (intent.action === 'answer' && answering !== undefined) {
-        await answerQuestion(answering, text);
-      } else if (intent.action === 'restart' && session) {
+      if (intent.action === 'restart' && session) {
         await stopSessions(stream.id);
         const said = await sayOnStream(stream.id, text, { start: true, session });
         if (said.started)
@@ -1375,86 +1366,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     </>
   );
 
-  // T416 (finding 12): the question reads in the chat right above; the bar only says which.
-  const answeringText = answeringItem ? (answeringItem.detail ?? answeringItem.context) : '';
-  const answeringIndex = questions.findIndex((q) => q.id === answering);
-  const answeringChip = answeringItem ? (
-    <div
-      className="cr-answering"
-      data-testid="composer-answering"
-      data-question={answeringItem.id}
-      title={answeringText}
-    >
-      <Icon name="corner-down-left" size={13} />
-      {questions.length > 1 ? (
-        <Menu
-          label="Which question"
-          align="start"
-          placement="top"
-          testid="composer-answering-menu"
-          trigger={(props) => (
-            <button
-              type="button"
-              className="cr-answering-q"
-              data-testid="composer-answering-pick"
-              title={answeringText}
-              {...props}
-            >
-              <span className="cr-answering-label">
-                Answering question {answeringIndex + 1} of {questions.length}
-              </span>
-              <Icon name="chevron-down" size={12} />
-            </button>
-          )}
-          items={[
-            ...questions.map((q) => ({
-              label: oneLine(q.detail ?? q.context, 70),
-              icon: q.id === answering ? ('check' as const) : undefined,
-              onSelect: () => {
-                setAnswerChoice(q.id);
-                composer.current?.focus();
-              },
-            })),
-            'separator' as const,
-            {
-              label: 'Write a message instead',
-              icon: 'message-square' as const,
-              onSelect: () => {
-                setAnswerChoice('message');
-                composer.current?.focus();
-              },
-            },
-          ]}
-        />
-      ) : (
-        <span className="cr-answering-label">Answering the question above</span>
-      )}
-      <IconButton
-        icon="x"
-        size="sm"
-        label="Write a message instead"
-        data-testid="composer-answer-cancel"
-        onClick={() => {
-          setAnswerChoice('message');
-          composer.current?.focus();
-        }}
-      />
-    </div>
-  ) : questions.length > 0 && open ? (
-    <button
-      type="button"
-      className="cr-answering-off"
-      data-testid="composer-answer-resume"
-      onClick={() => {
-        setAnswerChoice(undefined);
-        composer.current?.focus();
-      }}
-    >
-      <Icon name="corner-down-left" size={13} />
-      Answer the open question instead
-    </button>
-  ) : undefined;
-
   // T468: the effort on the right of the bar, stepped by a click or Shift+Tab; a pick for the
   // next message, as the model chip's is.
   const stepEffort =
@@ -1516,7 +1427,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     showGoalCard({ goal: stream.goal, title: stream.title, projectRoot });
 
   // T445 (audit r7 #26): a project's root with no agent: Ask (A) is how to question the project.
-  const askFirst = projectRoot && open && liveAgent === undefined && intent.action !== 'answer';
+  const askFirst = projectRoot && open && liveAgent === undefined;
   // T438 (audit r6 #4): under a failure's warning, "Tell the agent what to do" would contradict it.
   const emptyChat = !conversation && !thinking && cards.length === 0 && !agentFailed(page.thread);
   // The open questions whose own line the chat shows (an older one may be above the loaded lines).
@@ -1545,7 +1456,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const listSteps = new Map([...steps.before].map(([i, led]) => [listed.listIndex(i), led]));
 
   const chat = (
-    <div className="cr-chat" data-tab-body="thread">
+    <div className="cr-chat" data-tab-body="thread" ref={chatRef}>
       <ChatScroll
         tick={`${threadTick}:${thinking}:${cards.length}`}
         resetKey={stream.id}
@@ -1638,36 +1549,38 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             </div>
           )}
           {cards.map((item) => (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: a pointer shortcut only; the composer's "Answering" menu picks the question from the keyboard.
-            <div
+            <Card
               key={item.id}
-              className="cr-decision"
-              data-answering={item.id === answering ? 'true' : undefined}
-              onClick={(e) => {
-                // A click on a question (not on one of its buttons) makes it the one Send answers.
-                if (item.kind !== 'question' || item.id === answering) return;
-                if ((e.target as Element).closest('button, a, input, textarea, select')) return;
-                setAnswerChoice(item.id);
-                composer.current?.focus();
+              item={item}
+              full
+              // T416 (finding 12): the chat's line above reads the question; the card
+              // repeats a line of it only to tell several apart (T499: whole, once you reply).
+              {...(item.kind === 'question' && askedInChat.has(item.id)
+                ? { questionText: questions.length > 1 ? ('line' as const) : ('none' as const) }
+                : {})}
+              onDone={() => {
+                load();
+                refresh();
               }}
-            >
-              <Card
-                item={item}
-                full
-                // T416 (finding 12): the chat's line above reads the question; the card
-                // repeats a line of it only to tell several apart.
-                {...(item.kind === 'question' && askedInChat.has(item.id)
-                  ? { questionText: questions.length > 1 ? ('line' as const) : ('none' as const) }
-                  : {})}
-                onDone={() => {
-                  load();
-                  refresh();
-                }}
-              />
-            </div>
+            />
           ))}
         </section>
       </ChatScroll>
+      {intent.action !== 'none' && (
+        // T499: a selection in a question (its card or its line) quotes into its answer box;
+        // anywhere else in the chat, into the composer.
+        <QuoteSelection
+          scope={chatRef}
+          onQuote={(text, question) => {
+            if (question !== undefined) {
+              quoteIntoAnswer(question, text);
+              return;
+            }
+            setDraft((before) => withQuote(before, text));
+            requestAnimationFrame(() => composer.current?.focusEnd());
+          }}
+        />
+      )}
       <div className="cr-chat-foot">
         <div className="cr-chat-col">
           <DraftComposer
@@ -1679,7 +1592,6 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             disabled={intent.action === 'none'}
             placeholder={askFirst ? ROOT_PLACEHOLDER : intent.placeholder}
             hint={intent.hint}
-            above={answeringChip}
             chip={
               context !== undefined ? (
                 <>
@@ -1692,10 +1604,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             }
             {...(effortChipEl ? { effort: effortChipEl } : {})}
             {...(stepEffort && effortChipEl ? { onShiftTab: stepEffort } : {})}
-            label={answeringItem ? 'Your answer' : 'Message the agent'}
-            mode={intent.action === 'answer' ? 'answer' : undefined}
+            label="Message the agent"
             {...(offline ? { sendBlocked: RECONNECTING } : {})}
-            {...(intent.action !== 'answer' && intent.action !== 'none'
+            {...(intent.action !== 'none'
               ? {
                   slash: {
                     running: agentCommands.running,

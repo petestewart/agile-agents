@@ -44,7 +44,8 @@ import { isShortcut, useShell } from '../lib/shell';
 import { ago } from '../lib/status';
 import { DIRECTOR_READ_KEY, ancestorTitles } from '../lib/unread';
 import { markAllRead, markRead, useDirectorUnread, useUnreadReplies } from '../lib/use-unread';
-import { Card, inboxIcon } from './DecisionCard';
+import { QuoteSelection } from './Chat';
+import { Card, inboxIcon, quoteIntoAnswer } from './DecisionCard';
 import { Icon, type IconName } from './Icon';
 import { ROLE_GLYPH } from './StreamTree';
 import {
@@ -609,6 +610,14 @@ export function Inbox({
               opens the node
             </p>
           </div>
+          {/* T499: a selection in a question's card quotes into its answer box. */}
+          <QuoteSelection
+            scope={list}
+            outside={false}
+            onQuote={(text, question) => {
+              if (question !== undefined) quoteIntoAnswer(question, text);
+            }}
+          />
         </>
       )}
       <ConfirmDialog

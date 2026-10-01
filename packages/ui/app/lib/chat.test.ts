@@ -11,7 +11,6 @@ import {
   agentName,
   agentStateText,
   agentWords,
-  answerTarget,
   chatAuthor,
   chatRows,
   chatVariant,
@@ -29,7 +28,6 @@ import {
   modelLabel,
   noEffortLine,
   nodeTabs,
-  oneLine,
   openQuestions,
   parseDiff,
   proposedNext,
@@ -406,24 +404,13 @@ describe('questions', () => {
       context: 'which?',
     }) as InboxItem;
 
-  test('the oldest open question on this node is answered unless you pick another or a message', () => {
+  test("this node's open questions, oldest first", () => {
     const items = [
       q('Q-2', '2026-09-26T10:02:00.000Z'),
       q('Q-1', '2026-09-26T10:01:00.000Z'),
       q('Q-3', '2026-09-26T10:00:00.000Z', 'OTHER'),
     ];
-    const open = openQuestions(items, 'N');
-    expect(open.map((i) => i.id)).toEqual(['Q-1', 'Q-2']);
-    expect(answerTarget(open, undefined)).toBe('Q-1');
-    expect(answerTarget(open, 'Q-2')).toBe('Q-2');
-    expect(answerTarget(open, 'Q-9')).toBe('Q-1');
-    expect(answerTarget(open, 'message')).toBeUndefined();
-    expect(answerTarget([], undefined)).toBeUndefined();
-  });
-
-  test('oneLine keeps the first non-empty line, clipped', () => {
-    expect(oneLine('\n  Pretty   or\none line?')).toBe('Pretty or');
-    expect(oneLine('x'.repeat(200), 10)).toBe(`${'x'.repeat(9)}…`);
+    expect(openQuestions(items, 'N').map((i) => i.id)).toEqual(['Q-1', 'Q-2']);
   });
 });
 
@@ -473,24 +460,12 @@ describe('what Send does', () => {
     ).toBe(
       'Stops Claude’s current step, restarts the agent with Gemini default model, then sends this.',
     );
-    // An open question is answered, whatever the chip says.
-    expect(
-      sendIntent({
-        ...base,
-        answering: 'Q-1',
-        live: { name: 'Claude', working: false },
-        restartWith: 'Gemini default model',
-      }).action,
-    ).toBe('answer');
     expect(sendIntent({ ...base, live: { name: 'Claude', working: false } }).hint).toBe(
       'Sends it to Claude now.',
     );
   });
 
-  test('an open question wins; a merged or closed node sends nothing', () => {
-    expect(
-      sendIntent({ ...base, answering: 'Q-1', live: { name: 'Claude', working: false } }),
-    ).toMatchObject({ action: 'answer', hint: expect.stringContaining('Answers the question') });
+  test('a merged node sends nothing; a closed one reopens', () => {
     expect(sendIntent({ ...base, open: false, merged: true })).toMatchObject({ action: 'none' });
     // T471: closed is inactive, not read-only: Send reopens it and wakes the agent.
     expect(sendIntent({ ...base, open: false })).toMatchObject({ action: 'start' });
