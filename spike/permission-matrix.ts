@@ -21,8 +21,9 @@
  *                      · codex (T506): PreToolUse hook in the fixture's .codex/hooks.json (a project hook)
  *   --user-hooks       codex (T506): the same hook in ~/.codex/hooks.json instead (merged into yours, your file restored byte for byte after;
  *                      the hook is a no-op outside the fixture)
- *   --bypass-hook-trust codex (T506): run Codex with --dangerously-bypass-hook-trust, through a CODEX_PATH wrapper that also logs
- *                      how codex-acp invokes Codex (--bypass-at front|end: where the flag goes, default front)
+ *   --bypass-hook-trust codex (T506): run Codex with --dangerously-bypass-hook-trust (--bypass-at front|end: where the flag
+ *                      goes, default front). Every codex run goes through a CODEX_PATH wrapper that logs how codex-acp
+ *                      invokes Codex and keeps Codex's stderr (report: codexInvokedAs, codexStderrTail)
  *   --codex-path <p>   codex: the Codex CLI the bridge runs (CODEX_PATH, as the daemon sets it since T480; default: `codex` on PATH)
  *   --fixture <dir>    use (and keep) this fixture dir instead of a new temp one, e.g. after trusting it in an interactive `codex`
  *   --matcher <m>      codex: the hook entry's matcher (default "Bash", the docs' example; C5's runs used "" and saw nothing)
@@ -190,13 +191,17 @@ process.exit(0);
       writeFileSync(join(cwd, ".codex", "hooks.json"), JSON.stringify({ hooks: { PreToolUse: [entry] } }, null, 2));
     }
   }
-  if (flag("bypass-hook-trust")) {
-    if (!codexEnv.CODEX_PATH) { console.error("--bypass-hook-trust needs an installed codex (--codex-path)"); process.exit(2); }
-    const wrapper = join(cwd, "codex-with-bypass.sh");
+  if (flag("bypass-hook-trust") && !codexEnv.CODEX_PATH) { console.error("--bypass-hook-trust needs an installed codex (--codex-path)"); process.exit(2); }
+  if (codexEnv.CODEX_PATH) {
+    // Every codex run goes through a wrapper that logs how codex-acp invokes Codex and keeps Codex's stderr,
+    // and with --bypass-hook-trust it adds --dangerously-bypass-hook-trust.
+    const wrapper = join(cwd, "codex-wrapper.sh");
+    const bypass = flag("bypass-hook-trust");
     const atEnd = opt("bypass-at", "front") === "end";
+    const args = !bypass ? '"$@"' : atEnd ? '"$@" --dangerously-bypass-hook-trust' : '--dangerously-bypass-hook-trust "$@"';
     writeFileSync(wrapper, `#!/bin/sh
 printf '%s\n' "$*" >> ${JSON.stringify(join(cwd, "codex-argv.log"))}
-exec ${JSON.stringify(codexEnv.CODEX_PATH)} ${atEnd ? '"$@" --dangerously-bypass-hook-trust' : '--dangerously-bypass-hook-trust "$@"'}
+exec ${JSON.stringify(codexEnv.CODEX_PATH)} ${args} 2>>${JSON.stringify(join(cwd, "codex-stderr.log"))}
 `);
     require("node:fs").chmodSync(wrapper, 0o755);
     codexEnv.CODEX_PATH = wrapper;
@@ -223,11 +228,12 @@ let nextId = 1;
 const pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>();
 const waiters: Array<(msg: any) => boolean> = []; // predicate consumers for notifications
 let buf = "";
+let bridgeStderr = ""; // T506: the tail goes in the report, so a run shows what the bridge (and Codex) said
 
 function start(env = process.env) {
   const [c, ...a] = cmd.split(" ");
   proc = spawn(c, a, { cwd, env: { ...env, ...codexEnv, AGILE_SPIKE_FIXTURE: cwd }, stdio: ["pipe", "pipe", "pipe"] });
-  proc.stderr.on("data", (d) => { if (verbose) process.stderr.write(`[agent stderr] ${d}`); });
+  proc.stderr.on("data", (d) => { bridgeStderr = (bridgeStderr + d.toString()).slice(-4000); if (verbose) process.stderr.write(`[agent stderr] ${d}`); });
   proc.stdout.on("data", (d) => {
     buf += d.toString();
     let nl;
@@ -398,6 +404,10 @@ async function scenarioPerm() {
     const curl = report.tools.find((t: ToolRec) => /curl/.test(`${t.title ?? ""} ${JSON.stringify(t.rawInput ?? {})}`));
     report.result.curlStep = curl ? { title: curl.title, status: curl.status } : "not attempted";
     report.result.hookCallsSeen = report.result.hookFired ?? 0;
+    // Codex's own stderr under the bridge (the wrapper redirects it): "hook: PreToolUse" lines, trust and feature warnings.
+    const codexStderr = join(cwd, "codex-stderr.log");
+    report.result.codexStderrTail = existsSync(codexStderr) ? readFileSync(codexStderr, "utf8").slice(-3000) : null;
+    report.result.bridgeStderrTail = bridgeStderr;
     report.result.toolCallsSeenOverAcp = report.tools.length;
   }
   await stop();
@@ -459,7 +469,8 @@ async function scenarioExec() {
   });
   report.result.execExit = r.status;
   report.result.execStdoutTail = String(r.stdout ?? "").slice(-2500);
-  report.result.execStderrTail = String(r.stderr ?? "").slice(-1500);
+  const errLog = join(cwd, "codex-stderr.log"); // the wrapper sends Codex's stderr there
+  report.result.execStderrTail = (String(r.stderr ?? "") + (existsSync(errLog) ? readFileSync(errLog, "utf8") : "")).slice(-1500);
   const log = join(cwd, "hook-calls.jsonl");
   report.result.hookCallsSeen = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).length : 0;
   if (existsSync(log)) writeFileSync(join(outDir, "codex-exec-hook-calls.jsonl"), readFileSync(log));
@@ -478,7 +489,9 @@ async function scenarioExec() {
     ? `${flag("hooks") ? "-hooks" : ""}${flag("user-hooks") ? "-userhooks" : ""}${flag("bypass-hook-trust") ? `-bypass${opt("bypass-at", "front") === "end" ? "end" : ""}` : ""}${fixtureOpt ? "-fixture" : ""}`
     : flag("hooks") ? "-hooks" : "";
   const matcherTag = vendor === "codex" && opt("matcher") !== undefined ? `-m${(opt("matcher") || "empty").replace(/[^A-Za-z0-9]/g, "")}` : "";
-  const file = join(outDir, `${vendor}-${mode ?? "defaultmode"}-${scenario}${variant}${matcherTag}.json`);
+  // A --cmd bridge other than the preset (e.g. a newer codex-acp) gets its version in the name, so runs don't overwrite.
+  const cmdTag = opt("cmd") !== undefined && opt("cmd") !== PRESETS[vendor]?.cmd ? `-${(opt("cmd")!.match(/@(\d[\w.-]*)/)?.[1] ?? "cmd").replace(/[^A-Za-z0-9.]/g, "")}` : "";
+  const file = join(outDir, `${vendor}-${mode ?? "defaultmode"}-${scenario}${variant}${matcherTag}${cmdTag}.json`);
   writeFileSync(file, JSON.stringify(report, null, 2));
   console.log(`\n== ${vendor} · mode=${mode ?? "(agent default)"} · ${scenario} ==`);
   if (report.session?.modes) console.log("modes:", (report.session.modes.availableModes ?? []).map((m: any) => m.id).join(", "), "| current:", report.session.modes.currentModeId);
@@ -492,6 +505,7 @@ async function scenarioExec() {
     if (vendor === "codex") {
       console.log("codex: tool calls over ACP:", report.result.toolCallsSeenOverAcp, "| hook calls:", report.result.hookCallsSeen, "| curl step:", JSON.stringify(report.result.curlStep));
       if (report.result.codexInvokedAs) console.log("codex-acp ran Codex as:", report.result.codexInvokedAs.join(" ;; "));
+      if (report.result.codexStderrTail) console.log("--- Codex stderr (tail) ---\n" + String(report.result.codexStderrTail).slice(-800).trim());
     }
     console.log("--- agent final text ---\n" + (report.result.finalText ?? "").trim());
   } else if (scenario === "exec") {

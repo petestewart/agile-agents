@@ -1766,3 +1766,20 @@ bun spike/permission-matrix.ts --vendor codex --scenario perm --user-hooks
       command again. Paste both summaries.
 - [ ] The JSON reports are in `spike-out/codex-defaultmode-perm-*.json`;
       attach them if a summary looks odd.
+
+**Round 2 (2026-10-01, design/spike-findings.md C5):** the hook works in
+`codex exec` (it blocked the `curl`) but was called 0 times through
+codex-acp 1.10.0. These runs tell "the bridge's `app-server` ignores hooks"
+from "it skipped them as untrusted". Each now prints Codex's own stderr
+under the bridge.
+
+```zsh
+bun spike/permission-matrix.ts --vendor codex --scenario perm --user-hooks --bypass-hook-trust --bypass-at end
+bun spike/permission-matrix.ts --vendor codex --scenario perm --user-hooks --bypass-hook-trust --cmd "npx -y @agentclientprotocol/codex-acp@2.1.0"
+```
+
+- [ ] Paste each summary, including the `Codex stderr (tail)` block. If
+      either shows `hook calls` > 0, that is the route.
+- [ ] If both show 0, do the trusted-project run above (`--fixture`, trust
+      the hook with `/hooks`, run again without any bypass): a trusted hook
+      that fires under the bridge means only the bypass flag is ignored.
