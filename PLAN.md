@@ -70,6 +70,10 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D57** (2026-09-30, Pete): Choose asks Jev for a **tier** (fast, balanced, strongest), not a model; the model is then the preset in that tier chosen by the vendor order (D59), then cost. Replaces T483's model question, whose confidence split between near-equivalent models of different vendors. (T490)
 - **D58** (2026-09-30, Pete): the daemon checks each vendor itself (the **vendor self-check**): a session with no node, a model and effort set and read back, one tiny prompt, a resume, and the usage fields it reports, kept per vendor and CLI version. It runs on demand and after a CLI update, and routing uses it. It replaces the live checks that measure vendors (LIVE-CHECKLIST §12's last column, §12.2, §14, §16). (T489)
 - **D59** (2026-09-30, Pete): the operator sets a **vendor order** for ties ("Anthropic, then OpenAI"), and may set it per role (reviews prefer Codex, code prefers Claude). (T490)
+- **D60** (2026-10-01, Pete): chat threads that aren't questions open in a **side panel** (Slack's); the main chat keeps one mark per thread at its place in time. design/chat-threads.md (T503)
+- **D61** (2026-10-01, Pete): a reply in a thread while the agent works is **queued** until its turn ends, like a composer line. (T503)
+- **D62** (2026-10-01, Pete): a question has **one box**; typing to a choice question instead of picking keeps it open, and the agent re-asks or settles it (`settle_question`). (T502)
+- **D63** (2026-10-01, Pete): a coordinator's chat shows its **children's questions as threads**. (T502)
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -2997,6 +3001,33 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** `sandboxedSubprocessEnv` builds from `withoutDaemonSecrets()`; `PATH` and the rest pass through; the daemon keeps its own copy.
 - **Validation Steps:** `subprocess-env.test.ts` T486b (fails without the change); typecheck, lint; the delivery, worktree, sandbox and tools tests.
 - **Notes:** Branch T486b-sandboxed-env. PR #12 itself targets `main`, which the stacked phase branches replace; its vendor-session part is T486 here.
+
+### Ticket: T502 Question threads (D62, D63)
+- **Priority:** P1
+- **Status:** Todo (design decided; waiting on Pete's go to build)
+- **Owner:** worker
+- **Scope:** design/chat-threads.md §5 and §8 step 1. A question card is its thread: the question, your replies, the agent's clarifications and the answer, grouped by `ref: questions/<id>` and by the turns the question's lines caused. A choice question stays open on a typed reply; the agent re-asks (superseding it, the thread carrying on) or calls a new verb `settle_question {question, answer}`; an open question with your reply unanswered for one finished turn is a Needs me row. A coordinator's chat shows each child question as a thread (D63).
+- **Acceptance Criteria:** As in the design. No new thread-entry field yet.
+- **Validation Steps:** Unit tests for the grouping and the settle path; control-room e2e: a choice question replied to by typing stays open and is settled by the fake agent; the coordinator's chat shows two child questions as two threads; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T502-question-threads.
+
+### Ticket: T503 Reply in a thread on any message (D60, D61)
+- **Priority:** P2
+- **Status:** Todo (after T502)
+- **Owner:** worker
+- **Scope:** design/chat-threads.md §4, §6, §7 and §8 step 2: the optional `thread` field on a thread entry (shared schema, strict), placement of the agent's reply by cause (the line that woke the turn; a batched turn goes to the main flow with links), an optional `thread` on `say`/`ask`, delivered lines labelled with their thread, the side panel, a mark per thread in the main flow, derived thread state, unread on the mark and the rail row, the "Open threads" chip. One level of nesting. Anything that needs the operator inside a thread also shows in the main flow and Needs me.
+- **Acceptance Criteria:** As in the design.
+- **Validation Steps:** Unit tests (placement by cause, batched turns, derived state, unread); control-room e2e: reply in a thread, the fake agent's answer lands in it, the mark shows the count and state, a question raised inside a thread also shows in the main flow; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T503-chat-threads.
+
+### Ticket: T504 Move a line to a thread or back; promote a thread to a tangent
+- **Priority:** P3
+- **Status:** Todo (after T503)
+- **Owner:** worker
+- **Scope:** design/chat-threads.md §6 (Move to thread / Move to main, recorded, display only) and §7 (promote to a tangent, T332).
+- **Acceptance Criteria:** As in the design.
+- **Validation Steps:** Unit and e2e tests for both; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T504-thread-moves.
 
 ### Ticket: T499 Answer a question in its own card (and quote from it)
 - **Priority:** P1
