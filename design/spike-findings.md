@@ -103,28 +103,31 @@ Pi is in. Decision: adapter = `pi-acp` (or fork) as the ACP shim, all enforcemen
 
 Codex CLI now has hooks (`PreToolUse`, …; learn.chatgpt.com/docs/hooks), which
 C2/C3 never tested. `spike/permission-matrix.ts --vendor codex` with codex-acp
-1.10.0 (the daemon's pin) running the installed Codex through `CODEX_PATH`,
-mode `agent` ("Approve for me"). Reports: `spike-out/codex-defaultmode-perm-hooks*.json`.
+1.10.0 (the daemon's pin) running the installed Codex through `CODEX_PATH`.
+Reports: `spike-out/codex-*-perm*.json`.
 
-| Run | Hook | Trust | Hook calls | `curl` step |
-|-----|------|-------|-----------|-------------|
-| `--hooks` | project `.codex/hooks.json` | none | 0 | ran |
-| `--hooks --bypass-hook-trust` | project | `--dangerously-bypass-hook-trust` | 0 | ran |
+**The first round of hook runs is void.** Five runs (project hook, project hook
++ bypass, user hook, user hook + bypass, `--mode read-only`) all saw 0 hook
+calls, but the spike's hook script itself was broken: the `"\n"` in its log
+line was written as a raw newline inside a JS string, so the generated hook
+never parsed, and its path check compared raw paths (macOS `/var/folders` is
+`/private/var/folders`). Fixed and checked offline (the generated hook parses,
+allows `echo` with exit 0, denies `curl` with exit 2 and the reason, logs every
+call); the matcher is now the docs' `Bash` (it was ""). Re-run pending.
+
+What those runs still show (none of it depends on the hook):
 
 - **codex-acp starts Codex as `<CODEX_PATH> app-server`**, and Codex accepts
-  `--dangerously-bypass-hook-trust` before `app-server` (the session ran
-  normally). So the daemon can pass the flag with a `CODEX_PATH` wrapper.
-- **A project hook stays off even with the bypass**: the bypass covers hook
-  trust, not project trust ("project-local hooks load only when the project
-  `.codex/` layer is trusted"). An untrusted hook is skipped silently and
-  the command runs: fail-open, as the docs say.
-- Codex's modes have changed since C2: `read-only` is now "Ask for approval:
-  always ask to edit external files and use the internet", `agent` is
-  "Approve for me: only ask for actions detected as potentially unsafe"
-  (`_meta.kind: auto_review`). Still **zero** ACP permission requests in
-  `agent`. Not yet re-measured: `read-only`.
-- **Still to run:** user-level hooks (`--user-hooks`, with and without the
-  bypass), which don't need project trust, and `--mode read-only`.
+  `--dangerously-bypass-hook-trust` before `app-server` (the sessions ran
+  normally), so the daemon can pass the flag through a `CODEX_PATH` wrapper.
+- **Modes changed since C2**: `read-only` is now "Ask for approval: always ask
+  to edit external files and use the internet", `agent` "Approve for me"
+  (`_meta.kind: auto_review`). **Still zero ACP permission requests in both**:
+  in `read-only` the edits, `npm test` and `curl` all ran unasked. codex-acp
+  still never asks.
+- The docs say an untrusted hook is skipped, not blocking (fail-open), and a
+  project hook needs a trusted project layer: the daemon must check that the
+  hook ran (T506's fail-closed check).
 
 ### D. Vendor status
 
