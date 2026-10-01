@@ -2998,6 +2998,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `subprocess-env.test.ts` T486b (fails without the change); typecheck, lint; the delivery, worktree, sandbox and tools tests.
 - **Notes:** Branch T486b-sandboxed-env. PR #12 itself targets `main`, which the stacked phase branches replace; its vendor-session part is T486 here.
 
+### Ticket: T497 A coordinator is told what its child asked, and whose it is
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete's Shop root had 8 questions from its coordinator: "The codex child is waiting with a question, but I cannot see the question text…". A child that asks the operator moves to `question`, and its ancestors' `child_status` said only "Child codex is asking." So the coordinator asked the operator what the question was.
+- **Acceptance Criteria:** `child_status` on `question` carries the child's latest open question (capped) and `asks: you | operator` (T338's coordinator-first, not passed up, is `you`). The line: "Child codex asked the operator: "…". It is in their Needs me and they answer it there; don't ask them for it, and tell the child nothing unless it concerns the plan." or "Child web asks you first: "…". Answer with `answer_child`." With no open question found, the line is as before.
+- **Validation Steps:** `events/producers.test.ts` (+3); typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T497-child-question-text. The payload schema gains two optional fields (`question`, `asks`).
+
 ### Ticket: T496 Needs me: closing a node takes its rows with it
 - **Priority:** P1
 - **Status:** Done

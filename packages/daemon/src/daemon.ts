@@ -41,6 +41,7 @@ import { DocsService, buildDocsRpcMethods } from './docs';
 import {
   type EmitRouted,
   KnowledgeWakeJudge,
+  type OpenQuestionOf,
   RoutedEventService,
   emitTransitions,
   makeEmitter,
@@ -189,11 +190,18 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   let autoClose: AutoClose | undefined;
   // T465 (D48): the attach service, once built: a node closed or merged ends its resting session.
   let restingSessions: AttachService | undefined;
+  // T497: a node's latest open question, once the question service is built.
+  let openQuestionOf: OpenQuestionOf | undefined;
   const streamService: StreamService | undefined = store
     ? new StreamService(store, {
         // T244: record changes that are routed events (child_status, pr_merged, …).
         onUpdated: async (before, after): Promise<void> => {
-          if (emitRouted) await emitTransitions(emitRouted, streamService)(before, after);
+          if (emitRouted) {
+            await emitTransitions(emitRouted, streamService, (node) => openQuestionOf?.(node))(
+              before,
+              after,
+            );
+          }
           // T283: the node's status card follows its record.
           await cardService?.refresh(after);
           // T324: Node → tracker (off unless the project turns it on); never blocks the update.
@@ -450,6 +458,21 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           },
         })
       : undefined;
+  if (questionService) {
+    openQuestionOf = (node) => {
+      const open = questionService.listOpen().filter((q) => q.stream === node);
+      const latest = open.sort((a, b) => a.raised_at.localeCompare(b.raised_at)).at(-1);
+      if (latest === undefined) return undefined;
+      const parent = streamService?.get(node).parent;
+      return {
+        text: latest.text,
+        toCoordinator:
+          latest.coordinator !== undefined &&
+          latest.coordinator === parent &&
+          latest.passed_up_at === undefined,
+      };
+    };
+  }
 
   // T481 (D50): each vendor's CLI kept up to date (Off, Alert or Auto). Its checks start
   // after startup (`start()` below); under `bun test` nothing runs unless a test injects a runner.

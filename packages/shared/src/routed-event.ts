@@ -62,6 +62,9 @@ export const ROUTED_EVENT_PAYLOADS = {
     title: Str,
     status: z.enum(['done', 'blocked', 'question']),
     progress: Str.optional(),
+    /** T497: on `question`, the child's open question (capped) and who it asks. */
+    question: Str.optional(),
+    asks: z.enum(['you', 'operator']).optional(),
   }),
   child_delivered: z.object({ child: UlidSchema, title: Str, repo: NonEmpty, sha: NonEmpty }),
   pr_review: z.object({

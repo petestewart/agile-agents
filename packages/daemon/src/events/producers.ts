@@ -234,7 +234,17 @@ export function lastAgentLineOf(
  * a finished tangent's summary is routed to its parent and posted, quoted,
  * on the parent's thread (T332, D33).
  */
-export function emitTransitions(emit: EmitRouted, streams?: TangentStreams) {
+/**
+ * T497: a node's latest open question, and whether it is with its
+ * coordinator (T338's coordinator-first) rather than the operator.
+ */
+export type OpenQuestionOf = (node: string) => { text: string; toCoordinator: boolean } | undefined;
+
+export function emitTransitions(
+  emit: EmitRouted,
+  streams?: TangentStreams,
+  openQuestionOf?: OpenQuestionOf,
+) {
   return async (before: Stream, after: Stream): Promise<void> => {
     // Only a new wait state (done, blocked, a question) reads the tree: a finished
     // tangent (D33) or a side conversation that tells its parent nothing (D42).
@@ -247,6 +257,18 @@ export function emitTransitions(emit: EmitRouted, streams?: TangentStreams) {
             lastAgentLine: (node: string) => lastAgentLineOf(streams, node),
           };
     for (const input of transitionEvents(before, after, tangents)) {
+      // T497 (Pete, 2026-10-01): "Child X is asking" alone left a coordinator
+      // asking the operator what the question was. It says what, and to whom.
+      if (input.type === 'child_status' && after.agent.status === 'question') {
+        const open = openQuestionOf?.(after.id);
+        if (open !== undefined) {
+          input.payload = {
+            ...input.payload,
+            question: clipLine(open.text),
+            asks: open.toCoordinator ? 'you' : 'operator',
+          };
+        }
+      }
       await emit(input);
       if (input.type === 'tangent_summary' && streams !== undefined && after.parent) {
         const { summary } = input.payload as { summary: string };
@@ -281,6 +303,13 @@ export function summarize(
   const pr = `PR #${String(p.pr)}`;
   switch (event.type) {
     case 'child_status': {
+      // T497: the question itself, quoted as data, and whose it is to answer.
+      if (p.status === 'question' && typeof p.question === 'string') {
+        const q = JSON.stringify(p.question);
+        return p.asks === 'you'
+          ? `Child ${String(p.title)} asks you first: ${q}. Answer with \`answer_child\`.`
+          : `Child ${String(p.title)} asked the operator: ${q}. It is in their Needs me and they answer it there; don't ask them for it, and tell the child nothing unless it concerns the plan.`;
+      }
       const word = p.status === 'question' ? 'asking' : String(p.status);
       // Events from before T436 carry the old stand-in; it says nothing.
       const progress =

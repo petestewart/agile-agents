@@ -14,6 +14,7 @@ import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import {
   type EmitRouted,
+  type OpenQuestionOf,
   TANGENT_SUMMARY_MAX,
   emitTransitions,
   makeEmitter,
@@ -210,6 +211,53 @@ describe('tangent_summary (T332, D33)', () => {
     await tangents.update('daemon', research.id, { agent: { status: 'done' } });
     await tangents.update('daemon', research.id, { agent: { status: 'question' } });
     expect(emitted.map((e) => e.type)).toEqual(['child_status']);
+  });
+});
+
+describe('T497: a child asking says what it asks, and whose it is to answer', () => {
+  const withQuestion = (open: ReturnType<OpenQuestionOf>) => {
+    const ref: { base?: EmitRouted } = {};
+    const emit: EmitRouted = async (input) => {
+      const e = await ref.base?.(input);
+      if (e) emitted.push(e);
+      return e;
+    };
+    streams = new StreamService(store, {
+      onUpdated: emitTransitions(emit, undefined, () => open),
+    });
+    ref.base = makeEmitter(new RoutedEventService(store), streams);
+  };
+
+  test("the operator's question: quoted, and the coordinator is told not to ask for it", async () => {
+    withQuestion({ text: 'Which Codex model should be the default?', toCoordinator: false });
+    const root = await streams.create('human', { title: 'Shop', goal: 'g' });
+    const child = await streams.create('human', { title: 'codex', goal: 'g', parent: root.id });
+    await streams.update('daemon', child.id, { agent: { status: 'question' } });
+    expect(emitted[0]?.payload).toMatchObject({
+      question: 'Which Codex model should be the default?',
+      asks: 'operator',
+    });
+    expect(summarize(emitted[0] as RoutedEvent, root.id)).toBe(
+      'Child codex asked the operator: "Which Codex model should be the default?". It is in their Needs me and they answer it there; don\'t ask them for it, and tell the child nothing unless it concerns the plan.',
+    );
+  });
+
+  test("a coordinator-first question is the coordinator's to answer", async () => {
+    withQuestion({ text: 'Does the api part own /schema?', toCoordinator: true });
+    const root = await streams.create('human', { title: 'Shop', goal: 'g' });
+    const child = await streams.create('human', { title: 'web', goal: 'g', parent: root.id });
+    await streams.update('daemon', child.id, { agent: { status: 'question' } });
+    expect(summarize(emitted[0] as RoutedEvent, root.id)).toBe(
+      'Child web asks you first: "Does the api part own /schema?". Answer with `answer_child`.',
+    );
+  });
+
+  test('no open question found: as before', async () => {
+    withQuestion(undefined);
+    const root = await streams.create('human', { title: 'Shop', goal: 'g' });
+    const child = await streams.create('human', { title: 'web', goal: 'g', parent: root.id });
+    await streams.update('daemon', child.id, { agent: { status: 'question' } });
+    expect(summarize(emitted[0] as RoutedEvent, root.id)).toBe('Child web is asking.');
   });
 });
 
