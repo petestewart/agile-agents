@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { HarnessUpdatesInputSchema, harnessModeOf } from './harness-updates';
+import {
+  HARNESS_IDS,
+  HarnessIdSchema,
+  HarnessUpdatesInputSchema,
+  harnessModeOf,
+} from './harness-updates';
 import {
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_BASE_URL,
@@ -63,14 +68,22 @@ describe('classifier config (T150, cockpit design §6.2/§6.3)', () => {
 });
 
 describe('T481 harness_updates (D50)', () => {
-  test('absent is Alert; a vendor overrides the home; pi-acp follows Pi', () => {
+  test('absent is Alert; a vendor overrides the home', () => {
     expect(harnessModeOf(undefined, 'claude')).toBe('alert');
     const config = validateHomeConfig({
       harness_updates: { mode: 'auto', vendors: { pi: 'off' }, dismissed: { claude: '2.3.1' } },
     }).harness_updates;
     expect(harnessModeOf(config, 'claude')).toBe('auto');
     expect(harnessModeOf(config, 'pi')).toBe('off');
-    expect(harnessModeOf(config, 'pi-acp')).toBe('off');
+  });
+
+  test('T501: a legacy pi-acp dismissed version still loads; pi-acp is no longer a CLI', () => {
+    const config = validateHomeConfig({
+      harness_updates: { dismissed: { pi: '0.85.1', 'pi-acp': '0.0.33' } },
+    }).harness_updates;
+    expect(config?.dismissed).toEqual({ pi: '0.85.1', 'pi-acp': '0.0.33' });
+    expect(HARNESS_IDS).not.toContain('pi-acp');
+    expect(HarnessIdSchema.safeParse('pi-acp').success).toBe(false);
   });
 
   test('strict: an unknown mode, vendor, key or version is refused', () => {

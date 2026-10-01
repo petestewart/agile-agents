@@ -505,6 +505,22 @@ describe('T432 (D43): a vendor that exits with an error on its own', () => {
     ).toBeUndefined();
     expect(missingVendorCommand({ label: 'X', command: 'x' }, () => '/usr/bin/x')).toBeUndefined();
   });
+
+  test('missingVendorCommand: a command the bridge needs besides its own is named (T501)', () => {
+    const pi = { label: 'Pi', command: 'npx', requiresCommands: ['pi'] };
+    const only = (found: string[]) => (c: string) => (found.includes(c) ? `/usr/bin/${c}` : null);
+    expect(missingVendorCommand(pi, only(['npx']))).toBe(
+      "Pi can't start: `pi` is not on the daemon's PATH.",
+    );
+    // npx missing is named first, with its Node.js hint.
+    expect(missingVendorCommand(pi, only([]))).toBe(
+      "Pi can't start: `npx` is not on the daemon's PATH. It runs through npx: install Node.js, then restart the daemon.",
+    );
+    expect(missingVendorCommand(pi, only(['npx', 'pi']))).toBeUndefined();
+    expect(missingVendorCommand(ACP_PROVIDERS.pi, only(['npx']))).toBe(
+      "Pi can't start: `pi` is not on the daemon's PATH.",
+    );
+  });
 });
 
 describe('T456: a crashed agent is retried, then another vendor takes over', () => {

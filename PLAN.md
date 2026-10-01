@@ -3018,12 +3018,19 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T501 Pi's bridge runs through npx, pinned
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** worker
 - **Scope:** Pete (2026-10-01): run Pi's ACP bridge through `npx` like Codex's and Claude's, so nothing extra is installed. The ACP registry lists `pi-acp` 0.0.34 (npx). Pi's own CLI (`pi`) must still be on PATH (pi-acp spawns `pi --mode rpc`).
 - **Acceptance Criteria:** The Pi provider runs `npx -y pi-acp@0.0.34`. "Can't start" for Pi names `pi` when the Pi CLI is missing (a provider can name a required command besides its own). The bridge shows in Settings → Agents → Updates as a pinned bridge (`bridgesOf`), not as an installed harness to update; `pi-acp` stays accepted in the home config's harness entries (strict schema: an existing `pi-acp` key must not make the config refuse) but is no longer checked or updated. Vendor self-check rows read correctly for Pi.
 - **Validation Steps:** providers, harness and vendor-check tests updated; typecheck, lint; build then full `bun test`.
 - **Notes:** Branch T501-pi-npx.
+  - `providers.ts`: Pi runs `npx -y pi-acp@0.0.34` (the registry's pin; T022 verified 0.0.33 offline, loadSession unchanged). New optional `AcpProviderConfig.requiresCommands` (frozen), `['pi']` for Pi only.
+  - `missingVendorCommand` checks the provider's command, then each `requiresCommands` entry, and names the first missing: "Pi can't start: `pi` is not on the daemon's PATH." (npx missing is named first, with the Node.js hint). Attach, the runner, routing's `installed` and the vendor self-check all go through it, so the self-check row reads "Not installed" with that line when `pi` is missing, and "Can't start" with the npx line when `pi` is there and Node isn't. A Pi self-check result names its bridge `pi-acp 0.0.34` (`bridgeOf`).
+  - Harness updates: `pi-acp` left `HARNESS_IDS`, `HARNESS_VENDOR` and `HARNESSES`; it shows as a pinned bridge through `bridgesOf(ACP_PROVIDERS)` (now Claude, Codex, Pi). The package.json version path (`version: 'package'`, `readText`) existed only for pi-acp and was removed; every CLI reads `--version`. `noteVersions` no longer filters pi-acp.
+  - Legacy config: `harness_updates.dismissed['pi-acp']` stays in the strict schema, documented as legacy and ignored, so an existing home keeps loading; no migration on read (least invasive: a store write of the block keeps its other entries as they are and validates the result, and nothing reads the key). Inbox `harness_update` items and the last check are in memory, never stored, so no stored `pi-acp` id can refuse; past `harness_updated` events carry the id as a plain string.
+  - Docs: README requirements (the npx bridges need Node.js; for Pi install only `pi`), LIVE-CHECKLIST §15 (the bridges row lists Pi's; pi-acp is not a CLI row). Neither described installing pi-acp before.
+  - Tests: providers +1 (and the Pi entry); `missingVendorCommand` +1 (attach/service.test.ts); harness: bridgesOf lists Pi's bridge and HARNESSES has no pi-acp, the npm-detection example moved to Pi's own CLI, the pi-acp package.json test replaced by "pi-acp on PATH is never checked"; vendor-check +1 (Pi's bridge) and Gemini has none; home-config +1 (a legacy `pi-acp` dismissed version loads; not a HarnessId); inbox, UI and CLI vendor-check examples moved to the npx case.
+  - Validation: typecheck and lint clean; build; full `bun test` 3826 pass, 3 skip, 0 fail.
 
 ### Ticket: T498 The ⌘K e2e waits for the snapshot before reading the palette
 - **Priority:** P1

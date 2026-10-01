@@ -119,7 +119,7 @@ export function vendorRowView(row: VendorCheckRow, now: number = Date.now()): Ve
       resume: dash,
       usage: '—',
       rateLimits: [],
-      // T494: Pi's CLI can be installed while its bridge isn't; say which command is missing.
+      // T494: a CLI can be installed while its bridge can't run (Pi's runs through npx); say which command is missing.
       errors: !row.installed && row.missing !== undefined ? [row.missing] : [],
       canCheck: row.installed && !busy,
     };

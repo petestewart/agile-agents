@@ -27,11 +27,12 @@ export type HarnessUpdateMode = z.infer<typeof HarnessUpdateModeSchema>;
 export const DEFAULT_HARNESS_UPDATE_MODE: HarnessUpdateMode = 'alert';
 
 /**
- * The CLIs the check reads: each vendor's own, as the operator installed it,
- * plus `pi-acp` (Pi's ACP adapter, which the daemon launches and which is
- * installed on its own).
+ * The CLIs the check reads: each vendor's own, as the operator installed it.
+ * ACP bridges run through `npx`, pinned in code, and are shown, never
+ * updated (`HarnessBridgeStatus`). T501: Pi's `pi-acp` is such a bridge now,
+ * no longer a CLI here.
  */
-export const HARNESS_IDS = ['claude', 'codex', 'gemini', 'cursor', 'grok', 'pi', 'pi-acp'] as const;
+export const HARNESS_IDS = ['claude', 'codex', 'gemini', 'cursor', 'grok', 'pi'] as const;
 export const HarnessIdSchema = z.enum(HARNESS_IDS);
 export type HarnessId = z.infer<typeof HarnessIdSchema>;
 
@@ -43,7 +44,6 @@ export const HARNESS_VENDOR: Record<HarnessId, SessionVendor> = {
   cursor: 'cursor',
   grok: 'grok',
   pi: 'pi',
-  'pi-acp': 'pi',
 };
 
 /** A version as `--version`, npm or Homebrew print it: `2.3.1`, `0.32.1-preview.0`. */
@@ -80,6 +80,11 @@ export const HarnessUpdatesConfigSchema = z
         cursor: dismissedFor,
         grok: dismissedFor,
         pi: dismissedFor,
+        /**
+         * Legacy (T501): before Pi's bridge ran through npx, `pi-acp` was a
+         * CLI checked here. A home that dismissed one of its updates keeps
+         * loading (the schema is strict); the entry is ignored.
+         */
         'pi-acp': dismissedFor,
       })
       .strict()
@@ -166,7 +171,7 @@ export interface HarnessStatus {
   dismissed?: string;
 }
 
-/** An ACP bridge (Claude's and Codex's npx bridges): information only, never installed by the updater. */
+/** An ACP bridge (Claude's, Codex's and Pi's npx bridges): information only, never installed by the updater. */
 export interface HarnessBridgeStatus {
   vendor: SessionVendor;
   label: string;

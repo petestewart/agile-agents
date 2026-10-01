@@ -73,7 +73,7 @@ describe('InboxItemSchema', () => {
       harness: { id: 'claude', label: 'Claude Code' },
     });
     expect(validateInboxItem(update).harness).toEqual({ id: 'claude', label: 'Claude Code' });
-    const failed = { ...(update as object), harness: { id: 'pi-acp', label: 'pi', failed: true } };
+    const failed = { ...(update as object), harness: { id: 'pi', label: 'Pi', failed: true } };
     expect(InboxItemSchema.safeParse(failed).success).toBe(true);
     expect(() => validateInboxItem({ ...(update as object), harness: undefined })).toThrow(
       /names its CLI/,

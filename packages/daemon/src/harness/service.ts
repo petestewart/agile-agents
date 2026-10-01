@@ -24,7 +24,7 @@
  * change.
  */
 
-import { readFileSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import {
   DEFAULT_HARNESS_UPDATE_MODE,
   HARNESS_IDS,
@@ -120,7 +120,6 @@ export interface HarnessUpdateDeps {
   /** Follows symlinks (default `realpathSync`). */
   realpath?: (path: string) => string;
   exists?: (path: string) => boolean;
-  readText?: (path: string) => string;
   /** Where a `harness_updated` line is recorded (Events). */
   events?: Pick<RoutedEventService, 'emit'>;
   bridges?: readonly HarnessBridge[];
@@ -135,7 +134,7 @@ export interface HarnessUpdateDeps {
   /**
    * T489 (D58): the vendor CLI versions a check read (`check`), or the one an
    * update installed (`update`): the vendor self-check runs for a version it
-   * has none for. Pi's adapter (`pi-acp`) is not a vendor CLI and is left out.
+   * has none for.
    */
   onVersions?: (
     versions: Array<{ vendor: SessionVendor; version: string }>,
@@ -376,7 +375,7 @@ export class HarnessUpdateService {
     }
     const { install, method } = detectInstall(id, path);
     const errors: string[] = [];
-    const version = await this.readVersion(id, bin, install, errors);
+    const version = await this.readVersion(bin, errors);
     let latest: string | undefined;
     if (method?.latest !== undefined) {
       const res = await this.runCheck(method.latest.argv(install, this.tools));
@@ -409,35 +408,7 @@ export class HarnessUpdateService {
     return entry;
   }
 
-  private async readVersion(
-    id: HarnessId,
-    bin: string,
-    install: InstallInfo,
-    errors: string[],
-  ): Promise<string | undefined> {
-    if (HARNESSES[id].version === 'package') {
-      if (
-        install.method !== 'npm' ||
-        install.prefix === undefined ||
-        install.package === undefined
-      ) {
-        errors.push('its version is read from its npm package, and it isn’t one');
-        return undefined;
-      }
-      try {
-        const pkg = JSON.parse(
-          (this.deps.readText ?? ((p: string) => readFileSync(p, 'utf8')))(
-            `${install.prefix}/lib/node_modules/${install.package}/package.json`,
-          ),
-        ) as { version?: unknown };
-        const version = typeof pkg.version === 'string' ? parseVersion(pkg.version) : undefined;
-        if (version === undefined) errors.push('its package.json names no version');
-        return version;
-      } catch {
-        errors.push('couldn’t read its package.json');
-        return undefined;
-      }
-    }
+  private async readVersion(bin: string, errors: string[]): Promise<string | undefined> {
     const res = await this.runCheck([bin, '--version']);
     const version =
       res.code === 0 ? (parseVersion(res.stdout) ?? parseVersion(res.stderr)) : undefined;
@@ -506,7 +477,7 @@ export class HarnessUpdateService {
     }
     // It worked: read the version it is at now.
     const errors: string[] = [];
-    const to = await this.readVersion(id, entry.bin as string, install, errors);
+    const to = await this.readVersion(entry.bin as string, errors);
     const printed = firstLine(res.stdout);
     let message: string;
     if (to !== undefined && to !== from) message = `Updated ${label} to ${to}`;
@@ -536,14 +507,15 @@ export class HarnessUpdateService {
     return this.settle(id, { ok: true, message });
   }
 
-  /** T489: hands the vendor CLIs' versions to `onVersions` (never Pi's adapter). */
+  /** T489: hands the vendor CLIs' versions to `onVersions`. */
   private noteVersions(
     versions: Array<{ id: HarnessId; version: string }>,
     reason: 'check' | 'update',
   ): void {
-    const vendors = versions
-      .filter((v) => v.id !== 'pi-acp')
-      .map((v) => ({ vendor: HARNESSES[v.id].vendor, version: v.version }));
+    const vendors = versions.map((v) => ({
+      vendor: HARNESSES[v.id].vendor,
+      version: v.version,
+    }));
     if (vendors.length === 0 || this.deps.onVersions === undefined) return;
     try {
       this.deps.onVersions(vendors, reason);

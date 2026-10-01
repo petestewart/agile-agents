@@ -16,7 +16,6 @@ import { type HarnessBridge, HarnessUpdateService } from './service';
 interface FakeMachine {
   onPath: Record<string, string>;
   real: Record<string, string>;
-  files: Record<string, string>;
   exists: string[];
   answers: Map<string, CommandResult | ((argv: readonly string[]) => CommandResult)>;
   calls: string[][];
@@ -31,7 +30,7 @@ const fail = (stderr: string, code = 1): CommandResult => ({
 });
 
 function machine(): FakeMachine {
-  return { onPath: {}, real: {}, files: {}, exists: [], answers: new Map(), calls: [] };
+  return { onPath: {}, real: {}, exists: [], answers: new Map(), calls: [] };
 }
 
 function runnerOf(m: FakeMachine): CommandRunner {
@@ -98,11 +97,6 @@ function service(
     which: (command) => m.onPath[command] ?? null,
     realpath: (path) => m.real[path] ?? path,
     exists: (path) => m.exists.includes(path),
-    readText: (path) => {
-      const text = m.files[path];
-      if (text === undefined) throw new Error(`ENOENT: ${path}`);
-      return text;
-    },
     events,
     bridges: extra.bridges ?? [],
     ...(extra.harnesses ? { harnesses: extra.harnesses } : {}),
@@ -363,16 +357,13 @@ describe('T481 HarnessUpdateService', () => {
     );
   });
 
-  test("pi-acp's version comes from its package.json, never by starting it", async () => {
+  test('T501: pi-acp is not a CLI the check reads, even when an old global install is on PATH', async () => {
     m.onPath['pi-acp'] = '/usr/local/bin/pi-acp';
     m.real['/usr/local/bin/pi-acp'] = '/usr/local/lib/node_modules/pi-acp/dist/index.js';
-    m.files['/usr/local/lib/node_modules/pi-acp/package.json'] = '{"version":"0.0.33"}';
-    m.exists.push(NPM);
-    m.answers.set(`${NPM} view pi-acp version`, ok('0.0.35\n'));
-    const s = service({ harnesses: ['pi-acp'] });
-    const [pi] = (await s.check('scheduled')).harnesses;
-    expect(pi).toMatchObject({ version: '0.0.33', latest: '0.0.35', behind: true });
-    expect(m.calls).toEqual([[NPM, 'view', 'pi-acp', 'version']]);
+    const s = service();
+    const status = await s.check('scheduled');
+    expect(status.harnesses.map((h) => h.id)).not.toContain('pi-acp');
+    expect(m.calls.flat()).not.toContain('pi-acp');
   });
 
   test('bridges: the pinned version and the newest published one, as information only', async () => {

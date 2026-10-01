@@ -140,7 +140,9 @@ describe('agile vendors (T489)', () => {
   });
 
   test('T494: long words go under the row, wrapped; an installed CLI with no bridge can’t start', () => {
-    const missing = 'Pi can’t start: `pi-acp` is not on the daemon’s PATH.';
+    // T501: Pi's bridge runs through npx; `pi` is installed, Node isn't.
+    const missing =
+      'Pi can’t start: `npx` is not on the daemon’s PATH. It runs through npx: install Node.js, then restart the daemon.';
     const pi = {
       vendor: 'pi' as const,
       label: 'Pi',

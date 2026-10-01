@@ -335,6 +335,14 @@ describe('runVendorCheck (T489)', () => {
     expect(result.rate_limits).toEqual([]);
     // Gemini's provider isn't set up for session/load.
     expect(result.resume.outcome).toBe('not_supported');
+    // Gemini runs its own CLI, no pinned bridge.
+    expect(result.bridge).toBeUndefined();
+  }, 30_000);
+
+  test("T501: Pi's result names its pinned npx bridge", async () => {
+    const { result } = await check('pi', { steps: [{ type: 'end_turn' }] });
+    expect(result.prompt.outcome).toBe('finished');
+    expect(result.bridge).toEqual({ package: 'pi-acp', version: '0.0.34' });
   }, 30_000);
 
   test('a resume that fails: failed, and why', async () => {

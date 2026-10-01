@@ -1504,8 +1504,10 @@ vendor CLI that is behind (for example `npm install -g
 - [ ] **Off:** switch to Off, put a CLI behind and restart the daemon: after
       a minute nothing is in Needs me, the rows read Off, and Check now changes
       nothing (no version is read).
-- [ ] The bridges row lists Claude's and Codex's npx bridges with their pinned
-      version and the newest published one. Nothing installs them.
+- [ ] The bridges row lists Claude's, Codex's and Pi's (`pi-acp`, T501) npx
+      bridges with their pinned version and the newest published one. Nothing
+      installs them, and `pi-acp` is not a CLI row: for Pi only `pi` itself is
+      installed (a global `pi-acp` left from before is unused).
 
 
 ## 16. **[vendor]** What each vendor reports about token usage (D51, T485a)
