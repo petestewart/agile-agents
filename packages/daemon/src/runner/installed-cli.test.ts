@@ -5,11 +5,17 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
+  cliStamp,
+  cliStampChanged,
   installedCliFor,
   installedCliForSpawn,
   installedCliOn,
   installedCliStatus,
+  sessionCliPath,
 } from './installed-cli';
 
 const which = (found: Record<string, string>) => (bin: string) => found[bin] ?? null;
@@ -59,5 +65,52 @@ describe('T480: the installed CLI a bridge runs', () => {
       { vendor: 'claude', label: 'Claude Code', on: true, path: '/x/claude' },
       { vendor: 'codex', label: 'Codex', on: false },
     ]);
+  });
+});
+
+describe('T495: a CLI updated in place since a session spawned', () => {
+  test('a rewrite, a symlink moved to a new version, or a removal is a change; nothing is not', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agile-cli-stamp-'));
+    try {
+      const v1 = join(dir, 'codex-0.147.0');
+      const v2 = join(dir, 'codex-0.150.0');
+      writeFileSync(v1, 'old');
+      writeFileSync(v2, 'newer build');
+      const onPath = join(dir, 'codex');
+      symlinkSync(v1, onPath);
+      const stamp = cliStamp(onPath);
+      expect(stamp?.real).toBe(cliStamp(v1)?.real);
+      if (stamp === undefined) throw new Error('no stamp');
+      expect(cliStampChanged(stamp)).toBe(false);
+      // A package manager repoints the link at the new version.
+      rmSync(onPath);
+      symlinkSync(v2, onPath);
+      expect(cliStampChanged(stamp)).toBe(true);
+      // Rewritten in place.
+      const direct = cliStamp(v1);
+      if (direct === undefined) throw new Error('no stamp');
+      writeFileSync(v1, 'a newer build in place');
+      expect(cliStampChanged(direct)).toBe(true);
+      // Gone.
+      rmSync(v1);
+      expect(cliStampChanged(direct)).toBe(true);
+      expect(cliStamp(join(dir, 'missing'))).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('which binary a session runs: the installed CLI, the vendor’s own command, never an npx bridge', () => {
+    const installed = installedCliFor('codex', undefined, which({ codex: '/usr/local/bin/codex' }));
+    expect(sessionCliPath({ command: 'npx' }, installed)).toBe('/usr/local/bin/codex');
+    expect(sessionCliPath({ command: 'npx' }, undefined)).toBeUndefined();
+    expect(sessionCliPath({ command: 'bun' }, undefined)).toBeUndefined();
+    expect(sessionCliPath({ command: 'gemini' }, undefined, which({ gemini: '/x/gemini' }))).toBe(
+      '/x/gemini',
+    );
+    expect(sessionCliPath({ command: '/opt/agy/agy_acp_server.par' }, undefined)).toBe(
+      '/opt/agy/agy_acp_server.par',
+    );
+    expect(sessionCliPath({ command: 'cursor-agent' }, undefined, which({}))).toBeUndefined();
   });
 });

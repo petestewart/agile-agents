@@ -67,7 +67,13 @@ import { buildEvent } from '../store';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { type CliInvocation, cliInvocationToShell, normalizeCliBin } from './cli-bin';
-import { type InstalledCli, installedCliForSpawn } from './installed-cli';
+import {
+  type InstalledCli,
+  cliStamp,
+  cliStampChanged,
+  installedCliForSpawn,
+  sessionCliPath,
+} from './installed-cli';
 import {
   type VendorEffortOption,
   type VendorModelOption,
@@ -273,6 +279,12 @@ export interface AgentSessionHandle {
    * last `available_commands_update` listed them (empty until one arrives).
    */
   commands(): readonly AgentCommand[];
+  /**
+   * T495: whether the vendor's CLI binary changed on disk since this
+   * process spawned (an update in place); `false` when it isn't known (a
+   * bridge's bundled copy). The process still runs the old one.
+   */
+  cliChanged?(): boolean;
   /** Whether `stop()` has been called. */
   stopped(): boolean;
   /** `cancel()` + `close()`; the exit path still runs off the session's own `exit` event. */
@@ -740,6 +752,10 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   // T480 (D49): the bridge runs the operator's installed CLI, not its bundled copy.
   // A sandboxed session keeps the bundled one: the sandbox may not see the host's.
   const installed = installedCliForSpawn(opts.installedCli, wrapped.backend);
+  // T495: the CLI binary this process runs, as it is now; an update in place
+  // later leaves the process on the old one until it starts again.
+  const cliPath = sessionCliPath(provider, installed);
+  const spawnStamp = cliPath !== undefined ? cliStamp(cliPath) : undefined;
   if (installed !== undefined) {
     stderrLog.append(`[agiled] running your installed ${installed.label}: ${installed.path}\n`);
   } else if (opts.installedCli !== undefined) {
@@ -1464,6 +1480,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     },
     commands() {
       return commands;
+    },
+    cliChanged() {
+      return spawnStamp !== undefined && cliStampChanged(spawnStamp);
     },
     stopped() {
       return stopRequested || settled;

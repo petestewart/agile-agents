@@ -15,6 +15,7 @@
  * Gemini, Cursor, Grok and Pi already run the installed CLI.
  */
 
+import { realpathSync, statSync } from 'node:fs';
 import {
   type HomeConfig,
   INSTALLED_CLI_VENDORS,
@@ -123,4 +124,70 @@ export function installedCliForSpawn(
   sandboxBackend: string,
 ): InstalledCli | undefined {
   return installed !== undefined && sandboxBackend === 'none' ? installed : undefined;
+}
+
+/**
+ * T495: the identity of the CLI binary a session runs, taken when it
+ * spawns: where the command resolves on disk, its modification time and
+ * size. An update in place (`npm i -g`, `brew upgrade`, the CLI's own
+ * updater) changes one of them.
+ */
+export interface CliStamp {
+  /** The command as found (on PATH, or as given). */
+  path: string;
+  /** Where it resolves (symlinks followed). */
+  real: string;
+  mtimeMs: number;
+  size: number;
+}
+
+/** `path`'s stamp now, or `undefined` when it can't be read. */
+export function cliStamp(path: string): CliStamp | undefined {
+  try {
+    const real = realpathSync(path);
+    const st = statSync(real);
+    return { path, real, mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether the binary behind `stamp.path` changed since the stamp: it now
+ * resolves elsewhere, or the file there is newer or a different size. A
+ * binary that can't be read now counts as changed (it was moved or removed).
+ */
+export function cliStampChanged(
+  stamp: CliStamp,
+  now: (path: string) => CliStamp | undefined = cliStamp,
+): boolean {
+  const current = now(stamp.path);
+  return (
+    current === undefined ||
+    current.real !== stamp.real ||
+    current.mtimeMs !== stamp.mtimeMs ||
+    current.size !== stamp.size
+  );
+}
+
+/**
+ * T495: the CLI binary a session of `provider` runs, to stamp: the
+ * installed CLI the bridge points at (T480), else the provider's own
+ * command when it is the vendor's CLI (Gemini, Cursor, Grok, Pi's shim).
+ * `undefined` for an `npx` bridge with its bundled copy: that copy only
+ * moves by a code change.
+ */
+export function sessionCliPath(
+  provider: { command: string },
+  installed: InstalledCli | undefined,
+  which: WhichFn = defaultWhich,
+): string | undefined {
+  if (installed !== undefined) return installed.path;
+  if (provider.command === 'npx' || provider.command === 'bun') return undefined;
+  if (provider.command.includes('/')) return provider.command;
+  try {
+    return which(provider.command) ?? undefined;
+  } catch {
+    return undefined;
+  }
 }

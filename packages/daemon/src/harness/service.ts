@@ -16,7 +16,8 @@
  *
  * Updates run one at a time, as a fixed argv (never a shell, never sudo)
  * with a timeout. Running sessions are untouched: the next start uses the
- * new version. The last result per CLI is held in memory; the mode and the
+ * new version (T495: a resting session whose CLI changed on disk, by this
+ * service or by hand, starts again, resumed, at its next message). The last result per CLI is held in memory; the mode and the
  * dismissed versions are in the home config, written through the store.
  * Bridges (Claude's and Codex's npx ACP bridges) are shown with their
  * pinned and newest versions, and never installed: they move by a code

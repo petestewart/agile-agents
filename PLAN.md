@@ -2998,6 +2998,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `subprocess-env.test.ts` T486b (fails without the change); typecheck, lint; the delivery, worktree, sandbox and tools tests.
 - **Notes:** Branch T486b-sandboxed-env. PR #12 itself targets `main`, which the stacked phase branches replace; its vendor-session part is T486 here.
 
+### Ticket: T495 A resting agent starts again on an updated CLI
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-10-01): a Codex node said "The 'gpt-6-astra' model requires a newer version of Codex"; he updated Codex and sent "try again" and got the same error, while a new node worked. Cause: a resting session (T465, D48) keeps its vendor process for up to 30 minutes, so the next line went to the process still running the old binary.
+- **Acceptance Criteria:** A session stamps the CLI binary it runs when it spawns (the installed CLI the bridge points at, or the vendor's own command; never an `npx` bridge's bundled copy): where it resolves, its mtime and size. A line to a resting session whose binary changed since ends that session ("session ended: Codex was updated since this agent started; it starts again on the new version") and starts the agent again with the session's own vendor, model and effort, so it resumes with `session/load` and the line. A working agent is left alone. Nothing changes when the binary didn't change.
+- **Validation Steps:** `runner/installed-cli.test.ts` (+2: a rewrite, a repointed symlink, a removal; which binary a session runs); `attach/service.test.ts` (+1: unchanged takes the line in the same session; after a rewrite the line ends it, resumes with one `session/load`, two sessions, same vendor and model); typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T495-restart-on-cli-update. Until it's pulled: ⋯ → Restart agent does the same by hand.
+
 ### Ticket: T494 Self-check fixes from Pete's first run
 - **Priority:** P1
 - **Status:** Done
