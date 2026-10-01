@@ -75,6 +75,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D62** (2026-10-01, Pete): a question has **one box**; typing to a choice question instead of picking keeps it open, and the agent re-asks or settles it (`settle_question`). (T502)
 - **D63** (2026-10-01, Pete): a coordinator's chat shows its **children's questions as threads**. (T502)
 - **D64** (2026-10-01, Pete): threads work like **Slack's, with Confluence's inline anchors**: every chat turn has a Reply in thread icon; selecting text first anchors the thread to that passage (quoted, highlighted in the turn with a count), so one turn can carry several threads. design/chat-threads.md §3a (T503)
+- **D65** (2026-10-01, Pete): a thread can be **archived**: hidden, never re-sent, the agent told once to treat it as closed; **Archive and forget** also restarts the agent fresh from a brief without archived threads, the only real way to take it out of the model's context (a vendor session's turns can't be deleted). design/chat-threads.md §6a (T504)
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -3023,7 +3024,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T502 Question threads (D62, D63)
 - **Priority:** P1
-- **Status:** Todo (design decided; waiting on Pete's go to build)
+- **Status:** In progress (Pete: "ready to build", 2026-10-01)
 - **Owner:** worker
 - **Scope:** design/chat-threads.md §5 and §8 step 1. A question card is its thread: the question, your replies, the agent's clarifications and the answer, grouped by `ref: questions/<id>` and by the turns the question's lines caused. A choice question stays open on a typed reply; the agent re-asks (superseding it, the thread carrying on) or calls a new verb `settle_question {question, answer}`; an open question with your reply unanswered for one finished turn is a Needs me row. A coordinator's chat shows each child question as a thread (D63).
 - **Acceptance Criteria:** As in the design. No new thread-entry field yet.
@@ -3039,11 +3040,11 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** Unit tests (placement by cause, batched turns, derived state, unread); control-room e2e: reply in a thread, the fake agent's answer lands in it, the mark shows the count and state, a question raised inside a thread also shows in the main flow; typecheck, lint; build then full `bun test`.
 - **Notes:** Branch T503-chat-threads.
 
-### Ticket: T504 Move a line to a thread or back; promote a thread to a tangent
+### Ticket: T504 Move a line to a thread or back; promote a thread to a tangent; archive a thread
 - **Priority:** P3
 - **Status:** Todo (after T503)
 - **Owner:** worker
-- **Scope:** design/chat-threads.md §6 (Move to thread / Move to main, recorded, display only) and §7 (promote to a tangent, T332).
+- **Scope:** design/chat-threads.md §6 (Move to thread / Move to main, recorded, display only), §6a (Archive, Archive and forget, D65) and §7 (promote to a tangent, T332).
 - **Acceptance Criteria:** As in the design.
 - **Validation Steps:** Unit and e2e tests for both; typecheck, lint; build then full `bun test`.
 - **Notes:** Branch T504-thread-moves.

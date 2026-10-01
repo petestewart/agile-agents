@@ -1,7 +1,7 @@
 # Chat threads: replies that nest under a message
 
-Status: **decided** (proposed 2026-10-01; Pete settled TH1–TH5 the same day,
-recorded as D60–D64 in PLAN.md). Not built yet: T502–T504 build it in three
+Status: **decided** (proposed 2026-10-01; Pete settled TH1–TH6 the same day,
+recorded as D60–D65 in PLAN.md). Not built yet: T502–T504 build it in three
 steps (§8). Mockup: the "Chat threads mockup" canvas (4 screens).
 
 ## 1. The problem
@@ -37,6 +37,8 @@ landing in the wrong place.
 | TH4 (D63) | The coordinator's project chat shows children's questions as threads? | **Yes** (Pete: "I think so"): each child question is a thread on the coordinator's chat, so the "N things wait on you" list stays one line each. |
 
 | TH5 (D64) | Where does a thread start? | **Slack's threads with Confluence's inline anchors** (Pete, 2026-10-01): every chat turn has a **Reply in thread** icon; select some of a turn's text first and the thread is **anchored to that selection**, which it quotes. One turn can carry several anchored threads, one per passage, so a long agent message about many things branches per topic. |
+
+| TH6 (D65) | Can a thread be archived, and taken out of the model's context? | **Yes, in two strengths** (§6a): **Archive** hides it, never re-sends it and tells the agent once to treat it as closed; **Archive and forget** also restarts the agent fresh from a brief that leaves archived threads out, which is the only real way to take it out of the model's context. |
 
 One level of nesting only (Slack's rule): a reply to a reply goes in the
 same thread. This alone prevents most of the mess.
@@ -122,6 +124,32 @@ agent as written:
   own lines move freely; an agent's line moves only by you, and is recorded.
 - **A batched reply is never forced into one thread** (§4.1).
 
+## 6a. Archiving a thread (TH6)
+
+A vendor session's context is the vendor's: no ACP call deletes turns
+from it, so a live agent can't truly forget a thread. Two strengths, in
+the thread's ⋯ and on its mark:
+
+- **Archive.** The thread folds into "Archived threads (n)" at the end of
+  its message's thread line (and out of "Open threads"); its mark and
+  highlight go quiet (no count, no tint); it is never re-sent in a digest,
+  a brief or a resume digest; its replies stop waking the agent. The agent
+  is told once, as a daemon line: `The operator archived the thread on
+  "<passage or message, quoted as data>". Treat it as closed: don't act on
+  it or bring it up.` Unarchive brings it back (and says so to the agent).
+  An archived thread with an open question settles nothing: the question
+  is withdrawn (`resolved_as: withdrawn`), and the agent is told.
+- **Archive and forget.** Archive, then the node's agent restarts fresh:
+  no `session/load`, a new brief built from the thread with every archived
+  thread left out. This really takes the thread out of what the model
+  sees. Its cost is said in the confirm: what the agent knew only from its
+  own session (never written to the chat) is gone too. Not offered while
+  the agent works on a turn (it waits), nor on a node whose agent runs
+  without resume.
+- Archiving is the operator's alone (human-only write), recorded on the
+  thread's first reply (`archived: {at, by: human, forget?: true}`), and
+  undone the same way. Nothing is deleted.
+
 ## 7. Data
 
 - One optional field on a thread entry, `thread`: the `ts` of the thread's
@@ -149,5 +177,5 @@ agent as written:
    selection bar, the highlights and counts (§3a), placement by cause (§4),
    `thread` on `say`/`ask`, the side panel, the main-flow marks, thread
    state, unread and the "Open threads" chip.
-3. **T504 — moving and promoting.** Move to thread / main, promote to a
-   tangent.
+3. **T504 — moving, promoting and archiving.** Move to thread / main,
+   promote to a tangent, Archive and Archive and forget (§6a).
