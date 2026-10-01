@@ -1700,3 +1700,45 @@ Needs the `agy` CLI signed in to a Google account, and `unzip` on the PATH.
       permission request it raises (edits, shell commands, reads) and whether
       a denial stops it, so its `requiresSandbox` mark and `loadSession` can be
       set from what you measured.
+
+## 19. **[vendor]** Does Codex's own PreToolUse hook gate it under the bridge? (T506 spike)
+
+Codex runs shell commands without asking over ACP, so today nothing checks
+them (T505's warning). Codex's own hooks (`PreToolUse`, learn.chatgpt.com/docs/hooks)
+can deny a command; these runs find out whether they fire when Codex runs
+through `codex-acp` (as the daemon runs it), and what trust they need. Each
+run uses a throwaway project, asks Codex to do nine small steps, and the
+hook denies step 9 (a `curl`). Nothing here touches your nodes. Needs
+Codex installed and logged in; takes a minute or two per run.
+
+```zsh
+cd ~/agile-agents
+git fetch origin claude/phase-14 && git checkout claude/phase-14 && git pull
+bun spike/permission-matrix.ts --vendor codex --scenario perm --hooks
+bun spike/permission-matrix.ts --vendor codex --scenario perm --hooks --bypass-hook-trust
+bun spike/permission-matrix.ts --vendor codex --scenario perm --user-hooks --bypass-hook-trust
+bun spike/permission-matrix.ts --vendor codex --scenario perm --user-hooks
+```
+
+- [ ] Paste each run's summary (the table, the `codex:` line and, when
+      shown, `codex-acp ran Codex as:`). What they tell us:
+  - `hook calls: 0` with a project hook: an untrusted project hook is
+    skipped (expected; this is the fail-open the daemon must catch).
+  - `hook calls` > 0 and the curl step `failed`/refused with
+    `AGILE-GATE` in the agent's text: the hook gates Codex under the
+    bridge. Which run first does this decides how the daemon installs it.
+  - `codex-acp ran Codex as:` shows how the bridge starts Codex, so the
+    daemon knows where `--dangerously-bypass-hook-trust` can go. If a
+    bypass run fails at once, try it with `--bypass-at end`.
+- [ ] `--user-hooks` adds the spike's hook to `~/.codex/hooks.json` for the
+      run only and puts your file back byte for byte when it ends (the hook
+      does nothing outside the throwaway project). Check
+      `cat ~/.codex/hooks.json` afterwards if you want to be sure.
+- [ ] If no run fires the hook: make a project you can trust, trust it in
+      Codex, and run against it:
+      `bun spike/permission-matrix.ts --vendor codex --scenario perm --hooks --fixture ~/agile-codex-spike`,
+      then `cd ~/agile-codex-spike && codex`, use `/hooks` to trust the
+      hook (and trust the project when asked), quit, and run the same
+      command again. Paste both summaries.
+- [ ] The JSON reports are in `spike-out/codex-defaultmode-perm-*.json`;
+      attach them if a summary looks odd.
