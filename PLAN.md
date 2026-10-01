@@ -3002,6 +3002,24 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `subprocess-env.test.ts` T486b (fails without the change); typecheck, lint; the delivery, worktree, sandbox and tools tests.
 - **Notes:** Branch T486b-sandboxed-env. PR #12 itself targets `main`, which the stacked phase branches replace; its vendor-session part is T486 here.
 
+### Ticket: T505 Say plainly that Codex, Grok and Antigravity run commands unchecked
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Found 2026-10-01: providers mark Codex, Grok and Antigravity `requiresSandbox: true` (their bridges never ask before running a command, design §6), but nothing passes that to `startAgentSession`, so they run unsandboxed and ungated (pattern rules and hooks never see their shell commands). Pete (2026-10-01): leave it as it is for now, add a warning; the real fix for Codex is OpenAI's native `codex app-server` (T506).
+- **Acceptance Criteria:** One shared list of these vendors in packages/shared (with a test that it equals the providers' `requiresSandbox` set, so it can't drift). The warning, in plain words ("Codex runs shell commands without asking, and nothing checks them yet. Use it on repos you trust."), shows: on the vendor's row in Settings → Agents → Vendors; on a node whose agent runs one of them (beside the model chip in the header, with the sentence as its tooltip and in Details → Agent); on the model picker's entries for them (a small mark, same tooltip); in `agile vendors` notes; once on the thread when such an agent starts ("… runs commands unchecked"). README and LIVE-CHECKLIST say it too. Nothing is blocked or changed in how they run.
+- **Validation Steps:** Unit tests for the shared list and the words; UI tests for the row and the chip; control-room e2e: a Codex node shows the mark and the tooltip, a Claude node doesn't; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T505-ungated-warning.
+
+### Ticket: T506 Codex through its native `codex app-server`, so its commands can be gated
+- **Priority:** P2
+- **Status:** Todo (follow-up of T505)
+- **Owner:** worker
+- **Scope:** `codex-acp` raises no permission requests in any mode or approval policy (design/spike-findings.md §C3), so the daemon can't gate Codex. The native `codex app-server` has approval request kinds. Spike it first (what it asks for, how sessions, models, effort, resume and usage map), then an adapter that answers its approvals through the daemon's one permission pipeline, like the ACP permission path. Drop Codex from T505's list once gated.
+- **Acceptance Criteria:** Decided after the spike; record findings in design/spike-findings.md.
+- **Validation Steps:** Spike report; then tests per the adapter.
+- **Notes:** Needs a real Codex login for the spike (Pete's machine).
+
 ### Ticket: T502 Question threads (D62, D63)
 - **Priority:** P1
 - **Status:** Todo (design decided; waiting on Pete's go to build)
