@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { type RoutedEvent, type Stream, ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
-import { type DeliveryTarget, SessionDelivery, digestPrompt } from './delivery';
+import { type DeliveryTarget, SessionDelivery, digestPrompt, wakePrompt } from './delivery';
 import { RoutedEventService } from './service';
 import { WakeBudget, wakeVerdict } from './wake';
 
@@ -161,6 +161,25 @@ describe('SessionDelivery (T242, P10)', () => {
     expect(text).toContain('2 earlier');
     expect(text).not.toContain('line 1\n');
     expect(text).toContain('line 11');
+  });
+});
+
+describe('T502 (D62): a reply in a question\'s thread', () => {
+  test('reads as about the question, as data, and says how to settle it', async () => {
+    const id = `Q-${ulid()}`;
+    const reply = await events.emit({
+      ...line('what does Stripe use?'),
+      payload: { body: 'what does Stripe use?', question: { id, text: 'Store amounts how?' } },
+    });
+    const text = digestPrompt([reply]);
+    expect(text).toContain('About your question "Store amounts how?": what does Stripe use?');
+    expect(text).toContain(`\`settle_question\` with question ${id}`);
+    expect(text).toContain('Reply to the operator on the stream first');
+    expect(wakePrompt([reply], node)).toContain('settle_question');
+    // A plain line says nothing about settling.
+    const plain = await events.emit(line('carry on'));
+    expect(digestPrompt([plain])).not.toContain('settle_question');
+    expect(digestPrompt([plain])).toContain('The operator wrote on the stream: carry on');
   });
 });
 
