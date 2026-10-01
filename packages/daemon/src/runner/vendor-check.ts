@@ -116,6 +116,12 @@ export function notLoggedInWords(vendor: string, label: string): string {
 /** A field name that reads as a rate limit or plan usage (never the context window). */
 const RATE_LIMIT_NAME =
   /rate.?limit|ratelimit|\blimits?\b|limit|quota|\bplan\b|plan_?type|remaining|reset|retry.?after|throttl|credit|allowance|weekly|billing|subscription/i;
+/**
+ * A subtree of token counts (`_meta.quota.token_count`, `…model_usage.N`):
+ * what the session used, not what the plan has left, so never a rate limit
+ * even under a name like `quota`.
+ */
+const TOKEN_COUNT_NAME = /^(?:token_?counts?|model_?usage)$/i;
 /** A field name that could hold a credential: never recorded. */
 const CREDENTIAL_NAME =
   /api.?key|secret|password|passwd|cookie|bearer|authori[sz]ation|credential|access.?token|refresh.?token|id.?token|session.?token|^token$|^auth$/i;
@@ -148,7 +154,7 @@ export function rateLimitFields(
 ): void {
   const walk = (node: unknown, path: string[], depth: number): void => {
     if (out.length >= VENDOR_CHECK_RATE_LIMITS_MAX) return;
-    if (path.some((p) => CREDENTIAL_NAME.test(p))) return;
+    if (path.some((p) => CREDENTIAL_NAME.test(p) || TOKEN_COUNT_NAME.test(p))) return;
     if (node === null || typeof node !== 'object') {
       if (path.length === 0 || !path.some((p) => RATE_LIMIT_NAME.test(p))) return;
       if (typeof node === 'string' && looksLikeCredential(node)) return;
@@ -556,7 +562,7 @@ export async function runVendorCheck(opts: RunVendorCheckOptions): Promise<Vendo
           detail: (set.result.ok ? `${label} took ${pick}` : set.result.line).slice(0, 500),
         };
         if (outcome === 'refused' && set.error !== undefined) {
-          errors.push(`${label} refused the model: ${set.error}`.slice(0, 500));
+          errors.push(`${label} refused the model ${pick}: ${set.error}`.slice(0, 500));
         }
       }
 
@@ -792,8 +798,11 @@ export function vendorCapabilities(
 
 /**
  * The vendors Choose leaves out, with why in words: those whose last check
- * says a model pick doesn't take (the vendor kept its own model, or refused
- * the pick). A vendor never checked is not left out.
+ * says a model pick doesn't take (the vendor kept its own model and said
+ * nothing). A refused pick leaves the vendor in (T494): the refusal is loud,
+ * it is about the one model the check tried (one the plan may not include),
+ * and a start that hits it fails over as any start error does. A vendor
+ * never checked is not left out.
  */
 export function vendorsLeftOut(
   capabilities: Partial<Record<SessionVendor, VendorCapability>>,
@@ -803,8 +812,6 @@ export function vendorsLeftOut(
     if (cap === undefined) continue;
     if (cap.model === 'kept') {
       out.set(cap.vendor, `left out ${cap.label}: its last check kept its own model`);
-    } else if (cap.model === 'refused') {
-      out.set(cap.vendor, `left out ${cap.label}: its last check refused a model pick`);
     }
   }
   return out;
@@ -932,10 +939,12 @@ export class VendorCheckService {
     const rows: VendorCheckRow[] = this.vendors.map((vendor) => {
       const last = this.latest.get(vendor);
       const version = this.cliVersion(vendor);
+      const missing = this.missing(vendor);
       return {
         vendor,
         label: this.provider(vendor).label,
-        installed: this.missing(vendor) === undefined,
+        installed: missing === undefined,
+        ...(missing !== undefined ? { missing } : {}),
         ...(version !== undefined ? { cli_version: version } : {}),
         running: this.running === vendor,
         queued: this.pending.has(vendor) && this.running !== vendor,

@@ -11,11 +11,11 @@ import {
   SESSION_VENDORS,
   type VendorCheckResult,
   type VendorCheckRow,
+  type VendorCheckSetting,
   type VendorChecksStatus,
   isSessionVendor,
   resumeMark,
   settingMark,
-  usageWords,
 } from '@agile-agents/shared';
 import { callRpc } from '../client';
 import { printJson, printTable } from '../format';
@@ -23,7 +23,19 @@ import { printJson, printTable } from '../format';
 /** A check per vendor can take a couple of minutes; every installed vendor, longer. */
 const CHECK_TIMEOUT_MS = 30 * 60 * 1000;
 
-/** One vendor's row of `agile vendors`, in words. */
+/** What usage a check saw, in a few words; the field names are in `--json`. */
+export function usageShort(row: VendorCheckRow): string {
+  const usage = row.last?.usage;
+  if (usage === undefined) return 'none';
+  const parts = [
+    ...(usage.turn_tokens ? ['per turn'] : []),
+    ...(usage.context ? ['context'] : []),
+    ...(usage.cost !== undefined ? ['cost'] : []),
+  ];
+  return parts.length > 0 ? parts.join(', ') : 'none';
+}
+
+/** One vendor's row of `agile vendors`, in words: short cells only (T494). */
 export function vendorRowCells(row: VendorCheckRow): string[] {
   const last = row.last;
   const version = last?.cli_version ?? row.cli_version ?? '—';
@@ -37,12 +49,13 @@ export function vendorRowCells(row: VendorCheckRow): string[] {
           ? 'waiting'
           : row.installed
             ? 'never'
-            : 'not installed',
+            : row.cli_version !== undefined
+              ? 'can’t start'
+              : 'not installed',
       '—',
       '—',
       '—',
       '—',
-      '',
     ];
   }
   return [
@@ -51,24 +64,68 @@ export function vendorRowCells(row: VendorCheckRow): string[] {
     row.running ? 'checking…' : last.finished_at.slice(0, 16).replace('T', ' '),
     last.logged_in ? settingMark(last.model.outcome) : '—',
     last.logged_in ? settingMark(last.effort.outcome) : '—',
-    last.logged_in ? usageWords(last.usage) : '—',
     last.logged_in ? resumeMark(last.resume.outcome) : '—',
-    [
-      ...(last.rate_limits.length > 0
-        ? [`rate limits: ${last.rate_limits.map((f) => `${f.name}=${f.value}`).join(', ')}`]
-        : []),
-      ...last.errors,
-    ].join(' · '),
+    last.logged_in ? usageShort(row) : '—',
   ];
 }
 
-const HEADERS = ['VENDOR', 'VERSION', 'CHECKED', 'MODEL', 'EFFORT', 'USAGE', 'RESUME', 'NOTES'];
+/** A setting that didn't take, in words (a refusal is in the errors, with its model). */
+function settingNote(what: string, s: VendorCheckSetting): string | undefined {
+  if (s.outcome === 'kept') {
+    return `${what}: kept its own${s.after !== undefined ? ` (${s.after})` : ''}; didn’t take ${s.to ?? 'the pick'}`;
+  }
+  if (s.outcome === 'unclear') return `${what}: didn’t say whether it took ${s.to ?? 'the pick'}`;
+  return undefined;
+}
+
+/** The notes under a vendor's row (T494): what didn't take, rate limits, errors. */
+export function vendorRowNotes(row: VendorCheckRow): string[] {
+  const last = row.last;
+  if (last === undefined) return !row.installed && row.missing !== undefined ? [row.missing] : [];
+  return [
+    ...(last.logged_in
+      ? [settingNote('Model', last.model), settingNote('Effort', last.effort)].filter(
+          (n): n is string => n !== undefined,
+        )
+      : []),
+    ...(last.rate_limits.length > 0
+      ? [`Rate limits: ${last.rate_limits.map((f) => `${f.name}=${f.value}`).join(', ')}`]
+      : []),
+    ...last.errors,
+    ...(!row.installed && row.missing !== undefined ? [row.missing] : []),
+  ];
+}
+
+/** `text` wrapped at word boundaries to `width`, each line indented by `indent`. */
+export function wrapNote(text: string, width: number, indent = '  '): string[] {
+  const room = Math.max(20, width - indent.length);
+  const lines: string[] = [];
+  let line = '';
+  for (const word of text.split(/\s+/)) {
+    if (word === '') continue;
+    if (line !== '' && line.length + 1 + word.length > room) {
+      lines.push(indent + line);
+      line = '';
+    }
+    line = line === '' ? word : `${line} ${word}`;
+  }
+  if (line !== '') lines.push(indent + line);
+  return lines;
+}
+
+const HEADERS = ['VENDOR', 'VERSION', 'CHECKED', 'MODEL', 'EFFORT', 'RESUME', 'USAGE'];
 
 export function printVendorTable(status: VendorChecksStatus): void {
-  printTable(HEADERS, status.vendors.map(vendorRowCells));
+  const width = process.stdout.columns ?? 100;
+  printTable(
+    HEADERS,
+    status.vendors.map(vendorRowCells),
+    status.vendors.map((row) => vendorRowNotes(row).flatMap((note) => wrapNote(note, width))),
+  );
   console.log(
     `\nAutomatic checks: ${status.mode === 'auto' ? 'on (after a CLI update or a new version)' : 'off (manual)'}`,
   );
+  console.log('Every usage and rate-limit field by name: agile vendors --json');
 }
 
 /** `agile vendors`: each vendor's latest self-check. */

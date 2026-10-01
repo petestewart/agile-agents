@@ -18,7 +18,7 @@ import {
 } from '@agile-agents/daemon';
 import type { VendorChecksStatus } from '@agile-agents/shared';
 import { runCli } from '../index';
-import { runVendors, runVendorsCheck, vendorRowCells } from './vendors';
+import { runVendors, runVendorsCheck, vendorRowCells, vendorRowNotes, wrapNote } from './vendors';
 
 const FAKE_AGENT = join(
   import.meta.dir,
@@ -103,15 +103,19 @@ describe('agile vendors (T489)', () => {
     expect(before.code).toBe(0);
     expect(before.out).toContain('VENDOR');
     expect(before.out).toMatch(/Codex\s+0\.50\.0\s+never/);
-    expect(before.out).toMatch(/Gemini CLI\s+0\.50\.0\s+not installed/);
+    expect(before.out).toMatch(
+      /Gemini CLI\s+0\.50\.0\s+can’t start[^\n]*\n {2}Gemini CLI can’t start: `gemini` is not on PATH\./,
+    );
     expect(before.out).toContain('Automatic checks: on');
 
     const checked = await capture(() => runVendorsCheck(socketPath, 'codex', false));
     expect(checked.code).toBe(0);
     expect(checked.out).toContain('Checking codex');
     const row = checked.out.split('\n').find((l) => l.startsWith('Codex')) ?? '';
-    // Model ✓, no effort option —, the reply's usage fields, resume ✓.
-    expect(row).toMatch(/✓\s+—\s+reply: inputTokens, outputTokens\s+✓/);
+    // Model ✓, no effort option —, resume ✓, the turn's tokens arrived.
+    expect(row).toMatch(/✓\s+—\s+✓\s+per turn$/);
+    // T494: no line pads to the widest note.
+    for (const line of checked.out.split('\n')) expect(line).toBe(line.trimEnd());
 
     const json = await capture(() => runVendors(socketPath, true));
     const status = JSON.parse(json.out) as VendorChecksStatus;
@@ -133,6 +137,27 @@ describe('agile vendors (T489)', () => {
     expect(vendorRowCells({ ...base, installed: false, running: false, queued: false })[2]).toBe(
       'not installed',
     );
+  });
+
+  test('T494: long words go under the row, wrapped; an installed CLI with no bridge can’t start', () => {
+    const missing = 'Pi can’t start: `pi-acp` is not on the daemon’s PATH.';
+    const pi = {
+      vendor: 'pi' as const,
+      label: 'Pi',
+      installed: false,
+      cli_version: '0.87.1',
+      missing,
+      running: false,
+      queued: false,
+    };
+    expect(vendorRowCells(pi)[2]).toBe('can’t start');
+    expect(vendorRowNotes(pi)).toEqual([missing]);
+    const lines = wrapNote(`Rate limits: ${'a=1, '.repeat(40)}`, 40);
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(line.startsWith('  ')).toBe(true);
+      expect(line.length).toBeLessThanOrEqual(40);
+    }
   });
 
   test('usage lists the verbs', async () => {

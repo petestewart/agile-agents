@@ -100,7 +100,9 @@ export function vendorRowView(row: VendorCheckRow, now: number = Date.now()): Ve
         ? `Checked ${ago(last.finished_at, now) === 'now' ? 'just now' : `${ago(last.finished_at, now)} ago`}`
         : row.installed
           ? 'Never checked'
-          : 'Not installed';
+          : row.cli_version !== undefined
+            ? 'Can’t start'
+            : 'Not installed';
   if (last === undefined) {
     return {
       version,
@@ -109,13 +111,16 @@ export function vendorRowView(row: VendorCheckRow, now: number = Date.now()): Ve
         ? { text: row.running ? 'Checking' : 'Waiting', tone: 'blue' }
         : row.installed
           ? { text: 'Not checked yet', tone: 'gray' }
-          : { text: 'Not installed', tone: 'gray' },
+          : row.cli_version !== undefined
+            ? { text: 'Can’t start', tone: 'amber' }
+            : { text: 'Not installed', tone: 'gray' },
       model: dash,
       effort: dash,
       resume: dash,
       usage: '—',
       rateLimits: [],
-      errors: [],
+      // T494: Pi's CLI can be installed while its bridge isn't; say which command is missing.
+      errors: !row.installed && row.missing !== undefined ? [row.missing] : [],
       canCheck: row.installed && !busy,
     };
   }
@@ -128,7 +133,7 @@ export function vendorRowView(row: VendorCheckRow, now: number = Date.now()): Ve
         : last.model.outcome === 'kept'
           ? { text: 'Keeps its own model', tone: 'amber' }
           : last.model.outcome === 'refused'
-            ? { text: 'Refuses model picks', tone: 'amber' }
+            ? { text: 'Refused the model it was given', tone: 'amber' }
             : last.errors.length > 0
               ? { text: 'Checked, with problems', tone: 'amber' }
               : { text: 'Checked', tone: 'green' };
@@ -152,12 +157,10 @@ export function vendorRowView(row: VendorCheckRow, now: number = Date.now()): Ve
     usage: skipped ? '—' : usageShort(last),
     rateLimits: last.rate_limits.map((f) => `${f.name}: ${f.value}`),
     errors: last.errors.map(sentence),
-    ...(!skipped && (last.model.outcome === 'kept' || last.model.outcome === 'refused')
-      ? {
-          leftOut: `Model choice leaves ${last.label} out: a model picked for it ${
-            last.model.outcome === 'kept' ? 'doesn’t take' : 'is refused'
-          }.`,
-        }
+    // T494: only a vendor that keeps its own model is left out; a refusal is
+    // about the one model the check tried, and the vendor stays in.
+    ...(!skipped && last.model.outcome === 'kept'
+      ? { leftOut: `Model choice leaves ${last.label} out: a model picked for it doesn’t take.` }
       : {}),
     canCheck: row.installed && !busy,
   };

@@ -536,7 +536,11 @@ T484 follows §6, with these differences and additions:
   Fields in `usage_update`, the reply's `usage`/`_meta` and the session
   reply's `_meta` whose names read as a rate limit or plan usage are kept
   with their values (at most 20, each value cut to 200 characters); a name or
-  value that looks like a credential never is.
+  value that looks like a credential never is. A `token_count` or
+  `model_usage` subtree never is either (T494): Claude Code and Codex send
+  `_meta.quota.token_count` and `…model_usage`, which are the session's own
+  token counts, not what the plan has left. On Pete's first run (2026-10-01)
+  that left no rate-limit field from any vendor.
 - **The resume**: where the provider is set up for `session/load` (Claude,
   Codex, Grok, Pi), the vendor is stopped and started again with a load of
   the same ACP session id; no second prompt. Cursor and Gemini read "not
@@ -565,7 +569,12 @@ T484 follows §6, with these differences and additions:
   service refuses to spawn anything unless a test injects the fake agent,
   and the trigger isn't wired.
 - **Routing**: `vendorCapabilities` is the pure view; `vendorsLeftOut` names
-  the vendors whose last check `kept` its own model or `refused` the pick.
+  the vendors whose last check `kept` its own model. (T494: a `refused` pick
+  no longer leaves the vendor out. The refusal is loud and about the one
+  model the check tried, which the plan may not include; Pete's first run had
+  Claude Code refuse its test model with "Internal error" while it ran
+  `claude-opus-5-5` fine, and leaving Claude out of Choose for that was
+  wrong. The error now names the model.)
   Under Choose, `ModelPolicyService` leaves them out of the candidates for a
   start, the cockpit's preview and Try it, and the pick's why ends "left out
   Cursor: its last check kept its own model". Nothing changes with no check
