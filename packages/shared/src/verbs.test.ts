@@ -68,6 +68,7 @@ describe('agent verbs', () => {
       'propose_repo',
       'goal_met',
       'escalate',
+      'settle_question',
     ]);
     for (const verb of AGENT_VERBS) {
       expect(AGENT_VERB_SCHEMAS[verb]).toBeDefined();
@@ -127,6 +128,23 @@ describe('agent verbs', () => {
     expect(
       AGENT_VERB_SCHEMAS.goal_met.safeParse({ session, summary: 'x', close: true }).success,
     ).toBe(false);
+  });
+
+  test('T502: settle_question takes a question id and the answer, and nothing else', () => {
+    const question = `Q-${ulid()}`;
+    expect(validateVerbInput('settle_question', { session, question, answer: 'cents' })).toEqual({
+      session,
+      question,
+      answer: 'cents',
+    });
+    const settle = (fields: Record<string, unknown>) =>
+      AGENT_VERB_SCHEMAS.settle_question.safeParse({ session, question, answer: 'x', ...fields })
+        .success;
+    expect(settle({ question: 'Q-1' })).toBe(false);
+    expect(settle({ answer: '' })).toBe(false);
+    expect(settle({ answer: 'x'.repeat(801) })).toBe(false);
+    expect(settle({ resolved_as: 'reply' })).toBe(false);
+    expect(AGENT_VERB_DESCRIPTIONS.settle_question).toContain('recorded as the answer');
   });
 
   test('T455: propose_repo takes a repo name and a why, and nothing else', () => {

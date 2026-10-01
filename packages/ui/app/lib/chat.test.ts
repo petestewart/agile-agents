@@ -30,9 +30,12 @@ import {
   nodeTabs,
   openQuestions,
   parseDiff,
+  placeQuestionThreads,
   proposedNext,
   questionIdOfRef,
+  questionThreadWords,
   refusalWords,
+  repliesText,
   sendIntent,
   sessionIdText,
   sessionLabel,
@@ -1154,5 +1157,60 @@ describe('windowRows (T447, audit r7 #15)', () => {
     // More shown: fewer hidden.
     expect(windowRows(rows, 30 + THREAD_WINDOW).hidden).toBe(10);
     expect(windowRows(rows, Number.MAX_SAFE_INTEGER).hidden).toBe(0);
+  });
+});
+
+describe('T502: question threads in the chat', () => {
+  test('a thread’s state in words: who it waits on, or how it ended', () => {
+    expect(questionThreadWords({ state: 'waits_on_you' })).toEqual({
+      text: 'Waits on you',
+      tone: 'amber',
+    });
+    expect(questionThreadWords({ state: 'waiting_on_agent', vendor: 'codex' }).text).toBe(
+      'Waiting on Codex',
+    );
+    expect(questionThreadWords({ state: 'waiting_on_agent' }).text).toBe('Waiting on the agent');
+    expect(questionThreadWords({ state: 'unsettled', vendor: 'codex' })).toEqual({
+      text: 'Codex didn’t settle it',
+      tone: 'amber',
+    });
+    expect(
+      questionThreadWords({ state: 'resolved', resolved_as: 'settled', answer: 'Integer\ncents' }),
+    ).toEqual({ text: 'Settled: Integer cents', tone: 'green' });
+    expect(questionThreadWords({ state: 'resolved', resolved_as: 'reply', answer: 'x' }).text).toBe(
+      'Answered: x',
+    );
+    expect(questionThreadWords({ state: 'resolved', resolved_as: 'superseded' }).text).toBe(
+      'Asked again',
+    );
+    expect(questionThreadWords({ state: 'with_coordinator' }).tone).toBe('gray');
+    expect([repliesText(1), repliesText(2)]).toEqual(['1 reply', '2 replies']);
+  });
+
+  test('a thread sits under its question; its other loaded lines leave the main flow', () => {
+    const loaded = ['t1', 't2', 't3', 't4', 't5'].map((ts) => ({ ts }));
+    const replied = { entries: ['t4', 't2', 't5'], state: 'waiting_on_agent' as const };
+    const alone = { entries: ['t3'], state: 'waits_on_you' as const };
+    const older = { entries: ['t0', 't9'], state: 'waiting_on_agent' as const };
+    const waiting = { entries: ['t1'], state: 'unsettled' as const };
+    const placed = placeQuestionThreads([replied, alone, older, waiting], loaded);
+    expect(placed.hostOf.get('t2')).toBe(replied);
+    expect(placed.linesOf.get(replied)).toEqual(['t4', 't5']);
+    expect([...placed.nested].sort()).toEqual(['t4', 't5']);
+    // A question alone, waiting on you, is its card's; one above the window has no host here.
+    expect(placed.hostOf.has('t3')).toBe(false);
+    expect(placed.linesOf.has(older)).toBe(false);
+    // An unsettled one shows its state even with nothing nested.
+    expect(placed.hostOf.get('t1')).toBe(waiting);
+  });
+
+  test('a coordinator’s notes on a child question leave its main flow (D63)', () => {
+    const child = { entries: ['c1'], state: 'waits_on_you' as const, notes: ['n2', 'n9'] };
+    const placed = placeQuestionThreads([child], [{ ts: 'n1' }, { ts: 'n2' }], {
+      notesOnly: true,
+    });
+    expect([...placed.nested]).toEqual(['n2']);
+    expect(placed.linesOf.get(child)).toEqual(['n2']);
+    expect(placed.hostOf.size).toBe(0);
   });
 });

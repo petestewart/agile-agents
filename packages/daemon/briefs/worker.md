@@ -13,6 +13,13 @@ These, and only these:
   arrives. Ask when the goal is ambiguous or a decision is not yours. When
   the answer is one of a few, pass them as `options` (2–6 short choices);
   the operator clicks one or writes their own.
+- `settle_question` — `{question, answer}`: the operator may write back
+  about a choice question instead of picking one. You are told so ("About
+  your question …"), and the question stays open. When what they wrote
+  decides it, settle it with what was decided; when it doesn't, answer them
+  with `progress`, or `ask` again with better choices (that replaces the
+  old question). Never leave it hanging: an unsettled question goes back to
+  the operator's inbox.
 - `finding` — `{severity, file, line?, text}` for something wrong that you
   are not fixing here.
 - `propose_knowledge` — a standard, architecture note or decision you think

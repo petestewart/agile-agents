@@ -596,3 +596,55 @@ describe('escalate (T484, D56)', () => {
     expect(brief).toContain('you never pick the model');
   });
 });
+
+describe('settle_question (T502, D62)', () => {
+  test('a node’s own agent settles its open question with what was decided; anyone else is refused', async () => {
+    const questions = new QuestionService(store, streams);
+    verbs = new VerbService({ store, streams, questions, rules });
+    const { session, stream } = await attach();
+    const { id } = await verbs.ask({
+      session,
+      text: 'Store amounts how?',
+      options: ['Integer cents', 'Floats'],
+    });
+    await questions.reply(id as QuestionId, { text: 'what does Stripe use?', by: 'human' });
+    expect(questions.get(id as QuestionId).status).toBe('open');
+
+    // A reviewer on the node can't settle it.
+    const reviewer = ulid();
+    await store.putAgent(reviewer as AgentId, {
+      vendor: 'claude',
+      model: 'sonnet',
+      stream: stream.id,
+      last_seen: new Date().toISOString(),
+      role: 'reviewer',
+    });
+    await expect(
+      verbs.settleQuestion({ session: reviewer, question: id, answer: 'cents' }),
+    ).rejects.toThrow("only a node's own agent settles one");
+    // Nor another node's agent.
+    const other = await attach();
+    await expect(
+      verbs.settleQuestion({ session: other.session, question: id, answer: 'cents' }),
+    ).rejects.toThrow('was not asked on your node');
+    // Only `{question, answer}`: a resolution of its own is refused at the edge.
+    await expect(
+      verbs.settleQuestion({ session, question: id, answer: 'cents', resolved_as: 'reply' }),
+    ).rejects.toThrow(/settle_question/);
+
+    expect(await verbs.settleQuestion({ session, question: id, answer: 'Integer cents' })).toEqual({
+      id,
+      resolved_as: 'settled',
+    });
+    expect(questions.get(id as QuestionId)).toMatchObject({
+      status: 'answered',
+      answer: 'Integer cents',
+      resolved_as: 'settled',
+      answered_by: `agent:${session}`,
+    });
+    // Twice is refused, and says how it ended.
+    await expect(verbs.settleQuestion({ session, question: id, answer: 'Floats' })).rejects.toThrow(
+      'is already settled',
+    );
+  });
+});

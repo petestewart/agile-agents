@@ -99,6 +99,12 @@ describe('InboxItemSchema', () => {
     expect(() => validateInboxItem(gate)).toThrow(/only a question item carries options/);
   });
 
+  test('T502: only a question item is unsettled', () => {
+    expect(validateInboxItem(item({ unsettled_by: 'codex' })).unsettled_by).toBe('codex');
+    const gate = item({ kind: 'gate', id: `HIL-${ulid()}`, unsettled_by: 'codex' });
+    expect(() => validateInboxItem(gate)).toThrow(/only a question item is unsettled/);
+  });
+
   test('context is one line, capped at the §3.2 budget', () => {
     expect(InboxItemSchema.safeParse(item({ context: 'x'.repeat(201) })).success).toBe(false);
     expect(inboxContext('a\n  long   question\n')).toBe('a long question');

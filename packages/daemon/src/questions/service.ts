@@ -13,6 +13,8 @@ import {
   type Question,
   type QuestionId,
   type Stream,
+  type ThreadEntry,
+  questionIdOfThreadRef,
   ulid,
   validateQuestion,
 } from '@agile-agents/shared';
@@ -103,14 +105,39 @@ export interface AnswerQuestionResult {
  */
 export type AnswerDelivery = (sessionId: string, question: Question) => Promise<void> | void;
 
+/**
+ * T502 (D62): how your reply in a choice question's thread reaches its
+ * agent (`AttachService.say` with the question): the line on the thread
+ * (`ref: questions/<id>.yaml`) and a `human_line` event that names the
+ * question. Unset, the line is only written (nobody to tell).
+ */
+export type ReplyDelivery = (question: Question, text: string) => Promise<ThreadEntry>;
+
 export interface QuestionServiceOptions {
   clock?: () => Date;
   deliver?: AnswerDelivery;
+  reply?: ReplyDelivery;
+}
+
+/** T502: what a reply did: kept a choice question open (`entry`), or answered one with none. */
+export interface ReplyQuestionResult {
+  question: Question;
+  entry?: ThreadEntry;
+  answered?: true;
+}
+
+/** T502: the session that asked can only settle its own node's open question. */
+export class NotYourQuestionError extends Error {
+  constructor(id: string) {
+    super(`question ${id} was not asked on your node`);
+    this.name = 'NotYourQuestionError';
+  }
 }
 
 export class QuestionService {
   private readonly clock: () => Date;
   private readonly deliver: AnswerDelivery | undefined;
+  private readonly replyTo: ReplyDelivery | undefined;
 
   constructor(
     private readonly store: StateStore,
@@ -119,6 +146,7 @@ export class QuestionService {
   ) {
     this.clock = options.clock ?? (() => new Date());
     this.deliver = options.deliver;
+    this.replyTo = options.reply;
   }
 
   /**
@@ -144,6 +172,12 @@ export class QuestionService {
       status: 'open',
       raised_at: this.clock().toISOString(),
     };
+    // T502 (D62): an agent asking again while you talked back to its earlier
+    // question (a reply it hasn't settled) replaces that question; read before the write.
+    const reasked =
+      input.raised_by !== 'human' && input.session !== undefined
+        ? this.repliedTo(input.stream, input.session)
+        : [];
     const saved = await this.persist(record);
 
     // `agent:<session>` when an agent asked from a live session, else `human` or `daemon`.
@@ -165,6 +199,7 @@ export class QuestionService {
         input.session,
       );
     }
+    for (const earlier of reasked) await this.supersedeByQuestion(earlier, saved);
 
     await this.streams.update('daemon', saved.stream, {
       agent: { status: 'question' },
@@ -241,6 +276,139 @@ export class QuestionService {
 
     await this.deliverAnswer(saved);
     return { question: saved };
+  }
+
+  /**
+   * T502 (D62, design/chat-threads.md §5): what you typed in a question's
+   * own box. A choice question stays open: the line goes on its thread
+   * (`ref: questions/<id>.yaml`) and to its agent as a reply about it
+   * (`ReplyDelivery`), and the node no longer waits on you; the agent
+   * settles it or asks again. A question with no choices is answered by
+   * it, as before (`resolved_as: reply`).
+   */
+  async reply(id: QuestionId, input: { text: string; by: string }): Promise<ReplyQuestionResult> {
+    const current = this.get(id);
+    if (current.status !== 'open') throw new QuestionAlreadyAnsweredError(id);
+    const text = normalizeText(input.text);
+    if (text.length === 0) throw new EmptyQuestionTextError('answer');
+    if (current.options === undefined || current.options.length === 0) {
+      const { question } = await this.answer(id, { answer: text, by: input.by });
+      return { question, answered: true };
+    }
+    const entry =
+      this.replyTo !== undefined
+        ? await this.replyTo(current, text)
+        : await this.streams.appendThread('human', current.stream, {
+            kind: 'line',
+            body: text,
+            ref: questionPath(current.id),
+          });
+    // Waiting on the agent now, not on you. Its turn (if one is live) works on the reply.
+    const node = this.streams.get(current.stream);
+    const live = node.sessions.some((session) => LIVE_SESSION_STATUSES.includes(session.status));
+    await this.streams
+      .update('daemon', current.stream, {
+        ...(live ? { agent: { status: 'working' } } : {}),
+        human: { status: 'open' },
+      })
+      .catch(() => {
+        // The line and its delivery happened; the status pair is best effort.
+      });
+    return { question: this.get(id), entry };
+  }
+
+  /**
+   * T502 (D62): the agent's `settle_question`: your reply decided its open
+   * question. The answer is recorded as `settled`, by the agent, with an
+   * `answer` line on the thread; nothing is delivered (the agent said it).
+   */
+  async settle(
+    id: QuestionId,
+    input: { answer: string; session: string; stream: string },
+  ): Promise<Question> {
+    const current = this.get(id);
+    if (current.stream !== input.stream) throw new NotYourQuestionError(id);
+    if (current.status !== 'open') throw new QuestionAlreadyAnsweredError(id);
+    const answer = normalizeText(input.answer);
+    if (answer.length === 0) throw new EmptyQuestionTextError('answer');
+    const by = `agent:${input.session}`;
+    const saved = await this.persist({
+      ...current,
+      status: 'answered',
+      answer,
+      resolved_as: 'settled',
+      answered_by: by,
+      answered_at: this.clock().toISOString(),
+    });
+    await this.streams.appendThread(
+      'agent',
+      saved.stream,
+      { kind: 'answer', body: answer, ref: questionPath(saved.id) },
+      input.session,
+    );
+    // Nothing else open on the node: it no longer waits on you.
+    if (!this.listOpen().some((q) => q.stream === saved.stream)) {
+      const node = this.streams.get(saved.stream);
+      if (node.human.status === 'waiting_on_you') {
+        await this.streams
+          .update('daemon', saved.stream, { human: { status: 'open' } })
+          .catch(() => {});
+      }
+    }
+    await this.store.appendEvent(
+      buildEvent('question_answered', {
+        stream: saved.stream,
+        agent: by,
+        session: input.session,
+        data: { id: saved.id, answer: saved.answer, settled: true },
+      }),
+    );
+    return saved;
+  }
+
+  /** T502: `session`'s open questions on `stream` that you replied to in their thread. */
+  private repliedTo(stream: string, session: string): Question[] {
+    const open = this.listOpen().filter((q) => q.stream === stream && q.session === session);
+    if (open.length === 0) return [];
+    let thread: ThreadEntry[];
+    try {
+      thread = this.store.readThread(stream);
+    } catch {
+      return [];
+    }
+    const replied = new Set(
+      thread
+        .filter((e) => e.by === 'human' && e.kind === 'line')
+        .map((e) => questionIdOfThreadRef(e.ref))
+        .filter((q): q is QuestionId => q !== undefined),
+    );
+    return open.filter((q) => replied.has(q.id));
+  }
+
+  /** T502 (D62): asked again: the earlier question is superseded by the newer one, its thread carrying on. */
+  private async supersedeByQuestion(earlier: Question, newer: Question): Promise<void> {
+    const saved = await this.persist({
+      ...earlier,
+      status: 'answered',
+      answer: normalizeText(`asked again: ${newer.text}`),
+      resolved_as: 'superseded',
+      answered_by: 'daemon',
+      answered_at: this.clock().toISOString(),
+      superseded_by: newer.id,
+    });
+    await this.streams.appendThread('daemon', saved.stream, {
+      kind: 'event',
+      body: 'the agent asked this again',
+      ref: questionPath(saved.id),
+    });
+    await this.store.appendEvent(
+      buildEvent('question_answered', {
+        stream: saved.stream,
+        agent: 'daemon',
+        ...(saved.session !== undefined ? { session: saved.session } : {}),
+        data: { id: saved.id, superseded_by: newer.id },
+      }),
+    );
   }
 
   /**

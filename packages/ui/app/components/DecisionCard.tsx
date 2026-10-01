@@ -9,7 +9,10 @@
  *                     focused card in the list, A/B… or 1/2… picks), and
  *                     its own answer box (T499), one "Reply…" line until
  *                     it is focused; in `full` the chat's own line carries
- *                     the question's text (T416)
+ *                     the question's text (T416); T502 (D62): typed to a
+ *                     choice question it is a Reply in its thread (the
+ *                     question stays open; its agent settles it or asks
+ *                     again), else the answer
  *  - `gate`         → Allow/Deny (a `land` gate reads Merge/Hold), with an
  *                     optional note sent as the reason, or on its own; a
  *                     held read (T457) reads Allow once, Always for this
@@ -49,6 +52,7 @@ import {
   landStream,
   markStreamLanded,
   noteGate,
+  replyToQuestion,
   sayOnStream,
   startWaitingParts,
   stopSessions,
@@ -456,10 +460,16 @@ function AnswerBox({
   locked,
   title,
   onSend,
+  talksBack = false,
 }: {
   question: string;
   /** The card has choice buttons above: the box is for an answer of your own. */
   choices: boolean;
+  /**
+   * T502 (D62): what you type is a reply in its thread, not the answer: the
+   * question stays open and its agent settles it or asks again ("Reply").
+   */
+  talksBack?: boolean;
   open: boolean;
   onOpen: (open: boolean) => void;
   sending: boolean;
@@ -563,7 +573,7 @@ function AnswerBox({
             // Keep the box's focus: a click here mustn't fold an empty box before it lands.
             onMouseDown={(e) => e.preventDefault()}
           >
-            Answer
+            {talksBack ? 'Reply' : 'Answer'}
           </Button>
         </div>
       )}
@@ -817,10 +827,19 @@ export function Card({
       foldable = main.foldable && textShown === 'whole';
       // Keys pick a choice on a focused card in the list (`Inbox`'s keys); the keycap says which.
       const keyed = !full;
-      /** Answers it (a choice's words or what was typed, as written); the kept answer goes. */
+      /** Answers it with a choice's words; the kept answer goes. */
       const answer = (key: string, words: string): Promise<void> =>
         act(key, async () => {
           await answerQuestion(item.id, words);
+          answerDrafts.set(item.id, undefined);
+        });
+      // T502 (D62): what you type goes as written. To a choice question it is a reply in its
+      // thread: the question stays open, waiting on its agent (it settles it or asks again).
+      // To one with no choices it is the answer, as before. The daemon decides which.
+      const talksBack = item.options !== undefined && item.options.length > 0;
+      const reply = (words: string): Promise<void> =>
+        act(talksBack ? 'reply' : 'answer', async () => {
+          await replyToQuestion(item.id, words);
           answerDrafts.set(item.id, undefined);
         });
       body = (
@@ -881,11 +900,12 @@ export function Card({
           choices={q.choices.length > 0}
           open={answerOpen}
           onOpen={setAnswerOpen}
-          sending={busy === 'answer'}
+          talksBack={talksBack}
+          sending={busy === 'answer' || busy === 'reply'}
           frozen={busy !== undefined || settled !== undefined}
           locked={locked}
           title={why()}
-          onSend={(words) => void answer('answer', words)}
+          onSend={(words) => void reply(words)}
         />
       );
       break;

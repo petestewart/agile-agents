@@ -125,6 +125,13 @@ export const InboxItemSchema = z
     read_root: ReadRootSchema.optional(),
     /** T481: a `harness_update` item's CLI — present on that kind only. */
     harness: InboxHarnessSchema.optional(),
+    /**
+     * T502 (design/chat-threads.md §5): a choice question you replied to whose
+     * agent finished the turn your reply started without settling it or
+     * asking again: its vendor (`codex`), for "Codex didn't settle …". A
+     * question item only.
+     */
+    unsettled_by: z.string().min(1).max(80).optional(),
   })
   .strict()
   .refine((item) => isStreamlessKind(item.kind) || item.stream !== undefined, {
@@ -146,6 +153,10 @@ export const InboxItemSchema = z
   .refine((item) => item.options === undefined || item.kind === 'question', {
     message: 'only a question item carries options',
     path: ['options'],
+  })
+  .refine((item) => item.unsettled_by === undefined || item.kind === 'question', {
+    message: 'only a question item is unsettled',
+    path: ['unsettled_by'],
   })
   .refine((item) => item.read_root === undefined || item.kind === 'gate', {
     message: 'only a gate item carries a read root',

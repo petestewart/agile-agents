@@ -1793,3 +1793,29 @@ bun spike/permission-matrix.ts --vendor codex --scenario exec --hooks --fixture 
       the `perm` run decides: hook calls > 0 means the daemon can install a
       trusted hook; 0 means `app-server` doesn't run hooks.
 - [ ] `rm -rf ~/agile-codex-spike` when done.
+
+## 21. **[vendor]** A question is its thread: talking back to a choice (D62, D63, T502)
+
+The fake agent plays `settle_question` offline; only a real agent shows it
+calls it when your reply decided the question, and asks again when it didn't.
+With a Claude login (then Codex, if you have one):
+
+- [ ] Start a node with a goal that needs a choice ("Add a price field to the
+      ledger; ask me how to store amounts, with choices"). Its question card
+      shows the choices and the box under them reads "Or write your own
+      answer, or ask about it…"; once you type, its button says Reply.
+- [ ] Type "What does Stripe use?" and Reply. The card leaves Needs me; in the
+      chat, under the question, the thread shows "1 reply · Waiting on
+      Claude", your line, then the agent's answer about it (not in the main
+      flow).
+- [ ] Reply "Integer cents, then." It calls `settle_question`: the thread
+      reads "Settled: …" with the agent's answer line, and nothing waits on
+      you. If it asks again with better choices instead, the old question's
+      thread carries on under the new one (one thread, the new card). Note
+      the vendor if it does neither.
+- [ ] Reply something that decides nothing ("not sure yet"). When its turn
+      ends without a settle or a new question, the card is back in Needs me
+      as "Claude didn't settle this", and the thread says so.
+- [ ] On a project with two parts, have each part ask you something: the
+      project's root chat lists "2 questions from the parts", one line each
+      with its part's name and state; a name opens that part's chat.

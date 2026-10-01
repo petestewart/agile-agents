@@ -206,6 +206,57 @@ describe('T160 cockpit routes', () => {
     expect(frame.inbox.map((i) => i.stream_path)).toEqual([['root', 'leaf']]);
   });
 
+  test('T502: POST /api/questions/:id/reply keeps a choice question open on its thread; the page and its coordinator show it as a thread', async () => {
+    const root = await streams.create('human', { title: 'Shop', goal: 'g' });
+    const leaf = await streams.create('human', { title: 'Ledger', goal: 'g', parent: root.id });
+    const q = await questions.raise({
+      stream: leaf.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      session: ulid(),
+      text: 'Store amounts how?',
+      options: ['Integer cents', 'Floats'],
+    });
+    const post = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/questions/${q.id}/reply`), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+    expect((await post({ text: 'x' }, { origin: 'http://evil.example' })).status).toBe(403);
+    expect((await post({ text: 42 })).status).toBe(400);
+    expect(
+      (
+        await fetch(url('/api/questions/nope/reply'), {
+          method: 'POST',
+          body: JSON.stringify({ text: 'x' }),
+        })
+      ).status,
+    ).toBe(400);
+    const ok = await post({ text: 'what does Stripe use?' });
+    expect(ok.status).toBe(200);
+    const result = (await ok.json()) as { question: { status: string }; entry?: { ref?: string } };
+    expect(result.question.status).toBe('open');
+    expect(result.entry?.ref).toBe(`questions/${q.id}.yaml`);
+    const line = streams.readThread(leaf.id).entries.at(-1);
+    expect(line).toMatchObject({ by: 'human', kind: 'line', body: 'what does Stripe use?' });
+
+    const page = (await (await fetch(url(`/api/streams/${leaf.id}`))).json()) as {
+      question_threads?: Array<{ question: string; replies: number; entries: string[] }>;
+    };
+    expect(page.question_threads?.[0]).toMatchObject({ question: q.id, replies: 1 });
+    expect(page.question_threads?.[0]?.entries).toContain(line?.ts);
+    const parent = (await (await fetch(url(`/api/streams/${root.id}`))).json()) as {
+      child_questions?: Array<{ question: string; node_title?: string }>;
+    };
+    expect(parent.child_questions?.map((t) => [t.question, t.node_title])).toEqual([
+      [q.id, 'Ledger'],
+    ]);
+
+    // Answered (a choice clicked), a second reply is 409.
+    await questions.answer(q.id, { answer: 'Integer cents', by: 'human' });
+    expect((await post({ text: 'and?' })).status).toBe(409);
+  });
+
   test('POST /api/rules/:id/accept decides as human; a second accept is 409; cross-origin is 403', async () => {
     const rule = await rules.create('agent', { text: 'use the repo scripts' });
     const foreign = await fetch(url(`/api/rules/${rule.id}/accept`), {

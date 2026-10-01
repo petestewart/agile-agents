@@ -15,6 +15,7 @@ import { ULID_PATTERN, UlidSchema } from './ids';
 import { EscalationTriggerSchema } from './model-escalation';
 import { AutonomyProposalIdSchema, CoordinatorActionSchema } from './plan';
 import { AutonomySchema, ProjectIdSchema } from './project';
+import { QuestionIdSchema } from './question';
 
 export const ROUTED_EVENT_STRING_MAX = 800;
 export const ROUTED_EVENT_PAYLOAD_MAX = 4096;
@@ -55,7 +56,15 @@ const PrNumber = z.number().int().positive();
 
 /** One strict payload schema per event type (§15 catalog). */
 export const ROUTED_EVENT_PAYLOADS = {
-  human_line: z.object({ body: NonEmpty }),
+  /**
+   * T502 (D62): `question` when the line is your reply in a question's
+   * thread (typed in its card): its id and text, so the agent is told what
+   * the reply is about and what it may settle.
+   */
+  human_line: z.object({
+    body: NonEmpty,
+    question: z.object({ id: QuestionIdSchema, text: NonEmpty }).strict().optional(),
+  }),
   answer: z.object({ question: NonEmpty, prompt: Str.optional(), answer: NonEmpty }),
   child_status: z.object({
     child: UlidSchema,

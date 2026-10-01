@@ -62,6 +62,7 @@ import {
   liveAgentOf,
   nodeTabs,
   openQuestions,
+  placeQuestionThreads,
   proposedNext,
   questionIdOfRef,
   sendIntent,
@@ -101,6 +102,7 @@ import {
   ChatScroll,
   ContextMeter,
   MessageList,
+  QuestionThreadView,
   QuoteSelection,
   StepsFold,
   Thinking,
@@ -1201,6 +1203,22 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   commands.current = { node: stream.id, title: stream.title, items: [...headerItems, ...menu] };
 
   // ---------------------------------------------------------------- the chat
+  // T502 (D62): each question is its thread: nested under the line that asked it, its other
+  // lines out of the main flow. D63: on a coordinator's chat each child's question is a thread,
+  // with the coordinator's own lines it caused (its notes) nested under it.
+  const questionThreads = placeQuestionThreads(page.question_threads ?? [], page.thread);
+  const childThreads = page.child_questions ?? [];
+  const childNotes = placeQuestionThreads(childThreads, page.thread, { notesOnly: true });
+  const lineAt = new Map(page.thread.map((e) => [e.ts, e]));
+  const linesAt = (ts: readonly string[]) =>
+    ts.flatMap((t) => {
+      const e = lineAt.get(t);
+      return e ? [e] : [];
+    });
+  /** The thread lines the main flow shows (by index into `page.thread`). */
+  const shownLines = page.thread.flatMap((e, i) =>
+    questionThreads.nested.has(e.ts) || childNotes.nested.has(e.ts) ? [] : [i],
+  );
   const renderActions = (entry: StreamPagePayload['thread'][number], i: number) => (
     <>
       {canBranch && entry.kind === 'line' && branching !== threadBase + i && (
@@ -1237,6 +1255,17 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
 
   const renderExtra = (entry: StreamPagePayload['thread'][number], i: number) => (
     <>
+      {(() => {
+        // T502 (D62): a question is its thread, nested under the line that asked it.
+        const thread = questionThreads.hostOf.get(entry.ts);
+        return thread ? (
+          <QuestionThreadView
+            thread={thread}
+            lines={linesAt(questionThreads.linesOf.get(thread) ?? [])}
+            authorOf={(by) => chatAuthor(by, stream.sessions)}
+          />
+        ) : null;
+      })()}
       {open &&
         (() => {
           // T427: what a worker proposes next is one click from being a node. T435 (#14): next
@@ -1447,7 +1476,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   // T445 (audit r7 #26): a project's root with no agent: Ask (A) is how to question the project.
   const askFirst = projectRoot && open && liveAgent === undefined;
   // T438 (audit r6 #4): under a failure's warning, "Tell the agent what to do" would contradict it.
-  const emptyChat = !conversation && !thinking && cards.length === 0 && !agentFailed(page.thread);
+  const emptyChat =
+    !conversation &&
+    !thinking &&
+    cards.length === 0 &&
+    childThreads.length === 0 &&
+    !agentFailed(page.thread);
   // The open questions whose own line the chat shows (an older one may be above the loaded lines).
   const askedInChat = new Set(
     page.thread
@@ -1466,12 +1500,23 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   // T441: one turned into work keeps the question it was asked (the record's `question`).
   const asked = stream.question ?? (role === 'conversation' ? stream.goal : undefined);
   const listed = withQuestion(
-    page.thread,
+    shownLines.map((i) => page.thread[i] as StreamPagePayload['thread'][number]),
     asked !== undefined && asked.trim() !== ''
       ? { ts: stream.created_at, by: 'human', kind: 'line' as const, body: asked }
       : undefined,
   );
-  const listSteps = new Map([...steps.before].map(([i, led]) => [listed.listIndex(i), led]));
+  // T502: a list index back to the whole loaded thread's (a question thread's lines are nested).
+  const threadIndexOf = (i: number): number | undefined => {
+    const at = listed.threadIndex(i);
+    return at === undefined ? undefined : shownLines[at];
+  };
+  const shownAt = new Map(shownLines.map((at, i) => [at, i]));
+  const listSteps = new Map(
+    [...steps.before].flatMap(([i, led]) => {
+      const at = shownAt.get(i);
+      return at === undefined ? [] : [[listed.listIndex(at), led] as const];
+    }),
+  );
 
   const chat = (
     <div className="cr-chat" data-tab-body="thread" ref={chatRef}>
@@ -1492,11 +1537,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           entries={listed.entries}
           authorOf={(by) => chatAuthor(by, stream.sessions)}
           renderActions={(entry, i) => {
-            const at = listed.threadIndex(i);
+            const at = threadIndexOf(i);
             return at === undefined ? null : renderActions(entry, at);
           }}
           renderExtra={(entry, i) => {
-            const at = listed.threadIndex(i);
+            const at = threadIndexOf(i);
             return at === undefined ? null : renderExtra(entry, at);
           }}
           entryAttrs={(_, i) =>
@@ -1553,6 +1598,46 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               </Button>
             )}
           </div>
+        )}
+        {childThreads.length > 0 && (
+          // T502 (D63): each part's question as a thread, one row each; its node answers it.
+          <section
+            className="cr-child-questions"
+            data-testid="child-questions"
+            aria-label="Questions from the parts"
+          >
+            <div className="cr-child-questions-hd">
+              <Icon name="help-circle" size={13} />
+              {childThreads.length === 1
+                ? 'A question from a part'
+                : `${childThreads.length} questions from the parts`}
+            </div>
+            {childThreads.map((thread) => (
+              <QuestionThreadView
+                key={thread.question}
+                testid="child-question-thread"
+                thread={thread}
+                lines={linesAt(childNotes.linesOf.get(thread) ?? [])}
+                authorOf={(by) => chatAuthor(by, stream.sessions)}
+                head={
+                  <div className="cr-qthread-head">
+                    <button
+                      type="button"
+                      className="cr-link cr-qthread-node"
+                      data-testid="child-question-open"
+                      title={`Open ${thread.node_title ?? 'the part'}’s chat`}
+                      onClick={() => select(thread.stream, { tab: 'thread' })}
+                    >
+                      {thread.node_title ?? 'A part'}
+                    </button>
+                    <p className="cr-qthread-text" title={thread.text}>
+                      {thread.text.replace(/\s+/g, ' ').trim()}
+                    </p>
+                  </div>
+                }
+              />
+            ))}
+          </section>
         )}
         <section
           className="cr-decisions"

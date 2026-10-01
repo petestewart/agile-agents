@@ -65,6 +65,39 @@ export const DIGEST_MAX = 10;
 export const REPLY_FIRST =
   'Reply to the operator on the stream first by calling the `progress` tool (what you pass is what they read; do not write the word "progress" into your message): if it is a question, answer it directly; if it is an instruction, acknowledge it and follow it. Then continue the work.';
 
+/**
+ * T502 (D62, design/chat-threads.md §5): what a reply in a question's thread
+ * tells the agent, after the line: settle the question if the reply decided
+ * it, else answer or ask again. `ids` are the questions the replies are about.
+ */
+export function settleHint(ids: readonly string[]): string {
+  const which = ids.length === 1 ? `question ${ids[0]}` : `the question (${ids.join(', ')})`;
+  return `That is a reply about your open question, not a pick: it stays open until you close it. If the reply decides it, call \`settle_question\` with ${which} and what was decided; if it doesn't, answer them with \`progress\`, or \`ask\` again with better choices.`;
+}
+
+/** T502: the question a human line is a reply about, when it is one. */
+function replyQuestionOf(event: RoutedEvent): { id: string; text: string } | undefined {
+  if (event.type !== 'human_line') return undefined;
+  const q = (event.payload as Record<string, unknown>).question;
+  if (typeof q !== 'object' || q === null) return undefined;
+  const { id, text } = q as Record<string, unknown>;
+  return typeof id === 'string' && typeof text === 'string' ? { id, text } : undefined;
+}
+
+/** What a digest (or a wake) ends with: the reply-first rule, and T502's settle hint. */
+function digestTail(events: readonly RoutedEvent[]): string {
+  if (!events.some((e) => e.type === 'human_line')) return 'Continue the work.';
+  const asked = [
+    ...new Set(
+      events.flatMap((e) => {
+        const about = replyQuestionOf(e);
+        return about !== undefined ? [about.id] : [];
+      }),
+    ),
+  ];
+  return asked.length > 0 ? `${settleHint(asked)}\n\n${REPLY_FIRST}` : REPLY_FIRST;
+}
+
 /** The one-line summary a recipient is told (§15). */
 export function summaryOf(
   event: RoutedEvent,
@@ -73,8 +106,13 @@ export function summaryOf(
 ): string {
   const p = event.payload as Record<string, unknown>;
   switch (event.type) {
-    case 'human_line':
-      return `The operator wrote on the stream: ${String(p.body)}`;
+    case 'human_line': {
+      // T502: a reply in a question's thread says what it is about (the question as data).
+      const about = replyQuestionOf(event);
+      return about !== undefined
+        ? `About your question "${about.text}": ${String(p.body)}`
+        : `The operator wrote on the stream: ${String(p.body)}`;
+    }
     case 'answer':
       return `Your question "${String(p.question)}" was answered: ${String(p.answer)}`;
     default:
@@ -89,7 +127,7 @@ export function digestPrompt(
   node?: string,
   titleOf?: (id: string) => string | undefined,
 ): string {
-  const tail = events.some((e) => e.type === 'human_line') ? REPLY_FIRST : 'Continue the work.';
+  const tail = digestTail(events);
   const line = (e: RoutedEvent) => summaryOf(e, node ?? e.subject ?? '', titleOf);
   if (events.length === 1) return `${line(events[0] as RoutedEvent)}\n\n${tail}`;
   const shown = events.slice(-DIGEST_MAX);
@@ -113,7 +151,7 @@ export function wakePrompt(
   node: string,
   titleOf?: (id: string) => string | undefined,
 ): string {
-  const tail = events.some((e) => e.type === 'human_line') ? REPLY_FIRST : 'Continue the work.';
+  const tail = digestTail(events);
   const shown = events.slice(-DIGEST_MAX);
   const earlier = events.length - shown.length;
   return [

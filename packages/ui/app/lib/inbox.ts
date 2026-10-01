@@ -28,7 +28,10 @@ function capitalise(word: string): string {
 export function cardTitle(item: InboxItem): string {
   switch (item.kind) {
     case 'question':
-      return 'Question';
+      // T502 (D62): you replied, and its agent's turn ended without settling it or asking again.
+      return item.unsettled_by !== undefined
+        ? `${item.unsettled_by === 'agent' ? 'The agent' : capitalise(item.unsettled_by)} didn’t settle this`
+        : 'Question';
     case 'gate':
       return isLandGate(item)
         ? 'Approve this merge?'

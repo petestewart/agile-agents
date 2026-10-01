@@ -115,6 +115,7 @@ import {
   QuestionAlreadyAnsweredError,
   QuestionNotFoundError,
   type QuestionService,
+  QuestionThreads,
   parseAnswerParams,
   sayAndAnswer,
 } from './questions';
@@ -211,6 +212,8 @@ export interface HttpServerOptions {
   gates?: GateService;
   /** `/api/questions` and the snapshot's open questions; without it those routes 503. */
   questions?: QuestionService;
+  /** T502: question threads on the node page; built over `streams`, `questions` and `events` when absent. */
+  questionThreads?: QuestionThreads;
   /** `GET /api/inbox` (§3); without it the route 503s. */
   inbox?: InboxService;
   streams?: StreamService;
@@ -430,6 +433,43 @@ function matchQuestionAnswer(pathname: string): string | undefined {
   return match?.[1] ? decodeURIComponent(match[1]) : undefined;
 }
 
+/** T502: `/api/questions/<id>/reply`. */
+function matchQuestionReply(pathname: string): string | undefined {
+  const match = pathname.match(/^\/api\/questions\/([^/]+)\/reply$/);
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined;
+}
+
+/**
+ * T502 (D62): `POST /api/questions/<id>/reply` `{ text }`: what you typed in
+ * a question's own box. A choice question stays open and its agent is told
+ * (it settles it or asks again); one with no choices is answered by it.
+ * The actor is always `human`.
+ */
+async function handleQuestionReply(
+  req: Request,
+  questions: QuestionService,
+  id: string,
+): Promise<Response> {
+  const parsedId = QuestionIdSchema.safeParse(id);
+  if (!parsedId.success) return errorResponse(400, `invalid question id: ${id}`);
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+  const text = readQuestionText(body.text, 'text');
+  if (typeof text !== 'string') return errorResponse(400, text.error);
+  try {
+    const result = await questions.reply(parsedId.data as QuestionId, { text, by: 'human' });
+    return jsonResponse(result);
+  } catch (err) {
+    if (err instanceof QuestionNotFoundError) return errorResponse(404, err.message);
+    if (err instanceof QuestionAlreadyAnsweredError) return errorResponse(409, err.message);
+    return errorResponse(400, messageOf(err));
+  }
+}
+
 /** Free text on a question, capped here so an over-long body is a 400. */
 function readQuestionText(value: unknown, field: string): string | { error: string } {
   if (typeof value !== 'string') return { error: `${field} must be a string` };
@@ -517,6 +557,8 @@ interface FeedContext {
   routing?: ModelPolicyService;
   director?: DirectorService;
   questions?: QuestionService;
+  /** T502: question threads (the node page's, and a coordinator's children's). */
+  questionThreads?: QuestionThreads;
   inbox?: InboxService;
   rules?: KnowledgeService;
   ruleEvals?: RuleRpcEvalDeps;
@@ -625,6 +667,18 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     projects: options.projects,
     director: options.director,
     questions: options.questions,
+    ...(() => {
+      const threads =
+        options.questionThreads ??
+        (options.questions && options.streams
+          ? new QuestionThreads({
+              streams: options.streams,
+              questions: options.questions,
+              ...(options.events ? { events: options.events } : {}),
+            })
+          : undefined);
+      return threads ? { questionThreads: threads } : {};
+    })(),
     inbox: options.inbox,
     rules: options.rules,
     ruleEvals: options.ruleEvals,
@@ -1967,6 +2021,7 @@ async function handleStreamRoute(
             ...(feed.docs ? { docs: feed.docs } : {}),
             ...(feed.landing ? { landing: feed.landing } : {}),
             ...(feed.routing ? { nextPick: (s: Stream) => feed.routing?.nextPick(s) } : {}),
+            ...(feed.questionThreads ? { threads: feed.questionThreads } : {}),
           },
           id,
         ),
@@ -2525,6 +2580,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           if (!feed?.questions) return errorResponse(503, 'questions store not available');
           if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           return handleQuestionAnswer(req, feed.questions, questionAnswerMatch);
+        }
+
+        const questionReplyMatch = matchQuestionReply(url.pathname);
+        if (questionReplyMatch && req.method === 'POST') {
+          if (!feed?.questions) return errorResponse(503, 'questions store not available');
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+          return handleQuestionReply(req, feed.questions, questionReplyMatch);
         }
 
         const hilMatch = matchHilAction(url.pathname);

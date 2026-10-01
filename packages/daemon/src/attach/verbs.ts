@@ -266,6 +266,38 @@ export class VerbService {
     return this.options.questions.answer(q.id, { answer, by: `agent:${session}` });
   }
 
+  /**
+   * T502 (D62, design/chat-threads.md §5): the operator wrote back about a
+   * choice question instead of picking, and that decided it: the agent
+   * closes its own node's open question with what was decided (`settled`).
+   * Nothing is delivered back: the agent said it.
+   */
+  async settleQuestion(input: unknown): Promise<{ id: string; resolved_as: string }> {
+    const { session, question, answer } = validateVerbInput('settle_question', input);
+    if (this.isDirector(session)) {
+      throw new Error('settle_question: the Director asks no node questions to settle');
+    }
+    const caller = this.caller(session);
+    if (!isAgentRole(caller.role)) {
+      throw new Error(
+        `settle_question: a ${caller.role} session asks no questions; only a node's own agent settles one`,
+      );
+    }
+    const q = this.options.questions.get(question as QuestionId);
+    if (q.stream !== caller.stream) {
+      throw new Error(`settle_question: ${question} was not asked on your node`);
+    }
+    if (q.status !== 'open') {
+      throw new Error(`settle_question: ${question} is already ${q.resolved_as ?? 'answered'}`);
+    }
+    const saved = await this.options.questions.settle(q.id, {
+      answer,
+      session,
+      stream: caller.stream,
+    });
+    return { id: saved.id, resolved_as: saved.resolved_as ?? 'settled' };
+  }
+
   async progress(input: unknown): Promise<ThreadEntry> {
     const { session, text } = validateVerbInput('progress', input);
     const caller = this.caller(session);
@@ -935,5 +967,6 @@ export function verbHandlers(
     propose_repo: (input) => service.proposeRepo(input),
     goal_met: (input) => service.goalMet(input),
     escalate: (input) => service.escalate(input),
+    settle_question: (input) => service.settleQuestion(input),
   };
 }

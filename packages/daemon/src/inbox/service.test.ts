@@ -111,6 +111,55 @@ describe('InboxService.list', () => {
     expect(items.every((i) => validateInboxItem(i).id === i.id)).toBe(true);
   });
 
+  test('T502 (D62): a choice question you replied to waits on its agent; unsettled, it is back, by whom', async () => {
+    const q = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'Store amounts how?',
+      options: ['Integer cents', 'Floats'],
+    });
+    const plain = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'And the currency?',
+    });
+    let state: 'waits_on_you' | 'waiting_on_agent' | 'unsettled' = 'waits_on_you';
+    const asked: string[] = [];
+    const threaded = new InboxService({
+      streams,
+      questions,
+      gates,
+      threads: {
+        stateOf: (question) => {
+          asked.push(question.id);
+          return { state, vendor: 'codex' };
+        },
+      },
+    });
+    expect(threaded.list().find((i) => i.id === q.id)?.unsettled_by).toBeUndefined();
+    state = 'waiting_on_agent';
+    expect(threaded.list().some((i) => i.id === q.id)).toBe(false);
+    state = 'unsettled';
+    const back = threaded.list().find((i) => i.id === q.id);
+    expect(back?.unsettled_by).toBe('codex');
+    expect(validateInboxItem(back).id).toBe(q.id);
+    // A question with no choices is answered by what you type: its thread is never asked.
+    expect(threaded.list().some((i) => i.id === plain.id)).toBe(true);
+    expect(asked.every((id) => id === q.id)).toBe(true);
+    // An unreadable thread leaves the question waiting on you.
+    const broken = new InboxService({
+      streams,
+      questions,
+      gates,
+      threads: {
+        stateOf: () => {
+          throw new Error('unreadable');
+        },
+      },
+    });
+    expect(broken.list().some((i) => i.id === q.id)).toBe(true);
+  });
+
   test("T361: a deleted node's question, gate and done item leave the inbox, and come back on restore", async () => {
     const q = await questions.raise({
       stream: child.id,
