@@ -500,6 +500,7 @@ The daemon is started once (`agile daemon start`, detached, pidfile and port in 
   rules/<id>.yaml              # rule records (§5.1)
   log/events.jsonl             # append-only, every state change
   sessions/<id>/               # per-session stderr, transcripts, tool output files
+  bridges/<name>/<version>/    # T500: an ACP server the daemon downloads (Antigravity's): archive, server, manifest.yaml
 ```
 
 Per repo, and tracked in the repo:

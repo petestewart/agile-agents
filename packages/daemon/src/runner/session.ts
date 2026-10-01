@@ -41,6 +41,7 @@ import {
   AgentCommandSchema,
   vendorHasHooks,
 } from '@agile-agents/shared';
+import { missingBridge } from '../bridges/bridges';
 import { writeClaudeSettings } from '../hook';
 import { permissionRoleFor } from '../hook/decide';
 import {
@@ -230,12 +231,15 @@ export interface AgentExitInfo {
  * daemon's PATH (an absolute or relative path is left to the spawn).
  * T501: then the commands the provider needs besides its own
  * (`requiresCommands`: Pi's npx bridge spawns `pi`), the first missing one
- * named. `undefined` when they are all there.
+ * named. T500: a downloaded bridge is `missingBridge`'s. `undefined` when
+ * they are all there.
  */
 export function missingVendorCommand(
-  provider: Pick<AcpProviderConfig, 'label' | 'command' | 'requiresCommands'>,
+  provider: Pick<AcpProviderConfig, 'label' | 'command' | 'requiresCommands' | 'bridge'>,
   which: (command: string) => string | null = (command) => Bun.which(command),
 ): string | undefined {
+  // T500: a server downloaded into the home (resolved by `providerIn`), never PATH.
+  if (provider.bridge !== undefined) return missingBridge(provider);
   const absent = (command: string) => !command.includes('/') && which(command) === null;
   const command = [provider.command, ...(provider.requiresCommands ?? [])].find(absent);
   if (command === undefined) return undefined;

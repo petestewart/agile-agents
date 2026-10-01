@@ -39,6 +39,7 @@ import {
   isSessionVendor,
   ulid,
 } from '@agile-agents/shared';
+import { providerIn } from '../bridges/bridges';
 import { withoutDaemonSecrets } from '../secret-env';
 import type { InstalledCli } from './installed-cli';
 import { SESSION_STATE_FILE, saveSessionState } from './session';
@@ -157,7 +158,8 @@ export class ModelCatalog {
   refresh(vendor: SessionVendor): Promise<VendorModels | undefined> {
     const running = this.refreshing.get(vendor);
     if (running !== undefined) return running;
-    const provider = this.options.provider?.(vendor) ?? ACP_PROVIDERS[vendor];
+    const provider =
+      this.options.provider?.(vendor) ?? providerIn(this.options.home, ACP_PROVIDERS[vendor]);
     const session = ulid();
     const installedCli = this.options.installedCli?.(vendor);
     const run = probeVendorState({

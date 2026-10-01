@@ -15,6 +15,7 @@
  */
 
 import { afterAll, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -55,6 +56,7 @@ import {
   chromium,
 } from 'playwright-core';
 import { AttachService, VerbService } from '../attach';
+import { BridgeInstallService } from '../bridges';
 import { Bus } from '../bus';
 import { ClassifierKeyService, FakeClassifier } from '../classifier';
 import { AutonomyService } from '../coordination/autonomy';
@@ -11899,6 +11901,119 @@ describe('The vendor self-check (Playwright e2e, T489)', () => {
           '[data-testid="settings-vendors-left-out-cursor"]',
           'Model choice leaves Cursor out: a model picked for it doesn’t take.',
         );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Install Antigravity’s ACP server (Playwright e2e, T500)', () => {
+  // The fake server is a shell script running the fake agent: a POSIX host only.
+  const posix = process.platform === 'linux' || process.platform === 'darwin';
+  const host = { platform: 'linux', arch: 'x64' };
+  const missingWords =
+    "Antigravity can't start: its ACP server isn't installed. Install it in Settings → Agents → Vendors.";
+  (posix ? browserTest : test.skip)(
+    'Settings → Agents → Vendors: Antigravity reads not installed with Install; Install records its SHA-256; then Check runs the server from the home',
+    async () => {
+      const zip = 'fake-archive-bytes';
+      const cockpit = await startCockpit({
+        vendorChecks: (store, home) => {
+          // Fakes only: nothing is fetched or unpacked; the "server" runs the fake agent.
+          const installs = new BridgeInstallService({
+            home,
+            store,
+            provider: (v) => ACP_PROVIDERS[v],
+            host,
+            download: async (_url, dest) => {
+              await Bun.sleep(400);
+              writeFileSync(dest, zip);
+            },
+            unzip: async (_archive, dir) => {
+              writeFileSync(
+                join(dir, 'agy_acp_server.par'),
+                `#!/bin/sh\nexec "${process.execPath}" "${FAKE_AGENT_PATH}" "$@"\n`,
+              );
+            },
+          });
+          return new VendorCheckService({
+            home,
+            store,
+            vendors: ['claude', 'antigravity'],
+            installs,
+            missing: (v) => (v === 'antigravity' ? installs.missing(v) : undefined),
+            provider: (v) =>
+              v === 'antigravity'
+                ? installs.resolved(v)
+                : { ...ACP_PROVIDERS[v], command: 'bun', args: [FAKE_AGENT_PATH] },
+          });
+        },
+      });
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=agents`);
+        await page.locator('[data-testid="settings-vendors-row-antigravity"]').waitFor();
+        await waitForAttr(
+          page,
+          '[data-testid="settings-vendors-row-antigravity"]',
+          'data-installed',
+          'false',
+        );
+        await waitForText(
+          page,
+          '[data-testid="settings-vendors-state-antigravity"]',
+          'Not installed',
+        );
+        await waitForText(page, '[data-testid="settings-vendors-error-antigravity"]', missingWords);
+        expect(
+          await page.locator('[data-testid="settings-vendors-check-antigravity"]').isDisabled(),
+        ).toBe(true);
+        // Claude is on PATH: nothing to install.
+        expect(await page.locator('[data-testid="settings-vendors-install-claude"]').count()).toBe(
+          0,
+        );
+
+        await page.locator('[data-testid="settings-vendors-install-antigravity"]').click();
+        await waitForAttr(
+          page,
+          '[data-testid="settings-vendors-row-antigravity"]',
+          'data-installed',
+          'true',
+        );
+        const sha = createHash('sha256').update(zip).digest('hex');
+        await waitForText(page, '[data-testid="settings-vendors-sha-antigravity"]', sha);
+        expect(
+          await page
+            .locator('[data-testid="settings-vendors-install-line-antigravity"]')
+            .textContent(),
+        ).toContain('ACP server 1.2.1 (linux-x86_64), installed');
+        expect(
+          await page.locator('[data-testid="settings-vendors-install-antigravity"]').count(),
+        ).toBe(0);
+        // The manifest, written through the store, beside the server.
+        const manifest = readFileSync(
+          join(cockpit.home, 'bridges', 'antigravity', '1.2.1', 'manifest.yaml'),
+          'utf8',
+        );
+        expect(manifest).toContain(`sha256: ${sha}`);
+
+        // Check runs `<home>/bridges/antigravity/1.2.1/agy_acp_server.par` (the fake agent).
+        await page.locator('[data-testid="settings-vendors-check-antigravity"]').click();
+        await waitForAttr(
+          page,
+          '[data-testid="settings-vendors-resume-antigravity"]',
+          'data-mark',
+          '—',
+          20000,
+        );
+        expect(
+          (await page.locator('[data-testid="settings-vendors-when-antigravity"]').textContent()) ??
+            '',
+        ).toStartWith('Checked');
       } finally {
         await teardown([page]);
         await cockpit.stop();

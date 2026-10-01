@@ -31,6 +31,7 @@ export * from './model-chooser';
 export * from './model-escalation';
 export * from './harness-updates';
 export * from './vendor-check';
+export * from './bridges';
 export * from './project';
 export * from './routed-event';
 export * from './card';

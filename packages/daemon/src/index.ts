@@ -88,6 +88,9 @@ export * from './attach';
 
 export * from './runner';
 
+// T500: ACP servers the daemon downloads into the home (Antigravity's).
+export * from './bridges';
+
 export * from './delivery';
 
 export * from './sandbox';

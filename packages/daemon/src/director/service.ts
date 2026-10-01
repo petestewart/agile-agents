@@ -37,6 +37,7 @@ import {
   ulid,
 } from '@agile-agents/shared';
 import { providerTakesEffort, resolveSessionSettings } from '../attach/resolve';
+import { providerIn } from '../bridges/bridges';
 import { readHomeConfigFile } from '../config';
 import type { AutonomyService } from '../coordination/autonomy';
 import type { DeliveryTarget, SessionDelivery } from '../events/delivery';
@@ -403,9 +404,11 @@ export class DirectorService {
     const { store, streams, home } = this.options;
     await this.ensureRecord();
     const settings = resolveSessionSettings({ home: readHomeConfigFile(home) });
+    // T500: a downloaded bridge (Antigravity's) runs from the home.
+    const registered = providerIn(home, settings.provider);
     const provider = this.options.provider
-      ? this.options.provider(settings.vendor, settings.provider)
-      : settings.provider;
+      ? this.options.provider(settings.vendor, registered)
+      : registered;
     // T329: a retry after a failed start writes nothing until it works.
     const quiet = this.failedStarts > 0;
     const sessionId = ulid();

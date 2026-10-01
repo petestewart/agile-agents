@@ -17,6 +17,7 @@
  */
 
 import { z } from 'zod';
+import type { VendorInstallView } from './bridges';
 import { type SessionVendor, SessionVendorSchema } from './session-defaults';
 
 /** The result file, in the probe session's own dir. */
@@ -204,6 +205,8 @@ export interface VendorCheckRow {
   queued: boolean;
   /** Its latest result, if it was ever checked. */
   last?: VendorCheckResult;
+  /** T500: a server the daemon downloads (Antigravity's): what Install fetches, and the install. */
+  install?: VendorInstallView;
 }
 
 export interface VendorChecksStatus {

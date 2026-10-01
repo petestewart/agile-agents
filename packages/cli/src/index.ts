@@ -68,7 +68,7 @@ import {
 } from './commands/stream';
 import { runDirectorTail, runNodeEvents, runTail } from './commands/tail';
 import { runTrackerClear, runTrackerSet, runTrackerStatus } from './commands/tracker';
-import { runVendors, runVendorsCheck } from './commands/vendors';
+import { runVendors, runVendorsCheck, runVendorsInstall } from './commands/vendors';
 
 export const PACKAGE_NAME = '@agile-agents/cli';
 
@@ -154,6 +154,7 @@ function usage(): string {
     '  policy try "<task text>" [--project <P-id> | --node <id>]   the chooser\u2019s scores and pick for a task; nothing starts',
     '  vendors                    each vendor\u2019s latest self-check: version, model, effort, usage, resume, rate limits',
     '  vendors check [vendor]     run the self-check (every installed vendor, or one): one session and one tiny prompt each',
+    '  vendors install antigravity   download its pinned ACP server into the home (records the archive\u2019s SHA-256)',
     '  tracker status             Jira/Linear: base URL, email, whether each token is set (never the token)',
     '  tracker set jira|linear [--base-url <url>] [--email <addr>|--no-email] [--no-token]',
     '                             token read from stdin or a no-echo prompt, never an argument',
@@ -330,6 +331,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
       case 'vendors': {
         if (sub === undefined) return await runVendors(socketPath, json);
         if (sub === 'check') return await runVendorsCheck(socketPath, restArgv[0], json);
+        if (sub === 'install') return await runVendorsInstall(socketPath, restArgv[0], json);
         console.error(usage());
         return 1;
       }

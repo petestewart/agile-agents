@@ -20,10 +20,14 @@ import {
   VendorCheckResultSchema,
   ulid,
 } from '@agile-agents/shared';
+import { BridgeInstallService } from '../bridges';
+import { runInit } from '../init';
+import { StateStore } from '../store';
 import type { FakeAgentScript } from './fake-agent';
 import { SESSION_STATE_FILE, USAGE_LOG_FILE } from './session';
 import {
   VendorCheckService,
+  buildVendorCheckRpcMethods,
   effortToTry,
   modelToTry,
   rateLimitFields,
@@ -620,5 +624,91 @@ describe('vendorCapabilities (T489)', () => {
     ]);
     expect(caps.grok?.model).toBe('refused');
     expect(vendorsLeftOut({}).size).toBe(0);
+  });
+});
+
+describe('Antigravity’s downloaded server in the self-check (T500)', () => {
+  const MISSING =
+    "Antigravity can't start: its ACP server isn't installed. Install it in Settings → Agents → Vendors.";
+
+  /** The installs over fakes: the "archive" is text and the "server" a script running the fake agent. */
+  function installs(store: StateStore, body = 'zip-bytes-1') {
+    return new BridgeInstallService({
+      home,
+      store,
+      provider: (v) => ACP_PROVIDERS[v],
+      download: async (_url, dest) => writeFileSync(dest, body),
+      unzip: async (_archive, dir) => {
+        writeFileSync(
+          join(dir, 'agy_acp_server.par'),
+          `#!/bin/sh\nexec "${process.execPath}" "${FAKE_AGENT_PATH}" "$@"\n`,
+        );
+      },
+    });
+  }
+
+  const hostHasBuild =
+    (process.platform === 'linux' || process.platform === 'darwin') &&
+    (process.arch === 'x64' || process.arch === 'arm64');
+
+  test.if(hostHasBuild)(
+    'missing until installed (the row names the fix and offers Install); Install records the manifest; then the check runs the server from the home',
+    async () => {
+      const store = StateStore.open(runInit(home).stateRoot);
+      const service = new VendorCheckService({
+        home,
+        store,
+        vendors: ['claude', 'antigravity'],
+        installs: installs(store),
+      });
+      const before = service.status().vendors.find((v) => v.vendor === 'antigravity');
+      expect(before).toMatchObject({
+        label: 'Antigravity',
+        installed: false,
+        missing: MISSING,
+        install: { version: '1.2.1', installing: false },
+      });
+      expect(before?.install?.manifest).toBeUndefined();
+      expect(service.status().vendors.find((v) => v.vendor === 'claude')?.install).toBeUndefined();
+      await expect(service.run('antigravity')).rejects.toThrow(MISSING);
+      // Nothing to install for a vendor on PATH.
+      expect(() => service.startInstall('claude')).toThrow(
+        "Claude Code isn't installed by this app",
+      );
+
+      const rpc = buildVendorCheckRpcMethods(service);
+      const got = (await rpc['vendors.install']?.({ vendor: 'antigravity' })) as {
+        manifest: { sha256: string; version: string };
+        status: { vendors: Array<{ vendor: string; installed: boolean }> };
+      };
+      expect(got.manifest.version).toBe('1.2.1');
+      expect(got.status.vendors.find((v) => v.vendor === 'antigravity')?.installed).toBe(true);
+      const row = service.status().vendors.find((v) => v.vendor === 'antigravity');
+      expect(row?.missing).toBeUndefined();
+      expect(row?.install?.manifest?.sha256).toBe(got.manifest.sha256);
+
+      // The check starts `<home>/bridges/antigravity/1.2.1/agy_acp_server.par` (the fake agent here).
+      const [result] = await service.run('antigravity');
+      expect(result?.opened).toBe(true);
+      expect(result?.bridge).toEqual({ package: 'antigravity-acp', version: '1.2.1' });
+      expect(result?.resume.outcome).toBe('not_supported');
+    },
+    30_000,
+  );
+
+  test('vendors.install: a vendor is required; one with nothing to download is refused in words', async () => {
+    const store = StateStore.open(runInit(home).stateRoot);
+    const service = new VendorCheckService({
+      home,
+      store,
+      vendors: ['claude', 'antigravity'],
+      installs: installs(store),
+    });
+    const rpc = buildVendorCheckRpcMethods(service);
+    const call = (params: unknown) =>
+      Promise.resolve().then(() => rpc['vendors.install']?.(params));
+    await expect(call({})).rejects.toThrow('missing "vendor"');
+    await expect(call({ vendor: 'claude' })).rejects.toThrow("isn't installed by this app");
+    await expect(call({ vendor: 'copilot' })).rejects.toThrow('invalid "vendor"');
   });
 });

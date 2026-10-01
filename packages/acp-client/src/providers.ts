@@ -14,7 +14,115 @@
  */
 import type { AcpClientCapabilities } from './types';
 
-export type AcpProviderId = 'claude' | 'gemini' | 'cursor' | 'grok' | 'pi' | 'codex';
+export type AcpProviderId =
+  | 'claude'
+  | 'gemini'
+  | 'cursor'
+  | 'grok'
+  | 'pi'
+  | 'codex'
+  | 'antigravity';
+
+/**
+ * T500: a host as an ACP registry binary distribution names it
+ * (`<os>-<arch>`, `aarch64`/`x86_64`).
+ */
+export type AcpBridgePlatform =
+  | 'darwin-aarch64'
+  | 'darwin-x86_64'
+  | 'linux-aarch64'
+  | 'linux-x86_64'
+  | 'windows-aarch64'
+  | 'windows-x86_64';
+
+/** T500: one platform's archive of a downloaded bridge, and how to start what it holds. */
+export interface AcpBridgeArtifact {
+  /** The archive, over HTTPS. Pinned: it moves by a code change. */
+  url: string;
+  /** The server inside the archive, relative to where it unpacks (`agy_acp_server.par`). */
+  command: string;
+  /** Its argv on this platform. */
+  args: readonly string[];
+}
+
+/**
+ * T500: an ACP server the daemon downloads into the home rather than one on
+ * PATH or behind `npx` (Antigravity's `agy_acp_server`). The daemon unpacks
+ * it into `<home>/bridges/<name>/<version>/` and the provider's `command` is
+ * only a name until the daemon resolves it there.
+ */
+export interface AcpBridgePin {
+  /** The folder under `<home>/bridges/`. */
+  name: string;
+  /** The ACP registry entry it comes from (`antigravity-acp`). */
+  registryId: string;
+  version: string;
+  artifacts: Readonly<Partial<Record<AcpBridgePlatform, AcpBridgeArtifact>>>;
+}
+
+/** T500: the ACP registry's name for a Node `process.platform`/`process.arch`, or `undefined`. */
+export function acpBridgePlatform(
+  platform: string = process.platform,
+  arch: string = process.arch,
+): AcpBridgePlatform | undefined {
+  const os =
+    platform === 'darwin'
+      ? 'darwin'
+      : platform === 'linux'
+        ? 'linux'
+        : platform === 'win32'
+          ? 'windows'
+          : undefined;
+  const cpu = arch === 'arm64' ? 'aarch64' : arch === 'x64' ? 'x86_64' : undefined;
+  return os !== undefined && cpu !== undefined ? (`${os}-${cpu}` as AcpBridgePlatform) : undefined;
+}
+
+const AGY_RELEASES = 'https://dl.google.com/agy-extensions/releases';
+const AGY_VERSION = '1.2.1';
+
+/**
+ * T500: Antigravity's ACP server, `agy_acp_server`, as the ACP registry
+ * lists it (entry `antigravity-acp` 1.2.1, authors "Google LLC", license
+ * proprietary): one zip per platform, the server at the archive's root.
+ * Linux builds take `--uid=` (empty), as the registry entry gives them.
+ */
+export const ANTIGRAVITY_BRIDGE: AcpBridgePin = Object.freeze({
+  name: 'antigravity',
+  registryId: 'antigravity-acp',
+  version: AGY_VERSION,
+  artifacts: Object.freeze({
+    'darwin-aarch64': Object.freeze({
+      url: `${AGY_RELEASES}/macos/agy-acp-server-${AGY_VERSION}-darwin-arm64.zip`,
+      command: 'agy_acp_server.par',
+      args: Object.freeze([]),
+    }),
+    'darwin-x86_64': Object.freeze({
+      url: `${AGY_RELEASES}/macos/agy-acp-server-${AGY_VERSION}-darwin-x86_64.zip`,
+      command: 'agy_acp_server.par',
+      args: Object.freeze([]),
+    }),
+    'linux-x86_64': Object.freeze({
+      url: `${AGY_RELEASES}/linux/agy-acp-server-${AGY_VERSION}-linux-x86_64.zip`,
+      command: 'agy_acp_server.par',
+      args: Object.freeze(['--uid=']),
+    }),
+    'linux-aarch64': Object.freeze({
+      url: `${AGY_RELEASES}/linux/agy-acp-server-${AGY_VERSION}-linux-arm64.zip`,
+      command: 'agy_acp_server.par',
+      args: Object.freeze(['--uid=']),
+    }),
+    'windows-x86_64': Object.freeze({
+      url: `${AGY_RELEASES}/windows/agy-acp-server-${AGY_VERSION}-windows-x86_64.zip`,
+      command: 'agy_acp_server.exe',
+      args: Object.freeze([]),
+    }),
+    'windows-aarch64': Object.freeze({
+      url: `${AGY_RELEASES}/windows/agy-acp-server-${AGY_VERSION}-windows-arm64.zip`,
+      command: 'agy_acp_server.exe',
+      args: Object.freeze([]),
+    }),
+  }),
+});
 
 /**
  * The closed effort enum of PLAN.md **D12**, spelled out here rather than
@@ -122,6 +230,13 @@ export interface AcpProviderConfig {
   model?: (modelId: string) => AcpSpawnContribution;
   /** The model id that means "whatever this vendor would pick itself" — the last step of the attach-time resolution order. */
   defaultModel: string;
+  /**
+   * T500: the server is downloaded into the home, not found on PATH. Its
+   * `command` here is only the file's name; the daemon resolves it to
+   * `<home>/bridges/<name>/<version>/<file>` with the platform's args
+   * (`packages/daemon/src/bridges/`), and a missing install is named there.
+   */
+  bridge?: AcpBridgePin;
 }
 
 /**
@@ -310,6 +425,36 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // codex-acp "raises zero permission requests ... regardless of mode or
     // approval policy" (§C3) — no tier 1/2 gate exists for this vendor at
     // all, so it is an engineer only inside a tier-0 sandbox (design §6).
+    requiresSandbox: true,
+  }),
+  antigravity: freezeProvider({
+    id: 'antigravity',
+    label: 'Antigravity',
+    // T500: Google's `agy_acp_server` (the `agy` CLI has no ACP mode),
+    // downloaded into `<home>/bridges/antigravity/<version>/` on the
+    // operator's say (Settings → Agents → Vendors → Install, or `agile
+    // vendors install antigravity`). The daemon swaps in the full path and
+    // the platform's args (`bridges/provider.ts`); this name alone is never
+    // looked up on PATH.
+    command: 'agy_acp_server.par',
+    args: [],
+    bridge: ANTIGRAVITY_BRIDGE,
+    envOverrides: {},
+    clientCapabilities: {
+      fs: { readTextFile: true, writeTextFile: true },
+    },
+    // Nothing below is measured yet (no live run): `loadSession` stays false
+    // so recovery flags a session for a manual restart rather than a blind
+    // load; no effort mapping; its models (if it reports any) come through
+    // T467's config-option path; no ACP `authenticate` round trip (the
+    // operator signs in with `agy` out of band).
+    loadSession: false,
+    authMethods: [],
+    defaultModel: 'default',
+    // No `defaultModeId`: its modes are unmeasured, and a mode id it doesn't
+    // know fails `session/new` (T027 review round 1 B1).
+    // Its permission behaviour is unmeasured: marked like Codex until a
+    // live run shows what it gates.
     requiresSandbox: true,
   }),
   pi: freezeProvider({

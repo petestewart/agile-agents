@@ -55,6 +55,7 @@ import {
   spawnSession as defaultSpawnSession,
 } from '@agile-agents/acp-client';
 import {
+  type BridgeManifest,
   DEFAULT_VENDOR_CHECK_MODE,
   EFFORT_LEVELS,
   type HomeConfig,
@@ -76,11 +77,13 @@ import {
   type VendorCheckSettingOutcome,
   type VendorCheckUsage,
   type VendorChecksStatus,
+  type VendorInstallView,
   isSessionVendor,
   ulid,
   vendorLoginHow,
 } from '@agile-agents/shared';
 import { retryWontHelp } from '../attach/fallback';
+import { providerIn } from '../bridges/bridges';
 import { RpcParamError, requireObject } from '../gates/rpc';
 import { bridgesOf } from '../harness/service';
 import type { RpcMethodHandler } from '../rpc';
@@ -730,8 +733,11 @@ function lastTurnStopReason(sessionDir: string): string | undefined {
   return reason;
 }
 
-/** The ACP bridge the daemon pins for a vendor (Claude's, Codex's), as `{bridge}`. */
+/** The ACP bridge the daemon pins for a vendor (Claude's, Codex's, Antigravity's), as `{bridge}`. */
 function bridgeOf(vendor: SessionVendor): Pick<VendorCheckResult, 'bridge'> {
+  // T500: a downloaded server is named by its registry entry and pinned version.
+  const pin = ACP_PROVIDERS[vendor].bridge;
+  if (pin !== undefined) return { bridge: { package: pin.registryId, version: pin.version } };
   const bridge = bridgesOf({ [vendor]: ACP_PROVIDERS[vendor] })[0];
   return bridge !== undefined
     ? { bridge: { package: bridge.package, version: bridge.pinned } }
@@ -839,12 +845,26 @@ export interface VendorCheckServiceOptions {
   installedCli?: (vendor: SessionVendor) => InstalledCli | undefined;
   /** T481: the vendor CLI's version as the daemon last read it. */
   cliVersion?: (vendor: SessionVendor) => string | undefined;
+  /** T500: the servers this app downloads (Antigravity's): Install, and what is installed. */
+  installs?: VendorInstalls;
   /** Every reply a check's session sent (the model catalog keeps the vendor's list). */
   onSessionState?: (vendor: SessionVendor, state: Record<string, unknown>, session: string) => void;
   openTimeoutMs?: number;
   promptTimeoutMs?: number;
   onError?: (err: unknown) => void;
   now?: () => Date;
+}
+
+/** T500: what the self-check needs of `BridgeInstallService` (`../bridges`). */
+export interface VendorInstalls {
+  /** The install's view for a downloaded bridge; `undefined` for any other vendor. */
+  view(vendor: SessionVendor): VendorInstallView | undefined;
+  /** Starts an install without waiting (throws, in words, for a vendor with nothing to install). */
+  start(vendor: SessionVendor): void;
+  /** Installs and resolves with the manifest. */
+  install(vendor: SessionVendor): Promise<BridgeManifest>;
+  /** Whether any install runs. */
+  busy(): boolean;
 }
 
 interface Pending {
@@ -874,7 +894,10 @@ export class VendorCheckService {
   }
 
   private missing(vendor: SessionVendor): string | undefined {
-    return (this.options.missing ?? ((v) => missingVendorCommand(ACP_PROVIDERS[v])))(vendor);
+    return (
+      this.options.missing ??
+      ((v) => missingVendorCommand(providerIn(this.options.home, ACP_PROVIDERS[v])))
+    )(vendor);
   }
 
   private changed(): void {
@@ -940,6 +963,7 @@ export class VendorCheckService {
       const last = this.latest.get(vendor);
       const version = this.cliVersion(vendor);
       const missing = this.missing(vendor);
+      const install = this.installView(vendor);
       return {
         vendor,
         label: this.provider(vendor).label,
@@ -949,13 +973,55 @@ export class VendorCheckService {
         running: this.running === vendor,
         queued: this.pending.has(vendor) && this.running !== vendor,
         ...(last !== undefined ? { last } : {}),
+        ...(install !== undefined ? { install } : {}),
       };
     });
     return { mode: this.mode(), vendors: rows, running: this.pending.size > 0 };
   }
 
+  private installView(vendor: SessionVendor): VendorInstallView | undefined {
+    try {
+      return this.options.installs?.view(vendor);
+    } catch (err) {
+      this.options.onError?.(err);
+      return undefined;
+    }
+  }
+
+  private installsFor(vendor: SessionVendor): VendorInstalls {
+    if (!this.vendors.includes(vendor))
+      throw new VendorNotInstalledError(`no such vendor here: ${vendor}`);
+    const installs = this.options.installs;
+    if (installs === undefined || installs.view(vendor) === undefined) {
+      throw new VendorNotInstalledError(
+        `${this.provider(vendor).label} isn't installed by this app: install its command-line tool yourself.`,
+      );
+    }
+    return installs;
+  }
+
+  /**
+   * T500: Install (Settings → Agents → Vendors): downloads the vendor's
+   * pinned server without waiting; the row shows it installing, then its
+   * manifest or what went wrong. Never automatic.
+   */
+  startInstall(vendor: SessionVendor): VendorChecksStatus {
+    this.installsFor(vendor).start(vendor);
+    this.changed();
+    return this.status();
+  }
+
+  /** T500: `agile vendors install <vendor>`: installs and waits. */
+  async install(
+    vendor: SessionVendor,
+  ): Promise<{ manifest: BridgeManifest; status: VendorChecksStatus }> {
+    const manifest = await this.installsFor(vendor).install(vendor);
+    this.changed();
+    return { manifest, status: this.status() };
+  }
+
   private provider(vendor: SessionVendor): AcpProviderConfig {
-    return this.options.provider?.(vendor) ?? ACP_PROVIDERS[vendor];
+    return this.options.provider?.(vendor) ?? providerIn(this.options.home, ACP_PROVIDERS[vendor]);
   }
 
   private cliVersion(vendor: SessionVendor): string | undefined {
@@ -1153,6 +1219,17 @@ export function buildVendorCheckRpcMethods(
   };
   return {
     'vendors.status': () => service.status(),
+    // T500: install a vendor's downloaded server (Antigravity's) and wait for it.
+    'vendors.install': async (params) => {
+      const vendor = vendorOf(params);
+      if (vendor === undefined) throw new RpcParamError('missing "vendor"');
+      try {
+        return await service.install(vendor);
+      } catch (err) {
+        if (err instanceof VendorNotInstalledError) throw new RpcParamError(err.message);
+        throw err;
+      }
+    },
     'vendors.check': async (params) => {
       const vendor = vendorOf(params);
       try {

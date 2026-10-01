@@ -4,11 +4,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS } from '@agile-agents/acp-client';
 import {
+  BridgeInstallService,
   type RpcServerHandle,
   StateStore,
   VendorCheckService,
@@ -18,7 +20,14 @@ import {
 } from '@agile-agents/daemon';
 import type { VendorChecksStatus } from '@agile-agents/shared';
 import { runCli } from '../index';
-import { runVendors, runVendorsCheck, vendorRowCells, vendorRowNotes, wrapNote } from './vendors';
+import {
+  runVendors,
+  runVendorsCheck,
+  runVendorsInstall,
+  vendorRowCells,
+  vendorRowNotes,
+  wrapNote,
+} from './vendors';
 
 const FAKE_AGENT = join(
   import.meta.dir,
@@ -172,5 +181,74 @@ describe('agile vendors (T489)', () => {
       console.error = original;
     }
     expect(errors.join('\n')).toContain('vendors check [vendor]');
+    expect(errors.join('\n')).toContain('vendors install antigravity');
+  });
+});
+
+describe('agile vendors install (T500)', () => {
+  let installHome: string;
+  let installRpc: RpcServerHandle;
+  let installSocket: string;
+
+  beforeEach(async () => {
+    installHome = mkdtempSync(join(tmpdir(), 'agile-cli-vendors-install-'));
+    const init = runInit(installHome);
+    const store = StateStore.open(init.stateRoot);
+    // Fakes only: nothing is fetched or unpacked, and the server never runs.
+    const installs = new BridgeInstallService({
+      home: installHome,
+      store,
+      provider: (v) => ACP_PROVIDERS[v],
+      host: { platform: 'linux', arch: 'x64' },
+      download: async (_url, dest) => writeFileSync(dest, 'zip-bytes'),
+      unzip: async (_archive, dir) => writeFileSync(join(dir, 'agy_acp_server.par'), 'fake'),
+    });
+    const service = new VendorCheckService({
+      home: installHome,
+      store,
+      vendors: ['antigravity', 'codex'],
+      missing: (v) => (v === 'antigravity' ? installs.missing(v) : undefined),
+      installs,
+    });
+    installSocket = join(installHome, 'agiled.sock');
+    installRpc = startRpcServer({
+      socketPath: installSocket,
+      version: 'test',
+      stateRoot: init.stateRoot,
+      startedAt: Date.now(),
+      extraMethods: buildVendorCheckRpcMethods(service),
+    });
+    await installRpc.listening;
+  });
+
+  afterEach(async () => {
+    await installRpc.close();
+    rmSync(installHome, { recursive: true, force: true });
+  });
+
+  test('the table names the fix; install prints the manifest and how to sign in; then the table shows the hash', async () => {
+    const before = await capture(() => runVendors(installSocket, false));
+    expect(before.out).toContain(
+      'ACP server 1.2.1 not installed: agile vendors install antigravity',
+    );
+    expect(before.out).toContain('Antigravity can');
+    const sha = createHash('sha256').update('zip-bytes').digest('hex');
+    const installed = await capture(() => runVendorsInstall(installSocket, 'antigravity', false));
+    expect(installed.code).toBe(0);
+    expect(installed.out).toContain('Installed antigravity-acp 1.2.1 (linux-x86_64)');
+    expect(installed.out).toContain(`SHA-256 ${sha}`);
+    expect(installed.out).toContain('run `agy` and sign in');
+    expect(installed.out).toContain('agile vendors check antigravity');
+    const after = await capture(() => runVendors(installSocket, false));
+    expect(after.out).toContain(sha);
+  });
+
+  test('a vendor with nothing to download, or none named, is refused in words', async () => {
+    await expect(runVendorsInstall(installSocket, 'codex', false)).rejects.toThrow(
+      "Codex isn't installed by this app",
+    );
+    await expect(runVendorsInstall(installSocket, undefined, false)).rejects.toThrow(
+      'agile vendors install: name a vendor',
+    );
   });
 });

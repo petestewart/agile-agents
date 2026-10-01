@@ -22,7 +22,15 @@ import type { HomeConfig } from './home-config';
 import type { RepoEntry } from './repos';
 
 /** Every vendor the provider registry knows (`@agile-agents/acp-client`'s `ACP_PROVIDERS`). */
-export const SESSION_VENDORS = ['claude', 'gemini', 'cursor', 'grok', 'pi', 'codex'] as const;
+export const SESSION_VENDORS = [
+  'claude',
+  'gemini',
+  'cursor',
+  'grok',
+  'pi',
+  'codex',
+  'antigravity',
+] as const;
 export const SessionVendorSchema = z.enum(SESSION_VENDORS);
 export type SessionVendor = z.infer<typeof SessionVendorSchema>;
 
@@ -79,6 +87,7 @@ export const KNOWN_MODEL_IDS: Readonly<Record<SessionVendor, readonly string[]>>
   grok: [],
   pi: [],
   codex: [],
+  antigravity: [],
 };
 
 export const SESSION_MODEL_MAX_CHARS = 200;
@@ -175,6 +184,7 @@ const VENDOR_LOGIN_HOW: Partial<Record<string, string>> = {
   gemini: 'run `gemini` and sign in',
   codex: 'run `codex login`',
   cursor: 'run `cursor-agent login`',
+  antigravity: 'run `agy` and sign in',
 };
 
 /** T460: the way to log `vendor` in, in words ("run `claude` and type /login"). */

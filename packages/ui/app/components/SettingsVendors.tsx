@@ -7,12 +7,16 @@
  * went wrong in words. **Check** per row, **Check all**, and the switch for
  * the automatic check (after a CLI update or a new version). Choose leaves
  * out a vendor whose last check kept its own model.
+ *
+ * T500: a vendor whose ACP server this app downloads (Antigravity) has
+ * **Install** while it is missing, and once installed the row shows the
+ * version, the platform and the archive's SHA-256 from its manifest.
  */
 
 import type { SessionVendor, VendorCheckMode, VendorChecksStatus } from '@agile-agents/shared';
 import { VENDOR_CHECK_MODES } from '@agile-agents/shared';
 import { useEffect, useRef, useState } from 'react';
-import { getVendorChecks, runVendorChecks, setVendorCheckMode } from '../lib/api';
+import { getVendorChecks, installVendor, runVendorChecks, setVendorCheckMode } from '../lib/api';
 import {
   CHECK_MODE_HINTS,
   CHECK_MODE_WORDS,
@@ -41,9 +45,10 @@ export function VendorChecksCard(): JSX.Element {
     };
   }, []);
 
-  // While a check runs or waits, read the status again until it's done.
+  // While a check (or an install, T500) runs or waits, read the status again until it's done.
   useEffect(() => {
-    if (status?.running !== true) return;
+    const installing = status?.vendors.some((v) => v.install?.installing === true) === true;
+    if (status?.running !== true && !installing) return;
     timer.current = setTimeout(() => {
       getVendorChecks()
         .then(setStatus)
@@ -128,6 +133,22 @@ export function VendorChecksCard(): JSX.Element {
                       {view.when}
                     </span>
                     <span className="cr-set-updates-controls">
+                      {view.install !== undefined &&
+                        (view.install.canInstall || view.install.installing) && (
+                          <Button
+                            size="sm"
+                            icon="download"
+                            data-testid={`settings-vendors-install-${vendor}`}
+                            busy={busy === `install:${vendor}` || view.install.installing}
+                            disabled={busy !== undefined || view.install.installing}
+                            title={`Download ${row.label}’s ACP server into this app’s home. It isn’t run until you check or use ${row.label}.`}
+                            onClick={() =>
+                              void run(`install:${vendor}`, () => installVendor(vendor))
+                            }
+                          >
+                            Install
+                          </Button>
+                        )}
                       <Button
                         size="sm"
                         icon="refresh"
@@ -167,6 +188,31 @@ export function VendorChecksCard(): JSX.Element {
                         <dd data-testid={`settings-vendors-usage-${vendor}`}>{view.usage}</dd>
                       </div>
                     </dl>
+                  )}
+                  {view.install !== undefined && (
+                    <p
+                      className="cr-set-updates-hint"
+                      data-testid={`settings-vendors-install-line-${vendor}`}
+                    >
+                      {view.install.line}
+                      {view.install.sha256 !== undefined && (
+                        <>
+                          {' · SHA-256 '}
+                          <code data-testid={`settings-vendors-sha-${vendor}`}>
+                            {view.install.sha256}
+                          </code>
+                        </>
+                      )}
+                    </p>
+                  )}
+                  {view.install?.error !== undefined && (
+                    <p
+                      className="cr-set-updates-result"
+                      data-ok="false"
+                      data-testid={`settings-vendors-install-error-${vendor}`}
+                    >
+                      {view.install.error}
+                    </p>
                   )}
                   {view.leftOut !== undefined && (
                     <p

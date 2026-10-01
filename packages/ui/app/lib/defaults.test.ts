@@ -25,7 +25,15 @@ const status: SessionDefaultsStatus = {
     },
   },
   vendors: ['claude', 'gemini'],
-  known_models: { claude: [], gemini: [], cursor: [], grok: [], pi: [], codex: [] },
+  known_models: {
+    claude: [],
+    gemini: [],
+    cursor: [],
+    grok: [],
+    pi: [],
+    codex: [],
+    antigravity: [],
+  },
 };
 
 describe('resolvedFor (T379)', () => {

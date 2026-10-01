@@ -6,9 +6,15 @@
 
 import { existsSync } from 'node:fs';
 import { ACP_PROVIDERS, type spawnSession } from '@agile-agents/acp-client';
-import { trackerStatus } from '@agile-agents/shared';
+import { isHarnessId, trackerStatus } from '@agile-agents/shared';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
+import {
+  type BridgeDownloader,
+  BridgeInstallService,
+  type BridgeUnzipper,
+  providerIn,
+} from './bridges';
 import { Bus, buildBusRpcMethods } from './bus';
 import {
   type Classifier,
@@ -163,6 +169,13 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
    * check is scheduled) unless a test injects one.
    */
   harnessRunner?: CommandRunner;
+  /**
+   * T500: how a downloaded bridge's archive is fetched and unpacked. Default:
+   * HTTPS and `unzip`, except under `bun test`, where nothing is fetched or
+   * unpacked unless a test injects fakes.
+   */
+  bridgeDownload?: BridgeDownloader;
+  bridgeUnzip?: BridgeUnzipper;
 }
 
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
@@ -313,12 +326,43 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // probe sessions' `self-check.json` files; a check also refreshes the model catalog.
   // Under `bun test` it never spawns a real vendor: without the fake spawn it refuses.
   const underTestSpawn = process.env.NODE_ENV === 'test' && options.spawn === undefined;
+  // T500: the servers this app downloads (Antigravity's), on the operator's say only.
+  // Under `bun test` nothing is fetched or unpacked unless a test injects fakes.
+  const underTestBridges = process.env.NODE_ENV === 'test';
+  const refuseUnderTest = async (): Promise<never> => {
+    throw new Error('nothing is downloaded or unpacked under bun test');
+  };
+  const bridgeInstalls: BridgeInstallService | undefined = store
+    ? new BridgeInstallService({
+        home: config.home,
+        store,
+        provider: (vendor) => ACP_PROVIDERS[vendor],
+        ...(options.bridgeDownload !== undefined
+          ? { download: options.bridgeDownload }
+          : underTestBridges
+            ? { download: refuseUnderTest }
+            : {}),
+        ...(options.bridgeUnzip !== undefined
+          ? { unzip: options.bridgeUnzip }
+          : underTestBridges
+            ? { unzip: refuseUnderTest }
+            : {}),
+        onChange: () => vendorChecks?.onChange?.(),
+        onError: (err) =>
+          console.error(`bridge install: ${err instanceof Error ? err.message : String(err)}`),
+      })
+    : undefined;
   const vendorChecks: VendorCheckService | undefined = store
     ? new VendorCheckService({
         home: config.home,
         store,
+        ...(bridgeInstalls ? { installs: bridgeInstalls } : {}),
         ...(options.spawn !== undefined
-          ? { spawn: options.spawn, missing: () => undefined }
+          ? {
+              spawn: options.spawn,
+              // A downloaded bridge is installed or not whatever the transport (T500).
+              missing: (vendor) => bridgeInstalls?.missing(vendor),
+            }
           : underTestSpawn
             ? {
                 spawn: () => {
@@ -334,7 +378,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           }
         },
         // T481's last read of the vendor's CLI (declared below; read at each check).
-        cliVersion: (vendor): string | undefined => harnessUpdates?.statusOf(vendor).version,
+        cliVersion: (vendor): string | undefined =>
+          isHarnessId(vendor) ? harnessUpdates?.statusOf(vendor).version : undefined,
         onSessionState: (vendor, state, session) => modelCatalog?.record(vendor, state, session),
         onError: (err) =>
           console.error(`vendor checks: ${err instanceof Error ? err.message : String(err)}`),
@@ -348,7 +393,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           streams: streamService,
           ...(modelCatalog ? { models: () => modelCatalog.all() } : {}),
           ...(options.spawn === undefined
-            ? { installed: (vendor) => missingVendorCommand(ACP_PROVIDERS[vendor]) === undefined }
+            ? {
+                installed: (vendor) =>
+                  missingVendorCommand(providerIn(config.home, ACP_PROVIDERS[vendor])) ===
+                  undefined,
+              }
             : {}),
           // T465: a resting session ends, so the next start lets the policy pick (declared below).
           onChooseAgain: async (id: string): Promise<void> =>
@@ -970,7 +1019,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(titleRun ? { cheapModel: titleRun } : {}),
     quickDraftsAvailable: modelRun !== undefined,
     // T437: the model lists mark a vendor whose command isn't on PATH.
-    vendorMissing: (vendor) => missingVendorCommand(ACP_PROVIDERS[vendor]),
+    vendorMissing: (vendor) => missingVendorCommand(providerIn(config.home, ACP_PROVIDERS[vendor])),
     ...(modelCatalog ? { models: modelCatalog } : {}),
     ...(vendorChecks ? { vendorChecks } : {}),
     ...(prPoller ? { prCheck: (id: string) => prPoller.pollNow(id) } : {}),

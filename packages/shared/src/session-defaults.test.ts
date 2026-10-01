@@ -4,14 +4,18 @@ import { validateProjectUpdateInput } from './project';
 import { validateRepoEntry } from './repos';
 import {
   BUILTIN_SESSION_DEFAULTS,
+  KNOWN_MODEL_IDS,
   SESSION_VENDORS,
   SessionDefaultsPatchSchema,
+  SessionVendorSchema,
   VendorFailureSchema,
   type VendorFailureSettings,
   formatSessionDefaults,
   resolveSessionDefaults,
   resolveVendorFailure,
   vendorHasHooks,
+  vendorLoginHow,
+  vendorTakesEffort,
 } from './session-defaults';
 
 describe('T170 session defaults (D17)', () => {
@@ -141,5 +145,15 @@ describe('T456: what happens when an agent crashes (vendor_failure)', () => {
 
   test('Claude and Pi have pre-tool hooks; the others do not', () => {
     expect(SESSION_VENDORS.filter(vendorHasHooks)).toEqual(['claude', 'pi']);
+  });
+
+  test('T500: Antigravity is a session vendor beside Gemini, signed in with `agy`, no known models or effort', () => {
+    expect(SESSION_VENDORS).toContain('antigravity');
+    expect(SESSION_VENDORS).toContain('gemini');
+    expect(SessionVendorSchema.parse('antigravity')).toBe('antigravity');
+    expect(vendorLoginHow('antigravity', 'Antigravity')).toBe('run `agy` and sign in');
+    expect(KNOWN_MODEL_IDS.antigravity).toEqual([]);
+    expect(vendorTakesEffort('antigravity')).toBe(false);
+    expect(vendorHasHooks('antigravity')).toBe(false);
   });
 });

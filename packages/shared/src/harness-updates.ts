@@ -36,6 +36,11 @@ export const HARNESS_IDS = ['claude', 'codex', 'gemini', 'cursor', 'grok', 'pi']
 export const HarnessIdSchema = z.enum(HARNESS_IDS);
 export type HarnessId = z.infer<typeof HarnessIdSchema>;
 
+/** Whether `id` is a CLI the update check reads (T500: Antigravity's `agy` isn't one yet). */
+export function isHarnessId(id: string): id is HarnessId {
+  return (HARNESS_IDS as readonly string[]).includes(id);
+}
+
 /** The vendor a CLI belongs to: its mode is that vendor's. */
 export const HARNESS_VENDOR: Record<HarnessId, SessionVendor> = {
   claude: 'claude',
@@ -68,6 +73,7 @@ export const HarnessUpdatesConfigSchema = z
         grok: modeFor,
         pi: modeFor,
         codex: modeFor,
+        antigravity: modeFor,
       })
       .strict()
       .optional(),

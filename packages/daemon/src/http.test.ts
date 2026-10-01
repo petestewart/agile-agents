@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   mkdirSync,
@@ -32,6 +33,7 @@ import {
   validateClassifierConfig,
 } from '@agile-agents/shared';
 import { type AttachService, resolveSessionSettings } from './attach';
+import { BridgeInstallService } from './bridges';
 import { Bus } from './bus';
 import { ClassifierKeyService, FakeClassifier } from './classifier';
 import { readHomeConfigFile } from './config';
@@ -2970,4 +2972,97 @@ describe('T489 vendor self-check routes (D58)', () => {
     expect(cursor).toMatchObject({ by: 'human', reason: 'manual', model: { outcome: 'kept' } });
     expect(cursor?.usage?.reply_usage_fields).toEqual(['inputTokens', 'outputTokens']);
   }, 30_000);
+});
+
+describe('T500 Install a downloaded ACP server (Antigravity)', () => {
+  let home: string;
+  let cockpit: HttpServerHandle;
+  let store: StateStore;
+  let installs: BridgeInstallService;
+  let checks: VendorCheckService;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'agile-http-vendor-install-'));
+    const init = runInit(home);
+    store = StateStore.open(init.stateRoot);
+    const streams = new StreamService(store);
+    const questions = new QuestionService(store, streams);
+    const gates = new GateService(store);
+    // Fakes only: nothing is fetched, nothing is unpacked, nothing runs.
+    installs = new BridgeInstallService({
+      home,
+      store,
+      provider: (v) => ACP_PROVIDERS[v],
+      host: { platform: 'linux', arch: 'x64' },
+      download: async (_url, dest) => writeFileSync(dest, 'zip-bytes'),
+      unzip: async (_archive, dir) => writeFileSync(join(dir, 'agy_acp_server.par'), 'fake'),
+    });
+    checks = new VendorCheckService({
+      home,
+      store,
+      vendors: ['claude', 'antigravity'],
+      missing: (v) => (v === 'antigravity' ? installs.missing(v) : undefined),
+      installs,
+    });
+    cockpit = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot: init.stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates,
+      streams,
+      questions,
+      vendorChecks: checks,
+      feedPollIntervalMs: 20,
+    });
+  });
+
+  afterEach(async () => {
+    await cockpit.stop();
+    await installs.settled();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const url = (path: string) => `http://127.0.0.1:${cockpit.port}${path}`;
+  const post = (path: string, body: unknown = {}, headers: Record<string, string> = {}) =>
+    fetch(url(path), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+
+  test('403 cross-origin; 400 a bad body; 409 a vendor with nothing to download; then Install as the operator, its manifest on the row', async () => {
+    const path = '/api/settings/vendor-checks/install';
+    const evil = { origin: 'http://evil.example' };
+    expect((await post(path, { vendor: 'antigravity' }, evil)).status).toBe(403);
+    expect(installs.view('antigravity')?.installing).toBe(false);
+    expect((await post(path, {})).status).toBe(400);
+    expect((await post(path, { vendor: 'antigravity', url: 'https://x' })).status).toBe(400);
+    expect((await post(path, { vendor: 'claude' })).status).toBe(409);
+    expect((await fetch(url(path))).status).not.toBe(200);
+    const before = (await (
+      await fetch(url('/api/settings/vendor-checks'))
+    ).json()) as VendorChecksStatus;
+    expect(before.vendors.find((v) => v.vendor === 'antigravity')).toMatchObject({
+      installed: false,
+      missing:
+        "Antigravity can't start: its ACP server isn't installed. Install it in Settings → Agents → Vendors.",
+      install: { version: '1.2.1', platform: 'linux-x86_64', installing: false },
+    });
+    const res = await post(path, { vendor: 'antigravity' });
+    expect(res.status).toBe(200);
+    await installs.settled();
+    const after = (await (
+      await fetch(url('/api/settings/vendor-checks'))
+    ).json()) as VendorChecksStatus;
+    const row = after.vendors.find((v) => v.vendor === 'antigravity');
+    expect(row?.installed).toBe(true);
+    expect(row?.install?.manifest).toMatchObject({
+      version: '1.2.1',
+      platform: 'linux-x86_64',
+      by: 'human',
+      sha256: createHash('sha256').update('zip-bytes').digest('hex'),
+    });
+  });
 });
