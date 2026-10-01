@@ -1,8 +1,8 @@
 # Chat threads: replies that nest under a message
 
-Status: **decided** (proposed 2026-10-01; Pete settled TH1–TH4 the same day,
-recorded as D60–D63 in PLAN.md). Not built yet: T502–T504 build it in three
-steps (§8).
+Status: **decided** (proposed 2026-10-01; Pete settled TH1–TH5 the same day,
+recorded as D60–D64 in PLAN.md). Not built yet: T502–T504 build it in three
+steps (§8). Mockup: the "Chat threads mockup" canvas (4 screens).
 
 ## 1. The problem
 
@@ -36,8 +36,38 @@ landing in the wrong place.
 | TH3 (D62) | "Ask about it" separate from "Answer"? | **One box.** It must be possible to talk back to a choice question instead of picking a choice. |
 | TH4 (D63) | The coordinator's project chat shows children's questions as threads? | **Yes** (Pete: "I think so"): each child question is a thread on the coordinator's chat, so the "N things wait on you" list stays one line each. |
 
+| TH5 (D64) | Where does a thread start? | **Slack's threads with Confluence's inline anchors** (Pete, 2026-10-01): every chat turn has a **Reply in thread** icon; select some of a turn's text first and the thread is **anchored to that selection**, which it quotes. One turn can carry several anchored threads, one per passage, so a long agent message about many things branches per topic. |
+
 One level of nesting only (Slack's rule): a reply to a reply goes in the
 same thread. This alone prevents most of the mess.
+
+## 3a. Starting a thread (TH5)
+
+- **On a whole turn.** Hovering a turn (any turn: the agent's or yours;
+  always visible on touch) shows a small **Reply in thread** icon beside
+  copy and Branch off. It opens the side panel on a new thread on that
+  turn; what you type there is the thread's first reply.
+- **On a selection.** Selecting text in a turn shows the floating bar T499
+  added for Quote, now with two actions: **Quote** (into the composer or a
+  card's box, as today) and **Reply in thread**. The thread is anchored to
+  the selection: the panel opens with the passage quoted at the top
+  (`> …`), and the passage stays highlighted in the turn, Confluence-style:
+  a soft underline tint, with a small count at the end of the passage
+  (`2`, amber when the thread waits on you). Clicking the highlight opens
+  its thread.
+- **Several anchors in one turn.** Each selection makes its own thread.
+  Under the turn, one line lists them in passage order: `"banker's
+  rounding…" 3 · "sheet per account" 1 · whole turn 2`. Overlapping
+  selections are allowed; the later anchor draws over the earlier one, and
+  hovering a highlight names its thread.
+- **The agent is told what you mean.** A delivered reply reads
+  `In a thread on your message of 10:02, about the passage "<quote, as
+  data>": <your text>`; a whole-turn thread omits the passage.
+- **Anchors never drift.** Turns don't change once written, so an anchor
+  is the turn's `ts` plus the passage's start and end in its body and the
+  quoted text itself; the quote is shown even if the body were ever
+  re-rendered differently (a mismatch falls back to the whole turn, the
+  quote still shown).
 
 ## 4. Where the agent's reply goes
 
@@ -94,10 +124,14 @@ agent as written:
 
 ## 7. Data
 
-- One optional field on a thread entry, `thread`: the `ts` of the line that
-  started the thread, or `questions/<id>` for a question's. Old threads load
-  as they are; question and answer lines are grouped by their `ref` until
-  they carry `thread`.
+- One optional field on a thread entry, `thread`: the `ts` of the thread's
+  first reply, or `questions/<id>` for a question's. Old threads load as
+  they are; question and answer lines are grouped by their `ref` until they
+  carry `thread`.
+- The thread's first reply also carries its anchor (TH5): `anchor:
+  {entry: <the turn's ts>, start, end, quote}` (start and end absent for a
+  whole-turn thread; `quote` capped at the quote limit). Strict schema in
+  packages/shared.
 - No new record kind. Thread state and unread are derived.
 - `settle_question` is a new agent verb (D24 verbs), human-visible as an
   `answer` line `resolved_as: settled`.
@@ -110,8 +144,10 @@ agent as written:
    agent turns it caused; a choice question stays open on a typed reply
    (§5), `settle_question`, the "didn't settle" row. Child questions as
    threads on the coordinator's chat (TH4). No new field yet.
-2. **T503 — reply in thread on any message.** The `thread` field,
-   placement by cause (§4), `thread` on `say`/`ask`, the side panel, the
-   main-flow marks, thread state, unread and the "Open threads" chip.
+2. **T503 — reply in thread on any turn, or on a passage.** The `thread`
+   field and the anchor, the Reply in thread icon on every turn and in the
+   selection bar, the highlights and counts (§3a), placement by cause (§4),
+   `thread` on `say`/`ask`, the side panel, the main-flow marks, thread
+   state, unread and the "Open threads" chip.
 3. **T504 — moving and promoting.** Move to thread / main, promote to a
    tangent.

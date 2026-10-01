@@ -74,6 +74,7 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D61** (2026-10-01, Pete): a reply in a thread while the agent works is **queued** until its turn ends, like a composer line. (T503)
 - **D62** (2026-10-01, Pete): a question has **one box**; typing to a choice question instead of picking keeps it open, and the agent re-asks or settles it (`settle_question`). (T502)
 - **D63** (2026-10-01, Pete): a coordinator's chat shows its **children's questions as threads**. (T502)
+- **D64** (2026-10-01, Pete): threads work like **Slack's, with Confluence's inline anchors**: every chat turn has a Reply in thread icon; selecting text first anchors the thread to that passage (quoted, highlighted in the turn with a count), so one turn can carry several threads. design/chat-threads.md §3a (T503)
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -3033,7 +3034,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Priority:** P2
 - **Status:** Todo (after T502)
 - **Owner:** worker
-- **Scope:** design/chat-threads.md §4, §6, §7 and §8 step 2: the optional `thread` field on a thread entry (shared schema, strict), placement of the agent's reply by cause (the line that woke the turn; a batched turn goes to the main flow with links), an optional `thread` on `say`/`ask`, delivered lines labelled with their thread, the side panel, a mark per thread in the main flow, derived thread state, unread on the mark and the rail row, the "Open threads" chip. One level of nesting. Anything that needs the operator inside a thread also shows in the main flow and Needs me.
+- **Scope:** design/chat-threads.md §3a, §4, §6, §7 and §8 step 2: a Reply in thread icon on every turn and in the selection bar, threads anchored to a selected passage (quoted, highlighted with a count, several per turn, D64), the optional `thread` field and `anchor` on a thread entry (shared schema, strict), placement of the agent's reply by cause (the line that woke the turn; a batched turn goes to the main flow with links), an optional `thread` on `say`/`ask`, delivered lines labelled with their thread, the side panel, a mark per thread in the main flow, derived thread state, unread on the mark and the rail row, the "Open threads" chip. One level of nesting. Anything that needs the operator inside a thread also shows in the main flow and Needs me.
 - **Acceptance Criteria:** As in the design.
 - **Validation Steps:** Unit tests (placement by cause, batched turns, derived state, unread); control-room e2e: reply in a thread, the fake agent's answer lands in it, the mark shows the count and state, a question raised inside a thread also shows in the main flow; typecheck, lint; build then full `bun test`.
 - **Notes:** Branch T503-chat-threads.
