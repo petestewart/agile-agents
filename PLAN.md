@@ -3012,14 +3012,14 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** Unit tests for the shared list and the words; UI tests for the row and the chip; control-room e2e: a Codex node shows the mark and the tooltip, a Claude node doesn't; typecheck, lint; build then full `bun test`.
 - **Notes:** Branch T505-ungated-warning.
 
-### Ticket: T506 Codex through its native `codex app-server`, so its commands can be gated
-- **Priority:** P2
-- **Status:** Todo (follow-up of T505)
+### Ticket: T506 Gate Codex with its own PreToolUse hook
+- **Priority:** P1
+- **Status:** Todo (spike first, on Pete's machine)
 - **Owner:** worker
-- **Scope:** `codex-acp` raises no permission requests in any mode or approval policy (design/spike-findings.md §C3), so the daemon can't gate Codex. The native `codex app-server` has approval request kinds. Spike it first (what it asks for, how sessions, models, effort, resume and usage map), then an adapter that answers its approvals through the daemon's one permission pipeline, like the ACP permission path. Drop Codex from T505's list once gated.
-- **Acceptance Criteria:** Decided after the spike; record findings in design/spike-findings.md.
-- **Validation Steps:** Spike report; then tests per the adapter.
-- **Notes:** Needs a real Codex login for the spike (Pete's machine).
+- **Scope:** Pete (2026-10-01) pointed at Codex's hooks (learn.chatgpt.com/docs/hooks): Codex CLI now has `PreToolUse` (and `PermissionRequest`, `PostToolUse`, …) hooks, configured in `~/.codex/hooks.json` or `<repo>/.codex/hooks.json`, covering shell commands (`Bash`), file edits (`apply_patch`/`Edit`/`Write`) and MCP tools; a hook denies with exit 2 or `{"permissionDecision":"deny"}`. That is the same tier-1 gate Claude has (`agile hook pre-tool-use`), so Codex needs no new adapter. design/spike-findings.md tested only ACP permission requests and `approval_policy` (codex-acp 1.10.0), never hooks; the earlier "use `codex app-server`" note came from there and is superseded. Two things the docs leave open and the spike must answer: (1) do hooks fire when Codex runs under `codex-acp` (since T480 the bridge runs the operator's installed Codex through `CODEX_PATH`)? (2) trust: non-managed hooks run only once trusted (recorded against the hook's hash), project hooks only in a trusted project `.codex/` layer, and an **untrusted hook is skipped, not blocking**: fail-open. Options: `--dangerously-bypass-hook-trust` per invocation (needs a way through codex-acp), or trusting the worktree project and the exact hook (a stable hash, since the daemon writes the same hook every time).
+- **Acceptance Criteria:** The daemon writes `<worktree>/.codex/hooks.json` for a Codex session (as it writes Claude's settings), its `PreToolUse` hooks (matchers Bash, apply_patch, MCP) calling `agile hook pre-tool-use` with the session's env, so Codex's commands go through the same rules, classifier and Needs me as Claude's. **Fail closed:** the daemon sees every tool call over ACP; a Codex tool call that ran without its hook having been consulted stops the agent and raises a Needs me item ("Codex ran a command its gate never saw: its hook isn't trusted or didn't fire"), so a skipped hook can never pass silently. Codex leaves T505's unchecked list once this holds. The spike's findings go in design/spike-findings.md.
+- **Validation Steps:** Spike on a real Codex login (LIVE-CHECKLIST steps); offline tests with the fake agent for the hooks.json writer, the env, and the fail-closed check (a tool call with no hook record stops the session); typecheck, lint; build then full `bun test`.
+- **Notes:** Antigravity's `agy` has the same kind of hook (`PreToolUse` with allow/deny/ask in `.agents/hooks.json`); once Codex's path works, a sibling ticket does Antigravity. Grok: unknown.
 
 ### Ticket: T502 Question threads (D62, D63)
 - **Priority:** P1
