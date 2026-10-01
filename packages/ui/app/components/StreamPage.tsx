@@ -68,6 +68,7 @@ import {
   sessionIdText,
   showGoalCard,
   tidyIds,
+  uncheckedWarning,
   vendorLabel,
   withQuestion,
   workingAs,
@@ -142,6 +143,7 @@ import {
   type MenuItem,
   RepoIcon,
   Tabs,
+  UncheckedMark,
   repoKindLabel,
   useCopy,
   useToast,
@@ -654,6 +656,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       : agentLabel(resolved)
     : undefined;
   const startWith = pending && !liveAgent ? agentLabel(pending) : defaultLabel;
+  // T505: Details → Agent warns for the agent that runs, else the one a start runs.
+  const agentWarning = uncheckedWarning(liveAgent?.vendor ?? resolved?.vendor);
   const statusInput: StatusInput = row ?? {
     agent_status: stream.agent.status,
     human_status: stream.human.status,
@@ -1389,7 +1393,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     liveAgent !== undefined && row?.live_agent?.role === liveAgent.role
       ? row.live_agent.context
       : undefined;
-  const modelChipEl =
+  // T505: the chip's agent runs shell commands that nothing checks (Codex, Grok, Antigravity):
+  // an amber mark beside it, the sentence its tooltip.
+  const chipWarning = uncheckedWarning(
+    canPick && chip && resolved ? chip.shows.vendor : liveAgent?.vendor,
+  );
+  const modelChipBare =
     canPick && chip && resolved ? (
       <ModelChip
         status={defaults}
@@ -1411,6 +1420,15 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         <span className="cr-model-chip-text">{agentLabel(liveAgent)}</span>
       </span>
     ) : undefined;
+  const modelChipEl =
+    modelChipBare && chipWarning !== undefined ? (
+      <>
+        {modelChipBare}
+        <UncheckedMark warning={chipWarning} testid="composer-unchecked" />
+      </>
+    ) : (
+      modelChipBare
+    );
 
   // T385: the goal changes in place. T413: not as a card when it only repeats the title (or on a
   // project's root, whose goal is its name); the details panel's About keeps it and its Edit then.
@@ -1943,6 +1961,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             stream={stream}
             {...(liveAgent ? { live: liveAgent } : {})}
             {...(defaultLabel ? { startWith: defaultLabel } : {})}
+            {...(agentWarning !== undefined ? { warning: agentWarning } : {})}
             busy={busy}
             canReview={liveReviewer === undefined}
             {...(hasCommits ? { onReview: () => setPicker('reviewer') } : {})}

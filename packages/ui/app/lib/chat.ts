@@ -11,6 +11,8 @@ import {
   type InboxItem,
   type SessionRef,
   type ThreadEntry,
+  uncheckedCommandsWarning,
+  vendorRunsUnchecked,
   vendorTakesEffort,
 } from '@agile-agents/shared';
 import type { IconName } from '../components/Icon';
@@ -33,6 +35,16 @@ const VENDOR_LABEL: Record<string, string> = {
 /** `claude` → "Claude"; an unknown vendor keeps its id, capitalised. */
 export function vendorLabel(vendor: string): string {
   return VENDOR_LABEL[vendor] ?? (vendor ? vendor[0]?.toUpperCase() + vendor.slice(1) : 'Agent');
+}
+
+/**
+ * T505: the warning for a vendor whose shell commands nothing checks
+ * (Codex, Grok, Antigravity), or `undefined` for one whose are.
+ */
+export function uncheckedWarning(vendor: string | undefined): string | undefined {
+  return vendor !== undefined && vendorRunsUnchecked(vendor)
+    ? uncheckedCommandsWarning(vendorLabel(vendor))
+    : undefined;
 }
 
 /** T488: whether `vendor` builds effort into each model instead of a setting of its own (Cursor). */
@@ -764,6 +776,10 @@ export function systemLine(body: string, meta: SystemLineMeta = {}): SystemLine 
       text: `${sessionRoleWord(role)} started · ${sessionLabelLong({ vendor, model, effort })}`,
       tone: 'muted',
     };
+  }
+  // T505: its agent's shell commands run unchecked (Codex, Grok, Antigravity).
+  if (/^.+ runs commands unchecked$/.test(body)) {
+    return { icon: 'alert-triangle', text: body, tone: 'warn' };
   }
   // T421 (D42): a conclusion sent up from this conversation.
   const sent = /^sent to (.+?): (.*)$/s.exec(body);

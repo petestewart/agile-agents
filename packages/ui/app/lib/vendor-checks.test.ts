@@ -60,6 +60,22 @@ describe('T489 a vendor row in Settings → Agents → Vendors', () => {
     expect(vendorRowView({ ...row, queued: true, last }, NOW).when).toBe('Waiting');
   });
 
+  test('T505: Codex, Grok and Antigravity say their commands run unchecked; Claude does not', () => {
+    const warning =
+      'Codex runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.';
+    expect(vendorRowView(row, NOW).unchecked).toBe(warning);
+    expect(vendorRowView({ ...row, last }, NOW).unchecked).toBe(warning);
+    expect(vendorRowView({ ...row, vendor: 'grok', label: 'Grok CLI' }, NOW).unchecked).toContain(
+      'Grok CLI runs shell commands without asking',
+    );
+    expect(
+      vendorRowView({ ...row, vendor: 'antigravity', label: 'Antigravity' }, NOW).unchecked,
+    ).toContain('Antigravity runs shell commands');
+    expect(vendorRowView({ ...row, vendor: 'claude', label: 'Claude Code' }, NOW).unchecked).toBe(
+      undefined,
+    );
+  });
+
   test('a result in marks and words', () => {
     const view = vendorRowView({ ...row, last }, NOW);
     expect(view.when).toBe('Checked 5m ago');

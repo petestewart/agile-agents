@@ -14081,3 +14081,145 @@ describe('permissions: the Ask card and Settings (Playwright e2e, T457)', () => 
     TEST_BUDGET_MS,
   );
 });
+
+// ---- T505: Codex, Grok and Antigravity run commands unchecked ----------------
+
+describe('Unchecked commands warning (Playwright e2e, T505)', () => {
+  const WARNING =
+    'Codex runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.';
+
+  browserTest(
+    'a Codex node shows the mark beside its model chip with the sentence as its tooltip, in Details and on its thread; a Claude node does not; the picker marks Codex',
+    async () => {
+      const hang: FakeAgentScript = {
+        steps: [{ type: 'agent_text', text: 'On it.' }, { type: 'hang' }],
+      };
+      const cockpit = await startStreamCockpit([hang, hang]);
+      await cockpit.store.setHomeModelPolicy({ mode: 'default', presets: [] });
+      let page: Page | undefined;
+      try {
+        const codexNode = await cockpit.streams.create('human', { title: 'Codex node', goal: 'g' });
+        const claudeNode = await cockpit.streams.create('human', {
+          title: 'Claude node',
+          goal: 'g',
+        });
+        // The fake agent stands in for Codex; the session records the vendor.
+        await cockpit.attach.attach(codexNode.id, { vendor: 'codex', model: 'gpt-5.5' });
+        await cockpit.attach.attach(claudeNode.id);
+        expect(cockpit.streams.get(codexNode.id).sessions[0]?.vendor).toBe('codex');
+        expect(cockpit.streams.get(claudeNode.id).sessions[0]?.vendor).toBe('claude');
+
+        const p = await openPage();
+        page = p;
+        const openDetails = async (): Promise<void> => {
+          if (!(await p.locator('[data-testid="node-details"]').isVisible())) {
+            await p.locator('[data-testid="details-toggle"]').click();
+          }
+          await p.locator('[data-testid="sessions"]').waitFor();
+        };
+
+        // The Codex node: an amber mark beside the chip, the sentence its tooltip and its name.
+        await p.goto(`${cockpit.base}/?node=${codexNode.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${codexNode.id}"]`).waitFor();
+        await waitForContains(p, '[data-testid="composer-model"]', 'Codex');
+        const mark = p.locator('[data-testid="composer-unchecked"]');
+        await mark.waitFor();
+        expect(await mark.getAttribute('title')).toBe(WARNING);
+        expect(await mark.getAttribute('aria-label')).toBe(WARNING);
+        expect(await mark.getAttribute('role')).toBe('img');
+        await openDetails();
+        await waitForText(p, '[data-testid="agent-unchecked"]', WARNING);
+        // Once on its thread, amber.
+        const line = p.locator('[data-testid="thread-entry"]', {
+          hasText: 'Codex runs commands unchecked',
+        });
+        await line.waitFor();
+        expect(await line.count()).toBe(1);
+        expect(await line.locator('.cr-sys').getAttribute('data-tone')).toBe('warn');
+
+        // The Claude node: none of it.
+        await p.goto(`${cockpit.base}/?node=${claudeNode.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${claudeNode.id}"]`).waitFor();
+        await waitForContains(p, '[data-testid="composer-model"]', 'Claude');
+        await openDetails();
+        expect(await p.locator('[data-testid="composer-unchecked"]').count()).toBe(0);
+        expect(await p.locator('[data-testid="agent-unchecked"]').count()).toBe(0);
+        expect(
+          await p
+            .locator('[data-testid="thread-entry"]', { hasText: 'runs commands unchecked' })
+            .count(),
+        ).toBe(0);
+
+        // The model picker, on a node that never started: Codex's entries carry the mark.
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const fresh = await cockpit.streams.create('human', {
+          title: 'Not started',
+          goal: 'g',
+          parent: shop.root,
+        });
+        await p.goto(`${cockpit.base}/?node=${fresh.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${fresh.id}"]`).waitFor();
+        await waitForContains(p, '[data-testid="composer-model"]', 'Claude');
+        expect(await p.locator('[data-testid="composer-unchecked"]').count()).toBe(0);
+        await p.locator('[data-testid="composer-model"]').click();
+        const popover = p.locator('[data-testid="model-popover"]');
+        const codex = popover.locator('[data-testid="model-option"][data-vendor="codex"]').first();
+        await codex.waitFor();
+        const codexMark = codex.locator('[data-testid="model-option-unchecked"]');
+        expect(await codexMark.getAttribute('title')).toBe(WARNING);
+        expect(await codexMark.getAttribute('aria-label')).toBe(WARNING);
+        const claude = popover.locator('[data-testid="model-option"][data-vendor="claude"]');
+        expect(await claude.count()).toBeGreaterThan(0);
+        expect(await claude.locator('[data-testid="model-option-unchecked"]').count()).toBe(0);
+        // Picking Codex puts the mark beside the chip.
+        await codex.click();
+        await p.locator('[data-testid="composer-model"]').click();
+        await popover.waitFor({ state: 'detached' });
+        await waitForContains(p, '[data-testid="composer-model"]', 'Codex');
+        expect(await p.locator('[data-testid="composer-unchecked"]').getAttribute('title')).toBe(
+          WARNING,
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    "Settings → Agents → Vendors warns on Codex's row, not on Claude's",
+    async () => {
+      const cockpit = await startCockpit({
+        vendorChecks: (store, home) =>
+          new VendorCheckService({
+            home,
+            store,
+            vendors: ['claude', 'codex'],
+            missing: () => undefined,
+          }),
+      });
+      let page: Page | undefined;
+      try {
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?view=settings&section=agents`);
+        await page.locator('[data-testid="settings-vendors-row-codex"]').waitFor();
+        await waitForText(page, '[data-testid="settings-vendors-unchecked-codex"]', WARNING);
+        expect(
+          await page
+            .locator('[data-testid="settings-vendors-unchecked-codex"]')
+            .getAttribute('data-tone'),
+        ).toBe('amber');
+        expect(
+          await page.locator('[data-testid="settings-vendors-unchecked-claude"]').count(),
+        ).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});

@@ -4470,6 +4470,30 @@ button.cr-model-chip[aria-expanded="true"] {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* T505: an agent whose shell commands nothing checks: an amber mark, the sentence its tooltip. */
+.cr-unchecked {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: var(--amber-text);
+  cursor: help;
+}
+.cr-unchecked-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--amber-text);
+  background: var(--amber-weak);
+  border-radius: var(--radius-sm);
+}
+.cr-unchecked-note .cr-icon {
+  flex: none;
+  margin-top: 1px;
+}
 /* T423: a pick for the next message, not yet sent: the chip says so in the accent. */
 .cr-model-chip[data-chosen="true"] {
   color: var(--accent-fg);

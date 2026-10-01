@@ -20,7 +20,9 @@ import {
   isSessionVendor,
   resumeMark,
   settingMark,
+  uncheckedCommandsWarning,
   vendorLoginHow,
+  vendorRunsUnchecked,
 } from '@agile-agents/shared';
 import { callRpc } from '../client';
 import { printJson, printTable } from '../format';
@@ -98,17 +100,23 @@ export function installNote(row: VendorCheckRow): string | undefined {
   return install.error !== undefined ? `${done}. Last install: ${install.error}` : done;
 }
 
-/** The notes under a vendor's row (T494): what didn't take, rate limits, errors. */
+/**
+ * The notes under a vendor's row (T494): what didn't take, rate limits, errors.
+ * T505: first, for a vendor whose commands nothing checks, the warning.
+ */
 export function vendorRowNotes(row: VendorCheckRow): string[] {
   const last = row.last;
   const install = installNote(row);
+  const unchecked = vendorRunsUnchecked(row.vendor) ? [uncheckedCommandsWarning(row.label)] : [];
   if (last === undefined) {
     return [
+      ...unchecked,
       ...(install !== undefined ? [install] : []),
       ...(!row.installed && row.missing !== undefined ? [row.missing] : []),
     ];
   }
   return [
+    ...unchecked,
     ...(install !== undefined ? [install] : []),
     ...(last.logged_in
       ? [settingNote('Model', last.model), settingNote('Effort', last.effort)].filter(

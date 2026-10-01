@@ -39,6 +39,7 @@ import {
   modelLabel,
   noEffortLine,
   sessionIdText,
+  uncheckedWarning,
   vendorLabel,
 } from '../lib/chat';
 import {
@@ -55,7 +56,7 @@ import { pickerView, toggleFold } from '../lib/favourites';
 import { useFavouriteModels, usePickerPrefs } from '../lib/use-favourites';
 import { Icon } from './Icon';
 import { Switch } from './SettingsCard';
-import { Button, Dialog, Popover, Segmented, Spinner } from './ui';
+import { Button, Dialog, Popover, Segmented, Spinner, UncheckedMark } from './ui';
 
 export interface SessionChoice {
   vendor: string;
@@ -326,6 +327,11 @@ export function ModelChoice({
                   >
                     <Icon name="check" size={14} className="cr-mpick-check" />
                     <span className="cr-mpick-name">{option.label}</span>
+                    {/* T505: its shell commands run unchecked. */}
+                    <UncheckedMark
+                      warning={uncheckedWarning(option.vendor)}
+                      testid="model-option-unchecked"
+                    />
                     {tag && <span className="cr-mpick-tag">{tag}</span>}
                   </button>
                   <ModelStar row={option} onError={setStarError} />

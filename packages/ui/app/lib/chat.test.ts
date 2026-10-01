@@ -43,6 +43,7 @@ import {
   systemLine,
   tidyIds,
   tokensText,
+  uncheckedWarning,
   vendorLabel,
   wakeWords,
   windowRows,
@@ -113,6 +114,15 @@ describe('names', () => {
       'Cursor sets effort as part of each model: pick the model with the effort you want',
     );
     expect(noEffortLine('gemini')).toBe('Gemini has no effort setting');
+    // T505: a vendor whose commands nothing checks says so; one whose are, doesn't.
+    expect(uncheckedWarning('codex')).toBe(
+      'Codex runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.',
+    );
+    expect(uncheckedWarning('grok')).toContain('Grok runs shell commands without asking');
+    expect(uncheckedWarning('antigravity')).toContain('Antigravity runs shell commands');
+    expect(uncheckedWarning('claude')).toBeUndefined();
+    expect(uncheckedWarning('pi')).toBeUndefined();
+    expect(uncheckedWarning(undefined)).toBeUndefined();
     expect(sessionIdText({ vendor: 'claude', model: 'opus', effort: 'max' })).toBe(
       'claude/opus · max effort',
     );
@@ -234,6 +244,12 @@ describe('chat rows', () => {
       'Reviewer started · Gemini default model',
     );
     expect(systemLine('session ended: its turn finished').text).toBe('Agent finished its turn');
+    // T505: an agent whose commands nothing checks reads amber.
+    expect(systemLine('Codex runs commands unchecked')).toEqual({
+      icon: 'alert-triangle',
+      text: 'Codex runs commands unchecked',
+      tone: 'warn',
+    });
     // T465 (D48): a finished turn's session stays; it ends after its idle time, or resumes.
     expect(systemLine('turn finished').text).toBe('Agent finished its turn');
     expect(systemLine('resumed its earlier session').text).toBe('Resumed its earlier session');
