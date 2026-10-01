@@ -3032,7 +3032,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T502 Question threads (D62, D63)
 - **Priority:** P1
-- **Status:** In progress (Pete: "ready to build", 2026-10-01)
+- **Status:** Review (worker done). Landed: `settle_question` verb (`resolved_as: settled`), `POST /api/questions/<id>/reply` (a choice question stays open; the agent is told it is a reply about it and how to settle; a re-ask supersedes it, `superseded_by`), derived question threads by ref and by cause (`questions/threads.ts`) on the node page and a coordinator's `child_questions`, the unsettled Needs me row (`unsettled_by`), and the cockpit's nested thread under the question, Reply on a choice card, and "N questions from the parts" on a coordinator's chat; LIVE-CHECKLIST §21.
 - **Owner:** worker
 - **Scope:** design/chat-threads.md §5 and §8 step 1. A question card is its thread: the question, your replies, the agent's clarifications and the answer, grouped by `ref: questions/<id>` and by the turns the question's lines caused. A choice question stays open on a typed reply; the agent re-asks (superseding it, the thread carrying on) or calls a new verb `settle_question {question, answer}`; an open question with your reply unanswered for one finished turn is a Needs me row. A coordinator's chat shows each child question as a thread (D63).
 - **Acceptance Criteria:** As in the design. No new thread-entry field yet.
