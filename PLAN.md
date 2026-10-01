@@ -2998,6 +2998,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `subprocess-env.test.ts` T486b (fails without the change); typecheck, lint; the delivery, worktree, sandbox and tools tests.
 - **Notes:** Branch T486b-sandboxed-env. PR #12 itself targets `main`, which the stacked phase branches replace; its vendor-session part is T486 here.
 
+### Ticket: T493 `agile` stays executable after a pull
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete got `zsh: permission denied: agile` on `agile daemon stop`. `bun link` puts `~/.bun/bin/agile` on the PATH as a link to `packages/cli/src/index.ts` and makes that file executable, but git tracked it as 100644, so a pull, or the checklist's own `git checkout -- packages/cli/src/index.ts`, dropped the bit again.
+- **Acceptance Criteria:** `packages/cli/src/index.ts` (it starts `#!/usr/bin/env bun`) is committed as 100755. LIVE-CHECKLIST §1.1 no longer needs `chmod +x` after a pull; its `git checkout --` line stays for checkouts from before this change, and does nothing otherwise.
+- **Validation Steps:** `git ls-files -s packages/cli/src/index.ts` shows 100755; a fresh `git checkout` of the file keeps it executable and `./packages/cli/src/index.ts` prints the usage.
+- **Notes:** Branch T493-cli-executable. File mode only, no code change.
+
 ### Ticket: T492 The fake agent's log is append-only; tests read complete lines
 - **Priority:** P1
 - **Status:** Done
