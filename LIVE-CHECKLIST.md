@@ -119,9 +119,10 @@ which agile
 `bun --version` must be 1.4.2 or newer. `which agile` prints
 `~/.bun/bin/agile`. If it prints nothing, add
 `export PATH="$HOME/.bun/bin:$PATH"` to `~/.zshrc` and open a new terminal.
-(`bun link` makes `packages/cli/src/index.ts` executable, which git sees as a
-local change; the first `git checkout --` line undoes it so the branch
-switch and pull never refuse.)
+(`packages/cli/src/index.ts` is committed executable, so a pull keeps
+`agile` runnable. On a checkout from before that, `bun link` made it
+executable as a local change; the first `git checkout --` line undoes it so
+the branch switch and pull never refuse. It does nothing otherwise.)
 
 After pulling new code at any later point, rebuild and restart the daemon,
 then reload the cockpit tab:
@@ -132,7 +133,6 @@ git checkout -- packages/cli/src/index.ts
 git pull origin claude/phase-14
 bun install
 bun run build
-chmod +x packages/cli/src/index.ts
 agile daemon stop
 agile daemon start
 ```
