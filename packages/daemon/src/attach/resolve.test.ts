@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { ACP_PROVIDERS } from '@agile-agents/acp-client';
-import { EFFORT_VENDORS, SESSION_VENDORS } from '@agile-agents/shared';
+import { EFFORT_VENDORS, SESSION_VENDORS, UNCHECKED_COMMAND_VENDORS } from '@agile-agents/shared';
 import {
   DEFAULT_VENDOR,
   UnknownVendorError,
@@ -111,5 +111,14 @@ describe('T401: the vendors that take effort', () => {
         ACP_PROVIDERS[vendor].effort !== undefined || ACP_PROVIDERS[vendor].effortOption === true,
     );
     expect([...EFFORT_VENDORS].sort()).toEqual([...mapped].sort());
+  });
+});
+
+describe('T505: the vendors that run commands unchecked', () => {
+  test("the shared list is the registry's: every provider marked requiresSandbox, no other", () => {
+    const ungated = SESSION_VENDORS.filter(
+      (vendor) => ACP_PROVIDERS[vendor].requiresSandbox === true,
+    );
+    expect([...UNCHECKED_COMMAND_VENDORS].sort()).toEqual([...ungated].sort());
   });
 });

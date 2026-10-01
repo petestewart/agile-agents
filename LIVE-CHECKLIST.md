@@ -1700,3 +1700,27 @@ Needs the `agy` CLI signed in to a Google account, and `unzip` on the PATH.
       permission request it raises (edits, shell commands, reads) and whether
       a denial stops it, so its `requiresSandbox` mark and `loadSession` can be
       set from what you measured.
+
+## 19. **[vendor]** Codex, Grok and Antigravity run commands unchecked (T505)
+
+Their ACP bridges run a shell command without asking (design/spike-findings.md
+§C3), and no sandbox is wired to them yet, so nothing checks their commands:
+no permission card, no pattern rule, no hook. They still run as they are; the
+app only says so. The real fix for Codex is its native `codex app-server`
+(T506). Needs a Codex login (Grok or Antigravity if you have one).
+
+- [ ] Settings → Agents → Vendors: the Codex, Grok CLI and Antigravity rows
+      each carry an amber line, "Codex runs shell commands without asking,
+      and nothing checks them yet. Use it on repos you trust." (with that
+      vendor's name). Claude Code's, Cursor's, Gemini CLI's and Pi's don't.
+- [ ] `agile vendors`: the same sentence is the first note under each of the
+      three rows.
+- [ ] The model chip's list: each Codex, Grok and Antigravity entry has a
+      small amber warning mark; hovering it shows the sentence.
+- [ ] Start a node on Codex. Beside the composer's model chip, the same mark
+      (the sentence on hover); Details → Agent shows the sentence; the thread
+      has one amber line, "Codex runs commands unchecked". A Claude node shows
+      none of these.
+- [ ] Ask the Codex node to run a harmless command (`ls`): it runs with no
+      permission card. Nothing in the app stops it; that is the point of the
+      warning.

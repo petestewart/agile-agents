@@ -141,6 +141,33 @@ export function Badge({
 }
 
 /**
+ * T505: the mark beside an agent whose shell commands nothing checks
+ * (Codex, Grok, Antigravity): an amber warning glyph, the sentence its
+ * tooltip and its name for a screen reader. Nothing for any other agent.
+ */
+export function UncheckedMark({
+  warning,
+  testid = 'unchecked-mark',
+}: {
+  /** `uncheckedWarning(vendor)`: the sentence, or `undefined` for a vendor whose commands are checked. */
+  warning: string | undefined;
+  testid?: string;
+}): JSX.Element | null {
+  if (warning === undefined) return null;
+  return (
+    <span
+      className="cr-unchecked"
+      role="img"
+      aria-label={warning}
+      title={warning}
+      data-testid={testid}
+    >
+      <Icon name="alert-triangle" size={13} />
+    </span>
+  );
+}
+
+/**
  * A node's status as a small shape: filled for "your move", a spinner ring
  * for working, hollow for not started / stopped. Keeps `.cr-dot` and
  * `data-dot` (the e2e suites read the colour name). T447 (audit r7 #9): the

@@ -11,6 +11,9 @@
  * T500: a vendor whose ACP server this app downloads (Antigravity) has
  * **Install** while it is missing, and once installed the row shows the
  * version, the platform and the archive's SHA-256 from its manifest.
+ *
+ * T505: a vendor whose shell commands nothing checks (Codex, Grok,
+ * Antigravity) says so on its row, in amber, whatever its check found.
  */
 
 import type { SessionVendor, VendorCheckMode, VendorChecksStatus } from '@agile-agents/shared';
@@ -23,6 +26,7 @@ import {
   type CheckMark,
   vendorRowView,
 } from '../lib/vendor-checks';
+import { Icon } from './Icon';
 import { FormError, SavedNote, SetCard, SetRow, errorText, useSavedFlash } from './SettingsCard';
 import { Badge, Button, Segmented, Spinner } from './ui';
 
@@ -188,6 +192,16 @@ export function VendorChecksCard(): JSX.Element {
                         <dd data-testid={`settings-vendors-usage-${vendor}`}>{view.usage}</dd>
                       </div>
                     </dl>
+                  )}
+                  {view.unchecked !== undefined && (
+                    <p
+                      className="cr-set-note"
+                      data-tone="amber"
+                      data-testid={`settings-vendors-unchecked-${vendor}`}
+                    >
+                      <Icon name="alert-triangle" size={14} />
+                      <span>{view.unchecked}</span>
+                    </p>
                   )}
                   {view.install !== undefined && (
                     <p
