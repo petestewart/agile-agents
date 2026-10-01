@@ -51,6 +51,43 @@ export interface VendorRowView {
   leftOut?: string;
   /** The check can run (installed, not running or waiting). */
   canCheck: boolean;
+  /** T500: a server this app downloads (Antigravity's): Install, and what is installed. */
+  install?: InstallView;
+}
+
+/** T500: a downloaded server's install, in words. */
+export interface InstallView {
+  /** Install shows (nothing installed yet, or the install is incomplete). */
+  canInstall: boolean;
+  installing: boolean;
+  /** "ACP server 1.2.1 (linux-x86_64), installed 2026-10-01", or what Install fetches. */
+  line: string;
+  /** The archive's SHA-256, once installed. */
+  sha256?: string;
+  /** Why the last install failed. */
+  error?: string;
+}
+
+/** T500: the install half of a row, or `undefined` for a vendor this app doesn't download. */
+export function installView(row: VendorCheckRow): InstallView | undefined {
+  const install = row.install;
+  if (install === undefined) return undefined;
+  const m = install.manifest;
+  const line = install.installing
+    ? `Downloading its ACP server ${install.version}…`
+    : m !== undefined
+      ? `ACP server ${m.version} (${m.platform}), installed ${m.installed_at.slice(0, 10)}`
+      : install.platform === undefined
+        ? `Its ACP server ${install.version} has no build for this computer.`
+        : `Its ACP server ${install.version} isn’t installed. Install downloads it from Google into this app’s home.`;
+  return {
+    canInstall:
+      !install.installing && install.platform !== undefined && (m === undefined || !row.installed),
+    installing: install.installing,
+    line,
+    ...(m !== undefined ? { sha256: m.sha256 } : {}),
+    ...(install.error !== undefined ? { error: install.error } : {}),
+  };
 }
 
 function settingWords(what: 'Model' | 'Effort', s: VendorCheckSetting): string {
@@ -122,6 +159,7 @@ export function vendorRowView(row: VendorCheckRow, now: number = Date.now()): Ve
       // T494: Pi's CLI can be installed while its bridge isn't; say which command is missing.
       errors: !row.installed && row.missing !== undefined ? [row.missing] : [],
       canCheck: row.installed && !busy,
+      ...withInstall(row),
     };
   }
   const state: VendorRowView['state'] = busy
@@ -163,5 +201,11 @@ export function vendorRowView(row: VendorCheckRow, now: number = Date.now()): Ve
       ? { leftOut: `Model choice leaves ${last.label} out: a model picked for it doesn’t take.` }
       : {}),
     canCheck: row.installed && !busy,
+    ...withInstall(row),
   };
+}
+
+function withInstall(row: VendorCheckRow): { install?: InstallView } {
+  const install = installView(row);
+  return install !== undefined ? { install } : {};
 }

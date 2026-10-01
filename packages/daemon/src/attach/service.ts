@@ -63,6 +63,7 @@ import {
   ulid,
   validateStreamCreateInput,
 } from '@agile-agents/shared';
+import { providerIn } from '../bridges/bridges';
 import type { Classifier } from '../classifier';
 import { readHomeConfigFile } from '../config';
 import type { ContractService } from '../coordination/contracts';
@@ -912,9 +913,11 @@ export class AttachService {
         reviewerPick = pinned;
       }
     }
+    // T500: a downloaded bridge (Antigravity's) runs from the home.
+    const registered = providerIn(this.options.home, settings.provider);
     const provider = this.options.provider
-      ? this.options.provider(settings.vendor, settings.provider)
-      : settings.provider;
+      ? this.options.provider(settings.vendor, registered)
+      : registered;
 
     const sessionId = ulid();
 
@@ -2261,7 +2264,7 @@ export class AttachService {
 
   /** T456: the provider a vendor runs as here (the test seam's transport, else the registry's). */
   private providerFor(vendor: string): AcpProviderConfig {
-    const base = resolveAcpProvider(vendor);
+    const base = providerIn(this.options.home, resolveAcpProvider(vendor));
     return this.options.provider ? this.options.provider(vendor, base) : base;
   }
 
@@ -2299,7 +2302,7 @@ export class AttachService {
         installed: (v) =>
           this.options.spawn !== undefined ||
           this.options.provider !== undefined ||
-          missingVendorCommand(resolveAcpProvider(v)) === undefined,
+          missingVendorCommand(providerIn(this.options.home, resolveAcpProvider(v))) === undefined,
         ...(models?.all !== undefined ? { models: () => models.all?.() ?? {} } : {}),
         onChooseAgain: (id) => this.endResting(id, CHOOSE_AGAIN_END_REASON),
         // T484: a step up ends a resting session; its line and event are recorded here.

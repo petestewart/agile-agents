@@ -867,6 +867,11 @@ export function runVendorChecks(vendor?: SessionVendor): Promise<VendorChecksSta
   ) as Promise<VendorChecksStatus>;
 }
 
+/** T500: Install a vendor's downloaded ACP server (Antigravity's); returns at once, installing. */
+export function installVendor(vendor: SessionVendor): Promise<VendorChecksStatus> {
+  return post('/api/settings/vendor-checks/install', { vendor }) as Promise<VendorChecksStatus>;
+}
+
 /** T482: a layer's model choice: what it sets itself, and the whole policy resolved with sources. */
 export interface ModelPolicyPayload {
   policy: ModelPolicyPartial;

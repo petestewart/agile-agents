@@ -6,7 +6,13 @@
  * per-provider behaviour to test.
  */
 import { describe, expect, it } from 'bun:test';
-import { ACP_PROVIDERS, isAcpProviderId, resolveAcpProvider } from './providers';
+import {
+  ACP_PROVIDERS,
+  ANTIGRAVITY_BRIDGE,
+  acpBridgePlatform,
+  isAcpProviderId,
+  resolveAcpProvider,
+} from './providers';
 
 describe('ACP provider registry', () => {
   it('resolves claude by default', () => {
@@ -27,6 +33,7 @@ describe('ACP provider registry', () => {
     expect(isAcpProviderId('grok')).toBe(true);
     expect(isAcpProviderId('pi')).toBe(true);
     expect(isAcpProviderId('codex')).toBe(true);
+    expect(isAcpProviderId('antigravity')).toBe(true);
     expect(isAcpProviderId('toString')).toBe(false);
     expect(isAcpProviderId('copilot')).toBe(false);
   });
@@ -97,6 +104,73 @@ describe('ACP provider registry', () => {
     expect(pi.args).toEqual([]);
     expect(pi.authMethods).toEqual([]);
     expect(pi.loadSession).toBe(true);
+  });
+
+  it('describes antigravity (T500): its downloaded server, nothing measured yet, marked like Codex', () => {
+    const agy = ACP_PROVIDERS.antigravity;
+    expect(agy.label).toBe('Antigravity');
+    // Only the file's name: the daemon resolves it under <home>/bridges/.
+    expect(agy.command).toBe('agy_acp_server.par');
+    expect(agy.args).toEqual([]);
+    expect(agy.bridge).toBe(ANTIGRAVITY_BRIDGE);
+    expect(agy.loadSession).toBe(false);
+    expect(agy.authMethods).toEqual([]);
+    expect(agy.effort).toBeUndefined();
+    expect(agy.effortOption).toBeUndefined();
+    expect(agy.model).toBeUndefined();
+    expect(agy.defaultModeId).toBeUndefined();
+    expect(agy.requiresSandbox).toBe(true);
+  });
+
+  it('pins the antigravity-acp 1.2.1 archives: HTTPS from dl.google.com, one per platform, --uid= on Linux', () => {
+    expect(ANTIGRAVITY_BRIDGE.registryId).toBe('antigravity-acp');
+    expect(ANTIGRAVITY_BRIDGE.version).toBe('1.2.1');
+    const base = 'https://dl.google.com/agy-extensions/releases';
+    expect(ANTIGRAVITY_BRIDGE.artifacts).toEqual({
+      'darwin-aarch64': {
+        url: `${base}/macos/agy-acp-server-1.2.1-darwin-arm64.zip`,
+        command: 'agy_acp_server.par',
+        args: [],
+      },
+      'darwin-x86_64': {
+        url: `${base}/macos/agy-acp-server-1.2.1-darwin-x86_64.zip`,
+        command: 'agy_acp_server.par',
+        args: [],
+      },
+      'linux-x86_64': {
+        url: `${base}/linux/agy-acp-server-1.2.1-linux-x86_64.zip`,
+        command: 'agy_acp_server.par',
+        args: ['--uid='],
+      },
+      'linux-aarch64': {
+        url: `${base}/linux/agy-acp-server-1.2.1-linux-arm64.zip`,
+        command: 'agy_acp_server.par',
+        args: ['--uid='],
+      },
+      'windows-x86_64': {
+        url: `${base}/windows/agy-acp-server-1.2.1-windows-x86_64.zip`,
+        command: 'agy_acp_server.exe',
+        args: [],
+      },
+      'windows-aarch64': {
+        url: `${base}/windows/agy-acp-server-1.2.1-windows-arm64.zip`,
+        command: 'agy_acp_server.exe',
+        args: [],
+      },
+    });
+    expect(Object.isFrozen(ANTIGRAVITY_BRIDGE.artifacts)).toBe(true);
+    expect(Object.isFrozen(ANTIGRAVITY_BRIDGE.artifacts['linux-x86_64']?.args)).toBe(true);
+  });
+
+  it('names a host as the ACP registry does', () => {
+    expect(acpBridgePlatform('darwin', 'arm64')).toBe('darwin-aarch64');
+    expect(acpBridgePlatform('darwin', 'x64')).toBe('darwin-x86_64');
+    expect(acpBridgePlatform('linux', 'x64')).toBe('linux-x86_64');
+    expect(acpBridgePlatform('linux', 'arm64')).toBe('linux-aarch64');
+    expect(acpBridgePlatform('win32', 'x64')).toBe('windows-x86_64');
+    expect(acpBridgePlatform('win32', 'arm64')).toBe('windows-aarch64');
+    expect(acpBridgePlatform('freebsd', 'x64')).toBeUndefined();
+    expect(acpBridgePlatform('linux', 'ia32')).toBeUndefined();
   });
 
   it('freezes every entry so callers cannot rewrite shared config', () => {

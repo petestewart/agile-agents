@@ -1,4 +1,7 @@
 /**
+ * `agile vendors install <vendor>` (T500): downloads a vendor's pinned ACP
+ * server into the home (Antigravity's), the same as Install in Settings.
+ *
  * `agile vendors` and `agile vendors check [vendor]` (T489, D58): the vendor
  * self-check over the daemon's `vendors.*` RPC, the same service as
  * Settings → Agents → Vendors. `agile vendors` prints each vendor's latest
@@ -8,6 +11,7 @@
  */
 
 import {
+  type BridgeManifest,
   SESSION_VENDORS,
   type VendorCheckResult,
   type VendorCheckRow,
@@ -16,12 +20,15 @@ import {
   isSessionVendor,
   resumeMark,
   settingMark,
+  vendorLoginHow,
 } from '@agile-agents/shared';
 import { callRpc } from '../client';
 import { printJson, printTable } from '../format';
 
 /** A check per vendor can take a couple of minutes; every installed vendor, longer. */
 const CHECK_TIMEOUT_MS = 30 * 60 * 1000;
+/** A download of a server archive (tens of MB) and its unpacking. */
+const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 
 /** What usage a check saw, in a few words; the field names are in `--json`. */
 export function usageShort(row: VendorCheckRow): string {
@@ -78,11 +85,31 @@ function settingNote(what: string, s: VendorCheckSetting): string | undefined {
   return undefined;
 }
 
+/** T500: a downloaded server's install, in one line: what is installed, or what Install fetches. */
+export function installNote(row: VendorCheckRow): string | undefined {
+  const install = row.install;
+  if (install === undefined) return undefined;
+  if (install.installing) return `Installing its ACP server ${install.version}…`;
+  const m = install.manifest;
+  const done =
+    m !== undefined
+      ? `ACP server ${m.version} (${m.platform}) installed ${m.installed_at.slice(0, 10)}, SHA-256 ${m.sha256}`
+      : `ACP server ${install.version} not installed: agile vendors install ${row.vendor}`;
+  return install.error !== undefined ? `${done}. Last install: ${install.error}` : done;
+}
+
 /** The notes under a vendor's row (T494): what didn't take, rate limits, errors. */
 export function vendorRowNotes(row: VendorCheckRow): string[] {
   const last = row.last;
-  if (last === undefined) return !row.installed && row.missing !== undefined ? [row.missing] : [];
+  const install = installNote(row);
+  if (last === undefined) {
+    return [
+      ...(install !== undefined ? [install] : []),
+      ...(!row.installed && row.missing !== undefined ? [row.missing] : []),
+    ];
+  }
   return [
+    ...(install !== undefined ? [install] : []),
     ...(last.logged_in
       ? [settingNote('Model', last.model), settingNote('Effort', last.effort)].filter(
           (n): n is string => n !== undefined,
@@ -164,4 +191,47 @@ export async function runVendorsCheck(
   }
   printVendorTable(status);
   return results.some((r) => !r.logged_in || !r.opened) ? 1 : 0;
+}
+
+/** The manifest in a few lines. */
+export function manifestLines(manifest: BridgeManifest): string[] {
+  return [
+    `Installed ${manifest.registry_id} ${manifest.version} (${manifest.platform})`,
+    `  from    ${manifest.url}`,
+    `  SHA-256 ${manifest.sha256}`,
+    `  size    ${manifest.size} bytes`,
+    `  server  ${manifest.command}`,
+  ];
+}
+
+/**
+ * `agile vendors install <vendor>` (T500): downloads the vendor's pinned ACP
+ * server into the home and waits. It never runs the server; sign in with the
+ * vendor's own CLI, then `agile vendors check <vendor>`.
+ */
+export async function runVendorsInstall(
+  socketPath: string,
+  vendor: string | undefined,
+  json: boolean,
+): Promise<number> {
+  if (vendor === undefined || !isSessionVendor(vendor)) {
+    throw new Error(
+      `agile vendors install: name a vendor (${vendor === undefined ? 'none given' : `${vendor} is not one of ${SESSION_VENDORS.join(', ')}`})`,
+    );
+  }
+  if (!json) console.log(`Downloading ${vendor}\u2019s ACP server…`);
+  const { manifest, status } = await callRpc<{
+    manifest: BridgeManifest;
+    status: VendorChecksStatus;
+  }>(socketPath, 'vendors.install', { vendor }, { timeoutMs: INSTALL_TIMEOUT_MS });
+  if (json) {
+    printJson({ manifest, status });
+    return 0;
+  }
+  for (const line of manifestLines(manifest)) console.log(line);
+  const label = status.vendors.find((row) => row.vendor === vendor)?.label ?? vendor;
+  console.log(
+    `Next: sign in (${vendorLoginHow(vendor, label)}), then run \`agile vendors check ${vendor}\`.`,
+  );
+  return 0;
 }

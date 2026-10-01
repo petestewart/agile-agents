@@ -59,6 +59,7 @@ import {
   UlidSchema,
   VendorCheckModeInputSchema,
   VendorCheckRunInputSchema,
+  VendorInstallInputSchema,
   formatZodError,
   liveChildrenOf,
   nodeRole,
@@ -933,6 +934,9 @@ async function handleHarnessUpdatesRoute(
  *   POST /api/settings/vendor-checks       `{mode: auto|manual}`: the automatic trigger's switch
  *   POST /api/settings/vendor-checks/run   `{vendor?}`: Check (one vendor) or Check all; returns
  *                                          at once with the running state (the page polls)
+ *   POST /api/settings/vendor-checks/install  `{vendor}` (T500): Install a server this app
+ *                                          downloads (Antigravity's); returns at once, the row
+ *                                          shows it installing, then its manifest or the failure
  *
  * Every POST is same-origin only; the actor is the operator. A named vendor
  * that isn't installed is 409, in words.
@@ -946,9 +950,10 @@ async function handleVendorChecksRoute(
   const path = url.pathname;
   const settings = path === '/api/settings/vendor-checks';
   const run = path === '/api/settings/vendor-checks/run';
-  if (!settings && !run) return undefined;
+  const install = path === '/api/settings/vendor-checks/install';
+  if (!settings && !run && !install) return undefined;
   if (settings && req.method !== 'GET' && req.method !== 'POST') return undefined;
-  if (run && req.method !== 'POST') return undefined;
+  if ((run || install) && req.method !== 'POST') return undefined;
   if (!checks) return errorResponse(503, 'vendor checks are not available');
   if (settings && req.method === 'GET') return jsonResponse(checks.status());
   if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
@@ -960,6 +965,21 @@ async function handleVendorChecksRoute(
     try {
       return jsonResponse(await checks.setMode(input.data.mode));
     } catch (err) {
+      return errorResponse(400, messageOf(err));
+    }
+  }
+  if (install) {
+    // T500: the operator's Install; the actor is human (the manifest says so).
+    const input = VendorInstallInputSchema.safeParse(
+      await readJsonBody(req).catch(() => undefined),
+    );
+    if (!input.success) {
+      return errorResponse(400, formatZodError('vendor-checks install', input.error));
+    }
+    try {
+      return jsonResponse(checks.startInstall(input.data.vendor));
+    } catch (err) {
+      if (err instanceof VendorNotInstalledError) return errorResponse(409, err.message);
       return errorResponse(400, messageOf(err));
     }
   }

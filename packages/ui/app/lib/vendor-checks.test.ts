@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { VendorCheckResult, VendorCheckRow } from '@agile-agents/shared';
-import { usageShort, vendorRowView } from './vendor-checks';
+import { installView, usageShort, vendorRowView } from './vendor-checks';
 
 const NOW = Date.parse('2026-09-30T10:05:00.000Z');
 
@@ -163,5 +163,83 @@ describe('T489 a vendor row in Settings → Agents → Vendors', () => {
         },
       }),
     ).toBe('e, f, g, a, b, c +1');
+  });
+});
+
+describe('installView (T500)', () => {
+  const missing =
+    "Antigravity can't start: its ACP server isn't installed. Install it in Settings → Agents → Vendors.";
+  const missingInstall = { version: '1.2.1', platform: 'linux-x86_64' as const, installing: false };
+  const base: VendorCheckRow = {
+    vendor: 'antigravity',
+    label: 'Antigravity',
+    installed: false,
+    missing,
+    running: false,
+    queued: false,
+    install: missingInstall,
+  };
+  const manifest = {
+    vendor: 'antigravity' as const,
+    registry_id: 'antigravity-acp',
+    version: '1.2.1',
+    platform: 'linux-x86_64' as const,
+    url: 'https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.2.1-linux-x86_64.zip',
+    archive: 'agy-acp-server-1.2.1-linux-x86_64.zip',
+    sha256: 'b'.repeat(64),
+    size: 10,
+    command: 'agy_acp_server.par',
+    installed_at: '2026-10-01T12:00:00.000Z',
+    by: 'human' as const,
+  };
+
+  test('a vendor on PATH has none', () => {
+    expect(installView({ ...base, vendor: 'claude', install: undefined })).toBeUndefined();
+    expect(vendorRowView({ ...base, install: undefined }).install).toBeUndefined();
+  });
+
+  test('missing: Install shows, with what it fetches, and the row names the fix', () => {
+    const view = vendorRowView(base, NOW);
+    expect(view.install).toEqual({
+      canInstall: true,
+      installing: false,
+      line: 'Its ACP server 1.2.1 isn’t installed. Install downloads it from Google into this app’s home.',
+    });
+    expect(view.state.text).toBe('Not installed');
+    expect(view.errors).toEqual([missing]);
+    expect(view.canCheck).toBe(false);
+  });
+
+  test('installing, then installed with its hash; a refused reinstall is shown', () => {
+    expect(installView({ ...base, install: { ...missingInstall, installing: true } })).toEqual({
+      canInstall: false,
+      installing: true,
+      line: 'Downloading its ACP server 1.2.1…',
+    });
+    const done: VendorCheckRow = {
+      ...base,
+      installed: true,
+      missing: undefined,
+      install: { ...missingInstall, manifest },
+    };
+    expect(installView(done)).toEqual({
+      canInstall: false,
+      installing: false,
+      line: 'ACP server 1.2.1 (linux-x86_64), installed 2026-10-01',
+      sha256: 'b'.repeat(64),
+    });
+    expect(vendorRowView(done, NOW).canCheck).toBe(true);
+    const refused = installView({
+      ...done,
+      install: { ...missingInstall, manifest, error: 'Refused: …' },
+    });
+    expect(refused?.error).toBe('Refused: …');
+    expect(refused?.canInstall).toBe(false);
+  });
+
+  test('no build for this computer: no Install', () => {
+    const view = installView({ ...base, install: { version: '1.2.1', installing: false } });
+    expect(view?.canInstall).toBe(false);
+    expect(view?.line).toBe('Its ACP server 1.2.1 has no build for this computer.');
   });
 });

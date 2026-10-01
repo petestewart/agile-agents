@@ -1134,6 +1134,9 @@ agile daemon status
   `ls -t ~/.agile-walkthrough/sessions | head -5`
 - Nodes, threads, projects, knowledge: `streams/`, `threads/`, `projects/`,
   `knowledge/` in the home.
+- A downloaded ACP server (Antigravity's, step 18): `bridges/<name>/<version>/`
+  in the home, with its archive and `manifest.yaml` (where it came from and its
+  SHA-256).
 
 ### 9.4 Troubleshooting
 
@@ -1644,3 +1647,44 @@ presets (Claude Haiku 4.5, Sonnet 5.5, Opus 5.5; Codex GPT-5.6 Sol, GPT-6 Astra)
       vendor_order_by_role.reviewer codex,claude` show in `agile policy show`;
       `agile policy try "<task>"` prints the tier, how it was decided, the
       confidence and "in the tier".
+
+## 18. **[vendor]** Antigravity: its ACP server installed by the daemon (T500)
+
+Gemini CLI no longer serves free accounts. Antigravity's `agy` has no ACP mode,
+so the daemon runs Google's ACP server, `agy_acp_server` (the ACP registry's
+`antigravity-acp` 1.2.1), which it downloads into the home only when you ask.
+None of this was run here: no download and no Antigravity login in the cloud.
+Needs the `agy` CLI signed in to a Google account, and `unzip` on the PATH.
+
+- [ ] Settings → Agents → Vendors: the **Antigravity** row reads "Not
+      installed" and, under it, "Antigravity can't start: its ACP server isn't
+      installed. Install it in Settings → Agents → Vendors.", with
+      **Install**. Gemini CLI's row is still there.
+- [ ] Press **Install**: the row shows "Downloading its ACP server 1.2.1…",
+      then "ACP server 1.2.1 (<your platform>), installed <today> · SHA-256
+      <hash>", and **Install** goes away. In a terminal:
+
+      ```bash
+      ls "$AGILE_HOME/bridges/antigravity/1.2.1/"
+      cat "$AGILE_HOME/bridges/antigravity/1.2.1/manifest.yaml"
+      ```
+
+      The folder holds the archive (`agy-acp-server-1.2.1-<platform>.zip`),
+      an executable `agy_acp_server.par` and `manifest.yaml`. The manifest's
+      `sha256` matches `shasum -a 256` of the archive and the hash Settings
+      shows. Note the hash here: ____.
+- [ ] `agile vendors install antigravity` (installed already) prints the same
+      manifest and nothing changes on disk (`ls -l` times unchanged).
+- [ ] Sign in: run `agy` and sign in with your Google account, then quit it.
+- [ ] `agile vendors check antigravity` (or **Check** on the row). Report
+      what it shows for each: opened (yes/no), logged in (or the login words),
+      Model (✓ ✗ —, and the models it listed, if any), Effort, Resume (expected
+      "—": `loadSession` is off until measured), Usage (expected none: Google's
+      issue tracker says `agy_acp_server` sends no usage yet), any rate-limit
+      fields, and any errors. `sessions/<id>/stderr.log` and
+      `session-state.json` for that check hold its raw replies: copy the
+      `session/new` reply's `authMethods`, `modes` and `configOptions` here.
+- [ ] Start a small node on Antigravity (Engineer, any repo). Note every
+      permission request it raises (edits, shell commands, reads) and whether
+      a denial stops it, so its `requiresSandbox` mark and `loadSession` can be
+      set from what you measured.

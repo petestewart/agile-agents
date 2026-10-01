@@ -9,8 +9,13 @@ export { spawnSession, resolveAgentEnv, AcpRpcError, type SpawnedSession } from 
 
 export {
   ACP_PROVIDERS,
+  ANTIGRAVITY_BRIDGE,
+  acpBridgePlatform,
   isAcpProviderId,
   resolveAcpProvider,
+  type AcpBridgeArtifact,
+  type AcpBridgePin,
+  type AcpBridgePlatform,
   type AcpEffortLevel,
   type AcpProviderConfig,
   type AcpProviderId,

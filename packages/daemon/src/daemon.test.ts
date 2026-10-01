@@ -276,8 +276,26 @@ describe('T489: the vendor self-check in the daemon', () => {
     };
     expect(result.mode).toBe('auto');
     expect(result.vendors.map((v) => v.vendor).sort()).toEqual(
-      ['claude', 'codex', 'cursor', 'gemini', 'grok', 'pi'].sort(),
+      ['antigravity', 'claude', 'codex', 'cursor', 'gemini', 'grok', 'pi'].sort(),
     );
+    // T500: Antigravity's server isn't installed in a fresh home, and under bun test
+    // Install fetches nothing.
+    const agy = (
+      result.vendors as Array<{ vendor: string; installed: boolean; install?: unknown }>
+    ).find((v) => v.vendor === 'antigravity');
+    expect(agy?.installed).toBe(false);
+    expect(agy?.install).toMatchObject({ version: '1.2.1', installing: false });
+    const install = await call(handle.rpc.socketPath, {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'vendors.install',
+      params: { vendor: 'antigravity' },
+    });
+    expect('error' in install).toBe(true);
+    expect('error' in install ? install.error.message : '').toMatch(
+      /nothing is downloaded or unpacked under bun test|no build for this computer/,
+    );
+    expect(existsSync(join(home, 'bridges', 'antigravity', '1.2.1', 'manifest.yaml'))).toBe(false);
     const got = await fetch(`http://127.0.0.1:${handle.http.port}/api/settings/vendor-checks`);
     expect(got.status).toBe(200);
     // Installed or not on this machine, a check here spawns nothing: it is refused.

@@ -27,6 +27,7 @@ const VENDOR_LABEL: Record<string, string> = {
   grok: 'Grok',
   pi: 'Pi',
   codex: 'Codex',
+  antigravity: 'Antigravity',
 };
 
 /** `claude` → "Claude"; an unknown vendor keeps its id, capitalised. */

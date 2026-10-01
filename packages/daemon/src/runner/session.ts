@@ -41,6 +41,7 @@ import {
   AgentCommandSchema,
   vendorHasHooks,
 } from '@agile-agents/shared';
+import { missingBridge } from '../bridges/bridges';
 import { writeClaudeSettings } from '../hook';
 import { permissionRoleFor } from '../hook/decide';
 import {
@@ -231,9 +232,11 @@ export interface AgentExitInfo {
  * `undefined` when it is there.
  */
 export function missingVendorCommand(
-  provider: Pick<AcpProviderConfig, 'label' | 'command'>,
+  provider: Pick<AcpProviderConfig, 'label' | 'command' | 'bridge'>,
   which: (command: string) => string | null = (command) => Bun.which(command),
 ): string | undefined {
+  // T500: a server downloaded into the home (resolved by `providerIn`), never PATH.
+  if (provider.bridge !== undefined) return missingBridge(provider);
   if (provider.command.includes('/') || which(provider.command) !== null) return undefined;
   const via =
     provider.command === 'npx'
