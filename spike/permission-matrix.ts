@@ -18,6 +18,13 @@
  *   --fs-deny <regex>  refuse fs/read_text_file for matching paths with a reason (tests the client-fs gate, e.g. grok)
  *   --auth <methodId>  ACP authenticate method to use if session/new says auth required (default: try each advertised)
  *   --hooks            claude: PreToolUse deny hook in fixture · cursor: .cursor/hooks.json · pi: gate extension in ~/.pi/agent/extensions (removed after)
+ *                      · codex (T506): PreToolUse hook in the fixture's .codex/hooks.json (a project hook)
+ *   --user-hooks       codex (T506): the same hook in ~/.codex/hooks.json instead (merged into yours, your file restored byte for byte after;
+ *                      the hook is a no-op outside the fixture)
+ *   --bypass-hook-trust codex (T506): run Codex with --dangerously-bypass-hook-trust, through a CODEX_PATH wrapper that also logs
+ *                      how codex-acp invokes Codex (--bypass-at front|end: where the flag goes, default front)
+ *   --codex-path <p>   codex: the Codex CLI the bridge runs (CODEX_PATH, as the daemon sets it since T480; default: `codex` on PATH)
+ *   --fixture <dir>    use (and keep) this fixture dir instead of a new temp one, e.g. after trusting it in an interactive `codex`
  *   --keep             keep the temp project dir
  *   --out <dir>        report dir (default ./spike-out)
  *   --verbose          print every frame
@@ -37,7 +44,7 @@ const PRESETS: Record<string, { cmd: string; note: string }> = {
   gemini: { cmd: "gemini --experimental-acp", note: "native ACP" },
   cursor: { cmd: "cursor-agent acp", note: "native ACP (cursor-agent login first)" },
   grok:   { cmd: "grok agent stdio", note: "native ACP; needs ACP authenticate" },
-  codex:  { cmd: "npx -y @agentclientprotocol/codex-acp", note: "Zed-maintained adapter over Codex; modes read-only | agent | agent-full-access" },
+  codex:  { cmd: "npx -y @agentclientprotocol/codex-acp@1.10.0", note: "Zed-maintained adapter over Codex (the daemon's pin); modes read-only | agent | agent-full-access" },
   pi:     { cmd: "npx -y pi-acp", note: "community ACP bridge over `pi --mode rpc`; gating via a pi extension (--hooks)" },
 };
 const vendor = opt("vendor", "claude")!;
@@ -52,7 +59,9 @@ const verbose = flag("verbose");
 mkdirSync(outDir, { recursive: true });
 
 // ---------- fixture project ----------
-const cwd = mkdtempSync(join(tmpdir(), "agile-spike-"));
+const fixtureOpt = opt("fixture");
+const cwd = fixtureOpt ? resolve(fixtureOpt) : mkdtempSync(join(tmpdir(), "agile-spike-"));
+mkdirSync(cwd, { recursive: true });
 writeFileSync(join(cwd, "small.txt"), "alpha\nbeta\ngamma\n");
 writeFileSync(join(cwd, "big.txt"), Array.from({ length: 1500 }, (_, i) => `line ${i} lorem ipsum dolor sit amet consectetur`).join("\n"));
 writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "spike", version: "0.0.0", scripts: { test: "node -e \"console.log('1 passing'); process.exit(0)\"" } }, null, 2));
@@ -124,6 +133,68 @@ process.exit(0);
   require("node:fs").chmodSync(hook, 0o755);
   writeFileSync(join(cwd, ".claude", "settings.json"), JSON.stringify({ hooks: { PreToolUse: [{ matcher: "", hooks: [{ type: "command", command: hook }] }] } }, null, 2));
 }
+// T506: Codex's own PreToolUse hook (learn.chatgpt.com/docs/hooks). Logs every call it sees and denies
+// any shell command that uses curl (step 9) with exit 2 and a reason on stderr. A no-op outside the fixture.
+const codexEnv: Record<string, string> = {};
+const earlyNotes: string[] = [];
+const report_note_early = (note: string) => { earlyNotes.push(note); };
+let codexUserHooks: { path: string; before: Buffer | null } | null = null;
+if (vendor === "codex") {
+  const which = require("node:child_process").spawnSync("sh", ["-c", "command -v codex"], { encoding: "utf8" });
+  const realCodex = opt("codex-path") ?? (which.stdout ?? "").trim();
+  if (realCodex) codexEnv.CODEX_PATH = realCodex;
+  else report_note_early("no `codex` on PATH: codex-acp runs its bundled Codex");
+  const wantsHook = flag("hooks") || flag("user-hooks");
+  if (wantsHook) {
+    const hook = join(cwd, "agile-codex-pre-tool-use.js");
+    writeFileSync(hook, `#!/usr/bin/env node
+const fs = require("node:fs");
+const fixture = ${JSON.stringify(cwd)};
+let raw = "";
+try { raw = fs.readFileSync(0, "utf8"); } catch {}
+let input = {};
+try { input = JSON.parse(raw); } catch {}
+// A user-level hook runs for every Codex session: only act inside the spike's fixture.
+if (input.cwd && !String(input.cwd).startsWith(fixture)) process.exit(0);
+fs.appendFileSync(fixture + "/hook-calls.jsonl", JSON.stringify({ event: input.hook_event_name, tool: input.tool_name, input: input.tool_input, cwd: input.cwd, model: input.model }) + "\n");
+const command = String((input.tool_input && input.tool_input.command) || "");
+if (/curl/.test(command)) {
+  process.stderr.write("AGILE-GATE: network commands need the operator's approval");
+  process.exit(2);
+}
+process.exit(0);
+`);
+    require("node:fs").chmodSync(hook, 0o755);
+    const entry = { matcher: "", hooks: [{ type: "command", command: hook, statusMessage: "agile spike gate" }] };
+    if (flag("user-hooks")) {
+      const dir = join(require("node:os").homedir(), ".codex");
+      const path = join(dir, "hooks.json");
+      mkdirSync(dir, { recursive: true });
+      const before = existsSync(path) ? readFileSync(path) : null;
+      let cfg: any = { hooks: {} };
+      if (before) { try { cfg = JSON.parse(before.toString("utf8")); } catch { console.error(`~/.codex/hooks.json isn't JSON; not touching it`); process.exit(2); } }
+      cfg.hooks ??= {}; cfg.hooks.PreToolUse = [...(cfg.hooks.PreToolUse ?? []), entry];
+      codexUserHooks = { path, before };
+      writeFileSync(path, JSON.stringify(cfg, null, 2));
+      const restore = () => { try { if (!codexUserHooks) return; if (codexUserHooks.before) writeFileSync(codexUserHooks.path, codexUserHooks.before); else rmSync(codexUserHooks.path, { force: true }); codexUserHooks = null; } catch {} };
+      process.on("exit", restore); process.on("SIGINT", () => { restore(); process.exit(130); });
+    } else {
+      mkdirSync(join(cwd, ".codex"), { recursive: true });
+      writeFileSync(join(cwd, ".codex", "hooks.json"), JSON.stringify({ hooks: { PreToolUse: [entry] } }, null, 2));
+    }
+  }
+  if (flag("bypass-hook-trust")) {
+    if (!codexEnv.CODEX_PATH) { console.error("--bypass-hook-trust needs an installed codex (--codex-path)"); process.exit(2); }
+    const wrapper = join(cwd, "codex-with-bypass.sh");
+    const atEnd = opt("bypass-at", "front") === "end";
+    writeFileSync(wrapper, `#!/bin/sh
+printf '%s\n' "$*" >> ${JSON.stringify(join(cwd, "codex-argv.log"))}
+exec ${JSON.stringify(codexEnv.CODEX_PATH)} ${atEnd ? '"$@" --dangerously-bypass-hook-trust' : '--dangerously-bypass-hook-trust "$@"'}
+`);
+    require("node:fs").chmodSync(wrapper, 0o755);
+    codexEnv.CODEX_PATH = wrapper;
+  }
+}
 spawnSyncQuiet("git", ["init", "-q"], cwd); spawnSyncQuiet("git", ["add", "."], cwd);
 spawnSyncQuiet("git", ["-c", "user.email=s@s", "-c", "user.name=s", "commit", "-qm", "init"], cwd);
 function spawnSyncQuiet(c: string, a: string[], d: string) { try { require("node:child_process").spawnSync(c, a, { cwd: d, stdio: "ignore" }); } catch {} }
@@ -132,9 +203,10 @@ function spawnSyncQuiet(c: string, a: string[], d: string) { try { require("node
 type ToolRec = { id: string; kind?: string; title?: string; toolName?: string; status?: string; permissionRaised: boolean; options?: any[]; ourAnswer?: string; rawInput?: any };
 const report: any = {
   vendor, cmd, mode, scenario, cwd, startedAt: new Date().toISOString(),
+  codex: vendor === "codex" ? { codexPath: codexEnv.CODEX_PATH ?? null, projectHooks: flag("hooks"), userHooks: flag("user-hooks"), bypassHookTrust: flag("bypass-hook-trust") } : undefined,
   env: { ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY, OPENAI_API_KEY: !!process.env.OPENAI_API_KEY, GEMINI_API_KEY: !!process.env.GEMINI_API_KEY },
   initialize: null as any, session: null as any, tools: [] as ToolRec[], permissionRequests: [] as any[], fsRequests: [] as any[],
-  agentText: "", stopReasons: [] as any[], usage: [] as any[], errors: [] as any[], notes: [] as string[], result: {} as any,
+  agentText: "", stopReasons: [] as any[], usage: [] as any[], errors: [] as any[], notes: [...earlyNotes] as string[], result: {} as any,
 };
 const tools = new Map<string, ToolRec>();
 
@@ -147,7 +219,7 @@ let buf = "";
 
 function start(env = process.env) {
   const [c, ...a] = cmd.split(" ");
-  proc = spawn(c, a, { cwd, env: { ...env, AGILE_SPIKE_FIXTURE: cwd }, stdio: ["pipe", "pipe", "pipe"] });
+  proc = spawn(c, a, { cwd, env: { ...env, ...codexEnv, AGILE_SPIKE_FIXTURE: cwd }, stdio: ["pipe", "pipe", "pipe"] });
   proc.stderr.on("data", (d) => { if (verbose) process.stderr.write(`[agent stderr] ${d}`); });
   proc.stdout.on("data", (d) => {
     buf += d.toString();
@@ -305,12 +377,21 @@ async function scenarioPerm() {
   report.result.writesViaClientFs = report.fsRequests.filter((f) => f.method === "fs/write_text_file").length;
   report.result.modelSawDenialReason = report.result.deniedOnce ? /REFUSED/i.test(report.agentText) : null;
   if (fsDenyRe) report.result.modelSawFsDenyReason = /AGILE-GATE/.test(report.agentText);
-  if (flag("hooks")) {
+  if (flag("hooks") || flag("user-hooks")) {
     const log = join(cwd, "hook-calls.jsonl");
     if (existsSync(log)) writeFileSync(join(outDir, `${vendor}-hook-calls.jsonl`), readFileSync(log));
     const calls = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).length : 0;
     report.result.hookFired = calls; report.result.hookReasonSeenByModel = /AGILE-GATE/.test(report.agentText);
     if (vendor === "pi") report.result.toolResultRewriteSeenByModel = /AGILE-SUMMARY/.test(report.agentText);
+  }
+  if (vendor === "codex") {
+    // T506: did the hook see the shell commands, did the curl step run anyway, and how codex-acp started Codex.
+    const argvLog = join(cwd, "codex-argv.log");
+    report.result.codexInvokedAs = existsSync(argvLog) ? readFileSync(argvLog, "utf8").trim().split("\n") : null;
+    const curl = report.tools.find((t: ToolRec) => /curl/.test(`${t.title ?? ""} ${JSON.stringify(t.rawInput ?? {})}`));
+    report.result.curlStep = curl ? { title: curl.title, status: curl.status } : "not attempted";
+    report.result.hookCallsSeen = report.result.hookFired ?? 0;
+    report.result.toolCallsSeenOverAcp = report.tools.length;
   }
   await stop();
 }
@@ -365,7 +446,10 @@ async function scenarioAuth() {
   if (!run) { console.error("scenario must be perm|cancel|resume|auth"); process.exit(2); }
   try { await run(); } catch (e: any) { report.errors.push({ fatal: e.message ?? String(e) }); try { await stop(); } catch {} }
   report.finishedAt = new Date().toISOString();
-  const file = join(outDir, `${vendor}-${mode ?? "defaultmode"}-${scenario}${flag("hooks") ? "-hooks" : ""}.json`);
+  const variant = vendor === "codex"
+    ? `${flag("hooks") ? "-hooks" : ""}${flag("user-hooks") ? "-userhooks" : ""}${flag("bypass-hook-trust") ? `-bypass${opt("bypass-at", "front") === "end" ? "end" : ""}` : ""}${fixtureOpt ? "-fixture" : ""}`
+    : flag("hooks") ? "-hooks" : "";
+  const file = join(outDir, `${vendor}-${mode ?? "defaultmode"}-${scenario}${variant}.json`);
   writeFileSync(file, JSON.stringify(report, null, 2));
   console.log(`\n== ${vendor} · mode=${mode ?? "(agent default)"} · ${scenario} ==`);
   if (report.session?.modes) console.log("modes:", (report.session.modes.availableModes ?? []).map((m: any) => m.id).join(", "), "| current:", report.session.modes.currentModeId);
@@ -375,12 +459,16 @@ async function scenarioAuth() {
     console.log("reads via client fs:", report.result.readsViaClientFs, "| writes via client fs:", report.result.writesViaClientFs);
     console.log("denied once:", JSON.stringify(report.result.deniedOnce), "| model reported REFUSED:", report.result.modelSawDenialReason);
     if (fsDenyRe) console.log("client-fs reads denied:", report.result.fsDenied ?? 0, "| model saw fs deny reason:", report.result.modelSawFsDenyReason);
-    if (flag("hooks")) console.log("hook/extension fired:", report.result.hookFired, "times | model saw hook reason:", report.result.hookReasonSeenByModel, vendor === "pi" ? "| model saw tool_result rewrite: " + report.result.toolResultRewriteSeenByModel : "");
+    if (flag("hooks") || flag("user-hooks")) console.log("hook/extension fired:", report.result.hookFired, "times | model saw hook reason:", report.result.hookReasonSeenByModel, vendor === "pi" ? "| model saw tool_result rewrite: " + report.result.toolResultRewriteSeenByModel : "");
+    if (vendor === "codex") {
+      console.log("codex: tool calls over ACP:", report.result.toolCallsSeenOverAcp, "| hook calls:", report.result.hookCallsSeen, "| curl step:", JSON.stringify(report.result.curlStep));
+      if (report.result.codexInvokedAs) console.log("codex-acp ran Codex as:", report.result.codexInvokedAs.join(" ;; "));
+    }
     console.log("--- agent final text ---\n" + (report.result.finalText ?? "").trim());
   } else console.log(JSON.stringify(report.result, null, 2));
   if (report.errors.length) console.log("errors:", JSON.stringify(report.errors));
   if (report.notes.length) console.log("notes:", report.notes.join(" | "));
   console.log("report:", file);
-  if (!flag("keep")) rmSync(cwd, { recursive: true, force: true }); else console.log("fixture kept at", cwd);
+  if (!flag("keep") && !fixtureOpt) rmSync(cwd, { recursive: true, force: true }); else console.log("fixture kept at", cwd);
   process.exit(0);
 })();
