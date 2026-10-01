@@ -2,8 +2,9 @@
  * T363: the composer (design/cockpit-ui.md §7): a rounded box with a
  * textarea that grows from one line to ten, Send (Enter; Shift+Enter is a
  * newline, never mid-IME composition), Stop while the agent works, a chip
- * slot (the model that runs or would start), a slot above the box (the
- * question being answered), and one hint line saying what Send will do.
+ * slot (the model that runs or would start), and one hint line saying what
+ * Send will do. T499: it sends messages only; a question is answered in
+ * its own card.
  *
  * It knows nothing about streams: the page decides what Send means.
  * `DraftComposer` keeps a node's draft for it (T447).
@@ -40,8 +41,6 @@ export interface ComposerProps {
   disabled?: boolean;
   placeholder: string;
   hint?: ReactNode;
-  /** Above the text: the "Answering: …" chip. */
-  above?: ReactNode;
   /** Left of the buttons: the model chip. */
   chip?: ReactNode;
   /** T468: right of the bar, before Stop and Send: the effort chip. */
@@ -52,8 +51,6 @@ export interface ComposerProps {
   label?: string;
   inputTestid?: string;
   sendTestid?: string;
-  /** Marks the box (e.g. `answer`) so it can take the question's accent. */
-  mode?: string;
   /**
    * T416: why Send is off for now (the daemon is away: "Reconnecting to the
    * daemon…"), as its tooltip. The text stays editable, and Enter still
@@ -84,7 +81,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     disabled = false,
     placeholder,
     hint,
-    above,
     chip,
     effort,
     onShiftTab,
@@ -92,7 +88,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     label = 'Message',
     inputTestid = 'composer-input',
     sendTestid = 'composer-send',
-    mode,
     sendBlocked,
     slash,
     onSlash,
@@ -188,14 +183,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     <div className="cr-composer-wrap">
       <form
         className="cr-compose"
-        data-mode={mode}
         data-disabled={disabled ? 'true' : undefined}
         onSubmit={(e) => {
           e.preventDefault();
           send();
         }}
       >
-        {above}
         {menuOpen && menu !== undefined && (
           <div
             className="cr-slash-menu"

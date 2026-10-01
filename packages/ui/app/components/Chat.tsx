@@ -14,6 +14,8 @@
  *  - `StepsFold` — "Worked through 12 steps · 1 failed" before a reply, which
  *    opens to the list (T392); `useSteps` reads a node's steps and follows
  *    the live `tool_call` events. The rules are in `lib/steps.ts`.
+ *  - `QuoteSelection` — a Quote button by selected text (T499); the quote
+ *    itself is `lib/quote.ts`.
  *
  * Every entry keeps `data-testid="thread-entry"` with `data-kind`/`data-by`
  * (a rule hit: `thread-rule-hit`), and every row's text stays in the DOM.
@@ -33,6 +35,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { getStreamSteps } from '../lib/api';
 import {
   type ChatAuthor,
@@ -560,6 +563,8 @@ export function MessageList<E extends ChatEntry>({
             data-by={byAttr(entry.by)}
             data-cont={continued ? 'true' : undefined}
             data-open-question={pending ? 'true' : undefined}
+            // T499: Quote from it goes to its card's answer box.
+            data-quote-target={pending ? asked : undefined}
             {...entryAttrs?.(entry, index)}
           >
             {!continued && (
@@ -899,4 +904,122 @@ export function useSteps(
   return state?.node === node && state !== undefined
     ? { steps: state.steps, partial: state.partial }
     : { steps: [], partial: false };
+}
+
+// ---------------------------------------------------------------- quote a selection
+
+/** Where the Quote button sits: over the selection's middle, or under it near the window's top. */
+interface QuoteSpot {
+  x: number;
+  y: number;
+  below: boolean;
+}
+
+/** Room (px) above a selection the Quote button needs before it goes under the selection instead. */
+const QUOTE_ROOM_PX = 44;
+
+/**
+ * T499: text selected inside `scope` (a chat message, a question card)
+ * shows a small Quote button by the selection. Pressed, it hands the text
+ * over with the question it was selected in — the nearest
+ * `data-quote-target`, a question card or that question's own line — or
+ * `undefined` outside one. With `outside` off it is offered only inside one.
+ * A selection in a text box isn't a quote; nor is one still being dragged.
+ */
+export function QuoteSelection({
+  scope,
+  onQuote,
+  outside = true,
+}: {
+  scope: RefObject<HTMLElement>;
+  onQuote: (text: string, question: string | undefined) => void;
+  outside?: boolean;
+}): JSX.Element | null {
+  const [spot, setSpot] = useState<QuoteSpot | undefined>(undefined);
+  const picked = useRef<{ text: string; question: string | undefined } | undefined>(undefined);
+
+  useEffect(() => {
+    let dragging = false;
+    /** The selection worth a Quote button: its text, its question, and where it is. */
+    const selected = ():
+      | { text: string; question: string | undefined; range: Range }
+      | undefined => {
+      const root = scope.current;
+      const selection = document.getSelection();
+      if (!root || !selection || selection.isCollapsed || selection.rangeCount === 0) return;
+      const range = selection.getRangeAt(0);
+      const common = range.commonAncestorContainer;
+      const within = common instanceof Element ? common : common.parentElement;
+      if (!within || !root.contains(within) || within.closest('textarea, input, [contenteditable]'))
+        return;
+      const text = selection.toString();
+      if (text.trim() === '') return;
+      const question = within.closest('[data-quote-target]')?.getAttribute('data-quote-target');
+      if (!question && !outside) return;
+      return { text, question: question || undefined, range };
+    };
+    const read = (): void => {
+      const found = selected();
+      picked.current = found && { text: found.text, question: found.question };
+      if (!found) {
+        setSpot(undefined);
+        return;
+      }
+      const box = found.range.getBoundingClientRect();
+      const below = box.top < QUOTE_ROOM_PX;
+      setSpot({ x: box.left + box.width / 2, y: below ? box.bottom + 6 : box.top - 6, below });
+    };
+    const onChange = (): void => {
+      if (!dragging) read();
+    };
+    const onDown = (event: PointerEvent): void => {
+      if (event.target instanceof Element && event.target.closest('.cr-quote')) return;
+      dragging = true;
+    };
+    const onUp = (): void => {
+      if (!dragging) return;
+      dragging = false;
+      // Once the click that ends a drag has settled the selection.
+      requestAnimationFrame(read);
+    };
+    document.addEventListener('selectionchange', onChange);
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('pointerup', onUp);
+    // The chat scrolls under a selection: the button follows it.
+    window.addEventListener('scroll', onChange, true);
+    window.addEventListener('resize', onChange);
+    return () => {
+      document.removeEventListener('selectionchange', onChange);
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('pointerup', onUp);
+      window.removeEventListener('scroll', onChange, true);
+      window.removeEventListener('resize', onChange);
+    };
+  }, [scope, outside]);
+
+  if (spot === undefined) return null;
+  return createPortal(
+    <button
+      type="button"
+      className="cr-quote"
+      data-testid="quote-selection"
+      data-below={spot.below ? 'true' : undefined}
+      style={{ left: spot.x, top: spot.y }}
+      title="Quote it in your answer (or, outside a question, in your message)"
+      // Pressing it would clear the selection it quotes.
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={() => {
+        const quote = picked.current;
+        if (quote === undefined) return;
+        onQuote(quote.text, quote.question);
+        document.getSelection()?.removeAllRanges();
+        picked.current = undefined;
+        setSpot(undefined);
+      }}
+    >
+      <Icon name="quote" size={12} />
+      Quote
+    </button>,
+    document.body,
+  );
 }

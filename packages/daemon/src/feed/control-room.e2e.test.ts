@@ -958,12 +958,14 @@ describe('cockpit shell (Playwright e2e)', () => {
             .evaluate((el) => el.scrollWidth - el.clientWidth),
         ).toBeLessThanOrEqual(0);
 
-        // T364: the node page's question card has no input of its own;
-        // T363: the page's composer answers it.
-        expect(await page.locator(`${card} [data-testid="answer-input"]`).count()).toBe(0);
-        await page.locator('[data-testid="composer-answering"]').waitFor();
-        await page.locator('[data-testid="composer-input"]').fill('main');
-        await page.locator('[data-testid="composer-send"]').click();
+        // T499: the node page's question card is answered in its own box, which fits too.
+        await page.locator(`${card} [data-testid="answer-input"]`).fill('main');
+        expect(
+          await page
+            .locator('[data-testid="stream-page"]')
+            .evaluate((el) => el.scrollWidth - el.clientWidth),
+        ).toBeLessThanOrEqual(0);
+        await page.locator(`${card} [data-testid="answer-send"]`).click();
         await page.locator(card).waitFor({ state: 'detached' });
         // T360: the views live in the drawer at phone width.
         await page.locator('[data-testid="rail-toggle"]').click();
@@ -1065,15 +1067,14 @@ describe('Needs me and the decision cards (Playwright e2e, T364)', () => {
         await page.keyboard.press('Enter');
         await page.locator(`[data-testid="stream-page"][data-stream="${pricing.id}"]`).waitFor();
 
-        // On the node page the card has its choices and no input of its own:
-        // the page's composer answers it.
+        // On the node page the card has its choices and, under them, its own answer box
+        // (T499): one line until it is focused, so no Answer button yet.
         const full = `[data-testid="stream-needs"] [data-id="${written.id}"]`;
         await page.locator(full).waitFor({ state: 'visible' });
-        expect(await page.locator(`${full} [data-testid="answer-input"]`).count()).toBe(0);
+        expect(
+          await page.locator(`${full} [data-testid="answer-input"]`).getAttribute('placeholder'),
+        ).toBe('Or write your own answer, or ask about it…');
         expect(await page.locator(`${full} [data-testid="answer-send"]`).count()).toBe(0);
-        expect(await page.locator(`${full} [data-testid="answer-hint"]`).textContent()).toContain(
-          'or type your answer below',
-        );
         await page.locator(`${full} [data-testid="answer-choice"]`, { hasText: 'Height' }).click();
         await waitUntil('the second answer', () => cockpit.delivered.length > 1);
         expect(cockpit.delivered[1]?.question.answer).toBe('Height');
@@ -1945,17 +1946,10 @@ describe('stream page (Playwright e2e, T161)', () => {
         git(['add', 'parser.ts'], worktree);
         git(['commit', '-q', '-m', 'semicolon parser'], worktree);
 
-        // ---- answer, on the stream page. T364: its card has no input of its own;
-        // T363: the composer answers the open question.
-        expect(await page.locator(`${card} [data-testid="answer-input"]`).count()).toBe(0);
-        // T416: the chip says it answers "the question above"; the question is its tooltip.
-        await page
-          .locator('[data-testid="composer-answering"][title*="two conventions"]', {
-            hasText: 'Answering the question above',
-          })
-          .waitFor();
-        await page.locator('[data-testid="composer-input"]').fill('semicolon');
-        await page.locator('[data-testid="composer-send"]').click();
+        // ---- answer, on the stream page. T499: in the question card's own box.
+        const box = page.locator(`${card} [data-testid="answer-input"]`);
+        await box.fill('semicolon');
+        await box.press('Enter');
         await page.locator(card).waitFor({ state: 'detached' });
         await page
           .locator('[data-testid="thread-entry"]', { hasText: 'continuing with semicolon' })
@@ -2102,7 +2096,7 @@ describe('stream page (Playwright e2e, T161)', () => {
 
 describe("a node's page is a chat (Playwright e2e, T363)", () => {
   browserTest(
-    'a question sits at the end of the chat, above the composer, and the composer answers it',
+    'questions sit at the end of the chat, above the composer, each answered in its own card (T499)',
     async () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
@@ -2147,84 +2141,163 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
             .getAttribute('data-variant'),
         ).toBe('you');
 
-        // The composer answers the oldest question by default, and says so. T416: the chat
-        // reads each question once, on its own line; the chip says which one it answers
-        // ("question 1 of 2", its whole text in the tooltip), and each card a line of its own.
-        const chip = page.locator('[data-testid="composer-answering"]');
-        await chip.waitFor();
-        expect(await chip.getAttribute('data-question')).toBe(first.id);
-        expect(await chip.getAttribute('title')).toContain('comma or semicolon');
-        expect(await chip.textContent()).toContain('Answering question 1 of 2');
-        expect(await page.locator('[data-testid="composer-hint"]').textContent()).toContain(
-          'Answers the question',
-        );
+        // T416: the chat reads each question once, on its own line; each card a line of its own.
+        // T499: and each card its own answer box, one line until focused. The composer is for
+        // messages only: no "Answering question 1 of 2", no "Type your answer below".
         expect(
           await page.locator(`${firstCard} [data-testid="inbox-context"]`).textContent(),
         ).toContain('comma or semicolon');
-
-        // A click on the other question's card makes it the one Send answers…
         const secondCard = `[data-testid="stream-needs"] [data-id="${second.id}"]`;
-        await page.locator(`${secondCard} [data-testid="inbox-context"]`).click();
-        await waitForAttr(page, '[data-testid="composer-answering"]', 'data-question', second.id);
-        expect(await chip.textContent()).toContain('Answering question 2 of 2');
-        // …and the chip's menu picks too: back to the first, then the second again.
-        await page.locator('[data-testid="composer-answering-pick"]').click();
-        await page
-          .locator('[data-testid="composer-answering-menu"] [role="menuitem"]', {
-            hasText: 'comma or semicolon',
-          })
-          .click();
-        await waitForAttr(page, '[data-testid="composer-answering"]', 'data-question', first.id);
-        await page.locator('[data-testid="composer-answering-pick"]').click();
-        await page
-          .locator('[data-testid="composer-answering-menu"] [role="menuitem"]', {
-            hasText: 'quote every field',
-          })
-          .click();
-        await waitForAttr(page, '[data-testid="composer-answering"]', 'data-question', second.id);
-        await page.locator('[data-testid="composer-input"]').fill('only when needed');
-        await page.locator('[data-testid="composer-input"]').press('Enter');
+        expect(await page.locator('[data-testid="stream-needs"] .cr-answer').count()).toBe(2);
+        expect(
+          await page.locator('[data-testid="stream-needs"] .cr-answer[data-open]').count(),
+        ).toBe(0);
+        expect(
+          await page
+            .locator(`${secondCard} [data-testid="answer-input"]`)
+            .getAttribute('placeholder'),
+        ).toBe('Reply…');
+        expect(await page.locator('[data-testid="composer-answering"]').count()).toBe(0);
+        expect(await page.locator('[data-testid="stream-page"]').textContent()).not.toContain(
+          'Type your answer below',
+        );
+        expect(await page.locator('[data-testid="composer-hint"]').textContent()).not.toContain(
+          'Answers the question',
+        );
+        const composerInput = page.locator('[data-testid="composer-input"]');
+
+        // The second question, answered in its card without the composer. Focus opens the box,
+        // and the question reads whole beside it (no one-line cut).
+        const secondBox = page.locator(`${secondCard} [data-testid="answer-input"]`);
+        await secondBox.click();
+        await page.locator(`${secondCard} .cr-answer[data-open="true"]`).waitFor();
+        expect(await page.locator(`${secondCard} .cr-card-quote`).count()).toBe(0);
+        expect(
+          await page.locator(`${secondCard} .context[data-testid="inbox-context"]`).textContent(),
+        ).toContain('quote every field, or only when needed?');
+        await secondBox.pressSequentially('only when');
+        // Esc folds it and keeps what was typed.
+        await secondBox.press('Escape');
+        await page.locator(`${secondCard} .cr-answer:not([data-open])`).waitFor();
+        expect(await secondBox.inputValue()).toBe('only when');
+        // Half an answer survives a reload, open where it was left.
+        await page.reload();
+        await page.locator(`${secondCard} .cr-answer[data-open="true"]`).waitFor();
+        expect(await secondBox.inputValue()).toBe('only when');
+
+        // Quote: text selected in the first question's card offers Quote, which puts it in
+        // that card's box as a Markdown quote (and opens it); what follows is the answer.
+        await page.locator(`${firstCard} [data-testid="inbox-context"]`).selectText();
+        await page.locator('[data-testid="quote-selection"]').click();
+        const firstBox = page.locator(`${firstCard} [data-testid="answer-input"]`);
+        await page.locator(`${firstCard} .cr-answer[data-open="true"]`).waitFor();
+        await waitUntilAsync('the quote in the box', async () =>
+          (await firstBox.inputValue()).startsWith('> '),
+        );
+        expect(await firstBox.inputValue()).toBe('> comma or semicolon for the CSV dialect?\n\n');
+        await page.waitForFunction("document.activeElement?.dataset?.testid === 'answer-input'");
+        await firstBox.pressSequentially('semicolon');
+        await page.locator(`${firstCard} [data-testid="answer-send"]`).click();
         await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
-        expect(cockpit.delivered[0]?.question.id).toBe(second.id);
-        expect(cockpit.delivered[0]?.question.answer).toBe('only when needed');
+        expect(cockpit.delivered[0]?.question.id).toBe(first.id);
+        const quoted = cockpit.questions.get(first.id).answer ?? '';
+        expect(quoted.startsWith('> ')).toBe(true);
+        expect(quoted).toBe('> comma or semicolon for the CSV dialect?\n\nsemicolon');
+        await page.locator(firstCard).waitFor({ state: 'detached' });
+        // The other card kept its half-written answer through all of it.
+        expect(await secondBox.inputValue()).toBe('only when');
+
+        // The second question, answered in its card without the composer. Shift+Enter is a
+        // new line; a selection in its own chat line quotes into its box too; Enter sends.
+        await secondBox.click();
+        await secondBox.press('End');
+        await secondBox.press('Shift+Enter');
+        await secondBox.pressSequentially('needed');
+        expect(await secondBox.inputValue()).toBe('only when\nneeded');
         await page
-          .locator(`[data-testid="stream-needs"] [data-id="${second.id}"]`)
-          .waitFor({ state: 'detached' });
-        // Your answer reads as a bubble tagged Answer.
+          .locator('[data-testid="thread-entry"][data-open-question="true"] .cr-msg-body .cr-md')
+          .selectText();
+        await page.locator('[data-testid="quote-selection"]').click();
+        await waitUntilAsync('the quote after the answer', async () =>
+          (await secondBox.inputValue()).endsWith('> quote every field, or only when needed?\n\n'),
+        );
+        await page.waitForFunction("document.activeElement?.dataset?.testid === 'answer-input'");
+        await secondBox.press('Enter');
+        await waitUntil('the second answer', () => cockpit.delivered.length > 1);
+        expect(cockpit.delivered[1]?.question.id).toBe(second.id);
+        expect(cockpit.delivered[1]?.question.answer).toBe(
+          'only when\nneeded\n\n> quote every field, or only when needed?',
+        );
+        await page.locator(secondCard).waitFor({ state: 'detached' });
+        await page.locator('[data-testid="stream-needs"]').waitFor({ state: 'hidden' });
+        // Your answer reads as a bubble tagged Answer; the composer was never used.
         await page
           .locator('[data-testid="thread-entry"][data-kind="answer"][data-by="human"]', {
-            hasText: 'only when needed',
+            hasText: 'only when',
           })
           .waitFor();
+        expect(await composerInput.inputValue()).toBe('');
 
-        // "Write a message instead": Send writes a plain line, and the question stays open.
-        // One question is left: the chip answers "the question above".
-        await chip.waitFor();
-        await waitForAttr(page, '[data-testid="composer-answering"]', 'data-question', first.id);
-        expect(await chip.textContent()).toContain('Answering the question above');
-        expect(await chip.getAttribute('title')).toContain('comma or semicolon');
-        await page.locator('[data-testid="composer-answer-cancel"]').click();
-        await chip.waitFor({ state: 'detached' });
-        await page.locator('[data-testid="composer-answer-resume"]').waitFor();
-        await page.locator('[data-testid="composer-input"]').fill('a side note, not an answer');
-        await page.locator('[data-testid="composer-send"]').click();
+        // Outside a question, Quote goes to the composer.
         await page
-          .locator('[data-testid="thread-entry"][data-kind="line"]', {
-            hasText: 'a side note, not an answer',
+          .locator('[data-testid="thread-entry"][data-by="human"] .cr-md', {
+            hasText: 'CHAT-MARKER',
           })
-          .waitFor();
-        expect(cockpit.delivered).toHaveLength(1);
-        await page.locator(firstCard).waitFor({ state: 'visible' });
+          .selectText();
+        await page.locator('[data-testid="quote-selection"]').click();
+        await waitUntilAsync('the quote in the composer', async () =>
+          (await composerInput.inputValue()).startsWith('> CHAT-MARKER'),
+        );
+        expect(await composerInput.inputValue()).toBe(
+          '> CHAT-MARKER please look at the export files\n\n',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
 
-        // Back to answering: the last question, from the composer.
-        await page.locator('[data-testid="composer-answer-resume"]').click();
-        await page.locator('[data-testid="composer-input"]').fill('semicolon');
-        await page.locator('[data-testid="composer-send"]').click();
-        await waitUntil('the second answer', () => cockpit.delivered.length > 1);
-        expect(cockpit.delivered[1]?.question.id).toBe(first.id);
-        await page.locator(firstCard).waitFor({ state: 'detached' });
-        await page.locator('[data-testid="composer-answering"]').waitFor({ state: 'detached' });
-        await page.locator('[data-testid="stream-needs"]').waitFor({ state: 'hidden' });
+  browserTest(
+    'a choice question is answered by typing in its card, as written (T499)',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const node = await cockpit.streams.create('human', { title: 'csv dialect', goal: 'g' });
+        const asked = await cockpit.questions.raise({
+          stream: node.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session: ulid(),
+          text: 'Which delimiter should the parser treat as canonical?',
+          options: ['comma', 'semicolon'],
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        const card = `[data-testid="stream-needs"] [data-id="${asked.id}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        // The choices stay buttons; the box under them takes words of your own.
+        expect(await page.locator(`${card} [data-testid="answer-choice"]`).count()).toBe(2);
+        const box = page.locator(`${card} [data-testid="answer-input"]`);
+        expect(await box.getAttribute('placeholder')).toBe(
+          'Or write your own answer, or ask about it…',
+        );
+        await box.click();
+        await page.locator(`${card} .cr-answer[data-open="true"]`).waitFor();
+        const send = page.locator(`${card} [data-testid="answer-send"]`);
+        expect(await send.getAttribute('data-variant')).toBe('secondary');
+        await box.pressSequentially('Neither: the export uses tabs. Which one does Excel open?');
+        expect(await send.getAttribute('data-variant')).toBe('primary');
+        await box.press('Enter');
+        await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
+        expect(cockpit.delivered[0]?.question.id).toBe(asked.id);
+        expect(cockpit.delivered[0]?.question.answer).toBe(
+          'Neither: the export uses tabs. Which one does Excel open?',
+        );
+        expect(cockpit.questions.get(asked.id).resolved_as).toBe('reply');
+        await page.locator(card).waitFor({ state: 'detached' });
+        expect(await page.locator('[data-testid="composer-input"]').inputValue()).toBe('');
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -12022,7 +12095,9 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
         // Answer is one variant everywhere: secondary while empty, primary once typed.
         await page.locator('[data-testid="inbox-filter"] [data-value="questions"]').click();
         const question = `[data-testid="inbox"] [data-id="${asked.id}"]`;
+        // T499: the box opens on focus, with its Answer.
         const answer = page.locator(`${question} [data-testid="answer-send"]`);
+        await page.locator(`${question} [data-testid="answer-input"]`).click();
         expect(await answer.getAttribute('data-variant')).toBe('secondary');
         await page.locator(`${question} [data-testid="answer-input"]`).fill('cents');
         expect(await answer.getAttribute('data-variant')).toBe('primary');
@@ -12120,35 +12195,57 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
         );
         expect(await input.inputValue()).toBe('Integer cents, please.');
         expect(cockpit.delivered).toHaveLength(0);
+        // T499: the question's own box keeps what you type; its Answer is off with the same why.
+        const nodeCard = `[data-testid="stream-needs"] [data-id="${asked.id}"]`;
+        const box = page.locator(`${nodeCard} [data-testid="answer-input"]`);
+        await box.fill('Integer cents');
+        const answer = page.locator(`${nodeCard} [data-testid="answer-send"]`);
+        expect(await answer.isDisabled()).toBe(true);
+        expect(await answer.getAttribute('title')).toBe('Reconnecting to the daemon…');
+        await box.press('Enter');
+        expect(await box.inputValue()).toBe('Integer cents');
+        expect(cockpit.delivered).toHaveLength(0);
 
-        // Back: the bar goes, Send is on again, and Retry sends the kept draft.
+        // Back: the bar goes, Send is on again, and Retry sends the kept draft as a message.
         socket.restore();
         await bar.waitFor({ state: 'detached', timeout: 15_000 });
         expect(await send.isDisabled()).toBe(false);
         expect(await start.isDisabled()).toBe(false);
         await page.locator('[data-testid="send-retry"]').click();
-        await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
-        expect(cockpit.delivered[0]?.question.answer).toBe('Integer cents, please.');
+        await page
+          .locator('[data-testid="thread-entry"][data-by="human"]', {
+            hasText: 'Integer cents, please.',
+          })
+          .waitFor();
         await failed.waitFor({ state: 'detached' });
+        expect(cockpit.delivered).toHaveLength(0);
+        // The card's answer, kept through it, goes now.
+        await box.press('Enter');
+        await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
+        expect(cockpit.delivered[0]?.question.answer).toBe('Integer cents');
 
-        // A send that never reached the daemon while the socket is up reads the same way.
+        // An answer that never reached the daemon while the socket is up says so on its card,
+        // and keeps what you wrote.
         const second = await cockpit.questions.raise({
           stream: node.id,
           raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
           session: ulid(),
           text: 'And the currency?',
         });
-        await page.locator(`[data-testid="stream-needs"] [data-id="${second.id}"]`).waitFor();
+        const secondCard = `[data-testid="stream-needs"] [data-id="${second.id}"]`;
+        await page.locator(secondCard).waitFor();
         await page.route('**/api/questions/*/answer', (route) =>
           route.abort('internetdisconnected'),
         );
-        await input.fill('EUR');
-        await input.press('Enter');
-        await failed.waitFor({ state: 'visible' });
-        expect(await failed.textContent()).toContain('your message wasn’t sent');
-        expect(await input.inputValue()).toBe('EUR');
+        const secondBox = page.locator(`${secondCard} [data-testid="answer-input"]`);
+        await secondBox.fill('EUR');
+        await secondBox.press('Enter');
+        const cardError = page.locator(`${secondCard} [data-testid="card-error"]`);
+        await cardError.waitFor({ state: 'visible' });
+        expect(await cardError.textContent()).toContain('nothing was sent');
+        expect(await secondBox.inputValue()).toBe('EUR');
         await page.unroute('**/api/questions/*/answer');
-        await page.locator('[data-testid="send-retry"]').click();
+        await secondBox.press('Enter');
         await waitUntil('the retried answer', () => cockpit.delivered.length > 1);
         expect(cockpit.delivered[1]?.question.answer).toBe('EUR');
       } finally {

@@ -356,7 +356,7 @@ keeps a hollow dot's ring (stopped, waiting).
 - **Composer**: rounded box, auto-growing textarea (1–10 lines), a model chip
   (with how full the live agent's context is, T411),
   a hint of what sending will do ("Starts the agent", "Queued until the
-  current step ends", "Answers the question"), and Send / Stop. A message to
+  current step ends"), and Send / Stop. A message to
   a node whose agent never ran or was stopped starts it (`say` with
   `start: true`) — except a part waiting for its coordinator's plan.
   T423: the chip names what the next message runs — the live agent's model
@@ -369,11 +369,16 @@ keeps a hollow dot's ring (stopped, waiting).
   this."). A pick lasts one message: the chip then goes back to the default,
   as its tooltip says. T436: the draft is kept per node in this tab's
   `sessionStorage` (`lib/drafts.ts`), so a reload keeps it too. Where a line starts nothing (a bare project root, a
-  part waiting for its plan) the chip only names what runs. With a
-  question open the composer answers it ("Answering the question above",
-  the whole question in its tooltip); the question reads once, in its own
-  chat line, and its card above the composer shows only its choices (T416;
-  with several open, one line of each to tell them apart). A send that
+  part waiting for its plan) the chip only names what runs. T499: the
+  composer sends messages only. A question is answered in its own card:
+  the question reads once, in its own chat line, and its card above the
+  composer shows its choices (T416; with several open, one line of each to
+  tell them apart) and its own answer box — one "Reply…" line that opens on
+  focus into a box (Enter sends, Shift+Enter a new line, Esc folds it), the
+  question then whole in the card, half an answer kept per question like
+  the composer's draft. Selected text in a question or a message offers
+  Quote, which puts it as a `> ` quote in that question's box, or else in
+  the composer. A send that
   fails says so under the composer ("Couldn’t reach the daemon; your
   message wasn’t sent."), keeps the draft and offers Retry.
   T447 (audit r7 #15): the composer holds the draft (`DraftComposer`), so a

@@ -6,10 +6,10 @@
  * with `full`, at the end of a node's chat.
  *
  *  - `question`     → its choices as buttons (one click answers; on a
- *                     focused card in the list, A/B… or 1/2… picks); in the
- *                     list a compact typed answer too, in `full` the node
- *                     page's composer answers, and the chat's own line
- *                     carries the question's text (T416)
+ *                     focused card in the list, A/B… or 1/2… picks), and
+ *                     its own answer box (T499), one "Reply…" line until
+ *                     it is focused; in `full` the chat's own line carries
+ *                     the question's text (T416)
  *  - `gate`         → Allow/Deny (a `land` gate reads Merge/Hold), with an
  *                     optional note sent as the reason, or on its own; a
  *                     held read (T457) reads Allow once, Always for this
@@ -30,7 +30,7 @@
  * (pure, unit-tested); this file only renders and calls the API.
  */
 
-import type { HarnessId, InboxItem } from '@agile-agents/shared';
+import { type HarnessId, type InboxItem, MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import {
   alwaysGate,
@@ -56,7 +56,7 @@ import {
 } from '../lib/api';
 import { proposalCardWords } from '../lib/autonomy';
 import { parseDiff, tidyIds } from '../lib/chat';
-import { draftOf, setDraftOf } from '../lib/drafts';
+import { answerDrafts, draftOf, setDraftOf, updateDraft, useAnswerDraft } from '../lib/drafts';
 import {
   type MergeFix,
   RECONNECTING,
@@ -94,6 +94,7 @@ import {
   waitingText,
 } from '../lib/inbox';
 import { distinctTitle } from '../lib/names';
+import { withQuote } from '../lib/quote';
 import {
   appendToDraft,
   clearComments,
@@ -106,7 +107,7 @@ import { useShell } from '../lib/shell';
 import { ago } from '../lib/status';
 import { Icon, type IconName } from './Icon';
 import { Markdown } from './Markdown';
-import { Button, Dialog, IconButton, Spinner } from './ui';
+import { Button, Dialog, IconButton, Kbd, Spinner } from './ui';
 
 function iconOf(item: InboxItem): IconName {
   switch (item.kind) {
@@ -415,15 +416,170 @@ function MergeDialog({
   );
 }
 
+// ---------------------------------------------------------------- a question's answer box
+
+/** T499: how tall an open answer box starts, and how far it grows before it scrolls. */
+const ANSWER_MIN_LINES = 3;
+const ANSWER_MAX_LINES = 10;
+
+/**
+ * T499: Quote into a question's answer box: the selection joins its kept
+ * answer as a Markdown quote, and the box opens with the caret after it.
+ */
+export function quoteIntoAnswer(question: string, selection: string): void {
+  updateDraft(answerDrafts, question, (before) => withQuote(before, selection));
+  requestAnimationFrame(() => {
+    const box = document.querySelector<HTMLTextAreaElement>(
+      `[data-answer-for="${CSS.escape(question)}"] textarea`,
+    );
+    if (!box) return;
+    box.focus({ preventScroll: true });
+    box.setSelectionRange(box.value.length, box.value.length);
+    box.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+/**
+ * T499: a question card's own answer box. One "Reply…" line until it is
+ * focused or clicked, then a box that grows from three lines to ten. Enter
+ * sends, Shift+Enter is a new line (never mid-IME composition), Esc folds it
+ * again. What is typed is kept per question (`useAnswerDraft`), across a
+ * re-render and a reload; an empty box folds when it loses focus.
+ */
+function AnswerBox({
+  question,
+  choices,
+  open,
+  onOpen,
+  sending,
+  frozen,
+  locked,
+  title,
+  onSend,
+}: {
+  question: string;
+  /** The card has choice buttons above: the box is for an answer of your own. */
+  choices: boolean;
+  open: boolean;
+  onOpen: (open: boolean) => void;
+  sending: boolean;
+  /** An action on the card is in flight or done: nothing more is typed. */
+  frozen: boolean;
+  /** No sending now (that, or the daemon is away; `title` says why). */
+  locked: boolean;
+  title: string | undefined;
+  onSend: (text: string) => void;
+}): JSX.Element {
+  const [draft, setDraft] = useAnswerDraft(question);
+  const area = useRef<HTMLTextAreaElement>(null);
+  const text = draft.trim();
+
+  // Folded, one line; open, three lines growing to ten with the text, past that it scrolls.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `draft` is a trigger too.
+  useLayoutEffect(() => {
+    const el = area.current;
+    if (!el) return;
+    el.style.height = '';
+    if (!open) {
+      el.style.overflowY = 'hidden';
+      return;
+    }
+    const style = getComputedStyle(el);
+    const line = Number.parseFloat(style.lineHeight) || 20;
+    const border =
+      Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
+    const pad = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+    const min = line * ANSWER_MIN_LINES + pad + border;
+    const max = line * ANSWER_MAX_LINES + pad + border;
+    el.style.height = 'auto';
+    // `scrollHeight` holds the padding, not the border (the box is border-box).
+    const needed = el.scrollHeight + border;
+    el.style.height = `${Math.min(Math.max(needed, min), max)}px`;
+    el.style.overflowY = needed > max ? 'auto' : 'hidden';
+  }, [draft, open]);
+
+  const send = (): void => {
+    if (text !== '' && !locked) onSend(text);
+  };
+
+  return (
+    <form
+      className="cr-answer"
+      data-open={open ? 'true' : undefined}
+      data-answer-for={question}
+      onSubmit={(e) => {
+        e.preventDefault();
+        send();
+      }}
+    >
+      <div className="cr-answer-box">
+        <Icon name="corner-down-left" size={13} />
+        <textarea
+          ref={area}
+          data-testid="answer-input"
+          aria-label="Your answer"
+          rows={1}
+          maxLength={MESSAGE_BODY_MAX_CHARS}
+          value={draft}
+          disabled={frozen}
+          placeholder={choices ? 'Or write your own answer, or ask about it…' : 'Reply…'}
+          onFocus={() => onOpen(true)}
+          onBlur={() => {
+            if (draft.trim() === '') onOpen(false);
+          }}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              // Folds the box (what you wrote stays), and nothing else hears it.
+              e.preventDefault();
+              e.stopPropagation();
+              onOpen(false);
+              area.current?.blur();
+              return;
+            }
+            // Enter sends; Shift+Enter is a newline; never mid-IME composition.
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              send();
+            }
+          }}
+        />
+      </div>
+      {open && (
+        <div className="cr-answer-bar">
+          <span className="cr-answer-keys" aria-hidden="true">
+            <Kbd>Enter</Kbd> send · <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> new line · <Kbd>Esc</Kbd>{' '}
+            close
+          </span>
+          <Button
+            type="submit"
+            size="sm"
+            // T416: one Answer everywhere: secondary while empty, primary once there is text.
+            variant={text.length > 0 ? 'primary' : 'secondary'}
+            data-testid="answer-send"
+            busy={sending}
+            disabled={locked || text.length === 0}
+            title={title}
+            // Keep the box's focus: a click here mustn't fold an empty box before it lands.
+            onMouseDown={(e) => e.preventDefault()}
+          >
+            Answer
+          </Button>
+        </div>
+      )}
+    </form>
+  );
+}
+
 // ---------------------------------------------------------------- the card
 
 /**
  * One decision card. `full` is the node page's rendering: the whole text up
- * front, no link to the node (it is already open), and a question answered
- * from the page's composer rather than an input of its own. T416:
+ * front, and no link to the node (it is already open). T416:
  * `questionText` is how much of a question the card repeats — `none` when
  * the chat right above already reads it, `line` (one line, to tell several
- * apart), `whole` otherwise.
+ * apart), `whole` otherwise. T499: while its answer box is open, a `line`
+ * reads whole, and so does a long question in the list.
  */
 export function Card({
   item,
@@ -454,6 +610,10 @@ export function Card({
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState('');
   const [noteOpen, setNoteOpen] = useState(false);
+  // T499: a question's answer box; one with a kept answer opens with it (after a reload).
+  const [answerOpen, setAnswerOpen] = useState(
+    () => item.kind === 'question' && answerDrafts.get(item.id) !== undefined,
+  );
   /** Which action is in flight ("approve", "choice:1", …). */
   const [busy, setBusy] = useState<string | undefined>(undefined);
   /** An action succeeded: the card waits, disabled, for the frame that removes it. */
@@ -651,15 +811,23 @@ export function Card({
   switch (item.kind) {
     case 'question': {
       const q = questionView(item);
-      const main = shown(q.text);
-      foldable = main.foldable && questionText === 'whole';
+      // T499: with its box open the question reads whole, beside what you write.
+      const main = answerOpen ? { text: q.text, foldable: false } : shown(q.text);
+      const textShown = answerOpen && questionText === 'line' ? 'whole' : questionText;
+      foldable = main.foldable && textShown === 'whole';
       // Keys pick a choice on a focused card in the list (`Inbox`'s keys); the keycap says which.
       const keyed = !full;
+      /** Answers it (a choice's words or what was typed, as written); the kept answer goes. */
+      const answer = (key: string, words: string): Promise<void> =>
+        act(key, async () => {
+          await answerQuestion(item.id, words);
+          answerDrafts.set(item.id, undefined);
+        });
       body = (
         <>
-          {questionText === 'whole' ? (
+          {textShown === 'whole' ? (
             <Markdown className="context" text={main.text} testId="inbox-context" />
-          ) : questionText === 'line' ? (
+          ) : textShown === 'line' ? (
             <p className="cr-card-quote" data-testid="inbox-context" title={q.text}>
               {q.text.replace(/\s+/g, ' ').trim()}
             </p>
@@ -679,7 +847,7 @@ export function Card({
                     disabled={locked}
                     title={why()}
                     aria-keyshortcuts={keyed ? `${choiceKey(i)} ${i + 1}` : undefined}
-                    onClick={() => act(key, () => answerQuestion(item.id, choice))}
+                    onClick={() => void answer(key, choice)}
                   >
                     {keyed && (
                       <span className="cr-choice-key" aria-hidden="true">
@@ -703,48 +871,23 @@ export function Card({
               })}
             </fieldset>
           )}
-          {full ? (
-            <p className="cr-card-hint" data-testid="answer-hint">
-              <Icon name="corner-down-left" size={13} />
-              {q.choices.length > 0 ? '…or type your answer below' : 'Type your answer below'}
-            </p>
-          ) : null}
         </>
       );
-      if (!full) {
-        actions = (
-          <form
-            className="cr-reply"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (text && !locked) void act('answer', () => answerQuestion(item.id, text));
-            }}
-          >
-            <input
-              data-testid="answer-input"
-              aria-label="Your answer"
-              value={draft}
-              disabled={busy !== undefined || settled !== undefined}
-              placeholder={
-                q.choices.length > 0 ? 'Or answer in your own words…' : 'Answer in your own words…'
-              }
-              onChange={(e) => setDraft(e.target.value)}
-            />
-            <Button
-              type="submit"
-              size="sm"
-              // T416: one Answer everywhere: secondary while empty, primary once there is text.
-              variant={text.length > 0 ? 'primary' : 'secondary'}
-              data-testid="answer-send"
-              busy={busy === 'answer'}
-              disabled={locked || text.length === 0}
-              title={why()}
-            >
-              Answer
-            </Button>
-          </form>
-        );
-      }
+      // Its text in the chat above and no choices: the card is its answer box alone.
+      if (textShown === 'none' && q.choices.length === 0) body = null;
+      actions = (
+        <AnswerBox
+          question={item.id}
+          choices={q.choices.length > 0}
+          open={answerOpen}
+          onOpen={setAnswerOpen}
+          sending={busy === 'answer'}
+          frozen={busy !== undefined || settled !== undefined}
+          locked={locked}
+          title={why()}
+          onSend={(words) => void answer('answer', words)}
+        />
+      );
       break;
     }
 
@@ -1455,6 +1598,8 @@ export function Card({
       data-full={full ? 'true' : undefined}
       data-settled={settled !== undefined ? 'true' : undefined}
       data-clamp={clampLine}
+      // T499: Quote from a question goes to its own answer box.
+      data-quote-target={item.kind === 'question' ? item.id : undefined}
       aria-labelledby={titleId}
       // The list moves focus between cards with j/k (Needs me); a card is never a tab stop.
       tabIndex={full ? undefined : -1}

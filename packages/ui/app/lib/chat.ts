@@ -897,44 +897,26 @@ export function questionIdOfRef(ref: string | undefined): string | undefined {
   return ref?.match(/(?:^|\/)(Q-[0-9A-HJKMNP-TV-Z]{26})\.yaml$/)?.[1];
 }
 
-/** One line of a question for the composer's "Answering: …" chip. */
-export function oneLine(text: string, max = 90): string {
-  const first = (text.split('\n').find((l) => l.trim() !== '') ?? '').trim().replace(/\s+/g, ' ');
-  return first.length > max ? `${first.slice(0, max - 1).trimEnd()}…` : first;
-}
-
-/** This node's open questions, oldest first (the one to answer by default is `[0]`). */
+/** This node's open questions, oldest first. T499: each one is answered in its own card. */
 export function openQuestions(items: readonly InboxItem[], node: string): InboxItem[] {
   return items
     .filter((item) => item.kind === 'question' && item.stream === node)
     .sort((a, b) => a.ts.localeCompare(b.ts));
 }
 
-/**
- * Which question Send answers. `choice` is the viewer's pick: a question id,
- * `'message'` (write a plain line instead), or `undefined` (the oldest).
- * A pick that is no longer open falls back to the oldest.
- */
-export function answerTarget(
-  questions: readonly Pick<InboxItem, 'id'>[],
-  choice: string | undefined,
-): string | undefined {
-  if (questions.length === 0 || choice === 'message') return undefined;
-  if (choice !== undefined && questions.some((q) => q.id === choice)) return choice;
-  return questions[0]?.id;
-}
-
 // ---------------------------------------------------------------- what Send does
 
-/** T423: `restart` stops the live agent and starts it again with the chip's pick, the line its first prompt. */
-export type SendAction = 'answer' | 'say' | 'start' | 'restart' | 'none';
+/**
+ * T423: `restart` stops the live agent and starts it again with the chip's
+ * pick, the line its first prompt. T499: Send is for messages only; a
+ * question is answered in its own card.
+ */
+export type SendAction = 'say' | 'start' | 'restart' | 'none';
 
 export interface SendIntentInput {
   /** Not merged or closed. */
   open: boolean;
   merged?: boolean;
-  /** The question Send answers, if any. */
-  answering?: string;
   /** The node's live agent: its name, and whether a turn is in flight. */
   live?: { name: string; working: boolean };
   /** T336: a part that starts when its coordinator's plan is approved; never started by a line. */
@@ -972,13 +954,6 @@ export function sendIntent(input: SendIntentInput): SendIntent {
         ? `Reopens this node and wakes the agent${model}.`
         : 'Reopens this node and adds a note.',
       placeholder: 'Write to reopen it…',
-    };
-  }
-  if (input.answering !== undefined) {
-    return {
-      action: 'answer',
-      hint: 'Answers the question. The agent gets your reply as written.',
-      placeholder: 'Answer the question…',
     };
   }
   if (input.live) {

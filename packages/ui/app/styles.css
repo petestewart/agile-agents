@@ -2739,9 +2739,6 @@ input[type="checkbox"].cr-switch:focus-visible {
 .cr-card[data-full="true"] .cr-card-body > .cr-choices:first-child {
   margin-top: 2px;
 }
-.cr-card[data-full="true"] .cr-card-body > .cr-card-hint:first-child {
-  margin-top: 0;
-}
 .cr-card-hint {
   display: flex;
   align-items: center;
@@ -2947,6 +2944,98 @@ input[type="checkbox"].cr-switch:focus-visible {
 }
 .cr-card[data-kind] .cr-reply .cr-btn {
   height: 28px;
+}
+/* T499: a question's own answer box: one "Reply…" line, a box once focused. */
+.cr-card-hd + .cr-card-ft {
+  margin-top: 8px;
+}
+.cr-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.cr-answer-box {
+  position: relative;
+  min-width: 0;
+}
+.cr-answer-box > .cr-icon {
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.cr-answer textarea {
+  display: block;
+  width: 100%;
+  height: 30px;
+  padding: 4px 10px 4px 30px;
+  font-size: var(--text-md);
+  line-height: 20px;
+  background: var(--bg-inset);
+  border-color: var(--border);
+  border-radius: var(--radius);
+  resize: none;
+  overflow-y: hidden;
+  cursor: text;
+}
+.cr-answer[data-open="true"] textarea {
+  padding-top: 6px;
+  padding-bottom: 6px;
+  background: var(--bg-panel);
+  border-color: var(--border-strong);
+}
+.cr-answer[data-open="true"] .cr-answer-box > .cr-icon {
+  top: 10px;
+}
+.cr-answer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cr-answer-bar .cr-btn {
+  flex: none;
+  margin-left: auto;
+}
+.cr-answer-keys {
+  min-width: 0;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+@media (hover: none) {
+  .cr-answer-keys {
+    display: none;
+  }
+}
+/* T499: Quote, by text selected in the chat (fixed, over the selection; under it near the top). */
+.cr-quote {
+  position: fixed;
+  z-index: 50;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  transform: translate(-50%, -100%);
+  cursor: pointer;
+}
+.cr-quote[data-below="true"] {
+  transform: translate(-50%, 0);
+}
+.cr-quote:hover {
+  background: var(--bg-hover);
+}
+.cr-quote .cr-icon {
+  color: var(--text-muted);
 }
 .cr-card-notice,
 .cr-card-error {
@@ -4117,15 +4206,6 @@ input[type="checkbox"].cr-switch:focus-visible {
 .cr-decisions .cr-card + .cr-card {
   margin-top: 0;
 }
-.cr-decision[data-answering="true"] .cr-card {
-  border-color: var(--amber);
-  box-shadow: 0 0 0 3px var(--amber-weak);
-}
-.cr-decisions:has(.cr-decision + .cr-decision)
-  .cr-decision:not([data-answering])
-  .cr-card[data-kind="question"] {
-  cursor: pointer;
-}
 
 /* -- the composer */
 .cr-composer-wrap {
@@ -4143,12 +4223,6 @@ input[type="checkbox"].cr-switch:focus-visible {
 .cr-compose:focus-within {
   border-color: var(--accent);
   box-shadow: var(--shadow-md), 0 0 0 3px var(--accent-weak);
-}
-.cr-compose[data-mode="answer"] {
-  border-color: color-mix(in srgb, var(--amber) 70%, var(--border-strong));
-}
-.cr-compose[data-mode="answer"]:focus-within {
-  box-shadow: var(--shadow-md), 0 0 0 3px var(--amber-weak);
 }
 .cr-compose[data-disabled="true"] {
   background: var(--bg-inset);
@@ -4683,82 +4757,6 @@ button.cr-model-chip[aria-expanded="true"] {
   height: 6px;
   border-radius: 50%;
   background: var(--green);
-}
-.cr-answering {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  margin: 8px 8px 0;
-  padding: 4px 4px 4px 10px;
-  font-size: var(--text-sm);
-  color: var(--amber-text);
-  background: var(--amber-weak);
-  border-radius: 10px;
-}
-.cr-answering-label {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-}
-.cr-answering > .cr-answering-label {
-  flex: 1;
-  cursor: default;
-}
-.cr-answering-q .cr-answering-label {
-  color: var(--amber-text);
-}
-.cr-answering .cr-pop-wrap {
-  flex: 1;
-  min-width: 0;
-}
-.cr-answering-q {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: 1;
-  min-width: 0;
-  max-width: 100%;
-  padding: 0;
-  font: inherit;
-  color: var(--text);
-  background: none;
-  border: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-}
-button.cr-answering-q {
-  cursor: pointer;
-}
-/* T413: one question as plain text: a block, so a long one ends in an ellipsis. */
-span.cr-answering-q {
-  display: block;
-}
-.cr-answering .cr-icon-btn {
-  color: var(--amber-text);
-}
-.cr-answering-off {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  margin: 8px 10px 0;
-  padding: 3px 8px;
-  font: inherit;
-  font-size: var(--text-sm);
-  color: var(--amber-text);
-  background: none;
-  border: 1px dashed color-mix(in srgb, var(--amber) 60%, transparent);
-  border-radius: 999px;
-  cursor: pointer;
-}
-.cr-answering-off:hover {
-  background: var(--amber-weak);
 }
 
 /* -- the details panel */
