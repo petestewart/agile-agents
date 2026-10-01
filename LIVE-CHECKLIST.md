@@ -1769,18 +1769,27 @@ bun spike/permission-matrix.ts --vendor codex --scenario perm --user-hooks
 
 **Round 2 (2026-10-01, design/spike-findings.md C5):** the hook works in
 `codex exec` (it blocked the `curl`) but was called 0 times through
-codex-acp 1.10.0. These runs tell "the bridge's `app-server` ignores hooks"
-from "it skipped them as untrusted". It prints Codex's own stderr under
-the bridge, also when the run fails.
+codex-acp, 1.10.0 and 2.1.0 alike, with the bypass flag (it only goes
+before `app-server`; after it Codex exits with code 2). The last question:
+does a hook you trusted in Codex fire under the bridge?
 
 ```zsh
-bun spike/permission-matrix.ts --vendor codex --scenario perm --user-hooks --bypass-hook-trust --cmd "npx -y @agentclientprotocol/codex-acp@2.1.0"
+bun spike/permission-matrix.ts --vendor codex --scenario perm --hooks --fixture ~/agile-codex-spike
+cd ~/agile-codex-spike && codex
 ```
 
-- [ ] Paste the summary, including the `Codex stderr (tail)` block. If it
-      shows `hook calls` > 0, that is the route. (`--bypass-at end` is
-      settled: Codex exits with code 2 when the flag comes after
-      `app-server`, so it only goes in front.)
-- [ ] If both show 0, do the trusted-project run above (`--fixture`, trust
-      the hook with `/hooks`, run again without any bypass): a trusted hook
-      that fires under the bridge means only the bypass flag is ignored.
+- [ ] In Codex: trust the project when asked, run `/hooks` and trust the
+      `agile spike gate` hook, then quit (don't give it a task).
+- [ ] Back in `~/agile-agents`, the same project, no bypass:
+
+```zsh
+cd ~/agile-agents
+bun spike/permission-matrix.ts --vendor codex --scenario perm --hooks --fixture ~/agile-codex-spike
+bun spike/permission-matrix.ts --vendor codex --scenario exec --hooks --fixture ~/agile-codex-spike
+```
+
+- [ ] Paste both summaries. The `exec` run is the control: it should show
+      2 hook calls and the `curl` refused, which proves the trust took. Then
+      the `perm` run decides: hook calls > 0 means the daemon can install a
+      trusted hook; 0 means `app-server` doesn't run hooks.
+- [ ] `rm -rf ~/agile-codex-spike` when done.

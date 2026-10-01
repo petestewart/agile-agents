@@ -65,6 +65,8 @@ mkdirSync(outDir, { recursive: true });
 // ---------- fixture project ----------
 const fixtureOpt = opt("fixture");
 const cwd = fixtureOpt ? resolve(fixtureOpt) : mkdtempSync(join(tmpdir(), "agile-spike-"));
+// A kept fixture is reused across runs: start each run's logs empty, so counts are this run's only.
+if (fixtureOpt) for (const f of ["hook-calls.jsonl", "codex-argv.log", "codex-stderr.log"]) rmSync(join(cwd, f), { force: true });
 mkdirSync(cwd, { recursive: true });
 writeFileSync(join(cwd, "small.txt"), "alpha\nbeta\ngamma\n");
 writeFileSync(join(cwd, "big.txt"), Array.from({ length: 1500 }, (_, i) => `line ${i} lorem ipsum dolor sit amet consectetur`).join("\n"));

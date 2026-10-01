@@ -146,11 +146,19 @@ Reports: `codex-defaultmode-exec-userhooks-bypass.json`,
 `--bypass-at end` (the flag after `app-server`) is settled: Codex exits at
 once with code 2, so the flag goes before the subcommand only.
 
-Next run: a newer codex-acp (`--cmd "npx -y @agentclientprotocol/codex-acp@2.1.0"`).
-If it doesn't fire the hook either, and a hook trusted in Codex's `/hooks`
-(LIVE-CHECKLIST §20) doesn't fire under the bridge, T506 can't gate Codex through codex-acp, and the
-options are the fail-closed observation check plus T505's warning, or the
-daemon talking to `codex app-server` itself.
+**codex-acp 2.1.0 changes nothing** (same user hook + bypass, Pete's run
+2026-10-01): Codex again started as `app-server`, 9 tool calls over ACP,
+**0 hook calls**, `curl` ran, and Codex wrote nothing to stderr (no trust or
+hook warning). 2.1.0 adds a fourth mode, `workspace-write`, and still raises
+no ACP permission requests.
+
+Last check before the fallback: a project hook trusted in Codex itself
+(`/hooks`, project trusted), run with no bypass, through the bridge and
+under `exec` as a control (LIVE-CHECKLIST §20). If it fires under the
+bridge, only the bypass flag is ignored and the daemon can install a
+trusted hook. If not, `app-server` doesn't run hooks, and T506 becomes the
+fail-closed observation check plus T505's warning, or the daemon talks to
+`codex app-server` itself.
 
 What those runs still show (none of it depends on the hook):
 
