@@ -1780,6 +1780,9 @@ export class AttachService {
     body: string,
     options: { start?: boolean; session?: AttachFlags } = {},
   ): Promise<{ entry: ThreadEntry; prompted?: string; started?: true }> {
+    // T495: a resting agent whose CLI was updated in place ends first; the
+    // start below resumes it on the new version with this line.
+    const restart = await this.endIfCliUpdated(streamId);
     // Held from before the first write: a turn ending before the emit keeps the session.
     const release = this.delivery.hold(streamId);
     let entry: ThreadEntry;
@@ -1813,10 +1816,10 @@ export class AttachService {
       // T389: a part waiting for its coordinator's plan starts with the plan, not a line.
       if (
         handle === undefined &&
-        options.start === true &&
+        (options.start === true || restart !== undefined) &&
         this.options.plans?.waitingForPlan?.(this.options.streams.get(streamId)) !== true
       ) {
-        started = await this.startFor(streamId, options.session);
+        started = await this.startFor(streamId, restart ?? options.session);
       }
     } finally {
       release();
@@ -1833,6 +1836,32 @@ export class AttachService {
       });
     }
     return { entry, prompted: sessionId };
+  }
+
+  /**
+   * T495: a resting agent keeps its vendor process, and that process keeps
+   * the CLI binary it started with. When the CLI was updated in place since
+   * (Pete, 2026-10-01: Codex said "gpt-6-astra requires a newer version of
+   * Codex" again after the update), the resting session ends and the
+   * session's own vendor, model and effort come back, so the start that
+   * follows resumes it (`session/load`) on the new binary. A working agent
+   * is left alone: its turn finishes on the old one.
+   */
+  private async endIfCliUpdated(streamId: string): Promise<AttachFlags | undefined> {
+    const handle = this.restingHandle(streamId);
+    if (handle === undefined || handle.cliChanged?.() !== true) return undefined;
+    const ref = this.options.streams.get(streamId).sessions.find((s) => s.id === handle.sessionId);
+    if (ref === undefined) return undefined;
+    await this.endResting(
+      streamId,
+      `${this.vendorLabel(ref.vendor)} was updated since this agent started; it starts again on the new version`,
+      handle.sessionId,
+    );
+    return {
+      vendor: ref.vendor,
+      model: ref.model,
+      ...(ref.effort !== undefined ? { effort: ref.effort } : {}),
+    };
   }
 
   /**

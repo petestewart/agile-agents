@@ -3502,6 +3502,49 @@ describe('T465 (D48): a finished turn keeps its session; an ended one resumes', 
     expect(stderr).toContain('session/load failed, starting fresh with the brief');
   }, 30_000);
 
+  test('T495: a resting agent whose CLI was updated in place starts again on it, resumed, with the line', async () => {
+    const bin = join(scratch, 'claude-cli');
+    writeFileSync(bin, '#!/bin/sh\necho 1.0.0\n');
+    const installed = {
+      vendor: 'claude' as const,
+      label: 'Claude Code',
+      path: bin,
+      env: { CLAUDE_CODE_EXECUTABLE: bin },
+    };
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log() }),
+      {
+        deliveryDelayMs: 5,
+        installedCli: (vendor) => (vendor === 'claude' ? installed : undefined),
+      },
+    );
+    const stream = await lineStarts();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => statusOf(stream.id, session.id) === 'idle');
+
+    // Unchanged: the resting session takes the line, as before.
+    await attachService.say(stream.id, 'first');
+    await waitFor(() => prompts().length === 2);
+    await waitFor(() => statusOf(stream.id, session.id) === 'idle');
+    expect(streams.get(stream.id).sessions).toHaveLength(1);
+
+    // The CLI is updated in place: the resting process still runs the old one.
+    writeFileSync(bin, '#!/bin/sh\necho 1.1.0 (a newer build)\n');
+    const said = await attachService.say(stream.id, 'try again');
+    expect(said.started).toBe(true);
+    await waitFor(() => statusOf(stream.id, session.id) === 'stopped');
+    expect(threadBodies(stream.id)).toContain(
+      'session ended: Claude Code was updated since this agent started; it starts again on the new version',
+    );
+    await waitFor(() => prompts().length === 3);
+    expect(loads()).toHaveLength(1);
+    expect(prompts()[2]).toContain('The operator wrote on the stream: try again');
+    const sessions = streams.get(stream.id).sessions;
+    expect(sessions).toHaveLength(2);
+    expect(sessions[1]?.vendor).toBe(sessions[0]?.vendor);
+    expect(sessions[1]?.model).toBe(sessions[0]?.model);
+  }, 30_000);
+
   test('a picked other model starts fresh, with no session/load', async () => {
     attachService = buildAttachService(
       fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log() }),
