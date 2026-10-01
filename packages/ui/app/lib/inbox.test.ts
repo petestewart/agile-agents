@@ -258,6 +258,13 @@ describe('fold (T364)', () => {
 describe('card titles and text (T364)', () => {
   test('a title in words for every kind', () => {
     expect(cardTitle(item({ kind: 'question' }))).toBe('Question');
+    // T502 (D62): a reply its agent didn't settle comes back saying so.
+    expect(cardTitle(item({ kind: 'question', unsettled_by: 'codex' }))).toBe(
+      'Codex didn’t settle this',
+    );
+    expect(cardTitle(item({ kind: 'question', unsettled_by: 'agent' }))).toBe(
+      'The agent didn’t settle this',
+    );
     expect(cardTitle(item({ kind: 'gate', context: 'classifier_review: edit x — why' }))).toBe(
       'Allow this action?',
     );

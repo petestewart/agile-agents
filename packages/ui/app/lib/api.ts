@@ -29,6 +29,7 @@ import type {
   Policy,
   Project,
   ProjectSessionDefaults,
+  Question,
   RepoRemote,
   ResolvedModelPolicy,
   RoutedEvent,
@@ -115,6 +116,22 @@ export function getEvents(
 /** A question card: the typed text reaches the asking session verbatim (§3.3). */
 export function answerQuestion(id: string, answer: string): Promise<unknown> {
   return post(`/api/questions/${encodeURIComponent(id)}/answer`, { answer });
+}
+
+/**
+ * T502 (D62): what you typed in a question's own box. A choice question
+ * stays open (its agent settles it or asks again: `entry` is your line in its
+ * thread); one with no choices is answered by it (`answered`).
+ */
+export function replyToQuestion(
+  id: string,
+  text: string,
+): Promise<{ question: Question; entry?: ThreadEntry; answered?: true }> {
+  return post(`/api/questions/${encodeURIComponent(id)}/reply`, { text }) as Promise<{
+    question: Question;
+    entry?: ThreadEntry;
+    answered?: true;
+  }>;
 }
 
 /** A gate card (`classifier_review`, `land`): allow/deny, optionally with the typed reason. */

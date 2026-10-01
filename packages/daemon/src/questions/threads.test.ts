@@ -90,7 +90,10 @@ describe('questionThreadsOf', () => {
   });
 
   test('your reply, not yet read, waits on the agent; its turn’s lines join the thread by cause', () => {
-    const pending: ThreadActivity = { event: humanLine('E-1', reply.ts, reply.body, Q1), status: 'pending' };
+    const pending: ThreadActivity = {
+      event: humanLine('E-1', reply.ts, reply.body, Q1),
+      status: 'pending',
+    };
     const waiting = questionThreadsOf({
       node: node('idle'),
       entries: [asked as ThreadEntry, reply],

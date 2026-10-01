@@ -4174,6 +4174,102 @@ input[type="checkbox"].cr-switch:focus-visible {
   }
 }
 
+/* T502 (D62, D63): a question's thread, nested under the line that asked it */
+.cr-qthread {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 0 8px 12px;
+  border-left: 2px solid var(--border-strong);
+}
+.cr-msg[data-variant="agent"] > .cr-qthread {
+  margin-left: 30px;
+}
+.cr-qthread-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.cr-qthread-meta .cr-msg-tag {
+  margin-bottom: 0;
+}
+.cr-msg-tag[data-tone="blue"] {
+  color: var(--blue-text);
+  background: var(--blue-weak);
+}
+.cr-msg-tag[data-tone="green"] {
+  color: var(--green-text);
+  background: var(--green-weak);
+}
+.cr-qthread-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cr-qthread-line {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-md);
+}
+.cr-qthread-who {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.cr-qthread-who .cr-msg-name {
+  font-size: var(--text-sm);
+}
+.cr-qthread-who .cr-msg-tag {
+  margin-bottom: 0;
+}
+.cr-qthread-line .cr-md > *:last-child {
+  margin-bottom: 0;
+}
+/* D63: a coordinator's chat lists its parts' questions, one thread each */
+.cr-child-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 22px;
+}
+.cr-child-questions-hd {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.cr-child-questions .cr-qthread {
+  margin-top: 0;
+}
+.cr-qthread-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.cr-qthread-node {
+  flex: none;
+  font-weight: 600;
+}
+.cr-qthread-text {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
 /* what waits on you, right above the composer */
 .cr-decisions {
   display: flex;

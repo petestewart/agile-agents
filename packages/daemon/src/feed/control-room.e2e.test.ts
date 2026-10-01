@@ -39,6 +39,7 @@ import {
   START_ON_GOAL,
   type SessionVendor,
   type Stream,
+  type ThreadEntry,
   classifierQuestion,
   examplesOf,
   liveChildrenOf,
@@ -81,7 +82,7 @@ import { TrackerLinks } from '../trackers/link';
 /** Proposals the home migration carried over from a seed import are batched under this source. */
 const SEED_PROVENANCE = 'migration';
 import { ProjectService } from '../projects';
-import { QuestionService } from '../questions';
+import { QuestionService, QuestionThreads } from '../questions';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { ModelCatalog } from '../runner/model-catalog';
 import { SESSION_STATE_FILE } from '../runner/session';
@@ -679,6 +680,8 @@ async function startCockpit(
   });
   const harness = extra.harness?.(store, events);
   const vendorChecks = extra.vendorChecks?.(store, home);
+  // T502: question threads, as the daemon wires them (Needs me and the node page).
+  const questionThreads = new QuestionThreads({ streams, questions, events });
   const inbox = new InboxService({
     streams,
     questions,
@@ -688,6 +691,7 @@ async function startCockpit(
     contracts,
     proposals: autonomy,
     ...(harness ? { harness } : {}),
+    threads: questionThreads,
   });
   const projects = new ProjectService(store, streams);
   // T300: no delivery wired, so a line to the Director stays pending (no session).
@@ -704,6 +708,7 @@ async function startCockpit(
     events,
     director,
     questions,
+    questionThreads,
     inbox,
     rules,
     plans,
@@ -1689,12 +1694,23 @@ async function startStreamCockpit(
   const gates = new GateService(store);
   const rules = new KnowledgeService({ store, streams });
   const docs = new DocsService(store, streams, init.stateRoot);
+  // T502: one routed-event log for attach and the page, as `daemon.ts` shares it.
+  const events = new RoutedEventService(store);
   const questions = new QuestionService(store, streams, {
     deliver: async (session, question) => {
       // Read lazily, exactly as `daemon.ts` does: built just below.
       await attach.deliverAnswer(session, question);
     },
+    // T502 (D62): a reply in a choice question's thread, to its agent, as `daemon.ts` wires it.
+    reply: async (question, text): Promise<ThreadEntry> =>
+      (
+        await attach.say(question.stream, text, {
+          start: true,
+          question: { id: question.id, text: question.text },
+        })
+      ).entry,
   });
+  const questionThreads = new QuestionThreads({ streams, questions, events });
   let spawned = 0;
   const providers: AcpProviderConfig[] = scripts.map((script, i) => {
     const path = join(scratch, `script-${i}.json`);
@@ -1710,6 +1726,7 @@ async function startStreamCockpit(
   const attach = new AttachService({
     store,
     streams,
+    events,
     home,
     ...(models !== undefined ? { models } : {}),
     ...(chooser !== undefined ? { classifier: chooser } : {}),
@@ -1739,7 +1756,15 @@ async function startStreamCockpit(
     contracts,
     start: (id) => attach.startWithPending(id),
   });
-  const inbox = new InboxService({ streams, questions, gates, rules, plans, contracts });
+  const inbox = new InboxService({
+    streams,
+    questions,
+    gates,
+    rules,
+    plans,
+    contracts,
+    threads: questionThreads,
+  });
   const prChecks: string[] = [];
   const http = startHttpServer({
     port: 0,
@@ -1749,7 +1774,9 @@ async function startStreamCockpit(
     store,
     gates,
     streams,
+    events,
     questions,
+    questionThreads,
     inbox,
     rules,
     landing,
@@ -2262,7 +2289,7 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
   );
 
   browserTest(
-    'a choice question is answered by typing in its card, as written (T499)',
+    'typing to a choice question replies in its thread: it stays open, waiting on its agent (T499, T502)',
     async () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
@@ -2289,16 +2316,35 @@ describe("a node's page is a chat (Playwright e2e, T363)", () => {
         await page.locator(`${card} .cr-answer[data-open="true"]`).waitFor();
         const send = page.locator(`${card} [data-testid="answer-send"]`);
         expect(await send.getAttribute('data-variant')).toBe('secondary');
+        // T502 (D62): to a choice question what you type is a reply, so the button says so.
+        expect(await send.textContent()).toBe('Reply');
         await box.pressSequentially('Neither: the export uses tabs. Which one does Excel open?');
         expect(await send.getAttribute('data-variant')).toBe('primary');
         await box.press('Enter');
-        await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
-        expect(cockpit.delivered[0]?.question.id).toBe(asked.id);
-        expect(cockpit.delivered[0]?.question.answer).toBe(
-          'Neither: the export uses tabs. Which one does Excel open?',
-        );
-        expect(cockpit.questions.get(asked.id).resolved_as).toBe('reply');
+        // It stays open, as written on its thread; nothing is answered or delivered.
+        const thread = `[data-testid="question-thread"][data-question="${asked.id}"]`;
+        await page.locator(thread).waitFor();
+        expect(cockpit.questions.get(asked.id).status).toBe('open');
+        expect(cockpit.delivered).toHaveLength(0);
+        // The card leaves Needs you: it waits on the agent now, never on you.
         await page.locator(card).waitFor({ state: 'detached' });
+        expect(await page.locator(thread).getAttribute('data-state')).toBe('waiting_on_agent');
+        expect(
+          await page.locator(`${thread} [data-testid="question-thread-state"]`).textContent(),
+        ).toBe('Waiting on the agent');
+        // The reply is in the question's thread, not the main flow.
+        expect(
+          await page
+            .locator(`${thread} [data-testid="question-thread-entry"][data-by="human"]`)
+            .textContent(),
+        ).toContain('Which one does Excel open?');
+        expect(
+          await page
+            .locator('[data-testid="thread"] > [data-testid="thread-entry"][data-by="human"]', {
+              hasText: 'Which one does Excel open?',
+            })
+            .count(),
+        ).toBe(0);
         expect(await page.locator('[data-testid="composer-input"]').inputValue()).toBe('');
       } finally {
         await teardown([page]);
@@ -12334,10 +12380,21 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
           .waitFor();
         await failed.waitFor({ state: 'detached' });
         expect(cockpit.delivered).toHaveLength(0);
-        // The card's answer, kept through it, goes now.
+        // The card's words, kept through it, go now: T502 (D62), to a choice question as a
+        // reply in its thread, which keeps it open for its agent to settle.
         await box.press('Enter');
-        await waitUntil('the answer to be delivered', () => cockpit.delivered.length > 0);
-        expect(cockpit.delivered[0]?.question.answer).toBe('Integer cents');
+        await waitUntil('the reply to be on its thread', () =>
+          cockpit.streams
+            .readThread(node.id)
+            .entries.some(
+              (e) =>
+                e.by === 'human' &&
+                e.body === 'Integer cents' &&
+                e.ref === `questions/${asked.id}.yaml`,
+            ),
+        );
+        expect(cockpit.questions.get(asked.id).status).toBe('open');
+        expect(cockpit.delivered).toHaveLength(0);
 
         // An answer that never reached the daemon while the socket is up says so on its card,
         // and keeps what you wrote.
@@ -12349,7 +12406,7 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
         });
         const secondCard = `[data-testid="stream-needs"] [data-id="${second.id}"]`;
         await page.locator(secondCard).waitFor();
-        await page.route('**/api/questions/*/answer', (route) =>
+        await page.route('**/api/questions/*/reply', (route) =>
           route.abort('internetdisconnected'),
         );
         const secondBox = page.locator(`${secondCard} [data-testid="answer-input"]`);
@@ -12359,10 +12416,10 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
         await cardError.waitFor({ state: 'visible' });
         expect(await cardError.textContent()).toContain('nothing was sent');
         expect(await secondBox.inputValue()).toBe('EUR');
-        await page.unroute('**/api/questions/*/answer');
+        await page.unroute('**/api/questions/*/reply');
         await secondBox.press('Enter');
-        await waitUntil('the retried answer', () => cockpit.delivered.length > 1);
-        expect(cockpit.delivered[1]?.question.answer).toBe('EUR');
+        await waitUntil('the retried answer', () => cockpit.delivered.length > 0);
+        expect(cockpit.delivered[0]?.question.answer).toBe('EUR');
       } finally {
         await teardown([page]);
         await cockpit.stop();
@@ -14215,6 +14272,241 @@ describe('Unchecked commands warning (Playwright e2e, T505)', () => {
         expect(
           await page.locator('[data-testid="settings-vendors-unchecked-claude"]').count(),
         ).toBe(0);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Question threads (Playwright e2e, T502)', () => {
+  browserTest(
+    'a choice question replied to by typing stays open, its agent settles it; one it doesn’t settle is back in Needs me',
+    async () => {
+      const asked = join(tmpdir(), `agile-t502-asked-${ulid()}`);
+      const settle = join(tmpdir(), `agile-t502-settle-${ulid()}`);
+      const promptLog = join(tmpdir(), `agile-t502-prompts-${ulid()}.jsonl`);
+      const worker: FakeAgentScript = {
+        logFile: promptLog,
+        turns: [
+          // The start: it asks (the test plays its `ask`), then ends the turn.
+          [
+            { type: 'agent_text', text: 'looking at the ledger' },
+            { type: 'tool_call', toolCallId: 'read-1', title: 'read ledger.ts' },
+            { type: 'wait_for_file', path: asked, timeoutMs: 60_000 },
+            { type: 'end_turn' },
+          ],
+          // Your reply: it clarifies, then settles (the test plays its `settle_question`).
+          [
+            { type: 'agent_text', text: 'Stripe stores integer cents' },
+            { type: 'tool_call', toolCallId: 'look-1', title: 'read the Stripe docs' },
+            { type: 'wait_for_file', path: settle, timeoutMs: 60_000 },
+            { type: 'end_turn' },
+          ],
+          // A reply to its second question: it answers, and ends without settling.
+          [{ type: 'agent_text', text: 'Either works for me' }, { type: 'end_turn' }],
+        ],
+        steps: [{ type: 'end_turn' }],
+      };
+      const cockpit = await startStreamCockpit([worker]);
+      let page: Page | undefined;
+      try {
+        const node = await cockpit.streams.create('human', {
+          title: 'Ledger',
+          goal: 'Store the amounts.',
+          repo: 'demo',
+        });
+        await cockpit.attach.attach(node.id);
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page
+          .locator('[data-testid="thread-entry"][data-by="agent"]', {
+            hasText: 'looking at the ledger',
+          })
+          .waitFor();
+        const session = cockpit.streams.get(node.id).sessions.find((s) => s.role === 'worker');
+        await waitUntil('the worker to register', () =>
+          cockpit.store.listAgents().some((a) => a.id === session?.id),
+        );
+        const { id: questionId } = await cockpit.verbs.ask({
+          session: session?.id,
+          text: 'Store amounts how?',
+          options: ['Integer cents', 'Floats'],
+        });
+        writeFileSync(asked, '');
+        await waitUntil(
+          'the first turn to end',
+          () =>
+            cockpit.streams.get(node.id).sessions.find((s) => s.id === session?.id)?.status ===
+            'idle',
+        );
+
+        // Typed instead of picked: a reply in its thread. It stays open, waiting on Claude.
+        const card = `[data-testid="stream-needs"] [data-id="${questionId}"]`;
+        const box = page.locator(`${card} [data-testid="answer-input"]`);
+        await box.fill('What does Stripe use?');
+        await box.press('Enter');
+        const thread = `[data-testid="question-thread"][data-question="${questionId}"]`;
+        await page.locator(thread).waitFor();
+        await page.locator(card).waitFor({ state: 'detached' });
+        expect(await page.locator(thread).getAttribute('data-state')).toBe('waiting_on_agent');
+        expect(
+          await page.locator(`${thread} [data-testid="question-thread-state"]`).textContent(),
+        ).toBe('Waiting on Claude');
+        expect(cockpit.questions.get(questionId as Question['id']).status).toBe('open');
+        // The agent reads it as a reply about its question, told how to settle it.
+        await page
+          .locator(`${thread} [data-testid="question-thread-entry"][data-by="agent"]`, {
+            hasText: 'Stripe stores integer cents',
+          })
+          .waitFor();
+        const prompts = readFileSync(promptLog, 'utf8');
+        expect(prompts).toContain(
+          'About your question \\"Store amounts how?\\": What does Stripe use?',
+        );
+        expect(prompts).toContain('settle_question');
+        // Its clarification is in the thread (by cause), not the main flow; Needs me is empty.
+        expect(
+          await page
+            .locator('[data-testid="thread"] > [data-testid="thread-entry"] > .cr-msg-body', {
+              hasText: 'Stripe stores integer cents',
+            })
+            .count(),
+        ).toBe(0);
+        expect(await page.locator(thread).getAttribute('data-state')).toBe('waiting_on_agent');
+
+        // The agent settles it: the thread resolves with what was decided.
+        await cockpit.verbs.settleQuestion({
+          session: session?.id,
+          question: questionId,
+          answer: 'Integer cents',
+        });
+        writeFileSync(settle, '');
+        await waitForAttr(page, thread, 'data-state', 'resolved');
+        expect(
+          await page.locator(`${thread} [data-testid="question-thread-state"]`).textContent(),
+        ).toBe('Settled: Integer cents');
+        await page
+          .locator(`${thread} [data-testid="question-thread-entry"][data-kind="answer"]`)
+          .waitFor();
+        expect(cockpit.questions.get(questionId as Question['id'])).toMatchObject({
+          status: 'answered',
+          resolved_as: 'settled',
+          answer: 'Integer cents',
+        });
+        await waitUntil(
+          'the second turn to end',
+          () =>
+            cockpit.streams.get(node.id).sessions.find((s) => s.id === session?.id)?.status ===
+            'idle',
+        );
+
+        // A second choice question, replied to; its turn ends without a settle: back in Needs
+        // me, saying so.
+        const { id: second } = await cockpit.verbs.ask({
+          session: session?.id,
+          text: 'Round how?',
+          options: ['Half up', 'Half even'],
+        });
+        const secondCard = `[data-testid="stream-needs"] [data-id="${second}"]`;
+        const secondBox = page.locator(`${secondCard} [data-testid="answer-input"]`);
+        await secondBox.fill('Which do banks use?');
+        await secondBox.press('Enter');
+        const secondThread = `[data-testid="question-thread"][data-question="${second}"]`;
+        await page.locator(secondThread).waitFor();
+        await waitForAttr(page, secondThread, 'data-state', 'unsettled');
+        expect(
+          await page.locator(`${secondThread} [data-testid="question-thread-state"]`).textContent(),
+        ).toBe('Claude didn’t settle it');
+        await page.locator(secondCard).waitFor();
+        expect(await page.locator(`${secondCard} .kind`).textContent()).toBe(
+          'Claude didn’t settle this',
+        );
+        expect(cockpit.questions.get(second as Question['id']).status).toBe('open');
+        expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        for (const file of [asked, settle, promptLog]) rmSync(file, { force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a coordinator’s chat shows each child question as a thread (D63)',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.streams.create('human', { title: 'Shop', goal: 'a shop' });
+        const web = await cockpit.streams.create('human', {
+          title: 'Web',
+          goal: 'g',
+          parent: shop.id,
+        });
+        const api = await cockpit.streams.create('human', {
+          title: 'API',
+          goal: 'g',
+          parent: shop.id,
+        });
+        const font = await cockpit.questions.raise({
+          stream: web.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session: ulid(),
+          text: 'Which font?',
+          options: ['Inter', 'System'],
+        });
+        const rest = await cockpit.questions.raise({
+          stream: api.id,
+          raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+          session: ulid(),
+          text: 'REST or RPC?',
+        });
+        // One of them talked back to: the chat says it waits on the part's agent.
+        await cockpit.questions.reply(font.id, { text: 'What does the brand use?', by: 'human' });
+
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${shop.id}&tab=thread`);
+        const list = '[data-testid="child-questions"]';
+        await page.locator(list).waitFor();
+        const rows = page.locator(`${list} [data-testid="child-question-thread"]`);
+        await waitForCount(page, `${list} [data-testid="child-question-thread"]`, 2);
+        expect(
+          await rows.evaluateAll((els) => els.map((el) => el.getAttribute('data-question'))),
+        ).toEqual([font.id, rest.id]);
+        expect(await page.locator(`${list} .cr-child-questions-hd`).textContent()).toContain(
+          '2 questions from the parts',
+        );
+        const fontRow = `${list} [data-question="${font.id}"]`;
+        const restRow = `${list} [data-question="${rest.id}"]`;
+        expect(
+          await page.locator(`${fontRow} [data-testid="child-question-open"]`).textContent(),
+        ).toBe('Web');
+        expect(await page.locator(`${fontRow} .cr-qthread-text`).textContent()).toBe('Which font?');
+        expect(await page.locator(fontRow).getAttribute('data-state')).toBe('waiting_on_agent');
+        expect(
+          await page.locator(`${fontRow} [data-testid="question-thread-replies"]`).textContent(),
+        ).toBe('1 reply');
+        expect(await page.locator(restRow).getAttribute('data-state')).toBe('waits_on_you');
+        expect(
+          await page.locator(`${restRow} [data-testid="question-thread-state"]`).textContent(),
+        ).toBe('Waits on you');
+        // The coordinator's own Needs you holds none of them: each is one line, here.
+        expect(await page.locator('[data-testid="stream-needs"] .cr-card').count()).toBe(0);
+
+        // Answered on its part, it reads as answered here.
+        await cockpit.questions.answer(rest.id, { answer: 'REST', by: 'human' });
+        await waitForAttr(page, restRow, 'data-state', 'resolved');
+        expect(
+          await page.locator(`${restRow} [data-testid="question-thread-state"]`).textContent(),
+        ).toBe('Answered: REST');
+        // A row opens its part's chat.
+        await page.locator(`${fontRow} [data-testid="child-question-open"]`).click();
+        await page.locator(`[data-testid="stream-page"][data-stream="${web.id}"]`).waitFor();
+        await page.locator(`[data-testid="question-thread"][data-question="${font.id}"]`).waitFor();
       } finally {
         await teardown([page]);
         await cockpit.stop();

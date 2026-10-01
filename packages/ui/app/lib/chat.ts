@@ -9,6 +9,7 @@
 import {
   EFFORT_IN_MODEL_VENDORS,
   type InboxItem,
+  type QuestionThread,
   type SessionRef,
   type ThreadEntry,
   uncheckedCommandsWarning,
@@ -919,6 +920,91 @@ export function openQuestions(items: readonly InboxItem[], node: string): InboxI
   return items
     .filter((item) => item.kind === 'question' && item.stream === node)
     .sort((a, b) => a.ts.localeCompare(b.ts));
+}
+
+/** T502: a question thread's state in words, and the tone of its tag. */
+export interface QuestionThreadWords {
+  text: string;
+  tone: 'amber' | 'blue' | 'green' | 'gray';
+}
+
+/**
+ * T502 (D62, design/chat-threads.md §5): where a question's thread stands,
+ * in words: who it waits on ("Waiting on Codex", never "waits on you" while
+ * the agent has your reply), or how it ended.
+ */
+export function questionThreadWords(
+  thread: Pick<QuestionThread, 'state' | 'vendor' | 'answer' | 'resolved_as'>,
+): QuestionThreadWords {
+  const agent = thread.vendor !== undefined ? vendorLabel(thread.vendor) : undefined;
+  switch (thread.state) {
+    case 'waits_on_you':
+      return { text: 'Waits on you', tone: 'amber' };
+    case 'waiting_on_agent':
+      return { text: `Waiting on ${agent ?? 'the agent'}`, tone: 'blue' };
+    case 'unsettled':
+      return { text: `${agent ?? 'The agent'} didn’t settle it`, tone: 'amber' };
+    case 'with_coordinator':
+      return { text: 'With the coordinator', tone: 'gray' };
+    case 'resolved': {
+      const answer = thread.answer?.replace(/\s+/g, ' ').trim();
+      if (thread.resolved_as === 'superseded') return { text: 'Asked again', tone: 'gray' };
+      const how = thread.resolved_as === 'settled' ? 'Settled' : 'Answered';
+      return { text: answer ? `${how}: ${answer}` : how, tone: 'green' };
+    }
+  }
+}
+
+/** T502: "1 reply", "3 replies". */
+export function repliesText(n: number): string {
+  return `${n} ${n === 1 ? 'reply' : 'replies'}`;
+}
+
+/** T502: where each question thread shows in a node's chat, and the lines it takes out of the flow. */
+export interface QuestionThreadPlacement<T> {
+  /** The thread under each host line (`ts`): its first loaded line, the question as asked. */
+  hostOf: Map<string, T>;
+  /** Lines shown in a thread instead of the main flow (`ts`). */
+  nested: Set<string>;
+  /** Each thread's nested lines (`ts`), in order. */
+  linesOf: Map<T, string[]>;
+}
+
+/**
+ * T502 (D62, D63): a question is its thread. Each of `threads` sits under
+ * its first line the chat has loaded (the question where it was asked); its
+ * other lines (your replies, the agent's turns they caused, a re-ask, the
+ * answer) leave the main flow and show nested under it. A thread with
+ * nothing nested and nobody but you to wait on is the question alone (its
+ * card answers it). `notes` are a coordinator's lines a child's question
+ * caused (D63): they always nest, under the child question's own row.
+ */
+export function placeQuestionThreads<T extends Pick<QuestionThread, 'entries' | 'state' | 'notes'>>(
+  threads: readonly T[],
+  loaded: readonly Pick<ThreadEntry, 'ts'>[],
+  options: { notesOnly?: boolean } = {},
+): QuestionThreadPlacement<T> {
+  const have = new Set(loaded.map((e) => e.ts));
+  const hostOf = new Map<string, T>();
+  const nested = new Set<string>();
+  const linesOf = new Map<T, string[]>();
+  for (const thread of threads) {
+    if (options.notesOnly) {
+      const notes = (thread.notes ?? []).filter((ts) => have.has(ts));
+      for (const ts of notes) nested.add(ts);
+      linesOf.set(thread, notes);
+      continue;
+    }
+    const [host, ...rest] = [...thread.entries].filter((ts) => have.has(ts)).sort();
+    if (host === undefined) continue;
+    if (rest.length === 0 && (thread.state === 'waits_on_you' || thread.state === 'resolved')) {
+      continue;
+    }
+    hostOf.set(host, thread);
+    for (const ts of rest) nested.add(ts);
+    linesOf.set(thread, rest);
+  }
+  return { hostOf, nested, linesOf };
 }
 
 // ---------------------------------------------------------------- what Send does

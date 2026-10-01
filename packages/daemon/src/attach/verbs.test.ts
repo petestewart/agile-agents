@@ -643,8 +643,8 @@ describe('settle_question (T502, D62)', () => {
       answered_by: `agent:${session}`,
     });
     // Twice is refused, and says how it ended.
-    await expect(
-      verbs.settleQuestion({ session, question: id, answer: 'Floats' }),
-    ).rejects.toThrow('is already settled');
+    await expect(verbs.settleQuestion({ session, question: id, answer: 'Floats' })).rejects.toThrow(
+      'is already settled',
+    );
   });
 });

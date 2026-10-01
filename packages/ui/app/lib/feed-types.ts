@@ -20,6 +20,7 @@ import type {
   PermissionPosture,
   ProjectSessionDefaults,
   Question,
+  QuestionThread,
   RepoRemote,
   RoutedEvent,
   RoutingEntry,
@@ -252,6 +253,10 @@ export interface StreamPagePayload {
   rollup?: { merged: number; total: number };
   /** T482: what a start with no pick would run when the policy picks (absent: the kept pick). */
   next_pick?: ModelPick;
+  /** T502 (D62): this node's question threads (open questions, and those with a thread). */
+  question_threads?: QuestionThread[];
+  /** T502 (D63): on a coordinator's chat, its children's questions as threads. */
+  child_questions?: QuestionThread[];
 }
 
 /** T245: mirror of `events/service.ts`'s `ActivityEntry` (`GET /api/streams/:id/activity`). */

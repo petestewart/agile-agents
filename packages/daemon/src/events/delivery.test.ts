@@ -164,7 +164,7 @@ describe('SessionDelivery (T242, P10)', () => {
   });
 });
 
-describe('T502 (D62): a reply in a question\'s thread', () => {
+describe("T502 (D62): a reply in a question's thread", () => {
   test('reads as about the question, as data, and says how to settle it', async () => {
     const id = `Q-${ulid()}`;
     const reply = await events.emit({

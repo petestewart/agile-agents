@@ -239,7 +239,8 @@ export function questionThreadsOf(input: QuestionThreadsInput): QuestionThread[]
     const session = delivery.session;
     const ended =
       turnEnd(entries, digests, session, delivery.delivered_at, delivery.digest ?? '') !==
-        undefined || !WORKING.has(input.node.sessions.find((s) => s.id === session)?.status ?? 'stopped');
+        undefined ||
+      !WORKING.has(input.node.sessions.find((s) => s.id === session)?.status ?? 'stopped');
     return ended ? 'unsettled' : 'waiting_on_agent';
   };
 

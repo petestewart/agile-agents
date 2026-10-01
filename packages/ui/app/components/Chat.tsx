@@ -16,12 +16,15 @@
  *    the live `tool_call` events. The rules are in `lib/steps.ts`.
  *  - `QuoteSelection` — a Quote button by selected text (T499); the quote
  *    itself is `lib/quote.ts`.
+ *  - `QuestionThreadView` — a question's thread, nested under the line that
+ *    asked it, or a child's question on a coordinator's chat (T502); where
+ *    each goes is `lib/chat.ts`'s `placeQuestionThreads`.
  *
  * Every entry keeps `data-testid="thread-entry"` with `data-kind`/`data-by`
  * (a rule hit: `thread-rule-hit`), and every row's text stays in the DOM.
  */
 
-import type { ThreadEntry } from '@agile-agents/shared';
+import type { QuestionThread, ThreadEntry } from '@agile-agents/shared';
 import {
   type MutableRefObject,
   type PropsWithChildren,
@@ -47,6 +50,8 @@ import {
   isNearBottom,
   proposedNext,
   questionIdOfRef,
+  questionThreadWords,
+  repliesText,
   ruleHitText,
   systemLine,
   windowRows,
@@ -615,6 +620,87 @@ export function MessageList<E extends ChatEntry>({
         return out;
       })}
     </ol>
+  );
+}
+
+// ---------------------------------------------------------------- question threads
+
+/**
+ * T502 (D62, D63, design/chat-threads.md §5): a question is its thread. Under
+ * the line that asked it: how many replies and where it stands ("Waiting on
+ * Codex", "Settled: Integer cents"), then its lines, compact: your replies,
+ * the agent's turns they caused, a re-ask, the answer. On a coordinator's
+ * chat, `head` names the child and its question, and the lines are the
+ * coordinator's own notes on it.
+ */
+export function QuestionThreadView({
+  thread,
+  lines,
+  authorOf,
+  head,
+  testid = 'question-thread',
+}: {
+  thread: QuestionThread;
+  lines: readonly ChatEntry[];
+  authorOf: (by: string) => ChatAuthor;
+  head?: ReactNode;
+  testid?: string;
+}): JSX.Element {
+  const words = questionThreadWords(thread);
+  return (
+    <div
+      className="cr-qthread"
+      data-testid={testid}
+      data-question={thread.question}
+      data-state={thread.state}
+    >
+      {head}
+      <div className="cr-qthread-meta">
+        <Icon name="corner-down-right" size={12} />
+        {thread.replies > 0 && (
+          <span data-testid="question-thread-replies">{repliesText(thread.replies)}</span>
+        )}
+        <span className="cr-msg-tag" data-tone={words.tone} data-testid="question-thread-state">
+          {words.text}
+        </span>
+      </div>
+      {lines.length > 0 && (
+        <ol className="cr-qthread-lines">
+          {lines.map((entry) => {
+            const tag =
+              entry.kind === 'answer'
+                ? 'Answer'
+                : entry.kind === 'question'
+                  ? 'Asked again'
+                  : undefined;
+            const body =
+              entry.by === 'daemon'
+                ? systemLine(entry.body, { by: entry.by, ref: entry.ref }).text
+                : agentWords(entry.body);
+            return (
+              <li
+                key={entry.ts}
+                className="cr-qthread-line"
+                data-testid="question-thread-entry"
+                data-kind={entry.kind}
+                data-by={defaultBy(entry.by)}
+              >
+                <div className="cr-qthread-who">
+                  <span className="cr-msg-name">{authorOf(entry.by).name}</span>
+                  {tag && (
+                    <span className="cr-msg-tag" data-tone="amber">
+                      {tag}
+                    </span>
+                  )}
+                  <Time ts={entry.ts} />
+                </div>
+                <ThreadBody body={body} id={entry.ts} />
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </div>
   );
 }
 
