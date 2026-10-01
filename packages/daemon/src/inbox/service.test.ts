@@ -137,6 +137,28 @@ describe('InboxService.list', () => {
     expect(ids()).toEqual(expect.arrayContaining([q.id, gate.id]));
   });
 
+  test("T496: a closed node's question and gate leave Needs me, and come back on reopen", async () => {
+    const q = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'comma or semicolon?',
+    });
+    const gate = await gates.request('land', {
+      policy: { gates: { land: 'human' }, breaker_signals: [] },
+      stream: child.id,
+      summary: 'merge parser into main',
+    });
+    const ids = () => inbox.list().map((i) => i.id);
+    expect(ids()).toEqual(expect.arrayContaining([q.id, gate.id]));
+
+    await streams.close('human', child.id);
+    expect(ids()).not.toContain(q.id);
+    expect(ids()).not.toContain(gate.id);
+
+    await streams.reopen('human', child.id);
+    expect(ids()).toEqual(expect.arrayContaining([q.id, gate.id]));
+  });
+
   test('a pending gate shows; a resolved one does not', async () => {
     const gate = await gates.request('land', {
       policy: { gates: { land: 'human' }, breaker_signals: [] },

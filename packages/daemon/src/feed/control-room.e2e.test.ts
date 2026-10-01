@@ -9852,6 +9852,10 @@ describe('Needs me as an inbox (Playwright e2e, T470)', () => {
         await p.locator(`${row(a)} [data-testid="inbox-select"]`).check();
         await p.locator(`${row(b)} [data-testid="inbox-select"]`).check();
         expect(await p.locator('[data-testid="inbox-selected"]').textContent()).toBe('2 selected');
+        // T496: the button counts nodes, and says so.
+        expect(await p.locator('[data-testid="inbox-close-selected"]').textContent()).toBe(
+          'Close 2 nodes',
+        );
         await p.locator('[data-testid="inbox-close-selected"]').click();
         await p
           .locator('[data-testid="inbox-close-confirm"] button', { hasText: 'Close 2 nodes' })

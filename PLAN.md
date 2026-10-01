@@ -2998,6 +2998,14 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `subprocess-env.test.ts` T486b (fails without the change); typecheck, lint; the delivery, worktree, sandbox and tools tests.
 - **Notes:** Branch T486b-sandboxed-env. PR #12 itself targets `main`, which the stacked phase branches replace; its vendor-session part is T486 here.
 
+### Ticket: T496 Needs me: closing a node takes its rows with it
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-10-01): closing a node from Needs me left its message there; with 9 rows selected the button read "Close 2", and closing removed none of them; the node column showed "S." for every row. Causes: (1) the inbox dropped a deleted node's questions and gates but not a closed or merged one's, though Close says it "leaves Needs me" (8 of the rows were questions from one node, the Shop root, so its close changed nothing on screen); (2) the bulk button counts nodes, not rows, and didn't say so; (3) the node name shrank with the long line beside it (flex weights by size).
+- **Acceptance Criteria:** A closed or merged node's open questions and pending gates leave Needs me; Reopen brings them back (derived, nothing deleted). The bulk button reads "Close N node(s)". The node name keeps its width up to 45% of the row, and the line gives way.
+- **Validation Steps:** `inbox/service.test.ts` (+1: close hides the question and the gate, reopen brings them back); control-room e2e "Needs me as an inbox (T470)" checks "Close 2 nodes"; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T496-needs-me-close.
 ### Ticket: T495 A resting agent starts again on an updated CLI
 - **Priority:** P1
 - **Status:** Done
