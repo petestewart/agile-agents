@@ -503,7 +503,8 @@ export function Inbox({
                       })
                     }
                   >
-                    Close {pickedNodes.length}
+                    {/* T496: it closes nodes, and several rows can be one node's. */}
+                    Close {pickedNodes.length} {pickedNodes.length === 1 ? 'node' : 'nodes'}
                   </Button>
                 )}
                 <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>

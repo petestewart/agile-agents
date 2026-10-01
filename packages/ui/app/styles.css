@@ -11228,7 +11228,8 @@ div.cr-lens-ev:hover {
   cursor: pointer;
 }
 .cr-inbox-row-subject {
-  flex: 0 1 auto;
+  /* T496: the node keeps its width (up to 45%); the line gives way, not the name. */
+  flex: 0 0 auto;
   max-width: 45%;
   overflow: hidden;
   font-weight: 600;
@@ -11246,6 +11247,7 @@ div.cr-lens-ev:hover {
   white-space: nowrap;
 }
 .cr-inbox-row-line {
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   font-size: var(--text-sm);

@@ -61,6 +61,11 @@ export interface InboxServiceDeps {
   harness?: { inboxItems(): InboxItem[] };
 }
 
+/** T496: closed or merged: the node's items leave Needs me (Reopen brings them back). */
+function isEnded(stream: Stream): boolean {
+  return stream.human.status === 'closed' || stream.human.status === 'landed';
+}
+
 export class InboxService {
   constructor(private readonly deps: InboxServiceDeps) {}
 
@@ -202,7 +207,8 @@ export class InboxService {
   private questionItem(question: Question, byId: Map<string, Stream>): InboxItem | undefined {
     const stream = byId.get(question.stream);
     // T361: a deleted (archived) node's items leave with it; Restore brings them back.
-    if (!stream || stream.archived === true) return undefined;
+    // T496: so do a closed or merged node's ("Close … leaves Needs me"); Reopen brings them back.
+    if (!stream || stream.archived === true || isEnded(stream)) return undefined;
     // T361: the choices ride along when they fit a card (an RPC question may offer any).
     const options = InboxItemOptionsSchema.safeParse(question.options);
     return {
@@ -258,7 +264,8 @@ export class InboxService {
 
   private gateItem(gate: HilRequest, byId: Map<string, Stream>): InboxItem | undefined {
     const stream = byId.get(gate.stream);
-    if (!stream || stream.archived === true) return undefined;
+    // T496: a closed or merged node's gate leaves Needs me with it, as its question does.
+    if (!stream || stream.archived === true || isEnded(stream)) return undefined;
     return {
       kind: 'gate',
       id: gate.id,
