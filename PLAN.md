@@ -2998,6 +2998,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `subprocess-env.test.ts` T486b (fails without the change); typecheck, lint; the delivery, worktree, sandbox and tools tests.
 - **Notes:** Branch T486b-sandboxed-env. PR #12 itself targets `main`, which the stacked phase branches replace; its vendor-session part is T486 here.
 
+### Ticket: T498 The ⌘K e2e waits for the snapshot before reading the palette
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** CI red on b7cf40a1 (T497's merge; the change didn't touch it): "⌘K on a node lists … recent nodes" failed `groups.some(g => g.startsWith('Recent'))`. Root cause: the test opened the palette once the node page's Merge was visible and read the groups at once, but the node page renders from its own fetch (`getStreamPage`) while Needs me and Recent come from the cockpit snapshot (`/ws`, `/api/snapshot`), which can land later under load. Reproduced by delaying the snapshot 2.5 s: the old test fails, the palette fills in while open.
+- **Acceptance Criteria:** The test waits for the "Answer: …" item and the Recent group before reading the groups; with the snapshot delayed it passes.
+- **Validation Steps:** The test alone passes, and passes with the snapshot delayed 2.5 s (the old version fails there); lint, typecheck.
+- **Notes:** Branch T498-palette-recent-wait. Test only.
+
 ### Ticket: T497 A coordinator is told what its child asked, and whose it is
 - **Priority:** P1
 - **Status:** Done

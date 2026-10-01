@@ -12201,6 +12201,18 @@ describe('Needs me, errors and the page chrome (Playwright e2e, T416)', () => {
             : [];
         await page.keyboard.press('Control+k');
         await page.locator(input).waitFor({ state: 'visible' });
+        // The node page renders from its own fetch (getStreamPage); what waits on you and
+        // Recent come from the cockpit's snapshot, which can land a moment after the palette
+        // opens (CI on b7cf40a1 read the groups before Recent was there).
+        await page
+          .locator(`${palette} [data-testid="palette-item"]`, {
+            hasText: 'Answer: Should amounts be stored as integer cents?',
+          })
+          .waitFor({ state: 'visible' });
+        await page
+          .locator(`${palette} .cr-palette-group-hd`, { hasText: /^Recent/ })
+          .first()
+          .waitFor({ state: 'visible' });
         // This node: its header's and ⋯ menu's actions, first.
         const groups = await page.locator(`${palette} .cr-palette-group-hd`).allTextContents();
         expect(groups[0]).toContain('This node');
