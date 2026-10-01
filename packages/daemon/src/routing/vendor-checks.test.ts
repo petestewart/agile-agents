@@ -1,6 +1,6 @@
 /**
  * T489 (D58): Choose leaves out a vendor whose last self-check says a model
- * pick doesn't take (it kept its own model, or refused the pick), and the
+ * pick doesn't take (it kept its own model; T494: not a refusal), and the
  * pick's why says so. No check on file: nothing changes. No classifier: the
  * rule decides (`start_cheap`: the cheapest balanced preset).
  */

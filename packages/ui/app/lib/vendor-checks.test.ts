@@ -48,7 +48,7 @@ describe('T489 a vendor row in Settings → Agents → Vendors', () => {
       model: { mark: '—' },
       canCheck: true,
     });
-    expect(vendorRowView({ ...row, installed: false }, NOW)).toMatchObject({
+    expect(vendorRowView({ ...row, installed: false, cli_version: undefined }, NOW)).toMatchObject({
       when: 'Not installed',
       canCheck: false,
     });
@@ -86,6 +86,38 @@ describe('T489 a vendor row in Settings → Agents → Vendors', () => {
     expect(view.model.mark).toBe('✗');
     expect(view.leftOut).toBe('Model choice leaves Codex out: a model picked for it doesn’t take.');
     expect(vendorRowView({ ...row, last }, NOW).leftOut).toBeUndefined();
+  });
+
+  test('T494: a vendor that refused the model it was given stays in model choice', () => {
+    const view = vendorRowView(
+      {
+        ...row,
+        last: {
+          ...last,
+          model: { outcome: 'refused', to: 'opus[1m]', detail: 'Internal error' },
+          errors: ['Codex refused the model opus[1m]: Internal error'],
+        },
+      },
+      NOW,
+    );
+    expect(view.state).toEqual({ text: 'Refused the model it was given', tone: 'amber' });
+    expect(view.model.mark).toBe('✗');
+    expect(view.leftOut).toBeUndefined();
+  });
+
+  test('T494: an installed CLI whose bridge is missing can’t start, and says which command', () => {
+    const missing = 'Pi can’t start: `pi-acp` is not on the daemon’s PATH.';
+    const view = vendorRowView(
+      { ...row, installed: false, cli_version: '0.87.1', missing, last: undefined },
+      NOW,
+    );
+    expect(view.when).toBe('Can’t start');
+    expect(view.state).toEqual({ text: 'Can’t start', tone: 'amber' });
+    expect(view.errors).toEqual([missing]);
+    expect(
+      vendorRowView({ ...row, installed: false, cli_version: undefined, last: undefined }, NOW)
+        .when,
+    ).toBe('Not installed');
   });
 
   test('not logged in: the marks are dashes and the words say how to log in', () => {

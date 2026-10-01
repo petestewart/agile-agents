@@ -2998,6 +2998,15 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `subprocess-env.test.ts` T486b (fails without the change); typecheck, lint; the delivery, worktree, sandbox and tools tests.
 - **Notes:** Branch T486b-sandboxed-env. PR #12 itself targets `main`, which the stacked phase branches replace; its vendor-session part is T486 here.
 
+### Ticket: T494 Self-check fixes from Pete's first run
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete's first `agile vendors check` (2026-10-01): Claude Code ✗ model ("refused the model: Internal error") while it ran `claude-opus-5-5`; Codex ✓✓✓; Cursor model ✓; Grok effort ✓ and resume ✓; Gemini not logged in; Pi "0.87.1 not installed". Four faults on our side: (1) the table padded every row to the widest note, hundreds of columns wide; (2) `_meta.quota.token_count` and `…model_usage` (the session's own token counts) were listed as rate limits because of the name `quota`; (3) a refused pick left the vendor out of Choose, so one bad test model would drop Claude; (4) Pi's CLI is installed but its `pi-acp` bridge isn't, which read as "not installed".
+- **Acceptance Criteria:** `agile vendors` prints short cells only (VENDOR, VERSION, CHECKED, MODEL, EFFORT, RESUME, USAGE as "per turn, context, cost"); notes (what didn't take, rate limits, errors, a missing command) go under the row, wrapped to the terminal; no line ends in padding; `--json` keeps every field name. A `token_count`/`model_usage` subtree is never a rate limit. Only `kept` leaves a vendor out (CLI, Settings and routing); the refusal error names the model tried. A vendor whose CLI version is known but whose command isn't on PATH reads "can't start" with the missing command (CLI and Settings).
+- **Validation Steps:** Affected suites (vendors CLI, vendor-check, routing, UI vendor-checks, shared) 71 pass; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T494-vendor-check-fixes. Why Claude Code refused its test model is still open: the next check's error names the model.
+
 ### Ticket: T493 `agile` stays executable after a pull
 - **Priority:** P1
 - **Status:** Done

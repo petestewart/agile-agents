@@ -159,6 +159,18 @@ describe('what a check sets (T489)', () => {
       'turn_end',
       out,
     );
+    // T494: what Claude Code and Codex send as `_meta.quota` is the session's
+    // token counts, not what the plan has left.
+    rateLimitFields(
+      {
+        quota: {
+          token_count: { totalTokens: 47852, inputTokens: 2 },
+          model_usage: [{ model: 'claude-opus-5-5', token_count: { totalTokens: 47852 } }],
+        },
+      },
+      'turn_end',
+      out,
+    );
     expect(out).toEqual([
       { where: 'turn_end', name: 'rateLimits.weekly.remaining', value: '42' },
       { where: 'turn_end', name: 'rateLimits.weekly.resetsAt', value: '2026-10-05T00:00:00Z' },
@@ -285,7 +297,7 @@ describe('runVendorCheck (T489)', () => {
     expect(result.model.detail).toContain('Codex refused the model GPT-5.6-Sol (cannot set model)');
     expect(result.effort.outcome).toBe('refused');
     expect(result.errors).toEqual([
-      'Codex refused the model: cannot set model',
+      'Codex refused the model gpt-5.6-sol: cannot set model',
       'Codex refused effort: cannot set reasoning_effort',
     ]);
     // The prompt still runs.
@@ -586,7 +598,7 @@ describe('VendorCheckService.stop (T489)', () => {
 });
 
 describe('vendorCapabilities (T489)', () => {
-  test('the latest per vendor; Choose leaves out one that kept its own model or refused the pick', () => {
+  test('the latest per vendor; Choose leaves out one that kept its own model, not one that refused the pick', () => {
     const caps = vendorCapabilities([
       result('cursor', '2026-09-30T08:00:00.000Z'),
       result('cursor', '2026-09-30T09:00:00.000Z', { model: { outcome: 'kept' } }),
@@ -597,8 +609,8 @@ describe('vendorCapabilities (T489)', () => {
     expect(caps.cursor?.model).toBe('kept');
     expect([...vendorsLeftOut(caps)]).toEqual([
       ['cursor', 'left out Cursor: its last check kept its own model'],
-      ['grok', 'left out Grok CLI: its last check refused a model pick'],
     ]);
+    expect(caps.grok?.model).toBe('refused');
     expect(vendorsLeftOut({}).size).toBe(0);
   });
 });
