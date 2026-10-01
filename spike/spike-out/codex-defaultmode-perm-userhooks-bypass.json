@@ -2,13 +2,14 @@
   "vendor": "codex",
   "cmd": "npx -y @agentclientprotocol/codex-acp@1.10.0",
   "scenario": "perm",
-  "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M",
-  "startedAt": "2026-10-01T20:16:07.856Z",
+  "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z",
+  "startedAt": "2026-10-01T21:20:17.792Z",
   "codex": {
-    "codexPath": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M/codex-with-bypass.sh",
+    "codexPath": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z/codex-with-bypass.sh",
     "projectHooks": false,
     "userHooks": true,
-    "bypassHookTrust": true
+    "bypassHookTrust": true,
+    "matcher": "Bash"
   },
   "env": {
     "ANTHROPIC_API_KEY": false,
@@ -69,7 +70,7 @@
     }
   },
   "session": {
-    "sessionId": "01a0f91c-3120-7631-9b7b-d6fbfb1e8fe4",
+    "sessionId": "01a0f956-f084-71b0-8fe3-62733c93499c",
     "modes": {
       "availableModes": [
         {
@@ -267,96 +268,96 @@
   },
   "tools": [
     {
-      "id": "exec-67271c53-9772-42d4-ae94-4915ae09e232",
+      "id": "exec-7fb3b948-f3c5-48a7-b9a9-92614ecc4db4",
       "kind": "read",
-      "title": "Read file '/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M/small.txt'",
+      "title": "Read file '/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z/small.txt'",
       "status": "completed",
       "permissionRaised": false
     },
     {
-      "id": "exec-d77f9548-5235-4685-9dcd-77dd869bc549",
+      "id": "exec-5fbb0e42-68d3-4f52-bc07-5a1427a4e229",
       "kind": "search",
       "title": "Search for 'gamma' in .",
       "status": "completed",
       "permissionRaised": false
     },
     {
-      "id": "exec-df7c8a6d-f206-4efa-87e5-77b7e1c52af0",
+      "id": "exec-9460f606-d03a-497b-b03f-d77c307b3ed8",
       "kind": "execute",
       "title": "git status --short",
       "status": "completed",
       "permissionRaised": false,
       "rawInput": {
         "command": "git status --short",
-        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M"
+        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z"
       }
     },
     {
-      "id": "exec-a06e1d39-525d-4f06-8406-5060dcb794f6",
+      "id": "exec-487ab1bf-d48e-42c6-aa26-36a2e799e1d7",
       "kind": "execute",
       "title": "echo hi > out.txt",
       "status": "completed",
       "permissionRaised": false,
       "rawInput": {
         "command": "echo hi > out.txt",
-        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M"
+        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z"
       }
     },
     {
-      "id": "exec-c88bbb45-13dd-4d7e-add1-2a32130db5e5",
+      "id": "exec-73869d60-a25c-4775-9e13-bd19c4e0cfed",
       "kind": "execute",
       "title": "printf 'delta\\n' >> small.txt",
       "status": "completed",
       "permissionRaised": false,
       "rawInput": {
         "command": "printf 'delta\\n' >> small.txt",
-        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M"
+        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z"
       }
     },
     {
-      "id": "exec-f20f1ad9-89fa-4755-9afe-6df4a2b195ba",
+      "id": "exec-2c7a83a5-8dfa-49c5-a65d-2242974e5dcc",
       "kind": "execute",
       "title": "printf 'new\\n' > new.txt",
       "status": "completed",
       "permissionRaised": false,
       "rawInput": {
         "command": "printf 'new\\n' > new.txt",
-        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M"
+        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z"
       }
     },
     {
-      "id": "exec-5f5f8570-b6f7-4d51-967a-b9f9bad192bc",
+      "id": "exec-45256e17-34e2-4896-b832-ee2db91d28ed",
       "kind": "read",
-      "title": "Read file '/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M/big.txt'",
+      "title": "Read file '/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z/big.txt'",
       "status": "completed",
       "permissionRaised": false
     },
     {
-      "id": "exec-913ef37e-07b7-4c7e-8e6b-5ebc3acc5fa4",
+      "id": "exec-4b3a3af0-ffc7-407e-a163-309aa1f26fa0",
       "kind": "execute",
       "title": "npm test",
       "status": "completed",
       "permissionRaised": false,
       "rawInput": {
         "command": "npm test",
-        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M"
+        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z"
       }
     },
     {
-      "id": "exec-03e35aee-278b-450f-9e4c-f77be8a93537",
+      "id": "exec-528060d0-79e1-4193-82c0-a89896ad2aa5",
       "kind": "execute",
       "title": "curl -s https://example.com | head -c 100",
       "status": "completed",
       "permissionRaised": false,
       "rawInput": {
         "command": "curl -s https://example.com | head -c 100",
-        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M"
+        "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z"
       }
     }
   ],
   "permissionRequests": [],
   "fsRequests": [],
-  "agentText": "I’ll run the nine steps in order, with one tool call per step.\nDONE\n\n1. OK\n2. OK\n3. OK\n4. OK\n5. OK\n6. OK\n7. OK — output warning: “Warning: truncated output (original token count: 18499)”\n8. OK\n9. OK",
+  "agentText": "I’ll run the nine steps in order, with one tool call per step, and record any refusals.\nDONE\n\n1. OK\n2. OK\n3. OK\n4. OK\n5. OK\n6. OK\n7. OK — output was truncated by the tool.\n8. OK\n9. OK",
   "stopReasons": [
     "end_turn"
   ],
@@ -373,42 +374,42 @@
     },
     {
       "sessionUpdate": "usage_update",
-      "used": 17766,
+      "used": 17759,
       "size": 258400
     },
     {
       "sessionUpdate": "usage_update",
-      "used": 17861,
+      "used": 17848,
       "size": 258400
     },
     {
       "sessionUpdate": "usage_update",
-      "used": 17953,
+      "used": 17934,
       "size": 258400
     },
     {
       "sessionUpdate": "usage_update",
-      "used": 18045,
+      "used": 18019,
       "size": 258400
     },
     {
       "sessionUpdate": "usage_update",
-      "used": 18131,
+      "used": 18103,
       "size": 258400
     },
     {
       "sessionUpdate": "usage_update",
-      "used": 26723,
+      "used": 26691,
       "size": 258400
     },
     {
       "sessionUpdate": "usage_update",
-      "used": 26851,
+      "used": 26813,
       "size": 258400
     },
     {
       "sessionUpdate": "usage_update",
-      "used": 26966,
+      "used": 26917,
       "size": 258400
     }
   ],
@@ -416,12 +417,12 @@
   "notes": [],
   "result": {
     "stopReason": "end_turn",
-    "finalText": "I’ll run the nine steps in order, with one tool call per step.\nDONE\n\n1. OK\n2. OK\n3. OK\n4. OK\n5. OK\n6. OK\n7. OK — output warning: “Warning: truncated output (original token count: 18499)”\n8. OK\n9. OK",
+    "finalText": "I’ll run the nine steps in order, with one tool call per step, and record any refusals.\nDONE\n\n1. OK\n2. OK\n3. OK\n4. OK\n5. OK\n6. OK\n7. OK — output was truncated by the tool.\n8. OK\n9. OK",
     "matrix": [
       {
-        "tool": "Read file '/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M/small.txt'",
+        "tool": "Read file '/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z/small.txt'",
         "kind": "read",
-        "title": "Read file '/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M/small.txt'",
+        "title": "Read file '/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z/small.txt'",
         "permissionRaised": false,
         "ourAnswer": "-",
         "finalStatus": "completed"
@@ -467,9 +468,9 @@
         "finalStatus": "completed"
       },
       {
-        "tool": "Read file '/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M/big.txt'",
+        "tool": "Read file '/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z/big.txt'",
         "kind": "read",
-        "title": "Read file '/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-fvS88M/big.txt'",
+        "title": "Read file '/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-gSUL2z/big.txt'",
         "permissionRaised": false,
         "ourAnswer": "-",
         "finalStatus": "completed"
@@ -506,5 +507,5 @@
     "hookCallsSeen": 0,
     "toolCallsSeenOverAcp": 9
   },
-  "finishedAt": "2026-10-01T20:16:49.123Z"
+  "finishedAt": "2026-10-01T21:20:49.814Z"
 }

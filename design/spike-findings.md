@@ -113,7 +113,41 @@ line was written as a raw newline inside a JS string, so the generated hook
 never parsed, and its path check compared raw paths (macOS `/var/folders` is
 `/private/var/folders`). Fixed and checked offline (the generated hook parses,
 allows `echo` with exit 0, denies `curl` with exit 2 and the reason, logs every
-call); the matcher is now the docs' `Bash` (it was ""). Re-run pending.
+call); the matcher is now the docs' `Bash` (it was "").
+
+**Second round (fixed hook, user-level `~/.codex/hooks.json`, matcher `Bash`,
+`--dangerously-bypass-hook-trust`):**
+
+| run | how Codex ran | hook calls | curl |
+|---|---|---|---|
+| `--scenario exec` (no bridge) | `codex exec` | 2 (both shell commands) | **blocked**: "Command blocked by PreToolUse hook: AGILE-GATE: …", and the model quoted it |
+| `--scenario perm` through codex-acp 1.10.0 | `codex app-server` | **0** (9 tool calls over ACP) | ran |
+
+Reports: `codex-defaultmode-exec-userhooks-bypass.json`,
+`codex-exec-hook-calls.jsonl`, `codex-defaultmode-perm-userhooks-bypass.json`.
+
+- **Codex's hooks work.** Under `exec` the hook got `session_id, turn_id,
+  transcript_path, cwd, hook_event_name, model, permission_mode, tool_name,
+  tool_input, tool_use_id`; `tool_name` is `Bash`, `tool_input.command` is
+  the shell line; exit 2 with a stderr reason blocks the call and the model
+  sees the reason. `cwd` came as `/private/var/…` (the realpath bug was real).
+- **Under codex-acp 1.10.0 they don't run.** Same config, same hook, same
+  bypass flag, but Codex started as `app-server` called the hook zero times.
+  Not yet told apart: `app-server` ignores hooks, or it skips them as
+  untrusted because it ignores the bypass flag (an untrusted hook is skipped
+  silently). The spike now keeps Codex's own stderr under the bridge
+  (`codexStderrTail`) to tell these apart.
+- The `echo hi > out.txt` refusal under `exec` was Codex's own exec sandbox
+  ("operation not permitted"), not the hook. Under codex-acp's `agent` mode
+  the same write ran.
+- Codex warns that `[features].codex_hooks` is deprecated; the flag is now
+  `[features].hooks`. The daemon must write the new name.
+
+Next runs: the bridge with the flag after `app-server` (`--bypass-at end`),
+and a newer codex-acp (`--cmd "npx -y @agentclientprotocol/codex-acp@2.1.0"`).
+If neither fires the hook, T506 can't gate Codex through codex-acp, and the
+options are the fail-closed observation check plus T505's warning, or the
+daemon talking to `codex app-server` itself.
 
 What those runs still show (none of it depends on the hook):
 
