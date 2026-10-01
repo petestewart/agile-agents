@@ -2998,6 +2998,33 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `subprocess-env.test.ts` T486b (fails without the change); typecheck, lint; the delivery, worktree, sandbox and tools tests.
 - **Notes:** Branch T486b-sandboxed-env. PR #12 itself targets `main`, which the stacked phase branches replace; its vendor-session part is T486 here.
 
+### Ticket: T499 Answer a question in its own card (and quote from it)
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Pete (2026-10-01), on a node with "4 things wait on you": each question card only says "Type your answer below", and the composer's "Answering question 1 of 4" means scrolling between a long question and the box. Approved design, kept concise: every question card (on the node's chat, and the expanded card in Needs me) gets its own answer box, collapsed by default to a one-line "Reply…" field (or a small reply/chat icon) that expands into a multi-line box on focus/click. Choice cards keep their buttons; the same box sits under them ("or write your own answer / ask about it"); what you type goes to the agent as written (`resolved_as: reply`). Enter sends that card's answer, Shift+Enter is a new line, Esc collapses it. Selecting text inside a question (or any message in the chat) shows a small **Quote** button by the selection; it inserts `> the selected text` (each line prefixed) into the answer box of that card (expanding it), or, outside a card, into the composer. The question text shows in full in the card (no one-line cut) when the box is open. The composer's "Answering question N of M" mode and the "Type your answer below" line go away; the composer is for messages only.
+- **Acceptance Criteria:** The above, with focus and a half-written answer kept per card across re-renders (and a reload, like the composer's draft). No new HTTP routes: answers go through the existing answer path. Same-origin checks unchanged.
+- **Validation Steps:** UI unit tests for the quote formatting and the per-card draft; control-room e2e: two questions on a node, answer the second in its card without touching the composer, quote a selection into the first and send it, a choice card answered by typing; existing Needs me/answer e2e updated; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T499-answer-in-card. UI only unless the answer path needs a field.
+
+### Ticket: T500 Antigravity as a vendor, its ACP server installed by the daemon
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Pete (2026-10-01): Gemini CLI no longer serves free accounts; he uses Antigravity (`agy` 1.2.14). `agy` has no ACP mode, but Google publishes an ACP server, `agy_acp_server` (ACP registry entry `antigravity-acp` 1.2.1, authors "Google LLC", binary archives per platform from `https://dl.google.com/agy-extensions/releases/<macos|linux|windows>/agy-acp-server-1.2.1-<platform>.zip`, cmd `./agy_acp_server.par` (`.exe` on Windows), linux args `["--uid="]`). Google staff confirmed (forum, 2026-09-16) a local single-user bridge on the user's own login is ToS-compliant. Pete chose option 2: the daemon downloads it into the home (approved: a new home folder, `bridges/`).
+- **Acceptance Criteria:** A new session vendor `antigravity` (label "Antigravity") everywhere vendors are listed (shared vendor lists, providers, labels, login hint "run `agy` and sign in", Settings, model picker, vendor self-check, routing profiles left empty until measured). Its provider runs `<home>/bridges/antigravity/<version>/agy_acp_server.par` with the platform's args; the version and the per-platform URLs are pinned in code (moves by a code change, like the npx pins). Install: Settings → Agents → Vendors shows Antigravity with **Install** while missing, and `agile vendors install antigravity`; the daemon downloads the archive over HTTPS (fixed URL only), records its SHA-256 in an install manifest beside it (shown in Settings; a later re-download of the same version with a different hash is refused), unpacks it with a fixed argv (no shell), makes the server executable, and never runs it during install. A missing install reads "Antigravity can't start: its ACP server isn't installed. Install it in Settings → Agents → Vendors." Not installed automatically. `loadSession`, effort and model mapping, auth methods and permission behaviour are unmeasured: loadSession false, no effort mapping, models through T467's config-option path, and the provider is marked like Codex (`requiresSandbox: true`) until measured — note in the ticket that `requiresSandbox` is not yet enforced (see the security note). Gemini stays as a vendor.
+- **Validation Steps:** Unit tests with a fake downloader and fake unzip (never the network, never the real binary): install writes the manifest and the executable, a hash mismatch on reinstall is refused, a missing install names the fix, the provider resolves the path per platform; the vendor shows in the self-check table and Settings (e2e with the fake agent standing in for the server); typecheck, lint; build then full `bun test`. LIVE-CHECKLIST gains a short Antigravity section (install, sign in with `agy`, `agile vendors check antigravity`).
+- **Notes:** Branch T500-antigravity. No downloads or vendor binaries in tests or in the cloud session.
+
+### Ticket: T501 Pi's bridge runs through npx, pinned
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Pete (2026-10-01): run Pi's ACP bridge through `npx` like Codex's and Claude's, so nothing extra is installed. The ACP registry lists `pi-acp` 0.0.34 (npx). Pi's own CLI (`pi`) must still be on PATH (pi-acp spawns `pi --mode rpc`).
+- **Acceptance Criteria:** The Pi provider runs `npx -y pi-acp@0.0.34`. "Can't start" for Pi names `pi` when the Pi CLI is missing (a provider can name a required command besides its own). The bridge shows in Settings → Agents → Updates as a pinned bridge (`bridgesOf`), not as an installed harness to update; `pi-acp` stays accepted in the home config's harness entries (strict schema: an existing `pi-acp` key must not make the config refuse) but is no longer checked or updated. Vendor self-check rows read correctly for Pi.
+- **Validation Steps:** providers, harness and vendor-check tests updated; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T501-pi-npx.
+
 ### Ticket: T498 The ⌘K e2e waits for the snapshot before reading the palette
 - **Priority:** P1
 - **Status:** Done
