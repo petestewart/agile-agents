@@ -192,8 +192,10 @@ export interface VendorCheckRow {
   /** Its command is on the daemon's PATH. */
   installed: boolean;
   /**
-   * T494: why it can't start, in words, when its command isn't on the PATH
-   * (Pi's CLI can be installed while its `pi-acp` bridge isn't).
+   * T494: why it can't start, in words, when a command it needs isn't on
+   * the PATH: its own, or (T501) one its bridge spawns. Pi needs `npx` for
+   * its `pi-acp` bridge and its own `pi` CLI, so `pi` can be installed
+   * while the bridge can't run.
    */
   missing?: string;
   /** The CLI version the daemon knows now (T481's last check), if any. */

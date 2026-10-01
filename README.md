@@ -30,7 +30,7 @@ One long-lived daemon, `agiled`, holds all state in one directory of plain YAML,
 ## Requirements
 
 - [Bun](https://bun.sh) 1.4.2 or newer, and git.
-- At least one vendor harness, logged in with your own account. [Claude Code](https://claude.com/claude-code) is the default. Gemini CLI, Codex, Cursor, Grok CLI and Pi are also supported over ACP.
+- At least one vendor harness, logged in with your own account. [Claude Code](https://claude.com/claude-code) is the default. Gemini CLI, Codex, Cursor, Grok CLI and Pi are also supported over ACP. Claude Code's, Codex's and Pi's ACP bridges run through `npx` at a version pinned in the code, so they need Node.js and nothing else installed: for Pi, install only its own `pi` CLI (its bridge, `pi-acp`, starts `pi`).
 - Optional: `gh`, logged in, for pull-request delivery; a Jira or Linear token for tracker links; a TypeSafe key for classifier checks.
 
 ## Install

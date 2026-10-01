@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ACP_PROVIDERS } from '@agile-agents/acp-client';
 import {
+  HARNESSES,
   type MethodTools,
   bunCommandRunner,
   commandText,
@@ -116,22 +117,22 @@ describe('T481 install method from the resolved path', () => {
     ]);
     expect(method?.latest?.parse('2.3.1\n')).toBe('2.3.1');
     const nvm = detectInstall(
-      'pi-acp',
-      '/Users/pete/.nvm/versions/node/v22.3.0/lib/node_modules/pi-acp/dist/index.js',
+      'pi',
+      '/Users/pete/.nvm/versions/node/v22.3.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js',
     );
     expect(nvm.install).toEqual({
       method: 'npm',
       prefix: '/Users/pete/.nvm/versions/node/v22.3.0',
-      package: 'pi-acp',
+      package: '@earendil-works/pi-coding-agent',
     });
     // No npm beside the package: the one on PATH, still into that prefix.
-    expect(nvm.method?.update(nvm.install, 'pi-acp', tools([], { npm: '/usr/bin/npm' }))).toEqual([
+    expect(nvm.method?.update(nvm.install, 'pi', tools([], { npm: '/usr/bin/npm' }))).toEqual([
       '/usr/bin/npm',
       'install',
       '-g',
       '--prefix',
       '/Users/pete/.nvm/versions/node/v22.3.0',
-      'pi-acp@latest',
+      '@earendil-works/pi-coding-agent@latest',
     ]);
   });
 
@@ -179,6 +180,7 @@ describe('T481 words and bridges', () => {
     expect(bridges.map((b) => [b.vendor, b.package])).toEqual([
       ['claude', '@agentclientprotocol/claude-agent-acp'],
       ['codex', '@agentclientprotocol/codex-acp'],
+      ['pi', 'pi-acp'],
     ]);
     const pinned = (vendor: string) => bridges.find((b) => b.vendor === vendor)?.pinned;
     // The same versions providers.ts pins (a bump there moves these).
@@ -186,6 +188,14 @@ describe('T481 words and bridges', () => {
       `@agentclientprotocol/claude-agent-acp@${pinned('claude')}`,
     );
     expect(ACP_PROVIDERS.codex.args).toContain(`@agentclientprotocol/codex-acp@${pinned('codex')}`);
+    // T501: Pi's bridge is a pinned npx bridge, not a CLI the updater checks.
+    expect(bridges.find((b) => b.vendor === 'pi')).toEqual({
+      vendor: 'pi',
+      label: 'Pi bridge',
+      package: 'pi-acp',
+      pinned: '0.0.34',
+    });
+    expect(Object.keys(HARNESSES)).not.toContain('pi-acp');
   });
 });
 

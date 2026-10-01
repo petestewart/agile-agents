@@ -105,8 +105,10 @@ describe('T489 a vendor row in Settings → Agents → Vendors', () => {
     expect(view.leftOut).toBeUndefined();
   });
 
-  test('T494: an installed CLI whose bridge is missing can’t start, and says which command', () => {
-    const missing = 'Pi can’t start: `pi-acp` is not on the daemon’s PATH.';
+  test('T494: an installed CLI whose bridge can’t run can’t start, and says which command', () => {
+    // T501: Pi's bridge runs through npx; `pi` is installed, Node isn't.
+    const missing =
+      'Pi can’t start: `npx` is not on the daemon’s PATH. It runs through npx: install Node.js, then restart the daemon.';
     const view = vendorRowView(
       { ...row, installed: false, cli_version: '0.87.1', missing, last: undefined },
       NOW,

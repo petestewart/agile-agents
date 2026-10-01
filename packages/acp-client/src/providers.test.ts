@@ -91,12 +91,21 @@ describe('ACP provider registry', () => {
     expect(codex.requiresSandbox).toBe(true);
   });
 
-  it('describes pi over pi-acp, no args, no auth round trip, loadSession verified', () => {
+  it('describes pi over pi-acp through npx, pinned, needing `pi` on PATH, no auth round trip, loadSession verified (T501)', () => {
     const pi = ACP_PROVIDERS.pi;
-    expect(pi.command).toBe('pi-acp');
-    expect(pi.args).toEqual([]);
+    expect(pi.command).toBe('npx');
+    expect(pi.args).toEqual(['-y', 'pi-acp@0.0.34']);
+    expect(pi.requiresCommands).toEqual(['pi']);
+    expect(Object.isFrozen(pi.requiresCommands)).toBe(true);
     expect(pi.authMethods).toEqual([]);
     expect(pi.loadSession).toBe(true);
+  });
+
+  it('names extra required commands only where a bridge spawns another CLI (T501)', () => {
+    const withExtras = Object.values(ACP_PROVIDERS)
+      .filter((p) => p.requiresCommands !== undefined)
+      .map((p) => p.id);
+    expect(withExtras).toEqual(['pi']);
   });
 
   it('freezes every entry so callers cannot rewrite shared config', () => {

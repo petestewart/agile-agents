@@ -228,18 +228,20 @@ export interface AgentExitInfo {
 /**
  * T432: why the vendor can't start here, when its command is not on the
  * daemon's PATH (an absolute or relative path is left to the spawn).
- * `undefined` when it is there.
+ * T501: then the commands the provider needs besides its own
+ * (`requiresCommands`: Pi's npx bridge spawns `pi`), the first missing one
+ * named. `undefined` when they are all there.
  */
 export function missingVendorCommand(
-  provider: Pick<AcpProviderConfig, 'label' | 'command'>,
+  provider: Pick<AcpProviderConfig, 'label' | 'command' | 'requiresCommands'>,
   which: (command: string) => string | null = (command) => Bun.which(command),
 ): string | undefined {
-  if (provider.command.includes('/') || which(provider.command) !== null) return undefined;
+  const absent = (command: string) => !command.includes('/') && which(command) === null;
+  const command = [provider.command, ...(provider.requiresCommands ?? [])].find(absent);
+  if (command === undefined) return undefined;
   const via =
-    provider.command === 'npx'
-      ? ' It runs through npx: install Node.js, then restart the daemon.'
-      : '';
-  return `${provider.label} can't start: \`${provider.command}\` is not on the daemon's PATH.${via}`;
+    command === 'npx' ? ' It runs through npx: install Node.js, then restart the daemon.' : '';
+  return `${provider.label} can't start: \`${command}\` is not on the daemon's PATH.${via}`;
 }
 
 /** The last non-empty line of a stderr tail, trimmed. */

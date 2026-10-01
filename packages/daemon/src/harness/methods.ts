@@ -166,45 +166,34 @@ export interface HarnessSpec {
   vendor: SessionVendor;
   /** Its name in words. */
   label: string;
-  /** The command looked up on the daemon's PATH. */
+  /** The command looked up on the daemon's PATH; its version is `<command> --version`. */
   command: string;
-  /**
-   * `flag`: `<command> --version`. `package`: the `version` in its npm
-   * package.json (pi-acp is an ACP server: started with a flag it would
-   * wait on stdin, so it is never run to read its version).
-   */
-  version: 'flag' | 'package';
 }
 
-/** Each vendor's own CLI, as the operator installed it (and Pi's ACP adapter). */
+/**
+ * Each vendor's own CLI, as the operator installed it. ACP bridges are not
+ * here: they run through `npx`, pinned in code, and Settings shows them as
+ * bridges (`bridgesOf`). T501: Pi's `pi-acp` is one of those now.
+ */
 export const HARNESSES: Record<HarnessId, HarnessSpec> = {
   claude: {
     vendor: HARNESS_VENDOR.claude,
     label: 'Claude Code',
     command: 'claude',
-    version: 'flag',
   },
-  codex: { vendor: HARNESS_VENDOR.codex, label: 'Codex', command: 'codex', version: 'flag' },
+  codex: { vendor: HARNESS_VENDOR.codex, label: 'Codex', command: 'codex' },
   gemini: {
     vendor: HARNESS_VENDOR.gemini,
     label: 'Gemini CLI',
     command: 'gemini',
-    version: 'flag',
   },
   cursor: {
     vendor: HARNESS_VENDOR.cursor,
     label: 'Cursor Agent',
     command: 'cursor-agent',
-    version: 'flag',
   },
-  grok: { vendor: HARNESS_VENDOR.grok, label: 'Grok CLI', command: 'grok', version: 'flag' },
-  pi: { vendor: HARNESS_VENDOR.pi, label: 'Pi', command: 'pi', version: 'flag' },
-  'pi-acp': {
-    vendor: HARNESS_VENDOR['pi-acp'],
-    label: 'pi-acp (Pi’s ACP adapter)',
-    command: 'pi-acp',
-    version: 'package',
-  },
+  grok: { vendor: HARNESS_VENDOR.grok, label: 'Grok CLI', command: 'grok' },
+  pi: { vendor: HARNESS_VENDOR.pi, label: 'Pi', command: 'pi' },
 };
 
 // ---------------------------------------------------------------- install methods

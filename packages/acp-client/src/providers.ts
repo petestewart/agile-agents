@@ -37,6 +37,13 @@ export interface AcpProviderConfig {
   command: string;
   args: readonly string[];
   /**
+   * T501: commands the agent needs on `$PATH` besides `command` itself — a
+   * bridge run through `npx` that spawns the vendor's own CLI (Pi's
+   * `pi-acp` runs `pi --mode rpc`). The daemon's "can't start" check names
+   * the first one missing. Absent = none.
+   */
+  requiresCommands?: readonly string[];
+  /**
    * Env vars overridden on top of the full inherited environment. A minimal
    * env fails at spawn (the agent needs `PATH`, and most bridges need `HOME`
    * for their credential stores), so isolation means *override*, not
@@ -140,6 +147,7 @@ const CLAUDE_THINKING_TOKENS: Record<AcpEffortLevel, string> = {
 /** Deep-freeze one registry entry so no caller can rewrite shared config. */
 function freezeProvider(config: AcpProviderConfig): AcpProviderConfig {
   Object.freeze(config.args);
+  if (config.requiresCommands) Object.freeze(config.requiresCommands);
   Object.freeze(config.envOverrides);
   Object.freeze(config.authMethods);
   Object.freeze(config.clientCapabilities.fs);
@@ -311,11 +319,14 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     label: 'Pi',
     // Community ACP shim over `pi --mode rpc` (T022; design/spike-findings.md
     // §C4: "adapter = `pi-acp` (or fork) as the ACP shim, all enforcement in
-    // an `agile` extension"). No args needed — `pi-acp` spawns `pi --mode rpc
-    // --no-themes` itself; the underlying `pi` binary it looks for on `$PATH`
-    // can be overridden with `PI_ACP_PI_COMMAND` if it's ever not `pi`.
-    command: 'pi-acp',
-    args: [],
+    // an `agile` extension"). T501: run through `npx`, pinned, like Claude's
+    // and Codex's bridges, so nothing extra is installed; 0.0.34 is the ACP
+    // registry's pin. The bridge spawns `pi --mode rpc --no-themes` itself,
+    // so Pi's own CLI must still be on `$PATH` (`requiresCommands`); the
+    // binary it looks for can be overridden with `PI_ACP_PI_COMMAND`.
+    command: 'npx',
+    args: ['-y', 'pi-acp@0.0.34'],
+    requiresCommands: ['pi'],
     envOverrides: {},
     clientCapabilities: {
       fs: { readTextFile: true, writeTextFile: true },
@@ -324,7 +335,7 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // @earendil-works/pi-coding-agent@0.85.1, no vendor login): `initialize`
     // replies `agentCapabilities.loadSession: true`, matching
     // spike-findings.md §C4's "session/load restored context via pi-acp's
-    // session map".
+    // session map". Unchanged at 0.0.34 (T501).
     loadSession: true,
     // `initialize`'s `authMethods` is a single terminal-login stub, not a
     // real ACP auth round trip (spike-findings.md §C4: "authMethods is a
