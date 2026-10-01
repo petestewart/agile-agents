@@ -25,6 +25,9 @@
  *                      how codex-acp invokes Codex (--bypass-at front|end: where the flag goes, default front)
  *   --codex-path <p>   codex: the Codex CLI the bridge runs (CODEX_PATH, as the daemon sets it since T480; default: `codex` on PATH)
  *   --fixture <dir>    use (and keep) this fixture dir instead of a new temp one, e.g. after trusting it in an interactive `codex`
+ *   --matcher <m>      codex: the hook entry's matcher (default "Bash", the docs' example; C5's runs used "" and saw nothing)
+ *   --scenario exec    codex only: run `codex exec` directly in the fixture (no codex-acp), with the same hook and flags, to tell
+ *                      a hook that never fires under the bridge from one that never matches
  *   --keep             keep the temp project dir
  *   --out <dir>        report dir (default ./spike-out)
  *   --verbose          print every frame
@@ -154,9 +157,13 @@ let raw = "";
 try { raw = fs.readFileSync(0, "utf8"); } catch {}
 let input = {};
 try { input = JSON.parse(raw); } catch {}
-// A user-level hook runs for every Codex session: only act inside the spike's fixture.
-if (input.cwd && !String(input.cwd).startsWith(fixture)) process.exit(0);
-fs.appendFileSync(fixture + "/hook-calls.jsonl", JSON.stringify({ event: input.hook_event_name, tool: input.tool_name, input: input.tool_input, cwd: input.cwd, model: input.model }) + "\n");
+// Every call is logged first: C5's first runs compared raw paths, and on macOS a temp dir
+// (/var/folders/...) is /private/var/folders/... once resolved, so calls may have been dropped.
+const real = (p) => { try { return fs.realpathSync(p); } catch { return String(p); } };
+const inside = !input.cwd || real(input.cwd).startsWith(real(fixture));
+fs.appendFileSync(fixture + "/hook-calls.jsonl", JSON.stringify({ event: input.hook_event_name, tool: input.tool_name, input: input.tool_input, cwd: input.cwd, inside, keys: Object.keys(input) }) + "\\n");
+// A user-level hook runs for every Codex session: it only denies inside the spike's fixture.
+if (!inside) process.exit(0);
 const command = String((input.tool_input && input.tool_input.command) || "");
 if (/curl/.test(command)) {
   process.stderr.write("AGILE-GATE: network commands need the operator's approval");
@@ -165,7 +172,7 @@ if (/curl/.test(command)) {
 process.exit(0);
 `);
     require("node:fs").chmodSync(hook, 0o755);
-    const entry = { matcher: "", hooks: [{ type: "command", command: hook, statusMessage: "agile spike gate" }] };
+    const entry = { matcher: opt("matcher", "Bash")!, hooks: [{ type: "command", command: hook, statusMessage: "agile spike gate" }] };
     if (flag("user-hooks")) {
       const dir = join(require("node:os").homedir(), ".codex");
       const path = join(dir, "hooks.json");
@@ -203,7 +210,7 @@ function spawnSyncQuiet(c: string, a: string[], d: string) { try { require("node
 type ToolRec = { id: string; kind?: string; title?: string; toolName?: string; status?: string; permissionRaised: boolean; options?: any[]; ourAnswer?: string; rawInput?: any };
 const report: any = {
   vendor, cmd, mode, scenario, cwd, startedAt: new Date().toISOString(),
-  codex: vendor === "codex" ? { codexPath: codexEnv.CODEX_PATH ?? null, projectHooks: flag("hooks"), userHooks: flag("user-hooks"), bypassHookTrust: flag("bypass-hook-trust") } : undefined,
+  codex: vendor === "codex" ? { codexPath: codexEnv.CODEX_PATH ?? null, projectHooks: flag("hooks"), userHooks: flag("user-hooks"), bypassHookTrust: flag("bypass-hook-trust"), matcher: opt("matcher", "Bash") } : undefined,
   env: { ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY, OPENAI_API_KEY: !!process.env.OPENAI_API_KEY, GEMINI_API_KEY: !!process.env.GEMINI_API_KEY },
   initialize: null as any, session: null as any, tools: [] as ToolRec[], permissionRequests: [] as any[], fsRequests: [] as any[],
   agentText: "", stopReasons: [] as any[], usage: [] as any[], errors: [] as any[], notes: [...earlyNotes] as string[], result: {} as any,
@@ -440,16 +447,38 @@ async function scenarioAuth() {
   await stop();
 }
 
+async function scenarioExec() {
+  // T506: Codex without the bridge. `codex exec` in the fixture, the same hook installed, so a hook that
+  // fires here but not under codex-acp means the bridge's `app-server` path skips hooks.
+  if (vendor !== "codex") { console.error("--scenario exec is for --vendor codex"); process.exit(2); }
+  const codex = codexEnv.CODEX_PATH;
+  if (!codex) { report.errors.push({ fatal: "no codex CLI found (--codex-path)" }); return; }
+  const prompt = "Run these shell commands one at a time, then reply DONE with OK or REFUSED for each, quoting any refusal: 1) echo hi > out.txt 2) curl -s https://example.com | head -c 100";
+  const r = require("node:child_process").spawnSync(codex, ["exec", "--skip-git-repo-check", prompt], {
+    cwd, env: { ...process.env, AGILE_SPIKE_FIXTURE: cwd }, encoding: "utf8", timeout: 240000,
+  });
+  report.result.execExit = r.status;
+  report.result.execStdoutTail = String(r.stdout ?? "").slice(-2500);
+  report.result.execStderrTail = String(r.stderr ?? "").slice(-1500);
+  const log = join(cwd, "hook-calls.jsonl");
+  report.result.hookCallsSeen = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).length : 0;
+  if (existsSync(log)) writeFileSync(join(outDir, "codex-exec-hook-calls.jsonl"), readFileSync(log));
+  report.result.hookReasonSeenByModel = /AGILE-GATE/.test(report.result.execStdoutTail + report.result.execStderrTail);
+  const argvLog = join(cwd, "codex-argv.log");
+  report.result.codexInvokedAs = existsSync(argvLog) ? readFileSync(argvLog, "utf8").trim().split("\n") : null;
+}
+
 // ---------- main ----------
 (async () => {
-  const run = { perm: scenarioPerm, cancel: scenarioCancel, resume: scenarioResume, auth: scenarioAuth }[scenario];
-  if (!run) { console.error("scenario must be perm|cancel|resume|auth"); process.exit(2); }
+  const run = { perm: scenarioPerm, cancel: scenarioCancel, resume: scenarioResume, auth: scenarioAuth, exec: scenarioExec }[scenario];
+  if (!run) { console.error("scenario must be perm|cancel|resume|auth|exec"); process.exit(2); }
   try { await run(); } catch (e: any) { report.errors.push({ fatal: e.message ?? String(e) }); try { await stop(); } catch {} }
   report.finishedAt = new Date().toISOString();
   const variant = vendor === "codex"
     ? `${flag("hooks") ? "-hooks" : ""}${flag("user-hooks") ? "-userhooks" : ""}${flag("bypass-hook-trust") ? `-bypass${opt("bypass-at", "front") === "end" ? "end" : ""}` : ""}${fixtureOpt ? "-fixture" : ""}`
     : flag("hooks") ? "-hooks" : "";
-  const file = join(outDir, `${vendor}-${mode ?? "defaultmode"}-${scenario}${variant}.json`);
+  const matcherTag = vendor === "codex" && opt("matcher") !== undefined ? `-m${(opt("matcher") || "empty").replace(/[^A-Za-z0-9]/g, "")}` : "";
+  const file = join(outDir, `${vendor}-${mode ?? "defaultmode"}-${scenario}${variant}${matcherTag}.json`);
   writeFileSync(file, JSON.stringify(report, null, 2));
   console.log(`\n== ${vendor} · mode=${mode ?? "(agent default)"} · ${scenario} ==`);
   if (report.session?.modes) console.log("modes:", (report.session.modes.availableModes ?? []).map((m: any) => m.id).join(", "), "| current:", report.session.modes.currentModeId);
@@ -465,6 +494,10 @@ async function scenarioAuth() {
       if (report.result.codexInvokedAs) console.log("codex-acp ran Codex as:", report.result.codexInvokedAs.join(" ;; "));
     }
     console.log("--- agent final text ---\n" + (report.result.finalText ?? "").trim());
+  } else if (scenario === "exec") {
+    console.log("codex exec (no bridge): exit", report.result.execExit, "| hook calls:", report.result.hookCallsSeen, "| refusal seen:", report.result.hookReasonSeenByModel);
+    if (report.result.codexInvokedAs) console.log("ran Codex as:", report.result.codexInvokedAs.join(" ;; "));
+    console.log("--- codex exec output (tail) ---\n" + String(report.result.execStdoutTail ?? "").trim());
   } else console.log(JSON.stringify(report.result, null, 2));
   if (report.errors.length) console.log("errors:", JSON.stringify(report.errors));
   if (report.notes.length) console.log("notes:", report.notes.join(" | "));
