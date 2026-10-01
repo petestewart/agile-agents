@@ -206,6 +206,17 @@ export const AnswerChildInputSchema = z
   .strict();
 
 /**
+ * T502 (D62, design/chat-threads.md §5): the operator talked back to a
+ * choice question instead of picking, and that reply decided it: the agent
+ * settles its own question with what was decided. Recorded as the answer
+ * (`resolved_as: settled`); it never wakes the agent.
+ */
+export const SettleQuestionInputSchema = z
+  .object({ session: Session, question: QuestionIdSchema, answer: Body })
+  .strict();
+export type SettleQuestionInput = z.infer<typeof SettleQuestionInputSchema>;
+
+/**
  * T285 (§9.1, §9.5): a child (optionally co-signed by siblings in `with`)
  * proposes a new body for a contract it relies on. It lands on the
  * contract as an open proposal and wakes the coordinator.
@@ -329,6 +340,7 @@ export const AGENT_VERBS = [
   'propose_repo',
   'goal_met',
   'escalate',
+  'settle_question',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -364,6 +376,7 @@ export const AGENT_VERB_SCHEMAS = {
   propose_repo: ProposeRepoInputSchema,
   goal_met: GoalMetInputSchema,
   escalate: EscalateInputSchema,
+  settle_question: SettleQuestionInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
@@ -423,6 +436,8 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Report that this node’s whole goal is done ({summary: what was done, one line}). Call it once, as your last step, only when nothing is left to do, fix or ask; never after a partial step or when you stop to ask. A node set to auto-close then closes itself if there is nothing to merge.',
   escalate:
     'Ask for a stronger model at your next start ({why: what you tried and why it isn’t enough, one line}), e.g. when the tests still fail and you can’t see why. You can’t name the model: the next rung of the operator’s preset models is taken when this node’s agent next starts, never mid-turn. Finish or stop your turn after asking.',
+  settle_question:
+    'Close one of your own open questions with what was decided ({question: Q-id, answer: the decision, one line}) when the operator wrote back about it instead of picking a choice and what they wrote decides it. It is recorded as the answer. If it doesn’t decide it, reply with `progress`, or `ask` again with better choices (that replaces the old question).',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

@@ -32,6 +32,7 @@ import type { PlanService } from '../coordination/plans';
 import type { GateService } from '../gates/service';
 import type { KnowledgeService } from '../knowledge/service';
 import { type QuestionService, withCoordinator } from '../questions/service';
+import type { QuestionThreads } from '../questions/threads';
 import type { StreamService } from '../streams/service';
 
 /** The full text behind a clipped context, as a spreadable field. */
@@ -59,6 +60,13 @@ export interface InboxServiceDeps {
   proposals?: Pick<AutonomyService, 'listOpen'>;
   /** T481 (D50): a vendor's CLI with an update (or a failed one) is a `harness_update` item. */
   harness?: { inboxItems(): InboxItem[] };
+  /**
+   * T502 (D62): where a choice question's thread stands. A question you
+   * replied to waits on its agent (no item) until that agent's turn on the
+   * reply finishes; finished without a settle or a re-ask, it is back, as
+   * "<Agent> didn't settle …". Without it, every open question waits on you.
+   */
+  threads?: Pick<QuestionThreads, 'stateOf'>;
 }
 
 /** T496: closed or merged: the node's items leave Needs me (Reopen brings them back). */
@@ -209,6 +217,18 @@ export class InboxService {
     // T361: a deleted (archived) node's items leave with it; Restore brings them back.
     // T496: so do a closed or merged node's ("Close … leaves Needs me"); Reopen brings them back.
     if (!stream || stream.archived === true || isEnded(stream)) return undefined;
+    // T502 (D62): a choice question you replied to waits on its agent, unless it didn't settle it.
+    let unsettledBy: string | undefined;
+    if (question.options !== undefined && question.options.length > 0 && this.deps.threads) {
+      let thread: ReturnType<QuestionThreads['stateOf']> | undefined;
+      try {
+        thread = this.deps.threads.stateOf(question);
+      } catch {
+        // An unreadable thread: the question still waits on you.
+      }
+      if (thread?.state === 'waiting_on_agent') return undefined;
+      if (thread?.state === 'unsettled') unsettledBy = thread.vendor ?? 'agent';
+    }
     // T361: the choices ride along when they fit a card (an RPC question may offer any).
     const options = InboxItemOptionsSchema.safeParse(question.options);
     return {
@@ -221,6 +241,7 @@ export class InboxService {
       ...withDetail(question.text),
       ref: `questions/${question.id}.yaml`,
       ...(options.success ? { options: options.data } : {}),
+      ...(unsettledBy !== undefined ? { unsettled_by: unsettledBy } : {}),
     };
   }
 

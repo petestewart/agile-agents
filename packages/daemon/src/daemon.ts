@@ -75,7 +75,12 @@ import { KnowledgeService, buildKnowledgeRpcMethods, ensureBuiltinKnowledge } fr
 import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
 import { ProjectService, buildProjectRpcMethods } from './projects';
-import { QuestionService, buildQuestionRpcMethods, wireQuestionSupersession } from './questions';
+import {
+  QuestionService,
+  QuestionThreads,
+  buildQuestionRpcMethods,
+  wireQuestionSupersession,
+} from './questions';
 import { CHOOSE_AGAIN_END_REASON, ModelPolicyService, buildModelPolicyRpcMethods } from './routing';
 import { type RpcServerHandle, startRpcServer } from './rpc';
 import { missingVendorCommand, resolveCliBin } from './runner';
@@ -505,6 +510,27 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           deliver: async (sessionId, question): Promise<void> => {
             await attachService?.deliverAnswer(sessionId, question);
           },
+          // T502 (D62): a reply in a choice question's thread, to its agent (started if none runs).
+          ...(attachService
+            ? {
+                reply: async (question, text) =>
+                  (
+                    await attachService.say(question.stream, text, {
+                      start: true,
+                      question: { id: question.id, text: question.text },
+                    })
+                  ).entry,
+              }
+            : {}),
+        })
+      : undefined;
+  // T502: question threads (by ref and by cause), for Needs me and the node page.
+  const questionThreads =
+    streamService && questionService
+      ? new QuestionThreads({
+          streams: streamService,
+          questions: questionService,
+          ...(routedEvents ? { events: routedEvents } : {}),
         })
       : undefined;
   if (questionService) {
@@ -557,6 +583,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(contractService ? { contracts: contractService } : {}),
           ...(autonomyService ? { proposals: autonomyService } : {}),
           ...(harnessUpdates ? { harness: harnessUpdates } : {}),
+          ...(questionThreads ? { threads: questionThreads } : {}),
         })
       : undefined;
   // Docs: plain Markdown under `<home>/repos/<name>/docs/` and `<home>/streams/<id>.docs/`.
@@ -1010,6 +1037,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(modelPolicy ? { routing: modelPolicy } : {}),
     ...(directorService ? { director: directorService } : {}),
     questions: questionService,
+    ...(questionThreads ? { questionThreads } : {}),
     inbox: inboxService,
     ...(rulesService ? { rules: rulesService } : {}),
     ...(rulesService && ruleEvals ? { ruleEvals } : {}),

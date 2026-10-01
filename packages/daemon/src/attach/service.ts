@@ -1777,11 +1777,18 @@ export class AttachService {
    * turn ends, and until then its thread `ts` sits in the session's
    * `queued` list, which the stream page shows as waiting. With no live
    * worker the event stays pending for the next session.
+   * T502 (D62): with `question`, the line is your reply in that question's
+   * thread (typed in its card): it carries the question's `ref`, and the
+   * event names the question, so the agent reads it as a reply about it.
    */
   async say(
     streamId: string,
     body: string,
-    options: { start?: boolean; session?: AttachFlags } = {},
+    options: {
+      start?: boolean;
+      session?: AttachFlags;
+      question?: Pick<Question, 'id' | 'text'>;
+    } = {},
   ): Promise<{ entry: ThreadEntry; prompted?: string; started?: true }> {
     // T495: a resting agent whose CLI was updated in place ends first; the
     // start below resumes it on the new version with this line.
@@ -1798,7 +1805,12 @@ export class AttachService {
       if (node.human.status === 'closed' && node.archived !== true) {
         await this.options.streams.reopen('human', streamId);
       }
-      entry = await this.options.streams.appendThread('human', streamId, { kind: 'line', body });
+      const about = options.question;
+      entry = await this.options.streams.appendThread('human', streamId, {
+        kind: 'line',
+        body,
+        ...(about !== undefined ? { ref: `questions/${about.id}.yaml` } : {}),
+      });
       handle = this.agentHandle(streamId);
       if (handle?.stopped()) handle = undefined;
       // T465 (D48): a resting session takes the line in the same session, context and all.
@@ -1809,7 +1821,10 @@ export class AttachService {
         {
           type: 'human_line',
           subject: streamId,
-          payload: { body: cap(body) },
+          payload: {
+            body: cap(body),
+            ...(about !== undefined ? { question: { id: about.id, text: cap(about.text) } } : {}),
+          },
           ref: entry.ts,
           by: 'human',
         },
