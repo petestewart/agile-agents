@@ -1220,6 +1220,8 @@ describe('effort (D12)', () => {
     const { session } = await attachService.attach(stream.id, { effort: 'max' });
     expect(session.effort).toBe('max');
     expect(threadBodies(stream.id).some((b) => b.includes('ignored by'))).toBe(false);
+    // T505: Claude's commands are checked (its hook): no warning line.
+    expect(threadBodies(stream.id).some((b) => b.includes('runs commands unchecked'))).toBe(false);
   });
 
   test('a vendor with no effort mapping still starts, with a thread line saying so', async () => {
@@ -3860,6 +3862,10 @@ describe("T488: Codex's effort goes through its own ACP option", () => {
     expect(sessionOf(stream.id, session.id)?.effort).toBe('high');
     // Codex takes effort now: no "effort … ignored by codex" line.
     expect(threadBodies(stream.id).some((b) => b.includes('ignored by codex'))).toBe(false);
+    // T505: its commands run unchecked, and the thread says so once.
+    expect(
+      threadBodies(stream.id).filter((b) => b === 'Codex runs commands unchecked'),
+    ).toHaveLength(1);
     expect(
       threadBodies(stream.id).some((b) => /did not take|refused effort|doesn't offer/.test(b)),
     ).toBe(false);

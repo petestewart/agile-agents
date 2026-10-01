@@ -11,6 +11,8 @@ import {
   type VendorCheckSetting,
   resumeMark,
   settingMark,
+  uncheckedCommandsWarning,
+  vendorRunsUnchecked,
 } from '@agile-agents/shared';
 import { ago } from './status';
 
@@ -53,6 +55,8 @@ export interface VendorRowView {
   canCheck: boolean;
   /** T500: a server this app downloads (Antigravity's): Install, and what is installed. */
   install?: InstallView;
+  /** T505: it runs shell commands that nothing checks, in words. */
+  unchecked?: string;
 }
 
 /** T500: a downloaded server's install, in words. */
@@ -159,7 +163,7 @@ export function vendorRowView(row: VendorCheckRow, now: number = Date.now()): Ve
       // T494: a CLI can be installed while its bridge can't run (Pi's runs through npx); say which command is missing.
       errors: !row.installed && row.missing !== undefined ? [row.missing] : [],
       canCheck: row.installed && !busy,
-      ...withInstall(row),
+      ...rowExtras(row),
     };
   }
   const state: VendorRowView['state'] = busy
@@ -201,11 +205,15 @@ export function vendorRowView(row: VendorCheckRow, now: number = Date.now()): Ve
       ? { leftOut: `Model choice leaves ${last.label} out: a model picked for it doesn’t take.` }
       : {}),
     canCheck: row.installed && !busy,
-    ...withInstall(row),
+    ...rowExtras(row),
   };
 }
 
-function withInstall(row: VendorCheckRow): { install?: InstallView } {
+function rowExtras(row: VendorCheckRow): { install?: InstallView; unchecked?: string } {
   const install = installView(row);
-  return install !== undefined ? { install } : {};
+  return {
+    ...(install !== undefined ? { install } : {}),
+    // T505: whatever its check says, its commands run unchecked.
+    ...(vendorRunsUnchecked(row.vendor) ? { unchecked: uncheckedCommandsWarning(row.label) } : {}),
+  };
 }

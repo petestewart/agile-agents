@@ -175,6 +175,32 @@ export function vendorHasHooks(vendor: string): boolean {
 }
 
 /**
+ * T505: vendors whose ACP bridge runs a shell command without asking (no
+ * ACP permission request, and no pre-tool hook the daemon installs yet;
+ * design/spike-findings.md §C3, §C5; Codex's own hook is T506).
+ * The providers mark them `requiresSandbox`, but no sandbox is wired to
+ * the spawn yet, so nothing checks their commands. They still run as they
+ * are; the cockpit, the CLI and the thread say so. A daemon test keeps the
+ * list and the registry's `requiresSandbox` in step.
+ */
+export const UNCHECKED_COMMAND_VENDORS: readonly SessionVendor[] = ['grok', 'codex', 'antigravity'];
+
+/** T505: whether `vendor` runs shell commands that nothing checks. */
+export function vendorRunsUnchecked(vendor: string): boolean {
+  return (UNCHECKED_COMMAND_VENDORS as readonly string[]).includes(vendor);
+}
+
+/** T505: the warning for such a vendor, by its label ("Codex runs shell commands without asking, …"). */
+export function uncheckedCommandsWarning(label: string): string {
+  return `${label} runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.`;
+}
+
+/** T505: the thread line when such a vendor's agent starts. */
+export function uncheckedCommandsLine(label: string): string {
+  return `${label} runs commands unchecked`;
+}
+
+/**
  * T460: how to log a vendor back in. Its harness runs headless over ACP,
  * so an interactive `/login` can't run in the cockpit; it runs in a
  * terminal, with the user's own login (no vendor credentials in the daemon).

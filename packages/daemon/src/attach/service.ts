@@ -61,7 +61,9 @@ import {
   routedPickLine,
   slashCommandOf,
   ulid,
+  uncheckedCommandsLine,
   validateStreamCreateInput,
+  vendorRunsUnchecked,
 } from '@agile-agents/shared';
 import { providerIn } from '../bridges/bridges';
 import type { Classifier } from '../classifier';
@@ -978,6 +980,14 @@ export class AttachService {
       await streams.appendThread('daemon', stream.id, {
         kind: 'event',
         body: effortIgnoredLine(settings.vendor, settings.effort),
+      });
+    }
+    // T505: its bridge runs shell commands without asking and nothing checks them yet; it runs
+    // as it is, and the thread says so once per start.
+    if (vendorRunsUnchecked(settings.vendor)) {
+      await streams.appendThread('daemon', stream.id, {
+        kind: 'event',
+        body: uncheckedCommandsLine(settings.provider.label),
       });
     }
 

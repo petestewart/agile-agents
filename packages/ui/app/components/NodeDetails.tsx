@@ -1148,6 +1148,7 @@ export function AgentSection({
   stream,
   live,
   startWith,
+  warning,
   busy,
   onReview,
   canReview,
@@ -1157,6 +1158,8 @@ export function AgentSection({
   live?: SessionRef;
   /** What a start would run. */
   startWith?: string;
+  /** T505: its agent runs shell commands that nothing checks, in words. */
+  warning?: string;
   busy: boolean;
   onReview?: () => void;
   canReview: boolean;
@@ -1170,6 +1173,12 @@ export function AgentSection({
         </span>
       }
     >
+      {warning !== undefined && (
+        <p className="cr-unchecked-note" data-testid="agent-unchecked">
+          <Icon name="alert-triangle" size={14} />
+          <span>{warning}</span>
+        </p>
+      )}
       <div data-testid="sessions" className="cr-sessions-box">
         <SessionList key={stream.id} sessions={stream.sessions} />
       </div>

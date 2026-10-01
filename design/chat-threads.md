@@ -139,6 +139,22 @@ the thread's ⋯ and on its mark:
   it or bring it up.` Unarchive brings it back (and says so to the agent).
   An archived thread with an open question settles nothing: the question
   is withdrawn (`resolved_as: withdrawn`), and the agent is told.
+- **On compaction (Pete, 2026-10-01).** Whenever the agent compacts its
+  context, the archived threads go: the summary is told to leave them out.
+  Two ways in, per vendor, both to be measured before they're relied on:
+  1. **Compact now** (a third strength, between Archive and Archive and
+     forget): the daemon sends the vendor's own compact command with the
+     instruction, e.g. Claude Code's `/compact <instructions>` (T461 passes
+     slash commands through): "Leave out the archived threads: <each one's
+     passage or message, quoted as data>." The agent keeps the rest of its
+     working memory and sheds the thread. Offered only for a vendor whose
+     compact command takes instructions.
+  2. **Its own auto-compaction:** where the vendor reads standing compaction
+     instructions or runs a pre-compact hook the daemon can answer (Claude
+     Code's and Codex's hook lists both have `PreCompact`), the daemon
+     supplies the current archived list there, so a compaction the vendor
+     starts on its own drops them too.
+  Where neither exists, Archive's one-time line is what the agent gets.
 - **Archive and forget.** Archive, then the node's agent restarts fresh:
   no `session/load`, a new brief built from the thread with every archived
   thread left out. This really takes the thread out of what the model

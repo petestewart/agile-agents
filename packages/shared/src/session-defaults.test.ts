@@ -13,8 +13,11 @@ import {
   formatSessionDefaults,
   resolveSessionDefaults,
   resolveVendorFailure,
+  uncheckedCommandsLine,
+  uncheckedCommandsWarning,
   vendorHasHooks,
   vendorLoginHow,
+  vendorRunsUnchecked,
   vendorTakesEffort,
 } from './session-defaults';
 
@@ -155,5 +158,17 @@ describe('T456: what happens when an agent crashes (vendor_failure)', () => {
     expect(KNOWN_MODEL_IDS.antigravity).toEqual([]);
     expect(vendorTakesEffort('antigravity')).toBe(false);
     expect(vendorHasHooks('antigravity')).toBe(false);
+  });
+
+  test('T505: Grok, Codex and Antigravity run commands unchecked, in plain words', () => {
+    expect(SESSION_VENDORS.filter(vendorRunsUnchecked)).toEqual(['grok', 'codex', 'antigravity']);
+    expect(vendorRunsUnchecked('claude')).toBe(false);
+    expect(vendorRunsUnchecked('nope')).toBe(false);
+    // None of them has pre-tool hooks.
+    expect(SESSION_VENDORS.filter((v) => vendorRunsUnchecked(v) && vendorHasHooks(v))).toEqual([]);
+    expect(uncheckedCommandsWarning('Codex')).toBe(
+      'Codex runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.',
+    );
+    expect(uncheckedCommandsLine('Codex')).toBe('Codex runs commands unchecked');
   });
 });
