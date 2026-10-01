@@ -143,9 +143,12 @@ Reports: `codex-defaultmode-exec-userhooks-bypass.json`,
 - Codex warns that `[features].codex_hooks` is deprecated; the flag is now
   `[features].hooks`. The daemon must write the new name.
 
-Next runs: the bridge with the flag after `app-server` (`--bypass-at end`),
-and a newer codex-acp (`--cmd "npx -y @agentclientprotocol/codex-acp@2.1.0"`).
-If neither fires the hook, T506 can't gate Codex through codex-acp, and the
+`--bypass-at end` (the flag after `app-server`) is settled: Codex exits at
+once with code 2, so the flag goes before the subcommand only.
+
+Next run: a newer codex-acp (`--cmd "npx -y @agentclientprotocol/codex-acp@2.1.0"`).
+If it doesn't fire the hook either, and a hook trusted in Codex's `/hooks`
+(LIVE-CHECKLIST §20) doesn't fire under the bridge, T506 can't gate Codex through codex-acp, and the
 options are the fail-closed observation check plus T505's warning, or the
 daemon talking to `codex app-server` itself.
 

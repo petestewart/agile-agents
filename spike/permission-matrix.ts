@@ -484,6 +484,14 @@ async function scenarioExec() {
   const run = { perm: scenarioPerm, cancel: scenarioCancel, resume: scenarioResume, auth: scenarioAuth, exec: scenarioExec }[scenario];
   if (!run) { console.error("scenario must be perm|cancel|resume|auth|exec"); process.exit(2); }
   try { await run(); } catch (e: any) { report.errors.push({ fatal: e.message ?? String(e) }); try { await stop(); } catch {} }
+  if (vendor === "codex") {
+    // Also when the run died early (e.g. Codex refused a flag): what Codex and the bridge said is the finding.
+    const argvLog = join(cwd, "codex-argv.log");
+    const codexStderr = join(cwd, "codex-stderr.log");
+    report.result.codexInvokedAs ??= existsSync(argvLog) ? readFileSync(argvLog, "utf8").trim().split("\n") : null;
+    report.result.codexStderrTail ??= existsSync(codexStderr) ? readFileSync(codexStderr, "utf8").slice(-3000) : null;
+    report.result.bridgeStderrTail ??= bridgeStderr;
+  }
   report.finishedAt = new Date().toISOString();
   const variant = vendor === "codex"
     ? `${flag("hooks") ? "-hooks" : ""}${flag("user-hooks") ? "-userhooks" : ""}${flag("bypass-hook-trust") ? `-bypass${opt("bypass-at", "front") === "end" ? "end" : ""}` : ""}${fixtureOpt ? "-fixture" : ""}`
@@ -513,7 +521,12 @@ async function scenarioExec() {
     if (report.result.codexInvokedAs) console.log("ran Codex as:", report.result.codexInvokedAs.join(" ;; "));
     console.log("--- codex exec output (tail) ---\n" + String(report.result.execStdoutTail ?? "").trim());
   } else console.log(JSON.stringify(report.result, null, 2));
-  if (report.errors.length) console.log("errors:", JSON.stringify(report.errors));
+  if (report.errors.length) {
+    console.log("errors:", JSON.stringify(report.errors));
+    if (report.result.codexInvokedAs) console.log("Codex was run as:", report.result.codexInvokedAs.join(" ;; "));
+    if (report.result.codexStderrTail) console.log("--- Codex stderr (tail) ---\n" + String(report.result.codexStderrTail).slice(-800).trim());
+    else if (report.result.bridgeStderrTail) console.log("--- bridge stderr (tail) ---\n" + String(report.result.bridgeStderrTail).slice(-800).trim());
+  }
   if (report.notes.length) console.log("notes:", report.notes.join(" | "));
   console.log("report:", file);
   if (!flag("keep") && !fixtureOpt) rmSync(cwd, { recursive: true, force: true }); else console.log("fixture kept at", cwd);
