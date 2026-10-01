@@ -99,6 +99,33 @@ Recommendation: **support Pi via its RPC mode plus an `agile` extension, not via
 
 Pi is in. Decision: adapter = `pi-acp` (or fork) as the ACP shim, all enforcement in an `agile` extension installed to `~/.pi/agent/extensions/` (the Terma install mechanism), self-guarding on an env var the daemon sets.
 
+### C5. Codex's own hooks under codex-acp (T506, Pete's machine, 2026-10-01)
+
+Codex CLI now has hooks (`PreToolUse`, …; learn.chatgpt.com/docs/hooks), which
+C2/C3 never tested. `spike/permission-matrix.ts --vendor codex` with codex-acp
+1.10.0 (the daemon's pin) running the installed Codex through `CODEX_PATH`,
+mode `agent` ("Approve for me"). Reports: `spike-out/codex-defaultmode-perm-hooks*.json`.
+
+| Run | Hook | Trust | Hook calls | `curl` step |
+|-----|------|-------|-----------|-------------|
+| `--hooks` | project `.codex/hooks.json` | none | 0 | ran |
+| `--hooks --bypass-hook-trust` | project | `--dangerously-bypass-hook-trust` | 0 | ran |
+
+- **codex-acp starts Codex as `<CODEX_PATH> app-server`**, and Codex accepts
+  `--dangerously-bypass-hook-trust` before `app-server` (the session ran
+  normally). So the daemon can pass the flag with a `CODEX_PATH` wrapper.
+- **A project hook stays off even with the bypass**: the bypass covers hook
+  trust, not project trust ("project-local hooks load only when the project
+  `.codex/` layer is trusted"). An untrusted hook is skipped silently and
+  the command runs: fail-open, as the docs say.
+- Codex's modes have changed since C2: `read-only` is now "Ask for approval:
+  always ask to edit external files and use the internet", `agent` is
+  "Approve for me: only ask for actions detected as potentially unsafe"
+  (`_meta.kind: auto_review`). Still **zero** ACP permission requests in
+  `agent`. Not yet re-measured: `read-only`.
+- **Still to run:** user-level hooks (`--user-hooks`, with and without the
+  bypass), which don't need project trust, and `--mode read-only`.
+
 ### D. Vendor status
 
 | vendor | ACP surface | verified | notes |
