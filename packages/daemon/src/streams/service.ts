@@ -18,9 +18,12 @@ import {
   type ThreadAuthor,
   type ThreadEntry,
   type ThreadEntryKind,
+  type ThreadOp,
   applyModelPolicyPatch,
+  chatThreadOpsOf,
   liveChildrenOf,
   nodeRole,
+  quoteThreadBody,
   threadBodyMaxFor,
   ulid,
   validateStreamCreateInput,
@@ -49,6 +52,8 @@ export interface ThreadAppendInput {
   thread?: string;
   /** T503 (D64): this line starts a thread on that turn (or passage): its own `ts` names it. */
   anchor?: ThreadAnchor;
+  /** T504 (D65): this line records a change to the chat's threads (yours: a human event). */
+  op?: ThreadOp;
 }
 
 export interface ThreadPageOptions {
@@ -146,6 +151,12 @@ export interface StreamServiceOptions {
    * logged, never a failed write.
    */
   onTreeChanged?: (nodes: readonly string[]) => void | Promise<void>;
+  /**
+   * T504 (§7): a chat thread's lines as the cockpit shows them (by field,
+   * by cause, after moves), for Promote to tangent's seed. Without it, the
+   * lines that name the thread (and the ones moved into it).
+   */
+  threadLines?: (node: string, thread: string) => readonly ThreadEntry[] | undefined;
 }
 
 export class StreamService {
@@ -194,7 +205,17 @@ export class StreamService {
         'a project is required: pass "project" (or a parent that belongs to one)',
       );
     }
+    if (input.seed_line !== undefined && input.seed_thread !== undefined) {
+      throw new StreamProjectError(
+        'a tangent branches off a line (seed_line) or a thread (seed_thread), not both',
+      );
+    }
     const seed = input.seed_line === undefined ? undefined : this.seedFor(input, parent);
+    // T504 (§7): Promote to tangent: the thread's passage and lines, quoted.
+    const seedThread =
+      input.seed_thread === undefined
+        ? undefined
+        : this.seedThreadFor(principal, input.seed_thread, input, parent);
     if (input.helper_of !== undefined && input.helper_of !== parent) {
       throw new StreamProjectError('helper_of must name the parent node');
     }
@@ -249,8 +270,91 @@ export class StreamService {
         ref: created.id,
       });
     }
+    if (seedThread !== undefined && parent !== undefined) {
+      for (const body of seedThread.bodies) {
+        await this.appendThread(principal, created.id, { kind: 'event', body, ref: parent });
+      }
+      // The thread in the parent links to its tangent (recorded: a human event).
+      await this.appendThread(principal, parent, {
+        kind: 'event',
+        body: `promoted the thread on ${seedThread.on} to a tangent: ${created.title}`.slice(
+          0,
+          THREAD_BODY_MAX_CHARS,
+        ),
+        ref: created.id,
+        op: { type: 'promote', thread: seedThread.thread, node: created.id },
+      });
+    }
     await this.treeChanged([parent]);
     return created;
+  }
+
+  /**
+   * T504 (D65, design/chat-threads.md §7): Promote to tangent's opening
+   * lines: what the thread is on (its passage, quoted), then each of its
+   * lines, quoted, with who wrote it. As `seedFor`, only a conversation
+   * branches off; and only you promote a thread.
+   */
+  private seedThreadFor(
+    principal: StreamPrincipal,
+    thread: string,
+    input: StreamCreateInput,
+    parent: string | undefined,
+  ): { thread: string; on: string; bodies: string[] } {
+    if (principal !== 'human') throw new StreamProjectError('only the operator promotes a thread');
+    if (parent === undefined || input.repo !== undefined || input.helper_of !== undefined) {
+      throw new StreamProjectError('seed_thread needs a parent, and a tangent has no repo');
+    }
+    const all = this.store.listStreams();
+    const host = this.store.getStream(parent);
+    const role = nodeRole(host, liveChildrenOf(parent, all), all);
+    if (role !== 'conversation') {
+      throw new StreamProjectError(`only a conversation branches off; ${host.title} is ${role}`);
+    }
+    const lines = this.store.readThread(parent);
+    const start = lines.find((l) => l.ts === thread && l.anchor !== undefined);
+    if (start?.anchor === undefined) {
+      throw new StreamProjectError(`seed_thread ${thread}: no such thread on ${parent}`);
+    }
+    const ops = chatThreadOpsOf(lines);
+    if (ops.archived.has(thread)) {
+      throw new StreamProjectError('that thread is archived; restore it to promote it');
+    }
+    const anchor = start.anchor;
+    const turn = lines.find((l) => l.ts === anchor.entry);
+    const quote = (text: string, room: number) =>
+      (text.length > room ? `${text.slice(0, room - 1)}…` : text).replace(/^/gm, '> ');
+    const on =
+      anchor.quote !== undefined
+        ? JSON.stringify(quoteThreadBody(anchor.quote, 120))
+        : `a message (${who(turn?.by ?? 'daemon')})`;
+    const head = `Promoted from a thread on ${host.title.slice(0, 120)}, on ${
+      anchor.quote !== undefined ? 'this passage' : 'this message'
+    } (${who(turn?.by ?? 'daemon')}):\n\n`;
+    const bodies = [
+      `${head}${quote(anchor.quote ?? turn?.body ?? '', THREAD_BODY_MAX_CHARS - head.length - 40)}`.slice(
+        0,
+        THREAD_BODY_MAX_CHARS,
+      ),
+    ];
+    const members =
+      this.options.threadLines?.(parent, thread) ??
+      lines.filter(
+        (l) =>
+          l.op === undefined &&
+          l.agent_only !== true &&
+          (ops.moves.get(l.ts)?.to ?? l.thread) === thread,
+      );
+    for (const line of members.slice(-PROMOTE_SEED_LINES_MAX)) {
+      const lead = `${who(line.by)} wrote in the thread:\n\n`;
+      bodies.push(
+        `${lead}${quote(line.body, THREAD_BODY_MAX_CHARS - lead.length - 40)}`.slice(
+          0,
+          THREAD_BODY_MAX_CHARS,
+        ),
+      );
+    }
+    return { thread, on, bodies };
   }
 
   /**
@@ -794,6 +898,7 @@ export class StreamService {
       body: input.body,
       ...(input.ref !== undefined ? { ref: input.ref } : {}),
       ...(input.agent_only ? { agent_only: true } : {}),
+      ...(input.op !== undefined ? { op: input.op } : {}),
       // T503: a thread's first reply names itself; the store checks both against the node.
       ...(input.anchor !== undefined
         ? { thread: ts, anchor: input.anchor }
@@ -823,6 +928,14 @@ export class StreamService {
       ...(lastIndex >= 0 && lastIndex < all.length - 1 ? { next: lastIndex } : {}),
     };
   }
+}
+
+/** T504: how many of a promoted thread's lines its tangent opens with (the newest). */
+export const PROMOTE_SEED_LINES_MAX = 30;
+
+/** Who wrote a line, as a tangent's seed says it. */
+function who(by: string): string {
+  return by === 'human' ? 'you' : by.startsWith('agent:') ? 'its agent' : by;
 }
 
 /** Now, or a millisecond past the latest of `earlier` (ISO times) when now is not later. */

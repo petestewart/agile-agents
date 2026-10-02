@@ -432,6 +432,9 @@ export function summarize(
       return p.step === 'up'
         ? `Stepped up to ${String(p.to)}: ${String(p.reason)} on ${String(p.from)}.`
         : `Stuck on the strongest preset model (${String(p.from)}): ${String(p.reason)}.`;
+    case 'thread_archived':
+      // T504 (D65, §6a): told once; the passage quoted as data.
+      return threadArchivedText(p);
     case 'sibling_ask':
       if (node === p.sibling) {
         return `${name(event.subject)} asks you (${event.id}): ${String(p.question)}. Answer with \`reply_sibling\`.`;
@@ -443,6 +446,29 @@ export function summarize(
     default:
       return `${event.type}: read_event ${event.id}.`;
   }
+}
+
+/**
+ * T504 (D65, design/chat-threads.md §6a): what the agent is told, once,
+ * when the operator archives a chat thread (or restores one).
+ */
+export function threadArchivedText(p: Record<string, unknown>): string {
+  const whose =
+    p.of === 'agent' ? 'your message' : p.of === 'human' ? 'their message' : 'a message';
+  const at = new Date(String(p.on));
+  const clock = Number.isNaN(at.getTime()) ? String(p.on) : `${at.toISOString().slice(11, 16)} UTC`;
+  const passage =
+    typeof p.quote === 'string' ? `, about the passage ${JSON.stringify(p.quote)}` : '';
+  const on = `the thread on ${whose} of ${clock} (thread ${String(p.thread)})${passage}`;
+  if (p.restored === true) {
+    return `The operator restored ${on}. It is open again: you may act on it and bring it up.`;
+  }
+  const withdrawn = Array.isArray(p.withdrawn) && p.withdrawn.length > 0 ? p.withdrawn : undefined;
+  const asked =
+    withdrawn !== undefined
+      ? ` Your question${withdrawn.length > 1 ? 's' : ''} asked in it (${withdrawn.join(', ')}) ${withdrawn.length > 1 ? 'are' : 'is'} withdrawn: don't wait for an answer.`
+      : '';
+  return `The operator archived ${on}. Treat it as closed: don't act on it or bring it up.${asked}`;
 }
 
 /** The sibling a `symbol_changed` was routed to because it imports the symbol. */

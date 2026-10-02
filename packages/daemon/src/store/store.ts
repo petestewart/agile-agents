@@ -18,6 +18,7 @@ import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } f
 import {
   type AgentId,
   type AgentRecord,
+  CHAT_MAIN,
   DEFAULT_HARNESS_UPDATE_MODE,
   DEFAULT_PERMISSION_POSTURE,
   DEFAULT_SESSION_IDLE_MINUTES,
@@ -37,6 +38,7 @@ import {
   type KnowledgeWakeMode,
   type LegacyRule,
   LegacyRuleIdSchema,
+  MOVABLE_THREAD_KINDS,
   type ModelPolicyPatch,
   ModelPolicyPatchSchema,
   type ModelProfilesPatch,
@@ -55,6 +57,7 @@ import {
   StatusCardSchema,
   type Stream,
   type StreamPrincipal,
+  type ThreadAnchor,
   type ThreadEntry,
   type TrackerSystem,
   UlidSchema,
@@ -65,6 +68,7 @@ import {
   assertNoStreamCycle,
   assertNoWaitsOnCycle,
   assertStreamWrite,
+  chatThreadOpsOf,
   favouriteKey,
   formatKnowledgeScope,
   formatZodError,
@@ -1270,8 +1274,15 @@ export class StateStore {
    * that line's body. A reply names a thread started on the node, or a
    * question asked on it.
    */
-  private assertThreadPlace(streamId: string, entry: Pick<ThreadEntry, 'anchor' | 'thread'>): void {
+  private assertThreadPlace(
+    streamId: string,
+    entry: Pick<ThreadEntry, 'anchor' | 'thread' | 'op'>,
+  ): void {
     const { anchor, thread } = entry;
+    if (entry.op !== undefined) {
+      this.assertThreadOp(streamId, entry.op);
+      return;
+    }
     if (anchor === undefined && thread === undefined) return;
     const question = questionOfChatThread(thread);
     if (anchor === undefined && question !== undefined) {
@@ -1287,14 +1298,19 @@ export class StateStore {
       return;
     }
     const lines = this.readThread(streamId);
+    // T504 (§6, §6a): moves and archives, read back from their lines.
+    const ops = chatThreadOpsOf(lines);
     if (anchor !== undefined) {
       const on = lines.find((line) => line.ts === anchor.entry);
       if (on === undefined) throw new Error(`thread anchor: no line ${anchor.entry} on this node`);
-      if (on.thread !== undefined) {
+      // Where it shows: moved, or where it was written (one level: not inside a thread).
+      const place = ops.moves.get(on.ts)?.to ?? on.thread;
+      if (place !== undefined && place !== CHAT_MAIN) {
         throw new Error(
           'thread anchor: that line is in a thread already; reply in its thread (one level only)',
         );
       }
+      if (on.op !== undefined) throw new Error('thread anchor: a change to the threads is no turn');
       if (anchor.end !== undefined && anchor.end > on.body.length) {
         throw new Error(
           `thread anchor: the passage ends at ${anchor.end}, past the line's ${on.body.length} characters`,
@@ -1304,6 +1320,83 @@ export class StateStore {
     }
     if (!lines.some((line) => line.ts === thread && line.anchor !== undefined)) {
       throw new Error(`no thread ${thread} on this node`);
+    }
+    if (ops.archived.has(thread as string)) {
+      throw new Error(`thread ${thread} is archived; restore it to write in it`);
+    }
+  }
+
+  /**
+   * T504 (D65, design/chat-threads.md §6, §6a, §7): a change to the chat's
+   * threads names what is on the node. A moved line is a message (not a
+   * thread's first reply, nor a line threads are on when it goes into one:
+   * one level only), and goes to the main flow or an open thread on a turn
+   * before it. Only an open thread is archived, only an archived one
+   * restored or left out of a compaction, and a thread is promoted to a
+   * tangent of this node.
+   */
+  private assertThreadOp(streamId: string, op: NonNullable<ThreadEntry['op']>): void {
+    const lines = this.readThread(streamId);
+    const ops = chatThreadOpsOf(lines);
+    const threadStart = (id: string): ThreadEntry => {
+      const start = lines.find((line) => line.ts === id && line.anchor !== undefined);
+      if (start === undefined) throw new Error(`no thread ${id} on this node`);
+      return start;
+    };
+    switch (op.type) {
+      case 'move': {
+        const line = lines.find((l) => l.ts === op.entry);
+        if (line === undefined) throw new Error(`move: no line ${op.entry} on this node`);
+        if (
+          line.op !== undefined ||
+          line.agent_only === true ||
+          !MOVABLE_THREAD_KINDS.has(line.kind)
+        ) {
+          throw new Error('move: only a message moves (a line, a finding or a proposal)');
+        }
+        if (line.anchor !== undefined) {
+          throw new Error("move: a thread's first reply stays in its thread");
+        }
+        if (line.thread !== undefined && ops.archived.has(line.thread)) {
+          throw new Error('move: that line is in an archived thread; restore it first');
+        }
+        if (op.to === CHAT_MAIN) return;
+        const start = threadStart(op.to);
+        if (ops.archived.has(op.to)) {
+          throw new Error('move: that thread is archived; restore it first');
+        }
+        if (lines.some((l) => l.anchor?.entry === line.ts)) {
+          throw new Error(
+            'move: threads are on that line, so it stays in the main flow (one level only)',
+          );
+        }
+        if (!(line.ts > (start.anchor as ThreadAnchor).entry)) {
+          throw new Error('move: a thread takes lines written after the message it is on');
+        }
+        return;
+      }
+      case 'archive':
+        threadStart(op.thread);
+        if (ops.archived.has(op.thread)) throw new Error(`thread ${op.thread} is archived already`);
+        return;
+      case 'unarchive':
+        threadStart(op.thread);
+        if (!ops.archived.has(op.thread)) throw new Error(`thread ${op.thread} is not archived`);
+        return;
+      case 'promote': {
+        threadStart(op.thread);
+        const tangent = this.getStream(op.node);
+        if (tangent.parent !== streamId) {
+          throw new Error('promote: the tangent is a node under this one');
+        }
+        return;
+      }
+      case 'compact':
+        for (const id of op.threads) {
+          threadStart(id);
+          if (!ops.archived.has(id)) throw new Error(`compact: thread ${id} is not archived`);
+        }
+        return;
     }
   }
 

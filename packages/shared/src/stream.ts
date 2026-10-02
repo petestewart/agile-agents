@@ -246,6 +246,97 @@ export const ThreadAnchorSchema = z
   });
 export type ThreadAnchor = z.infer<typeof ThreadAnchorSchema>;
 
+/**
+ * T504 (D65, design/chat-threads.md §6, §6a, §7): the main flow, as a moved
+ * line's destination (a thread's id otherwise).
+ */
+export const CHAT_MAIN = 'main';
+export const ChatPlaceSchema = z.union([z.literal(CHAT_MAIN), ChatThreadIdSchema]);
+export type ChatPlace = z.infer<typeof ChatPlaceSchema>;
+
+/** T504: the kinds of line that move between the main flow and a thread. */
+export const MOVABLE_THREAD_KINDS: ReadonlySet<ThreadEntryKind> = new Set<ThreadEntryKind>([
+  'line',
+  'finding',
+  'proposal',
+]);
+
+/**
+ * T504 (D65, design/chat-threads.md §6, §6a, §7): a change to the chat's
+ * threads, recorded as its own append-only line (`ThreadEntry.op`): a
+ * thread line is never rewritten, so where a line shows and whether a
+ * thread is archived are read back from these, the latest winning.
+ *
+ * - `move`: line `entry` shows in thread `to` (or the main flow). Display
+ *   only: what the agent already received never changes. Undone by moving
+ *   it back.
+ * - `archive` / `unarchive`: the thread folds away and is never re-sent;
+ *   `forget` also restarted the agent fresh without it.
+ * - `promote`: the thread became the tangent `node` (T332).
+ * - `compact`: the agent was told to compact its context without the
+ *   archived `threads`; the line's body is the command it was sent.
+ */
+export const ThreadOpSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('move'),
+      entry: z.string().min(1).max(64),
+      to: ChatPlaceSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('archive'),
+      thread: ChatThreadIdSchema,
+      forget: z.literal(true).optional(),
+    })
+    .strict(),
+  z.object({ type: z.literal('unarchive'), thread: ChatThreadIdSchema }).strict(),
+  z.object({ type: z.literal('promote'), thread: ChatThreadIdSchema, node: UlidSchema }).strict(),
+  z
+    .object({
+      type: z.literal('compact'),
+      threads: z.array(ChatThreadIdSchema).min(1).max(50),
+    })
+    .strict(),
+]);
+export type ThreadOp = z.infer<typeof ThreadOpSchema>;
+
+/** T504: where the chat's recorded changes leave its threads, read from its lines in order. */
+export interface ChatThreadOps {
+  /** Archived threads: when, and whether the agent was restarted without them. */
+  archived: Map<string, { at: string; forget?: true }>;
+  /** Moved lines: where each shows now (the latest move). */
+  moves: Map<string, { to: ChatPlace; at: string }>;
+  /** Threads promoted to a tangent: the tangent. */
+  promoted: Map<string, { node: string; at: string }>;
+}
+
+export function chatThreadOpsOf(entries: readonly Pick<ThreadEntry, 'ts' | 'op'>[]): ChatThreadOps {
+  const out: ChatThreadOps = { archived: new Map(), moves: new Map(), promoted: new Map() };
+  for (const e of entries) {
+    const op = e.op;
+    if (op === undefined) continue;
+    switch (op.type) {
+      case 'move':
+        out.moves.set(op.entry, { to: op.to, at: e.ts });
+        break;
+      case 'archive':
+        out.archived.set(op.thread, { at: e.ts, ...(op.forget ? { forget: true as const } : {}) });
+        break;
+      case 'unarchive':
+        out.archived.delete(op.thread);
+        break;
+      case 'promote':
+        out.promoted.set(op.thread, { node: op.node, at: e.ts });
+        break;
+      case 'compact':
+        break;
+    }
+  }
+  return out;
+}
+
 /** One append-only line of `~/.agile/threads/<stream id>.jsonl`. */
 export const ThreadEntrySchema = z
   .object({
@@ -269,6 +360,11 @@ export const ThreadEntrySchema = z
     thread: ChatThreadIdSchema.optional(),
     /** T503 (D64, §3a): on a thread's first reply only, what the thread is on. */
     anchor: ThreadAnchorSchema.optional(),
+    /**
+     * T504 (D65, §6, §6a, §7): this line records a change to the chat's
+     * threads (a move, an archive, a promotion, a compaction): yours alone.
+     */
+    op: ThreadOpSchema.optional(),
   })
   .strict()
   .superRefine((entry, ctx) => {
@@ -279,6 +375,22 @@ export const ThreadEntrySchema = z
         path: ['body'],
         message: `body must be at most ${max} characters; write the detail to a file and reference it`,
       });
+    }
+    if (entry.op !== undefined) {
+      if (entry.by !== 'human' || entry.kind !== 'event') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['op'],
+          message: 'only you change the chat’s threads (an event line by human)',
+        });
+      }
+      if (entry.thread !== undefined || entry.anchor !== undefined || entry.agent_only) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['op'],
+          message: 'a change to the threads is a line of its own, in no thread',
+        });
+      }
     }
     if (entry.anchor !== undefined) {
       if (entry.by !== 'human' || entry.kind !== 'line') {
@@ -702,6 +814,13 @@ export const StreamCreateInputSchema = z
      */
     seed_line: z.number().int().nonnegative().optional(),
     /**
+     * T504 (§7): Promote to tangent: the id of a chat thread on the
+     * parent's thread. The new node is a tangent seeded with the thread's
+     * passage and its lines, quoted; the thread links to it. Not with
+     * `seed_line`. Not stored.
+     */
+    seed_thread: ChatThreadIdSchema.optional(),
+    /**
      * T414 (D41): `title` is a placeholder the cockpit derived from the goal;
      * the daemon asks a cheap model for a better one after creating. Not stored.
      */
@@ -997,6 +1116,26 @@ export const StreamSayInputSchema = z
     path: ['anchor'],
   });
 export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;
+
+/** T504 (§6): Move to thread / Move to main (`POST /api/streams/:id/move-line`). */
+export const StreamMoveLineInputSchema = z
+  .object({ entry: z.string().min(1).max(64), to: ChatPlaceSchema })
+  .strict();
+export type StreamMoveLineInput = z.infer<typeof StreamMoveLineInputSchema>;
+
+/**
+ * T504 (D65, §6a): Archive a thread (`POST /api/streams/:id/archive-thread`);
+ * with `forget`, Archive and forget: the agent also restarts fresh from a
+ * brief without the archived threads.
+ */
+export const StreamArchiveThreadInputSchema = z
+  .object({ thread: ChatThreadIdSchema, forget: z.literal(true).optional() })
+  .strict();
+export type StreamArchiveThreadInput = z.infer<typeof StreamArchiveThreadInputSchema>;
+
+/** T504 (§6a): Restore an archived thread (`POST /api/streams/:id/restore-thread`). */
+export const StreamRestoreThreadInputSchema = z.object({ thread: ChatThreadIdSchema }).strict();
+export type StreamRestoreThreadInput = z.infer<typeof StreamRestoreThreadInputSchema>;
 
 /**
  * T437: what Send to <parent> carries (the parent's line adds the

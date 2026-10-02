@@ -24,6 +24,7 @@
 
 import {
   type NodeRole,
+  QUIET_EVENT_TYPES,
   RECORD_ONLY_EVENT_TYPES,
   type RoutedEventType,
   type Stream,
@@ -54,6 +55,8 @@ const CONVERSATION_WAKE_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEven
 export function wakesRole(role: NodeRole, type: RoutedEventType): boolean {
   // T446: a record (`autonomy_applied`) wakes nobody, not even a coordinator.
   if (RECORD_ONLY_EVENT_TYPES.has(type)) return false;
+  // T504: a quiet one (an archive notice) rides along with what does wake it.
+  if (QUIET_EVENT_TYPES.has(type)) return false;
   switch (role) {
     case 'coordinating':
       return true;
