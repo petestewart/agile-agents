@@ -4171,6 +4171,13 @@ describe('a long agent message collapses (Playwright e2e, T330)', () => {
           kind: 'line',
           body,
         });
+        // T509: two turns, so each line is a reply (one turn's earlier line folds into its steps).
+        await cockpit.store.appendThreadEntry(stream.id, {
+          ts: new Date().toISOString(),
+          by: 'daemon',
+          kind: 'event',
+          body: 'turn finished',
+        });
         await cockpit.store.appendThreadEntry(stream.id, {
           ts: new Date().toISOString(),
           by: 'agent:01ARZ3NDEKTSV4RRFFQ69G5FAV',
