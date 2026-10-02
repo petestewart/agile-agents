@@ -1852,3 +1852,54 @@ login (then Codex, if you have one):
       format"). Its question shows in the thread, in the main chat with
       "Asked in a thread: open it", and in Needs me; the mark reads "waiting
       on you", and once you answer it, "resolved".
+
+## 23. **[vendor]** Moving, archiving and compacting threads (D65, T504)
+
+Offline, the fake agent shows a move is display only, an archived thread
+folds away and its notice rides the next digest, and Archive and forget
+starts a fresh session with no `session/load`. Only a real agent shows that
+it heeds the notice, and that a compaction leaves the archived threads out.
+Nothing about compaction was measured when T504 was built
+(design/spike-findings.md C6): note what each step shows, per vendor. With a
+Claude login (then Codex, Gemini, if you have them):
+
+- [ ] On a node with a thread (§22), hover a line of yours in the main chat
+      and click **Move to thread**: it leaves the main chat for the thread,
+      reads "Moved here by you" in the panel, and **Move back** returns it.
+      In the panel, **Move to main** on the agent's reply puts it in the main
+      chat ("Moved here from a thread by you · Move back"). Ask the agent
+      "what did I last ask you?": its answer is unchanged by the moves.
+- [ ] The thread's ⋯ → **Archive**. The mark and the passage's tint go;
+      under the message, "Archived threads (1)". Its replies are gone from
+      the main chat and "Open threads". The reply box says to restore it.
+- [ ] Send a line in the main chat. The agent's next prompt starts with "The
+      operator archived the thread on your message of … Treat it as closed"
+      (its session's `stderr.log` or the Activity tab shows it). Ask it about
+      the archived topic: note whether it declines or brings it up anyway.
+- [ ] "Archived threads (1)" → **Restore**: the mark is back, and the agent's
+      next prompt says the thread is open again.
+- [ ] **Claude only: Compact now.** On an archived thread, ⋯ → **Compact
+      now** (on an open one, **Archive and compact now**); it is there only
+      while Claude runs and lists `/compact` (§11). The chat shows your
+      `/compact Leave out the archived threads …` line and Claude's compaction
+      output. Then ask Claude what the archived thread was about. Record: did
+      `/compact` take the instructions through the bridge, and did the
+      summary leave the thread out? On Codex and Gemini, check the menu has
+      no Compact now; type `/` and note whether a compact command is listed
+      and what its hint says (it decides whether one is added to
+      `COMPACT_COMMANDS`).
+- [ ] **Auto-compaction (not wired yet).** If you can make Claude or Codex
+      compact on its own (a long session), note whether a `PreCompact` hook
+      could have changed the summary (design/spike-findings.md C6).
+- [ ] The thread's ⋯ → **Archive and forget…** on another thread, while the
+      agent rests: the confirm says it restarts the agent. Confirm: the
+      sessions strip shows a new session, the thread reads "Archived, and the
+      agent restarted without it", and the new session's `brief.md` has none
+      of the thread's lines; ask the agent about it: it doesn't know. While
+      the agent works on a turn, the item is greyed ("Waits for the agent's
+      turn to end").
+- [ ] On a conversation node, a thread's ⋯ → **Promote to tangent…**, type a
+      question, **Start tangent**: the tangent opens with "Promoted from a
+      thread on …", the passage and each line quoted; its agent picks it up.
+      Back on the conversation, the thread's panel reads "Promoted to a
+      tangent: <title>", and the link opens it.
