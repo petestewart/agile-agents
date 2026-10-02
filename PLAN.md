@@ -3032,6 +3032,30 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
   - Spike round 3 (2026-10-02, C5): **the hook works under codex-acp.** A project `.codex/hooks.json` (matcher `Bash`, no bypass) in `~/agile-codex-spike` fired 7 times through the bridge, blocked the `curl` with our reason, and the model quoted it; the blocked call never appears over ACP. It fired before anything was trusted in Codex, while the same hook in a temp dir saw 0 calls: project trust by path (probably a trusted parent in `~/.codex/config.toml`) decides it, and the bypass flag appears to do nothing under `app-server`. T506 goes ahead: hook in the worktree's `.codex/hooks.json` with `Bash` and `apply_patch` matchers, the worktree trusted, plus the fail-closed check.
   - Trust (Pete, 2026-10-02, option b): **the daemon never edits `~/.codex/config.toml`.** It reads it: a worktree is covered when it or an ancestor is `trust_level = "trusted"` (Pete trusts `/Users/petestewart`, so every repo under home is covered, which is why round 3 fired before `/hooks`). A Codex start in an uncovered worktree is refused with "Codex's gate isn't trusted here: trust <repo> in Codex" (a Needs me item), never started ungated.
 
+### Ticket: T508 A stopped agent says why, in a card
+- **Priority:** P1
+- **Status:** In progress (2026-10-02)
+- **Owner:** worker
+- **Scope:** Pete (2026-10-02, live T506 check): when the daemon stops an agent (T506's fail-closed stop "Codex ran a command its gate never saw", and any other daemon stop that blocks the node), the chat shows only a grey system line "Worker stopped: …" and a Blocked badge. It should be a card under "Waiting on you", like "Finished, no changes": what happened in plain words, why, and what to do (for the Codex gate: "Codex's hook didn't run in this worktree, so its commands weren't checked. Nothing it ran after that was allowed through." plus Restart agent and a "How to fix" line), and the same item in Needs me.
+- **Acceptance Criteria:** A fail-closed stop and an untrusted-worktree refusal each show a card with the reason and actions; the grey line stays as the record. Unit + control-room e2e.
+- **Validation Steps:** typecheck, lint; build then full `bun test`; `test:e2e`.
+
+### Ticket: T509 The agent's narration between steps folds into its steps
+- **Priority:** P1
+- **Status:** In progress (2026-10-02)
+- **Owner:** worker
+- **Scope:** Pete (2026-10-02): "I'm seeing thinking steps in the transcript". These are not thoughts (the daemon never shows `agent_thought_chunk`); they are the agent's own messages between tool calls ("Let me ask the operator for approval:", "I need to ask for approval…"). Within one agent turn, only the last message reads as the reply; the earlier ones fold into that turn's "Worked through N steps" (expanding shows them in order with the steps). A turn with one message is unchanged. A question or gate raised in the turn still shows in full.
+- **Acceptance Criteria:** As above; unit tests in `lib/chat`/`lib/steps`; control-room e2e: a fake turn with two messages and steps shows one message, the other inside the fold.
+- **Validation Steps:** typecheck, lint; build then full `bun test`; `test:e2e`.
+
+### Ticket: T510 One approval ask, not two
+- **Priority:** P1
+- **Status:** In progress (2026-10-02)
+- **Owner:** worker
+- **Scope:** Pete (2026-10-02): a held call (the route band's "Allow this action?" card, e.g. writing `package.json`) was followed by the agent's own `ask` "Create package.json…? Approve / Cancel": two cards for one decision. The held-call reason already says to wait (route-band.ts `routedReason`); prompts aren't enforcement. The daemon refuses an `ask` from a session that has an open held-call gate raised in its current turn, with a reason the model can act on ("Your call is already waiting for the operator's approval (a card in their Needs me); don't ask about it, wait for the answer, then retry the call"), and the brief says the same. The refusal shows nothing extra in the chat.
+- **Acceptance Criteria:** Unit tests on the verb (open gate this turn → refused; no gate, or a gate from an earlier turn → allowed); the e2e or a daemon test for the held write followed by an ask.
+- **Validation Steps:** typecheck, lint; build then full `bun test`.
+
 ### Ticket: T502 Question threads (D62, D63)
 - **Priority:** P1
 - **Status:** Done (merged 2026-10-01; the live settle_question check is LIVE-CHECKLIST §21). Landed: `settle_question` verb (`resolved_as: settled`), `POST /api/questions/<id>/reply` (a choice question stays open; the agent is told it is a reply about it and how to settle; a re-ask supersedes it, `superseded_by`), derived question threads by ref and by cause (`questions/threads.ts`) on the node page and a coordinator's `child_questions`, the unsettled Needs me row (`unsettled_by`), and the cockpit's nested thread under the question, Reply on a choice card, and "N questions from the parts" on a coordinator's chat; LIVE-CHECKLIST §21.
