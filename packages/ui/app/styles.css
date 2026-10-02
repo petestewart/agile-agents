@@ -6688,6 +6688,27 @@ button.cr-model-chip[aria-expanded="true"] {
 .cr-steps-failed {
   color: var(--red-text);
 }
+/* T509: the agent's earlier message of a turn, inside its steps */
+.cr-step-note {
+  align-items: flex-start;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.cr-step-note > .cr-step-icon {
+  margin-top: 3px;
+}
+.cr-step-note-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+}
+.cr-step-note-text p {
+  margin: 0;
+}
+.cr-step-note-text p + p {
+  margin-top: 4px;
+}
 .cr-steps > .cr-step-list {
   align-self: stretch;
   max-height: 340px;

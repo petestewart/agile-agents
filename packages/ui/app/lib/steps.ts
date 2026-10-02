@@ -146,6 +146,12 @@ export interface GroupStepsOptions {
    * than a wrong count.
    */
   partial?: boolean;
+  /**
+   * T509: the agent's narration folded into its turn's reply
+   * (`narrationFolds`): those lines are no reply of their own, so the steps
+   * around them belong to the reply they fold into.
+   */
+  folded?: ReadonlyMap<number, number>;
 }
 
 /**
@@ -170,6 +176,7 @@ export function groupSteps(
   const anchors: { index: number; ts: string; agent: boolean }[] = [];
   entries.forEach((entry, index) => {
     const variant = chatVariant(entry);
+    if (options.folded?.has(index)) return;
     if (variant === 'agent' || variant === 'you') {
       anchors.push({ index, ts: entry.ts, agent: variant === 'agent' });
     }
@@ -199,6 +206,108 @@ export function groupSteps(
   return { before, current };
 }
 
+// ---------------------------------------------------------------- T509: narration
+
+/** The daemon's line for a finished turn whose session stays (T465), as `lib/chat.ts` reads it. */
+const TURN_FINISHED = 'turn finished';
+
+/** A daemon line that ends an agent's turn: its session ended, or its turn finished (T465). */
+function endsTurn(entry: Anchorable): boolean {
+  return (
+    entry.by === 'daemon' &&
+    entry.kind === 'event' &&
+    (entry.body === TURN_FINISHED ||
+      entry.body.startsWith('session ended: ') ||
+      /^\w+ (?:attached|detached by human)\b/.test(entry.body))
+  );
+}
+
+export interface NarrationOptions {
+  /** Whether the chat's main flow shows entry `index` (a line nested in a thread doesn't). */
+  shown?: (index: number) => boolean;
+  /** An entry that stays where it is (a thread is anchored to it). */
+  keep?: (index: number) => boolean;
+}
+
+/**
+ * T509: what the agent says between its steps ("Let me ask the operator
+ * for approval:") is narration, not its reply. Within one turn of one
+ * session (from your line, or a turn's end, to the next) only the last of
+ * the agent's messages reads as the reply; each plain message before it
+ * (`kind: 'line'`) folds into that reply's steps. A question, a proposal or
+ * any other kind is never folded, nor is a daemon or system line. A turn
+ * with one message is unchanged. Display only: nothing stored changes.
+ * Returns each folded line's index and the index of the reply it folds into.
+ *
+ * A turn is told from the thread: your lines (and answers), the daemon's
+ * "turn finished" and "session ended" lines, and a session starting or
+ * stopping bound it. A turn that waited on a held call or a routed event
+ * and went on with no such line reads as one.
+ */
+export function narrationFolds(
+  entries: readonly Anchorable[],
+  options: NarrationOptions = {},
+): Map<number, number> {
+  const folds = new Map<number, number>();
+  let author: string | undefined;
+  let turn: number[] = [];
+  const close = (): void => {
+    const reply = turn.at(-1);
+    if (reply !== undefined) {
+      for (const index of turn.slice(0, -1)) {
+        if (entries[index]?.kind === 'line' && options.keep?.(index) !== true) {
+          folds.set(index, reply);
+        }
+      }
+    }
+    author = undefined;
+    turn = [];
+  };
+  entries.forEach((entry, index) => {
+    if (options.shown !== undefined && !options.shown(index)) return;
+    const variant = chatVariant(entry);
+    if (variant === 'you' || endsTurn(entry)) {
+      close();
+      return;
+    }
+    if (variant !== 'agent' || !entry.by.startsWith('agent:')) return;
+    if (author !== entry.by) close();
+    author = entry.by;
+    turn.push(index);
+  });
+  close();
+  return folds;
+}
+
+/** T509: a reply's folded row, in order: its steps and the narration between them. */
+export type FoldItem<E> = { step: AgentStep } | { note: E };
+
+/**
+ * The steps and the folded lines of one reply, oldest first. A line and a
+ * step stamped the same millisecond: the line first (the runner writes an
+ * agent's words before the tool call that ends them).
+ */
+export function foldItems<E extends { ts: string }>(
+  steps: readonly AgentStep[],
+  notes: readonly E[],
+): FoldItem<E>[] {
+  const out: FoldItem<E>[] = [];
+  let s = 0;
+  let n = 0;
+  while (s < steps.length || n < notes.length) {
+    const step = steps[s];
+    const note = notes[n];
+    if (note !== undefined && (step === undefined || note.ts <= step.ts)) {
+      out.push({ note });
+      n += 1;
+    } else if (step !== undefined) {
+      out.push({ step });
+      s += 1;
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- how a step reads
 
 /** What a step shows as, from its status and whether its turn still runs. */
@@ -217,14 +326,23 @@ export const STEP_STATE_LABEL: Record<StepState, string> = {
   stopped: 'Didn’t finish',
 };
 
-/** "Worked through 12 steps", and how many failed. */
-export function stepsSummary(steps: readonly Pick<AgentStep, 'status'>[]): {
+/**
+ * "Worked through 12 steps", and how many failed. T509: a fold that holds
+ * only the agent's earlier messages (no steps) reads "1 earlier message".
+ */
+export function stepsSummary(
+  steps: readonly Pick<AgentStep, 'status'>[],
+  notes = 0,
+): {
   label: string;
   failed: number;
 } {
   const n = steps.length;
   return {
-    label: `Worked through ${n} ${n === 1 ? 'step' : 'steps'}`,
+    label:
+      n === 0 && notes > 0
+        ? `${notes} earlier ${notes === 1 ? 'message' : 'messages'}`
+        : `Worked through ${n} ${n === 1 ? 'step' : 'steps'}`,
     failed: steps.filter((s) => s.status === 'failed').length,
   };
 }

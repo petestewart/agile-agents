@@ -103,7 +103,7 @@ import { appendToDraft, roomAfter, useReview } from '../lib/review';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
 import { type StatusInput, ownStatusKey, partsSummary } from '../lib/status';
-import { groupSteps, turnStartedAt } from '../lib/steps';
+import { groupSteps, narrationFolds, turnStartedAt } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
 import {
   anchorFor,
@@ -1297,16 +1297,34 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const compactCmd = agentCommands.running
     ? compactCommandFor(agentCommands.vendor, agentCommands.commands)
     : undefined;
+  /** Whether the main flow has thread line `e` (a line nested in a thread doesn't). */
+  const inFlow = (e: StreamPagePayload['thread'][number]): boolean =>
+    !(
+      questionThreads.nested.has(e.ts) ||
+      childNotes.nested.has(e.ts) ||
+      chatPlaced.nested.has(e.ts) ||
+      // T504: a move is shown on the line it moved, not as a row of its own.
+      e.op?.type === 'move'
+    );
+  // T509: the agent's messages before its turn's reply fold into the reply's steps (display
+  // only); a line a thread hangs on stays where it is.
+  const narration = narrationFolds(page.thread, {
+    shown: (i) => {
+      const e = page.thread[i];
+      return e !== undefined && inFlow(e);
+    },
+    keep: (i) => {
+      const ts = page.thread[i]?.ts ?? '';
+      return (
+        chatPlaced.marksOn.has(ts) ||
+        chatPlaced.alsoIn.has(ts) ||
+        chatPlaced.repliesTo.has(ts) ||
+        chatPlaced.archivedOn.has(ts)
+      );
+    },
+  });
   /** The thread lines the main flow shows (by index into `page.thread`). */
-  const shownLines = page.thread.flatMap((e, i) =>
-    questionThreads.nested.has(e.ts) ||
-    childNotes.nested.has(e.ts) ||
-    chatPlaced.nested.has(e.ts) ||
-    // T504: a move is shown on the line it moved, not as a row of its own.
-    e.op?.type === 'move'
-      ? []
-      : [i],
-  );
+  const shownLines = page.thread.flatMap((e, i) => (inFlow(e) && !narration.has(i) ? [i] : []));
   const renderActions = (entry: StreamPagePayload['thread'][number], i: number) => (
     <>
       {intent.action !== 'none' && (
@@ -1710,6 +1728,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     live: thinking,
     truncated: page.thread_total > page.thread.length,
     partial: agentSteps.partial,
+    folded: narration,
   });
   // T419 (D42): a conversation's goal is the question you asked: your first message. T435 (#10):
   // in the thread's own list (one day divider), after "Node created".
@@ -1733,6 +1752,15 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       return at === undefined ? [] : [[listed.listIndex(at), led] as const];
     }),
   );
+  // T509: each reply's folded narration, by its list index, in thread order.
+  const listNarration = new Map<number, StreamPagePayload['thread'][number][]>();
+  for (const [line, reply] of narration) {
+    const at = shownAt.get(reply);
+    const entry = page.thread[line];
+    if (at === undefined || entry === undefined) continue;
+    const key = listed.listIndex(at);
+    listNarration.set(key, [...(listNarration.get(key) ?? []), entry]);
+  }
 
   // T503 (D64, §3a): each passage a thread is anchored to, highlighted with its count.
   const passageMarks = (entry: StreamPagePayload['thread'][number]): PassageMark[] | undefined => {
@@ -2080,6 +2108,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           onOpenRule={(rule) => openRules({ ...DEFAULT_RULES_FILTER, rule })}
           openQuestions={new Set(questions.map((q) => q.id))}
           steps={listSteps}
+          narration={listNarration}
           windowKey={stream.id}
         />
         {thinking && (

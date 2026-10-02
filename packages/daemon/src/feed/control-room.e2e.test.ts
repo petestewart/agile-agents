@@ -4370,6 +4370,85 @@ describe("the agent's steps in the chat (Playwright e2e, T392)", () => {
   );
 });
 
+// ---- T509: the agent's narration folds into its steps ------------------------
+
+describe('narration folds into the steps (Playwright e2e, T509)', () => {
+  browserTest(
+    'a turn with two messages and steps shows one message; the other reads inside the fold, in order',
+    async () => {
+      const worker: FakeAgentScript = {
+        steps: [
+          { type: 'agent_text', text: 'NARRATION Let me read the parser first:' },
+          {
+            type: 'tool_call',
+            toolCallId: 'read-1',
+            kind: 'read',
+            title: 'Read src/parser.ts',
+            status: 'pending',
+          },
+          { type: 'delay', ms: 5 },
+          { type: 'tool_call_update', toolCallId: 'read-1', status: 'completed' },
+          { type: 'delay', ms: 20 },
+          { type: 'agent_text', text: 'REPLY The delimiter is fixed.' },
+          { type: 'end_turn' },
+        ],
+      };
+      const cockpit = await startStreamCockpit([worker]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const node = await cockpit.streams.create('human', {
+          title: 'csv parser',
+          goal: 'fix the delimiter',
+          repo: 'demo',
+          project: shop.id,
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        await page.locator('[data-testid="attach"]').click();
+
+        const reply = page.locator('[data-testid="thread-entry"][data-by="agent"]', {
+          hasText: 'REPLY The delimiter is fixed.',
+        });
+        await reply.waitFor();
+        await page.locator('[data-testid="thinking"]').waitFor({ state: 'detached' });
+        // Both lines are stored; only the last reads as the reply.
+        await waitUntil('both lines on the thread', () =>
+          cockpit.streams.readThread(node.id).entries.some((e) => e.body.startsWith('NARRATION')),
+        );
+        const agentLines = page.locator('[data-testid="thread-entry"][data-by="agent"]');
+        await waitUntilAsync('one agent message', async () => (await agentLines.count()) === 1);
+        expect(await page.locator('[data-testid="thread"]').textContent()).not.toContain(
+          'NARRATION',
+        );
+        const fold = reply.locator('[data-testid="steps-fold"]');
+        const toggle = fold.locator('[data-testid="steps-toggle"]');
+        await waitUntilAsync(
+          'the folded steps',
+          async () =>
+            (await toggle.count()) === 1 &&
+            (await toggle.textContent()) === 'Worked through 1 step',
+        );
+        await toggle.click();
+        const rows = fold.locator('[data-testid="steps-list"] > li');
+        await waitUntilAsync('the fold open', async () => (await rows.count()) === 2);
+        expect(await rows.nth(0).getAttribute('data-testid')).toBe('step-note');
+        expect(await rows.nth(0).textContent()).toContain(
+          'NARRATION Let me read the parser first:',
+        );
+        expect(await rows.nth(1).getAttribute('data-testid')).toBe('step');
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 // ---- T350: ended sessions collapse ------------------------------------------
 
 describe('ended sessions collapse (Playwright e2e, T350)', () => {

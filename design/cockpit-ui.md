@@ -338,6 +338,12 @@ keeps a hollow dot's ring (stopped, waiting).
   agent's name; daemon lines as one-line system rows (icon + muted text) that
   collapse when there are several in a row. A long message folds with "Show
   more". Hover actions on a message: Copy, Branch off (conversations).
+  T509: within one turn of the agent, only its last message reads as the
+  reply; its earlier plain messages (its narration between steps, "Let me
+  ask the operator for approval:") fold into that reply's "Worked through N
+  steps", in order with the steps when it opens. A turn with one message is
+  unchanged; questions, gates, refusals and system rows are never folded.
+  Display only (`lib/steps.ts` `narrationFolds`).
   T446 (audit r7 #6): what a coordinator or the Director did on its own — a
   change it applied, a proposal it made, a node it created — is a system row
   with its own icon (a bot, the Director's sparkles), never its chat message,

@@ -12,7 +12,8 @@
  *  - `ThreadBody` — a message's markdown, folded past ~12 lines (T330).
  *  - `Thinking` — "<Agent> is working…", with its latest steps live (T392).
  *  - `StepsFold` — "Worked through 12 steps · 1 failed" before a reply, which
- *    opens to the list (T392); `useSteps` reads a node's steps and follows
+ *    opens to the list (T392), with the agent's earlier messages of the turn
+ *    in order among the steps (T509); `useSteps` reads a node's steps and follows
  *    the live `tool_call` events. The rules are in `lib/steps.ts`.
  *  - `QuoteSelection` — a Quote button by selected text (T499); the quote
  *    itself is `lib/quote.ts`.
@@ -66,6 +67,7 @@ import {
   type StepUpdate,
   applyStep,
   elapsedText,
+  foldItems,
   liveWindow,
   stepKey,
   stepState,
@@ -283,6 +285,12 @@ export interface MessageListProps<E extends ChatEntry> {
    */
   steps?: ReadonlyMap<number, readonly AgentStep[]>;
   /**
+   * T509: the agent's earlier messages of a turn, by the index of the
+   * turn's reply (`narrationFolds`): they read inside its steps' fold, in
+   * order with the steps, not as replies of their own.
+   */
+  narration?: ReadonlyMap<number, readonly E[]>;
+  /**
    * T435: extra attributes on an entry's row, after its own (a conversation's
    * question, in the thread's list, is `data-testid="chat-question"`).
    */
@@ -417,6 +425,7 @@ export function MessageList<E extends ChatEntry>({
   onOpenRule,
   openQuestions,
   steps,
+  narration,
   entryAttrs,
   marksOf,
   onMark,
@@ -537,8 +546,12 @@ export function MessageList<E extends ChatEntry>({
             {renderActions?.(entry, index)}
           </div>
         );
-        const led = steps?.get(index);
-        const fold = led && led.length > 0 ? <StepsFold key="steps" steps={led} /> : undefined;
+        const led = steps?.get(index) ?? [];
+        const notes = narration?.get(index) ?? [];
+        const fold =
+          led.length > 0 || notes.length > 0 ? (
+            <StepsFold key="steps" steps={led} notes={notes} />
+          ) : undefined;
         if (variant === 'you') {
           if (fold) {
             out.push(
@@ -1205,10 +1218,17 @@ export function ContextMeter({
   );
 }
 
-export function StepsFold({ steps }: { steps: readonly AgentStep[] }): JSX.Element {
+export function StepsFold({
+  steps,
+  notes = [],
+}: {
+  steps: readonly AgentStep[];
+  /** T509: the agent's earlier messages of the turn, shown in order with the steps. */
+  notes?: readonly { ts: string; body: string }[];
+}): JSX.Element {
   const [open, setOpen] = useState(false);
   const hold = useContext(ChatHold);
-  const { label, failed } = stepsSummary(steps);
+  const { label, failed } = stepsSummary(steps, notes.length);
   return (
     <div className="cr-steps" data-testid="steps-fold" data-open={open ? 'true' : undefined}>
       <button
@@ -1230,8 +1250,33 @@ export function StepsFold({ steps }: { steps: readonly AgentStep[] }): JSX.Eleme
           </>
         )}
       </button>
-      {open && <StepList steps={steps} live={false} testid="steps-list" />}
+      {open &&
+        (notes.length === 0 ? (
+          <StepList steps={steps} live={false} testid="steps-list" />
+        ) : (
+          <ol className="cr-step-list" data-testid="steps-list">
+            {foldItems(steps, notes).map((item) =>
+              'step' in item ? (
+                <StepRow key={stepKey(item.step)} step={item.step} live={false} />
+              ) : (
+                <NarrationRow key={`note:${item.note.ts}`} body={item.note.body} />
+              ),
+            )}
+          </ol>
+        ))}
     </div>
+  );
+}
+
+/** T509: one of the agent's earlier messages in its turn, inside the fold, in its words. */
+function NarrationRow({ body }: { body: string }): JSX.Element {
+  return (
+    <li className="cr-step cr-step-note" data-testid="step-note">
+      <Icon name="message-square" size={13} className="cr-step-icon" />
+      <div className="cr-step-note-text">
+        <Markdown text={agentWords(body)} />
+      </div>
+    </li>
   );
 }
 
