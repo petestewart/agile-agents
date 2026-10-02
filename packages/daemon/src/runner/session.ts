@@ -47,6 +47,7 @@ import {
   CodexGateWatch,
   type HookSightings,
   codexHomeDir,
+  codexHookPlacement,
   codexTrustFor,
   codexUntrustedMessage,
   writeClaudeSettings,
@@ -134,6 +135,11 @@ export interface AgentSessionOptions {
   role: SessionRole;
   /** Absolute: the session's `cwd`, where `.claude/settings.json` is written. */
   worktreePath: string;
+  /**
+   * T511: the repo `worktreePath` is a worktree of (its `repos.yaml` path),
+   * when the session runs in one. Codex's hook goes at its root.
+   */
+  repoRoot?: string;
   /** The rendered brief, sent as the first `prompt()`. */
   brief: string;
   /** T336: the brief's turn started (the session accepted it). */
@@ -723,14 +729,18 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
 
   // T506: Codex's own PreToolUse hook, the same gate (spike-findings §C5). It
   // loads only in a project Codex trusts, which the daemon reads and never
-  // writes (option b): an untrusted worktree is refused, never run ungated.
+  // writes (option b): an untrusted project is refused, never run ungated.
+  // T511: for a worktree Codex reads the main repo's hooks (§C5 round 4), so
+  // the hook and the trust check are the repo root's.
   if (provider.id === 'codex') {
     const codexHome = opts.codexHome ?? codexHomeDir({ ...process.env, ...provider.envOverrides });
-    const trust = codexTrustFor(worktreePath, codexHome);
-    if (!trust.trusted) throw new Error(codexUntrustedMessage(worktreePath, trust.why));
-    writeCodexHooks(worktreePath, {
+    const placement = codexHookPlacement(worktreePath, opts.repoRoot);
+    const trust = codexTrustFor(placement.root, codexHome);
+    if (!trust.trusted) throw new Error(codexUntrustedMessage(placement.root, trust.why));
+    writeCodexHooks(placement.root, {
       agileBin: cliInvocationToShell(cliBin),
       ...(opts.socketPath !== undefined ? { socketPath: opts.socketPath } : {}),
+      ...(placement.repoRoot !== undefined ? { repoRoot: placement.repoRoot } : {}),
     });
   }
 

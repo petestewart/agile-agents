@@ -1316,6 +1316,10 @@ export class AttachService {
         session,
         role,
         worktreePath: cwd,
+        // T511: Codex's hook goes at the root of the repo the worktree belongs to.
+        ...(worktreePath !== undefined && repoEntry !== undefined
+          ? { repoRoot: repoEntry.path }
+          : {}),
         brief: prompt,
         ...(wake !== undefined ? { onBriefDelivered: () => wake.delivered(sessionId) } : {}),
         ...(resumeFrom?.acp_session_id !== undefined && wake !== undefined
