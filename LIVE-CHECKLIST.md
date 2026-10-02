@@ -1794,6 +1794,11 @@ bun spike/permission-matrix.ts --vendor codex --scenario exec --hooks --fixture 
       trusted hook; 0 means `app-server` doesn't run hooks.
 - [ ] `rm -rf ~/agile-codex-spike` when done.
 
+**Round 3 (2026-10-02):** done. Through the bridge the project hook fired
+7 times and blocked the `curl` with our reason, even before anything was
+trusted in `/hooks`; the same hook in a temp dir never fired. Settled in
+design/spike-findings.md C5: T506 installs the hook in the worktree.
+
 ## 21. **[vendor]** A question is its thread: talking back to a choice (D62, D63, T502)
 
 The fake agent plays `settle_question` offline; only a real agent shows it

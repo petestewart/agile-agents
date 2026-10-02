@@ -152,13 +152,43 @@ once with code 2, so the flag goes before the subcommand only.
 hook warning). 2.1.0 adds a fourth mode, `workspace-write`, and still raises
 no ACP permission requests.
 
-Last check before the fallback: a project hook trusted in Codex itself
-(`/hooks`, project trusted), run with no bypass, through the bridge and
-under `exec` as a control (LIVE-CHECKLIST §20). If it fires under the
-bridge, only the bypass flag is ignored and the daemon can install a
-trusted hook. If not, `app-server` doesn't run hooks, and T506 becomes the
-fail-closed observation check plus T505's warning, or the daemon talks to
-`codex app-server` itself.
+**Round 3 (2026-10-02, Pete's machine): a project hook in a kept project
+under `~` fires under the bridge.** `--scenario perm --hooks --fixture
+~/agile-codex-spike` (project `.codex/hooks.json`, matcher `Bash`, **no
+bypass flag**), codex-acp 1.10.0, Codex as `app-server`:
+
+| run | hook calls | curl | model saw the reason |
+|---|---|---|---|
+| perm, before trusting anything in Codex | 7 | **blocked** | yes, quoted "AGILE-GATE: …" |
+| perm, after trusting the project and `/hooks` | 7 | **blocked** | yes |
+| exec (control) | 2 | **blocked** | yes |
+
+Reports: `codex-defaultmode-perm-hooks-fixture.json`,
+`codex-defaultmode-exec-hooks-fixture.json` (Pete's `spike-out/`).
+
+- **Codex's PreToolUse hook gates Codex under codex-acp.** Exit 2 with a
+  reason blocks the call; Codex logs `ERROR codex_core::tools::router:
+  error=Command blocked by PreToolUse hook: …` and the model gets the
+  reason. So `app-server` runs hooks, and T506 can install one.
+- **A blocked call never shows up over ACP.** The curl step is missing
+  from the ACP tool list (8 tool calls for 9 steps, "not attempted"). The
+  daemon learns of a denial from its own hook, not from ACP.
+- **7 hook calls with matcher `Bash`**: the shell steps, including Codex's
+  own reads and search (it runs them as shell commands). The two edits
+  (`Editing files`, `apply_patch`) did not reach a `Bash` hook: the
+  daemon's hooks.json needs an `apply_patch` (edit) matcher too.
+- **It fired before anything was trusted in Codex.** The first run came
+  before `/hooks` and the project trust prompt, and the earlier runs in a
+  fresh temp dir (`/var/folders/…`, project hook, with or without the
+  bypass) saw 0 calls. So what decides it is where the project is, not
+  the per-hook trust: most likely a trusted parent path in Pete's
+  `~/.codex/config.toml` `[projects]` (to confirm). The user-level hook in
+  `~/.codex/hooks.json` saw 0 calls under the bridge even with the bypass
+  flag (it fired under `exec` with the flag), so the bypass flag appears
+  to do nothing under `app-server`.
+- Consequence for T506: the hook goes in `<worktree>/.codex/hooks.json`,
+  and the worktree must be a trusted Codex project. The daemon checks the
+  hook ran (fail-closed) for the case where it isn't.
 
 What those runs still show (none of it depends on the hook):
 
