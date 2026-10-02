@@ -14515,3 +14515,286 @@ describe('Question threads (Playwright e2e, T502)', () => {
     TEST_BUDGET_MS,
   );
 });
+
+/** T503: selects `phrase` inside the first element matching `selector`, as a reader's drag would. */
+async function selectPhrase(page: Page, selector: string, phrase: string): Promise<void> {
+  const found = await page.evaluate(`(() => {
+    const root = document.querySelector(${JSON.stringify(selector)});
+    if (!root) return false;
+    const text = ${JSON.stringify(phrase)};
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+      const at = (n.textContent || '').indexOf(text);
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(n, at);
+      range.setEnd(n, at + text.length);
+      const selection = document.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    }
+    return false;
+  })()`);
+  if (found !== true) throw new Error(`"${phrase}" is not in ${selector}`);
+}
+
+describe('Chat threads (Playwright e2e, T503)', () => {
+  const TURN_TEXT = 'Use banker’s rounding for the cents. Keep one sheet per account.';
+
+  browserTest(
+    'a reply in a thread on a turn: the agent’s answer lands in it, its mark counts it with its state and unread; a question asked in it shows in the main flow and Needs me too',
+    async () => {
+      const go = join(tmpdir(), `agile-t503-go-${ulid()}`);
+      const asked = join(tmpdir(), `agile-t503-asked-${ulid()}`);
+      const promptLog = join(tmpdir(), `agile-t503-prompts-${ulid()}.jsonl`);
+      const worker: FakeAgentScript = {
+        logFile: promptLog,
+        turns: [
+          [{ type: 'agent_text', text: TURN_TEXT }, { type: 'end_turn' }],
+          // Your reply in the thread: it answers (once the test says go), then asks (the test plays
+          // its `ask`, with no `thread`: the turn your reply woke places it).
+          [
+            { type: 'wait_for_file', path: go, timeoutMs: 60_000 },
+            { type: 'agent_text', text: 'It avoids drift when you sum many rows.' },
+            { type: 'tool_call', toolCallId: 'look-1', title: 'read ledger.ts' },
+            { type: 'wait_for_file', path: asked, timeoutMs: 60_000 },
+            { type: 'end_turn' },
+          ],
+        ],
+        steps: [{ type: 'end_turn' }],
+      };
+      const cockpit = await startStreamCockpit([worker]);
+      let page: Page | undefined;
+      try {
+        const node = await cockpit.streams.create('human', {
+          title: 'Ledger',
+          goal: 'Store the amounts.',
+          repo: 'demo',
+        });
+        await cockpit.attach.attach(node.id);
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        const turn = page.locator('[data-testid="thread-entry"][data-by="agent"]', {
+          hasText: 'Use banker’s rounding',
+        });
+        await turn.waitFor();
+        const session = cockpit.streams.get(node.id).sessions.find((s) => s.role === 'worker');
+        await waitUntil(
+          'the first turn to end',
+          () =>
+            cockpit.streams.get(node.id).sessions.find((s) => s.id === session?.id)?.status ===
+            'idle',
+        );
+
+        // Reply in thread, on the whole turn: the side panel opens on a new thread.
+        await turn.hover();
+        await turn.locator('[data-testid="reply-in-thread"]').click();
+        const panel = '[data-testid="thread-panel"]';
+        await page.locator(`${panel}[data-state="new"]`).waitFor();
+        const box = page.locator(`${panel} [data-testid="thread-reply-input"]`);
+        await box.fill('Why banker’s rounding?');
+        await box.press('Enter');
+        await page.locator(`${panel}:not([data-thread=""])`).waitFor();
+        const id = (await page.locator(panel).getAttribute('data-thread')) as string;
+        const stored = cockpit.streams
+          .readThread(node.id)
+          .entries.find((e) => e.body === 'Why banker’s rounding?');
+        expect(stored).toMatchObject({ by: 'human', thread: id });
+        expect(stored?.anchor?.entry).toBe(
+          cockpit.streams.readThread(node.id).entries.find((e) => e.body === TURN_TEXT)?.ts,
+        );
+
+        // Its mark under the turn: one reply, waiting on Claude. The reply is not in the main flow.
+        const mark = `[data-testid="thread-mark"][data-thread="${id}"]`;
+        await page.locator(mark).waitFor();
+        await waitForAttr(page, mark, 'data-state', 'waiting_on_agent');
+        expect(await page.locator(`${mark} [data-testid="thread-mark-count"]`).textContent()).toBe(
+          '1 reply',
+        );
+        expect(await page.locator(`${mark} [data-testid="thread-mark-state"]`).textContent()).toBe(
+          'waiting on Claude',
+        );
+        const mainFlow = '[data-testid="thread"] > [data-testid="thread-entry"]';
+        expect(await page.locator(mainFlow, { hasText: 'Why banker’s rounding?' }).count()).toBe(0);
+        await page
+          .locator(`${panel} [data-testid="thread-panel-entry"][data-by="human"]`, {
+            hasText: 'Why banker’s rounding?',
+          })
+          .waitFor();
+
+        // The panel closed, the agent answers: in the thread (by cause), unread on its mark and
+        // on the rail row; not in the main flow.
+        await page.locator('[data-testid="thread-panel-close"]').click();
+        await page.locator(panel).waitFor({ state: 'detached' });
+        writeFileSync(go, '');
+        await waitForText(page, `${mark} [data-testid="thread-mark-unread"]`, '1');
+        expect(await page.locator(mark).getAttribute('data-unread')).toBe('true');
+        await waitForText(
+          page,
+          `[data-testid="stream-tree"] [data-stream="${node.id}"] [data-testid="tree-thread-unread"]`,
+          '1',
+        );
+        expect(await page.locator(mainFlow, { hasText: 'It avoids drift' }).count()).toBe(0);
+        const prompts = readFileSync(promptLog, 'utf8');
+        expect(prompts).toContain('In a thread on your message of');
+        expect(prompts).toContain(`(thread ${id})`);
+        expect(prompts).toContain('Why banker’s rounding?');
+
+        // It asks in that turn: the question is in the thread and in the main flow and Needs me.
+        const { id: questionId } = await cockpit.verbs.ask({
+          session: session?.id,
+          text: 'Half up or half even for the totals?',
+          options: ['Half up', 'Half even'],
+        });
+        writeFileSync(asked, '');
+        const askedLine = page.locator(`${mainFlow}[data-kind="question"]`, {
+          hasText: 'Half up or half even',
+        });
+        await askedLine.waitFor();
+        await askedLine.locator('[data-testid="thread-origin"]').waitFor();
+        await page.locator(`[data-testid="stream-needs"] [data-id="${questionId}"]`).waitFor();
+        await waitForAttr(page, mark, 'data-state', 'waits_on_you');
+        expect(await page.locator(`${mark} [data-testid="thread-mark-state"]`).textContent()).toBe(
+          'waiting on you',
+        );
+        await waitForText(page, `${mark} [data-testid="thread-mark-count"]`, '3 replies');
+        expect(await page.locator('[data-testid="open-threads"]').textContent()).toContain(
+          'Open threads (1)',
+        );
+
+        // The chip opens the unread thread: its lines, read now.
+        await page.locator('[data-testid="open-threads"]').click();
+        await page.locator(`${panel}[data-thread="${id}"]`).waitFor();
+        expect(
+          await page
+            .locator(`${panel} [data-testid="thread-panel-entry"]`)
+            .evaluateAll((els) =>
+              els.map((el) => [el.getAttribute('data-by'), el.getAttribute('data-kind')]),
+            ),
+        ).toEqual([
+          ['human', 'line'],
+          ['agent', 'line'],
+          ['agent', 'question'],
+        ]);
+        await page.locator(`${mark} [data-testid="thread-mark-unread"]`).waitFor({
+          state: 'detached',
+        });
+        await page
+          .locator(
+            `[data-testid="stream-tree"] [data-stream="${node.id}"] [data-testid="tree-thread-unread"]`,
+          )
+          .waitFor({ state: 'detached' });
+
+        // Answered, and nothing written since: the thread resolves.
+        await cockpit.questions.answer(questionId as Question['id'], {
+          answer: 'Half even',
+          by: 'human',
+        });
+        await waitForAttr(page, mark, 'data-state', 'resolved');
+        expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        for (const file of [go, asked, promptLog]) rmSync(file, { force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a thread on a selected passage: quoted in the panel, highlighted in the turn with its count; the highlight opens it',
+    async () => {
+      const promptLog = join(tmpdir(), `agile-t503-passage-${ulid()}.jsonl`);
+      const worker: FakeAgentScript = {
+        logFile: promptLog,
+        turns: [
+          [{ type: 'agent_text', text: TURN_TEXT }, { type: 'end_turn' }],
+          [{ type: 'agent_text', text: 'One sheet keeps the totals apart.' }, { type: 'end_turn' }],
+        ],
+        steps: [{ type: 'end_turn' }],
+      };
+      const cockpit = await startStreamCockpit([worker]);
+      let page: Page | undefined;
+      try {
+        const node = await cockpit.streams.create('human', {
+          title: 'Ledger',
+          goal: 'Store the amounts.',
+          repo: 'demo',
+        });
+        await cockpit.attach.attach(node.id);
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        const turnSel = '[data-testid="thread-entry"][data-by="agent"][data-thread-on]';
+        const turn = page.locator(turnSel, { hasText: 'Use banker’s rounding' });
+        await turn.waitFor();
+        const session = cockpit.streams.get(node.id).sessions.find((s) => s.role === 'worker');
+        await waitUntil(
+          'the first turn to end',
+          () =>
+            cockpit.streams.get(node.id).sessions.find((s) => s.id === session?.id)?.status ===
+            'idle',
+        );
+
+        // Select a passage: the bar offers Quote and Reply in thread.
+        await selectPhrase(page, `${turnSel} .cr-msg-body`, 'one sheet per account');
+        await page.locator('[data-testid="selection-bar"]').waitFor();
+        await page.locator('[data-testid="selection-thread"]').click();
+        const panel = '[data-testid="thread-panel"]';
+        await page.locator(`${panel}[data-state="new"]`).waitFor();
+        expect(
+          await page.locator(`${panel} [data-testid="thread-panel-quote"]`).textContent(),
+        ).toBe('one sheet per account');
+        const box = page.locator(`${panel} [data-testid="thread-reply-input"]`);
+        await box.fill('Why one per account?');
+        await box.press('Enter');
+        await page.locator(`${panel}:not([data-thread=""])`).waitFor();
+        const id = (await page.locator(panel).getAttribute('data-thread')) as string;
+
+        // Stored with the passage's place in the turn and its quote.
+        const lines = cockpit.streams.readThread(node.id).entries;
+        const on = lines.find((e) => e.body === TURN_TEXT);
+        const first = lines.find((e) => e.ts === id);
+        expect(first?.anchor).toMatchObject({ entry: on?.ts, quote: 'one sheet per account' });
+        expect(on?.body.slice(first?.anchor?.start, first?.anchor?.end)).toBe(
+          'one sheet per account',
+        );
+
+        // Highlighted in the turn, with its count; the agent's answer lands in the thread.
+        const highlight = `${turnSel} mark[data-thread-anchor="${id}"]`;
+        await page.locator(highlight).first().waitFor();
+        expect((await page.locator(highlight).allTextContents()).join('')).toBe(
+          'one sheet per account',
+        );
+        const count = `${turnSel} [data-testid="thread-anchor-count"][data-thread-anchor="${id}"]`;
+        await waitForAttr(page, count, 'data-count', '2');
+        await page
+          .locator(`${panel} [data-testid="thread-panel-entry"][data-by="agent"]`, {
+            hasText: 'One sheet keeps the totals apart.',
+          })
+          .waitFor();
+        // The mark names the passage.
+        expect(
+          await page
+            .locator(`[data-testid="thread-mark"][data-thread="${id}"] .cr-tmark-quote`)
+            .textContent(),
+        ).toBe('“one sheet per account”');
+        expect(readFileSync(promptLog, 'utf8')).toContain(
+          'about the passage \\"one sheet per account\\"',
+        );
+
+        // Closed, a click on the highlight opens its thread again.
+        await page.locator('[data-testid="thread-panel-close"]').click();
+        await page.locator(panel).waitFor({ state: 'detached' });
+        await page.locator(highlight).first().click();
+        await page.locator(`${panel}[data-thread="${id}"]`).waitFor();
+        expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(promptLog, { force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
