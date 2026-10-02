@@ -31,6 +31,7 @@ import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
 import {
   type AgentId,
+  CODEX_UNGATED_REASON,
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_DENY_AT,
   type Question,
@@ -56,7 +57,7 @@ import {
   type Worker,
   chromium,
 } from 'playwright-core';
-import { AttachService, VerbService } from '../attach';
+import { AttachService, CRASHED_PREFIX, FAILED_START_PREFIX, VerbService } from '../attach';
 import { BridgeInstallService } from '../bridges';
 import { Bus } from '../bus';
 import { ClassifierKeyService, FakeClassifier } from '../classifier';
@@ -70,7 +71,7 @@ import { DocsService } from '../docs';
 import { RoutedEventService, emitTransitions, makeEmitter, routeAndEmit } from '../events';
 import { GateService } from '../gates';
 import { type CommandResult, HarnessUpdateService } from '../harness';
-import { HookService } from '../hook';
+import { HookService, codexUntrustedMessage } from '../hook';
 import { type HttpServerHandle, startHttpServer } from '../http';
 import { InboxService } from '../inbox';
 import { runInit } from '../init';
@@ -3284,6 +3285,116 @@ describe('finished with nothing to merge (Playwright e2e, T380)', () => {
         await waitUntil(
           'the node closed',
           () => cockpit.streams.get(stream.id).human.status === 'closed',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('a stopped agent says why (Playwright e2e, T508)', () => {
+  browserTest(
+    "Codex's fail-closed stop and an untrusted refusal each show a card with the reason and actions; the grey line stays",
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        // T506's fail-closed stop, as the attach service leaves it.
+        const stopped = await cockpit.streams.create('human', {
+          title: 'Gate the checkout',
+          goal: 'g',
+          project: shop.id,
+        });
+        await cockpit.streams.appendThread('daemon', stopped.id, {
+          kind: 'event',
+          body: `worker stopped: ${CODEX_UNGATED_REASON}`,
+        });
+        await cockpit.streams.update('daemon', stopped.id, {
+          agent: { status: 'blocked', progress: `${CRASHED_PREFIX}${CODEX_UNGATED_REASON}` },
+        });
+        // T506's refusal of a start in a worktree Codex doesn't trust.
+        const refused = await cockpit.streams.create('human', {
+          title: 'Trust the repo',
+          goal: 'g',
+          project: shop.id,
+        });
+        const untrusted = codexUntrustedMessage('/Users/pete/shop/.worktrees/01-x');
+        await cockpit.streams.appendThread('daemon', refused.id, {
+          kind: 'event',
+          body: `could not start the agent: ${untrusted}`,
+        });
+        await cockpit.streams.update('daemon', refused.id, {
+          agent: { status: 'blocked', progress: `${FAILED_START_PREFIX}${untrusted}` },
+        });
+
+        page = await openPage();
+        const attached: Array<{ id: string; role?: string }> = [];
+        await page.route('**/api/streams/*/attach', (route) => {
+          const id = new URL(route.request().url()).pathname.split('/')[3] ?? '';
+          attached.push({ id, ...(route.request().postDataJSON() as { role?: string }) });
+          return route.fulfill({ status: 201, contentType: 'application/json', body: '{}' });
+        });
+        await page.goto(`${cockpit.base}/`);
+
+        // Needs me: each card says what happened in words, with its restart.
+        const stopCard = `[data-testid="inbox"] [data-kind="blocked"][data-id="${stopped.id}"]`;
+        await page.locator(stopCard).waitFor({ state: 'visible' });
+        expect(await page.locator(`${stopCard} .kind`).textContent()).toBe(
+          'Codex’s gate didn’t run',
+        );
+        expect(
+          await page.locator(`${stopCard} [data-testid="inbox-context"]`).textContent(),
+        ).toContain('Codex ran a command its hook never checked, so the daemon stopped it.');
+        expect(await page.locator(`${stopCard} [data-testid="stop-restart"]`).textContent()).toBe(
+          'Restart agent',
+        );
+        expect(await page.locator(`${stopCard} [data-testid="blocked-reply"]`).count()).toBe(0);
+        const refusedCard = `[data-testid="inbox"] [data-kind="blocked"][data-id="${refused.id}"]`;
+        expect(await page.locator(`${refusedCard} .kind`).textContent()).toBe(
+          'Codex can’t start here: its gate isn’t trusted',
+        );
+        expect(
+          await page.locator(`${refusedCard} [data-testid="stop-restart"]`).textContent(),
+        ).toBe('Try again');
+
+        // The node's chat: the card under "Waiting on you", whole, and the grey line as the record.
+        await page.goto(`${cockpit.base}/?node=${stopped.id}`);
+        await page.locator(`[data-testid="stream-page"][data-stream="${stopped.id}"]`).waitFor();
+        const needs = '[data-testid="stream-needs"]';
+        const card = `${needs} [data-kind="blocked"][data-id="${stopped.id}"]`;
+        await page.locator(card).waitFor({ state: 'visible' });
+        expect(await page.locator(needs).textContent()).toContain('Waiting on you');
+        const body =
+          (await page.locator(`${card} [data-testid="inbox-context"]`).textContent()) ?? '';
+        expect(body).toContain('Nothing it ran after that was allowed through.');
+        expect(body).toContain('How to fix:');
+        expect(body).toContain('.codex/hooks.json');
+        await page
+          .locator('[data-testid="thread-entry"][data-by="daemon"]', {
+            hasText: 'worker stopped: Codex ran a command its gate never saw',
+          })
+          .waitFor();
+        await page.locator(`${card} [data-testid="stop-restart"]`).click();
+        await waitUntil('the restart to reach the node', () =>
+          attached.some((a) => a.id === stopped.id),
+        );
+        expect(attached.find((a) => a.id === stopped.id)?.role).toBe('worker');
+
+        // The refused start: the repo to trust, on its own chat too.
+        await page.goto(`${cockpit.base}/?node=${refused.id}`);
+        const refusedHere = `${needs} [data-kind="blocked"][data-id="${refused.id}"]`;
+        await page.locator(refusedHere).waitFor({ state: 'visible' });
+        expect(
+          await page.locator(`${refusedHere} [data-testid="inbox-context"]`).textContent(),
+        ).toContain('Trust /Users/pete/shop in Codex');
+        expect(await page.locator('[data-testid="thread"]').textContent()).not.toContain(
+          'Fix its install or login',
         );
       } finally {
         await teardown([page]);

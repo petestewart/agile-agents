@@ -21,6 +21,7 @@ import {
   fold,
   gateView,
   groupNeedsMe,
+  inboxLine,
   isAgentFailure,
   isFirstRun,
   isLandGate,
@@ -43,6 +44,9 @@ import {
   scopeWords,
   setupSteps,
   statusText,
+  stopCardOf,
+  stopCardOfItem,
+  stopCardText,
   withDecided,
 } from './inbox';
 
@@ -830,6 +834,65 @@ describe('isAgentFailure (T437)', () => {
     expect(isAgentFailure('The agent couldn’t start: Gemini CLI can’t start')).toBe(true);
     expect(isAgentFailure('The agent stopped with an error: Invalid API key')).toBe(true);
     expect(isAgentFailure('The agent is stuck and needs a hand.')).toBe(false);
+  });
+});
+
+describe('stop cards (T508)', () => {
+  const ungated =
+    "The agent stopped with an error: Codex ran a command its gate never saw: its hook isn't trusted or didn't fire";
+  const untrusted =
+    "The agent couldn’t start: Codex's gate isn't trusted here: trust /Users/pete/shop in Codex (Codex project /Users/pete is not trusted)";
+  test("Codex's fail-closed stop: what happened, why, how to fix, Restart agent", () => {
+    const card = stopCardOf(ungated);
+    expect(card?.kind).toBe('codex_ungated');
+    expect(card?.title).toBe('Codex’s gate didn’t run');
+    expect(card?.text).toBe(
+      'Codex ran a command its hook never checked, so the daemon stopped it. Nothing it ran after that was allowed through.',
+    );
+    expect(card?.fix).toContain('isn’t a trusted Codex project');
+    expect(card?.fix).toContain('`.codex/hooks.json`');
+    expect(card?.restart).toBe('Restart agent');
+  });
+  test('an untrusted worktree: the repo to trust, and Try again', () => {
+    const card = stopCardOf(untrusted);
+    expect(card?.kind).toBe('codex_untrusted');
+    expect(card?.title).toBe('Codex can’t start here: its gate isn’t trusted');
+    expect(card?.fix).toContain('Trust `/Users/pete/shop` in Codex');
+    expect(card?.restart).toBe('Try again');
+  });
+  test('any other daemon stop reuses the card in its own words', () => {
+    expect(stopCardOf('The agent couldn’t start: Gemini CLI can’t start')).toMatchObject({
+      kind: 'failed_start',
+      title: 'The agent couldn’t start',
+      text: 'Gemini CLI can’t start',
+      restart: 'Try again',
+    });
+    expect(stopCardOf('The agent stopped with an error: Invalid API key')).toMatchObject({
+      kind: 'crashed',
+      title: 'The agent stopped with an error',
+      text: 'Invalid API key',
+      restart: 'Restart agent',
+    });
+  });
+  test("an agent's own blocked line is no stop card", () => {
+    expect(stopCardOf('The agent is stuck and needs a hand.')).toBeUndefined();
+    expect(stopCardOfItem(item({ kind: 'blocked', context: 'Waiting on the Redis box' }))).toBe(
+      undefined,
+    );
+  });
+  test("the item's title, body and row line say it; the full text is read past the clip", () => {
+    const blocked = item({ kind: 'blocked', context: ungated.slice(0, 60), detail: ungated });
+    expect(cardTitle(blocked)).toBe('Codex’s gate didn’t run');
+    expect(stopCardOfItem(blocked)?.kind).toBe('codex_ungated');
+    expect(stopCardText(stopCardOf(ungated) as NonNullable<ReturnType<typeof stopCardOf>>)).toMatch(
+      /^Codex ran a command .+\n\n\*\*How to fix:\*\* The worktree/s,
+    );
+    expect(inboxLine(blocked)).toBe(
+      'Codex ran a command its hook never checked, so the daemon stopped it. Nothing it ran after that was allowed through.',
+    );
+    expect(stopCardOfItem({ ...blocked, kind: 'done' })).toBeUndefined();
+    expect(cardTitle(item({ kind: 'blocked' }))).toBe('Blocked');
+    expect(cardOutcome(blocked, 'restart')).toBe('Agent started');
   });
 });
 

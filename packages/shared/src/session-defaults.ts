@@ -176,6 +176,21 @@ export function vendorHasHooks(vendor: string): boolean {
 }
 
 /**
+ * T506: the daemon's words when it stops a Codex session whose `PreToolUse`
+ * hook never saw its commands (the session's end, the thread, Needs me).
+ * T508: shared so the cockpit's card can tell this stop from others.
+ */
+export const CODEX_UNGATED_REASON =
+  "Codex ran a command its gate never saw: its hook isn't trusted or didn't fire";
+
+/**
+ * T506: how the refusal of a Codex start in a worktree Codex doesn't trust
+ * begins ("Codex's gate isn't trusted here: trust <repo> in Codex"). T508:
+ * the cockpit's card reads the repo to trust from it.
+ */
+export const CODEX_UNTRUSTED_LEAD = "Codex's gate isn't trusted here: trust ";
+
+/**
  * T505: vendors whose ACP bridge runs a shell command without asking (no
  * ACP permission request, and no pre-tool hook the daemon installs yet;
  * design/spike-findings.md §C3). T506: Codex left the list: the daemon

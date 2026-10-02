@@ -7,6 +7,7 @@
  */
 
 import {
+  CODEX_UNTRUSTED_LEAD,
   EFFORT_IN_MODEL_VENDORS,
   type InboxItem,
   type QuestionThread,
@@ -827,9 +828,13 @@ export function systemLine(body: string, meta: SystemLineMeta = {}): SystemLine 
   const failed = /^could not start the agent: (.+)$/s.exec(body);
   if (failed) {
     const why = tidyIds(failed[1] ?? '').replace(/[.\s]+$/, '');
+    // T508: Codex's untrusted worktree isn't an install or a login; its card below says the fix.
+    const fix = why.startsWith(CODEX_UNTRUSTED_LEAD)
+      ? ''
+      : ' Fix its install or login, then send a message to start it again.';
     return {
       icon: 'alert-triangle',
-      text: `The agent couldn’t start: ${why}. Fix its install or login, then send a message to start it again.`,
+      text: `The agent couldn’t start: ${why}.${fix}`,
       tone: 'warn',
     };
   }

@@ -97,7 +97,7 @@ import {
 } from '../lib/errors';
 import { useFeed } from '../lib/feed-context';
 import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
-import { proposalLineAction } from '../lib/inbox';
+import { proposalLineAction, stopCardOfItem } from '../lib/inbox';
 import { withQuote } from '../lib/quote';
 import { appendToDraft, roomAfter, useReview } from '../lib/review';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
@@ -193,9 +193,12 @@ export { THREAD_COLLAPSE_LINES, ThreadBody, isLongThreadBody } from './Chat';
 /** Decision cards only: `blocked`/`done` are this page's own status and Merge button. */
 function needsYou(items: readonly InboxItem[], stream: string, noChanges = false): InboxItem[] {
   // The header has Merge; T380: with nothing to merge, the card's Close is the move.
+  // T508: a stop the daemon made is a card here too (what happened, why, Restart agent).
   return items.filter(
     (item) =>
-      item.stream === stream && item.kind !== 'blocked' && (item.kind !== 'done' || noChanges),
+      item.stream === stream &&
+      (item.kind !== 'blocked' || stopCardOfItem(item) !== undefined) &&
+      (item.kind !== 'done' || noChanges),
   );
 }
 

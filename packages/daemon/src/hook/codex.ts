@@ -42,6 +42,7 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { CODEX_UNGATED_REASON, CODEX_UNTRUSTED_LEAD } from '@agile-agents/shared';
 import { shellQuote } from '../runner/cli-bin';
 import { excludeFromGit, isTracked } from './settings';
 import type { ClaudePreToolUsePayload } from './types';
@@ -230,7 +231,7 @@ export function codexTrustTarget(worktreePath: string): string {
 
 /** The refusal, in the ticket's words. */
 export function codexUntrustedMessage(worktreePath: string, why?: string): string {
-  const base = `Codex's gate isn't trusted here: trust ${codexTrustTarget(worktreePath)} in Codex`;
+  const base = `${CODEX_UNTRUSTED_LEAD}${codexTrustTarget(worktreePath)} in Codex`;
   return why === undefined ? base : `${base} (${why})`;
 }
 
@@ -352,9 +353,8 @@ export class HookSightings {
   }
 }
 
-/** The stop's words (Needs me, the session's end, the thread). */
-export const CODEX_UNGATED_REASON =
-  "Codex ran a command its gate never saw: its hook isn't trusted or didn't fire";
+/** The stop's words (Needs me, the session's end, the thread); T508: defined in shared. */
+export { CODEX_UNGATED_REASON };
 
 /** ACP kinds Codex's hook must have seen: its reads and searches run as shell too, but report other kinds. */
 const GATED_ACP_KINDS = new Set(['execute', 'edit']);

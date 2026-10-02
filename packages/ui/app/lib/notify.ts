@@ -197,7 +197,8 @@ export function itemHeadline(item: InboxItem, lookup?: NodeLookup): string {
     case 'done':
       return of(noChanges(item, lookup) ? 'Finished, no changes' : 'Ready to merge', node);
     case 'blocked':
-      return of('Blocked', node);
+      // T508: a stop the daemon made says which ("Codex’s gate didn’t run: …").
+      return of(cardTitle(item), node);
     case 'harness_update':
       return of(cardTitle(item), item.harness?.label);
     case 'model_stuck':

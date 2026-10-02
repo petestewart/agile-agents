@@ -833,6 +833,24 @@ describe('an agent that failed (T438)', () => {
       "The agent couldn’t start: Claude Code can't start: `claude` is not on the daemon's PATH. Fix its install or login, then send a message to start it again.",
     );
   });
+  test('T508: a Codex start refused in an untrusted worktree says so, not "fix its login"', () => {
+    const line = systemLine(
+      "could not start the agent: Codex's gate isn't trusted here: trust /Users/pete/shop in Codex",
+    );
+    expect(line.tone).toBe('warn');
+    expect(line.text).toBe(
+      "The agent couldn’t start: Codex's gate isn't trusted here: trust /Users/pete/shop in Codex.",
+    );
+  });
+  test('T508: a Codex fail-closed stop stays a grey record row (its card says the rest)', () => {
+    const line = systemLine(
+      "worker stopped: Codex ran a command its gate never saw: its hook isn't trusted or didn't fire",
+    );
+    expect(line.tone).toBe('muted');
+    expect(line.text).toBe(
+      "worker stopped: Codex ran a command its gate never saw: its hook isn't trusted or didn't fire",
+    );
+  });
   test('a failed start or a non-zero exit is a failure; a clean end or other lines are not', () => {
     expect(agentFailed([daemon('could not start the agent: no vendor')])).toBe(true);
     expect(agentFailed([daemon('session ended: process exited (code 1): Invalid API key')])).toBe(
