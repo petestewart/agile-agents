@@ -82,7 +82,7 @@ import {
   railTitle,
   subtreeIds,
 } from '../lib/tree';
-import { useUnreadReplies } from '../lib/use-unread';
+import { useUnreadReplies, useUnreadThreads } from '../lib/use-unread';
 import { Icon, type IconName } from './Icon';
 import { PickList, type PickOption } from './Pickers';
 import {
@@ -192,6 +192,8 @@ interface TreeContext {
   openNode(id: string): void;
   /** T433: nodes with a reply you haven't read (T429). */
   unread: ReadonlySet<string>;
+  /** T503 (§6): per node, its chat threads with a reply you haven't read. */
+  threadsUnread: ReadonlyMap<string, number>;
 }
 
 /** Where a row's menu opens: above it when there is no room below in the sidebar. */
@@ -448,6 +450,18 @@ function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.El
               aria-label="a reply you haven't read"
               title="Replied: not read yet"
             />
+          )}
+          {/* T503 (§6): replies in its chat threads you haven't read: a count by the title. */}
+          {(ctx.threadsUnread.get(id) ?? 0) > 0 && (
+            <span
+              className="cr-tree-threads"
+              data-testid="tree-thread-unread"
+              role="img"
+              aria-label={`${ctx.threadsUnread.get(id)} threads with a reply you haven't read`}
+              title="A thread has a reply you haven't read"
+            >
+              {ctx.threadsUnread.get(id)}
+            </span>
           )}
           {hiddenNeedsYou && (
             <span
@@ -971,6 +985,7 @@ export function StreamTree({
 
   const replies = useUnreadReplies();
   const unread = useMemo(() => new Set(replies.map((r) => r.id)), [replies]);
+  const threadsUnread = useUnreadThreads();
   const ctx: TreeContext = {
     fold,
     drag,
@@ -984,6 +999,7 @@ export function StreamTree({
     allRows,
     openNode: select,
     unread,
+    threadsUnread,
   };
   const empty = allRows.length === 0 && projects.length === 0;
 

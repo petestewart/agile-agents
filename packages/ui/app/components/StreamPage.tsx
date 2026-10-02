@@ -24,9 +24,11 @@
  */
 
 import {
+  type ChatThread,
   type InboxItem,
   type ResolvedSessionDefaults,
   type SessionDefaultsStatus,
+  type ThreadAnchor,
   isAgentRole,
 } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -40,6 +42,7 @@ import {
   getStreamPage,
   reopenStream,
   resolveConflict,
+  sayInThread,
   sayOnStream,
   setNodeAutoClose,
   stopSessions,
@@ -97,7 +100,16 @@ import { useShell } from '../lib/shell';
 import { type StatusInput, ownStatusKey, partsSummary } from '../lib/status';
 import { groupSteps, turnStartedAt } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
+import {
+  anchorFor,
+  openThreadsChip,
+  placeChatThreads,
+  threadReadKey,
+  threadRepliesText,
+  threadUnread,
+} from '../lib/threads';
 import { splitRepos, titleFromGoal } from '../lib/tree';
+import { markRead, useThreadReadUpTo } from '../lib/use-unread';
 import {
   ChatScroll,
   ContextMeter,
@@ -106,6 +118,9 @@ import {
   QuoteSelection,
   StepsFold,
   Thinking,
+  ThreadLinks,
+  ThreadMarks,
+  ThreadPanel,
   useSteps,
 } from './Chat';
 import { type NodeCommands, useNodeCommands } from './CommandPalette';
@@ -115,7 +130,7 @@ import { DeliveryPanel, isMergeable, outcomeTone, useDelivery } from './Delivery
 import { TabBoundary, lazyNamed } from './ErrorBoundary';
 import { Icon, type IconName } from './Icon';
 import { Card } from './Inbox';
-import { Markdown } from './Markdown';
+import { Markdown, type PassageMark } from './Markdown';
 import { ModelChoiceSection } from './ModelPolicy';
 import { useRepoList } from './NewStream';
 import {
@@ -408,6 +423,28 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [linkChoice, setLinkChoice] = useState('');
   // T332 (D33): "Branch off" — the thread line (0-based, whole thread) and the tangent's question.
   const [branching, setBranching] = useState<number | undefined>(undefined);
+  // T503 (D60, D64): the chat thread the side panel shows, or a new one on a turn (or passage).
+  const [threadView, setThreadView] = useState<
+    { id: string } | { anchor: ThreadAnchor } | undefined
+  >(undefined);
+  const readThreadUpTo = useThreadReadUpTo();
+  const openThreadId = threadView !== undefined && 'id' in threadView ? threadView.id : undefined;
+  const openReplyAt =
+    page?.stream.id === id
+      ? page.chat_threads?.find((t) => t.id === openThreadId)?.reply_at
+      : undefined;
+  // T503 (§6): a thread open in the panel, in a visible tab, is read up to its last reply.
+  useEffect(() => {
+    if (openThreadId === undefined || openReplyAt === undefined) return;
+    const read = (): void => {
+      if (document.visibilityState === 'visible') {
+        markRead(threadReadKey(id, openThreadId), openReplyAt);
+      }
+    };
+    read();
+    document.addEventListener('visibilitychange', read);
+    return () => document.removeEventListener('visibilitychange', read);
+  }, [id, openThreadId, openReplyAt]);
   // T421 (D42): Send to parent's dialog, with the words it starts from.
   const [sendingUp, setSendingUp] = useState<string | undefined>(undefined);
   // T422 (D42): Turn into work's dialog.
@@ -478,6 +515,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     setRepoChoice('');
     setLinkChoice('');
     setBranching(undefined);
+    setThreadView(undefined);
     setTangentQuestion('');
     setTrackerOpen(false);
     setNextSession(undefined);
@@ -1215,12 +1253,45 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       const e = lineAt.get(t);
       return e ? [e] : [];
     });
+  // T503 (D60, D64, §6): chat threads on its turns: a mark under each turn they're on, their
+  // lines in the side panel (a question asked in one stays here too), a batched reply linked.
+  const chatThreads = page.chat_threads ?? [];
+  const chatPlaced = placeChatThreads(chatThreads, page.chat_batches ?? [], page.thread);
+  const chatThreadOf = new Map(chatThreads.map((t) => [t.id, t]));
+  const threadUnreadOf = (thread: ChatThread): number =>
+    threadUnread(
+      thread,
+      (ts) => lineAt.get(ts)?.by,
+      readThreadUpTo(threadReadKey(stream.id, thread.id)),
+    );
+  const openThread = (thread: string) => {
+    setThreadView({ id: thread });
+  };
   /** The thread lines the main flow shows (by index into `page.thread`). */
   const shownLines = page.thread.flatMap((e, i) =>
-    questionThreads.nested.has(e.ts) || childNotes.nested.has(e.ts) ? [] : [i],
+    questionThreads.nested.has(e.ts) || childNotes.nested.has(e.ts) || chatPlaced.nested.has(e.ts)
+      ? []
+      : [i],
   );
   const renderActions = (entry: StreamPagePayload['thread'][number], i: number) => (
     <>
+      {intent.action !== 'none' && (
+        // T503 (D64, §3a): every turn, yours or the agent's: a thread on it (one already in a
+        // thread, a question asked there, opens that thread: one level only).
+        <button
+          type="button"
+          className="cr-msg-btn"
+          data-testid="reply-in-thread"
+          title="Reply in a thread on this message (select some of it first to anchor the thread to that passage)"
+          onClick={() => {
+            const inThread = chatPlaced.alsoIn.get(entry.ts);
+            setThreadView(inThread ? { id: inThread.id } : { anchor: { entry: entry.ts } });
+          }}
+        >
+          <Icon name="message-square" size={13} />
+          Reply in thread
+        </button>
+      )}
       {canBranch && entry.kind === 'line' && branching !== threadBase + i && (
         <button
           type="button"
@@ -1255,6 +1326,40 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
 
   const renderExtra = (entry: StreamPagePayload['thread'][number], i: number) => (
     <>
+      {(() => {
+        // T503 (§6, §4.1): the threads on this turn; a question asked in one; a batched reply.
+        const marks = chatPlaced.marksOn.get(entry.ts);
+        const alsoIn = chatPlaced.alsoIn.get(entry.ts);
+        const repliesTo = chatPlaced.repliesTo.get(entry.ts);
+        return (
+          <>
+            {alsoIn && (
+              <ThreadLinks
+                lead="Asked in a thread:"
+                threads={[alsoIn]}
+                onOpen={openThread}
+                testid="thread-origin"
+              />
+            )}
+            {repliesTo && (
+              <ThreadLinks
+                lead="Replies to:"
+                threads={repliesTo}
+                onOpen={openThread}
+                testid="thread-batch"
+              />
+            )}
+            {marks && (
+              <ThreadMarks
+                threads={marks}
+                unreadOf={threadUnreadOf}
+                onOpen={openThread}
+                {...(openThreadId !== undefined ? { open: openThreadId } : {})}
+              />
+            )}
+          </>
+        );
+      })()}
       {(() => {
         // T502 (D62): a question is its thread, nested under the line that asked it.
         const thread = questionThreads.hostOf.get(entry.ts);
@@ -1518,8 +1623,101 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     }),
   );
 
+  // T503 (D64, §3a): each passage a thread is anchored to, highlighted with its count.
+  const passageMarks = (entry: StreamPagePayload['thread'][number]): PassageMark[] | undefined => {
+    const on = chatPlaced.marksOn.get(entry.ts);
+    if (on === undefined || on[0]?.anchor.entry !== entry.ts) return undefined;
+    const marks = on.flatMap((t): PassageMark[] =>
+      t.anchor.quote === undefined
+        ? []
+        : [
+            {
+              id: t.id,
+              quote: t.anchor.quote,
+              ...(t.anchor.start !== undefined && entry.body.length > 0
+                ? { near: t.anchor.start / entry.body.length }
+                : {}),
+              count: t.replies,
+              ...(t.state === 'waits_on_you' ? { amber: true } : {}),
+              title: `Thread: ${threadRepliesText(t.replies)}`,
+            },
+          ],
+    );
+    return marks.length > 0 ? marks : undefined;
+  };
+  // T503 (§6): "Open threads (2)" at the top of the chat jumps to the first unread one.
+  const threadsChip = openThreadsChip(chatThreads, threadUnreadOf);
+  // T503: the thread the panel shows, what it is on, and its lines.
+  const panelThread = openThreadId !== undefined ? chatThreadOf.get(openThreadId) : undefined;
+  const panelAnchor =
+    threadView === undefined
+      ? undefined
+      : 'anchor' in threadView
+        ? threadView.anchor
+        : panelThread?.anchor;
+  const panelLines =
+    openThreadId === undefined
+      ? []
+      : linesAt(
+          [
+            ...new Set([
+              ...(panelThread?.entries ?? []),
+              ...page.thread.filter((e) => e.thread === openThreadId).map((e) => e.ts),
+            ]),
+          ].sort(),
+        );
+  const sendInThread = async (text: string): Promise<void> => {
+    if (threadView === undefined) return;
+    const where = 'id' in threadView ? { thread: threadView.id } : { anchor: threadView.anchor };
+    const said = await sayInThread(stream.id, text, where, { start: true });
+    if ('anchor' in threadView) setThreadView({ id: said.entry.thread ?? said.entry.ts });
+    load();
+    refresh();
+  };
+  const threadPanel =
+    shownTab === 'thread' && panelAnchor !== undefined ? (
+      <ThreadPanel
+        key={openThreadId ?? `new:${panelAnchor.entry}:${panelAnchor.quote ?? ''}`}
+        {...(panelThread ? { thread: panelThread } : {})}
+        anchor={panelAnchor}
+        {...(lineAt.get(panelAnchor.entry) ? { on: lineAt.get(panelAnchor.entry) } : {})}
+        lines={panelLines}
+        authorOf={(by) => chatAuthor(by, stream.sessions)}
+        queued={queuedLines}
+        {...(intent.action === 'none'
+          ? { sendBlocked: intent.hint ?? 'Nothing can be sent here now' }
+          : offline
+            ? { sendBlocked: RECONNECTING }
+            : {})}
+        onSend={sendInThread}
+        onClose={() => setThreadView(undefined)}
+      />
+    ) : null;
+
   const chat = (
     <div className="cr-chat" data-tab-body="thread" ref={chatRef}>
+      {threadsChip.count > 0 && (
+        <div className="cr-threads-bar">
+          <button
+            type="button"
+            className="cr-threads-chip"
+            data-testid="open-threads"
+            data-unread={threadsChip.unread > 0 ? 'true' : undefined}
+            title={
+              threadsChip.unread > 0
+                ? 'Open the first thread with a reply you haven’t read'
+                : 'Open a thread'
+            }
+            onClick={() => {
+              if (threadsChip.target) openThread(threadsChip.target.id);
+            }}
+          >
+            <Icon name="message-square" size={12} />
+            Open threads ({threadsChip.count})
+            {threadsChip.unread > 0 && <span className="cr-threads-chip-dot" aria-hidden="true" />}
+          </button>
+        </div>
+      )}
       <ChatScroll
         tick={`${threadTick}:${thinking}:${cards.length}`}
         resetKey={stream.id}
@@ -1544,11 +1742,16 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             const at = threadIndexOf(i);
             return at === undefined ? null : renderExtra(entry, at);
           }}
-          entryAttrs={(_, i) =>
+          entryAttrs={(entry, i): Record<string, string> | undefined =>
             i === listed.at
               ? { 'data-testid': 'chat-question', 'data-question': 'true' }
-              : undefined
+              : threadIndexOf(i) !== undefined
+                ? // T503: a selection in this turn can start a thread on it.
+                  { 'data-thread-on': entry.ts }
+                : undefined
           }
+          marksOf={(entry, i) => (threadIndexOf(i) === undefined ? undefined : passageMarks(entry))}
+          onMark={openThread}
           onOpenRule={(rule) => openRules({ ...DEFAULT_RULES_FILTER, rule })}
           openQuestions={new Set(questions.map((q) => q.id))}
           steps={listSteps}
@@ -1681,6 +1884,14 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
             }
             setDraft((before) => withQuote(before, text));
             requestAnimationFrame(() => composer.current?.focusEnd());
+          }}
+          onThread={(text, on) => {
+            // T503 (D64, §3a): a thread anchored to the passage (one level: a line already
+            // in a thread opens that thread).
+            const entry = lineAt.get(on);
+            if (entry === undefined) return;
+            const inThread = chatPlaced.alsoIn.get(on);
+            setThreadView(inThread ? { id: inThread.id } : { anchor: anchorFor(entry, text) });
           }}
         />
       )}
@@ -2100,6 +2311,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         // biome-ignore lint/a11y/useKeyWithClickEvents: the panel closes with its own button too.
         <div className="cr-node-scrim" onClick={() => setDetailsOpen(false)} />
       )}
+      {threadPanel}
 
       {turning && (
         <TurnIntoWorkDialog
