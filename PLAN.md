@@ -3063,6 +3063,18 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Acceptance Criteria:** A Codex node's start writes `<repo>/.codex/hooks.json` with T506's matchers and a script calling `agile hook pre-tool-use --vendor codex --repo <root>`; git status of the repo stays clean; a hook call with `cwd` outside `<root>/.worktrees/` exits 0 without contacting the daemon; inside, it behaves as T506. LIVE-CHECKLIST §24 updated.
 - **Validation Steps:** Unit tests (writer at the repo root, merge with existing hooks, exclude, tracked-file refusal, the `--repo` guard both ways); typecheck, lint; build then full `bun test`; `test:e2e`.
 
+### Ticket: T513 Fixes from the 2026-10-02 live check (§21–§24)
+- **Priority:** P1
+- **Status:** Review (worker done) — thread replies leave out the agent's on-the-way lines (folded above its answer in the panel, not unread) and opening a thread reads it on the click, to the newest reply the page or rail knows of (the live non-clearing did not reproduce with the fake agent); a refused start writes no "attached" line; `settle_question` only on the operator's own decision (verb, briefs, reply hint); a reviewer is one-shot by design (cockpit-design §2): its line now says its turn finished and `agile node say` notes the line went to the node's agent. typecheck, lint, build; `bun test` 4048 pass / 3 skip / 0 fail; `test:e2e` 2+157+3 pass.
+- **Owner:** worker
+- **Scope:** Pete's local live check of `claude/phase-14` @ f7c20417 (§21–§24) found, besides the Codex hook (T512):
+  1. §22: a thread's mark read "3 replies" for two replies (an extra agent chatter line counted); "Open threads (1) · 1 unread" and the count dot did not clear when the thread was opened.
+  2. A refused start (untrusted or tracked-hook Codex) first writes "worker attached: codex/default …" on the thread, then the refusal: no "attached" line for a start that never ran.
+  3. §21: Claude called `settle_question` on an informational reply ("What does Stripe use?" to a choice question) in 2 of 2 runs. The verb's description and the briefs must say a question about the options (or any reply that doesn't decide it) is answered with `progress` and leaves the question open; settle only when the operator's words decide it.
+  4. §24: a Codex reviewer ended after its first turn ("review finished: 0 findings (process exited (code -1))") and a following `agile node say` woke a worker: check whether a reviewer is meant to be one-shot (design §4) and, if so, make `say` to a node whose last session was a finished reviewer say so; if not, find why the process exited -1.
+- **Acceptance Criteria:** each item fixed or, for 4, explained with a test; unit/e2e coverage for 1–3.
+- **Validation Steps:** typecheck, lint; build then full `bun test`; `test:e2e`.
+
 ### Ticket: T502 Question threads (D62, D63)
 - **Priority:** P1
 - **Status:** Done (merged 2026-10-01; the live settle_question check is LIVE-CHECKLIST §21). Landed: `settle_question` verb (`resolved_as: settled`), `POST /api/questions/<id>/reply` (a choice question stays open; the agent is told it is a reply about it and how to settle; a re-ask supersedes it, `superseded_by`), derived question threads by ref and by cause (`questions/threads.ts`) on the node page and a coordinator's `child_questions`, the unsettled Needs me row (`unsettled_by`), and the cockpit's nested thread under the question, Reply on a choice card, and "N questions from the parts" on a coordinator's chat; LIVE-CHECKLIST §21.

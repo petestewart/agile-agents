@@ -179,6 +179,56 @@ describe('chatThreadsOf: placement by cause (§4.1)', () => {
   });
 });
 
+describe('chatThreadsOf: replies (T513, §6)', () => {
+  test('what the agent said on the way to its answer is no reply: your line and its answer are 2', () => {
+    // The operator's reply, then one turn: a line on the way ("Let me look"), then the answer.
+    const onTheWay = line(at(2), `agent:${S}`, 'Let me look at the ledger first.');
+    const answer = line(at(2, 20), `agent:${S}`, 'It avoids drift when you sum many rows.');
+    const { threads } = chatThreadsOf({
+      node: node('idle'),
+      entries: [TURN, A, onTheWay, answer, finished(at(2, 30))],
+      activity: [delivered(humanLine('E-1', A.ts, A.thread), 'D-1', at(1, 30))],
+    });
+    expect(threads[0]?.entries).toEqual([A.ts, onTheWay.ts, answer.ts]);
+    expect(threads[0]?.replies).toBe(2);
+    expect(threads[0]?.reply_at).toBe(answer.ts);
+  });
+
+  test('each turn’s answer counts; a question asked on the way is never folded', () => {
+    const asked = line(at(2), `agent:${S}`, 'Half up or half even?', {
+      kind: 'question',
+      ref: 'questions/Q-1.yaml',
+    });
+    const first = line(at(2, 10), `agent:${S}`, 'Waiting on your pick.');
+    const again = line(at(4), 'human', 'half even', { thread: A.ts });
+    const second = line(at(4, 20), `agent:${S}`, 'Done: half even.');
+    const { threads } = chatThreadsOf({
+      node: node('idle'),
+      entries: [TURN, A, asked, first, finished(at(2, 30)), again, second, finished(at(4, 30))],
+      activity: [
+        delivered(humanLine('E-1', A.ts, A.thread), 'D-1', at(1, 30)),
+        delivered(humanLine('E-2', again.ts, A.thread), 'D-2', at(4, 10)),
+      ],
+    });
+    // A, the question, its answer line, your second line, its answer: 5 replies, nothing folded.
+    expect(threads[0]?.entries).toEqual([A.ts, asked.ts, first.ts, again.ts, second.ts]);
+    expect(threads[0]?.replies).toBe(5);
+  });
+
+  test('two turns with no line of yours between them: each turn’s last message counts', () => {
+    const one = line(at(2), `agent:${S}`, 'first turn, on the way');
+    const oneEnd = line(at(2, 10), `agent:${S}`, 'first turn’s answer');
+    const two = line(at(3), `agent:${S}`, 'second turn’s answer', { thread: A.ts });
+    const { threads } = chatThreadsOf({
+      node: node('idle'),
+      entries: [TURN, A, one, oneEnd, finished(at(2, 30)), two],
+      activity: [delivered(humanLine('E-1', A.ts, A.thread), 'D-1', at(1, 30))],
+    });
+    expect(threads[0]?.entries).toEqual([A.ts, one.ts, oneEnd.ts, two.ts]);
+    expect(threads[0]?.replies).toBe(3);
+  });
+});
+
 describe('chatThreadsOf: state (§6)', () => {
   test('your reply waits on the agent until the turn it started ends', () => {
     const pending: ThreadActivity = { event: humanLine('E-1', A.ts, A.thread), status: 'pending' };

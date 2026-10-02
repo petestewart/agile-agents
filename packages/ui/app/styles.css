@@ -4477,6 +4477,19 @@ mark.cr-anchor[data-tone="amber"] {
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }
+/* T513 (T509): what the agent said on the way to a reply, folded above it */
+.cr-tpanel-fold {
+  margin-bottom: 4px;
+  font-size: var(--text-sm);
+}
+.cr-tpanel-fold > summary {
+  cursor: pointer;
+}
+.cr-tpanel-fold > .cr-qthread-lines {
+  margin: 4px 0 2px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
 .cr-tpanel-foot {
   display: flex;
   flex-direction: column;

@@ -17,12 +17,14 @@ import type {
   ChatBatch,
   ChatMove,
   ChatThread,
+  ChatThreadReply,
   ThreadAnchor,
   ThreadEntry,
 } from '@agile-agents/shared';
 import { THREAD_ANCHOR_QUOTE_MAX_CHARS } from '@agile-agents/shared';
 import { vendorLabel } from './chat';
 import { tidySelection } from './quote';
+import { narrationFolds } from './steps';
 
 /** Where each chat thread shows in a node's chat, and the lines it takes out of the flow. */
 export interface ChatThreadPlacement {
@@ -179,17 +181,74 @@ export function threadReadKey(node: string, thread: string): string {
   return `thread:${node}:${thread}`;
 }
 
-/** The lines of `thread` not yours written after `readUpTo`: its unread count. */
+/**
+ * The lines of `thread` not yours written after `readUpTo`: its unread
+ * count. T513: a line in `folded` (said on the way to a reply) is no reply.
+ */
 export function threadUnread(
   thread: Pick<ChatThread, 'entries' | 'reply_at'>,
   byOf: (ts: string) => string | undefined,
   readUpTo: string,
+  folded?: ReadonlyMap<string, string>,
 ): number {
   if (thread.reply_at === undefined || thread.reply_at <= readUpTo) return 0;
   return thread.entries.filter((ts) => {
     const by = byOf(ts);
-    return ts > readUpTo && by !== undefined && by !== 'human';
+    return ts > readUpTo && by !== undefined && by !== 'human' && folded?.has(ts) !== true;
   }).length;
+}
+
+/**
+ * T513 (§6): how far opening a thread reads it: the newest reply the
+ * cockpit knows of. The page's `reply_at`, its loaded lines, and the rail
+ * row's reply for it (`thread_replies`, which a pushed frame updates before
+ * the page reloads): the mark, the chip and the rail row all read up to the
+ * same point, so opening it clears all three. Undefined: nothing to read.
+ */
+export function threadReadAt(
+  thread: Pick<ChatThread, 'id' | 'entries' | 'reply_at'> | undefined,
+  byOf: (ts: string) => string | undefined,
+  rail?: readonly ChatThreadReply[],
+  id = thread?.id,
+): string | undefined {
+  let at: string | undefined = thread?.reply_at;
+  const later = (ts: string | undefined) => {
+    if (ts !== undefined && (at === undefined || ts > at)) at = ts;
+  };
+  for (const ts of thread?.entries ?? []) {
+    const by = byOf(ts);
+    if (by !== undefined && by !== 'human') later(ts);
+  }
+  later(rail?.find((r) => r.thread === id)?.at);
+  return at;
+}
+
+/**
+ * T513 (§6, T509): the lines of a thread that fold into its agent's reply:
+ * within one turn only the agent's last message is its reply, the plain
+ * lines before it were said on the way (the main flow folds them the same
+ * way, `narrationFolds`). The daemon's `replies` leaves them out too.
+ * `loaded` is the node's loaded lines (their turn ends bound a turn).
+ * Each folded line's `ts` → the `ts` of the reply it folds into.
+ */
+export function threadNarration(
+  loaded: readonly Pick<ThreadEntry, 'ts' | 'by' | 'kind' | 'body' | 'ref' | 'agent_only'>[],
+  thread: Pick<ChatThread, 'entries'>,
+): Map<string, string> {
+  const members = new Set(thread.entries);
+  const folds = narrationFolds(loaded, {
+    shown: (i) => {
+      const e = loaded[i];
+      return e !== undefined && (members.has(e.ts) || e.by === 'daemon');
+    },
+  });
+  const out = new Map<string, string>();
+  for (const [line, reply] of folds) {
+    const from = loaded[line]?.ts;
+    const to = loaded[reply]?.ts;
+    if (from !== undefined && to !== undefined) out.set(from, to);
+  }
+  return out;
 }
 
 /**

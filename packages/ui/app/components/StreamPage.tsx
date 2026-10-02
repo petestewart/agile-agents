@@ -112,6 +112,8 @@ import {
   movesByLine,
   openThreadsChip,
   placeChatThreads,
+  threadNarration,
+  threadReadAt,
   threadReadKey,
   threadRepliesText,
   threadUnread,
@@ -448,22 +450,36 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   >(undefined);
   const readThreadUpTo = useThreadReadUpTo();
   const openThreadId = threadView !== undefined && 'id' in threadView ? threadView.id : undefined;
-  const openReplyAt =
-    page?.stream.id === id
-      ? page.chat_threads?.find((t) => t.id === openThreadId)?.reply_at
-      : undefined;
+  // T513: how far a thread is read when it is opened, or while it is open: its newest reply
+  // the page or the rail row knows of (the mark, the chip and the rail row read to one point).
+  const readAtOf = (thread: string): string | undefined => {
+    const shown = page?.stream.id === id ? page : undefined;
+    const lines = new Map((shown?.thread ?? []).map((e) => [e.ts, e.by]));
+    return threadReadAt(
+      shown?.chat_threads?.find((t) => t.id === thread),
+      (ts) => lines.get(ts),
+      cockpit?.streams.find((row) => row.id === id)?.thread_replies,
+      thread,
+    );
+  };
+  const openReadAt = openThreadId !== undefined ? readAtOf(openThreadId) : undefined;
   // T503 (§6): a thread open in the panel, in a visible tab, is read up to its last reply.
+  // T513: also when the window comes back into focus.
   useEffect(() => {
-    if (openThreadId === undefined || openReplyAt === undefined) return;
+    if (openThreadId === undefined || openReadAt === undefined) return;
     const read = (): void => {
       if (document.visibilityState === 'visible') {
-        markRead(threadReadKey(id, openThreadId), openReplyAt);
+        markRead(threadReadKey(id, openThreadId), openReadAt);
       }
     };
     read();
     document.addEventListener('visibilitychange', read);
-    return () => document.removeEventListener('visibilitychange', read);
-  }, [id, openThreadId, openReplyAt]);
+    window.addEventListener('focus', read);
+    return () => {
+      document.removeEventListener('visibilitychange', read);
+      window.removeEventListener('focus', read);
+    };
+  }, [id, openThreadId, openReadAt]);
   // T421 (D42): Send to parent's dialog, with the words it starts from.
   const [sendingUp, setSendingUp] = useState<string | undefined>(undefined);
   // T422 (D42): Turn into work's dialog.
@@ -1280,14 +1296,20 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const chatThreads = page.chat_threads ?? [];
   const chatPlaced = placeChatThreads(chatThreads, page.chat_batches ?? [], page.thread);
   const chatThreadOf = new Map(chatThreads.map((t) => [t.id, t]));
+  // T513 (T509): what the agent said on the way to its reply in a thread folds into it there.
+  const narrationOf = new Map(chatThreads.map((t) => [t.id, threadNarration(page.thread, t)]));
   const threadUnreadOf = (thread: ChatThread): number =>
     threadUnread(
       thread,
       (ts) => lineAt.get(ts)?.by,
       readThreadUpTo(threadReadKey(stream.id, thread.id)),
+      narrationOf.get(thread.id),
     );
   const openThread = (thread: string) => {
     setThreadView({ id: thread });
+    // T513: opening it is reading it (a click: you are here), whatever the tab's visibility says.
+    const at = readAtOf(thread);
+    if (at !== undefined) markRead(threadReadKey(stream.id, thread), at);
   };
   // T504 (§6): moved lines (display only), and where a main-flow line can go.
   const moved = movesByLine(page.chat_moves);
@@ -2019,6 +2041,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         anchor={panelAnchor}
         {...(lineAt.get(panelAnchor.entry) ? { on: lineAt.get(panelAnchor.entry) } : {})}
         lines={panelLines}
+        {...(openThreadId !== undefined && narrationOf.has(openThreadId)
+          ? { folded: narrationOf.get(openThreadId) }
+          : {})}
         authorOf={(by) => chatAuthor(by, stream.sessions)}
         queued={queuedLines}
         {...(panelArchived

@@ -638,6 +638,19 @@ describe('escalate (T484, D56)', () => {
 });
 
 describe('settle_question (T502, D62)', () => {
+  test('T513: the briefs settle only on the operator’s own decision; a question back stays open', () => {
+    for (const name of ['worker.md', 'coordinator.md']) {
+      const brief = readFileSync(join(import.meta.dir, '..', '..', 'briefs', name), 'utf8').replace(
+        /\s+/g,
+        ' ',
+      );
+      expect(brief).toContain("only when the operator's own words decide it");
+      expect(brief).toContain('A reply that asks about the options');
+      expect(brief).toContain("doesn't decide them is no answer: reply with `progress`");
+      expect(brief).toContain('the question stays open');
+    }
+  });
+
   test('a node’s own agent settles its open question with what was decided; anyone else is refused', async () => {
     const questions = new QuestionService(store, streams);
     verbs = new VerbService({ store, streams, questions, rules });

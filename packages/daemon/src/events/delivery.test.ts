@@ -174,6 +174,10 @@ describe("T502 (D62): a reply in a question's thread", () => {
     const text = digestPrompt([reply]);
     expect(text).toContain('About your question "Store amounts how?": what does Stripe use?');
     expect(text).toContain(`\`settle_question\` with question ${id}`);
+    // T513: a question back about the options is no answer; it stays open.
+    expect(text).toContain("Only if the operator's own words decide it");
+    expect(text).toContain("If it asks about the options or doesn't decide them, it is no answer");
+    expect(text).toContain('leave the question open');
     expect(text).toContain('Reply to the operator on the stream first');
     expect(wakePrompt([reply], node)).toContain('settle_question');
     // A plain line says nothing about settling.

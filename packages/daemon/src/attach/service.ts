@@ -1252,61 +1252,6 @@ export class AttachService {
           .catch(() => undefined);
       }
     }
-    await streams.appendThread('daemon', stream.id, {
-      kind: 'event',
-      body: `${role} attached: ${settings.vendor}/${settings.model} effort=${settings.effort}${
-        worktreePath !== undefined ? ` in ${worktreePath}` : ''
-      }`,
-      ref: sessionId,
-    });
-    // T482: a routed pick says what it chose and why; an explicit pick outside the
-    // preset models says it runs as picked (D53). A kept pick says nothing new.
-    // T483, T490: a routed reviewer says so too.
-    const shown = pick ?? reviewerPick;
-    const pickLine =
-      shown === undefined || shown.how === 'kept' || shown.how === 'escalation'
-        ? undefined
-        : shown.how === 'explicit'
-          ? shown.note
-          : routedPickLine(
-              { ...shown, vendor: settings.vendor, model: settings.model },
-              this.routing().catalogModels(),
-            );
-    if (pickLine !== undefined) {
-      await streams.appendThread('daemon', stream.id, {
-        kind: 'event',
-        body: pickLine.slice(0, 800),
-        ref: sessionId,
-      });
-    }
-    // T484: the pending step is spent by this start: its line and record-only event, or,
-    // at the top of the ladder, the Needs me card. An explicit pick clears the card too.
-    if (routedStart) {
-      await this.routing()
-        .escalation.started(stream, {
-          ...(step !== undefined ? { step } : {}),
-          explicit: flagged,
-          ran: {
-            vendor: settings.vendor,
-            model: settings.model,
-            ...(providerTakesEffort(provider) ? { effort: settings.effort } : {}),
-          },
-          session: sessionId,
-        })
-        .catch((err) => console.error('escalation: the step was not recorded:', err));
-    }
-    await store.appendEvent(
-      buildEvent('agent_put', {
-        agent: sessionId,
-        data: {
-          stream: stream.id,
-          attached: true,
-          vendor: settings.vendor,
-          model: settings.model,
-          effort: settings.effort,
-        },
-      }),
-    );
     // 4. Spawn. T437: a spawn that throws (a sandbox or extension refusal) ends the
     // session it recorded: `error` with the reason, the node `blocked`, never "Working".
     let handle: AgentSessionHandle;
@@ -1388,6 +1333,64 @@ export class AttachService {
       throw err;
     }
     this.handles(role).set(stream.id, handle);
+    // T513: what this start runs is said once it started: a refused start (an untrusted or
+    // tracked-hook Codex, a sandbox refusal) never reads "attached", only its refusal. Begun
+    // before anything is awaited, so it comes before the agent's first line.
+    await streams.appendThread('daemon', stream.id, {
+      kind: 'event',
+      body: `${role} attached: ${settings.vendor}/${settings.model} effort=${settings.effort}${
+        worktreePath !== undefined ? ` in ${worktreePath}` : ''
+      }`,
+      ref: sessionId,
+    });
+    // T482: a routed pick says what it chose and why; an explicit pick outside the
+    // preset models says it runs as picked (D53). A kept pick says nothing new.
+    // T483, T490: a routed reviewer says so too.
+    const shown = pick ?? reviewerPick;
+    const pickLine =
+      shown === undefined || shown.how === 'kept' || shown.how === 'escalation'
+        ? undefined
+        : shown.how === 'explicit'
+          ? shown.note
+          : routedPickLine(
+              { ...shown, vendor: settings.vendor, model: settings.model },
+              this.routing().catalogModels(),
+            );
+    if (pickLine !== undefined) {
+      await streams.appendThread('daemon', stream.id, {
+        kind: 'event',
+        body: pickLine.slice(0, 800),
+        ref: sessionId,
+      });
+    }
+    // T484: the pending step is spent by this start: its line and record-only event, or,
+    // at the top of the ladder, the Needs me card. An explicit pick clears the card too.
+    if (routedStart) {
+      await this.routing()
+        .escalation.started(stream, {
+          ...(step !== undefined ? { step } : {}),
+          explicit: flagged,
+          ran: {
+            vendor: settings.vendor,
+            model: settings.model,
+            ...(providerTakesEffort(provider) ? { effort: settings.effort } : {}),
+          },
+          session: sessionId,
+        })
+        .catch((err) => console.error('escalation: the step was not recorded:', err));
+    }
+    await store.appendEvent(
+      buildEvent('agent_put', {
+        agent: sessionId,
+        data: {
+          stream: stream.id,
+          attached: true,
+          vendor: settings.vendor,
+          model: settings.model,
+          effort: settings.effort,
+        },
+      }),
+    );
     await this.setSessionStatus(stream.id, sessionId, 'running');
 
     // Findings already on the stream, so the reviewer's exit reports only its own.
@@ -2342,7 +2345,14 @@ export class AttachService {
         return;
       }
       if (role === 'reviewer') {
-        await this.onReviewerExit(streamId, sessionId, reason, findingsBefore);
+        // T513: a review is one turn (§2, D48): the daemon ends it, and its kill's exit code
+        // says nothing; the line says so, and where a message goes now.
+        await this.onReviewerExit(
+          streamId,
+          sessionId,
+          finishedTurn ? REVIEW_TURN_FINISHED : reason,
+          findingsBefore,
+        );
         return;
       }
       // The retro is not the stream's work: report on the thread, leave `agent.status`.
@@ -2839,6 +2849,14 @@ export class AttachService {
 
 /** T437: the progress line a failed start or a vendor crash leaves, so Needs me, Overview and Events say why. */
 export const FAILED_START_PREFIX = 'The agent couldn’t start: ';
+
+/**
+ * T513: why a reviewer's session ended when its turn did (design/cockpit-design.md
+ * §2, D48: a reviewer's turn still ends its session). A message after it goes to
+ * the node's agent, never the reviewer.
+ */
+export const REVIEW_TURN_FINISHED =
+  'its turn finished; a review is one turn: a message now goes to the node’s agent, not the reviewer';
 export const CRASHED_PREFIX = 'The agent stopped with an error: ';
 /**
  * T464: the node's most recent worker or coordinator session whose vendor

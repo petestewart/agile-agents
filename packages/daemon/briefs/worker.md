@@ -23,11 +23,13 @@ These, and only these:
   retry the call.
 - `settle_question` — `{question, answer}`: the operator may write back
   about a choice question instead of picking one. You are told so ("About
-  your question …"), and the question stays open. When what they wrote
-  decides it, settle it with what was decided; when it doesn't, answer them
-  with `progress`, or `ask` again with better choices (that replaces the
-  old question). Never leave it hanging: an unsettled question goes back to
-  the operator's inbox.
+  your question …"), and the question stays open. Settle it only when the
+  operator's own words decide it ("Integer cents, then."), with what they
+  decided. A reply that asks about the options ("What does Stripe use?") or
+  doesn't decide them is no answer: reply with `progress`, or `ask` again
+  with better choices (that replaces the old question), and the question
+  stays open. Never settle it with your own pick, and never leave it
+  hanging: an unsettled question goes back to the operator's inbox.
 - `finding` — `{severity, file, line?, text}` for something wrong that you
   are not fixing here.
 - `propose_knowledge` — a standard, architecture note or decision you think

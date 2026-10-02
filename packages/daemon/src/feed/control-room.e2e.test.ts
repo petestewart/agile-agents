@@ -14866,7 +14866,9 @@ describe('Chat threads (Playwright e2e, T503)', () => {
         expect(await page.locator(`${mark} [data-testid="thread-mark-state"]`).textContent()).toBe(
           'waiting on you',
         );
-        await waitForText(page, `${mark} [data-testid="thread-mark-count"]`, '3 replies');
+        // T513 (T509): its line before the question was said on the way to it: your reply and
+        // its question are the thread's replies; the line folds above the question.
+        await waitForText(page, `${mark} [data-testid="thread-mark-count"]`, '2 replies');
         expect(await page.locator('[data-testid="open-threads"]').textContent()).toContain(
           'Open threads (1)',
         );
@@ -14882,9 +14884,15 @@ describe('Chat threads (Playwright e2e, T503)', () => {
             ),
         ).toEqual([
           ['human', 'line'],
-          ['agent', 'line'],
           ['agent', 'question'],
         ]);
+        expect(
+          await page
+            .locator(
+              `${panel} [data-testid="thread-panel-fold"] [data-testid="thread-panel-folded"]`,
+            )
+            .textContent(),
+        ).toContain('It avoids drift');
         await page.locator(`${mark} [data-testid="thread-mark-unread"]`).waitFor({
           state: 'detached',
         });
@@ -15001,6 +15009,120 @@ describe('Chat threads (Playwright e2e, T503)', () => {
         await teardown([page]);
         await cockpit.stop();
         rmSync(promptLog, { force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Thread replies and unread (Playwright e2e, T513)', () => {
+  const TURN_TEXT = 'Use banker’s rounding for the cents. Keep one sheet per account.';
+
+  browserTest(
+    'a thread’s count is its replies (what the agent said on the way folds into its answer); opening it reads it: the mark, the chip and the rail row clear',
+    async () => {
+      const go = join(tmpdir(), `agile-t513-go-${ulid()}`);
+      const worker: FakeAgentScript = {
+        turns: [
+          [{ type: 'agent_text', text: TURN_TEXT }, { type: 'end_turn' }],
+          // Your reply in the thread: a line on the way, a step, then the answer.
+          [
+            { type: 'wait_for_file', path: go, timeoutMs: 60_000 },
+            { type: 'agent_text', text: 'Let me look at the ledger first.' },
+            { type: 'tool_call', toolCallId: 'look-1', title: 'read ledger.ts' },
+            { type: 'agent_text', text: 'It avoids drift when you sum many rows.' },
+            { type: 'end_turn' },
+          ],
+        ],
+        steps: [{ type: 'end_turn' }],
+      };
+      const cockpit = await startStreamCockpit([worker]);
+      let page: Page | undefined;
+      try {
+        const node = await cockpit.streams.create('human', {
+          title: 'Ledger',
+          goal: 'Store the amounts.',
+          repo: 'demo',
+        });
+        await cockpit.attach.attach(node.id);
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${node.id}`);
+        const turn = page.locator('[data-testid="thread-entry"][data-by="agent"]', {
+          hasText: 'Use banker’s rounding',
+        });
+        await turn.waitFor();
+        const session = cockpit.streams.get(node.id).sessions.find((s) => s.role === 'worker');
+        const idle = () =>
+          cockpit.streams.get(node.id).sessions.find((s) => s.id === session?.id)?.status ===
+          'idle';
+        await waitUntil('the first turn to end', idle);
+
+        await turn.hover();
+        await turn.locator('[data-testid="reply-in-thread"]').click();
+        const panel = '[data-testid="thread-panel"]';
+        const box = page.locator(`${panel} [data-testid="thread-reply-input"]`);
+        await box.fill('Why banker’s rounding?');
+        await box.press('Enter');
+        await page.locator(`${panel}:not([data-thread=""])`).waitFor();
+        const id = (await page.locator(panel).getAttribute('data-thread')) as string;
+        const mark = `[data-testid="thread-mark"][data-thread="${id}"]`;
+        await page.locator(mark).waitFor();
+
+        // Closed before it answers; it answers with a line on the way, a step, then the answer.
+        await page.locator('[data-testid="thread-panel-close"]').click();
+        await page.locator(panel).waitFor({ state: 'detached' });
+        writeFileSync(go, '');
+        await waitUntil('the reply turn to end', () =>
+          cockpit.streams
+            .readThread(node.id)
+            .entries.some((e) => e.body === 'It avoids drift when you sum many rows.'),
+        );
+        await waitUntil('the reply turn to end', idle);
+        // Two replies: yours and its answer. The line on the way is no reply, nor unread.
+        await waitForText(page, `${mark} [data-testid="thread-mark-count"]`, '2 replies');
+        await waitForText(page, `${mark} [data-testid="thread-mark-unread"]`, '1');
+        const railUnread = `[data-testid="stream-tree"] [data-stream="${node.id}"] [data-testid="tree-thread-unread"]`;
+        await waitForText(page, railUnread, '1');
+        const chip = page.locator('[data-testid="open-threads"]');
+        expect(await chip.textContent()).toContain('Open threads (1)');
+        expect(await chip.textContent()).toContain('1 unread');
+
+        // The chip opens it: the panel shows your line and the answer, the line on the way
+        // folded above the answer.
+        await chip.click();
+        await page.locator(`${panel}[data-thread="${id}"]`).waitFor();
+        expect(
+          await page
+            .locator(`${panel} [data-testid="thread-panel-entry"]`)
+            .evaluateAll((els) => els.map((el) => el.getAttribute('data-by'))),
+        ).toEqual(['human', 'agent']);
+        const fold = page.locator(`${panel} [data-testid="thread-panel-fold"]`);
+        expect(await fold.locator('summary').textContent()).toBe('1 earlier message on the way');
+        expect(await fold.locator('[data-testid="thread-panel-folded"]').textContent()).toContain(
+          'Let me look at the ledger first.',
+        );
+
+        // Read: the mark's dot, the chip's unread and the rail row's count clear.
+        await page.locator(`${mark} [data-testid="thread-mark-unread"]`).waitFor({
+          state: 'detached',
+        });
+        await page.locator(railUnread).waitFor({ state: 'detached' });
+        await waitUntilAsync('the chip to clear', async () => {
+          const text = (await chip.textContent()) ?? '';
+          return !text.includes('unread');
+        });
+        expect(await chip.getAttribute('data-unread')).toBeNull();
+        // And they stay clear after a reload.
+        await page.reload();
+        await page.locator(mark).waitFor();
+        expect(await page.locator(`${mark} [data-testid="thread-mark-unread"]`).count()).toBe(0);
+        expect(await page.locator(railUnread).count()).toBe(0);
+        expect(await chip.textContent()).not.toContain('unread');
+        expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(go, { force: true });
       }
     },
     TEST_BUDGET_MS,

@@ -72,7 +72,7 @@ export const REPLY_FIRST =
  */
 export function settleHint(ids: readonly string[]): string {
   const which = ids.length === 1 ? `question ${ids[0]}` : `the question (${ids.join(', ')})`;
-  return `That is a reply about your open question, not a pick: it stays open until you close it. If the reply decides it, call \`settle_question\` with ${which} and what was decided; if it doesn't, answer them with \`progress\`, or \`ask\` again with better choices.`;
+  return `That is a reply about your open question, not a pick: it stays open until you close it. Only if the operator's own words decide it, call \`settle_question\` with ${which} and what they decided. If it asks about the options or doesn't decide them, it is no answer: reply with \`progress\`, or \`ask\` again with better choices, and leave the question open.`;
 }
 
 /** T502: the question a human line is a reply about, when it is one. */

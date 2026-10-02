@@ -164,6 +164,15 @@ describe('agent verbs', () => {
     expect(AGENT_VERB_DESCRIPTIONS.settle_question).toContain('recorded as the answer');
   });
 
+  test('T513: settle_question is only for a reply that decides it; a question back is answered with progress', () => {
+    const text = AGENT_VERB_DESCRIPTIONS.settle_question;
+    expect(text).toContain('only when the operator wrote back');
+    expect(text).toContain('their own words decide it');
+    expect(text).toContain('A reply that asks about the options');
+    expect(text).toContain('reply with `progress`');
+    expect(text).toContain('the question stays open');
+  });
+
   test('T455: propose_repo takes a repo name and a why, and nothing else', () => {
     const input = validateVerbInput('propose_repo', {
       session,
