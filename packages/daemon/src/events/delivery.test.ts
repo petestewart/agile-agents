@@ -297,3 +297,52 @@ describe('T336: a woken session gets its events in the brief', () => {
     delivery.stop();
   });
 });
+
+describe('quiet events (T504, D65)', () => {
+  const archived = {
+    type: 'thread_archived' as const,
+    subject: node,
+    payload: {
+      thread: '2026-10-02T10:01:00.000Z',
+      on: '2026-10-02T10:00:00.000Z',
+      of: 'agent' as const,
+      quote: 'banker’s rounding',
+    },
+    by: 'human' as const,
+    routing: [{ node, because: 'self' as const }],
+  };
+
+  test('an archive notice alone starts no turn; it rides the next digest', async () => {
+    const { prompts, target } = fakeTarget();
+    const delivery = new SessionDelivery({ events, target: () => target, delayMs: 5 });
+    await events.emit(archived);
+    await Bun.sleep(40);
+    expect(prompts).toEqual([]);
+    expect(await delivery.flushWhenReady(node)).toBe(false);
+    expect(events.pendingFor(node)).toHaveLength(1);
+    await events.emit(line('carry on'));
+    await until(() => prompts.length === 1);
+    expect(prompts[0]).toContain('2 things arrived for you:');
+    expect(prompts[0]).toContain(
+      'The operator archived the thread on your message of 10:00 UTC (thread 2026-10-02T10:01:00.000Z), about the passage "banker’s rounding". Treat it as closed',
+    );
+    expect(prompts[0]).toContain('The operator wrote on the stream: carry on');
+    delivery.stop();
+  });
+
+  test('it wakes no agent, of any role', () => {
+    const stream = {
+      id: node,
+      sessions: [
+        { id: ulid(), role: 'coordinator', status: 'stopped', ended_reason: 'stopped: x' },
+      ],
+      agent: { status: 'idle' },
+      human: { status: 'open' },
+    } as unknown as Stream;
+    for (const role of ['work', 'conversation', 'coordinating', 'project'] as const) {
+      expect(wakeVerdict(stream, role, [{ type: 'thread_archived', subject: node } as never])).toBe(
+        'no_trigger',
+      );
+    }
+  });
+});
