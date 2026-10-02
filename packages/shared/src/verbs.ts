@@ -453,7 +453,7 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   escalate:
     'Ask for a stronger model at your next start ({why: what you tried and why it isn’t enough, one line}), e.g. when the tests still fail and you can’t see why. You can’t name the model: the next rung of the operator’s preset models is taken when this node’s agent next starts, never mid-turn. Finish or stop your turn after asking.',
   settle_question:
-    'Close one of your own open questions with what was decided ({question: Q-id, answer: the decision, one line}) when the operator wrote back about it instead of picking a choice and what they wrote decides it. It is recorded as the answer. If it doesn’t decide it, reply with `progress`, or `ask` again with better choices (that replaces the old question).',
+    'Close one of your own open questions ({question: Q-id, answer: the decision, one line}) only when the operator wrote back instead of picking a choice and their own words decide it ("Integer cents, then."). It is recorded as the answer. A reply that asks about the options ("What does Stripe use?") or doesn’t decide them is no answer: reply with `progress`, or `ask` again with better choices (that replaces the old question), and the question stays open. Never settle it with your own pick.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {
