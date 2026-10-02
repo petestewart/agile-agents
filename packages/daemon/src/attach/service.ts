@@ -822,16 +822,7 @@ export class AttachService {
     }
   }
 
-  /**
-   * T504 (D65, design/chat-threads.md §6a): Archive and forget's restart.
-   * The node's agent starts again fresh: no `session/load`, a new brief
-   * (which leaves the archived threads out), the same vendor, model and
-   * effort. A resting agent ends first; one working on a turn is refused
-   * (`AgentWorkingError`: it waits). A node whose agent never ran has
-   * nothing to forget: `undefined`. A closed or deleted node is not
-   * started: its next start is fresh anyway (`forgottenSince`).
-   * `agentWorking`: a turn is running (not resting): Archive and forget waits.
-   */
+  /** T504 (D65, §6a): a turn is running (not resting): Archive and forget waits. */
   agentWorking(streamId: string): boolean {
     const handle = this.agentHandle(streamId);
     return (
@@ -842,7 +833,15 @@ export class AttachService {
     );
   }
 
-  /** T504 (D65, §6a): Archive and forget's restart; see above. */
+  /**
+   * T504 (D65, design/chat-threads.md §6a): Archive and forget's restart.
+   * The node's agent starts again fresh: no `session/load`, a new brief
+   * (which leaves the archived threads out), the same vendor, model and
+   * effort. A resting agent ends first; one working on a turn is refused
+   * (`AgentWorkingError`: it waits). A node whose agent never ran has
+   * nothing to forget: `undefined`. A closed or deleted node is not
+   * started: its next start is fresh anyway (`forgottenSince`).
+   */
   async restartFresh(streamId: string, why: string): Promise<SessionRef | undefined> {
     const stream = this.options.streams.get(streamId);
     const handle = this.agentHandle(streamId);
