@@ -111,4 +111,15 @@ describe('the inline-code placeholder', () => {
     const html = renderMarkdown('CODE0 and `real`');
     expect(html).toBe('<p>CODE0 and <code>real</code></p>');
   });
+
+  test('underscores inside a word stay literal (an MCP tool name, snake_case)', () => {
+    expect(renderMarkdown('mcp__agile__progress is not an allowed command')).not.toContain(
+      '<strong>',
+    );
+    expect(renderMarkdown('read some_file_name here')).not.toContain('<em>');
+    expect(renderMarkdown('a __bold__ word and an _italic_ one')).toContain(
+      '<strong>bold</strong>',
+    );
+    expect(renderMarkdown('a __bold__ word and an _italic_ one')).toContain('<em>italic</em>');
+  });
 });

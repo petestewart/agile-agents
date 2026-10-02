@@ -24,6 +24,8 @@
  *   --bypass-hook-trust codex (T506): run Codex with --dangerously-bypass-hook-trust (--bypass-at front|end: where the flag
  *                      goes, default front). Every codex run goes through a CODEX_PATH wrapper that logs how codex-acp
  *                      invokes Codex and keeps Codex's stderr (report: codexInvokedAs, codexStderrTail)
+ *   --worktree         codex (T506 live check): run the agent in a git worktree of the fixture (<fixture>/.worktrees/w1),
+ *                      as the daemon does; --hooks-at worktree|main says where the project hook goes (default worktree)
  *   --codex-path <p>   codex: the Codex CLI the bridge runs (CODEX_PATH, as the daemon sets it since T480; default: `codex` on PATH)
  *   --fixture <dir>    use (and keep) this fixture dir instead of a new temp one, e.g. after trusting it in an interactive `codex`
  *   --matcher <m>      codex: the hook entry's matcher (default "Bash", the docs' example; C5's runs used "" and saw nothing)
@@ -145,6 +147,7 @@ const codexEnv: Record<string, string> = {};
 const earlyNotes: string[] = [];
 const report_note_early = (note: string) => { earlyNotes.push(note); };
 let codexUserHooks: { path: string; before: Buffer | null } | null = null;
+let deferredProjectHooks: unknown = null;
 if (vendor === "codex") {
   const which = require("node:child_process").spawnSync("sh", ["-c", "command -v codex"], { encoding: "utf8" });
   const realCodex = opt("codex-path") ?? (which.stdout ?? "").trim();
@@ -188,6 +191,8 @@ process.exit(0);
       writeFileSync(path, JSON.stringify(cfg, null, 2));
       const restore = () => { try { if (!codexUserHooks) return; if (codexUserHooks.before) writeFileSync(codexUserHooks.path, codexUserHooks.before); else rmSync(codexUserHooks.path, { force: true }); codexUserHooks = null; } catch {} };
       process.on("exit", restore); process.on("SIGINT", () => { restore(); process.exit(130); });
+    } else if (flag("worktree")) {
+      deferredProjectHooks = { hooks: { PreToolUse: [entry] } }; // written after the worktree exists (below)
     } else {
       mkdirSync(join(cwd, ".codex"), { recursive: true });
       writeFileSync(join(cwd, ".codex", "hooks.json"), JSON.stringify({ hooks: { PreToolUse: [entry] } }, null, 2));
@@ -209,8 +214,27 @@ exec ${JSON.stringify(codexEnv.CODEX_PATH)} ${args} 2>>${JSON.stringify(join(cwd
     codexEnv.CODEX_PATH = wrapper;
   }
 }
+if (flag("worktree")) writeFileSync(join(cwd, ".gitignore"), ".worktrees/\n.codex/\n*.log\nhook-calls.jsonl\n");
 spawnSyncQuiet("git", ["init", "-q"], cwd); spawnSyncQuiet("git", ["add", "."], cwd);
 spawnSyncQuiet("git", ["-c", "user.email=s@s", "-c", "user.name=s", "commit", "-qm", "init"], cwd);
+// T506 (live check, 2026-10-02): the daemon runs Codex in a git worktree (<repo>/.worktrees/<id>) with the hook in the
+// worktree's .codex/. --worktree does the same: the agent runs in <fixture>/.worktrees/w1, and --hooks-at says where the
+// project hook goes: `worktree` (default, as the daemon writes it) or `main` (the repo root, untracked), to see which
+// one Codex reads for a worktree.
+let agentCwd = cwd;
+if (flag("worktree")) {
+  const wt = join(cwd, ".worktrees", "w1");
+  if (!existsSync(wt)) spawnSyncQuiet("git", ["worktree", "add", "-q", wt, "-b", "w1"], cwd);
+  if (!existsSync(join(wt, "small.txt"))) { console.error(`--worktree: couldn't create the git worktree at ${wt}`); process.exit(2); }
+  agentCwd = wt;
+  if (deferredProjectHooks !== null) {
+    const at = opt("hooks-at", "worktree") === "main" ? cwd : wt;
+    mkdirSync(join(at, ".codex"), { recursive: true });
+    writeFileSync(join(at, ".codex", "hooks.json"), JSON.stringify(deferredProjectHooks, null, 2));
+    for (const other of [cwd, wt]) if (other !== at) rmSync(join(other, ".codex", "hooks.json"), { force: true });
+    report_note_early(`worktree run: agent in ${wt}, project hook in ${at}/.codex`);
+  }
+}
 function spawnSyncQuiet(c: string, a: string[], d: string) { try { require("node:child_process").spawnSync(c, a, { cwd: d, stdio: "ignore" }); } catch {} }
 
 // ---------- report ----------
@@ -234,7 +258,7 @@ let bridgeStderr = ""; // T506: the tail goes in the report, so a run shows what
 
 function start(env = process.env) {
   const [c, ...a] = cmd.split(" ");
-  proc = spawn(c, a, { cwd, env: { ...env, ...codexEnv, AGILE_SPIKE_FIXTURE: cwd }, stdio: ["pipe", "pipe", "pipe"] });
+  proc = spawn(c, a, { cwd: agentCwd, env: { ...env, ...codexEnv, AGILE_SPIKE_FIXTURE: cwd }, stdio: ["pipe", "pipe", "pipe"] });
   proc.stderr.on("data", (d) => { bridgeStderr = (bridgeStderr + d.toString()).slice(-4000); if (verbose) process.stderr.write(`[agent stderr] ${d}`); });
   proc.stdout.on("data", (d) => {
     buf += d.toString();
@@ -353,9 +377,9 @@ async function authenticateIfNeeded(err: any) {
 }
 async function newSession() {
   let r: any;
-  try { r = await request("session/new", { cwd, mcpServers: [] }); }
+  try { r = await request("session/new", { cwd: agentCwd, mcpServers: [] }); }
   catch (e: any) {
-    if (e?.code === -32000 || /auth/i.test(e?.message ?? "")) { await authenticateIfNeeded(e); r = await request("session/new", { cwd, mcpServers: [] }); }
+    if (e?.code === -32000 || /auth/i.test(e?.message ?? "")) { await authenticateIfNeeded(e); r = await request("session/new", { cwd: agentCwd, mcpServers: [] }); }
     else throw e;
   }
   report.session = { sessionId: r.sessionId, modes: r.modes, configOptions: r.configOptions };
@@ -438,7 +462,7 @@ async function scenarioResume() {
   buf = ""; pending.clear(); report.agentText = "";
   start(); await initialize();
   try {
-    await request("session/load", { sessionId: sid, cwd, mcpServers: [] });
+    await request("session/load", { sessionId: sid, cwd: agentCwd, mcpServers: [] });
     report.result.loadOk = true;
     const r = await prompt(sid, "What was the secret word? Reply with only the word.");
     report.result.recalled = /PINEAPPLE/i.test(report.agentText); report.result.stopReason = r?.stopReason;
@@ -467,7 +491,7 @@ async function scenarioExec() {
   if (!codex) { report.errors.push({ fatal: "no codex CLI found (--codex-path)" }); return; }
   const prompt = "Run these shell commands one at a time, then reply DONE with OK or REFUSED for each, quoting any refusal: 1) echo hi > out.txt 2) curl -s https://example.com | head -c 100";
   const r = require("node:child_process").spawnSync(codex, ["exec", "--skip-git-repo-check", prompt], {
-    cwd, env: { ...process.env, AGILE_SPIKE_FIXTURE: cwd }, encoding: "utf8", timeout: 240000,
+    cwd: agentCwd, env: { ...process.env, AGILE_SPIKE_FIXTURE: cwd }, encoding: "utf8", timeout: 240000,
   });
   report.result.execExit = r.status;
   report.result.execStdoutTail = String(r.stdout ?? "").slice(-2500);
@@ -496,7 +520,7 @@ async function scenarioExec() {
   }
   report.finishedAt = new Date().toISOString();
   const variant = vendor === "codex"
-    ? `${flag("hooks") ? "-hooks" : ""}${flag("user-hooks") ? "-userhooks" : ""}${flag("bypass-hook-trust") ? `-bypass${opt("bypass-at", "front") === "end" ? "end" : ""}` : ""}${fixtureOpt ? "-fixture" : ""}`
+    ? `${flag("hooks") ? "-hooks" : ""}${flag("user-hooks") ? "-userhooks" : ""}${flag("bypass-hook-trust") ? `-bypass${opt("bypass-at", "front") === "end" ? "end" : ""}` : ""}${fixtureOpt ? "-fixture" : ""}${flag("worktree") ? `-wt${opt("hooks-at", "worktree") === "main" ? "main" : ""}` : ""}`
     : flag("hooks") ? "-hooks" : "";
   const matcherTag = vendor === "codex" && opt("matcher") !== undefined ? `-m${(opt("matcher") || "empty").replace(/[^A-Za-z0-9]/g, "")}` : "";
   // A --cmd bridge other than the preset (e.g. a newer codex-acp) gets its version in the name, so runs don't overwrite.
