@@ -219,7 +219,12 @@ export class ChatThreads {
   }
 
   /** The node page's threads and batches, over `entries` (its loaded lines). */
-  forNode(id: string, entries?: readonly ThreadEntry[]): ChatThreadsOf {
+  forNode(
+    id: string,
+    entries?: readonly ThreadEntry[],
+    /** Read the node's questions (a thread's state needs them; its replies don't). */
+    withQuestions = true,
+  ): ChatThreadsOf {
     const node = this.sources.streams.get(id);
     const lines = entries ?? this.tail(id);
     if (!lines.some((e) => e.anchor !== undefined)) return { threads: [], batches: [] };
@@ -227,7 +232,9 @@ export class ChatThreads {
       node,
       entries: lines,
       activity: [...(this.sources.events?.activityFor(id, ACTIVITY_WINDOW) ?? [])].reverse(),
-      questions: (this.sources.questions?.list() ?? []).filter((q) => q.stream === id),
+      ...(withQuestions
+        ? { questions: (this.sources.questions?.list() ?? []).filter((q) => q.stream === id) }
+        : {}),
     });
   }
 
@@ -241,7 +248,7 @@ export class ChatThreads {
     if (known !== undefined && known.at === changedAt) return known.replies;
     let replies: ChatThreadReply[] = [];
     try {
-      replies = this.forNode(id)
+      replies = this.forNode(id, undefined, false)
         .threads.flatMap((t) =>
           t.reply_at !== undefined ? [{ thread: t.id, at: t.reply_at }] : [],
         )
