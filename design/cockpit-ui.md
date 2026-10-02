@@ -338,6 +338,12 @@ keeps a hollow dot's ring (stopped, waiting).
   agent's name; daemon lines as one-line system rows (icon + muted text) that
   collapse when there are several in a row. A long message folds with "Show
   more". Hover actions on a message: Copy, Branch off (conversations).
+  T509: within one turn of the agent, only its last message reads as the
+  reply; its earlier plain messages (its narration between steps, "Let me
+  ask the operator for approval:") fold into that reply's "Worked through N
+  steps", in order with the steps when it opens. A turn with one message is
+  unchanged; questions, gates, refusals and system rows are never folded.
+  Display only (`lib/steps.ts` `narrationFolds`).
   T446 (audit r7 #6): what a coordinator or the Director did on its own — a
   change it applied, a proposal it made, a node it created — is a system row
   with its own icon (a bot, the Director's sparkles), never its chat message,
@@ -559,6 +565,14 @@ keeps a hollow dot's ring (stopped, waiting).
   then send a message to start it again.", the empty-chat hero stays hidden
   under a failure, and Details → Agent says why a session ended in words
   ("Stopped with an error: <vendor line>" in red; a clean end in grey).
+  T508: a stop the daemon made (a failed start, an agent stopped with an
+  error, T506's Codex gate stops) is a card, in Needs me and under "Waiting
+  on you" at the end of the node's chat: its title says what happened
+  ("Codex’s gate didn’t run", "Codex can’t start here: its gate isn’t
+  trusted", "The agent couldn’t start"), its body why, then a **How to
+  fix:** line, and its one action restarts the agent (Restart agent, or Try
+  again for a start that failed). The grey system line stays as the record
+  (`lib/inbox.ts` `stopCardOf`).
 - **What a worker proposes next** (T427): an agent's `propose_next` line
   ("Proposal") reads as the node it proposes — "Next: **<title>**", the goal
   under it (T435) — and carries **Create node…**, which opens New node with

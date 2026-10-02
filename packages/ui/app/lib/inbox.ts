@@ -7,7 +7,13 @@
  * `bun test` covers it; `components/Inbox.tsx` only renders.
  */
 
-import { type InboxItem, inboxContext, repoOfProposalRef } from '@agile-agents/shared';
+import {
+  CODEX_UNGATED_REASON,
+  CODEX_UNTRUSTED_LEAD,
+  type InboxItem,
+  inboxContext,
+  repoOfProposalRef,
+} from '@agile-agents/shared';
 import type { CockpitFrame, CockpitProjectRow, CockpitStreamRow } from './feed-types';
 
 // ---------------------------------------------------------------- kinds
@@ -53,7 +59,8 @@ export function cardTitle(item: InboxItem): string {
     case 'done':
       return 'Ready to merge';
     case 'blocked':
-      return 'Blocked';
+      // T508: a stop the daemon made says which.
+      return stopCardOfItem(item)?.title ?? 'Blocked';
     case 'harness_update':
       return item.harness?.failed === true ? 'Update failed' : 'Update available';
     case 'model_stuck':
@@ -624,6 +631,9 @@ export function inboxLine(
     return doneCardOf(row) === 'no_changes' ? 'Nothing to merge' : undefined;
   }
   if (item.kind === 'question') return plainLine(questionView(item).text) || undefined;
+  // T508: a stop the daemon made reads as what happened, its title saying which.
+  const stop = stopCardOfItem(item);
+  if (stop !== undefined) return plainLine(stop.text) || undefined;
   return plainLine(item.context) || undefined;
 }
 
@@ -933,6 +943,92 @@ export function isAgentFailure(text: string): boolean {
   return /^The agent (couldn’t start|stopped with an error): /.test(text.trim());
 }
 
+/**
+ * T508: a node the daemon stopped (or wouldn't start), as a card: what
+ * happened, why, and what to do. It reads only the daemon's own failure
+ * notes (`isAgentFailure`): the two it writes for any agent (a start that
+ * failed, a session that stopped with an error), with T506's Codex gate
+ * stops in their own words. `restart` names the card's button: "Try again"
+ * for a start that failed, "Restart agent" for one that ran.
+ */
+export interface StopCard {
+  kind: 'codex_ungated' | 'codex_untrusted' | 'failed_start' | 'crashed';
+  title: string;
+  /** What happened and why, in plain words. */
+  text: string;
+  /** What to do, for the card's "How to fix" line. */
+  fix: string;
+  restart: 'Try again' | 'Restart agent';
+}
+
+const FAILED_START = 'The agent couldn’t start: ';
+const CRASHED = 'The agent stopped with an error: ';
+
+/** "/Users/pete/shop" from "Codex's gate isn't trusted here: trust /Users/pete/shop in Codex (…)". */
+function codexTrustRepo(reason: string): string | undefined {
+  if (!reason.startsWith(CODEX_UNTRUSTED_LEAD)) return undefined;
+  const rest = reason.slice(CODEX_UNTRUSTED_LEAD.length);
+  const at = rest.lastIndexOf(' in Codex');
+  const repo = (at >= 0 ? rest.slice(0, at) : rest).trim();
+  return repo === '' ? undefined : repo;
+}
+
+export function stopCardOf(text: string): StopCard | undefined {
+  const line = text.trim();
+  if (line.startsWith(FAILED_START)) {
+    const reason = line.slice(FAILED_START.length).trim();
+    if (reason.startsWith(CODEX_UNTRUSTED_LEAD)) {
+      const repo = codexTrustRepo(reason);
+      return {
+        kind: 'codex_untrusted',
+        title: 'Codex can’t start here: its gate isn’t trusted',
+        text: 'Codex checks its commands with a hook that runs only in a project Codex trusts. This one isn’t trusted, so the daemon didn’t start Codex: it would run unchecked.',
+        fix: `Trust ${repo !== undefined ? `\`${repo}\`` : 'the repository'} in Codex (open Codex there once and trust the folder), then try again.`,
+        restart: 'Try again',
+      };
+    }
+    return {
+      kind: 'failed_start',
+      title: 'The agent couldn’t start',
+      text: reason === '' ? 'The daemon couldn’t start it.' : reason,
+      fix: 'Fix its install or login, then try again.',
+      restart: 'Try again',
+    };
+  }
+  if (line.startsWith(CRASHED)) {
+    const reason = line.slice(CRASHED.length).trim();
+    if (reason.startsWith(CODEX_UNGATED_REASON)) {
+      return {
+        kind: 'codex_ungated',
+        title: 'Codex’s gate didn’t run',
+        text: 'Codex ran a command its hook never checked, so the daemon stopped it. Nothing it ran after that was allowed through.',
+        fix: 'The worktree isn’t a trusted Codex project, or Codex didn’t load `.codex/hooks.json`. Trust the repository in Codex (or turn its hooks on), then restart the agent.',
+        restart: 'Restart agent',
+      };
+    }
+    return {
+      kind: 'crashed',
+      title: 'The agent stopped with an error',
+      text: reason === '' ? 'Its process ended with an error.' : reason,
+      fix: 'Check its vendor is installed and logged in, then restart the agent.',
+      restart: 'Restart agent',
+    };
+  }
+  return undefined;
+}
+
+/** T508: a stop card's body: what happened, then the fix on its own line. */
+export function stopCardText(card: Pick<StopCard, 'text' | 'fix'>): string {
+  return `${card.text}\n\n**How to fix:** ${card.fix}`;
+}
+
+/** T508: a `blocked` item the daemon's stop raised (its card says why and offers a restart). */
+export function stopCardOfItem(
+  item: Pick<InboxItem, 'kind' | 'context' | 'detail'>,
+): StopCard | undefined {
+  return item.kind === 'blocked' ? stopCardOf(fullText(item)) : undefined;
+}
+
 // ---------------------------------------------------------------- T445: proposal lines
 
 /**
@@ -1019,6 +1115,7 @@ export function cardOutcome(
     mark: 'Marked as merged',
     close: 'Closed',
     reply: 'Sent',
+    restart: 'Agent started',
   };
   return words[key] ?? 'Done';
 }

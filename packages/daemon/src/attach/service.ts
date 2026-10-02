@@ -455,6 +455,8 @@ export class AttachService {
   private readonly stopReasons = new Map<string, string>();
   /** T341: sessions stopped because their turn finished with nothing open (the normal end). */
   private readonly turnFinished = new Set<string>();
+  /** T510: each live session's held calls raised before its current turn (`onTurnStart`). */
+  private readonly heldBeforeTurn = new Map<string, Set<string>>();
   /** T432: every session `stop()` ended: its exit code (a SIGTERM's) is no crash. */
   private readonly stopping = new Set<string>();
 
@@ -1365,6 +1367,7 @@ export class AttachService {
         onTurnEnd: (info) => {
           void this.onTurnEnd(stream.id, sessionId, role, info.queued);
         },
+        onTurnStart: () => this.onTurnStart(sessionId),
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -1499,6 +1502,49 @@ export class AttachService {
    * The routed call this session is waiting on: a gate that is `pending`,
    * or approved but not yet spent (the retry hasn't happened yet).
    */
+  /**
+   * T510: a turn starts: the session's held calls raised before it, so a
+   * verb can tell a call held in this turn from one held in an earlier turn.
+   */
+  private onTurnStart(sessionId: string): void {
+    try {
+      this.heldBeforeTurn.set(
+        sessionId,
+        new Set(
+          (this.options.gates?.list() ?? [])
+            .filter((gate) => gate.gate === 'classifier_review' && gate.session === sessionId)
+            .map((gate) => gate.id),
+        ),
+      );
+    } catch {
+      // The home was torn down: no turn to tell apart.
+      this.heldBeforeTurn.delete(sessionId);
+    }
+  }
+
+  /**
+   * T510: a call of `sessionId`'s that the route band holds for the human
+   * (an open `classifier_review` gate), raised in its current turn. A
+   * session whose turn start this daemon never saw counts every open one.
+   */
+  heldCallThisTurn(sessionId: string): HilRequest | undefined {
+    const before = this.heldBeforeTurn.get(sessionId);
+    try {
+      return this.options.gates
+        ?.list()
+        .find(
+          (gate) =>
+            gate.gate === 'classifier_review' &&
+            gate.session === sessionId &&
+            gate.status === 'pending' &&
+            before?.has(gate.id) !== true,
+        );
+    } catch {
+      // The home was torn down: "nothing open".
+      return undefined;
+    }
+  }
+
   private openGateFor(streamId: string, sessionId: string): HilRequest | undefined {
     try {
       return this.options.gates
@@ -2173,6 +2219,7 @@ export class AttachService {
   ): Promise<void> {
     const handles = this.handles(role);
     if (handles.get(streamId)?.sessionId === sessionId) handles.delete(streamId);
+    this.heldBeforeTurn.delete(sessionId);
     const detached = this.detaching.delete(sessionId);
     const stopReason = this.stopReasons.get(sessionId);
     this.stopReasons.delete(sessionId);

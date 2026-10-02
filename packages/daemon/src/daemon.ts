@@ -761,6 +761,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             : {}),
           // T484 (D56): `escalate`, and the quiet-turn count's `progress`.
           ...(modelPolicy ? { escalation: modelPolicy.escalation } : {}),
+          // T510: `ask` refuses while the caller's own call is held for the human this turn.
+          ...(attachService ? { heldCalls: attachService } : {}),
           // The three-proposal cap.
           proposalLimit: {
             assertCanPropose: (caller) => lessonsService?.assertCanPropose(caller),

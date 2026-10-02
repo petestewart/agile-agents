@@ -5,8 +5,10 @@ import {
   STEP_TITLE_MAX,
   applyStep,
   elapsedText,
+  foldItems,
   groupSteps,
   liveWindow,
+  narrationFolds,
   stepState,
   stepUpdateOf,
   stepView,
@@ -230,6 +232,120 @@ describe('groupSteps', () => {
     const entries = [you(1), { ...agent(3, 'hidden'), agent_only: true as const }, agent(6)];
     const { before } = groupSteps([step('b', 4), step('a', 2)], entries);
     expect(ids(before.get(2))).toEqual(['a', 'b']);
+  });
+});
+
+describe('T509: narration folds into the turn’s steps', () => {
+  const you = (s: number, body = 'do it') => ({
+    ts: at(s),
+    by: 'human',
+    kind: 'line' as const,
+    body,
+  });
+  const agent = (
+    s: number,
+    body: string,
+    kind: 'line' | 'question' = 'line',
+    by = 'agent:S-1',
+  ) => ({
+    ts: at(s),
+    by,
+    kind,
+    body,
+  });
+  const daemon = (s: number, body: string) => ({
+    ts: at(s),
+    by: 'daemon',
+    kind: 'event' as const,
+    body,
+  });
+  const ids = (list: readonly AgentStep[] | undefined) => (list ?? []).map((s) => s.id);
+
+  test('only the turn’s last message is the reply; the earlier ones fold into it', () => {
+    const entries = [
+      you(1),
+      agent(3, 'Let me look at the config.'),
+      agent(6, 'Found it; fixing.'),
+      agent(9, 'Done: the port is 8080 now.'),
+      daemon(10, 'turn finished'),
+    ];
+    const folded = narrationFolds(entries);
+    expect([...folded]).toEqual([
+      [1, 3],
+      [2, 3],
+    ]);
+    // The steps around the folded lines belong to the reply.
+    const steps = [step('a', 4), step('b', 7), step('c', 8)];
+    const { before } = groupSteps(steps, entries, { folded });
+    expect([...before.keys()]).toEqual([3]);
+    expect(ids(before.get(3))).toEqual(['a', 'b', 'c']);
+  });
+
+  test('a turn with one message is unchanged; your line and a turn’s end bound a turn', () => {
+    expect(narrationFolds([you(1), agent(2, 'Done.')]).size).toBe(0);
+    const entries = [
+      you(1),
+      agent(2, 'first turn'),
+      daemon(3, 'turn finished'),
+      daemon(4, 'woken by sibling reply'),
+      agent(5, 'second turn'),
+      you(6, 'and?'),
+      agent(7, 'third turn'),
+      daemon(8, 'session ended: its turn finished'),
+      agent(9, 'from a new session', 'line', 'agent:S-2'),
+    ];
+    expect(narrationFolds(entries).size).toBe(0);
+  });
+
+  test('questions and system lines are never folded; narration before a question folds into it', () => {
+    const entries = [
+      you(1),
+      agent(2, 'Let me ask the operator for approval:'),
+      daemon(3, 'hook_deny: routed to the human `Write package.json` — held'),
+      agent(4, 'Create package.json?', 'question'),
+    ];
+    expect([...narrationFolds(entries)]).toEqual([[1, 3]]);
+    // A question mid-turn stays where it is; the last message is still the reply.
+    const asked = [you(1), agent(2, 'Which port?', 'question'), agent(3, 'Using 8080 for now.')];
+    expect(narrationFolds(asked).size).toBe(0);
+  });
+
+  test('lines outside the main flow are skipped; a line a thread hangs on stays', () => {
+    const entries = [you(1), agent(2, 'a'), agent(3, 'in a thread'), agent(4, 'b'), agent(5, 'c')];
+    const folded = narrationFolds(entries, { shown: (i) => i !== 2, keep: (i) => i === 3 });
+    expect([...folded]).toEqual([[1, 4]]);
+  });
+
+  test('a running turn folds all but its latest message so far', () => {
+    const entries = [you(1), agent(2, 'Looking.'), agent(5, 'Reading the tests.')];
+    const folded = narrationFolds(entries);
+    expect([...folded]).toEqual([[1, 2]]);
+    const live = groupSteps([step('a', 3), step('b', 6)], entries, { live: true, folded });
+    expect(ids(live.before.get(2))).toEqual(['a']);
+    expect(ids(live.current)).toEqual(['b']);
+  });
+
+  test('the fold lists steps and narration in order, a line before a step of the same ms', () => {
+    const items = foldItems(
+      [step('a', 2), step('b', 4), step('c', 6)],
+      [
+        { ts: at(4), body: 'Now the tests.' },
+        { ts: at(1), body: 'Let me look.' },
+      ].sort((x, y) => (x.ts < y.ts ? -1 : 1)),
+    );
+    expect(items.map((i) => ('step' in i ? i.step.id : i.note.body))).toEqual([
+      'Let me look.',
+      'a',
+      'Now the tests.',
+      'b',
+      'c',
+    ]);
+  });
+
+  test('a fold with only messages says so', () => {
+    expect(stepsSummary([], 1).label).toBe('1 earlier message');
+    expect(stepsSummary([], 2).label).toBe('2 earlier messages');
+    expect(stepsSummary([step('a', 1)], 2).label).toBe('Worked through 1 step');
   });
 });
 

@@ -24,7 +24,9 @@
  *  - `proposal`     → Apply/Dismiss a change held at Advise (T282)
  *  - `done`         → Merge (T347, D36 D7; T416: the first one asks), View
  *                     changes; a refusal says why under it, with its fix
- *  - `blocked`      → a reply unblocks it (T416: "Reply to unblock…")
+ *  - `blocked`      → a reply unblocks it (T416: "Reply to unblock…"); T508:
+ *                     one the daemon stopped (or wouldn't start) says what
+ *                     happened, why and how to fix it, with a restart
  *  - `harness_update` → Update (runs the CLI's update, says the result in
  *                     words) and Dismiss (until a newer version) (T481)
  *
@@ -95,6 +97,8 @@ import {
   questionView,
   scopeWords,
   statusText,
+  stopCardOfItem,
+  stopCardText,
   waitingText,
 } from '../lib/inbox';
 import { distinctTitle } from '../lib/names';
@@ -1529,12 +1533,43 @@ export function Card({
     }
 
     case 'blocked': {
+      // T508: the daemon stopped the agent (or wouldn't start it): what happened, why, what to do.
+      const stop = stopCardOfItem(item);
+      const id = item.stream;
+      if (stop !== undefined) {
+        const main = shown(stopCardText(stop));
+        foldable = main.foldable;
+        body = <Markdown className="context" text={main.text} testId="inbox-context" />;
+        actions = (
+          <div className="cr-actions">
+            {id !== undefined && (
+              <Button
+                variant="primary"
+                size="sm"
+                icon="refresh"
+                data-testid="stop-restart"
+                busy={busy === 'restart'}
+                disabled={locked}
+                title={why()}
+                onClick={() => void act('restart', () => attachSession(id, 'worker'))}
+              >
+                {stop.restart}
+              </Button>
+            )}
+            {open && !full && (
+              <Button size="sm" iconRight="arrow-right" data-testid="stop-open" onClick={open}>
+                Open node
+              </Button>
+            )}
+          </div>
+        );
+        break;
+      }
       const main = shown(statusText(item));
       foldable = main.foldable;
       body = <Markdown className="context" text={main.text} testId="inbox-context" />;
       // T416 (finding 13): it's filed with the questions because it wants your words; a reply
       // unblocks it (a message to the node, which wakes its agent, or starts one).
-      const id = item.stream;
       if (id !== undefined) {
         actions = (
           <form

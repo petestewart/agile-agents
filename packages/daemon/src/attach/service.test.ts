@@ -27,6 +27,7 @@ import {
 } from '@agile-agents/acp-client';
 import {
   AGENT_LINE_MAX_CHARS,
+  type AgentId,
   type HilId,
   type Policy,
   type Question,
@@ -45,6 +46,7 @@ import { RoutedEventService } from '../events/service';
 import { stoppedByHuman } from '../events/wake';
 import { GateService } from '../gates/service';
 import { CODEX_UNGATED_REASON, HookSightings } from '../hook/codex';
+import { routeCall } from '../hook/route-band';
 import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
 import { KnowledgeService } from '../knowledge/service';
@@ -75,7 +77,7 @@ import {
   endedReason,
   idleEndReason,
 } from './service';
-import { VerbService } from './verbs';
+import { HELD_CALL_ASK_REFUSAL, VerbService } from './verbs';
 
 const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
 
@@ -1632,6 +1634,90 @@ describe('a gate and a question in the same turn (T145)', () => {
     expect(streams.get(stream.id).agent.status).toBe('question');
     expect(streams.get(stream.id).human.status).toBe('waiting_on_you');
     expect(questions.get(questionId as Question['id']).status).toBe('open');
+  }, 30_000);
+});
+
+describe('one approval ask, not two (T510)', () => {
+  const POLICY: Policy = {
+    gates: { land: 'human', rule_accept: 'human', classifier_review: 'human' },
+    breaker_signals: [],
+  };
+  /** The hook's route band holds a write for the human, as `agile hook pre-tool-use` does. */
+  const hold = async (stream: string, session: string, path: string) => {
+    const routed = await routeCall(gates, {
+      session,
+      stream,
+      policy: POLICY,
+      call: { tool: 'Write', path: join(scratch, path), fingerprint: Bun.hash(path).toString(16) },
+      reason: 'editing a dependency manifest is never automatic',
+    });
+    expect(routed.decision.decision).toBe('deny');
+    expect(routed.decision.reason).toContain("held for the human's approval");
+    return gates.get(routed.gate);
+  };
+
+  test('an ask while its own call is held this turn is refused; a call held in an earlier turn, or none, is not', async () => {
+    const first = join(scratch, 't510-first.flag');
+    const second = join(scratch, 't510-second.flag');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [{ type: 'end_turn' }],
+        turns: [
+          [
+            { type: 'agent_text', text: 'writing package.json' },
+            { type: 'tool_call', toolCallId: 'write-1', title: 'Write package.json' },
+            { type: 'wait_for_file', path: first },
+            { type: 'end_turn' },
+          ],
+          [
+            { type: 'agent_text', text: 'back at it' },
+            { type: 'tool_call', toolCallId: 'read-2', title: 'read package.json' },
+            { type: 'wait_for_file', path: second },
+            { type: 'end_turn' },
+          ],
+        ],
+      }),
+    );
+    verbs = new VerbService({ store, streams, questions, heldCalls: attachService });
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes('writing package.json'));
+    expect(attachService.heldCallThisTurn(session.id)).toBeUndefined();
+
+    // The route band holds the write; the agent then asks about the same thing.
+    const held = await hold(stream.id, session.id, 'package.json');
+    expect(attachService.heldCallThisTurn(session.id)?.id).toBe(held.id);
+    const before = threadBodies(stream.id);
+    await expect(
+      verbs.ask({
+        session: session.id,
+        text: 'Create package.json?',
+        options: ['Approve', 'Cancel'],
+      }),
+    ).rejects.toThrow(HELD_CALL_ASK_REFUSAL);
+    // No second card, and nothing on the chat.
+    expect(questions.listOpen()).toEqual([]);
+    expect(threadBodies(stream.id)).toEqual(before);
+
+    // The turn ends waiting on the card; your message starts the next turn.
+    writeFileSync(first, '');
+    await waitFor(
+      () => streams.get(stream.id).sessions.find((s) => s.id === session.id)?.status === 'idle',
+    );
+    await attachService.say(stream.id, 'what is the plan meanwhile?');
+    await waitFor(() => threadBodies(stream.id).includes('back at it'));
+    // Held in an earlier turn: an ask in this one is its own question.
+    expect(attachService.heldCallThisTurn(session.id)).toBeUndefined();
+    const asked = await verbs.ask({ session: session.id, text: 'Should the tests go first?' });
+    expect(questions.listOpen().map((q: Question) => q.id)).toEqual([asked.id as Question['id']]);
+    // A call held in this turn refuses again, until it is decided.
+    const again = await hold(stream.id, session.id, 'bun.lock');
+    await expect(verbs.ask({ session: session.id, text: 'Write bun.lock?' })).rejects.toThrow(
+      HELD_CALL_ASK_REFUSAL,
+    );
+    await gates.respond(again.id as HilId, 'deny', 'pete');
+    expect(attachService.heldCallThisTurn(session.id)).toBeUndefined();
+    writeFileSync(second, '');
   }, 30_000);
 });
 

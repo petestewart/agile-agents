@@ -173,6 +173,16 @@ describe('itemHeadline (T388): what it is and where, in words', () => {
     ).toBe('Director proposal on Ledger export format');
     expect(itemHeadline(item({ kind: 'done' }))).toBe('Ready to merge: Ledger export format');
     expect(itemHeadline(item({ kind: 'blocked' }))).toBe('Blocked: Ledger export format');
+    // T508: a stop the daemon made says which.
+    expect(
+      itemHeadline(
+        item({
+          kind: 'blocked',
+          context:
+            "The agent stopped with an error: Codex ran a command its gate never saw: its hook isn't trusted or didn't fire",
+        }),
+      ),
+    ).toBe('Codex’s gate didn’t run: Ledger export format');
   });
 
   test("the node's title comes from the rows when known, else the path", () => {
