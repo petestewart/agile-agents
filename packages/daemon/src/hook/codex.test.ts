@@ -320,6 +320,18 @@ describe("T511: the hook at the repo root (Codex reads a worktree's hooks from i
     expect(readFileSync(script, 'utf8')).toContain('AGILE_SOCKET_PATH=/n.sock');
   });
 
+  test('an unreadable hooks.json at the root is refused, never overwritten', () => {
+    const { repo, wt } = repoWithWorktree();
+    mkdirSync(join(repo, '.codex'));
+    writeFileSync(join(repo, '.codex', 'hooks.json'), '{"hooks": ');
+    const root = codexHookPlacement(wt, repo).root;
+    expect(() => writeCodexHooks(root, { agileBin: 'agile', repoRoot: repo })).toThrow(
+      `${join(repo, '.codex', 'hooks.json')} isn't valid JSON; Codex's gate can't be merged into it`,
+    );
+    expect(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8')).toBe('{"hooks": ');
+    expect(existsSync(join(repo, '.codex', 'agile-pre-tool-use.sh'))).toBe(false);
+  });
+
   test('a repo that tracks the script or hooks.json at its root is refused, never changed', () => {
     const { repo, wt } = repoWithWorktree();
     mkdirSync(join(repo, '.codex'));

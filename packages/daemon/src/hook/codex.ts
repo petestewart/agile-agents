@@ -189,14 +189,17 @@ export function writeCodexHooks(root: string, options: CodexHookOptions): CodexH
     }
   }
   const dir = join(root, CODEX_DIR);
-  mkdirSync(dir, { recursive: true });
   const script = join(dir, CODEX_GATE_SCRIPT);
-  writeIfChanged(script, renderCodexGateScript(options), 0o755);
-
   const path = join(dir, CODEX_HOOKS_FILE);
   let existing: Record<string, unknown> = {};
   if (existsSync(path)) {
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+      // Never overwritten: it may hold the operator's own hooks.
+      throw new Error(`${path} isn't valid JSON; Codex's gate can't be merged into it`);
+    }
     if (isPlainObject(parsed)) existing = parsed;
   }
   const existingHooks = isPlainObject(existing.hooks) ? existing.hooks : {};
@@ -210,6 +213,8 @@ export function writeCodexHooks(root: string, options: CodexHookOptions): CodexH
       ),
     },
   };
+  mkdirSync(dir, { recursive: true });
+  writeIfChanged(script, renderCodexGateScript(options), 0o755);
   writeIfChanged(path, `${JSON.stringify(merged, null, 2)}\n`);
   excludeFromGit(root, `${CODEX_DIR}/`);
   return merged;
