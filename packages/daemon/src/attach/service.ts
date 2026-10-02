@@ -53,6 +53,7 @@ import {
   type StreamPrincipal,
   type ThreadAnchor,
   type ThreadEntry,
+  compactCommandFor,
   isAgentRole,
   isConversationNode,
   liveChildrenOf,
@@ -63,6 +64,7 @@ import {
   routedPickLine,
   slashCommandOf,
   ulid,
+  ulidTime,
   uncheckedCommandsLine,
   validateStreamCreateInput,
   vendorRunsUnchecked,
@@ -96,6 +98,7 @@ import type { RuleStatsOutcome } from '../knowledge/service';
 import { repoScriptChecks } from '../permissions/command';
 import { nodeReadScope } from '../permissions/policy-tables';
 import { projectReadSettings } from '../permissions/posture';
+import { linesForAgent } from '../questions/chat-threads';
 import { type StartStep, escalationEndReason } from '../routing/escalation';
 import { CHOOSE_AGAIN_END_REASON, ModelPolicyService } from '../routing/policy';
 import type { AboutParent, BriefDoc, WipNode } from '../runner/brief';
@@ -271,6 +274,16 @@ export interface AttachOptions extends AttachFlags {
    * Without it, any flag is the operator's explicit pick (D53).
    */
   carried?: string;
+}
+
+/** T504 (D65, §6a): Archive and forget waits while the agent works on a turn. */
+export class AgentWorkingError extends Error {
+  constructor(title: string) {
+    super(
+      `${title}'s agent is working on a turn; archive and forget once it finishes (or archive it now)`,
+    );
+    this.name = 'AgentWorkingError';
+  }
 }
 
 /** `detach: true`: the human pulled the plug, not a shutdown. */
@@ -781,6 +794,99 @@ export class AttachService {
     }
   }
 
+  /**
+   * T504 (D65, design/chat-threads.md §6a): a node's lines as its agent is
+   * handed them again: no archived thread, no move or archive record.
+   */
+  linesForAgent(streamId: string, entries: readonly ThreadEntry[]): ThreadEntry[] {
+    if (!entries.some((e) => e.op !== undefined)) return [...entries];
+    return linesForAgent(entries, [...this.events.activityFor(streamId, 1000)].reverse());
+  }
+
+  /**
+   * T504 (D65, §6a): an Archive and forget was recorded after session
+   * `sessionId` started (its id's time), so that session's context still
+   * holds what was forgotten: it is never resumed.
+   */
+  private forgottenSince(streamId: string, sessionId: string): boolean {
+    const started = ulidTime(sessionId);
+    if (Number.isNaN(started)) return false;
+    try {
+      return this.options.store
+        .readThread(streamId)
+        .some(
+          (e) => e.op?.type === 'archive' && e.op.forget === true && Date.parse(e.ts) >= started,
+        );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * T504 (D65, design/chat-threads.md §6a): Archive and forget's restart.
+   * The node's agent starts again fresh: no `session/load`, a new brief
+   * (which leaves the archived threads out), the same vendor, model and
+   * effort. A resting agent ends first; one working on a turn is refused
+   * (`AgentWorkingError`: it waits). A node whose agent never ran has
+   * nothing to forget: `undefined`. A closed or deleted node is not
+   * started: its next start is fresh anyway (`forgottenSince`).
+   * `agentWorking`: a turn is running (not resting): Archive and forget waits.
+   */
+  agentWorking(streamId: string): boolean {
+    const handle = this.agentHandle(streamId);
+    return (
+      handle !== undefined &&
+      !handle.stopped() &&
+      !this.resting.has(handle.sessionId) &&
+      handle.turnsInFlight() > 0
+    );
+  }
+
+  /** T504 (D65, §6a): Archive and forget's restart; see above. */
+  async restartFresh(streamId: string, why: string): Promise<SessionRef | undefined> {
+    const stream = this.options.streams.get(streamId);
+    const handle = this.agentHandle(streamId);
+    const live = handle !== undefined && !handle.stopped() ? handle : undefined;
+    if (this.agentWorking(streamId)) throw new AgentWorkingError(stream.title);
+    const was =
+      live !== undefined
+        ? stream.sessions.find((s) => s.id === live.sessionId)
+        : lastAgentSession(stream, () => true);
+    if (was === undefined) return undefined;
+    if (
+      live === undefined &&
+      (stream.archived === true ||
+        stream.human.status === 'closed' ||
+        stream.human.status === 'landed')
+    ) {
+      return undefined;
+    }
+    // Held so no wake starts (or resumes) an agent in the gap; pending events go to the new one.
+    const release = this.delivery.hold(streamId);
+    try {
+      if (live !== undefined) await this.stop(streamId, live.role, { reason: why });
+      const result = await this.attach(streamId, {
+        vendor: was.vendor,
+        ...(was.model !== 'default' ? { model: was.model } : {}),
+        ...(was.effort !== undefined ? { effort: was.effort } : {}),
+        carried: why,
+      });
+      return result.session;
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * T504 (D65, §6a): the compact command Compact now sends the node's live
+   * agent, when its vendor's takes instructions (`COMPACT_COMMANDS`) and
+   * the agent advertises it; undefined otherwise (the button isn't offered).
+   */
+  compactCommand(streamId: string): string | undefined {
+    const { vendor, commands, running } = this.commandsFor(streamId);
+    return running ? compactCommandFor(vendor, commands) : undefined;
+  }
+
   /** T396: an agent start for the node is in flight (a wake or a line need not start another). */
   private startingAgent(streamId: string): boolean {
     return this.starting.has(startKey(streamId, 'worker'));
@@ -1025,7 +1131,8 @@ export class AttachService {
       role,
       stream,
       ancestors,
-      thread: streams.readThread(stream.id, { limit: 500 }).entries,
+      // T504 (D65, §6a): never the archived threads, nor the cockpit's own records.
+      thread: this.linesForAgent(stream.id, streams.readThread(stream.id, { limit: 500 }).entries),
       docs: this.options.docs?.docsForStream(stream.id) ?? [],
       // §5.3: the accepted rules in scope for this stream and its ancestors.
       rules: this.options.rules?.inScope(stream.id) ?? [],
@@ -1063,9 +1170,14 @@ export class AttachService {
     });
     // T465 (D48): a start with something to hand over resumes the node's last
     // session, when the vendor can and nothing about the agent changed.
-    const resumeFrom =
+    const resumable =
       wake !== undefined && options.briefAppendix === undefined
         ? resumableSession(stream, role, settings, provider)
+        : undefined;
+    // T504 (D65, §6a): after an Archive and forget, a session from before it is never resumed.
+    const resumeFrom =
+      resumable !== undefined && !this.forgottenSince(stream.id, resumable.id)
+        ? resumable
         : undefined;
     // The lessons material rides after the brief, never inside it (the
     // brief's own ceiling protects its parts; the caller caps the appendix).

@@ -19,9 +19,11 @@
  */
 
 import {
+  CHAT_MAIN,
   CHAT_THREAD_ENTRIES_MAX,
   CHAT_THREAD_REPLIES_MAX,
   type ChatBatch,
+  type ChatMove,
   type ChatThread,
   type ChatThreadReply,
   type ChatThreadState,
@@ -30,6 +32,7 @@ import {
   type RoutedEvent,
   type Stream,
   type ThreadEntry,
+  chatThreadOpsOf,
   isAgentRole,
   questionIdOfThreadRef,
 } from '@agile-agents/shared';
@@ -62,6 +65,13 @@ export interface ChatThreadsInput {
 export interface ChatThreadsOf {
   threads: ChatThread[];
   batches: ChatBatch[];
+  /** T504 (§6): lines shown somewhere other than where they were written. */
+  moves: ChatMove[];
+}
+
+/** T504: a line that is no message of a thread: a recorded change, or one written for the agent. */
+function notAMessage(entry: ThreadEntry): boolean {
+  return entry.op !== undefined || entry.agent_only === true;
 }
 
 /** The chat thread a delivered human line is a reply in (its payload's `thread.id`). */
@@ -88,7 +98,9 @@ export function chatThreadsOf(input: ChatThreadsInput): ChatThreadsOf {
   for (const e of entries) {
     if (e.anchor !== undefined && e.thread === e.ts) starts.set(e.ts, e);
   }
-  if (starts.size === 0) return { threads: [], batches: [] };
+  if (starts.size === 0) return { threads: [], batches: [], moves: [] };
+  // T504: moves, archives and promotions, read back from their lines.
+  const ops = chatThreadOpsOf(entries);
 
   // By field.
   const members = new Map<string, Set<string>>();
@@ -98,7 +110,7 @@ export function chatThreadsOf(input: ChatThreadsInput): ChatThreadsOf {
     members.set(thread, set);
   };
   for (const e of entries) {
-    if (e.thread !== undefined && starts.has(e.thread)) add(e.thread, e.ts);
+    if (e.thread !== undefined && starts.has(e.thread) && !notAMessage(e)) add(e.thread, e.ts);
   }
 
   // By cause: a turn one thread's reply woke posts there; a mixed one is a batch.
@@ -124,6 +136,30 @@ export function chatThreadsOf(input: ChatThreadsInput): ChatThreadsOf {
   }
 
   const byTs = new Map(entries.map((e) => [e.ts, e]));
+
+  // T504 (§6): Move to thread / Move to main, display only: the latest move of a line wins,
+  // and a line moved back where it was written is not moved.
+  const moves: ChatMove[] = [];
+  if (ops.moves.size > 0) {
+    const written = new Map<string, string>();
+    for (const [thread, set] of members) for (const ts of set) written.set(ts, thread);
+    for (const [entry, move] of ops.moves) {
+      if (!byTs.has(entry) || starts.has(entry)) continue;
+      const from = written.get(entry) ?? CHAT_MAIN;
+      if (move.to === from) continue;
+      if (move.to !== CHAT_MAIN && !starts.has(move.to)) continue;
+      if (from !== CHAT_MAIN) members.get(from)?.delete(entry);
+      if (move.to !== CHAT_MAIN) add(move.to, entry);
+      moves.push({ entry, from, to: move.to, at: move.at });
+    }
+    const moved = new Set(moves.filter((m) => m.to !== CHAT_MAIN).map((m) => m.entry));
+    for (let i = batches.length - 1; i >= 0; i--) {
+      const batch = batches[i] as ChatBatch;
+      const left = batch.entries.filter((ts) => !moved.has(ts));
+      if (left.length === 0) batches.splice(i, 1);
+      else batches[i] = { ...batch, entries: left };
+    }
+  }
   const questionsById = new Map<string, Question>(
     (input.questions ?? []).map((q) => [q.id as string, q]),
   );
@@ -184,9 +220,46 @@ export function chatThreadsOf(input: ChatThreadsInput): ChatThreadsOf {
       ...(others.length > 0 ? { reply_at: (others.at(-1) as ThreadEntry).ts } : {}),
       ...(open.length > 0 ? { questions: [...new Set(open)].slice(0, 50) } : {}),
       ...(vendor !== undefined ? { vendor: vendor.slice(0, 80) } : {}),
+      ...(() => {
+        const archived = ops.archived.get(id);
+        const promoted = ops.promoted.get(id);
+        return {
+          ...(archived !== undefined ? { archived } : {}),
+          ...(promoted !== undefined ? { promoted } : {}),
+        };
+      })(),
     });
   }
-  return { threads: threads.sort((a, b) => a.id.localeCompare(b.id)), batches };
+  return { threads: threads.sort((a, b) => a.id.localeCompare(b.id)), batches, moves };
+}
+
+/** T504: the recorded changes an agent is still shown: a promotion (the thread goes on as a tangent). */
+function agentSeesOp(entry: ThreadEntry): boolean {
+  return entry.op?.type === 'promote';
+}
+
+/**
+ * T504 (D65, design/chat-threads.md §6a): a node's lines as its agent is
+ * handed them again (a brief, `read_stream`): without the cockpit's own
+ * records (moves are display only; an archive is told once, as an event)
+ * and without the archived threads, as the chat shows them: their lines by
+ * field, by cause and moved in, and anything written in them.
+ */
+export function linesForAgent(
+  entries: readonly ThreadEntry[],
+  activity: readonly ThreadActivity[] = [],
+): ThreadEntry[] {
+  const kept = (e: ThreadEntry) => e.op === undefined || agentSeesOp(e);
+  const ops = chatThreadOpsOf(entries);
+  if (ops.archived.size === 0) return entries.filter(kept);
+  const hidden = new Set<string>();
+  for (const thread of chatThreadsOf({ node: { id: '', sessions: [] }, entries, activity })
+    .threads) {
+    if (thread.archived !== undefined) for (const ts of thread.entries) hidden.add(ts);
+  }
+  return entries.filter(
+    (e) => kept(e) && !hidden.has(e.ts) && !(e.thread !== undefined && ops.archived.has(e.thread)),
+  );
 }
 
 export interface ChatThreadSources {
@@ -227,7 +300,7 @@ export class ChatThreads {
   ): ChatThreadsOf {
     const node = this.sources.streams.get(id);
     const lines = entries ?? this.tail(id);
-    if (!lines.some((e) => e.anchor !== undefined)) return { threads: [], batches: [] };
+    if (!lines.some((e) => e.anchor !== undefined)) return { threads: [], batches: [], moves: [] };
     return chatThreadsOf({
       node,
       entries: lines,
@@ -235,6 +308,27 @@ export class ChatThreads {
       ...(withQuestions
         ? { questions: (this.sources.questions?.list() ?? []).filter((q) => q.stream === id) }
         : {}),
+    });
+  }
+
+  /** T504: `entries` (the node's lines) as its agent is handed them again (`linesForAgent`). */
+  linesForAgent(id: string, entries: readonly ThreadEntry[]): ThreadEntry[] {
+    if (!entries.some((e) => e.op !== undefined)) return [...entries];
+    return linesForAgent(
+      entries,
+      [...(this.sources.events?.activityFor(id, ACTIVITY_WINDOW) ?? [])].reverse(),
+    );
+  }
+
+  /** T504 (§7): a chat thread's lines as the chat shows them, oldest first (Promote to tangent). */
+  linesOf(id: string, thread: string): ThreadEntry[] | undefined {
+    const lines = this.tail(id);
+    const found = this.forNode(id, lines, false).threads.find((t) => t.id === thread);
+    if (found === undefined) return undefined;
+    const byTs = new Map(lines.map((e) => [e.ts, e]));
+    return found.entries.flatMap((ts) => {
+      const e = byTs.get(ts);
+      return e !== undefined ? [e] : [];
     });
   }
 
@@ -249,8 +343,11 @@ export class ChatThreads {
     let replies: ChatThreadReply[] = [];
     try {
       replies = this.forNode(id, undefined, false)
+        // T504: an archived thread has nothing for you to read.
         .threads.flatMap((t) =>
-          t.reply_at !== undefined ? [{ thread: t.id, at: t.reply_at }] : [],
+          t.reply_at !== undefined && t.archived === undefined
+            ? [{ thread: t.id, at: t.reply_at }]
+            : [],
         )
         .sort((a, b) => b.at.localeCompare(a.at))
         .slice(0, CHAT_THREAD_REPLIES_MAX);

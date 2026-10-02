@@ -6,7 +6,7 @@
 
 import { existsSync } from 'node:fs';
 import { ACP_PROVIDERS, type spawnSession } from '@agile-agents/acp-client';
-import { isHarnessId, trackerStatus } from '@agile-agents/shared';
+import { type ThreadEntry, isHarnessId, trackerStatus } from '@agile-agents/shared';
 import daemonPackageJson from '../package.json' with { type: 'json' };
 import { AttachService, VerbService, buildAttachRpcMethods } from './attach';
 import {
@@ -76,6 +76,7 @@ import { LessonsService } from './lessons';
 import { type LockHandle, acquireLock } from './lock';
 import { ProjectService, buildProjectRpcMethods } from './projects';
 import {
+  ChatThreads,
   QuestionService,
   QuestionThreads,
   buildQuestionRpcMethods,
@@ -237,6 +238,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         },
         // T361: a live agent follows its node's role change (read lazily; built below).
         onTreeChanged: async (nodes): Promise<void> => attachService?.followRoles(nodes),
+        // T504 (§7): a promoted thread's lines as the chat shows them (read lazily; built below).
+        threadLines: (node, thread): ThreadEntry[] | undefined =>
+          chatThreads?.linesOf(node, thread),
       })
     : undefined;
   // T283: status cards; `read_card` and the cockpit read them.
@@ -533,6 +537,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(routedEvents ? { events: routedEvents } : {}),
         })
       : undefined;
+  // T503/T504: chat threads on a node's turns (the node page, the rail, a promotion's seed).
+  const chatThreads: ChatThreads | undefined = streamService
+    ? new ChatThreads({
+        streams: streamService,
+        ...(questionService ? { questions: questionService } : {}),
+        ...(routedEvents ? { events: routedEvents } : {}),
+      })
+    : undefined;
   if (questionService) {
     openQuestionOf = (node) => {
       const open = questionService.listOpen().filter((q) => q.stream === node);
@@ -1038,6 +1050,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(directorService ? { director: directorService } : {}),
     questions: questionService,
     ...(questionThreads ? { questionThreads } : {}),
+    ...(chatThreads ? { chatThreads } : {}),
     inbox: inboxService,
     ...(rulesService ? { rules: rulesService } : {}),
     ...(rulesService && ruleEvals ? { ruleEvals } : {}),

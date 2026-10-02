@@ -393,6 +393,47 @@ export class QuestionService {
     return open.filter((q) => replied.has(q.id));
   }
 
+  /**
+   * T504 (D65, design/chat-threads.md §6a): the operator archived the chat
+   * thread question `id` was asked in, so it settles nothing: it closes as
+   * `withdrawn`, by you, with a daemon line; nothing is delivered (the
+   * archive notice tells the agent). The node no longer waits on you for it.
+   */
+  async withdraw(id: QuestionId, why: string): Promise<Question> {
+    const current = this.get(id);
+    if (current.status !== 'open') throw new QuestionAlreadyAnsweredError(id);
+    const saved = await this.persist({
+      ...current,
+      status: 'answered',
+      answer: normalizeText(`withdrawn: ${why}`),
+      resolved_as: 'withdrawn',
+      answered_by: 'human',
+      answered_at: this.clock().toISOString(),
+    });
+    await this.streams.appendThread('daemon', saved.stream, {
+      kind: 'event',
+      body: `question withdrawn: ${why}`.slice(0, 800),
+      ref: questionPath(saved.id),
+    });
+    if (!this.listOpen().some((q) => q.stream === saved.stream)) {
+      const node = this.streams.get(saved.stream);
+      if (node.human.status === 'waiting_on_you') {
+        await this.streams
+          .update('daemon', saved.stream, { human: { status: 'open' } })
+          .catch(() => {});
+      }
+    }
+    await this.store.appendEvent(
+      buildEvent('question_answered', {
+        stream: saved.stream,
+        agent: 'human',
+        ...(saved.session !== undefined ? { session: saved.session } : {}),
+        data: { id: saved.id, withdrawn: true },
+      }),
+    );
+    return saved;
+  }
+
   /** T502 (D62): asked again: the earlier question is superseded by the newer one, its thread carrying on. */
   private async supersedeByQuestion(earlier: Question, newer: Question): Promise<void> {
     const saved = await this.persist({

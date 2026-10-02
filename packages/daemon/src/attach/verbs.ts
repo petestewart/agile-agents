@@ -43,7 +43,9 @@ import { summaryOf } from '../events/delivery';
 import type { EmitRouted } from '../events/producers';
 import { type KnowledgeService, worktreeRelativePaths } from '../knowledge/service';
 import { canReadRepo } from '../permissions/visibility';
+import { linesForAgent } from '../questions/chat-threads';
 import type { QuestionService } from '../questions/service';
+import type { ThreadActivity } from '../questions/threads';
 import type { EscalationService } from '../routing/escalation';
 import { NotFoundError, type StateStore } from '../store';
 import type { StreamService } from '../streams/service';
@@ -127,7 +129,11 @@ export interface VerbServiceOptions {
   rules?: KnowledgeService;
   /** §5.5's "at most three" proposals from a lessons session, enforced as a gate. */
   /** T244: `read_event`'s read side (`RoutedEventService`). */
-  events?: { get(id: string): RoutedEvent | undefined };
+  events?: {
+    get(id: string): RoutedEvent | undefined;
+    /** T504: deliveries, so `read_stream` leaves out an archived thread's lines by cause. */
+    activityFor?(node: string, limit?: number): readonly ThreadActivity[];
+  };
   /** T246: `deliver`'s write side (`DeliveryService.push`). */
   delivery?: { push(stream: string): Promise<unknown> };
   /** T283: `read_card`'s read side. */
@@ -602,12 +608,17 @@ export class VerbService {
     const caller = this.caller(session);
     const page = this.options.streams.readThread(caller.stream, { limit: 500 });
     const take = limit ?? 20;
+    // T504 (D65, §6a): an archived thread is never re-sent, nor the cockpit's own records.
+    const lines = page.entries.some((e) => e.op !== undefined)
+      ? linesForAgent(
+          page.entries,
+          [...(this.options.events?.activityFor?.(caller.stream, 1000) ?? [])].reverse(),
+        )
+      : page.entries;
     return {
       stream: caller.stream,
       // T330: an agent line may run to 16k chars; the tool result quotes the head.
-      entries: page.entries
-        .slice(-take)
-        .map((entry) => ({ ...entry, body: quoteThreadBody(entry.body) })),
+      entries: lines.slice(-take).map((entry) => ({ ...entry, body: quoteThreadBody(entry.body) })),
       total: page.total,
     };
   }
