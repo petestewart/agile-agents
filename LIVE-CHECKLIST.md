@@ -1911,21 +1911,40 @@ Claude login (then Codex, Gemini, if you have them):
       Back on the conversation, the thread's panel reads "Promoted to a
       tangent: <title>", and the link opens it.
 
-## 24. **[vendor]** Codex is gated by its own PreToolUse hook (T506)
+## 24. **[vendor]** Codex is gated by its own PreToolUse hook (T506, T511)
 
-The daemon writes `<worktree>/.codex/hooks.json` (matchers `Bash`,
-`apply_patch|Edit|Write`, `mcp__.*`) and `.codex/agile-pre-tool-use.sh`, which
-runs `agile hook pre-tool-use --vendor codex`: Codex's commands and edits go
-through the same rules, classifier and Needs me as Claude's
-(design/spike-findings.md §C5, "as built"). The hook loads only in a project
-Codex trusts; the daemon reads `$CODEX_HOME/config.toml` (default
-`~/.codex/config.toml`) and never writes it. Needs a Codex login, and a repo
-under a path your Codex config trusts (`[projects."<dir>"]` with
-`trust_level = "trusted"`, the repo or an ancestor such as your home).
+For a git worktree Codex reads project hooks from the main repo, not the
+worktree (design/spike-findings.md §C5 round 4), so the daemon writes the hook
+at the root of the repo the node's worktree belongs to: `<repo>/.codex/hooks.json`
+(matchers `Bash`, `apply_patch|Edit|Write`, `mcp__.*`; anything else already in
+the file is kept) and `<repo>/.codex/agile-pre-tool-use.sh`, which runs
+`agile hook pre-tool-use --vendor codex --repo <repo>`. A call from under
+`<repo>/.worktrees/` goes through the same rules, classifier and Needs me as
+Claude's; any other call (your own Codex in the repo) is allowed with no daemon
+call. `.codex/` is in the repo's `.git/info/exclude`. A node with no repo (and
+the Director) keeps the hook in its own session dir, every call gated. The hook
+loads only in a project Codex trusts; the daemon checks the repo root against
+`$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) and never writes it.
+Needs a Codex login, and a repo under a path your Codex config trusts
+(`[projects."<dir>"]` with `trust_level = "trusted"`, the repo or an ancestor
+such as your home).
 
-- [ ] Start a node on Codex in a trusted repo. `<worktree>/.codex/hooks.json`
-      and `agile-pre-tool-use.sh` exist; `git status` in the worktree does
-      not list `.codex/`. The thread has no "runs commands unchecked" line.
+- [ ] Start a node on Codex in a trusted repo. `<repo>/.codex/hooks.json` and
+      `<repo>/.codex/agile-pre-tool-use.sh` exist (the script's last line ends
+      `--vendor codex --repo <repo> || exit 2`); the worktree has no `.codex/`.
+      `git status` in the repo and in the worktree lists nothing new. The
+      thread has no "runs commands unchecked" line.
+- [ ] **Re-check (T511):** ask it to run `ls` and then
+      `curl -sI https://example.com`. The node keeps working after `ls` (no
+      "Codex ran a command its gate never saw" stop: the hook fired), and the
+      `curl` is blocked as below. `log/events.jsonl` has a `hook_decision` for
+      each.
+- [ ] Your own Codex is not gated: in a terminal at the repo root (not under
+      `.worktrees/`), run `codex` and ask it to run `curl -sI https://example.com`.
+      It runs with no block, no Needs me card, and no `hook_decision` in
+      `log/events.jsonl`, also with the daemon stopped.
+- [ ] Two Codex nodes in the same repo both run gated; the repo's
+      `.codex/hooks.json` has one set of the three matchers.
 - [ ] Ask it to run `curl -sI https://example.com`. The gate answers as it
       does for Claude (today an engineer's `curl` is refused: "curl is not an
       allowed command for the engineer role"; if your rules or posture hold
@@ -1948,7 +1967,11 @@ under a path your Codex config trusts (`[projects."<dir>"]` with
       --matcher apply_patch` logs it to `hook-calls.jsonl`).
 - [ ] Ask it to run `ls` and edit a file inside the worktree: both run with
       no card (allowed), and the node keeps working (no fail-closed stop).
-- [ ] An untrusted worktree is refused: register a repo outside every
+- [ ] A repo that tracks `.codex/hooks.json` is refused: commit a
+      `.codex/hooks.json` in a scratch repo, start a Codex node there. Needs me
+      reads "…tracks .codex/hooks.json; Codex's gate would change a tracked
+      file…", and the file is unchanged.
+- [ ] An untrusted repo is refused: register a repo outside every
       trusted path in your Codex config (e.g. under `/tmp`), start a node on
       Codex there. It does not start: Needs me reads "The agent couldn’t
       start: Codex's gate isn't trusted here: trust <repo> in Codex (…)",
@@ -1956,12 +1979,12 @@ under a path your Codex config trusts (`[projects."<dir>"]` with
       trust_level = "trusted"`, or Codex's own trust prompt), start it
       again: it runs gated.
 - [ ] Fail closed (optional): with Codex running gated, make the hook stop
-      firing (rename `.codex/hooks.json` in the worktree while the agent
-      rests), then ask it for two commands. After the second, the agent is
+      firing (rename `<repo>/.codex/hooks.json` while the agent rests), then ask it for two commands. After the second, the agent is
       stopped and Needs me reads "Codex ran a command its gate never saw:
       its hook isn't trusted or didn't fire". It is not restarted.
 - [ ] A Codex reviewer on the same node gets the same gate (its start
-      rewrites `.codex/hooks.json`); ask it to edit a file: refused
+      writes the same `<repo>/.codex/hooks.json`, unchanged); ask it to edit a
+      file: refused
       ("reviewer role denies all writes").
 
 **Live result (2026-10-02):** on a real Codex node the fail-closed check fired
@@ -1973,3 +1996,7 @@ same hook in a git worktree, hook in the worktree vs at the repo root:
 bun spike/permission-matrix.ts --vendor codex --scenario perm --hooks --worktree --fixture ~/agile-codex-spike
 bun spike/permission-matrix.ts --vendor codex --scenario perm --hooks --worktree --hooks-at main --fixture ~/agile-codex-spike
 ```
+
+Result (C5 round 4): the worktree's hook saw 0 calls, the repo root's 9 (curl
+blocked). T511 moved the daemon's hook to the repo root; the re-check above is
+the live confirmation still owed.

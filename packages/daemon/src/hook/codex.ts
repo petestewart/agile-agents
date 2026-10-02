@@ -2,7 +2,7 @@
  * T506: Codex's own `PreToolUse` hook, the same tier-1 gate as Claude's
  * (`settings.ts`), measured in design/spike-findings.md §C5 round 3:
  *
- * - Codex reads project hooks from `<worktree>/.codex/hooks.json`
+ * - Codex reads project hooks from `<project>/.codex/hooks.json`
  *   (`{hooks: {PreToolUse: [{matcher, hooks: [{type: 'command', command,
  *   statusMessage}]}]}}`), also under codex-acp (`codex app-server`).
  * - The hook gets `session_id, turn_id, transcript_path, cwd,

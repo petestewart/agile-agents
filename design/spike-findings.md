@@ -230,6 +230,23 @@ trusted here: trust <repo> in Codex"). Fail closed: when a session's
 restarted. Codex left `UNCHECKED_COMMAND_VENDORS` and joined
 `HOOKED_VENDORS`. Live check: LIVE-CHECKLIST §24.
 
+**As built (T511, 2026-10-02), after round 4.** A Codex session in a node's
+worktree gets the hook at the root of the repo the worktree belongs to
+(`<repo>/.codex/hooks.json` and `agile-pre-tool-use.sh`; the repo path is the
+node's `repos.yaml` entry, which the attach service already has; no copy in the
+worktree). Someone else's `PreToolUse` matchers and other events in that file
+are kept, ours replaced; an unchanged file is not rewritten and a changed one is
+renamed into place, so every Codex node of the repo shares one file. `.codex/`
+goes in the repo's `info/exclude` (the common git dir, which its worktrees
+share); a repo tracking either file is refused. The script runs `agile hook
+pre-tool-use --vendor codex --repo <repo>`: a call whose input `cwd` (realpath'd)
+is not under `<repo>/.worktrees/` is allowed with no daemon call (the operator's
+own Codex in the repo), anything else, including a missing `cwd`, is gated
+fail-closed as before. A worktree not under `<repo>/.worktrees/` is refused at
+start. Trust is checked at the repo root. A session with no worktree (the
+Director, a node with no repo) keeps T506's hook in its own `cwd`. Not yet
+confirmed live: LIVE-CHECKLIST §24 re-check.
+
 ### C6. Compaction routes (T504, D65): assumed, not measured
 
 T504 needed to know, per vendor, how the daemon can make the agent compact
