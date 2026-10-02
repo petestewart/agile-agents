@@ -21,6 +21,7 @@ export * from './agent-message';
 export * from './event';
 export * from './hil';
 export * from './question';
+export * from './chat-thread';
 export * from './inbox';
 export * from './repos';
 export * from './home-config';

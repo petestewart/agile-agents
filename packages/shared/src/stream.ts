@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 import { EffortSchema } from './effort';
-import { UlidSchema, formatZodError } from './ids';
+import { ULID_PATTERN, UlidSchema, formatZodError } from './ids';
 import { KnowledgeIdSchema } from './knowledge';
 import { EscalationStateSchema } from './model-escalation';
 import { ModelPickRecordSchema, ModelPolicyPartialSchema } from './model-policy';
@@ -175,6 +175,77 @@ export const THREAD_ENTRY_KINDS = [
 export const ThreadEntryKindSchema = z.enum(THREAD_ENTRY_KINDS);
 export type ThreadEntryKind = z.infer<typeof ThreadEntryKindSchema>;
 
+/**
+ * T503 (D60, D64, design/chat-threads.md §3a, §7): a chat thread's id. A
+ * thread on a turn is named by its first reply's `ts`; a question's thread
+ * by `questions/<Q-id>` (an agent's `progress` in it; T502 groups the
+ * question's own lines by their `ref`).
+ */
+export const QUESTION_THREAD_PREFIX = 'questions/';
+const QUESTION_THREAD_PATTERN = new RegExp(`^questions/Q-${ULID_PATTERN.source.slice(1, -1)}$`);
+const IsoTs = z.string().datetime();
+
+export const ChatThreadIdSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine(
+    (value) => QUESTION_THREAD_PATTERN.test(value) || IsoTs.safeParse(value).success,
+    'must be the ts of its first reply or "questions/<Q-id>"',
+  );
+export type ChatThreadId = z.infer<typeof ChatThreadIdSchema>;
+
+/** T503: the question a thread id names (`questions/<Q-id>`), or undefined for a thread on a turn. */
+export function questionOfChatThread(thread: string | undefined): string | undefined {
+  return thread !== undefined && QUESTION_THREAD_PATTERN.test(thread)
+    ? thread.slice(QUESTION_THREAD_PREFIX.length)
+    : undefined;
+}
+
+/** T503 (§3a): how much of a turn an anchored thread quotes. */
+export const THREAD_ANCHOR_QUOTE_MAX_CHARS = THREAD_BODY_MAX_CHARS;
+
+/**
+ * T503 (D64, design/chat-threads.md §3a, §7): what a thread is on. `entry`
+ * is the turn's `ts`; a thread on a passage also carries the passage's
+ * `start` and `end` in that turn's body and the quoted text itself (shown
+ * even if the body were ever rendered differently). A whole-turn thread has
+ * neither. `quote` alone (no offsets): a passage the cockpit could not place
+ * in the body's source; it is still shown, and highlighted where it reads.
+ */
+export const ThreadAnchorSchema = z
+  .object({
+    entry: z.string().min(1).max(64),
+    start: z.number().int().nonnegative().max(AGENT_LINE_MAX_CHARS).optional(),
+    end: z.number().int().positive().max(AGENT_LINE_MAX_CHARS).optional(),
+    quote: z.string().min(1).max(THREAD_ANCHOR_QUOTE_MAX_CHARS).optional(),
+  })
+  .strict()
+  .superRefine((anchor, ctx) => {
+    if ((anchor.start === undefined) !== (anchor.end === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [anchor.start === undefined ? 'start' : 'end'],
+        message: 'start and end go together (both absent: a thread on the whole turn)',
+      });
+    }
+    if (anchor.start !== undefined && anchor.end !== undefined && anchor.end <= anchor.start) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['end'],
+        message: 'end must be after start',
+      });
+    }
+    if (anchor.start !== undefined && anchor.quote === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['quote'],
+        message: 'a passage carries its quote',
+      });
+    }
+  });
+export type ThreadAnchor = z.infer<typeof ThreadAnchorSchema>;
+
 /** One append-only line of `~/.agile/threads/<stream id>.jsonl`. */
 export const ThreadEntrySchema = z
   .object({
@@ -190,6 +261,14 @@ export const ThreadEntrySchema = z
      * Absent on every line written before it, which all show.
      */
     agent_only: z.literal(true).optional(),
+    /**
+     * T503 (D60, design/chat-threads.md §7): the chat thread this line is
+     * in: its first reply's `ts` (that reply carries its own), or
+     * `questions/<Q-id>`. Absent: the main flow, or placed by cause (§4).
+     */
+    thread: ChatThreadIdSchema.optional(),
+    /** T503 (D64, §3a): on a thread's first reply only, what the thread is on. */
+    anchor: ThreadAnchorSchema.optional(),
   })
   .strict()
   .superRefine((entry, ctx) => {
@@ -199,6 +278,39 @@ export const ThreadEntrySchema = z
         code: z.ZodIssueCode.custom,
         path: ['body'],
         message: `body must be at most ${max} characters; write the detail to a file and reference it`,
+      });
+    }
+    if (entry.anchor !== undefined) {
+      if (entry.by !== 'human' || entry.kind !== 'line') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['anchor'],
+          message: 'only your line starts a thread',
+        });
+      }
+      if (entry.thread !== entry.ts) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['thread'],
+          message: "a thread's first reply names its own ts as its thread",
+        });
+      }
+      if (!(entry.anchor.entry < entry.ts)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['anchor', 'entry'],
+          message: 'a thread is on an earlier line',
+        });
+      }
+    } else if (
+      entry.thread !== undefined &&
+      questionOfChatThread(entry.thread) === undefined &&
+      !(entry.thread < entry.ts)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['thread'],
+        message: 'a reply is in a thread started before it',
       });
     }
   });
@@ -867,11 +979,22 @@ export const StreamSayInputSchema = z
      * agent keeps its model.
      */
     session: SessionFlagsSchema.optional(),
+    /**
+     * T503 (D60, D61): a reply in this thread (its id), queued like any
+     * line while the agent works. Not with `anchor`.
+     */
+    thread: ChatThreadIdSchema.optional(),
+    /** T503 (D64): starts a thread on a turn, or on a passage of it; this line is its first reply. */
+    anchor: ThreadAnchorSchema.optional(),
   })
   .strict()
   .refine((input) => input.session === undefined || input.start === true, {
     message: 'session is only for a line that starts the agent (start: true)',
     path: ['session'],
+  })
+  .refine((input) => input.thread === undefined || input.anchor === undefined, {
+    message: 'a line either starts a thread (anchor) or replies in one (thread), not both',
+    path: ['anchor'],
   });
 export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;
 

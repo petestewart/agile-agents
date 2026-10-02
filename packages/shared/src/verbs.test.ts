@@ -97,7 +97,7 @@ describe('agent verbs', () => {
     expect(ask(['a', 'x'.repeat(201)]).success).toBe(false);
     expect(ask(['a', 'x'.repeat(200)]).success).toBe(true);
     // The MCP bridge publishes the shape to the model, so `ask` stays a plain object.
-    expect(Object.keys(AGENT_VERB_SCHEMAS.ask.shape)).toEqual(['session', 'text', 'options']);
+    expect(Object.keys(AGENT_VERB_SCHEMAS.ask.shape)).toEqual(['session', 'text', 'options', 'thread']);
     expect(AGENT_VERB_DESCRIPTIONS.ask).toContain('options');
   });
 
@@ -128,6 +128,18 @@ describe('agent verbs', () => {
     expect(
       AGENT_VERB_SCHEMAS.goal_met.safeParse({ session, summary: 'x', close: true }).success,
     ).toBe(false);
+  });
+
+  test('T503: progress and ask take an optional thread, a turn’s or a question’s', () => {
+    const ts = '2026-10-02T10:05:00.000Z';
+    expect(validateVerbInput('progress', { session, text: 'x', thread: ts }).thread).toBe(ts);
+    expect(validateVerbInput('progress', { session, text: 'x' }).thread).toBeUndefined();
+    const q = `questions/Q-${ulid()}`;
+    expect(validateVerbInput('ask', { session, text: 'x?', thread: q }).thread).toBe(q);
+    expect(AGENT_VERB_SCHEMAS.progress.safeParse({ session, text: 'x', thread: 'main' }).success).toBe(
+      false,
+    );
+    expect(AGENT_VERB_DESCRIPTIONS.progress).toContain('thread');
   });
 
   test('T502: settle_question takes a question id and the answer, and nothing else', () => {

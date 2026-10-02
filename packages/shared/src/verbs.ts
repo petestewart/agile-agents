@@ -41,7 +41,7 @@ import { ProjectIdSchema, ProjectNameSchema } from './project';
 import { QuestionChoicesSchema, QuestionIdSchema } from './question';
 import { RepoNameSchema } from './repos';
 import { RoutedEventIdSchema } from './routed-event';
-import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
+import { ChatThreadIdSchema, StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
 /** Free text an agent writes into the thread — capped like every thread body. */
 const Body = z.string().min(1).max(THREAD_BODY_MAX_CHARS);
@@ -49,13 +49,28 @@ const Body = z.string().min(1).max(THREAD_BODY_MAX_CHARS);
 /** Every verb names the session it is called from. */
 const Session = UlidSchema;
 
+/**
+ * T503 (D60, design/chat-threads.md §4.2): the chat thread a line goes in,
+ * as a delivered line names it ("In a thread … (thread <id>)"). Absent: the
+ * line is placed by cause (a turn a thread reply woke posts there), else in
+ * the main flow.
+ */
+const Thread = ChatThreadIdSchema;
+
 /** T361: `options` are choices the operator can click; typing an answer is always allowed. */
 export const AskInputSchema = z
-  .object({ session: Session, text: Body, options: QuestionChoicesSchema.optional() })
+  .object({
+    session: Session,
+    text: Body,
+    options: QuestionChoicesSchema.optional(),
+    thread: Thread.optional(),
+  })
   .strict();
 export type AskInput = z.infer<typeof AskInputSchema>;
 
-export const ProgressInputSchema = z.object({ session: Session, text: Body }).strict();
+export const ProgressInputSchema = z
+  .object({ session: Session, text: Body, thread: Thread.optional() })
+  .strict();
 export type ProgressInput = z.infer<typeof ProgressInputSchema>;
 
 /** T478: the node's whole goal is done; `summary` is what was done, in a line. */
@@ -381,8 +396,9 @@ export const AGENT_VERB_SCHEMAS = {
 
 /** One line of help per verb, published to the model by the MCP bridge. */
 export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
-  ask: 'Ask the operator a question and block until it is answered ({text, options?: 2–6 short choices, each ≤200 chars}). With `options` the operator can click one; they may still type their own answer.',
-  progress: 'Report one line of progress onto the stream thread.',
+  ask: 'Ask the operator a question and block until it is answered ({text, options?: 2–6 short choices, each ≤200 chars, thread?}). With `options` the operator can click one; they may still type their own answer. `thread`: as for `progress`; the question still shows in the main chat too.',
+  progress:
+    'Report one line of progress onto the stream thread ({text, thread?}). `thread` is the id a line from the operator named ("In a thread … (thread <id>)"): pass it to answer in that thread when what you were sent carried lines from several threads; a turn woken by one thread’s line already posts there.',
   finding: 'Record a finding ({severity, file, line?, text}) on the stream.',
   propose_knowledge:
     'Propose a knowledge item for the operator to accept or reject ({text, kind?: standard|architecture|decision, scope?, paths?, examples?: [{action, violates}], enforcement?: tell|action|ship|review, critical?, sources?: [id]}). Scope defaults to this node’s subtree; the Director names it (global, repo:<name>, project:<id>).',

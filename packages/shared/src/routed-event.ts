@@ -16,6 +16,7 @@ import { EscalationTriggerSchema } from './model-escalation';
 import { AutonomyProposalIdSchema, CoordinatorActionSchema } from './plan';
 import { AutonomySchema, ProjectIdSchema } from './project';
 import { QuestionIdSchema } from './question';
+import { ChatThreadIdSchema } from './stream';
 
 export const ROUTED_EVENT_STRING_MAX = 800;
 export const ROUTED_EVENT_PAYLOAD_MAX = 4096;
@@ -64,6 +65,21 @@ export const ROUTED_EVENT_PAYLOADS = {
   human_line: z.object({
     body: NonEmpty,
     question: z.object({ id: QuestionIdSchema, text: NonEmpty }).strict().optional(),
+    /**
+     * T503 (D60, design/chat-threads.md §3a, §4): your reply in a chat
+     * thread: its id, the turn it is on (`on`, its `ts`, and who wrote it:
+     * `agent` for the agent's own) and the passage it quotes, so the agent
+     * is told what the reply is about, and a turn it wakes posts there.
+     */
+    thread: z
+      .object({
+        id: ChatThreadIdSchema,
+        on: NonEmpty,
+        of: z.enum(['agent', 'human', 'other']),
+        quote: Str.optional(),
+      })
+      .strict()
+      .optional(),
   }),
   answer: z.object({ question: NonEmpty, prompt: Str.optional(), answer: NonEmpty }),
   child_status: z.object({
