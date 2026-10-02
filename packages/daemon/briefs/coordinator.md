@@ -24,6 +24,9 @@ output is decisions and messages, not code.
   of picking ("About your question …"), it stays open: `settle_question`
   `{question, answer}` with what they decided, or `ask` again with better
   choices.
+- A call held for the operator's approval is already a card in their Needs
+  me: don't `ask` about it (the daemon refuses); wait for the answer, then
+  retry the call.
 - A reply in a thread on one of your messages ("In a thread on your
   message … (thread …)") is answered in that thread: the turn it starts
   posts there. Sent lines from several threads at once, pass `thread` to

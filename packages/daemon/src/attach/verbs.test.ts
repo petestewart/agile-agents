@@ -26,7 +26,7 @@ import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
-import { UnknownSessionError, VerbService, lookupPath } from './verbs';
+import { HELD_CALL_ASK_REFUSAL, UnknownSessionError, VerbService, lookupPath } from './verbs';
 
 let home: string;
 let store: StateStore;
@@ -90,6 +90,46 @@ describe('ask (T361)', () => {
       /ask/,
     );
     expect(questions.listOpen()).toHaveLength(2);
+  });
+});
+
+describe('ask while a call is held (T510)', () => {
+  test('refused while the session has a call held this turn; allowed otherwise', async () => {
+    const questions = new QuestionService(store, streams);
+    const state: { held?: unknown } = {};
+    const asked: string[] = [];
+    verbs = new VerbService({
+      store,
+      streams,
+      questions,
+      rules,
+      heldCalls: {
+        heldCallThisTurn: (session) => {
+          asked.push(session);
+          return state.held;
+        },
+      },
+    });
+    const { session } = await attach();
+    await verbs.ask({ session, text: 'which dialect?' });
+    state.held = { id: 'HIL-1' };
+    await expect(verbs.ask({ session, text: 'Create package.json?' })).rejects.toThrow(
+      HELD_CALL_ASK_REFUSAL,
+    );
+    expect(HELD_CALL_ASK_REFUSAL).toBe(
+      "Your call is already waiting for the operator's approval (a card in their Needs me). Don't ask about it; wait for the answer, then retry the call.",
+    );
+    expect(asked).toEqual([session, session]);
+    expect(questions.listOpen()).toHaveLength(1);
+  });
+
+  test('the briefs say the same', () => {
+    for (const name of ['worker.md', 'coordinator.md']) {
+      const brief = readFileSync(join(import.meta.dir, '..', '..', 'briefs', name), 'utf8');
+      expect(brief.replace(/\s+/g, ' ')).toContain(
+        "A call held for the operator's approval is already a card in their Needs me: don't `ask` about it",
+      );
+    }
   });
 });
 

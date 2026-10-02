@@ -155,7 +155,17 @@ export interface VerbServiceOptions {
    * next start, and a `progress` call keeps a turn from counting as quiet.
    */
   escalation?: Pick<EscalationService, 'asked' | 'progressed'>;
+  /**
+   * T510: the session's call the route band holds for the human, raised in
+   * its current turn (`AttachService.heldCallThisTurn`): `ask` refuses
+   * while one waits, so one decision is one card.
+   */
+  heldCalls?: { heldCallThisTurn(session: string): unknown };
 }
+
+/** T510: `ask`'s refusal while the caller's own call waits on the human, in words it can act on. */
+export const HELD_CALL_ASK_REFUSAL =
+  "Your call is already waiting for the operator's approval (a card in their Needs me). Don't ask about it; wait for the answer, then retry the call.";
 
 /** `source.finding`: the named sources (T303), and a tell/review item's examples (T260). */
 function proposalFinding(
@@ -201,6 +211,10 @@ export class VerbService {
   async ask(input: unknown): Promise<{ id: string }> {
     const { session, text, options, thread } = validateVerbInput('ask', input);
     const caller = this.caller(session);
+    // T510: a call held for the human this turn is already its card; a second ask is a second card.
+    if (this.options.heldCalls?.heldCallThisTurn(session) !== undefined) {
+      throw new Error(HELD_CALL_ASK_REFUSAL);
+    }
     // T503: asked in a chat thread: it must name one on the node (checked before the question exists).
     if (thread !== undefined) this.options.store.assertChatThread(caller.stream, thread);
     const coordinator = this.coordinatorFirst(caller.stream, text);

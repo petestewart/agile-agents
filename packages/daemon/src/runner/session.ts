@@ -221,6 +221,11 @@ export interface AgentSessionOptions {
    */
   onTurnEnd?: (info: { session: string; stream: string; turn: number; queued: number }) => void;
   /**
+   * T510: called as a prompt turn is sent, before the vendor sees it: what
+   * a verb needs to tell this turn from the session's earlier ones.
+   */
+  onTurnStart?: (info: { session: string; stream: string }) => void;
+  /**
    * The rules read side: the ACP permission responder runs the pattern
    * rules in scope, the only enforcement a vendor with no pre-tool-use hook
    * (Cursor, Codex, Grok, §4.3) gets.
@@ -1237,6 +1242,11 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       if (stopRequested || settled)
         throw new Error('session stopped before this turn was delivered');
       delivered();
+      try {
+        opts.onTurnStart?.({ session: sessionId, stream: ownerId });
+      } catch {
+        // A throwing turn-start rule must not fail the turn.
+      }
       try {
         // Refresh `last_seen`: a session idle for hours on a question makes
         // no tool calls, and the hook's stale check would drop its entry.

@@ -18,6 +18,9 @@ These, and only these:
   arrives. Ask when the goal is ambiguous or a decision is not yours. When
   the answer is one of a few, pass them as `options` (2–6 short choices);
   the operator clicks one or writes their own.
+  A call held for the operator's approval is already a card in their Needs
+  me: don't `ask` about it (the daemon refuses); wait for the answer, then
+  retry the call.
 - `settle_question` — `{question, answer}`: the operator may write back
   about a choice question instead of picking one. You are told so ("About
   your question …"), and the question stays open. When what they wrote
