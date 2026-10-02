@@ -378,7 +378,16 @@ keeps a hollow dot's ring (stopped, waiting).
   question then whole in the card, half an answer kept per question like
   the composer's draft. Selected text in a question or a message offers
   Quote, which puts it as a `> ` quote in that question's box, or else in
-  the composer. A send that
+  the composer. T503 (D60, D64, design/chat-threads.md): every turn has
+  Reply in thread beside Copy, and the selection bar a second action, Reply
+  in thread, anchored to the passage. A thread opens in a side panel over
+  the right of the page (full screen on a phone): the turn or the quoted
+  passage, its lines, its own reply box. The main chat keeps a mark per
+  thread under the turn it is on ("“banker's rounding” 3 replies · last 2m
+  · waiting on you", a count dot when unread), tints each anchored passage
+  with its count, links a batched reply to the threads it answers, and
+  shows "Open threads (n)" at its top; a question asked in a thread stays in
+  the main chat and Needs me too. A send that
   fails says so under the composer ("Couldn’t reach the daemon; your
   message wasn’t sent."), keeps the draft and offers Retry.
   T447 (audit r7 #15): the composer holds the draft (`DraftComposer`), so a

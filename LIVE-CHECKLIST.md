@@ -1819,3 +1819,36 @@ With a Claude login (then Codex, if you have one):
 - [ ] On a project with two parts, have each part ask you something: the
       project's root chat lists "2 questions from the parts", one line each
       with its part's name and state; a name opens that part's chat.
+
+## 22. **[vendor]** Reply in a thread on any message, or on a passage (D60, D61, D64, T503)
+
+The fake agent's reply lands in its thread offline because the daemon places
+a turn by the line that woke it; only a real agent shows it reads the
+thread's label ("In a thread on your message of 10:02 (thread …)") and, sent
+lines from two threads at once, passes `thread` to `progress`. With a Claude
+login (then Codex, if you have one):
+
+- [ ] On a node whose agent wrote a message about several things, hover it
+      and click **Reply in thread**. The side panel opens on a new thread
+      (full screen at phone width). Type "Why that rounding?" and Enter: your
+      line is in the panel, not the main chat, and under the message a mark
+      reads "1 reply · last now · waiting on Claude".
+- [ ] The agent answers in the panel (by cause), not the main chat; the mark
+      reads "2 replies". Close the panel before it answers: the mark gets a
+      count dot, the node's rail row a count, and "Open threads (1) · 1
+      unread" at the top of the chat opens it and clears both.
+- [ ] Select a passage of another of its messages: the bar offers **Quote**
+      and **Reply in thread**. Reply in thread: the panel quotes the passage;
+      once you send, the passage is tinted in the message with a count after
+      it, and clicking the tint opens the thread. A second passage of the
+      same message makes a second mark, in passage order.
+- [ ] Send a reply in a thread while the agent is working: it reads "queued
+      until the agent's current step ends" and goes when the turn ends (D61).
+- [ ] Reply in two threads before the agent's turn ends, so one turn gets
+      both: its reply is in the main chat with "Replies to: ⓐ … ⓑ …" links,
+      unless it passed `thread` for each (then each lands in its thread).
+      Note the vendor and what it did.
+- [ ] Ask it, in a thread, something it must ask you about ("ask me which
+      format"). Its question shows in the thread, in the main chat with
+      "Asked in a thread: open it", and in Needs me; the mark reads "waiting
+      on you", and once you answer it, "resolved".
