@@ -121,8 +121,8 @@ describe('agile vendors (T489)', () => {
     expect(checked.code).toBe(0);
     expect(checked.out).toContain('Checking codex');
     const row = checked.out.split('\n').find((l) => l.startsWith('Codex')) ?? '';
-    // T505: the warning goes under Codex's row.
-    expect(checked.out).toMatch(/\n {2}Codex runs shell commands without asking/);
+    // T506: Codex is gated by its own hook: no unchecked warning under its row (T505).
+    expect(checked.out).not.toContain('runs shell commands without asking');
     // Model ✓, no effort option —, resume ✓, the turn's tokens arrived.
     expect(row).toMatch(/✓\s+—\s+✓\s+per turn$/);
     // T494: no line pads to the widest note.
@@ -172,7 +172,7 @@ describe('agile vendors (T489)', () => {
     );
     // T506: nor does Codex, gated by its own hook.
     const codex = { ...pi, vendor: 'codex' as const, label: 'Codex', installed: true };
-    expect(vendorRowNotes(codex)).toEqual([missing]);
+    expect(vendorRowNotes(codex)).toEqual([]);
     expect(vendorRowNotes({ ...pi, vendor: 'claude', label: 'Claude Code' })).toEqual([missing]);
     const lines = wrapNote(`Rate limits: ${'a=1, '.repeat(40)}`, 40);
     expect(lines.length).toBeGreaterThan(1);
