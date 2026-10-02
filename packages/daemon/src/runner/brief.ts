@@ -331,7 +331,23 @@ function renderDoc(doc: BriefDoc, bodyCap: number): string {
 function renderEntry(entry: ThreadEntry): string {
   // T330: an agent line may run to 16k chars; the brief quotes its head (the rest is on the thread).
   const body = entry.by.startsWith('agent:') ? quoteThreadBody(entry.body) : entry.body;
-  return `- **${entry.by}** (${entry.kind}): ${body}`;
+  return `- **${entry.by}** (${entry.kind}${threadLabel(entry)}): ${body}`;
+}
+
+/**
+ * T503 (D60, design/chat-threads.md §4.2): a line in a chat thread says
+ * which (the id `progress` takes as `thread`), and a thread's first reply
+ * what it is on: the line's `ts` and the passage, quoted as data.
+ */
+function threadLabel(entry: ThreadEntry): string {
+  if (entry.anchor !== undefined) {
+    const passage =
+      entry.anchor.quote !== undefined
+        ? `, about the passage ${JSON.stringify(quoteThreadBody(entry.anchor.quote, 200))}`
+        : '';
+    return `, starts thread ${entry.ts} on the line of ${entry.anchor.entry}${passage}`;
+  }
+  return entry.thread !== undefined ? `, in thread ${entry.thread}` : '';
 }
 
 /**

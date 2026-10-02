@@ -648,3 +648,39 @@ describe('settle_question (T502, D62)', () => {
     );
   });
 });
+
+describe('thread on progress and ask (T503, design/chat-threads.md §4.2)', () => {
+  test('the agent answers in a thread on its node; a thread not there is refused before anything is written', async () => {
+    const questions = new QuestionService(store, streams);
+    verbs = new VerbService({ store, streams, questions, rules });
+    const { session, stream } = await attach();
+    const turn = await verbs.progress({ session, text: 'rounding and sheets' });
+    const first = await streams.appendThread('human', stream.id, {
+      kind: 'line',
+      body: 'why that rounding?',
+      anchor: { entry: turn.ts, start: 0, end: 8, quote: 'rounding' },
+    });
+    const said = await verbs.progress({ session, text: 'it avoids drift', thread: first.ts });
+    expect(said.thread).toBe(first.ts);
+    const { id } = await verbs.ask({ session, text: 'half up or half even?', thread: first.ts });
+    const asked = streams
+      .readThread(stream.id)
+      .entries.find((e) => e.kind === 'question' && e.ref === `questions/${id}.yaml`);
+    expect(asked?.thread).toBe(first.ts);
+
+    const before = questions.list().length;
+    const nowhere = '2020-01-01T00:00:00.000Z';
+    await expect(verbs.ask({ session, text: 'lost?', thread: nowhere })).rejects.toThrow(
+      /no thread/,
+    );
+    expect(questions.list()).toHaveLength(before);
+    await expect(verbs.progress({ session, text: 'lost', thread: nowhere })).rejects.toThrow(
+      /no thread/,
+    );
+    // Another node's thread is not this agent's to answer in.
+    const other = await attach();
+    await expect(
+      verbs.progress({ session: other.session, text: 'x', thread: first.ts }),
+    ).rejects.toThrow(/no thread/);
+  });
+});

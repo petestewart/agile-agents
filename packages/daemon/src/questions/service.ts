@@ -85,6 +85,8 @@ export interface RaiseQuestionInput {
   options?: string[];
   /** T338: the part's coordinator, when the question goes there first. */
   coordinator?: string;
+  /** T503: the chat thread it is asked in (the agent's `ask` named it). */
+  thread?: string;
 }
 
 export interface AnswerQuestionInput {
@@ -195,7 +197,13 @@ export class QuestionService {
       await this.streams.appendThread(
         'agent',
         saved.stream,
-        { kind: 'question', body: saved.text, ref: questionPath(saved.id) },
+        {
+          kind: 'question',
+          body: saved.text,
+          ref: questionPath(saved.id),
+          // T503 (§6): asked in a chat thread, it shows there and in the main flow and Needs me.
+          ...(input.thread !== undefined ? { thread: input.thread } : {}),
+        },
         input.session,
       );
     }

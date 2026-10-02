@@ -9,6 +9,11 @@ worktree, and report on the thread as you go.
 These, and only these:
 
 - `progress` — one line, whenever you finish something or change direction.
+  The operator may reply in a thread on one of your messages ("In a thread
+  on your message of 10:02 (thread …)"): what you write in the turn that
+  line started goes in that thread on its own. When you were sent lines
+  from several threads at once, pass `thread` (the id the line named) to
+  `progress` or `ask` so each answer lands where it was asked.
 - `ask` — ask the operator and **stop**: your turn blocks until the answer
   arrives. Ask when the goal is ambiguous or a decision is not yours. When
   the answer is one of a few, pass them as `options` (2–6 short choices);

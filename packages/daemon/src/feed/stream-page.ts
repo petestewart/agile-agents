@@ -6,6 +6,8 @@
  */
 
 import {
+  type ChatBatch,
+  type ChatThread,
   type KnowledgeItem,
   type ModelPick,
   type QuestionThread,
@@ -17,6 +19,7 @@ import {
 import type { DeliveryService, LandPreflight } from '../delivery/service';
 import type { Doc, DocsService } from '../docs/service';
 import type { KnowledgeService } from '../knowledge/service';
+import type { ChatThreads } from '../questions/chat-threads';
 import type { QuestionThreads } from '../questions/threads';
 import type { StreamService } from '../streams/service';
 import { rollupProgress } from '../trackers/rollup';
@@ -55,6 +58,10 @@ export interface StreamPagePayload {
   question_threads?: QuestionThread[];
   /** T502 (D63): on a coordinating node or a project root, its children's questions as threads. */
   child_questions?: QuestionThread[];
+  /** T503 (D60, D64): the chat threads on this node's turns, over the loaded lines. */
+  chat_threads?: ChatThread[];
+  /** T503 (§4.1): turns woken by lines from several threads: in the main flow, linking them. */
+  chat_batches?: ChatBatch[];
 }
 
 export interface StreamPageSources {
@@ -66,6 +73,8 @@ export interface StreamPageSources {
   nextPick?: (stream: Stream) => ModelPick | undefined;
   /** T502: question threads (and, on a coordinator's node, its children's). */
   threads?: Pick<QuestionThreads, 'forNode' | 'forCoordinator'>;
+  /** T503: chat threads on the node's turns. */
+  chatThreads?: Pick<ChatThreads, 'forNode'>;
 }
 
 export function buildStreamPage(sources: StreamPageSources, id: string): StreamPagePayload {
@@ -118,6 +127,16 @@ export function buildStreamPage(sources: StreamPageSources, id: string): StreamP
     }
   }
 
+  // T503: derived over the loaded lines, as the question threads are.
+  let chat: ReturnType<ChatThreads['forNode']> | undefined;
+  if (sources.chatThreads !== undefined) {
+    try {
+      chat = sources.chatThreads.forNode(id, thread);
+    } catch (err) {
+      console.error(`chat threads of ${id}:`, err);
+    }
+  }
+
   return {
     stream,
     path,
@@ -134,6 +153,8 @@ export function buildStreamPage(sources: StreamPageSources, id: string): StreamP
     ...(childQuestions !== undefined && childQuestions.length > 0
       ? { child_questions: childQuestions }
       : {}),
+    ...(chat !== undefined && chat.threads.length > 0 ? { chat_threads: chat.threads } : {}),
+    ...(chat !== undefined && chat.batches.length > 0 ? { chat_batches: chat.batches } : {}),
     ...(() => {
       try {
         const next = sources.nextPick?.(stream);

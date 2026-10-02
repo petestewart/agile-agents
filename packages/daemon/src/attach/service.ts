@@ -51,12 +51,14 @@ import {
   type StatusCard,
   type Stream,
   type StreamPrincipal,
+  type ThreadAnchor,
   type ThreadEntry,
   isAgentRole,
   isConversationNode,
   liveChildrenOf,
   nodeRole,
   partsOf,
+  questionOfChatThread,
   resolveVendorFailure,
   routedPickLine,
   slashCommandOf,
@@ -1790,6 +1792,11 @@ export class AttachService {
    * T502 (D62): with `question`, the line is your reply in that question's
    * thread (typed in its card): it carries the question's `ref`, and the
    * event names the question, so the agent reads it as a reply about it.
+   * T503 (D60, D61, D64): with `anchor`, the line starts a chat thread on
+   * that turn (or passage); with `thread`, it is a reply in one. Either way
+   * it is queued like any line while a turn runs, and the event names the
+   * thread, the turn it is on and the passage, so the agent is told what it
+   * is about and the turn it wakes posts in that thread (§4.1).
    */
   async say(
     streamId: string,
@@ -1798,6 +1805,8 @@ export class AttachService {
       start?: boolean;
       session?: AttachFlags;
       question?: Pick<Question, 'id' | 'text'>;
+      thread?: string;
+      anchor?: ThreadAnchor;
     } = {},
   ): Promise<{ entry: ThreadEntry; prompted?: string; started?: true }> {
     // T495: a resting agent whose CLI was updated in place ends first; the
@@ -1820,7 +1829,13 @@ export class AttachService {
         kind: 'line',
         body,
         ...(about !== undefined ? { ref: `questions/${about.id}.yaml` } : {}),
+        ...(options.anchor !== undefined
+          ? { anchor: options.anchor }
+          : options.thread !== undefined
+            ? { thread: options.thread }
+            : {}),
       });
+      const inThread = this.threadOfLine(streamId, entry);
       handle = this.agentHandle(streamId);
       if (handle?.stopped()) handle = undefined;
       // T465 (D48): a resting session takes the line in the same session, context and all.
@@ -1834,6 +1849,7 @@ export class AttachService {
           payload: {
             body: cap(body),
             ...(about !== undefined ? { question: { id: about.id, text: cap(about.text) } } : {}),
+            ...(inThread !== undefined ? { thread: inThread } : {}),
           },
           ref: entry.ts,
           by: 'human',
@@ -1864,6 +1880,40 @@ export class AttachService {
       });
     }
     return { entry, prompted: sessionId };
+  }
+
+  /**
+   * T503: what a line in a chat thread tells its agent: the thread, the turn
+   * it is on (and who wrote that turn), and the passage it quotes.
+   */
+  private threadOfLine(
+    streamId: string,
+    entry: ThreadEntry,
+  ): { id: string; on: string; of: 'agent' | 'human' | 'other'; quote?: string } | undefined {
+    if (entry.thread === undefined || questionOfChatThread(entry.thread) !== undefined) {
+      return undefined;
+    }
+    const lines = this.options.store.readThread(streamId);
+    const first =
+      entry.anchor !== undefined ? entry : lines.find((line) => line.ts === entry.thread);
+    const anchor = first?.anchor;
+    if (anchor === undefined) return undefined;
+    const on = lines.find((line) => line.ts === anchor.entry);
+    const by = on?.by;
+    const of =
+      by === undefined
+        ? 'other'
+        : by === 'human'
+          ? 'human'
+          : by.startsWith('agent:') || by === 'coordinator' || by === 'director'
+            ? 'agent'
+            : 'other';
+    return {
+      id: entry.thread,
+      on: anchor.entry,
+      of,
+      ...(anchor.quote !== undefined ? { quote: cap(anchor.quote) } : {}),
+    };
   }
 
   /**

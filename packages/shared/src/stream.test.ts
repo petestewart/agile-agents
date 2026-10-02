@@ -9,6 +9,7 @@ import {
   StreamSendUpInputSchema,
   StreamUpdateRequestSchema,
   THREAD_BODY_MAX_CHARS,
+  ThreadEntrySchema,
   assertNoStreamCycle,
   assertNoWaitsOnCycle,
   assertStreamWrite,
@@ -598,5 +599,99 @@ describe('principals (§14.12)', () => {
       );
     }
     expect(assertStreamWrite('daemon', before, after)).toBe(after);
+  });
+});
+
+describe('chat threads on a thread entry (T503, D60, D64)', () => {
+  const turn = '2026-10-02T10:02:00.000Z';
+  const first = '2026-10-02T10:05:00.000Z';
+  const later = '2026-10-02T10:06:00.000Z';
+  const reply = (extra: Record<string, unknown>) => ({
+    ts: first,
+    by: 'human',
+    kind: 'line',
+    body: 'why banker’s rounding?',
+    ...extra,
+  });
+
+  test('a first reply names itself as its thread and carries what it is on', () => {
+    const whole = validateThreadEntry(reply({ thread: first, anchor: { entry: turn } }));
+    expect(whole.anchor).toEqual({ entry: turn });
+    const passage = validateThreadEntry(
+      reply({
+        thread: first,
+        anchor: { entry: turn, start: 10, end: 26, quote: 'banker’s rounding' },
+      }),
+    );
+    expect(passage.anchor?.quote).toBe('banker’s rounding');
+    // A quote it could not place in the source still anchors (no offsets).
+    expect(
+      validateThreadEntry(reply({ thread: first, anchor: { entry: turn, quote: 'x' } })).anchor,
+    ).toEqual({ entry: turn, quote: 'x' });
+  });
+
+  test('the anchor is strict and its bounds hold', () => {
+    const anchored = (anchor: Record<string, unknown>) =>
+      ThreadEntrySchema.safeParse(reply({ thread: first, anchor: { entry: turn, ...anchor } }))
+        .success;
+    expect(anchored({ start: 0, end: 1, quote: 'a' })).toBe(true);
+    expect(anchored({ start: 5 })).toBe(false); // end missing
+    expect(anchored({ end: 5, quote: 'a' })).toBe(false); // start missing
+    expect(anchored({ start: 5, end: 5, quote: 'a' })).toBe(false); // empty
+    expect(anchored({ start: 6, end: 5, quote: 'a' })).toBe(false); // backwards
+    expect(anchored({ start: -1, end: 5, quote: 'a' })).toBe(false);
+    expect(anchored({ start: 0, end: AGENT_LINE_MAX_CHARS + 1, quote: 'a' })).toBe(false);
+    expect(anchored({ start: 0, end: 4 })).toBe(false); // a passage carries its quote
+    expect(anchored({ quote: 'x'.repeat(801) })).toBe(false);
+    expect(anchored({ quote: '' })).toBe(false);
+    expect(anchored({ colour: 'amber' })).toBe(false);
+  });
+
+  test('only your line starts a thread, on an earlier line, naming itself', () => {
+    expect(() => validateThreadEntry(reply({ anchor: { entry: turn } }))).toThrow(/own ts/);
+    expect(() => validateThreadEntry(reply({ thread: later, anchor: { entry: turn } }))).toThrow(
+      /own ts/,
+    );
+    expect(() =>
+      validateThreadEntry(
+        reply({ by: `agent:${SESSION}`, thread: first, anchor: { entry: turn } }),
+      ),
+    ).toThrow(/only your line/);
+    expect(() =>
+      validateThreadEntry(reply({ kind: 'event', thread: first, anchor: { entry: turn } })),
+    ).toThrow(/only your line/);
+    expect(() => validateThreadEntry(reply({ thread: first, anchor: { entry: later } }))).toThrow(
+      /earlier line/,
+    );
+  });
+
+  test('a reply names a thread started before it, or a question’s', () => {
+    expect(validateThreadEntry(reply({ ts: later, thread: first })).thread).toBe(first);
+    expect(
+      validateThreadEntry({ ...reply({ ts: later, thread: first }), by: `agent:${SESSION}` })
+        .thread,
+    ).toBe(first);
+    expect(() => validateThreadEntry(reply({ ts: first, thread: later }))).toThrow(
+      /started before/,
+    );
+    const question = `questions/Q-${ulid()}`;
+    expect(validateThreadEntry(reply({ thread: question })).thread).toBe(question);
+    expect(() => validateThreadEntry(reply({ thread: 'questions/Q-1' }))).toThrow();
+    expect(() => validateThreadEntry(reply({ thread: 'general' }))).toThrow();
+  });
+
+  test('the composer’s say: a reply in a thread, or the start of one, never both', () => {
+    expect(StreamSayInputSchema.parse({ body: 'hi', thread: first }).thread).toBe(first);
+    expect(
+      StreamSayInputSchema.parse({
+        body: 'hi',
+        anchor: { entry: turn, start: 0, end: 2, quote: 'ok' },
+      }).anchor?.end,
+    ).toBe(2);
+    expect(
+      StreamSayInputSchema.safeParse({ body: 'hi', thread: first, anchor: { entry: turn } })
+        .success,
+    ).toBe(false);
+    expect(StreamSayInputSchema.safeParse({ body: 'hi', thread: 'nope' }).success).toBe(false);
   });
 });

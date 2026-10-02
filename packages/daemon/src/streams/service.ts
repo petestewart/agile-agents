@@ -14,6 +14,7 @@ import {
   type StreamCreateInput,
   type StreamPrincipal,
   THREAD_BODY_MAX_CHARS,
+  type ThreadAnchor,
   type ThreadAuthor,
   type ThreadEntry,
   type ThreadEntryKind,
@@ -44,6 +45,10 @@ export interface ThreadAppendInput {
   ref?: string;
   /** T347: written for the agent; hidden from the cockpit's thread view. */
   agent_only?: true;
+  /** T503 (D60): the chat thread the line is in (the store checks it names one on the node). */
+  thread?: string;
+  /** T503 (D64): this line starts a thread on that turn (or passage): its own `ts` names it. */
+  anchor?: ThreadAnchor;
 }
 
 export interface ThreadPageOptions {
@@ -779,13 +784,22 @@ export class StreamService {
         `thread body is ${input.body.length} characters; the cap is ${max} — write the detail to a file and pass it as "ref"`,
       );
     }
+    // T503: a line's `ts` names it (a thread's anchor and id are one), so each comes after the
+    // node's last line and after what it is in or on: the same millisecond is not after.
+    const ts = after([this.store.threadUpdatedAt(id), input.anchor?.entry ?? input.thread]);
     return this.store.appendThreadEntry(id, {
-      ts: new Date().toISOString(),
+      ts,
       by,
       kind: input.kind,
       body: input.body,
       ...(input.ref !== undefined ? { ref: input.ref } : {}),
       ...(input.agent_only ? { agent_only: true } : {}),
+      // T503: a thread's first reply names itself; the store checks both against the node.
+      ...(input.anchor !== undefined
+        ? { thread: ts, anchor: input.anchor }
+        : input.thread !== undefined
+          ? { thread: input.thread }
+          : {}),
     });
   }
 
@@ -809,6 +823,17 @@ export class StreamService {
       ...(lastIndex >= 0 && lastIndex < all.length - 1 ? { next: lastIndex } : {}),
     };
   }
+}
+
+/** Now, or a millisecond past the latest of `earlier` (ISO times) when now is not later. */
+function after(earlier: readonly (string | undefined)[]): string {
+  const now = Date.now();
+  let floor = Number.NEGATIVE_INFINITY;
+  for (const at of earlier) {
+    const t = at !== undefined ? Date.parse(at) : Number.NaN;
+    if (!Number.isNaN(t) && t > floor) floor = t;
+  }
+  return new Date(now > floor ? now : floor + 1).toISOString();
 }
 
 /** A partial stream write. `agent`/`human` merge; everything else replaces. */

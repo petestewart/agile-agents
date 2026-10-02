@@ -24,7 +24,7 @@
  * (a rule hit: `thread-rule-hit`), and every row's text stays in the DOM.
  */
 
-import type { QuestionThread, ThreadEntry } from '@agile-agents/shared';
+import type { ChatThread, QuestionThread, ThreadAnchor, ThreadEntry } from '@agile-agents/shared';
 import {
   type MutableRefObject,
   type PropsWithChildren,
@@ -57,6 +57,7 @@ import {
   windowRows,
 } from '../lib/chat';
 import { useFeed, useOptionalFeed } from '../lib/feed-context';
+import { ago } from '../lib/status';
 import {
   type AgentStep,
   STEP_STATE_LABEL,
@@ -74,9 +75,10 @@ import {
   stepsSummary,
 } from '../lib/steps';
 import { ruleHitOf } from '../lib/streams';
+import { anchorLabel, threadRepliesText, threadStateWords } from '../lib/threads';
 import { Icon, type IconName } from './Icon';
-import { Markdown } from './Markdown';
-import { IconButton, Spinner, useCopy } from './ui';
+import { Markdown, type PassageMark } from './Markdown';
+import { Button, IconButton, Spinner, useCopy } from './ui';
 
 /** T330: past ~12 lines a thread entry offers Show less (T475: it opens whole). */
 export const THREAD_COLLAPSE_LINES = 12;
@@ -99,9 +101,22 @@ const folded = new Set<string>();
  * fold it with Show less (Pete: "i should never have to click show more to
  * see all the output"); your fold is kept for that message (`id`).
  */
-export function ThreadBody({ body, id }: { body: string; id?: string }): JSX.Element {
+export function ThreadBody({
+  body,
+  id,
+  marks,
+  onMark,
+}: {
+  body: string;
+  id?: string;
+  /** T503 (D64): passages threads are anchored to, highlighted with their counts. */
+  marks?: readonly PassageMark[];
+  onMark?: (thread: string) => void;
+}): JSX.Element {
   const [isFolded, setFolded] = useState(() => id !== undefined && folded.has(id));
-  if (!isLongThreadBody(body)) return <Markdown text={body} />;
+  const marked =
+    marks !== undefined && marks.length > 0 ? { marks, ...(onMark ? { onMark } : {}) } : {};
+  if (!isLongThreadBody(body)) return <Markdown text={body} {...marked} />;
   const toggle = (): void => {
     const next = !isFolded;
     if (id !== undefined) {
@@ -116,6 +131,7 @@ export function ThreadBody({ body, id }: { body: string; id?: string }): JSX.Ele
         text={body}
         className={isFolded ? 'cr-collapsed' : undefined}
         testId="thread-body"
+        {...marked}
       />
       <button
         type="button"
@@ -271,6 +287,9 @@ export interface MessageListProps<E extends ChatEntry> {
    * question, in the thread's list, is `data-testid="chat-question"`).
    */
   entryAttrs?: (entry: E, index: number) => Record<string, string> | undefined;
+  /** T503 (D64): the passages of a turn its threads are anchored to; a click opens one. */
+  marksOf?: (entry: E, index: number) => readonly PassageMark[] | undefined;
+  onMark?: (thread: string) => void;
   /**
    * T447 (audit r7 #15): render only the newest `THREAD_WINDOW` rows of a
    * long thread; "Show earlier" (or scrolling to the top) adds more, and
@@ -399,6 +418,8 @@ export function MessageList<E extends ChatEntry>({
   openQuestions,
   steps,
   entryAttrs,
+  marksOf,
+  onMark,
   windowKey,
   testid = 'thread',
   label = 'Conversation',
@@ -546,7 +567,12 @@ export function MessageList<E extends ChatEntry>({
                       Answer
                     </span>
                   )}
-                  <ThreadBody body={entry.body} id={entry.ts} />
+                  <ThreadBody
+                    body={entry.body}
+                    id={entry.ts}
+                    marks={marksOf?.(entry, index)}
+                    onMark={onMark}
+                  />
                 </div>
               </div>
               {renderExtra?.(entry, index)}
@@ -611,7 +637,12 @@ export function MessageList<E extends ChatEntry>({
                   <ThreadBody body={next.goal} />
                 </div>
               ) : (
-                <ThreadBody body={agentWords(entry.body)} id={entry.ts} />
+                <ThreadBody
+                  body={agentWords(entry.body)}
+                  id={entry.ts}
+                  marks={marksOf?.(entry, index)}
+                  onMark={onMark}
+                />
               )}
             </div>
             {renderExtra?.(entry, index)}
@@ -653,6 +684,7 @@ export function QuestionThreadView({
       data-testid={testid}
       data-question={thread.question}
       data-state={thread.state}
+      data-thread-on=""
     >
       {head}
       <div className="cr-qthread-meta">
@@ -701,6 +733,293 @@ export function QuestionThreadView({
         </ol>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------- chat threads
+
+/**
+ * T503 (D60, D64, design/chat-threads.md §3a, §6): the marks under a turn,
+ * one per thread on it, in passage order: what it is on ("banker's
+ * rounding…", or the whole message), its replies, how long ago, where it
+ * stands, and a dot with a count when it has replies you haven't read.
+ */
+export function ThreadMarks({
+  threads,
+  unreadOf,
+  onOpen,
+  open,
+}: {
+  threads: readonly ChatThread[];
+  unreadOf: (thread: ChatThread) => number;
+  onOpen: (thread: string) => void;
+  /** The thread the panel shows. */
+  open?: string;
+}): JSX.Element {
+  const several = threads.length > 1;
+  return (
+    // `data-thread-on` empty: a selection here starts no thread on the turn above.
+    <div className="cr-tmarks" data-testid="thread-marks" data-thread-on="">
+      {threads.map((thread) => {
+        const unread = unreadOf(thread);
+        const words = threadStateWords(thread);
+        const label =
+          thread.anchor.quote !== undefined || several ? anchorLabel(thread.anchor) : '';
+        return (
+          <button
+            key={thread.id}
+            type="button"
+            className="cr-tmark"
+            data-testid="thread-mark"
+            data-thread={thread.id}
+            data-state={thread.state}
+            data-unread={unread > 0 ? 'true' : undefined}
+            aria-pressed={open === thread.id}
+            title="Open the thread"
+            onClick={() => onOpen(thread.id)}
+          >
+            <Icon name="corner-down-right" size={12} />
+            {label && <span className="cr-tmark-quote">{label}</span>}
+            <span className="cr-tmark-count" data-testid="thread-mark-count">
+              {threadRepliesText(thread.replies)}
+            </span>
+            <span className="cr-faint">· last {ago(thread.last_at) || 'now'}</span>
+            {words && (
+              <span className="cr-msg-tag" data-tone={words.tone} data-testid="thread-mark-state">
+                {words.text}
+              </span>
+            )}
+            {unread > 0 && (
+              <span
+                className="cr-tmark-unread"
+                data-testid="thread-mark-unread"
+                aria-label={`${unread} unread`}
+              >
+                {unread}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** T503 (§4.1, §6): a link row under a main-flow line: the threads it replies to, or is asked in. */
+export function ThreadLinks({
+  lead,
+  threads,
+  onOpen,
+  testid,
+  whole,
+}: {
+  lead: string;
+  threads: readonly ChatThread[];
+  onOpen: (thread: string) => void;
+  testid: string;
+  /** How a thread on a whole message reads (it has no passage to quote). */
+  whole: string;
+}): JSX.Element {
+  return (
+    <div className="cr-tlinks" data-testid={testid} data-thread-on="">
+      <Icon name="corner-down-right" size={12} />
+      <span>{lead}</span>
+      {threads.map((thread, i) => (
+        <button
+          key={thread.id}
+          type="button"
+          className="cr-link"
+          data-testid="thread-link"
+          data-thread={thread.id}
+          onClick={() => onOpen(thread.id)}
+        >
+          {threads.length > 1 ? `${String.fromCharCode(9424 + i)} ` : ''}
+          {anchorLabel(thread.anchor, 40, whole)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * T503 (D60, D61, design/chat-threads.md §3a, §6): a thread in the side
+ * panel (full screen on a phone): the turn it is on and the passage it
+ * quotes, its lines, and a box to reply in it. A reply sent while the agent
+ * works is queued until its turn ends, as a composer line is (D61). A new
+ * thread (no `thread` yet) is the passage and the box: the first reply
+ * starts it. A question asked in it shows here and in the main flow.
+ */
+export function ThreadPanel({
+  thread,
+  anchor,
+  on,
+  lines,
+  authorOf,
+  queued,
+  sendBlocked,
+  onSend,
+  onClose,
+}: {
+  thread?: ChatThread;
+  anchor: ThreadAnchor;
+  /** The turn it is on, when the chat has it loaded. */
+  on?: ChatEntry;
+  lines: readonly ChatEntry[];
+  authorOf: (by: string) => ChatAuthor;
+  /** Your lines not delivered yet (queued until the agent's turn ends). */
+  queued: ReadonlySet<string>;
+  /** Why a reply can't be sent now; absent: it can. */
+  sendBlocked?: string;
+  onSend: (text: string) => Promise<void>;
+  onClose: () => void;
+}): JSX.Element {
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const box = useRef<HTMLTextAreaElement>(null);
+  const words = thread ? threadStateWords(thread) : undefined;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: focus once per thread (or new one) opened.
+  useEffect(() => {
+    box.current?.focus();
+  }, [thread?.id, anchor.entry, anchor.quote]);
+  const send = async (): Promise<void> => {
+    const text = draft.trim();
+    if (text === '' || sending || sendBlocked !== undefined) return;
+    setSending(true);
+    setError(undefined);
+    try {
+      await onSend(text);
+      setDraft('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSending(false);
+    }
+  };
+  const author = on ? authorOf(on.by) : undefined;
+  return (
+    <aside
+      className="cr-tpanel"
+      data-testid="thread-panel"
+      data-thread={thread?.id ?? ''}
+      data-state={thread?.state ?? 'new'}
+      aria-label="Thread"
+    >
+      <div className="cr-tpanel-hd">
+        <span className="cr-tpanel-title">{thread ? 'Thread' : 'New thread'}</span>
+        {words && (
+          <span className="cr-msg-tag" data-tone={words.tone} data-testid="thread-panel-state">
+            {words.text}
+          </span>
+        )}
+        <IconButton
+          icon="x"
+          label="Close the thread"
+          size="sm"
+          data-testid="thread-panel-close"
+          onClick={onClose}
+        />
+      </div>
+      <div className="cr-tpanel-body">
+        <div className="cr-tpanel-on" data-testid="thread-panel-on">
+          {author && (
+            <div className="cr-qthread-who">
+              <span className="cr-msg-name">{author.name}</span>
+              {on && <Time ts={on.ts} />}
+            </div>
+          )}
+          {anchor.quote !== undefined ? (
+            <blockquote className="cr-tpanel-quote" data-testid="thread-panel-quote">
+              {anchor.quote}
+            </blockquote>
+          ) : on ? (
+            <p className="cr-tpanel-turn">
+              {agentWords(on.body).replace(/\s+/g, ' ').slice(0, 280)}
+            </p>
+          ) : (
+            <p className="cr-tpanel-turn cr-faint">The message is above the loaded lines.</p>
+          )}
+        </div>
+        <ol className="cr-qthread-lines cr-tpanel-lines" data-testid="thread-panel-lines">
+          {lines.map((entry) => (
+            <li
+              key={entry.ts}
+              className="cr-qthread-line"
+              data-testid="thread-panel-entry"
+              data-kind={entry.kind}
+              data-by={defaultBy(entry.by)}
+            >
+              <div className="cr-qthread-who">
+                <span className="cr-msg-name">{authorOf(entry.by).name}</span>
+                {entry.kind === 'question' && (
+                  <span className="cr-msg-tag" data-tone="amber">
+                    Question · also in the chat
+                  </span>
+                )}
+                <Time ts={entry.ts} />
+              </div>
+              <ThreadBody
+                body={entry.by === 'human' ? entry.body : agentWords(entry.body)}
+                id={entry.ts}
+              />
+              {entry.by === 'human' && queued.has(entry.ts) && (
+                <div className="cr-queued" data-testid="thread-queued">
+                  <Icon name="clock" size={12} />
+                  Not sent yet — queued until the agent’s current step ends
+                </div>
+              )}
+            </li>
+          ))}
+        </ol>
+      </div>
+      <form
+        className="cr-tpanel-foot"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send();
+        }}
+      >
+        <textarea
+          ref={box}
+          data-testid="thread-reply-input"
+          aria-label="Reply in the thread"
+          placeholder={thread ? 'Reply in the thread…' : 'Start the thread…'}
+          rows={2}
+          value={draft}
+          disabled={sending}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.stopPropagation();
+              onClose();
+            } else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void send();
+            }
+          }}
+        />
+        {error && (
+          <div className="cr-send-error" role="alert" data-testid="thread-reply-error">
+            <Icon name="alert-circle" size={14} />
+            <span>{error}</span>
+          </div>
+        )}
+        <div className="cr-tpanel-actions">
+          <span className="cr-faint">Enter to send · Shift+Enter for a new line</span>
+          <Button
+            type="submit"
+            variant="primary"
+            size="sm"
+            data-testid="thread-reply-send"
+            busy={sending}
+            disabled={draft.trim() === '' || sendBlocked !== undefined}
+            title={sendBlocked}
+          >
+            Reply
+          </Button>
+        </div>
+      </form>
+    </aside>
   );
 }
 
@@ -1015,20 +1334,28 @@ const QUOTE_ROOM_PX = 44;
 export function QuoteSelection({
   scope,
   onQuote,
+  onThread,
   outside = true,
 }: {
   scope: RefObject<HTMLElement>;
   onQuote: (text: string, question: string | undefined) => void;
+  /**
+   * T503 (D64, §3a): Reply in thread, beside Quote, for a selection inside
+   * one turn of the main flow (its row's `data-thread-on`, the turn's `ts`).
+   */
+  onThread?: (text: string, on: string) => void;
   outside?: boolean;
 }): JSX.Element | null {
   const [spot, setSpot] = useState<QuoteSpot | undefined>(undefined);
-  const picked = useRef<{ text: string; question: string | undefined } | undefined>(undefined);
+  const picked = useRef<
+    { text: string; question: string | undefined; on: string | undefined } | undefined
+  >(undefined);
 
   useEffect(() => {
     let dragging = false;
     /** The selection worth a Quote button: its text, its question, and where it is. */
     const selected = ():
-      | { text: string; question: string | undefined; range: Range }
+      | { text: string; question: string | undefined; on: string | undefined; range: Range }
       | undefined => {
       const root = scope.current;
       const selection = document.getSelection();
@@ -1042,11 +1369,13 @@ export function QuoteSelection({
       if (text.trim() === '') return;
       const question = within.closest('[data-quote-target]')?.getAttribute('data-quote-target');
       if (!question && !outside) return;
-      return { text, question: question || undefined, range };
+      // T503: the turn the selection is in (all of it in one turn), for Reply in thread.
+      const on = within.closest('[data-thread-on]')?.getAttribute('data-thread-on');
+      return { text, question: question || undefined, on: on || undefined, range };
     };
     const read = (): void => {
       const found = selected();
-      picked.current = found && { text: found.text, question: found.question };
+      picked.current = found && { text: found.text, question: found.question, on: found.on };
       if (!found) {
         setSpot(undefined);
         return;
@@ -1084,13 +1413,18 @@ export function QuoteSelection({
   }, [scope, outside]);
 
   if (spot === undefined) return null;
-  return createPortal(
+  const done = (): void => {
+    document.getSelection()?.removeAllRanges();
+    picked.current = undefined;
+    setSpot(undefined);
+  };
+  const quoteButton = (inBar: boolean) => (
     <button
       type="button"
       className="cr-quote"
       data-testid="quote-selection"
-      data-below={spot.below ? 'true' : undefined}
-      style={{ left: spot.x, top: spot.y }}
+      data-below={!inBar && spot.below ? 'true' : undefined}
+      style={inBar ? undefined : { left: spot.x, top: spot.y }}
       title="Quote it in your answer (or, outside a question, in your message)"
       // Pressing it would clear the selection it quotes.
       onMouseDown={(e) => e.preventDefault()}
@@ -1098,14 +1432,43 @@ export function QuoteSelection({
         const quote = picked.current;
         if (quote === undefined) return;
         onQuote(quote.text, quote.question);
-        document.getSelection()?.removeAllRanges();
-        picked.current = undefined;
-        setSpot(undefined);
+        done();
       }}
     >
       <Icon name="quote" size={12} />
       Quote
-    </button>,
+    </button>
+  );
+  const on = picked.current?.on;
+  if (onThread === undefined || on === undefined) {
+    return createPortal(quoteButton(false), document.body);
+  }
+  // T503 (§3a): the bar's two actions: Quote, and Reply in thread on the passage.
+  return createPortal(
+    <div
+      className="cr-quote-bar"
+      data-testid="selection-bar"
+      data-below={spot.below ? 'true' : undefined}
+      style={{ left: spot.x, top: spot.y }}
+    >
+      {quoteButton(true)}
+      <button
+        type="button"
+        className="cr-quote"
+        data-testid="selection-thread"
+        title="Start a thread on this passage: it is quoted, and highlighted in the message"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => {
+          const picked_ = picked.current;
+          if (picked_?.on === undefined) return;
+          onThread(picked_.text, picked_.on);
+          done();
+        }}
+      >
+        <Icon name="message-square" size={12} />
+        Reply in thread
+      </button>
+    </div>,
     document.body,
   );
 }

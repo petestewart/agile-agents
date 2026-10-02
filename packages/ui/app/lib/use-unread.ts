@@ -21,7 +21,9 @@ import {
   markAllSeen,
   markSeen,
   parseSeen,
+  threadReadUpTo,
   unreadReplies,
+  unreadThreads,
 } from './unread';
 import { notifyAccess, raiseNotification, readNotifyOn } from './use-notify';
 
@@ -191,4 +193,24 @@ export function useReplyNotifications(): void {
       () => (fresh.length === 1 ? go.current(first.id) : goInbox.current()),
     );
   }, [replies]);
+}
+
+/** T503: when one chat thread was last read (its key is `threads.ts`'s `threadReadKey`). */
+export function useThreadReadUpTo(): (key: string) => string {
+  const seen = useSeen();
+  return useMemo(() => (key: string) => threadReadUpTo(seen, key), [seen]);
+}
+
+/** T503 (§6): each node's chat threads with a reply you haven't read (the rail rows' marks). */
+export function useUnreadThreads(): Map<string, number> {
+  const cockpit = useOptionalFeed()?.cockpit;
+  const seen = useSeen();
+  return useMemo(() => {
+    const out = new Map<string, number>();
+    for (const row of cockpit?.streams ?? []) {
+      const n = unreadThreads(row, seen);
+      if (n > 0) out.set(row.id, n);
+    }
+    return out;
+  }, [cockpit, seen]);
 }

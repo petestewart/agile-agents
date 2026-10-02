@@ -8,6 +8,7 @@
 import { basename } from 'node:path';
 import {
   type Autonomy,
+  type ChatThreadReply,
   type Event,
   type HilRequest,
   type InboxItem,
@@ -182,6 +183,8 @@ export interface CockpitStreamRow {
   autonomy?: Autonomy;
   /** T437: when its agent last answered a line of yours (or its question); a woken turn is not an answer. */
   answered_at?: string;
+  /** T503 (§6): its chat threads with a reply, the newest first (unread against your read marks). */
+  thread_replies?: ChatThreadReply[];
   /** T336: a part not yet started because its coordinator's plan is not approved. */
   waiting_for_plan?: true;
   /** T341: its PR is open, so it merges on GitHub (not the operator's move here). */
@@ -330,6 +333,8 @@ export function buildCockpitFrame(
   directorRepliedAt?: () => string | undefined,
   /** T437: when a node's agent last answered you (`StateStore.answeredAt`). */
   answeredAt?: (node: string) => string | undefined,
+  /** T503: a node's chat threads with a reply (`ChatThreads.repliesFor`). */
+  threadReplies?: (node: string) => ChatThreadReply[] | undefined,
 ): CockpitFrame {
   const repliedAt = directorRepliedAt?.();
   // One read of the home: the archived ones are only for Restore (T361).
@@ -370,6 +375,7 @@ export function buildCockpitFrame(
       ...mergeRow(mergeStateOf?.(s)),
       updated_at: latest(s.created_at, s.agent.updated_at, threadUpdatedAt?.(s.id)),
       ...answeredRow(answeredAt?.(s.id)),
+      ...repliesRow(threadReplies?.(s.id)),
       ...startState(s),
       ...liveAgent(s, contextOf),
       ...lastAgent(s),
@@ -413,6 +419,12 @@ export function buildCockpitFrame(
 
 function answeredRow(at: string | undefined): { answered_at?: string } {
   return at !== undefined ? { answered_at: at } : {};
+}
+
+function repliesRow(replies: ChatThreadReply[] | undefined): {
+  thread_replies?: ChatThreadReply[];
+} {
+  return replies !== undefined && replies.length > 0 ? { thread_replies: replies } : {};
 }
 
 /**
