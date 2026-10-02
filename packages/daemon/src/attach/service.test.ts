@@ -5278,6 +5278,8 @@ describe("T506: Codex's own PreToolUse gate", () => {
     expect(after.agent.status).toBe('blocked');
     expect(after.agent.progress).toContain(expected);
     expect(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8')).toBe('{"theirs":true}\n');
+    // T513: a start that never ran says no "attached".
+    expect(threadBodies(stream.id).filter((b) => / attached: /.test(b))).toEqual([]);
   }, 30_000);
 
   test('a worktree Codex does not trust is refused, never started ungated; Needs me says how to fix it', async () => {
@@ -5313,6 +5315,45 @@ describe("T506: Codex's own PreToolUse gate", () => {
     await expect(attachService.attach(other.id, { vendor: 'codex' })).rejects.toThrow(
       "Codex's gate isn't trusted here: trust",
     );
+  }, 30_000);
+
+  test('T513: a refused start writes no "attached" line, only its refusal; a start that ran says it before the agent speaks', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const untrusted = join(scratch, 'codex-untrusted-t513');
+    mkdirSync(untrusted, { recursive: true });
+    writeFileSync(
+      join(untrusted, 'config.toml'),
+      '[projects."/elsewhere"]\ntrust_level = "trusted"\n',
+    );
+    attachService = buildAttachService(codexProvider(), { codexHome: untrusted });
+    const stream = await makeStream('demo');
+    await expect(attachService.attach(stream.id, { vendor: 'codex' })).rejects.toThrow(
+      "Codex's gate isn't trusted here",
+    );
+    expect(threadBodies(stream.id).filter((b) => / attached: /.test(b))).toEqual([]);
+    // The refusal is what the node says.
+    expect(streams.get(stream.id).agent.progress).toContain("Codex's gate isn't trusted here");
+
+    // Trusted: the start runs, and "worker attached" comes before the agent's first line.
+    writeFileSync(
+      join(untrusted, 'config.toml'),
+      `[projects."${repo}"]\ntrust_level = "trusted"\n`,
+    );
+    await attachService.stopAll();
+    attachService = buildAttachService(codexProvider(SPEAKS_THEN_HANGS), { codexHome: untrusted });
+    const { session } = await attachService.attach(stream.id, { vendor: 'codex' });
+    await waitFor(() =>
+      streams
+        .readThread(stream.id, { limit: 500 })
+        .entries.some((e) => e.by === `agent:${session.id}`),
+    );
+    const lines = streams.readThread(stream.id, { limit: 500 }).entries;
+    const attached = lines.findIndex((e) => e.ref === session.id && / attached: /.test(e.body));
+    expect(attached).toBeGreaterThanOrEqual(0);
+    expect(lines[attached]?.body).toStartWith('worker attached: codex/');
+    expect(attached).toBeLessThan(lines.findIndex((e) => e.by === `agent:${session.id}`));
+    expect(lines.filter((e) => / attached: /.test(e.body))).toHaveLength(1);
+    await attachService.stop(stream.id);
   }, 30_000);
 
   const RUNS_TWO_COMMANDS: FakeAgentScript = {

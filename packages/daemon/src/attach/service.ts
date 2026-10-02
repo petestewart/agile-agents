@@ -1252,61 +1252,6 @@ export class AttachService {
           .catch(() => undefined);
       }
     }
-    await streams.appendThread('daemon', stream.id, {
-      kind: 'event',
-      body: `${role} attached: ${settings.vendor}/${settings.model} effort=${settings.effort}${
-        worktreePath !== undefined ? ` in ${worktreePath}` : ''
-      }`,
-      ref: sessionId,
-    });
-    // T482: a routed pick says what it chose and why; an explicit pick outside the
-    // preset models says it runs as picked (D53). A kept pick says nothing new.
-    // T483, T490: a routed reviewer says so too.
-    const shown = pick ?? reviewerPick;
-    const pickLine =
-      shown === undefined || shown.how === 'kept' || shown.how === 'escalation'
-        ? undefined
-        : shown.how === 'explicit'
-          ? shown.note
-          : routedPickLine(
-              { ...shown, vendor: settings.vendor, model: settings.model },
-              this.routing().catalogModels(),
-            );
-    if (pickLine !== undefined) {
-      await streams.appendThread('daemon', stream.id, {
-        kind: 'event',
-        body: pickLine.slice(0, 800),
-        ref: sessionId,
-      });
-    }
-    // T484: the pending step is spent by this start: its line and record-only event, or,
-    // at the top of the ladder, the Needs me card. An explicit pick clears the card too.
-    if (routedStart) {
-      await this.routing()
-        .escalation.started(stream, {
-          ...(step !== undefined ? { step } : {}),
-          explicit: flagged,
-          ran: {
-            vendor: settings.vendor,
-            model: settings.model,
-            ...(providerTakesEffort(provider) ? { effort: settings.effort } : {}),
-          },
-          session: sessionId,
-        })
-        .catch((err) => console.error('escalation: the step was not recorded:', err));
-    }
-    await store.appendEvent(
-      buildEvent('agent_put', {
-        agent: sessionId,
-        data: {
-          stream: stream.id,
-          attached: true,
-          vendor: settings.vendor,
-          model: settings.model,
-          effort: settings.effort,
-        },
-      }),
-    );
     // 4. Spawn. T437: a spawn that throws (a sandbox or extension refusal) ends the
     // session it recorded: `error` with the reason, the node `blocked`, never "Working".
     let handle: AgentSessionHandle;
@@ -1388,6 +1333,64 @@ export class AttachService {
       throw err;
     }
     this.handles(role).set(stream.id, handle);
+    // T513: what this start runs is said once it started: a refused start (an untrusted or
+    // tracked-hook Codex, a sandbox refusal) never reads "attached", only its refusal. Begun
+    // before anything is awaited, so it comes before the agent's first line.
+    await streams.appendThread('daemon', stream.id, {
+      kind: 'event',
+      body: `${role} attached: ${settings.vendor}/${settings.model} effort=${settings.effort}${
+        worktreePath !== undefined ? ` in ${worktreePath}` : ''
+      }`,
+      ref: sessionId,
+    });
+    // T482: a routed pick says what it chose and why; an explicit pick outside the
+    // preset models says it runs as picked (D53). A kept pick says nothing new.
+    // T483, T490: a routed reviewer says so too.
+    const shown = pick ?? reviewerPick;
+    const pickLine =
+      shown === undefined || shown.how === 'kept' || shown.how === 'escalation'
+        ? undefined
+        : shown.how === 'explicit'
+          ? shown.note
+          : routedPickLine(
+              { ...shown, vendor: settings.vendor, model: settings.model },
+              this.routing().catalogModels(),
+            );
+    if (pickLine !== undefined) {
+      await streams.appendThread('daemon', stream.id, {
+        kind: 'event',
+        body: pickLine.slice(0, 800),
+        ref: sessionId,
+      });
+    }
+    // T484: the pending step is spent by this start: its line and record-only event, or,
+    // at the top of the ladder, the Needs me card. An explicit pick clears the card too.
+    if (routedStart) {
+      await this.routing()
+        .escalation.started(stream, {
+          ...(step !== undefined ? { step } : {}),
+          explicit: flagged,
+          ran: {
+            vendor: settings.vendor,
+            model: settings.model,
+            ...(providerTakesEffort(provider) ? { effort: settings.effort } : {}),
+          },
+          session: sessionId,
+        })
+        .catch((err) => console.error('escalation: the step was not recorded:', err));
+    }
+    await store.appendEvent(
+      buildEvent('agent_put', {
+        agent: sessionId,
+        data: {
+          stream: stream.id,
+          attached: true,
+          vendor: settings.vendor,
+          model: settings.model,
+          effort: settings.effort,
+        },
+      }),
+    );
     await this.setSessionStatus(stream.id, sessionId, 'running');
 
     // Findings already on the stream, so the reviewer's exit reports only its own.
