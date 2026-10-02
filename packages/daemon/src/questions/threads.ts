@@ -148,8 +148,7 @@ export function turnsByCause(
     const end = turnEnd(entries, digests, d.session, d.at, d.id);
     const by = `agent:${d.session}`;
     const lines = entries.filter(
-      (e) =>
-        e.by === by && e.ts >= d.at && (end === undefined || e.ts < end) && kinds.has(e.kind),
+      (e) => e.by === by && e.ts >= d.at && (end === undefined || e.ts < end) && kinds.has(e.kind),
     );
     out.push({ keys, lines });
   }

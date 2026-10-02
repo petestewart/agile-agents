@@ -97,7 +97,12 @@ describe('agent verbs', () => {
     expect(ask(['a', 'x'.repeat(201)]).success).toBe(false);
     expect(ask(['a', 'x'.repeat(200)]).success).toBe(true);
     // The MCP bridge publishes the shape to the model, so `ask` stays a plain object.
-    expect(Object.keys(AGENT_VERB_SCHEMAS.ask.shape)).toEqual(['session', 'text', 'options', 'thread']);
+    expect(Object.keys(AGENT_VERB_SCHEMAS.ask.shape)).toEqual([
+      'session',
+      'text',
+      'options',
+      'thread',
+    ]);
     expect(AGENT_VERB_DESCRIPTIONS.ask).toContain('options');
   });
 
@@ -136,9 +141,9 @@ describe('agent verbs', () => {
     expect(validateVerbInput('progress', { session, text: 'x' }).thread).toBeUndefined();
     const q = `questions/Q-${ulid()}`;
     expect(validateVerbInput('ask', { session, text: 'x?', thread: q }).thread).toBe(q);
-    expect(AGENT_VERB_SCHEMAS.progress.safeParse({ session, text: 'x', thread: 'main' }).success).toBe(
-      false,
-    );
+    expect(
+      AGENT_VERB_SCHEMAS.progress.safeParse({ session, text: 'x', thread: 'main' }).success,
+    ).toBe(false);
     expect(AGENT_VERB_DESCRIPTIONS.progress).toContain('thread');
   });
 

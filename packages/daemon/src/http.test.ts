@@ -257,6 +257,56 @@ describe('T160 cockpit routes', () => {
     expect((await post({ text: 'and?' })).status).toBe(409);
   });
 
+  test('T503: POST /api/streams/:id/say starts a thread on a turn and replies in it; the page and the rail row show it', async () => {
+    const node = await streams.create('human', { title: 'Ledger', goal: 'g' });
+    const session = ulid();
+    const turn = await streams.appendThread(
+      'agent',
+      node.id,
+      { kind: 'line', body: 'Use banker’s rounding.' },
+      session,
+    );
+    const say = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/streams/${node.id}/say`), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+    const anchor = { entry: turn.ts, start: 4, end: 21, quote: 'banker’s rounding' };
+    expect((await say({ body: 'why?', anchor }, { origin: 'http://evil.example' })).status).toBe(
+      403,
+    );
+    expect((await say({ body: 'why?', anchor: { ...anchor, end: 99 } })).status).toBe(400);
+    expect((await say({ body: 'why?', anchor: { ...anchor, colour: 'x' } })).status).toBe(400);
+    expect((await say({ body: 'x', thread: '2020-01-01T00:00:00.000Z' })).status).toBe(400);
+    expect((await say({ body: 'x', thread: `questions/Q-${ulid()}` })).status).toBe(400);
+    const started = await say({ body: 'why?', anchor });
+    expect(started.status).toBe(201);
+    const first = ((await started.json()) as { entry: { ts: string; thread?: string; by: string } })
+      .entry;
+    expect(first).toMatchObject({ by: 'human', thread: first.ts });
+    const replied = await say({ body: 'and the sheets?', thread: first.ts });
+    expect(replied.status).toBe(201);
+    await streams.appendThread(
+      'agent',
+      node.id,
+      { kind: 'line', body: 'it avoids drift', thread: first.ts },
+      session,
+    );
+
+    const page = (await (await fetch(url(`/api/streams/${node.id}`))).json()) as {
+      chat_threads?: Array<{ id: string; anchor: unknown; replies: number; reply_at?: string }>;
+    };
+    expect(page.chat_threads).toHaveLength(1);
+    expect(page.chat_threads?.[0]).toMatchObject({ id: first.ts, anchor, replies: 3 });
+    const frame = (await (await fetch(url('/api/cockpit'))).json()) as {
+      streams: Array<{ id: string; thread_replies?: Array<{ thread: string; at: string }> }>;
+    };
+    expect(frame.streams.find((r) => r.id === node.id)?.thread_replies).toEqual([
+      { thread: first.ts, at: page.chat_threads?.[0]?.reply_at as string },
+    ]);
+  });
+
   test('POST /api/rules/:id/accept decides as human; a second accept is 409; cross-origin is 403', async () => {
     const rule = await rules.create('agent', { text: 'use the repo scripts' });
     const foreign = await fetch(url(`/api/rules/${rule.id}/accept`), {

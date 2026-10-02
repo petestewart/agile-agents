@@ -1807,10 +1807,9 @@ interface AnswerState {
   threaded?: true;
 }
 
-function nextAnswer(state: AnswerState, entry: ThreadEntry): AnswerState {
-  if (entry.anchor !== undefined && state.threaded !== true) {
-    state = { ...state, threaded: true };
-  }
+function nextAnswer(before: AnswerState, entry: ThreadEntry): AnswerState {
+  const state: AnswerState =
+    entry.anchor !== undefined && before.threaded !== true ? { ...before, threaded: true } : before;
   if (entry.kind !== 'line') return state;
   if (entry.by === 'human') return { ...state, pending: true };
   const agent =

@@ -140,6 +140,36 @@ describe('buildBrief', () => {
     );
   });
 
+  test('T503: a line in a chat thread says which; a first reply says what it is on', () => {
+    const turn = '2026-10-02T10:02:00.000Z';
+    const first = '2026-10-02T10:05:00.000Z';
+    const brief = buildBrief({
+      role: 'worker',
+      stream: makeStream(),
+      ancestors: [],
+      thread: [
+        { ts: turn, by: 'human', kind: 'line', body: 'use banker’s rounding' },
+        {
+          ts: first,
+          by: 'human',
+          kind: 'line',
+          body: 'why?',
+          thread: first,
+          anchor: { entry: turn, start: 4, end: 21, quote: 'banker’s rounding' },
+        },
+        { ts: '2026-10-02T10:06:00.000Z', by: 'human', kind: 'line', body: 'and?', thread: first },
+      ],
+      docs: [],
+      rules: [],
+      briefsDir: '/no/such/dir',
+    });
+    expect(brief).toContain(
+      `- **human** (line, starts thread ${first} on the line of ${turn}, about the passage "banker’s rounding"): why?`,
+    );
+    expect(brief).toContain(`- **human** (line, in thread ${first}): and?`);
+    expect(brief).toContain('- **human** (line): use banker’s rounding');
+  });
+
   test('the reviewer brief is the same shape with the reviewer role file', () => {
     const brief = buildBrief({
       role: 'reviewer',

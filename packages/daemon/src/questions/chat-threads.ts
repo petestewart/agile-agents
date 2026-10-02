@@ -163,12 +163,10 @@ export function chatThreadsOf(input: ChatThreadsInput): ChatThreadsOf {
 
   const threads: ChatThread[] = [];
   for (const [id, start] of starts) {
-    const lines = [...(members.get(id) ?? new Set<string>([id]))]
-      .sort()
-      .flatMap((ts) => {
-        const e = byTs.get(ts);
-        return e ? [e] : [];
-      });
+    const lines = [...(members.get(id) ?? new Set<string>([id]))].sort().flatMap((ts) => {
+      const e = byTs.get(ts);
+      return e ? [e] : [];
+    });
     const open = lines
       .filter((e) => e.kind === 'question')
       .map((e) => questionIdOfThreadRef(e.ref))
@@ -204,7 +202,10 @@ const ACTIVITY_WINDOW = 1000;
 /** T503: a node's chat threads (its page), and their latest replies (its rail row's unread). */
 export class ChatThreads {
   /** Per node: the rail's replies, as of the thread's last change. */
-  private readonly replied = new Map<string, { at: string | undefined; replies: ChatThreadReply[] }>();
+  private readonly replied = new Map<
+    string,
+    { at: string | undefined; replies: ChatThreadReply[] }
+  >();
 
   constructor(private readonly sources: ChatThreadSources) {}
 
@@ -241,7 +242,9 @@ export class ChatThreads {
     let replies: ChatThreadReply[] = [];
     try {
       replies = this.forNode(id)
-        .threads.flatMap((t) => (t.reply_at !== undefined ? [{ thread: t.id, at: t.reply_at }] : []))
+        .threads.flatMap((t) =>
+          t.reply_at !== undefined ? [{ thread: t.id, at: t.reply_at }] : [],
+        )
         .sort((a, b) => b.at.localeCompare(a.at))
         .slice(0, CHAT_THREAD_REPLIES_MAX);
     } catch {

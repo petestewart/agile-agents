@@ -784,7 +784,9 @@ export class StreamService {
         `thread body is ${input.body.length} characters; the cap is ${max} — write the detail to a file and pass it as "ref"`,
       );
     }
-    const ts = new Date().toISOString();
+    // T503: a line's `ts` names it (a thread's anchor and id are one), so each comes after the
+    // node's last line and after what it is in or on: the same millisecond is not after.
+    const ts = after([this.store.threadUpdatedAt(id), input.anchor?.entry ?? input.thread]);
     return this.store.appendThreadEntry(id, {
       ts,
       by,
@@ -821,6 +823,17 @@ export class StreamService {
       ...(lastIndex >= 0 && lastIndex < all.length - 1 ? { next: lastIndex } : {}),
     };
   }
+}
+
+/** Now, or a millisecond past the latest of `earlier` (ISO times) when now is not later. */
+function after(earlier: readonly (string | undefined)[]): string {
+  const now = Date.now();
+  let floor = Number.NEGATIVE_INFINITY;
+  for (const at of earlier) {
+    const t = at !== undefined ? Date.parse(at) : Number.NaN;
+    if (!Number.isNaN(t) && t > floor) floor = t;
+  }
+  return new Date(now > floor ? now : floor + 1).toISOString();
 }
 
 /** A partial stream write. `agent`/`human` merge; everything else replaces. */

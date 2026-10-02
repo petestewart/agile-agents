@@ -24,7 +24,9 @@ describe('ChatThreadSchema (T503)', () => {
     expect(ChatThreadSchema.safeParse({ ...thread, unread: 2 }).success).toBe(false);
     expect(ChatThreadSchema.safeParse({ ...thread, replies: -1 }).success).toBe(false);
     expect(ChatThreadSchema.safeParse({ ...thread, questions: ['Q-1'] }).success).toBe(false);
-    expect(ChatThreadSchema.safeParse({ ...thread, questions: [`Q-${ulid()}`] }).success).toBe(true);
+    expect(ChatThreadSchema.safeParse({ ...thread, questions: [`Q-${ulid()}`] }).success).toBe(
+      true,
+    );
   });
 
   test('a batched turn links at least one thread', () => {

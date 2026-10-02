@@ -618,7 +618,10 @@ describe('chat threads on a thread entry (T503, D60, D64)', () => {
     const whole = validateThreadEntry(reply({ thread: first, anchor: { entry: turn } }));
     expect(whole.anchor).toEqual({ entry: turn });
     const passage = validateThreadEntry(
-      reply({ thread: first, anchor: { entry: turn, start: 10, end: 26, quote: 'banker’s rounding' } }),
+      reply({
+        thread: first,
+        anchor: { entry: turn, start: 10, end: 26, quote: 'banker’s rounding' },
+      }),
     );
     expect(passage.anchor?.quote).toBe('banker’s rounding');
     // A quote it could not place in the source still anchors (no offsets).
@@ -650,14 +653,16 @@ describe('chat threads on a thread entry (T503, D60, D64)', () => {
       /own ts/,
     );
     expect(() =>
-      validateThreadEntry(reply({ by: `agent:${SESSION}`, thread: first, anchor: { entry: turn } })),
+      validateThreadEntry(
+        reply({ by: `agent:${SESSION}`, thread: first, anchor: { entry: turn } }),
+      ),
     ).toThrow(/only your line/);
     expect(() =>
       validateThreadEntry(reply({ kind: 'event', thread: first, anchor: { entry: turn } })),
     ).toThrow(/only your line/);
-    expect(() =>
-      validateThreadEntry(reply({ thread: first, anchor: { entry: later } })),
-    ).toThrow(/earlier line/);
+    expect(() => validateThreadEntry(reply({ thread: first, anchor: { entry: later } }))).toThrow(
+      /earlier line/,
+    );
   });
 
   test('a reply names a thread started before it, or a question’s', () => {
@@ -666,7 +671,9 @@ describe('chat threads on a thread entry (T503, D60, D64)', () => {
       validateThreadEntry({ ...reply({ ts: later, thread: first }), by: `agent:${SESSION}` })
         .thread,
     ).toBe(first);
-    expect(() => validateThreadEntry(reply({ ts: first, thread: later }))).toThrow(/started before/);
+    expect(() => validateThreadEntry(reply({ ts: first, thread: later }))).toThrow(
+      /started before/,
+    );
     const question = `questions/Q-${ulid()}`;
     expect(validateThreadEntry(reply({ thread: question })).thread).toBe(question);
     expect(() => validateThreadEntry(reply({ thread: 'questions/Q-1' }))).toThrow();
@@ -676,11 +683,14 @@ describe('chat threads on a thread entry (T503, D60, D64)', () => {
   test('the composer’s say: a reply in a thread, or the start of one, never both', () => {
     expect(StreamSayInputSchema.parse({ body: 'hi', thread: first }).thread).toBe(first);
     expect(
-      StreamSayInputSchema.parse({ body: 'hi', anchor: { entry: turn, start: 0, end: 2, quote: 'ok' } })
-        .anchor?.end,
+      StreamSayInputSchema.parse({
+        body: 'hi',
+        anchor: { entry: turn, start: 0, end: 2, quote: 'ok' },
+      }).anchor?.end,
     ).toBe(2);
     expect(
-      StreamSayInputSchema.safeParse({ body: 'hi', thread: first, anchor: { entry: turn } }).success,
+      StreamSayInputSchema.safeParse({ body: 'hi', thread: first, anchor: { entry: turn } })
+        .success,
     ).toBe(false);
     expect(StreamSayInputSchema.safeParse({ body: 'hi', thread: 'nope' }).success).toBe(false);
   });

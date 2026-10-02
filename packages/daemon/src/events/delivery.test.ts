@@ -183,6 +183,43 @@ describe("T502 (D62): a reply in a question's thread", () => {
   });
 });
 
+describe('T503 (D60, §3a, §4): a reply in a chat thread', () => {
+  const thread = (id: string, quote?: string) => ({
+    id,
+    on: '2026-10-02T10:02:11.000Z',
+    of: 'agent' as 'agent' | 'human',
+    ...(quote !== undefined ? { quote } : {}),
+  });
+  const reply = (body: string, t: ReturnType<typeof thread>) =>
+    events.emit({ ...line(body), payload: { body, thread: t } });
+  const A = '2026-10-02T10:05:00.000Z';
+  const B = '2026-10-02T10:06:00.000Z';
+
+  test('says the turn it is on, the thread, and the passage as data', async () => {
+    const one = await reply('why that?', thread(A, 'banker’s "rounding"'));
+    const text = digestPrompt([one]);
+    expect(text).toContain(
+      `In a thread on your message of 10:02 UTC (thread ${A}), about the passage "banker’s \\"rounding\\"": why that?`,
+    );
+    // One thread's line alone: its turn posts there; nothing to say about where.
+    expect(text).not.toContain('different threads');
+    const whole = await reply('and this?', { ...thread(B), of: 'human' as const });
+    expect(digestPrompt([whole])).toContain(
+      `In a thread on the operator’s message of 10:02 UTC (thread ${B}): and this?`,
+    );
+  });
+
+  test('lines from several threads, or the main chat and a thread, say where answers go', async () => {
+    const a = await reply('a', thread(A));
+    const b = await reply('b', thread(B));
+    const main = await events.emit(line('carry on'));
+    expect(digestPrompt([a, b])).toContain('pass its thread id to `progress`');
+    expect(digestPrompt([a, main])).toContain('pass its thread id to `progress`');
+    expect(wakePrompt([a, main], node)).toContain('different threads');
+    expect(digestPrompt([main])).not.toContain('different threads');
+  });
+});
+
 describe("T290: a parent's note wakes an ended work node", () => {
   const note = (subject: string) => ({
     type: 'coordinator_note' as const,

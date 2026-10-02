@@ -113,10 +113,10 @@ import {
 import { NotAReadGateError, answerReadAlways } from './permissions/posture';
 import type { ProjectService } from './projects';
 import {
+  ChatThreads,
   QuestionAlreadyAnsweredError,
   QuestionNotFoundError,
   type QuestionService,
-  ChatThreads,
   QuestionThreads,
   parseAnswerParams,
   sayAndAnswer,
