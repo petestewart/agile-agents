@@ -311,15 +311,6 @@ export class ChatThreads {
     });
   }
 
-  /** T504: `entries` (the node's lines) as its agent is handed them again (`linesForAgent`). */
-  linesForAgent(id: string, entries: readonly ThreadEntry[]): ThreadEntry[] {
-    if (!entries.some((e) => e.op !== undefined)) return [...entries];
-    return linesForAgent(
-      entries,
-      [...(this.sources.events?.activityFor(id, ACTIVITY_WINDOW) ?? [])].reverse(),
-    );
-  }
-
   /** T504 (§7): a chat thread's lines as the chat shows them, oldest first (Promote to tangent). */
   linesOf(id: string, thread: string): ThreadEntry[] | undefined {
     const lines = this.tail(id);
