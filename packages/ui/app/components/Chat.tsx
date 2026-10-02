@@ -924,6 +924,7 @@ export function ThreadPanel({
   anchor,
   on,
   lines,
+  folded,
   authorOf,
   queued,
   sendBlocked,
@@ -938,6 +939,12 @@ export function ThreadPanel({
   /** The turn it is on, when the chat has it loaded. */
   on?: ChatEntry;
   lines: readonly ChatEntry[];
+  /**
+   * T513 (T509): lines the agent said on the way to its reply (`ts` → the
+   * reply's): folded under that reply, as the main flow folds them, and no
+   * reply of their own.
+   */
+  folded?: ReadonlyMap<string, string>;
   authorOf: (by: string) => ChatAuthor;
   /** Your lines not delivered yet (queued until the agent's turn ends). */
   queued: ReadonlySet<string>;
@@ -976,6 +983,18 @@ export function ThreadPanel({
     }
   };
   const author = on ? authorOf(on.by) : undefined;
+  // T513: each reply's folded lines, in order; a folded line whose reply isn't here shows as is.
+  const shownTs = new Set(lines.map((e) => e.ts));
+  const foldsOf = new Map<string, ChatEntry[]>();
+  for (const entry of lines) {
+    const reply = folded?.get(entry.ts);
+    if (reply === undefined || !shownTs.has(reply)) continue;
+    foldsOf.set(reply, [...(foldsOf.get(reply) ?? []), entry]);
+  }
+  const isFolded = (entry: ChatEntry): boolean => {
+    const reply = folded?.get(entry.ts);
+    return reply !== undefined && shownTs.has(reply);
+  };
   return (
     <aside
       className="cr-tpanel"
@@ -1024,36 +1043,59 @@ export function ThreadPanel({
           )}
         </div>
         <ol className="cr-qthread-lines cr-tpanel-lines" data-testid="thread-panel-lines">
-          {lines.map((entry) => (
-            <li
-              key={entry.ts}
-              className="cr-qthread-line"
-              data-testid="thread-panel-entry"
-              data-kind={entry.kind}
-              data-by={defaultBy(entry.by)}
-            >
-              <div className="cr-qthread-who">
-                <span className="cr-msg-name">{authorOf(entry.by).name}</span>
-                {entry.kind === 'question' && (
-                  <span className="cr-msg-tag" data-tone="amber">
-                    Question · also in the chat
-                  </span>
+          {lines.map((entry) =>
+            isFolded(entry) ? null : (
+              <li
+                key={entry.ts}
+                className="cr-qthread-line"
+                data-testid="thread-panel-entry"
+                data-kind={entry.kind}
+                data-by={defaultBy(entry.by)}
+              >
+                {foldsOf.has(entry.ts) && (
+                  <details className="cr-tpanel-fold" data-testid="thread-panel-fold">
+                    <summary className="cr-faint">
+                      {(() => {
+                        const n = foldsOf.get(entry.ts)?.length ?? 0;
+                        return `${n} earlier ${n === 1 ? 'message' : 'messages'} on the way`;
+                      })()}
+                    </summary>
+                    <ol className="cr-qthread-lines">
+                      {(foldsOf.get(entry.ts) ?? []).map((note) => (
+                        <li
+                          key={note.ts}
+                          className="cr-qthread-line cr-faint"
+                          data-testid="thread-panel-folded"
+                        >
+                          <ThreadBody body={agentWords(note.body)} id={note.ts} />
+                        </li>
+                      ))}
+                    </ol>
+                  </details>
                 )}
-                <Time ts={entry.ts} />
-              </div>
-              <ThreadBody
-                body={entry.by === 'human' ? entry.body : agentWords(entry.body)}
-                id={entry.ts}
-              />
-              {entry.by === 'human' && queued.has(entry.ts) && (
-                <div className="cr-queued" data-testid="thread-queued">
-                  <Icon name="clock" size={12} />
-                  Not sent yet — queued until the agent’s current step ends
+                <div className="cr-qthread-who">
+                  <span className="cr-msg-name">{authorOf(entry.by).name}</span>
+                  {entry.kind === 'question' && (
+                    <span className="cr-msg-tag" data-tone="amber">
+                      Question · also in the chat
+                    </span>
+                  )}
+                  <Time ts={entry.ts} />
                 </div>
-              )}
-              {lineExtra?.(entry)}
-            </li>
-          ))}
+                <ThreadBody
+                  body={entry.by === 'human' ? entry.body : agentWords(entry.body)}
+                  id={entry.ts}
+                />
+                {entry.by === 'human' && queued.has(entry.ts) && (
+                  <div className="cr-queued" data-testid="thread-queued">
+                    <Icon name="clock" size={12} />
+                    Not sent yet — queued until the agent’s current step ends
+                  </div>
+                )}
+                {lineExtra?.(entry)}
+              </li>
+            ),
+          )}
         </ol>
         {notice}
       </div>

@@ -74,6 +74,56 @@ function notAMessage(entry: ThreadEntry): boolean {
   return entry.op !== undefined || entry.agent_only === true;
 }
 
+/** A daemon line that ends an agent's turn, as the cockpit's T509 fold reads it (`lib/steps.ts`). */
+function endsTurn(entry: ThreadEntry): boolean {
+  return (
+    entry.by === 'daemon' &&
+    entry.kind === 'event' &&
+    (entry.body === 'turn finished' ||
+      entry.body.startsWith('session ended: ') ||
+      /^\w+ (?:attached|detached by human)\b/.test(entry.body))
+  );
+}
+
+/**
+ * T513 (design/chat-threads.md §6): a thread's replies are what its panel
+ * shows as replies: your lines, and each agent turn's last message. What
+ * the agent said on the way to it (T509's narration: an earlier plain line
+ * of the same agent in the same turn) folds into that reply, so it is no
+ * reply of its own. The same rule as the cockpit's `narrationFolds`, over
+ * the thread's lines and the node's turn ends. Returns the folded lines' ts.
+ */
+export function narrationIn(
+  lines: readonly ThreadEntry[],
+  entries: readonly ThreadEntry[],
+): Set<string> {
+  const mine = new Set(lines.map((e) => e.ts));
+  const merged = entries.filter((e) => mine.has(e.ts) || endsTurn(e));
+  const seen = new Set(merged.map((e) => e.ts));
+  for (const e of lines) if (!seen.has(e.ts)) merged.push(e);
+  merged.sort((a, b) => a.ts.localeCompare(b.ts));
+  const folded = new Set<string>();
+  let author: string | undefined;
+  let turn: ThreadEntry[] = [];
+  const close = (): void => {
+    for (const e of turn.slice(0, -1)) if (e.kind === 'line') folded.add(e.ts);
+    author = undefined;
+    turn = [];
+  };
+  for (const e of merged) {
+    if ((e.by === 'human' && e.kind !== 'event') || endsTurn(e)) {
+      close();
+      continue;
+    }
+    if (!e.by.startsWith('agent:') || e.agent_only === true) continue;
+    if (author !== e.by) close();
+    author = e.by;
+    turn.push(e);
+  }
+  close();
+  return folded;
+}
+
 /** The chat thread a delivered human line is a reply in (its payload's `thread.id`). */
 function threadOfEvent(event: RoutedEvent): string | undefined {
   if (event.type !== 'human_line') return undefined;
@@ -214,7 +264,8 @@ export function chatThreadsOf(input: ChatThreadsInput): ChatThreadsOf {
       stream: input.node.id,
       anchor: start.anchor as NonNullable<ThreadEntry['anchor']>,
       state: stateOf(lines, open),
-      replies: lines.length,
+      // T513: what the agent said on the way to its reply is no reply of its own.
+      replies: lines.length - narrationIn(lines, entries).size,
       entries: lines.map((e) => e.ts).slice(-CHAT_THREAD_ENTRIES_MAX),
       last_at: last.ts,
       ...(others.length > 0 ? { reply_at: (others.at(-1) as ThreadEntry).ts } : {}),

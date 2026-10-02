@@ -112,13 +112,18 @@ agent as written:
   too (Slack's "also send to channel"), with a link to its thread.
 - **Every thread leaves a mark in the main flow**, at the point in time it
   started: `↳ 3 replies · last 2m · waiting on you`. Reading the main flow
-  top to bottom never skips a thread.
+  top to bottom never skips a thread. Its replies (T513) are your lines and
+  each agent turn's last message: what the agent said on the way to it
+  folds above it in the panel ("1 earlier message on the way", T509's rule)
+  and counts neither as a reply nor as unread.
 - **Thread state:** open, waiting on you, waiting on the agent, resolved.
   Derived from its lines; a question thread resolves when its question does,
   and replying again reopens it.
 - **Unread:** a dot and count on the thread's mark, on the node's rail row
   (T433's unread marks), and an "Open threads (2)" chip at the top of the
-  chat that jumps to the first unread one.
+  chat that jumps to the first unread one. Opening a thread reads it (T513:
+  on the click itself, and while its panel is open), up to the newest reply
+  the page or the rail row knows of, so all three clear together.
 - **Move to thread / Move to main.** It changes where a line shows, never
   what the agent already received; the line says it was moved, by whom. Your
   own lines move freely; an agent's line moves only by you, and is recorded.

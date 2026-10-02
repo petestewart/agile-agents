@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { ChatThread } from '@agile-agents/shared';
+import type { ChatThread, ThreadEntry } from '@agile-agents/shared';
 import {
   anchorFor,
   anchorLabel,
@@ -9,12 +9,14 @@ import {
   openThreadsChip,
   placeChatThreads,
   quoteOf,
+  threadNarration,
+  threadReadAt,
   threadReadKey,
   threadRepliesText,
   threadStateWords,
   threadUnread,
 } from './threads';
-import { parseSeen, unreadThreads } from './unread';
+import { markSeen, parseSeen, threadReadUpTo, unreadThreads } from './unread';
 
 const NODE = '01ARZ3NDEKTSV4RRFFQ69GE001';
 
@@ -134,6 +136,81 @@ describe('unread (T503, §6)', () => {
     expect(unreadThreads(row, seen)).toBe(1);
     expect(unreadThreads(row, seen, 'y')).toBe(0);
     expect(unreadThreads({ id: NODE }, seen)).toBe(0);
+  });
+});
+
+describe('replies and reading a thread (T513, §6)', () => {
+  const S = 'agent:01ARZ3NDEKTSV4RRFFQ69GE0S1';
+  const at = (minute: number, second = 0) =>
+    new Date(Date.UTC(2026, 9, 2, 10, minute, second)).toISOString();
+  type Line = Pick<ThreadEntry, 'ts' | 'by' | 'kind' | 'body' | 'ref' | 'agent_only'>;
+  const l = (ts: string, by: string, body: string, kind: ThreadEntry['kind'] = 'line'): Line => ({
+    ts,
+    by,
+    kind,
+    body,
+  });
+  // The node's lines: the turn the thread is on, your reply in it, then one turn: a line on
+  // the way, the answer, and the daemon's "turn finished".
+  const loaded: Line[] = [
+    l(at(0), S, 'Use banker’s rounding.'),
+    l(at(1), 'human', 'Why banker’s?'),
+    l(at(2), S, 'Let me look at the ledger first.'),
+    l(at(2, 20), S, 'It avoids drift when you sum many rows.'),
+    l(at(2, 30), 'daemon', 'turn finished', 'event'),
+    l(at(3), S, 'Next: the totals.'),
+  ];
+  const t = thread(at(1), {
+    anchor: { entry: at(0) },
+    entries: [at(1), at(2), at(2, 20)],
+    replies: 2,
+    reply_at: at(2, 20),
+  });
+  const byOf = (ts: string) => loaded.find((e) => e.ts === ts)?.by;
+
+  test('what the agent said on the way folds into its answer: no reply, not unread', () => {
+    const folded = threadNarration(loaded, t);
+    expect([...folded]).toEqual([[at(2), at(2, 20)]]);
+    // Before T513 both agent lines counted as unread.
+    expect(threadUnread(t, byOf, at(1))).toBe(2);
+    expect(threadUnread(t, byOf, at(1), folded)).toBe(1);
+    // A line of the main flow after the turn's end is no part of it.
+    expect(folded.has(at(3))).toBe(false);
+  });
+
+  test('two turns in a thread: each turn’s answer is a reply', () => {
+    const lines: Line[] = [
+      ...loaded.slice(0, 5),
+      l(at(4), 'human', 'And the totals?'),
+      l(at(4, 10), S, 'Checking.'),
+      l(at(4, 20), S, 'Half even too.'),
+    ];
+    const two = thread(at(1), {
+      entries: [at(1), at(2), at(2, 20), at(4), at(4, 10), at(4, 20)],
+    });
+    expect([...threadNarration(lines, two).keys()]).toEqual([at(2), at(4, 10)]);
+  });
+
+  test('opening it reads it to the newest reply the cockpit knows of: the mark, the chip and the rail row clear', () => {
+    const NODE_ID = NODE;
+    const key = threadReadKey(NODE_ID, t.id);
+    const seen = parseSeen(JSON.stringify({ since: at(0), nodes: {} }), 'now');
+    // The rail row heard of a newer reply than the page has loaded (a pushed frame lands
+    // before the page re-reads): read only to the page's `reply_at`, the rail stayed unread.
+    const row = { id: NODE_ID, thread_replies: [{ thread: t.id, at: at(2, 40) }] };
+    const before = markSeen(seen, key, t.reply_at as string);
+    expect(unreadThreads(row, before)).toBe(1);
+    const readAt = threadReadAt(t, byOf, row.thread_replies);
+    expect(readAt).toBe(at(2, 40));
+    const after = markSeen(seen, key, readAt as string);
+    expect(threadUnread(t, byOf, threadReadUpTo(after, key))).toBe(0);
+    expect(unreadThreads(row, after)).toBe(0);
+    // Nothing newer anywhere: the page's own reply.
+    expect(threadReadAt(t, byOf, [])).toBe(at(2, 20));
+    // A thread with only your lines has nothing to read.
+    expect(threadReadAt(thread(at(1), { entries: [at(1)] }), byOf, undefined)).toBeUndefined();
+    // The rail alone (a thread the page has not loaded yet).
+    expect(threadReadAt(undefined, byOf, row.thread_replies, t.id)).toBe(at(2, 40));
   });
 });
 

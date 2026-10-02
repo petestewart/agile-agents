@@ -1841,9 +1841,12 @@ login (then Codex, if you have one):
       line is in the panel, not the main chat, and under the message a mark
       reads "1 reply · last now · waiting on Claude".
 - [ ] The agent answers in the panel (by cause), not the main chat; the mark
-      reads "2 replies". Close the panel before it answers: the mark gets a
-      count dot, the node's rail row a count, and "Open threads (1) · 1
-      unread" at the top of the chat opens it and clears both.
+      reads "2 replies" (T513: a line it said on the way to its answer, such
+      as "Let me look at…", folds above the answer as "1 earlier message on
+      the way" and is no reply). Close the panel before it answers: the mark
+      gets a count dot, the node's rail row a count, and "Open threads (1) ·
+      1 unread" at the top of the chat opens it and clears the dot, the
+      chip's "unread" and the rail row's count (also after a reload).
 - [ ] Select a passage of another of its messages: the bar offers **Quote**
       and **Reply in thread**. Reply in thread: the panel quotes the passage;
       once you send, the passage is tinted in the message with a count after
@@ -1977,7 +1980,8 @@ such as your home).
       start: Codex's gate isn't trusted here: trust <repo> in Codex (…)",
       and nothing ran. Trust the repo in Codex (`[projects."<repo>"]
       trust_level = "trusted"`, or Codex's own trust prompt), start it
-      again: it runs gated.
+      again: it runs gated. (T513) The refused start wrote no "worker
+      attached: codex/…" line; the one that ran did.
 - [ ] Fail closed (optional): with Codex running gated, make the hook stop
       firing (rename `<repo>/.codex/hooks.json` while the agent rests), then ask it for two commands. After the second, the agent is
       stopped and Needs me reads "Codex ran a command its gate never saw:
@@ -1986,6 +1990,12 @@ such as your home).
       writes the same `<repo>/.codex/hooks.json`, unchanged); ask it to edit a
       file: refused
       ("reviewer role denies all writes").
+- [ ] (T513) A review is one turn (cockpit-design §2): when it ends the
+      thread reads "review finished: N findings (its turn finished; a review
+      is one turn: a message now goes to the node’s agent, not the
+      reviewer)", never "process exited (code -1)". `agile node say <id> …`
+      after it prints a note that the line is for the node's agent, and
+      `agile review <id>` for another review.
 
 **Live result (2026-10-02):** on a real Codex node the fail-closed check fired
 ("Codex ran a command its gate never saw"): the hook did not run in the daemon's
