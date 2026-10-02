@@ -3050,7 +3050,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T504 Move a line to a thread or back; promote a thread to a tangent; archive a thread
 - **Priority:** P3
-- **Status:** Todo (after T503)
+- **Status:** In progress (2026-10-02)
 - **Owner:** worker
 - **Scope:** design/chat-threads.md §6 (Move to thread / Move to main, recorded, display only), §6a (Archive, Compact now, Archive and forget, and archived threads left out of the vendor's own compactions where it lets the daemon in, D65) and §7 (promote to a tangent, T332). Measure per vendor first which compaction route exists.
 - **Acceptance Criteria:** As in the design.
