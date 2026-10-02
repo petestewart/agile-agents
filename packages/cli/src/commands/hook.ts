@@ -59,7 +59,7 @@
  */
 
 import { realpathSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { type ParsedArgs, hasFlag, optionalString, readStdin } from '../args';
 import { RpcCallError, callRpc } from '../client';
 import { printJson } from '../format';
@@ -118,13 +118,20 @@ export function denyReasonOf(reply: unknown): string | undefined {
   return typeof reason === 'string' && reason.length > 0 ? reason : 'AGILE-GATE: blocked';
 }
 
-/** A path as given (resolved) and, when it exists, its realpath. */
+/** A path as given (resolved) and its real path: its nearest existing ancestor's, with the rest appended. */
 function pathForms(path: string): string[] {
   const resolved = resolve(path);
-  try {
-    return [...new Set([resolved, realpathSync(path)])];
-  } catch {
-    return [resolved];
+  const rest: string[] = [];
+  let current = resolved;
+  for (;;) {
+    try {
+      return [...new Set([resolved, join(realpathSync(current), ...rest)])];
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return [resolved];
+      rest.unshift(basename(current));
+      current = parent;
+    }
   }
 }
 
