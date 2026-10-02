@@ -12,6 +12,7 @@
 import type {
   Autonomy,
   ChatBatch,
+  ChatMove,
   ChatThread,
   ChatThreadReply,
   Event,
@@ -266,6 +267,8 @@ export interface StreamPagePayload {
   chat_threads?: ChatThread[];
   /** T503 (§4.1): turns woken by lines from several threads: in the main flow, linking them. */
   chat_batches?: ChatBatch[];
+  /** T504 (§6): lines moved to a thread or to the main flow (display only). */
+  chat_moves?: ChatMove[];
 }
 
 /** T245: mirror of `events/service.ts`'s `ActivityEntry` (`GET /api/streams/:id/activity`). */

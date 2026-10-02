@@ -43,13 +43,16 @@ import {
   type SessionVendor,
   type Stream,
   StreamAddRepoRequestSchema,
+  StreamArchiveThreadInputSchema,
   StreamAttachRequestSchema,
   StreamAutoCloseRequestSchema,
   StreamAutonomyRequestSchema,
   StreamCreateInputSchema,
+  StreamMoveLineInputSchema,
   StreamMoveRequestSchema,
   StreamPermissionsRequestSchema,
   StreamReorderRequestSchema,
+  StreamRestoreThreadInputSchema,
   StreamRuleRequestSchema,
   StreamSayInputSchema,
   StreamSendUpInputSchema,
@@ -69,6 +72,7 @@ import {
 } from '@agile-agents/shared';
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import {
+  AgentWorkingError,
   type AttachService,
   SessionDefaultsService,
   StreamBusyError,
@@ -113,7 +117,9 @@ import {
 import { NotAReadGateError, answerReadAlways } from './permissions/posture';
 import type { ProjectService } from './projects';
 import {
+  ChatThreadOps,
   ChatThreads,
+  CompactUnavailableError,
   QuestionAlreadyAnsweredError,
   QuestionNotFoundError,
   type QuestionService,
@@ -2019,7 +2025,7 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|auto-close|reorder|draft-goal|attach|resolve|stop|close|reopen|to-talk|purge|trash-preview|dismiss|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|auto-close|reorder|draft-goal|attach|resolve|stop|close|reopen|to-talk|purge|trash-preview|dismiss|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive|move-line|archive-thread|restore-thread|compact))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
@@ -2071,6 +2077,16 @@ async function handleStreamRoute(
     if (action === 'commands') {
       feed.streams.get(id);
       return jsonResponse(feed.attach?.commandsFor(id) ?? { running: false, commands: [] });
+    }
+
+    // T504 (D65, design/chat-threads.md §6, §6a): the operator's changes to the chat's threads.
+    if (
+      action === 'move-line' ||
+      action === 'archive-thread' ||
+      action === 'restore-thread' ||
+      action === 'compact'
+    ) {
+      return await threadOpRoute(req, action, id, feed, feed.streams);
     }
 
     // Close, Dismiss, Mark landed, Check now, Delete and Restore take no body.
@@ -2362,6 +2378,64 @@ async function handleStreamRoute(
       return errorResponse(400, message);
     }
     return errorResponse(400, message);
+  }
+}
+
+/**
+ * T504 (D65, design/chat-threads.md §6, §6a): Move to thread / Move to
+ * main, Archive (and forget), Restore and Compact now. Same-origin is
+ * checked by the caller; every change is recorded as yours.
+ *
+ *   POST /api/streams/:id/move-line       {entry, to}      → {entry}
+ *   POST /api/streams/:id/archive-thread  {thread, forget?} → {entry, withdrawn, restarted?}
+ *   POST /api/streams/:id/restore-thread  {thread}         → {entry}
+ *   POST /api/streams/:id/compact         {}               → {entry, command}
+ */
+async function threadOpRoute(
+  req: Request,
+  action: 'move-line' | 'archive-thread' | 'restore-thread' | 'compact',
+  id: string,
+  feed: FeedContext,
+  streams: StreamService,
+): Promise<Response> {
+  const body = await readJsonBody(req).catch(() => ({}));
+  const ops = new ChatThreadOps({
+    streams,
+    chatThreads: feed.chatThreads ?? new ChatThreads({ streams }),
+    ...(feed.events ? { events: feed.events } : {}),
+    ...(feed.questions ? { questions: feed.questions } : {}),
+    ...(feed.attach ? { attach: feed.attach } : {}),
+  });
+  streams.get(id);
+  try {
+    if (action === 'move-line') {
+      const input = StreamMoveLineInputSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('move-line', input.error));
+      return jsonResponse({ entry: await ops.move(id, input.data.entry, input.data.to) }, 201);
+    }
+    if (action === 'archive-thread') {
+      const input = StreamArchiveThreadInputSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('archive-thread', input.error));
+      return jsonResponse(
+        await ops.archive(id, input.data.thread, { forget: input.data.forget === true }),
+        201,
+      );
+    }
+    if (action === 'restore-thread') {
+      const input = StreamRestoreThreadInputSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('restore-thread', input.error));
+      return jsonResponse({ entry: await ops.restore(id, input.data.thread) }, 201);
+    }
+    if (body !== undefined && body !== null && Object.keys(body as object).length > 0) {
+      return errorResponse(400, 'compact takes no body');
+    }
+    return jsonResponse(await ops.compact(id), 201);
+  } catch (err) {
+    if (err instanceof NotFoundError) throw err;
+    if (err instanceof AgentWorkingError || err instanceof CompactUnavailableError) {
+      return errorResponse(409, messageOf(err));
+    }
+    return errorResponse(400, messageOf(err));
   }
 }
 

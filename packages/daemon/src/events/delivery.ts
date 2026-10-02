@@ -13,7 +13,7 @@
  * prompt after restart (at-least-once), never an event within one digest.
  */
 
-import { type RoutedEvent, ulid } from '@agile-agents/shared';
+import { QUIET_EVENT_TYPES, type RoutedEvent, ulid } from '@agile-agents/shared';
 import { summarize } from './producers';
 import type { RoutedEventService } from './service';
 
@@ -410,6 +410,8 @@ export class SessionDelivery {
       events = this.unsent(node);
     }
     if (events.length === 0) return false;
+    // T504 (D65): quiet ones (an archive notice) never make a turn of their own.
+    if (events.every((e) => QUIET_EVENT_TYPES.has(e.type))) return false;
     // Re-checked after the await: a turn may have been queued meanwhile.
     if (busy(target) || this.options.target(node)?.sessionId !== target.sessionId) return false;
     events = this.withFullLines(node, events);

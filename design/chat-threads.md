@@ -1,8 +1,8 @@
 # Chat threads: replies that nest under a message
 
 Status: **decided** (proposed 2026-10-01; Pete settled TH1–TH6 the same day,
-recorded as D60–D65 in PLAN.md). Not built yet: T502–T504 build it in three
-steps (§8). Mockup: the "Chat threads mockup" canvas (4 screens).
+recorded as D60–D65 in PLAN.md). Built by T502–T504 in three steps (§8);
+T504's choices are in §7a. Mockup: the "Chat threads mockup" canvas (4 screens).
 
 ## 1. The problem
 
@@ -162,9 +162,9 @@ the thread's ⋯ and on its mark:
   own session (never written to the chat) is gone too. Not offered while
   the agent works on a turn (it waits), nor on a node whose agent runs
   without resume.
-- Archiving is the operator's alone (human-only write), recorded on the
-  thread's first reply (`archived: {at, by: human, forget?: true}`), and
-  undone the same way. Nothing is deleted.
+- Archiving is the operator's alone (human-only write), recorded as its
+  own append-only line (§7a; a thread line is never rewritten, so not on
+  the first reply), and undone the same way. Nothing is deleted.
 
 ## 7. Data
 
@@ -181,6 +181,39 @@ the thread's ⋯ and on its mark:
   `answer` line `resolved_as: settled`.
 - **Promote to tangent:** a thread's ⋯ makes it a tangent (T332), its lines
   quoted into the new conversation; the thread ends with a link to it.
+
+## 7a. As built (T504)
+
+- **Changes are lines of their own.** A thread line is never rewritten, so
+  a move, an archive, its undo, a promotion and a compaction are each one
+  append-only `event` line by `human` carrying `op` (`ThreadOpSchema`:
+  `move {entry, to}`, `archive {thread, forget?}`, `unarchive {thread}`,
+  `promote {thread, node}`, `compact {threads}`), checked by the store
+  (a message moves, not a thread's first reply; into an open thread on an
+  earlier turn, never a line threads are on; only an open thread archives,
+  only an archived one restores). Where a line shows and which threads are
+  archived are read back from them, the latest winning.
+- **Display only.** The derived threads apply the moves (`chat_moves` on
+  the node page says what moved, from where); the agent's briefs and
+  `read_stream` never carry move, archive or compact lines (a promotion
+  stays: the thread goes on as a tangent).
+- **Archive.** Its lines (by field, by cause, moved in) leave every brief
+  and `read_stream`; its pending replies are superseded and a new one is
+  refused; a question asked in it is `withdrawn`. The agent is told once by
+  a `thread_archived` routed event that is **quiet**: it rides the next
+  digest or brief and never starts a turn or wakes an agent on its own
+  (archived and restored before it was heard, nothing is said).
+- **Archive and forget.** Refused while the agent works on a turn; else
+  the archive, then the agent restarts fresh with its vendor, model and
+  effort (no `session/load`), with no notice. A session started before a
+  forget is never resumed later (its id's time is before the line).
+- **Compact now.** Only Claude Code's `/compact <instructions>` is assumed,
+  offered while its agent runs and advertises `compact`; no vendor's own
+  auto-compaction is hooked yet (design/spike-findings.md C6; LIVE-CHECKLIST
+  §23 measures both).
+- **Promote to tangent** is a node create with `seed_thread` (beside T332's
+  `seed_line`): the tangent opens with the passage and the thread's lines
+  (the newest 30), quoted; the parent's thread links to it.
 
 ## 8. Build order
 

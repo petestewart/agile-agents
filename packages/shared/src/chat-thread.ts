@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { UlidSchema } from './ids';
 import { QuestionIdSchema } from './question';
-import { ChatThreadIdSchema, ThreadAnchorSchema } from './stream';
+import { ChatPlaceSchema, ChatThreadIdSchema, ThreadAnchorSchema } from './stream';
 
 /**
  * Where a chat thread stands (§6), from its lines:
@@ -48,9 +48,37 @@ export const ChatThreadSchema = z
     questions: z.array(QuestionIdSchema).max(50).optional(),
     /** The node's agent's vendor (`codex`), for "Waiting on Codex". */
     vendor: z.string().min(1).max(80).optional(),
+    /**
+     * T504 (D65, §6a): archived: folded away, never re-sent to the agent;
+     * `forget`: its agent was restarted fresh without it.
+     */
+    archived: z
+      .object({ at: z.string().min(1), forget: z.literal(true).optional() })
+      .strict()
+      .optional(),
+    /** T504 (§7): promoted to a tangent: the tangent node. */
+    promoted: z
+      .object({ node: UlidSchema, at: z.string().min(1) })
+      .strict()
+      .optional(),
   })
   .strict();
 export type ChatThread = z.infer<typeof ChatThreadSchema>;
+
+/**
+ * T504 (§6): a line shown somewhere other than where it was written (Move
+ * to thread / Move to main): display only, recorded, undone by moving it
+ * back. `from` is where it was, `to` where it shows; `at` the move's line.
+ */
+export const ChatMoveSchema = z
+  .object({
+    entry: z.string().min(1),
+    from: ChatPlaceSchema,
+    to: ChatPlaceSchema,
+    at: z.string().min(1),
+  })
+  .strict();
+export type ChatMove = z.infer<typeof ChatMoveSchema>;
 
 /**
  * §4.1: a turn woken by lines from more than one thread (or the main flow

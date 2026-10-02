@@ -88,6 +88,18 @@ export function ulid(now: number = Date.now()): string {
   return ulidEncodeTime(now) + ulidEncodeDigits(lastUlidRandom);
 }
 
+/** T504: when a ULID was made (ms since the epoch), from its time part; NaN when it isn't one. */
+export function ulidTime(id: string): number {
+  if (id.length < ULID_TIME_LEN) return Number.NaN;
+  let t = 0;
+  for (const c of id.slice(0, ULID_TIME_LEN)) {
+    const digit = ULID_ENCODING.indexOf(c);
+    if (digit < 0) return Number.NaN;
+    t = t * ULID_ENCODING_LEN + digit;
+  }
+  return t;
+}
+
 /**
  * A bus identity (T130, narrowed by T168): one of the two named principals,
  * `human` and `daemon`, or **a session's own ULID**. An attached session is

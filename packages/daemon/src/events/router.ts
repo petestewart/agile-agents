@@ -81,6 +81,8 @@ export const ROUTES: Record<RoutedEventType, readonly Rule[]> = {
   harness_updated: [],
   // T484: a node's model stepped up (or it is stuck on the strongest): its own record, like a restart.
   model_escalated: ['self'],
+  // T504 (D65): the node's own agent is told a thread is closed (quiet: it rides the next digest).
+  thread_archived: ['self'],
 };
 
 /** Types whose parties also bring their own ancestors (overlap: "both nodes, their ancestors"). */

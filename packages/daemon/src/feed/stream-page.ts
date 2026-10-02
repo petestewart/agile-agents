@@ -7,6 +7,7 @@
 
 import {
   type ChatBatch,
+  type ChatMove,
   type ChatThread,
   type KnowledgeItem,
   type ModelPick,
@@ -62,6 +63,8 @@ export interface StreamPagePayload {
   chat_threads?: ChatThread[];
   /** T503 (§4.1): turns woken by lines from several threads: in the main flow, linking them. */
   chat_batches?: ChatBatch[];
+  /** T504 (§6): lines moved to a thread or to the main flow (display only), over the loaded lines. */
+  chat_moves?: ChatMove[];
 }
 
 export interface StreamPageSources {
@@ -155,6 +158,7 @@ export function buildStreamPage(sources: StreamPageSources, id: string): StreamP
       : {}),
     ...(chat !== undefined && chat.threads.length > 0 ? { chat_threads: chat.threads } : {}),
     ...(chat !== undefined && chat.batches.length > 0 ? { chat_batches: chat.batches } : {}),
+    ...(chat !== undefined && chat.moves.length > 0 ? { chat_moves: chat.moves } : {}),
     ...(() => {
       try {
         const next = sources.nextPick?.(stream);

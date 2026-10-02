@@ -232,6 +232,21 @@ export const ROUTED_EVENT_PAYLOADS = {
     to: Str.optional(),
     reason: NonEmpty,
   }),
+  /**
+   * T504 (D65, design/chat-threads.md §6a): the operator archived a chat
+   * thread on the node (or restored one: `restored`). `on`/`of`/`quote` say
+   * what it is on, as `human_line`'s `thread` does; `withdrawn` are the
+   * questions asked in it that it closed. Told once, and quiet: see
+   * `QUIET_EVENT_TYPES`.
+   */
+  thread_archived: z.object({
+    thread: ChatThreadIdSchema,
+    on: NonEmpty,
+    of: z.enum(['agent', 'human', 'other']),
+    quote: Str.optional(),
+    restored: z.literal(true).optional(),
+    withdrawn: z.array(QuestionIdSchema).max(LIST_MAX).optional(),
+  }),
   /** T262: the ship check held delivery; the findings go back to the worker. */
   ship_findings: z.object({
     source: z.enum(['classifier', 'reviewer']),
@@ -259,6 +274,15 @@ export const RECORD_ONLY_EVENT_TYPES: ReadonlySet<RoutedEventType> = new Set<Rou
   'agent_restarted',
   'harness_updated',
   'model_escalated',
+]);
+
+/**
+ * T504 (D65): types delivered only beside something else: they ride the
+ * next digest (or the brief of the next start), but never start a turn of
+ * their own or wake an agent. An archive notice is not worth a turn.
+ */
+export const QUIET_EVENT_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEventType>([
+  'thread_archived',
 ]);
 
 const RoutedEventBaseSchema = z

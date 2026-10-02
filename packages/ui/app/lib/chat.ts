@@ -949,6 +949,8 @@ export function questionThreadWords(
     case 'resolved': {
       const answer = thread.answer?.replace(/\s+/g, ' ').trim();
       if (thread.resolved_as === 'superseded') return { text: 'Asked again', tone: 'gray' };
+      // T504 (§6a): its thread was archived, so it settles nothing.
+      if (thread.resolved_as === 'withdrawn') return { text: 'Withdrawn', tone: 'gray' };
       const how = thread.resolved_as === 'settled' ? 'Settled' : 'Answered';
       return { text: answer ? `${how}: ${answer}` : how, tone: 'green' };
     }

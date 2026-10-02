@@ -154,6 +154,7 @@ export type EventFamily = 'messages' | 'delivery' | 'coordination' | 'knowledge'
 export const EVENT_FAMILY: Record<RoutedEventType, EventFamily> = {
   human_line: 'messages',
   answer: 'messages',
+  thread_archived: 'messages',
   director_request: 'messages',
   coordinator_note: 'messages',
   sibling_ask: 'messages',

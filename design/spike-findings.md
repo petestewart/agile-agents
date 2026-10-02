@@ -174,6 +174,26 @@ What those runs still show (none of it depends on the hook):
   project hook needs a trusted project layer: the daemon must check that the
   hook ran (T506's fail-closed check).
 
+### C6. Compaction routes (T504, D65): assumed, not measured
+
+T504 needed to know, per vendor, how the daemon can make the agent compact
+its context with instructions ("leave out the archived threads"). None of
+this was measured: the work was done with no vendor login (a cloud
+session). What the code assumes, and LIVE-CHECKLIST §23 measures:
+
+| vendor | Compact now (the operator's button) | its own auto-compaction | what T504 does |
+|---|---|---|---|
+| Claude Code | `/compact [instructions]`, from Claude Code's own docs; claude-agent-acp advertises `compact` in `available_commands_update` (LIVE-CHECKLIST §11, T461). Not checked that the instructions reach the summary through the ACP bridge. | `PreCompact` hook in Claude Code's hook list; whether its output can steer the summary is not known | offers Compact now: `/compact Leave out the archived threads …: the thread on "<passage>"; …` as a slash line (T461 pass-through), only while the agent runs and advertises `compact` (`COMPACT_COMMANDS`, `compactCommandFor`) |
+| Codex | the TUI has `/compact`; whether it takes instructions, and whether codex-acp advertises or runs it, is unknown | `PreCompact` is in Codex's hook list (learn.chatgpt.com/docs/hooks); hooks under codex-acp are in doubt (C5) | not offered |
+| Gemini CLI | has a compression command; its name over ACP and whether it takes instructions are unknown | unknown | not offered |
+| Cursor, Grok, Antigravity, Pi | unknown (Pi's RPC mode has `compact`, C4, but the daemon talks to it over ACP) | unknown | not offered |
+
+Nothing hooks a vendor's own auto-compaction yet: the `PreCompact` route is
+open until §23 shows a hook can change the summary. Where no route is used,
+Archive's one-time notice (a quiet `thread_archived` event) and the briefs
+that leave archived threads out are what keeps them out; Archive and forget
+(a fresh start, no `session/load`) is the only sure way.
+
 ### D. Vendor status
 
 | vendor | ACP surface | verified | notes |

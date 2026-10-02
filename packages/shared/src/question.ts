@@ -55,7 +55,12 @@ export type QuestionStatus = z.infer<typeof QuestionStatusSchema>;
  * instead of picking. Only the agent verb writes it; the RPC edge and the
  * browser still answer with `reply`.
  */
-export const QUESTION_RESOLUTIONS = ['reply', 'superseded', 'settled'] as const;
+/**
+ * T504 (D65, design/chat-threads.md §6a) adds `withdrawn`: the operator
+ * archived the chat thread the question was asked in, so it settles
+ * nothing and closes; the daemon writes it, and the agent is told.
+ */
+export const QUESTION_RESOLUTIONS = ['reply', 'superseded', 'settled', 'withdrawn'] as const;
 export const QuestionResolvedAsSchema = z.enum(QUESTION_RESOLUTIONS);
 export type QuestionResolvedAs = z.infer<typeof QuestionResolvedAsSchema>;
 

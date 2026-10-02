@@ -242,6 +242,30 @@ export function slashCommandOf(text: string): string | undefined {
 }
 
 /**
+ * T504 (D65, design/chat-threads.md §6a): the vendors whose compact command
+ * is known to take instructions, and its name. Only Claude Code's: its own
+ * docs give `/compact [instructions]`, and T461 passes it through. Nothing
+ * else is assumed (design/spike-findings.md "Compaction routes"):
+ * LIVE-CHECKLIST §23 measures each route on a real login before another
+ * vendor is added here.
+ */
+export const COMPACT_COMMANDS: Readonly<Partial<Record<string, string>>> = {
+  claude: 'compact',
+};
+
+/**
+ * T504: the command Compact now sends to `vendor`'s live agent, when it
+ * has one known to take instructions and the agent advertises it (T461).
+ */
+export function compactCommandFor(
+  vendor: string | undefined,
+  commands: readonly Pick<AgentCommand, 'name'>[],
+): string | undefined {
+  const name = vendor !== undefined ? COMPACT_COMMANDS[vendor] : undefined;
+  return name !== undefined && commands.some((c) => c.name === name) ? name : undefined;
+}
+
+/**
  * T456 (D43 follow-up): what happens when a node's agent crashes (its
  * vendor exits non-zero on its own). `vendor_failure:` in the home
  * `config.yaml`, a repo's entry in `repos.yaml` and a project record; each

@@ -29,19 +29,24 @@ import {
   type ResolvedSessionDefaults,
   type SessionDefaultsStatus,
   type ThreadAnchor,
+  compactCommandFor,
   isAgentRole,
 } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   addRepoToStream,
   archiveStream,
+  archiveThread,
   attachSession,
   closeStream,
+  compactNow,
   createStream,
   getSessionDefaults,
   getStreamPage,
+  moveLine,
   reopenStream,
   resolveConflict,
+  restoreThread,
   sayInThread,
   sayOnStream,
   setNodeAutoClose,
@@ -102,6 +107,9 @@ import { groupSteps, turnStartedAt } from '../lib/steps';
 import { isLiveSession, isThinking } from '../lib/streams';
 import {
   anchorFor,
+  anchorLabel,
+  moveTargets,
+  movesByLine,
   openThreadsChip,
   placeChatThreads,
   threadReadKey,
@@ -111,6 +119,8 @@ import {
 import { splitRepos, titleFromGoal } from '../lib/tree';
 import { markRead, useThreadReadUpTo } from '../lib/use-unread';
 import {
+  ArchivedThreads,
+  type ChatEntry,
   ChatScroll,
   ContextMeter,
   MessageList,
@@ -157,6 +167,7 @@ import {
   EmptyState,
   Field,
   IconButton,
+  Menu,
   type MenuItem,
   RepoIcon,
   Tabs,
@@ -423,6 +434,11 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [linkChoice, setLinkChoice] = useState('');
   // T332 (D33): "Branch off" — the thread line (0-based, whole thread) and the tangent's question.
   const [branching, setBranching] = useState<number | undefined>(undefined);
+  // T504 (§6, §6a, §7): the line whose Move to thread picker is open; the thread whose Archive
+  // and forget awaits your confirm; the thread being promoted to a tangent (its question).
+  const [moving, setMoving] = useState<string | undefined>(undefined);
+  const [forgetting, setForgetting] = useState<string | undefined>(undefined);
+  const [promoting, setPromoting] = useState<string | undefined>(undefined);
   // T503 (D60, D64): the chat thread the side panel shows, or a new one on a turn (or passage).
   const [threadView, setThreadView] = useState<
     { id: string } | { anchor: ThreadAnchor } | undefined
@@ -516,6 +532,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     setLinkChoice('');
     setBranching(undefined);
     setThreadView(undefined);
+    setMoving(undefined);
+    setForgetting(undefined);
+    setPromoting(undefined);
     setTangentQuestion('');
     setTrackerOpen(false);
     setNextSession(undefined);
@@ -1267,9 +1286,21 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const openThread = (thread: string) => {
     setThreadView({ id: thread });
   };
+  // T504 (§6): moved lines (display only), and where a main-flow line can go.
+  const moved = movesByLine(page.chat_moves);
+  const moveTo = (entry: string, to: string) => act(() => moveLine(stream.id, entry, to));
+  // T504 (§6a): Compact now, where the live agent's vendor has a compact command that takes
+  // instructions (Claude Code's `/compact`, T461); not offered otherwise.
+  const compactCmd = agentCommands.running
+    ? compactCommandFor(agentCommands.vendor, agentCommands.commands)
+    : undefined;
   /** The thread lines the main flow shows (by index into `page.thread`). */
   const shownLines = page.thread.flatMap((e, i) =>
-    questionThreads.nested.has(e.ts) || childNotes.nested.has(e.ts) || chatPlaced.nested.has(e.ts)
+    questionThreads.nested.has(e.ts) ||
+    childNotes.nested.has(e.ts) ||
+    chatPlaced.nested.has(e.ts) ||
+    // T504: a move is shown on the line it moved, not as a row of its own.
+    e.op?.type === 'move'
       ? []
       : [i],
   );
@@ -1292,6 +1323,28 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           Reply in thread
         </button>
       )}
+      {intent.action !== 'none' &&
+        moving !== entry.ts &&
+        moveTargets(chatThreads, entry).length > 0 && (
+          // T504 (§6): into the thread open in the panel, else pick one.
+          <button
+            type="button"
+            className="cr-msg-btn"
+            data-testid="move-to-thread"
+            title="Show this line in a thread instead (display only: what the agent received doesn’t change)"
+            disabled={busy}
+            onClick={() => {
+              const targets = moveTargets(chatThreads, entry);
+              const open = targets.find((t) => t.id === openThreadId);
+              if (open !== undefined) void moveTo(entry.ts, open.id);
+              else if (targets.length === 1) void moveTo(entry.ts, (targets[0] as ChatThread).id);
+              else setMoving(entry.ts);
+            }}
+          >
+            <Icon name="corner-down-right" size={13} />
+            Move to thread
+          </button>
+        )}
       {canBranch && entry.kind === 'line' && branching !== threadBase + i && (
         <button
           type="button"
@@ -1359,9 +1412,62 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                 {...(openThreadId !== undefined ? { open: openThreadId } : {})}
               />
             )}
+            {chatPlaced.archivedOn.get(entry.ts) && (
+              <ArchivedThreads
+                threads={chatPlaced.archivedOn.get(entry.ts) ?? []}
+                onOpen={openThread}
+                onRestore={(thread) => void act(() => restoreThread(stream.id, thread))}
+              />
+            )}
           </>
         );
       })()}
+      {(() => {
+        // T504 (§6): a line moved here from a thread says so, and moves back.
+        const move = moved.get(entry.ts);
+        if (move === undefined || move.to !== 'main' || move.from === 'main') return null;
+        const from = chatThreadOf.get(move.from);
+        return (
+          <div className="cr-tlinks cr-faint" data-testid="moved-line" data-thread-on="">
+            <Icon name="corner-down-left" size={12} />
+            <span>Moved here from a thread by you</span>
+            {from !== undefined && from.archived === undefined && (
+              <button
+                type="button"
+                className="cr-link"
+                data-testid="move-back"
+                disabled={busy}
+                onClick={() => void moveTo(entry.ts, move.from)}
+              >
+                Move back
+              </button>
+            )}
+          </div>
+        );
+      })()}
+      {moving === entry.ts && (
+        // T504 (§6): which thread the line goes to.
+        <div className="cr-tlinks" data-testid="move-picker" data-thread-on="">
+          <Icon name="corner-down-right" size={12} />
+          <span>Move to the thread on:</span>
+          {moveTargets(chatThreads, entry).map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className="cr-link"
+              data-testid="move-target"
+              data-thread={t.id}
+              disabled={busy}
+              onClick={() => void moveTo(entry.ts, t.id).then(() => setMoving(undefined))}
+            >
+              {anchorLabel(t.anchor, 40, 'a whole message')}
+            </button>
+          ))}
+          <button type="button" className="cr-link cr-faint" onClick={() => setMoving(undefined)}>
+            Cancel
+          </button>
+        </div>
+      )}
       {(() => {
         // T502 (D62): a question is its thread, nested under the line that asked it.
         const thread = questionThreads.hostOf.get(entry.ts);
@@ -1664,7 +1770,16 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           [
             ...new Set([
               ...(panelThread?.entries ?? []),
-              ...page.thread.filter((e) => e.thread === openThreadId).map((e) => e.ts),
+              // T504: not a line moved out of it, nor a record or a line for the agent.
+              ...page.thread
+                .filter(
+                  (e) =>
+                    e.thread === openThreadId &&
+                    moved.get(e.ts) === undefined &&
+                    e.op === undefined &&
+                    e.agent_only !== true,
+                )
+                .map((e) => e.ts),
             ]),
           ].sort(),
         );
@@ -1676,6 +1791,195 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     load();
     refresh();
   };
+  // T504 (D65, §6a, §7): the thread's ⋯: Archive, Archive and compact / Compact now, Archive
+  // and forget (confirmed: it restarts the agent), Promote to tangent; Restore when archived.
+  const panelArchived = panelThread?.archived !== undefined;
+  const threadMenu = (thread: ChatThread): MenuItem[] => {
+    const archived = thread.archived !== undefined;
+    const vendor = agentCommands.vendor ?? liveAgent?.vendor;
+    return [
+      {
+        label: 'Archive',
+        icon: 'archive',
+        testid: 'thread-archive',
+        hidden: archived,
+        title:
+          'Hide it; it is never sent to the agent again, and the agent is told once to treat it as closed',
+        onSelect: () => void act(() => archiveThread(stream.id, thread.id)),
+      },
+      {
+        label: archived ? 'Compact now' : 'Archive and compact now',
+        icon: 'layers',
+        testid: 'thread-compact',
+        hidden: compactCmd === undefined,
+        title: `Runs ${vendor !== undefined ? vendorLabel(vendor) : 'the agent'}’s /${compactCmd ?? 'compact'}, told to leave the archived threads out of its summary`,
+        onSelect: () =>
+          void act(async () => {
+            if (!archived) await archiveThread(stream.id, thread.id);
+            await compactNow(stream.id);
+          }),
+      },
+      {
+        label: 'Archive and forget…',
+        icon: 'refresh',
+        testid: 'thread-forget',
+        hidden: archived || !hasRun,
+        disabled: agentWorking,
+        title: agentWorking
+          ? 'Waits for the agent’s turn to end'
+          : 'Archive it, then restart the agent fresh without it',
+        onSelect: () => setForgetting(thread.id),
+      },
+      {
+        label: 'Promote to tangent…',
+        icon: 'git-fork',
+        testid: 'thread-promote',
+        hidden: archived || !canBranch || thread.promoted !== undefined,
+        title: 'Start a new conversation from this thread: its passage and lines, quoted',
+        onSelect: () => setPromoting(thread.id),
+      },
+      {
+        label: 'Restore',
+        icon: 'undo',
+        testid: 'thread-restore',
+        hidden: !archived,
+        title: 'Bring it back (the agent is told it is open again)',
+        onSelect: () => void act(() => restoreThread(stream.id, thread.id)),
+      },
+    ];
+  };
+  const promoteQuestion = tangentQuestion.trim();
+  const promote = (thread: string) =>
+    act(async () => {
+      const created = await createStream({
+        title: titleFromGoal(promoteQuestion) || promoteQuestion.slice(0, 60),
+        goal: promoteQuestion,
+        parent: stream.id,
+        seed_thread: thread,
+        auto_title: true,
+      });
+      setPromoting(undefined);
+      setTangentQuestion('');
+      select(created.id);
+    });
+  const panelNotice =
+    panelThread === undefined ? null : (
+      <>
+        {panelThread.promoted !== undefined && (
+          <div className="cr-tpanel-note" data-testid="thread-promoted">
+            <Icon name="git-fork" size={12} />
+            Promoted to a tangent:{' '}
+            <button
+              type="button"
+              className="cr-link"
+              data-testid="thread-promoted-link"
+              onClick={() => select((panelThread.promoted as { node: string }).node)}
+            >
+              {titleOf(panelThread.promoted.node)}
+            </button>
+          </div>
+        )}
+        {panelArchived && (
+          <div className="cr-tpanel-note" data-testid="thread-archived-note">
+            <Icon name="archive" size={12} />
+            {panelThread.archived?.forget
+              ? 'Archived, and the agent restarted without it.'
+              : 'Archived: never sent to the agent again; it was told to treat it as closed.'}
+            <button
+              type="button"
+              className="cr-link"
+              data-testid="thread-restore-note"
+              disabled={busy}
+              onClick={() => void act(() => restoreThread(stream.id, panelThread.id))}
+            >
+              Restore
+            </button>
+          </div>
+        )}
+        {promoting === panelThread.id && (
+          <form
+            className="cr-branch-form"
+            data-testid="promote-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (promoteQuestion) void promote(panelThread.id);
+            }}
+          >
+            <div className="cr-branch-label">
+              <Icon name="git-fork" size={13} />
+              Promote to a tangent: a new conversation that starts with this thread
+            </div>
+            <textarea
+              data-testid="promote-question"
+              aria-label="The tangent's question"
+              placeholder="What should the tangent look into?"
+              rows={2}
+              // biome-ignore lint/a11y/noAutofocus: the form opens on a click, for typing at once.
+              autoFocus
+              value={tangentQuestion}
+              onChange={(e) => setTangentQuestion(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.stopPropagation();
+                  setPromoting(undefined);
+                }
+              }}
+            />
+            <div className="cr-branch-actions">
+              <Button size="sm" variant="ghost" onClick={() => setPromoting(undefined)}>
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                size="sm"
+                variant="primary"
+                data-testid="promote-start"
+                disabled={busy || !promoteQuestion}
+              >
+                Start tangent
+              </Button>
+            </div>
+          </form>
+        )}
+      </>
+    );
+  /** T504 (§6): under a line in the panel: moved here (Move back), or Move to main. */
+  const panelLineExtra = (entry: ChatEntry): JSX.Element | null => {
+    if (panelThread === undefined || panelArchived) return null;
+    const move = moved.get(entry.ts);
+    if (move !== undefined && move.to === panelThread.id) {
+      return (
+        <div className="cr-tlinks cr-faint" data-testid="moved-line">
+          <Icon name="corner-down-right" size={12} />
+          <span>Moved here by you</span>
+          <button
+            type="button"
+            className="cr-link"
+            data-testid="move-back"
+            disabled={busy}
+            onClick={() => void moveTo(entry.ts, move.from)}
+          >
+            Move back
+          </button>
+        </div>
+      );
+    }
+    if (entry.ts === panelThread.id || entry.kind === 'question' || entry.kind === 'answer') {
+      return null;
+    }
+    return (
+      <button
+        type="button"
+        className="cr-link cr-faint"
+        data-testid="move-to-main"
+        title="Show this line in the main chat instead (display only)"
+        disabled={busy}
+        onClick={() => void moveTo(entry.ts, 'main')}
+      >
+        Move to main
+      </button>
+    );
+  };
   const threadPanel =
     shownTab === 'thread' && panelAnchor !== undefined ? (
       <ThreadPanel
@@ -1686,13 +1990,24 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         lines={panelLines}
         authorOf={(by) => chatAuthor(by, stream.sessions)}
         queued={queuedLines}
-        {...(intent.action === 'none'
-          ? { sendBlocked: intent.hint ?? 'Nothing can be sent here now' }
-          : offline
-            ? { sendBlocked: RECONNECTING }
-            : {})}
+        {...(panelArchived
+          ? { sendBlocked: 'Restore the thread to reply in it' }
+          : intent.action === 'none'
+            ? { sendBlocked: intent.hint ?? 'Nothing can be sent here now' }
+            : offline
+              ? { sendBlocked: RECONNECTING }
+              : {})}
         onSend={sendInThread}
         onClose={() => setThreadView(undefined)}
+        {...(panelThread !== undefined
+          ? {
+              actions: (
+                <Menu items={threadMenu(panelThread)} label="Thread actions" testid="thread-menu" />
+              ),
+            }
+          : {})}
+        lineExtra={panelLineExtra}
+        notice={panelNotice}
       />
     ) : null;
 
@@ -2319,6 +2634,28 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         <div className="cr-node-scrim" onClick={() => setDetailsOpen(false)} />
       )}
       {threadPanel}
+      <ConfirmDialog
+        open={forgetting !== undefined}
+        title="Archive and forget this thread?"
+        confirmLabel="Archive and restart the agent"
+        danger
+        busy={busy}
+        testid="forget-confirm"
+        onCancel={() => setForgetting(undefined)}
+        onConfirm={() => {
+          const thread = forgetting;
+          setForgetting(undefined);
+          if (thread !== undefined) void act(() => archiveThread(stream.id, thread, true));
+        }}
+      >
+        <p>
+          This archives the thread and <strong>restarts the agent</strong>: it starts fresh, from a
+          brief without the archived threads, so the thread is really out of what it sees.
+        </p>
+        <p className="cr-faint">
+          What the agent knew only from its own session (never written in the chat) is gone too.
+        </p>
+      </ConfirmDialog>
 
       {turning && (
         <TurnIntoWorkDialog
