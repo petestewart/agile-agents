@@ -190,6 +190,14 @@ Reports: `codex-defaultmode-perm-hooks-fixture.json`,
   and the worktree must be a trusted Codex project. The daemon checks the
   hook ran (fail-closed) for the case where it isn't.
 
+**Round 4 (2026-10-02, live check + `--worktree`):** on a real Codex node
+the daemon's T506 hook in the node's worktree never ran (the fail-closed check
+stopped the agent). Spike `--worktree` (agent in `<fixture>/.worktrees/w1`, a
+git worktree, as the daemon runs it): hook in the worktree's `.codex/` → **0**
+calls, curl ran; hook in the main repo's `.codex/` (`--hooks-at main`) → **9**
+calls, curl blocked with our reason. For a git worktree Codex loads project
+hooks from the main repo root. T511 moves the daemon's hook there.
+
 What those runs still show (none of it depends on the hook):
 
 - **codex-acp starts Codex as `<CODEX_PATH> app-server`**, and Codex accepts
