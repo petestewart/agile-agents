@@ -339,7 +339,7 @@ describe('T160 cockpit routes', () => {
     expect((await post('move-line', { entry: aside.ts, to: first.ts })).status).toBe(201);
     let page = (await (await fetch(url(`/api/streams/${node.id}`))).json()) as {
       chat_threads?: Array<{ id: string; entries: string[]; archived?: unknown }>;
-      chat_moves?: Array<{ entry: string; to: string }>;
+      chat_moves?: Array<{ entry: string; from: string; to: string; at: string }>;
     };
     expect(page.chat_threads?.[0]?.entries).toEqual([first.ts, aside.ts]);
     expect(page.chat_moves).toEqual([

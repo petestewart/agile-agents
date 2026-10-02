@@ -14798,3 +14798,272 @@ describe('Chat threads (Playwright e2e, T503)', () => {
     TEST_BUDGET_MS,
   );
 });
+
+describe('Moving, archiving and promoting threads (Playwright e2e, T504)', () => {
+  const TURN_TEXT = 'Use banker’s rounding for the cents. Keep one sheet per account.';
+  const mainFlow = '[data-testid="thread"] > [data-testid="thread-entry"]';
+  const panel = '[data-testid="thread-panel"]';
+
+  /** A work node whose agent spoke, with a thread on its turn the agent answered in. */
+  async function threadedNode(cockpit: Awaited<ReturnType<typeof startStreamCockpit>>) {
+    const node = await cockpit.streams.create('human', {
+      title: 'Ledger',
+      goal: 'Store the amounts.',
+      repo: 'demo',
+    });
+    await cockpit.attach.attach(node.id);
+    const page = await openPage();
+    await page.goto(`${cockpit.base}/?node=${node.id}`);
+    const turn = page.locator('[data-testid="thread-entry"][data-by="agent"]', {
+      hasText: 'Use banker’s rounding',
+    });
+    await turn.waitFor();
+    const session = cockpit.streams.get(node.id).sessions.find((s) => s.role === 'worker');
+    await waitUntil(
+      'the first turn to end',
+      () =>
+        cockpit.streams.get(node.id).sessions.find((s) => s.id === session?.id)?.status === 'idle',
+    );
+    await turn.hover();
+    await turn.locator('[data-testid="reply-in-thread"]').click();
+    const box = page.locator(`${panel} [data-testid="thread-reply-input"]`);
+    await box.fill('Why banker’s rounding?');
+    await box.press('Enter');
+    await page.locator(`${panel}:not([data-thread=""])`).waitFor();
+    const id = (await page.locator(panel).getAttribute('data-thread')) as string;
+    await page
+      .locator(`${panel} [data-testid="thread-panel-entry"][data-by="agent"]`, {
+        hasText: 'It avoids drift.',
+      })
+      .waitFor();
+    await waitUntil(
+      'the thread’s turn to end',
+      () =>
+        cockpit.streams.get(node.id).sessions.find((s) => s.id === session?.id)?.status === 'idle',
+    );
+    await page.locator('[data-testid="thread-panel-close"]').click();
+    await page.locator(panel).waitFor({ state: 'detached' });
+    return { node, page, id };
+  }
+
+  browserTest(
+    'a line moves into a thread and back, and a reply moves to the main chat and back: display only, recorded',
+    async () => {
+      const worker: FakeAgentScript = {
+        turns: [
+          [{ type: 'agent_text', text: TURN_TEXT }, { type: 'end_turn' }],
+          [{ type: 'agent_text', text: 'It avoids drift.' }, { type: 'end_turn' }],
+        ],
+        steps: [{ type: 'end_turn' }],
+      };
+      const cockpit = await startStreamCockpit([worker]);
+      let page: Page | undefined;
+      try {
+        const made = await threadedNode(cockpit);
+        page = made.page;
+        const { node, id } = made;
+        const mark = `[data-testid="thread-mark"][data-thread="${id}"]`;
+        await waitForText(page, `${mark} [data-testid="thread-mark-count"]`, '2 replies');
+
+        // A line of yours in the main chat (written straight to the thread: nothing delivered).
+        const aside = await cockpit.streams.appendThread('human', node.id, {
+          kind: 'line',
+          body: 'MOVE-ME: and the sheets too',
+        });
+        const asideRow = page.locator(mainFlow, { hasText: 'MOVE-ME' });
+        await asideRow.waitFor();
+        await asideRow.hover();
+        // One thread to go to: Move to thread puts it there.
+        await asideRow.locator('[data-testid="move-to-thread"]').click();
+        await page.locator(mainFlow, { hasText: 'MOVE-ME' }).waitFor({ state: 'detached' });
+        await waitForText(page, `${mark} [data-testid="thread-mark-count"]`, '3 replies');
+        // Recorded, by you; the stored line itself is never rewritten.
+        const lines = cockpit.streams.readThread(node.id, { limit: 500 }).entries;
+        expect(lines.find((e) => e.ts === aside.ts)?.thread).toBeUndefined();
+        expect(lines.at(-1)).toMatchObject({
+          by: 'human',
+          kind: 'event',
+          op: { type: 'move', entry: aside.ts, to: id },
+        });
+
+        // In the panel: it says it was moved; Move back returns it.
+        await page.locator(mark).click();
+        const movedIn = page.locator(`${panel} [data-testid="thread-panel-entry"]`, {
+          hasText: 'MOVE-ME',
+        });
+        await movedIn.locator('[data-testid="moved-line"]').waitFor();
+        await movedIn.locator('[data-testid="move-back"]').click();
+        await page.locator(mainFlow, { hasText: 'MOVE-ME' }).waitFor();
+        await waitForText(page, `${mark} [data-testid="thread-mark-count"]`, '2 replies');
+        expect(
+          await page
+            .locator(mainFlow, { hasText: 'MOVE-ME' })
+            .locator('[data-testid="moved-line"]')
+            .count(),
+        ).toBe(0);
+
+        // The agent's reply moves to the main chat, saying so, and back again.
+        const reply = page.locator(`${panel} [data-testid="thread-panel-entry"][data-by="agent"]`, {
+          hasText: 'It avoids drift.',
+        });
+        await reply.locator('[data-testid="move-to-main"]').click();
+        const inMain = page.locator(mainFlow, { hasText: 'It avoids drift.' });
+        await inMain.waitFor();
+        await inMain.locator('[data-testid="moved-line"]').waitFor();
+        expect(await inMain.locator('[data-testid="moved-line"]').textContent()).toContain(
+          'Moved here from a thread by you',
+        );
+        await waitForText(page, `${mark} [data-testid="thread-mark-count"]`, '1 reply');
+        await inMain.locator('[data-testid="move-back"]').click();
+        await page
+          .locator(mainFlow, { hasText: 'It avoids drift.' })
+          .waitFor({ state: 'detached' });
+        await waitForText(page, `${mark} [data-testid="thread-mark-count"]`, '2 replies');
+        expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'Archive hides a thread (folded, restorable), never re-sends it, and tells the agent once; Restore brings it back',
+    async () => {
+      const promptLog = join(tmpdir(), `agile-t504-archive-${ulid()}.jsonl`);
+      const worker: FakeAgentScript = {
+        logFile: promptLog,
+        turns: [
+          [{ type: 'agent_text', text: TURN_TEXT }, { type: 'end_turn' }],
+          [{ type: 'agent_text', text: 'It avoids drift.' }, { type: 'end_turn' }],
+          [{ type: 'agent_text', text: 'Carrying on.' }, { type: 'end_turn' }],
+        ],
+        steps: [{ type: 'end_turn' }],
+      };
+      const cockpit = await startStreamCockpit([worker]);
+      let page: Page | undefined;
+      try {
+        const made = await threadedNode(cockpit);
+        page = made.page;
+        const { node, id } = made;
+        const mark = `[data-testid="thread-mark"][data-thread="${id}"]`;
+        await page.locator(mark).waitFor();
+
+        // The thread's ⋯ → Archive.
+        await page.locator(mark).click();
+        await page.locator(`${panel} [data-testid="thread-menu-trigger"]`).click();
+        await page.locator('[data-testid="thread-archive"]').click();
+        await page.locator(`${panel}[data-archived="true"]`).waitFor();
+        await page.locator(`${panel} [data-testid="thread-archived-note"]`).waitFor();
+        expect(
+          await page.locator(`${panel} [data-testid="thread-reply-send"]`).getAttribute('title'),
+        ).toBe('Restore the thread to reply in it');
+        await page.locator('[data-testid="thread-panel-close"]').click();
+
+        // Quiet: no mark, no highlight count, no Open threads chip; folded under its turn.
+        await page.locator(mark).waitFor({ state: 'detached' });
+        expect(await page.locator('[data-testid="open-threads"]').count()).toBe(0);
+        await waitForText(page, '[data-testid="archived-threads-toggle"]', 'Archived threads (1)');
+        expect(await page.locator(mainFlow, { hasText: 'It avoids drift.' }).count()).toBe(0);
+
+        // Told once, with your next line; never re-sent.
+        await cockpit.attach.say(node.id, 'carry on');
+        await waitUntil('the next digest', () =>
+          readFileSync(promptLog, 'utf8').includes(
+            'The operator archived the thread on your message',
+          ),
+        );
+        const prompts = readFileSync(promptLog, 'utf8');
+        expect(prompts).toContain('Treat it as closed');
+        expect(prompts.split('The operator archived the thread').length - 1).toBe(1);
+
+        // Restore, from the fold: its mark is back.
+        await page.locator('[data-testid="archived-threads-toggle"]').click();
+        await page.locator(`[data-testid="archived-thread"][data-thread="${id}"]`).waitFor();
+        await page.locator('[data-testid="restore-thread"]').click();
+        await page.locator(mark).waitFor();
+        await page.locator('[data-testid="archived-threads"]').waitFor({ state: 'detached' });
+        expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+        rmSync(promptLog, { force: true });
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'Promote to tangent: a new conversation seeded with the passage and the thread’s lines; the thread links to it',
+    async () => {
+      const tangentAgent: FakeAgentScript = {
+        steps: [{ type: 'agent_text', text: 'Looking into the rounding.' }, { type: 'end_turn' }],
+      };
+      const cockpit = await startStreamCockpit([tangentAgent]);
+      let page: Page | undefined;
+      try {
+        const root = await cockpit.streams.create('human', { title: 'Shop', goal: 'g' });
+        const talk = await cockpit.streams.create('human', {
+          title: 'Money talk',
+          goal: 'how to store money',
+          parent: root.id,
+        });
+        const turn = await cockpit.streams.appendThread(
+          'agent',
+          talk.id,
+          { kind: 'line', body: TURN_TEXT },
+          ulid(),
+        );
+        const first = await cockpit.streams.appendThread('human', talk.id, {
+          kind: 'line',
+          body: 'PROMOTE-ME why banker’s?',
+          anchor: { entry: turn.ts, start: 4, end: 21, quote: 'banker’s rounding' },
+        });
+        page = await openPage();
+        await page.goto(`${cockpit.base}/?node=${talk.id}`);
+        const mark = `[data-testid="thread-mark"][data-thread="${first.ts}"]`;
+        await page.locator(mark).click();
+        await page.locator(`${panel} [data-testid="thread-menu-trigger"]`).click();
+        await page.locator('[data-testid="thread-promote"]').click();
+        await page.locator('[data-testid="promote-question"]').fill('Which rounding for totals?');
+        await page.locator('[data-testid="promote-start"]').click();
+
+        // The tangent opens, its thread opening with the passage and the thread's line.
+        await page
+          .locator('[data-testid="thread-entry"]', {
+            hasText: 'Promoted from a thread on Money talk',
+          })
+          .first()
+          .waitFor();
+        await page
+          .locator('[data-testid="thread-entry"]', { hasText: 'PROMOTE-ME why banker’s?' })
+          .first()
+          .waitFor();
+        const tangent = cockpit.streams.list().find((s) => s.parent === talk.id);
+        expect(tangent?.goal).toBe('Which rounding for totals?');
+
+        // Back on the conversation: the thread says it was promoted, with a link.
+        await page.goto(`${cockpit.base}/?node=${talk.id}`);
+        await page.locator(mark).click();
+        await waitForText(
+          page,
+          `${panel} [data-testid="thread-promoted-link"]`,
+          tangent?.title as string,
+        );
+        await page.locator(`${panel} [data-testid="thread-promoted-link"]`).click();
+        await page
+          .locator('[data-testid="thread-entry"]', {
+            hasText: 'Promoted from a thread on Money talk',
+          })
+          .first()
+          .waitFor();
+        expect(cockpit.attachErrors).toEqual([]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
