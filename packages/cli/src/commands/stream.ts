@@ -340,9 +340,32 @@ export async function runStreamSay(
     kind: 'line',
     body: text,
   });
-  if (json) printJson(entry);
-  else console.log(`agile stream say: appended to ${id}`);
+  if (json) {
+    printJson(entry);
+    return 0;
+  }
+  console.log(`agile stream say: appended to ${id}`);
+  // T513: a line never reaches a reviewer; after one, say where it went.
+  const note = sayNote(
+    await callRpc<Stream>(socketPath, 'stream.get', { id }).catch(() => undefined),
+  );
+  if (note !== undefined) console.log(note);
   return 0;
+}
+
+/**
+ * T513: what `say` adds when the node's newest session is a reviewer. A
+ * line goes to the node's own agent (its worker or coordinator), never a
+ * reviewer, and a review is one turn: the daemon ends its session when its
+ * turn finishes (design/cockpit-design.md §2, D48). Undefined otherwise.
+ */
+export function sayNote(stream: Pick<Stream, 'id' | 'sessions'> | undefined): string | undefined {
+  const last = stream?.sessions.at(-1);
+  if (stream === undefined || last?.role !== 'reviewer') return undefined;
+  const live = last.status === 'starting' || last.status === 'running' || last.status === 'idle';
+  return live
+    ? `note: its reviewer takes no messages; this line is for the node's agent, not the reviewer`
+    : `note: its reviewer finished (a review is one turn); this line is for the node's agent, not the reviewer. For another review: agile review ${stream.id}`;
 }
 
 /**

@@ -2345,7 +2345,14 @@ export class AttachService {
         return;
       }
       if (role === 'reviewer') {
-        await this.onReviewerExit(streamId, sessionId, reason, findingsBefore);
+        // T513: a review is one turn (§2, D48): the daemon ends it, and its kill's exit code
+        // says nothing; the line says so, and where a message goes now.
+        await this.onReviewerExit(
+          streamId,
+          sessionId,
+          finishedTurn ? REVIEW_TURN_FINISHED : reason,
+          findingsBefore,
+        );
         return;
       }
       // The retro is not the stream's work: report on the thread, leave `agent.status`.
@@ -2842,6 +2849,14 @@ export class AttachService {
 
 /** T437: the progress line a failed start or a vendor crash leaves, so Needs me, Overview and Events say why. */
 export const FAILED_START_PREFIX = 'The agent couldn’t start: ';
+
+/**
+ * T513: why a reviewer's session ended when its turn did (design/cockpit-design.md
+ * §2, D48: a reviewer's turn still ends its session). A message after it goes to
+ * the node's agent, never the reviewer.
+ */
+export const REVIEW_TURN_FINISHED =
+  'its turn finished; a review is one turn: a message now goes to the node’s agent, not the reviewer';
 export const CRASHED_PREFIX = 'The agent stopped with an error: ';
 /**
  * T464: the node's most recent worker or coordinator session whose vendor

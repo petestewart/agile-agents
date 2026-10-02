@@ -10,6 +10,7 @@ import {
   STREAM_STATUS_VALUES,
   filterStreamTree,
   formatThreadEntry,
+  sayNote,
   showFields,
   streamRows,
   streamStatusMatches,
@@ -120,5 +121,39 @@ describe('stream list --status/--landed filtering (T136)', () => {
     expect(
       filterStreamTree([{ stream: parent, children: [{ stream: child, children: [] }] }], 'landed'),
     ).toEqual([]);
+  });
+});
+
+describe('say after a review (T513)', () => {
+  const session = (role: string, status: string) =>
+    ({
+      id: '01SESSION00000000000000000',
+      vendor: 'codex',
+      model: 'default',
+      role,
+      status,
+    }) as Stream['sessions'][number];
+
+  test('a finished reviewer: the line is for the node’s agent, and how to review again', () => {
+    const node = stream({
+      sessions: [session('worker', 'stopped'), session('reviewer', 'stopped')],
+    });
+    expect(sayNote(node)).toBe(
+      `note: its reviewer finished (a review is one turn); this line is for the node's agent, not the reviewer. For another review: agile review ${node.id}`,
+    );
+  });
+
+  test('a live reviewer takes no messages either', () => {
+    expect(sayNote(stream({ sessions: [session('reviewer', 'running')] }))).toContain(
+      'its reviewer takes no messages',
+    );
+  });
+
+  test('nothing to add when the newest session is the node’s agent, or there is none', () => {
+    expect(
+      sayNote(stream({ sessions: [session('reviewer', 'stopped'), session('worker', 'idle')] })),
+    ).toBeUndefined();
+    expect(sayNote(stream())).toBeUndefined();
+    expect(sayNote(undefined)).toBeUndefined();
   });
 });

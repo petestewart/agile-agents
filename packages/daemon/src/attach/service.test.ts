@@ -72,6 +72,7 @@ import {
   DAEMON_SHUTDOWN_REASON,
   FAILED_START_PREFIX,
   RESUMED_LINE,
+  REVIEW_TURN_FINISHED,
   StreamBusyError,
   TURN_FINISHED_LINE,
   endedReason,
@@ -1198,6 +1199,12 @@ describe('the reviewer (§4.2)', () => {
     await handle.exited;
     await waitFor(() => threadBodies(stream.id).some((b) => b.startsWith('review finished:')));
     expect(streams.get(stream.id).agent.status).toBe('idle');
+    // T513: a review is one turn; the daemon ends it, and the line says so (not the kill's
+    // "process exited (code -1)"), and where a message goes now.
+    expect(threadBodies(stream.id)).toContain(
+      `review finished: 0 findings (${REVIEW_TURN_FINISHED})`,
+    );
+    expect(threadBodies(stream.id).some((b) => b.includes('process exited'))).toBe(false);
   }, 20_000);
 
   test('auto_review starts a reviewer when the worker exits done', async () => {
