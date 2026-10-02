@@ -394,11 +394,11 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // `approval_policy` tested — "codex-acp never asks, regardless of mode
     // or approval policy. If Codex needs approvals its adapter is the
     // native `codex app-server` (which has approval request kinds)".
-    // Neither ACP permission (tier 2) nor a hook (tier 1) can gate this
-    // vendor, so a Codex engineer is routed through tier-0 sandbox only
-    // (`VendorConfig.requires_sandbox: true`, §6) plus tier-3 observation —
-    // never spawned unsandboxed (`Runner.spawn`/`wrapAgentCommand` fail
-    // closed on `requires_sandbox` with no backend, T026).
+    // ACP permission (tier 2) can't gate this vendor. T506 (§C5 round 3):
+    // Codex's own `PreToolUse` hook can, under codex-acp too: the daemon
+    // writes `<worktree>/.codex/hooks.json` (`hook/codex.ts`), refuses a
+    // worktree Codex doesn't trust, and stops a session whose calls the hook
+    // never saw. So it is tier-1 gated like Claude, not `requiresSandbox`.
     command: 'npx',
     args: ['-y', '@agentclientprotocol/codex-acp@1.10.0'],
     envOverrides: {},
@@ -422,10 +422,6 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // since codex-acp "raises zero permission requests in agent and
     // read-only" alike (§C2/§C3), so mode never affects enforcement here.
     defaultModeId: 'agent',
-    // codex-acp "raises zero permission requests ... regardless of mode or
-    // approval policy" (§C3) — no tier 1/2 gate exists for this vendor at
-    // all, so it is an engineer only inside a tier-0 sandbox (design §6).
-    requiresSandbox: true,
   }),
   antigravity: freezeProvider({
     id: 'antigravity',

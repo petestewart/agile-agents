@@ -42,7 +42,16 @@ import {
   vendorHasHooks,
 } from '@agile-agents/shared';
 import { missingBridge } from '../bridges/bridges';
-import { writeClaudeSettings } from '../hook';
+import {
+  CODEX_UNGATED_REASON,
+  CodexGateWatch,
+  type HookSightings,
+  codexHomeDir,
+  codexTrustFor,
+  codexUntrustedMessage,
+  writeClaudeSettings,
+  writeCodexHooks,
+} from '../hook';
 import { permissionRoleFor } from '../hook/decide';
 import {
   type AcpPermissionRequestParams,
@@ -193,6 +202,18 @@ export interface AgentSessionOptions {
   piAgentDir?: string;
   /** Test seam: a fake `installPiExtension`. */
   installPiExtension?: typeof installPiExtension;
+  /**
+   * T506: Codex's home, whose `config.toml` says which projects Codex
+   * trusts (read, never written). Default `$CODEX_HOME`, else `~/.codex`.
+   */
+  codexHome?: string;
+  /**
+   * T506: the hook's per-session call counts. With it, a Codex session
+   * whose `execute`/`edit` calls its hook never saw is stopped.
+   */
+  hookSightings?: Pick<HookSightings, 'count' | 'forget'>;
+  /** T506 test seam: how long a Codex call's hook record may trail it over ACP (default 2000 ms). */
+  codexGateGraceMs?: number;
   /**
    * Called when a prompt turn resolves normally. What that means (finished,
    * or waiting on an answer) is a stream question for `attach/service.ts`.
@@ -700,6 +721,19 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     timeoutSeconds: opts.hookTimeoutSeconds,
   });
 
+  // T506: Codex's own PreToolUse hook, the same gate (spike-findings §C5). It
+  // loads only in a project Codex trusts, which the daemon reads and never
+  // writes (option b): an untrusted worktree is refused, never run ungated.
+  if (provider.id === 'codex') {
+    const codexHome = opts.codexHome ?? codexHomeDir({ ...process.env, ...provider.envOverrides });
+    const trust = codexTrustFor(worktreePath, codexHome);
+    if (!trust.trusted) throw new Error(codexUntrustedMessage(worktreePath, trust.why));
+    writeCodexHooks(worktreePath, {
+      agileBin: cliInvocationToShell(cliBin),
+      ...(opts.socketPath !== undefined ? { socketPath: opts.socketPath } : {}),
+    });
+  }
+
   // Tier 0 (§4.3): wrap the vendor command in the host's sandbox backend.
   // `SandboxRequiredError` when `requiresSandbox` and no backend resolves;
   // an available backend alone is never a reason to wrap.
@@ -825,6 +859,19 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       : {}),
   });
 
+  // T506: fail closed. A Codex call over ACP that its hook never saw means the hook
+  // isn't running (untrusted, or broken): the session stops and says so.
+  const sightings = opts.hookSightings;
+  const gateWatch =
+    provider.id === 'codex' && sightings !== undefined
+      ? new CodexGateWatch({
+          session: sessionId,
+          sightings,
+          ...(opts.codexGateGraceMs !== undefined ? { graceMs: opts.codexGateGraceMs } : {}),
+          onUngated: () => stopUngated(),
+        })
+      : undefined;
+
   let model = sessionRef.model;
   /** T467: the vendor's last reply about its session, as saved (its model option is read from it). */
   let lastState: Record<string, unknown> | null = null;
@@ -929,6 +976,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   ): Promise<void> {
     if (settled) return;
     settled = true;
+    gateWatch?.dispose();
+    sightings?.forget(sessionId);
     unsubscribe();
     flushOutput();
     await Promise.all([...pendingWrites]);
@@ -1068,6 +1117,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
       flushOutput();
 
       if (kind === 'tool_call' || kind === 'tool_call_update') {
+        gateWatch?.toolCall(update?.toolCallId, update?.kind);
         track(
           store.appendEvent(
             buildEvent('tool_call', {
@@ -1106,6 +1156,28 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     } catch {
       // Already reported through the session's error path, or moot: closing.
     }
+  }
+  /** T506: the Codex hook never saw this session's calls: stop it, blocked, with the reason. */
+  function stopUngated(): void {
+    if (settled) return;
+    stopRequested = true;
+    track(
+      store
+        .appendEvent(
+          buildEvent('agent_put', {
+            agent: sessionId as AgentId,
+            data: { stream: ownerId, warning: `${CODEX_UNGATED_REASON}; stopping session` },
+          }),
+        )
+        .catch(() => {
+          // Best effort: the session's end carries the reason either way.
+        }),
+    );
+    // `finish` settles first, so the exit the close causes can't name another reason.
+    const done = finish(CODEX_UNGATED_REASON, false, false);
+    cancelBeforeClose();
+    spawned.close();
+    void done;
   }
   let turnCount = 0;
   /** Turns enqueued and not yet finished, the running one included. */

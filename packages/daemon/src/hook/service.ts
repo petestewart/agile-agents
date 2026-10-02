@@ -44,6 +44,7 @@ import { worktreeBranchLookups } from '../permissions/push-detector';
 import { patternRulesOf, protectedBranchesFor, touchedPaths } from '../permissions/rule-checks';
 import { directorReadScope } from '../permissions/visibility';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
+import { type HookSightings, codexToClaudePayload } from './codex';
 import {
   type ClassifierTierOutcome,
   buildClassifierState,
@@ -148,6 +149,11 @@ export interface HookServiceOptions {
   /** Injectable for tests; defaults to `node:fs.statSync`. */
   fileSize?: (path: string) => number | undefined;
   now?: () => Date;
+  /**
+   * T506: told of every pre-tool-use call it attributed to a session, so
+   * the runner can tell a Codex session whose hook never ran (fail closed).
+   */
+  sightings?: Pick<HookSightings, 'record'>;
 }
 
 /** The slice of `KnowledgeService` the hook needs. */
@@ -465,6 +471,7 @@ export class HookService {
   ): Promise<PreToolUseHookOutput | undefined> {
     const who = this.resolveAgentByCwd(payload.cwd, agentHintFrom(payload), { streamless: true });
     if (who === undefined || who.stream !== DIRECTOR_NODE) return undefined;
+    this.options.sightings?.record(who.session);
     try {
       await this.store.heartbeat(who.session as AgentId, {}, this.now);
     } catch (err) {
@@ -499,7 +506,9 @@ export class HookService {
     };
   }
 
-  async preToolUse(payload: ClaudePreToolUsePayload): Promise<PreToolUseHookOutput> {
+  async preToolUse(raw: ClaudePreToolUsePayload): Promise<PreToolUseHookOutput> {
+    // T506: `agile hook pre-tool-use --vendor codex` marks Codex's input, read as Claude's.
+    const payload = raw.agile_vendor === 'codex' ? codexToClaudePayload(raw) : raw;
     const director = await this.directorPreToolUse(payload);
     if (director !== undefined) return director;
     const ctx = await this.buildContext(
@@ -520,6 +529,7 @@ export class HookService {
         },
       };
     }
+    this.options.sightings?.record(ctx.session);
 
     let decision = decidePreToolUse(ctx, payload);
     let allowedBy: string | undefined;

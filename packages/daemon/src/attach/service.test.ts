@@ -13,6 +13,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -80,6 +81,7 @@ const FAKE_AGENT_PATH = join(import.meta.dir, '..', 'runner', 'fake-agent.ts');
 let home: string;
 let repo: string;
 let scratch: string;
+let codexHome: string;
 let store: StateStore;
 let streams: StreamService;
 let questions: QuestionService;
@@ -137,6 +139,8 @@ function buildAttachService(
   return new AttachService({
     // T480: never the test machine's own `claude`/`codex` (a test passes one to check it).
     installedCli: () => undefined,
+    // T506: a Codex home that trusts the temp dir, never the test machine's own.
+    codexHome,
     ...extra,
     store,
     streams,
@@ -173,6 +177,12 @@ async function makeStream(repoName?: string): Promise<Stream> {
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'agile-attach-home-'));
   scratch = mkdtempSync(join(tmpdir(), 'agile-attach-scratch-'));
+  codexHome = join(scratch, 'codex-home');
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(
+    join(codexHome, 'config.toml'),
+    `[projects.${JSON.stringify(realpathSync(tmpdir()))}]\ntrust_level = "trusted"\n`,
+  );
   repo = mkdtempSync(join(tmpdir(), 'agile-attach-repo-'));
   git(['init', '-q']);
   git(['config', 'user.email', 'test@example.com']);
@@ -3864,10 +3874,8 @@ describe("T488: Codex's effort goes through its own ACP option", () => {
     expect(sessionOf(stream.id, session.id)?.effort).toBe('high');
     // Codex takes effort now: no "effort … ignored by codex" line.
     expect(threadBodies(stream.id).some((b) => b.includes('ignored by codex'))).toBe(false);
-    // T505: its commands run unchecked, and the thread says so once.
-    expect(
-      threadBodies(stream.id).filter((b) => b === 'Codex runs commands unchecked'),
-    ).toHaveLength(1);
+    // T506: its commands go through its own hook now: no unchecked line.
+    expect(threadBodies(stream.id).some((b) => b.includes('runs commands unchecked'))).toBe(false);
     expect(
       threadBodies(stream.id).some((b) => /did not take|refused effort|doesn't offer/.test(b)),
     ).toBe(false);

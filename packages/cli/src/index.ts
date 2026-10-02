@@ -166,7 +166,7 @@ function usage(): string {
     '  question raise --stream <id> --text <text> [--by <agent>]',
     '  question answer <id> --answer <text> [--by <agent>]',
     '  breaker clear <signal>',
-    '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-open] [--timeout <ms>, default 2000]',
+    '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-open] [--timeout <ms>, default 2000] [--vendor codex]',
     "  mcp --session <id> [--timeout <ms>, default 60000]   stdio MCP bridge to the daemon's agent.* verbs",
     '',
     'flags:',
@@ -429,8 +429,14 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
 
       case 'hook': {
         const args: ParsedArgs = parseArgs(rest.slice(1));
-        const { event, failClosed, timeoutMs } = parseHookArgs(args);
-        return await runHook({ socketPath, event, failClosed, timeoutMs });
+        const { event, failClosed, timeoutMs, vendor } = parseHookArgs(args);
+        return await runHook({
+          socketPath,
+          event,
+          failClosed,
+          timeoutMs,
+          ...(vendor !== undefined ? { vendor } : {}),
+        });
       }
 
       case 'mcp': {

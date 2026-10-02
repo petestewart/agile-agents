@@ -166,10 +166,13 @@ describe('agile vendors (T489)', () => {
     expect(vendorRowCells(pi)[2]).toBe('can’t start');
     expect(vendorRowNotes(pi)).toEqual([missing]);
     // T505: a vendor whose commands nothing checks says so first; Claude doesn't.
-    const codex = { ...pi, vendor: 'codex' as const, label: 'Codex', installed: true };
-    expect(vendorRowNotes(codex)[0]).toBe(
-      'Codex runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.',
+    const grok = { ...pi, vendor: 'grok' as const, label: 'Grok CLI', installed: true };
+    expect(vendorRowNotes(grok)[0]).toBe(
+      'Grok CLI runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.',
     );
+    // T506: nor does Codex, gated by its own hook.
+    const codex = { ...pi, vendor: 'codex' as const, label: 'Codex', installed: true };
+    expect(vendorRowNotes(codex)).toEqual([missing]);
     expect(vendorRowNotes({ ...pi, vendor: 'claude', label: 'Claude Code' })).toEqual([missing]);
     const lines = wrapNote(`Rate limits: ${'a=1, '.repeat(40)}`, 40);
     expect(lines.length).toBeGreaterThan(1);
