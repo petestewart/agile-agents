@@ -3041,7 +3041,7 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 
 ### Ticket: T503 Reply in a thread on any message (D60, D61)
 - **Priority:** P2
-- **Status:** Todo (after T502)
+- **Status:** In progress (2026-10-02)
 - **Owner:** worker
 - **Scope:** design/chat-threads.md §3a, §4, §6, §7 and §8 step 2: a Reply in thread icon on every turn and in the selection bar, threads anchored to a selected passage (quoted, highlighted with a count, several per turn, D64), the optional `thread` field and `anchor` on a thread entry (shared schema, strict), placement of the agent's reply by cause (the line that woke the turn; a batched turn goes to the main flow with links), an optional `thread` on `say`/`ask`, delivered lines labelled with their thread, the side panel, a mark per thread in the main flow, derived thread state, unread on the mark and the rail row, the "Open threads" chip. One level of nesting. Anything that needs the operator inside a thread also shows in the main flow and Needs me.
 - **Acceptance Criteria:** As in the design.
