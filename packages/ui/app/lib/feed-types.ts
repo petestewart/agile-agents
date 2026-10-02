@@ -11,6 +11,9 @@
 
 import type {
   Autonomy,
+  ChatBatch,
+  ChatThread,
+  ChatThreadReply,
   Event,
   EventDeliveryStatus,
   HilRequest,
@@ -89,6 +92,8 @@ export interface CockpitStreamRow {
   autonomy?: Autonomy;
   /** T437: when its agent last answered a line of yours (or its question). Absent from an older daemon. */
   answered_at?: string;
+  /** T503 (§6): its chat threads with a reply, the newest first (unread against your read marks). */
+  thread_replies?: ChatThreadReply[];
   /** T336: a part not yet started because its coordinator's plan is not approved. */
   waiting_for_plan?: true;
   /** T341: its PR is open, so it merges on GitHub. */
@@ -257,6 +262,10 @@ export interface StreamPagePayload {
   question_threads?: QuestionThread[];
   /** T502 (D63): on a coordinator's chat, its children's questions as threads. */
   child_questions?: QuestionThread[];
+  /** T503 (D60, D64): the chat threads on this node's turns. */
+  chat_threads?: ChatThread[];
+  /** T503 (§4.1): turns woken by lines from several threads: in the main flow, linking them. */
+  chat_batches?: ChatBatch[];
 }
 
 /** T245: mirror of `events/service.ts`'s `ActivityEntry` (`GET /api/streams/:id/activity`). */

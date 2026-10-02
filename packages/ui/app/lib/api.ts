@@ -43,6 +43,7 @@ import type {
   StepUpView,
   Stream,
   StreamCreateInput,
+  ThreadAnchor,
   ThreadEntry,
   TrackerSettings,
   TrackerSettingsInput,
@@ -347,6 +348,24 @@ export function sayOnStream(
     ...(opts.start === true ? { start: true } : {}),
     ...(opts.start === true && opts.session !== undefined ? { session: opts.session } : {}),
   }) as Promise<{ prompted?: string; started?: true }>;
+}
+
+/**
+ * T503 (D60, D61, D64): a reply in a chat thread (`thread`), or the first
+ * of a new one on a turn or a passage of it (`anchor`). Queued like any
+ * line while the agent works; `start` wakes an agent that isn't running.
+ */
+export function sayInThread(
+  id: string,
+  body: string,
+  where: { thread: string } | { anchor: ThreadAnchor },
+  opts: { start?: boolean } = {},
+): Promise<{ entry: ThreadEntry; prompted?: string; started?: true }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/say`, {
+    body,
+    ...where,
+    ...(opts.start === true ? { start: true } : {}),
+  }) as Promise<{ entry: ThreadEntry; prompted?: string; started?: true }>;
 }
 
 /** T161: the sessions strip's Attach (a worker) and Review (a reviewer). */

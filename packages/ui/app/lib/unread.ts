@@ -136,3 +136,23 @@ export function directorUnread(
 ): boolean {
   return !reading && repliedAt !== undefined && repliedAt > readUpTo(seen, DIRECTOR_READ_KEY);
 }
+
+/**
+ * T503 (design/chat-threads.md §6): the read marks of a node's chat
+ * threads, beside the nodes' own (`thread:<node>:<thread>`, never a ULID).
+ * A thread is read up to its last reply while its panel is open.
+ */
+export function threadReadUpTo(seen: SeenState, key: string): string {
+  return readUpTo(seen, key);
+}
+
+/** T503: a rail row's threads with a reply you haven't read (the panel open on one reads it). */
+export function unreadThreads(
+  row: Pick<CockpitStreamRow, 'id' | 'thread_replies'>,
+  seen: SeenState,
+  reading?: string,
+): number {
+  return (row.thread_replies ?? []).filter(
+    (r) => r.thread !== reading && r.at > readUpTo(seen, `thread:${row.id}:${r.thread}`),
+  ).length;
+}
