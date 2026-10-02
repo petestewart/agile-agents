@@ -153,7 +153,8 @@ describe('collisions go to the parent (T287)', () => {
     expect(out.applied).toBe(true);
     expect(streams.get(web.id).waits_on?.map((w) => w.node)).toEqual([api.id]);
     const thread = streams.readThread(parent.id).entries;
-    expect(thread.map((e) => e.body)).toContain('coordinator (organise) applied: web waits on api');
+    // T446 (audit r7 #6): in words, as the coordinator's own row.
+    expect(thread.map((e) => e.body)).toContain('Linked web to wait on api');
 
     const note = await verbs.noteChild({
       session: coordinator,

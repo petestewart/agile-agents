@@ -1209,6 +1209,36 @@ describe('spawnSession', () => {
       await expect(setModePromise).resolves.toEqual({});
     });
 
+    it('T467: setConfigOption() sends session/set_config_option and forwards the reply as session state', async () => {
+      const session = create();
+      const states: unknown[] = [];
+      session.on((event) => {
+        if (
+          event.type === 'event' &&
+          event.event.acp === 'notification' &&
+          event.event.message.method === '_agile/session_state'
+        ) {
+          states.push(event.event.message.params);
+        }
+      });
+      await answerInitialize();
+      const setPromise = session.setConfigOption('model', 'grok-4.7');
+      await answerSessionNew('acp-1');
+      await flush();
+      const msg = sentMessages().find((m) => m.method === 'session/set_config_option');
+      expect(msg?.params).toEqual({ sessionId: 'acp-1', configId: 'model', value: 'grok-4.7' });
+      const configOptions = [{ id: 'model', category: 'model', currentValue: 'grok-4.7' }];
+      agentSends({ jsonrpc: '2.0', id: msg?.id, result: { configOptions } });
+      await expect(setPromise).resolves.toEqual({ configOptions });
+      expect(states.at(0)).toMatchObject({ source: 'session/new', sessionId: 'acp-1' });
+      expect(states.at(-1)).toMatchObject({
+        source: 'session/set_config_option',
+        sessionId: 'acp-1',
+        configOptions,
+        models: null,
+      });
+    });
+
     it('load() recovers a session id and records session state', async () => {
       const session = create();
       await answerInitialize();

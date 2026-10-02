@@ -5,7 +5,13 @@
  * `HookDecision` into Claude's hook JSON, and performs the side effects.
  */
 
-import type { AgentMessage, KnowledgeItem, SessionRole } from '@agile-agents/shared';
+import type {
+  AgentMessage,
+  KnowledgeItem,
+  PermissionPosture,
+  SessionRole,
+} from '@agile-agents/shared';
+import type { ReadAsk } from '../permissions/policy-tables';
 import type { VisibilityContext } from '../permissions/visibility';
 
 /** The outcomes of the pure decision (spike-findings.md §B); `ask` never reaches the wire. */
@@ -50,6 +56,14 @@ export interface HookDecisionContext {
    */
   readRoots?: readonly string[];
   hiddenRoots?: readonly string[];
+  /** T457: the node's permission posture (`nodeReadScope`): a read outside every root is allowed or asked. */
+  posture?: PermissionPosture;
+  /**
+   * T442 (D42): the session's node has no repo of its own (a conversation:
+   * it answers, researches, explains). Its worker reads other repos with a
+   * read-only `git -C`, within `readRoots`, as a coordinator does (T336).
+   */
+  noOwnRepo?: true;
 }
 
 /** Raw Claude `PreToolUse` stdin payload (spike-findings.md §B). */
@@ -73,6 +87,11 @@ export interface ClaudePreToolUsePayload {
    * Urgent messages still deny with the body as the reason.
    */
   no_additional_context_channel?: boolean;
+  /**
+   * T506: set by `agile hook pre-tool-use --vendor codex`: the rest is
+   * Codex's hook input, translated by `hook/codex.ts` before any decision.
+   */
+  agile_vendor?: string;
   [key: string]: unknown;
 }
 
@@ -89,4 +108,6 @@ export interface HookDecision {
   ruleViolated?: string;
   /** The classifier rule that routed this call (`stats.routed`); a human deny later counts as `violated`. */
   ruleRouted?: string;
+  /** T457: an `ask` for a read the Ask posture held; its gate offers "Always for this project". */
+  readAsk?: ReadAsk;
 }

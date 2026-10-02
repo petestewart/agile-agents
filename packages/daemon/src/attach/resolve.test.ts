@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { ACP_PROVIDERS } from '@agile-agents/acp-client';
+import { EFFORT_VENDORS, SESSION_VENDORS, UNCHECKED_COMMAND_VENDORS } from '@agile-agents/shared';
 import {
   DEFAULT_VENDOR,
   UnknownVendorError,
@@ -99,5 +100,25 @@ describe('effort mapping', () => {
   test('claude maps a named model to ANTHROPIC_MODEL, and its own default to nothing', () => {
     expect(ACP_PROVIDERS.claude.model?.('sonnet')).toEqual({ env: { ANTHROPIC_MODEL: 'sonnet' } });
     expect(ACP_PROVIDERS.claude.model?.('default')).toEqual({});
+  });
+});
+
+describe('T401: the vendors that take effort', () => {
+  test("the cockpit's list is the registry's: every provider with an effort mapping, no other", () => {
+    // T488: a spawn mapping (Claude) or the vendor's own ACP effort option (Codex).
+    const mapped = SESSION_VENDORS.filter(
+      (vendor) =>
+        ACP_PROVIDERS[vendor].effort !== undefined || ACP_PROVIDERS[vendor].effortOption === true,
+    );
+    expect([...EFFORT_VENDORS].sort()).toEqual([...mapped].sort());
+  });
+});
+
+describe('T505: the vendors that run commands unchecked', () => {
+  test("the shared list is the registry's: every provider marked requiresSandbox, no other", () => {
+    const ungated = SESSION_VENDORS.filter(
+      (vendor) => ACP_PROVIDERS[vendor].requiresSandbox === true,
+    );
+    expect([...UNCHECKED_COMMAND_VENDORS].sort()).toEqual([...ungated].sort());
   });
 });

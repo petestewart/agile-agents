@@ -243,6 +243,48 @@ test('T336: a worker keeps no_worktree_escape for git -C into another registered
   }
 });
 
+test("T442: a conversation's worker may git -C log a registered repo, never write there", async () => {
+  // A conversation (no repo of its own) runs in its session's scratch dir, with no worktree
+  // to read: Pete's "Plan this with me" node at LIVE-CHECKLIST 3.2 was denied its reads.
+  const scratch = mkdtempSync(join(tmpdir(), 'agile-convo-'));
+  try {
+    const streams = new StreamService(store);
+    const root = await streams.create('human', { title: 'Shop', goal: 'Shop' });
+    const convo = await streams.create('human', {
+      title: 'Plan it',
+      goal: 'Plan this with me before any code.',
+      parent: root.id,
+    });
+    await store.putAgent('convo-1', {
+      vendor: 'claude',
+      model: 'claude-sonnet-4-5',
+      stream: convo.id,
+      pid: 4343,
+      role: 'worker',
+      worktree: scratch,
+      last_seen: new Date().toISOString(),
+    });
+    const ask = async (command: string) =>
+      (
+        await hooks.preToolUse({
+          cwd: scratch,
+          session_id: 'convo-1',
+          agile_agent: 'convo-1',
+          tool_name: 'Bash',
+          tool_input: { command },
+        })
+      ).hookSpecificOutput.permissionDecision;
+    expect(await ask(`git -C ${repo} log --oneline -5`)).toBe('allow');
+    expect(await ask(`git -C ${repo} status`)).toBe('allow');
+    expect(await ask(`git -C ${repo} commit -m x`)).toBe('deny');
+    expect(await ask(`git -C ${repo} checkout -b y`)).toBe('deny');
+    // The work node's worker keeps T336's rule.
+    expect((await decide(`git -C ${scratch} log`)).decision).toBe('deny');
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test('the protected branches come from repos.yaml, not from the rule (D8)', async () => {
   await store.putRepos({ demo: { path: repo, protected_branches: ['trunk'] } });
   expect((await decide('git push origin main')).decision).toBe('allow');

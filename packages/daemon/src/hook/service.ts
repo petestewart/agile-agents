@@ -39,10 +39,12 @@ import { type Classifier, ClassifierUnavailableError, classifierEnabled } from '
 import { type RuleStatsOutcome, knowledgeMatchesPaths } from '../knowledge/service';
 import { isPathInside } from '../permissions/command';
 import { nodeReadScope } from '../permissions/policy-tables';
+import { projectReadSettings } from '../permissions/posture';
 import { worktreeBranchLookups } from '../permissions/push-detector';
 import { patternRulesOf, protectedBranchesFor, touchedPaths } from '../permissions/rule-checks';
 import { directorReadScope } from '../permissions/visibility';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
+import { type HookSightings, codexToClaudePayload } from './codex';
 import {
   type ClassifierTierOutcome,
   buildClassifierState,
@@ -52,7 +54,7 @@ import {
   pathsForToolCall,
 } from './decide';
 import { fingerprintCall } from './fingerprint';
-import { type RouteBandGates, routeCall } from './route-band';
+import { type RouteBandGates, routeCall, routePolicy } from './route-band';
 import {
   type ClaudePreToolUsePayload,
   DEFAULT_MAX_READ_BYTES,
@@ -147,6 +149,11 @@ export interface HookServiceOptions {
   /** Injectable for tests; defaults to `node:fs.statSync`. */
   fileSize?: (path: string) => number | undefined;
   now?: () => Date;
+  /**
+   * T506: told of every pre-tool-use call it attributed to a session, so
+   * the runner can tell a Codex session whose hook never ran (fail closed).
+   */
+  sightings?: Pick<HookSightings, 'record'>;
 }
 
 /** The slice of `KnowledgeService` the hook needs. */
@@ -338,6 +345,10 @@ export class HookService {
       upstreamBranch: branches.upstream,
       headBranch: branches.head,
       ...this.visibilityFor(stream, worktreePath),
+      // T442: a conversation (no repo of its own) reads repos as a coordinator does.
+      ...(stream !== DIRECTOR_NODE && this.streamRecord(stream)?.repo === undefined
+        ? { noOwnRepo: true as const }
+        : {}),
     };
   }
 
@@ -365,12 +376,15 @@ export class HookService {
     };
   }
 
-  /** T213, T330: the registered repos this node may read, and what it never may. */
-  private readScope(stream: string): Pick<HookDecisionContext, 'readRoots' | 'hiddenRoots'> {
+  /** T213, T330, T457: the roots this node may read, what it never may, and its posture. */
+  private readScope(
+    stream: string,
+  ): Pick<HookDecisionContext, 'readRoots' | 'hiddenRoots' | 'posture'> {
     return nodeReadScope(
       this.streamRecord(stream),
       () => this.store.getRepos(),
       this.options.agileHome,
+      projectReadSettings(this.store),
     );
   }
 
@@ -457,6 +471,7 @@ export class HookService {
   ): Promise<PreToolUseHookOutput | undefined> {
     const who = this.resolveAgentByCwd(payload.cwd, agentHintFrom(payload), { streamless: true });
     if (who === undefined || who.stream !== DIRECTOR_NODE) return undefined;
+    this.options.sightings?.record(who.session);
     try {
       await this.store.heartbeat(who.session as AgentId, {}, this.now);
     } catch (err) {
@@ -491,7 +506,9 @@ export class HookService {
     };
   }
 
-  async preToolUse(payload: ClaudePreToolUsePayload): Promise<PreToolUseHookOutput> {
+  async preToolUse(raw: ClaudePreToolUsePayload): Promise<PreToolUseHookOutput> {
+    // T506: `agile hook pre-tool-use --vendor codex` marks Codex's input, read as Claude's.
+    const payload = raw.agile_vendor === 'codex' ? codexToClaudePayload(raw) : raw;
     const director = await this.directorPreToolUse(payload);
     if (director !== undefined) return director;
     const ctx = await this.buildContext(
@@ -512,6 +529,7 @@ export class HookService {
         },
       };
     }
+    this.options.sightings?.record(ctx.session);
 
     let decision = decidePreToolUse(ctx, payload);
     let allowedBy: string | undefined;
@@ -522,7 +540,8 @@ export class HookService {
       // `classifier_review` gate plus a deny the model can act on, and the
       // human's yes lets exactly that call through once (`route-band.ts`).
       const why = decision.reason ?? 'never-without-human call';
-      const routed = await this.route(ctx, payload, why);
+      // T457: a held Ask read's gate carries the dir "Always for this project" adds.
+      const routed = await this.route(ctx, payload, why, undefined, decision.readAsk?.root);
       decision = { ...decision, ...routed.decision };
       allowedBy = routed.allowedBy;
     }
@@ -604,6 +623,13 @@ export class HookService {
         ? tier.ask
         : {
             ask: () =>
+              Promise.reject(
+                new ClassifierUnavailableError(
+                  'not_configured',
+                  'the classifier tier is off for this stream',
+                ),
+              ),
+            choose: () =>
               Promise.reject(
                 new ClassifierUnavailableError(
                   'not_configured',
@@ -815,6 +841,7 @@ export class HookService {
     payload: ClaudePreToolUsePayload,
     why: string,
     rule?: KnowledgeId,
+    readRoot?: string,
   ): Promise<{ decision: HookDecision; allowedBy?: string }> {
     const gates = this.options.gates;
     const call = fingerprintCall(payload, ctx.worktreePath);
@@ -826,17 +853,7 @@ export class HookService {
         },
       };
     }
-    let policy: Policy;
-    try {
-      policy = this.store.getPolicy();
-    } catch (err) {
-      if (!(err instanceof NotFoundError)) throw err;
-      // No `policy.yaml`: every gate is the human's (the shipped default).
-      policy = {
-        gates: { land: 'human', rule_accept: 'human', classifier_review: 'human' },
-        breaker_signals: [],
-      };
-    }
+    const policy = routePolicy(this.store);
     const routed = await routeCall(gates, {
       session: ctx.session,
       stream: ctx.stream,
@@ -844,6 +861,7 @@ export class HookService {
       call,
       reason: why,
       ...(rule !== undefined ? { rule } : {}),
+      ...(readRoot !== undefined ? { readRoot } : {}),
     });
     return {
       decision: routed.decision,

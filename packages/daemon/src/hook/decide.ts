@@ -42,7 +42,7 @@ import type {
   AcpToolKind,
 } from '../permissions';
 import type { PermissionRole } from '../permissions';
-import { readDenyReason } from '../permissions/policy-tables';
+import { readPathsVerdict } from '../permissions/policy-tables';
 import type { RuleCheckContext } from '../permissions/rule-checks';
 import { patternRulesOf, runPatternRules } from '../permissions/rule-checks';
 import { commandPaths, visibilityDenyReason } from '../permissions/visibility';
@@ -90,7 +90,9 @@ export function pathsForToolCall(payload: ClaudePreToolUsePayload): string[] {
     return [];
   }
   const input = payload.tool_input ?? {};
-  const candidates = [input.file_path, input.path, input.notebook_path].filter(
+  // T506: a Codex `apply_patch` names several files (`file_paths`, from `hook/codex.ts`).
+  const more = Array.isArray(input.file_paths) ? input.file_paths : [];
+  const candidates = [input.file_path, input.path, input.notebook_path, ...more].filter(
     (v): v is string => typeof v === 'string' && v.length > 0,
   );
   return [...new Set(candidates)];
@@ -154,11 +156,14 @@ function claudeToolRawInput(
 /** Claude's built-in read tools: their paths go through the same read allow-list as Bash's. */
 const BUILT_IN_READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead']);
 
-/** T213: the deny reason for a built-in read outside what this node may read. */
-function builtInReadDenyReason(
+/**
+ * T213, T457: a built-in read outside what this node may read: `deny`, or
+ * `ask` for a read the Ask posture holds for the human.
+ */
+function builtInReadVerdict(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
-): string | undefined {
+): HookDecision | undefined {
   if (payload.tool_name === undefined || !BUILT_IN_READ_TOOLS.has(payload.tool_name)) {
     return undefined;
   }
@@ -166,14 +171,24 @@ function builtInReadDenyReason(
   const paths = [input.file_path, input.path, input.notebook_path].filter(
     (v): v is string => typeof v === 'string' && v.length > 0,
   );
-  const policy = {
-    worktreePath: ctx.worktreePath,
-    ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
-    ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
-  };
-  for (const raw of paths) {
-    const reason = readDenyReason(raw, policy);
-    if (reason !== undefined) return reason;
+  const verdict = readPathsVerdict(
+    paths,
+    {
+      worktreePath: ctx.worktreePath,
+      ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
+      ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
+      ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
+    },
+    // T457: Grep reads every file under its path.
+    { walks: payload.tool_name === 'Grep' },
+  );
+  if (verdict.action === 'deny') return { decision: 'deny', reason: verdict.reason };
+  if (verdict.action === 'hil') {
+    return {
+      decision: 'ask',
+      reason: verdict.reason,
+      ...(verdict.readAsk !== undefined ? { readAsk: verdict.readAsk } : {}),
+    };
   }
   return undefined;
 }
@@ -186,8 +201,8 @@ function roleToolVerdict(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
 ): HookDecision | undefined {
-  const readDenied = builtInReadDenyReason(ctx, payload);
-  if (readDenied !== undefined) return { decision: 'deny', reason: readDenied };
+  const read = builtInReadVerdict(ctx, payload);
+  if (read !== undefined) return read;
   // P20: a coordinator has no network. WebFetch/WebSearch have no ACP kind,
   // so the role table never sees them; deny them here by name.
   if (
@@ -202,22 +217,37 @@ function roleToolVerdict(
   const kind = claudeToolKind(payload);
   if (kind === undefined) return undefined;
 
-  const toolCall: AcpToolCall = {
-    kind,
-    title: payload.tool_name,
-    rawInput: claudeToolRawInput(kind, payload),
-  };
+  // T506: an edit naming several files (Codex's `apply_patch`) checks every one, as
+  // an ACP edit's `locations` are.
+  const editPaths = kind === 'edit' ? pathsForToolCall(payload) : [];
+  const toolCall: AcpToolCall =
+    editPaths.length > 1
+      ? {
+          kind,
+          title: payload.tool_name,
+          rawInput: {},
+          locations: editPaths.map((path) => ({ path })),
+        }
+      : { kind, title: payload.tool_name, rawInput: claudeToolRawInput(kind, payload) };
   const request: AcpPermissionRequestParams = { toolCall, options: SYNTHETIC_OPTIONS };
   const decision = decidePermission({
     role: permissionRoleFor(ctx.role),
     worktreePath: ctx.worktreePath,
     ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
     ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
+    ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
     request,
   });
 
   if (decision.kind === 'deny') return { decision: 'deny', reason: decision.reason };
-  if (decision.kind === 'hil') return { decision: 'ask', reason: decision.reason };
+  if (decision.kind === 'hil') {
+    const readAsk = decision.hilRequest.readAsk;
+    return {
+      decision: 'ask',
+      reason: decision.reason,
+      ...(readAsk !== undefined ? { readAsk } : {}),
+    };
+  }
 
   return undefined;
 }
@@ -258,12 +288,16 @@ function patternRuleVerdict(
     protectedBranches: ctx.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
     upstream: ctx.upstreamBranch ?? (() => undefined),
     head: ctx.headBranch ?? (() => undefined),
-    // T336: only a coordinator's read-only git -C may reach a repo it can read.
-    ...(permissionRoleFor(ctx.role) === 'coordinator'
+    // T336: only a coordinator's read-only git -C may reach a repo it can read. T442: and a
+    // conversation's (a worker on a node with no repo of its own: it has no worktree to read).
+    ...(permissionRoleFor(ctx.role) === 'coordinator' ||
+    (ctx.role === 'worker' && ctx.noOwnRepo === true)
       ? {
           coordinatorReads: {
             ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
             ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
+            // T457: Trusted widens a read-only `git -C` as it widens every read.
+            ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
           },
         }
       : {}),

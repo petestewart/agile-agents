@@ -11,17 +11,34 @@
  * the like.
  */
 
-import { realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
-import type { ReposConfig, Stream } from '@agile-agents/shared';
+import { realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import {
+  DEFAULT_PERMISSION_POSTURE,
+  type PermissionPosture,
+  READ_ROOT_MAX_CHARS,
+  type ReposConfig,
+  type Stream,
+} from '@agile-agents/shared';
 import * as cmd from './command';
-import { isPathInside } from './command';
+import { isPathInside, realpathNearestExisting } from './command';
 import type { PermissionRequest, PermissionRole } from './types';
+
+/**
+ * T457: a read the Ask posture holds for the human. `root` is the dir an
+ * "Always for this project" answer adds (`alwaysReadRoot`); absent when
+ * there is none worth offering (`/`, the home dir).
+ */
+export interface ReadAsk {
+  path: string;
+  root?: string;
+}
 
 export type PolicyVerdict =
   | { action: 'allow' }
   | { action: 'deny'; reason: string }
-  | { action: 'hil'; reason: string };
+  | { action: 'hil'; reason: string; readAsk?: ReadAsk };
 
 const ALLOW: PolicyVerdict = { action: 'allow' };
 function deny(reason: string): PolicyVerdict {
@@ -48,42 +65,419 @@ export interface PolicyContext {
   readRoots?: readonly string[];
   /** T213: never readable unless inside the worktree: private repos not shared with the node, and the agile home. */
   hiddenRoots?: readonly string[];
+  /**
+   * T457: what a read outside every root gets: `trusted` allows it, `ask`
+   * holds it for the human (`hil` with a `readAsk`). Absent (the Director, a
+   * bare test context): denied, as before T457.
+   */
+  posture?: PermissionPosture;
 }
 
 /**
- * T213: the deny reason for a read of `path` (absolute, or relative to the
- * worktree), or `undefined` when it may be read. An allow-list: the own
- * worktree (or session dir), then any `readRoots` path not under a hidden root.
+ * T457: credential locations no agent reads under any posture, relative to
+ * the user's home dir (`/proc` is absolute: another process's environ holds
+ * its keys). Checked right after the node's own worktree, before any read
+ * root, so neither Trusted nor a registered repo or an "Always" root that
+ * contains one opens it. An entry ending in `*` matches every name in its
+ * dir that starts with the rest. The one list of them: add a location here.
  */
-export function readDenyReason(
-  raw: string,
-  ctx: Pick<PolicyContext, 'worktreePath' | 'readRoots' | 'hiddenRoots'>,
+export const CREDENTIAL_PATHS: readonly string[] = [
+  '.ssh',
+  '.gnupg',
+  '.password-store',
+  '.aws',
+  '.azure',
+  '.config/gcloud',
+  '.kube/config',
+  '.docker/config.json',
+  '.netrc',
+  '.git-credentials',
+  '.config/gh',
+  '.config/hub',
+  '.npmrc',
+  '.pypirc',
+  '.cargo/credentials',
+  '.cargo/credentials.toml',
+  '.terraform.d/credentials.tfrc.json',
+  'Library/Keychains',
+  // The vendor logins the adapters spawn with (the user's own, never an agent's to read).
+  '.claude/.credentials*',
+  '.claude.json',
+  '.codex/auth.json',
+  '.gemini/oauth_creds.json',
+  '.config/cursor/auth.json',
+  '.pi/agent/auth.json',
+  '/proc',
+];
+
+/**
+ * T457: a path in the two spellings the deny side compares: as written
+ * (resolved) and as its symlinks resolve, each with case and Unicode
+ * normalisation folded, since a case-insensitive disk (macOS) opens
+ * `~/.AGILE` as `~/.agile`. Only ever used to refuse, never to allow.
+ */
+function spellings(path: string): [string, string] {
+  const fold = (p: string) => p.normalize('NFC').toLowerCase();
+  return [fold(resolve(path)), fold(realpathNearestExisting(path))];
+}
+
+/** `path` is `root` or under it (both already folded). */
+function under(path: string, root: string): boolean {
+  const rel = relative(root, path);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/** T457: `path` is `root` or inside it in either spelling (`spellings`). */
+function insideEither(path: string, root: string): boolean {
+  const [pathLex, pathReal] = spellings(path);
+  const [rootLex, rootReal] = spellings(root);
+  return under(pathLex, rootLex) || under(pathReal, rootReal);
+}
+
+/** Each `CREDENTIAL_PATHS` entry as an absolute path, and the name prefix a `*` entry matches. */
+function credentialEntries(home: string): Array<{ path: string; prefix?: string }> {
+  return CREDENTIAL_PATHS.map((entry) => {
+    const abs = isAbsolute(entry) ? entry : join(home, entry);
+    return abs.endsWith('*')
+      ? { path: dirname(abs), prefix: basename(abs).slice(0, -1).toLowerCase() }
+      : { path: abs };
+  });
+}
+
+/** T457: `path` (absolute) is one of `CREDENTIAL_PATHS` or inside one, in either spelling. */
+export function isCredentialPath(path: string, home: string = homedir()): boolean {
+  const [pathLex, pathReal] = spellings(path);
+  return credentialEntries(home).some((entry) => {
+    const [rootLex, rootReal] = spellings(entry.path);
+    if (entry.prefix === undefined) return under(pathLex, rootLex) || under(pathReal, rootReal);
+    // A `*` entry: the first name under its dir starts with the prefix.
+    const first = (p: string, root: string) =>
+      under(p, root) && (relative(root, p).split(sep)[0] ?? '').startsWith(entry.prefix ?? '');
+    return first(pathLex, rootLex) || first(pathReal, rootReal);
+  });
+}
+
+/**
+ * T457: why a read that walks `dir` (a recursive grep, a pattern's fixed
+ * prefix) could reach something no read may: a hidden root (the agile home,
+ * another project's private repo) or a credential location inside it.
+ */
+function walkReachesProtected(
+  dir: string,
+  ctx: Pick<PolicyContext, 'hiddenRoots'>,
+  home: string = homedir(),
 ): string | undefined {
-  const path = resolve(ctx.worktreePath, raw);
-  if (isPathInside(path, ctx.worktreePath)) return undefined;
+  const [dirLex, dirReal] = spellings(dir);
+  const protectedRoots = [
+    ...(ctx.hiddenRoots ?? []),
+    ...credentialEntries(home).map((entry) => entry.path),
+  ];
+  const reached = protectedRoots.find((root) => {
+    const [rootLex, rootReal] = spellings(root);
+    return under(rootLex, dirLex) || under(rootReal, dirReal);
+  });
+  return reached;
+}
+
+/** Shell pattern characters: a path with one expands to paths the literal text doesn't name. */
+const PATTERN_CHARS = /[*?[\]{}]/;
+
+/**
+ * T457, T459: a glob or brace pattern whose matches can leave the dir its
+ * fixed prefix names: a `..` segment after the first pattern character, a
+ * segment like `.*` (matches `..` in older shells), or a brace group with a
+ * `.` or `/` in it (`{b,../../x}`). Its literal text resolves inside, so a
+ * lexical check alone would pass it.
+ */
+function patternClimbs(path: string): boolean {
+  const at = path.search(PATTERN_CHARS);
+  if (at < 0) return false;
+  const rest = path.slice(path.lastIndexOf('/', at) + 1);
+  const segments = rest.split('/');
+  return (
+    segments.includes('..') ||
+    segments.some((segment) => /^\.[*?[]/.test(segment)) ||
+    /\{[^}]*[./][^}]*\}/.test(rest)
+  );
+}
+
+/**
+ * T457: a read path with a glob or brace pattern expands to paths its
+ * literal text doesn't name, so the literal check alone can't hold. What it
+ * can reach is bounded by its fixed prefix (the dirs before the first
+ * pattern character), unless the pattern can climb out of it: a `..`
+ * segment after a glob (through a symlinked match the kernel climbs from
+ * the target), a segment like `.*` (matches `..` in older shells), or a
+ * brace alternative with a `.` or `/` (`{.,.}{.,.}`, `{a,../x}`). Returns
+ * the deny, or `undefined` for a plain path or a pattern whose prefix
+ * reaches nothing protected.
+ */
+function patternReadVerdict(
+  expanded: string,
+  raw: string,
+  ctx: Pick<PolicyContext, 'worktreePath' | 'hiddenRoots'>,
+): PolicyVerdict | undefined {
+  const at = expanded.search(PATTERN_CHARS);
+  if (at < 0) return undefined;
+  const cut = expanded.lastIndexOf('/', at);
+  const rest = expanded.slice(cut + 1);
+  if (patternClimbs(expanded)) {
+    return deny(`"${raw}" is a pattern that may climb out of its dir: name the path without it`);
+  }
+  const prefix =
+    cut < 0 ? ctx.worktreePath : resolve(ctx.worktreePath, expanded.slice(0, cut) || '/');
+  const reached = walkReachesProtected(prefix, ctx);
+  if (reached !== undefined) {
+    return deny(
+      `"${raw}" is a pattern over ${prefix}, which holds ${reached} (the agile home, a private repo or credentials): narrow it`,
+    );
+  }
+  // Outside the worktree, what it matches now: a match through a symlink into
+  // something protected is refused as its literal path would be.
+  if (isPathInside(prefix, ctx.worktreePath)) return undefined;
+  let count = 0;
+  try {
+    const matches = new Bun.Glob(rest).scanSync({
+      cwd: prefix,
+      absolute: true,
+      onlyFiles: false,
+      followSymlinks: true,
+    });
+    for (const match of matches) {
+      if (++count > PATTERN_MATCHES_MAX) {
+        return deny(`"${raw}" matches over ${PATTERN_MATCHES_MAX} paths: narrow it`);
+      }
+      if (isCredentialPath(match) || (ctx.hiddenRoots ?? []).some((h) => insideEither(match, h))) {
+        return deny(
+          `"${raw}" matches ${match}, in the agile home, a private repo or credentials: narrow it`,
+        );
+      }
+    }
+  } catch {
+    return deny(`"${raw}" is a pattern that could not be expanded to check: name the paths`);
+  }
+  return undefined;
+}
+
+/** T457: how many matches of a read pattern outside the worktree are checked before it is refused as too wide. */
+const PATTERN_MATCHES_MAX = 2000;
+
+/**
+ * T457: how a read tool walks what it is given: not at all, every file
+ * under it (`grep -r`, `rg`), or also through the symlinks it meets
+ * (`grep -R`, `rg -L`, `diff -r`), which no check of the named dir can see.
+ */
+function walkMode(tokens: readonly string[]): ReadOptions['walks'] {
+  const head = tokens[0];
+  const short = (letter: string) =>
+    tokens
+      .slice(1)
+      .some((t) => /^-[^-]/.test(t) && (t.slice(1).split('=')[0] ?? '').includes(letter));
+  if (head === 'grep') {
+    return tokens.includes('--dereference-recursive') || short('R') ? 'follows' : true;
+  }
+  if (head === 'rg') return tokens.includes('--follow') || short('L') ? 'follows' : true;
+  if (head === 'diff') return tokens.includes('--recursive') || short('r') ? 'follows' : true;
+  return false;
+}
+
+/**
+ * T457: `~` and `~/rest` expanded against the real home (a built-in Read
+ * may be handed one); `~user` can't be placed.
+ */
+function expandHome(raw: string): string | undefined {
+  if (raw === '~') return homedir();
+  if (raw.startsWith('~/')) return join(homedir(), raw.slice(2));
+  if (raw.startsWith('~')) return undefined;
+  return raw;
+}
+
+/**
+ * T457: `raw` walked as the kernel walks it: each existing segment
+ * `realpath`'d before a later `..` applies, so `<link>/../x` lands beside
+ * the link's target. `resolve` alone cancels the `..` against the link's
+ * own name.
+ */
+function physicalPath(raw: string, base: string): string {
+  const full = isAbsolute(raw) ? raw : `${base}/${raw}`;
+  let current = '/';
+  for (const part of full.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      current = dirname(current);
+      continue;
+    }
+    const next = join(current, part);
+    try {
+      current = realpathSync(next);
+    } catch {
+      current = next;
+    }
+  }
+  return current;
+}
+
+/**
+ * T457: the dir "Always for this project" adds for a read of `path`: the
+ * path itself when it is a directory, else its parent. Never `/`, the home
+ * dir or a dir above it: then `undefined`, and the card offers only Allow
+ * once and Deny.
+ */
+export function alwaysReadRoot(path: string, home: string = homedir()): string | undefined {
+  let dir = resolve(path);
+  try {
+    if (!statSync(dir).isDirectory()) dir = dirname(dir);
+  } catch {
+    dir = dirname(dir);
+  }
+  return readRootRefusal(dir, home) === undefined ? dir : undefined;
+}
+
+/** T457: why `root` can't be a project's read root (`/`, the home dir or above it), or `undefined`. */
+export function readRootRefusal(root: string, home: string = homedir()): string | undefined {
+  if (!isAbsolute(root) || resolve(root) === '/') return `${root}: a read root is a dir below /`;
+  if (root.length > READ_ROOT_MAX_CHARS) return `${root}: too long for a read root`;
+  if (isPathInside(resolve(home), root)) {
+    return `${root}: the home dir or a dir above it is too wide for a read root (use Trusted)`;
+  }
+  return undefined;
+}
+
+type ReadScopeContext = Pick<
+  PolicyContext,
+  'worktreePath' | 'readRoots' | 'hiddenRoots' | 'posture'
+>;
+
+/** One resolved path's verdict (`readVerdict` runs it on the lexical and the physical path). */
+function readVerdictAt(path: string, raw: string, ctx: ReadScopeContext): PolicyVerdict {
+  if (isPathInside(path, ctx.worktreePath)) return ALLOW;
+  if (isCredentialPath(path)) {
+    return deny(`${raw} holds credentials: no agent reads it, whatever the permission setting`);
+  }
   // The deepest root wins (as P13's visibility check): a readable repo nested
   // inside a hidden one stays readable.
   const readable = (ctx.readRoots ?? []).filter((root) => isPathInside(path, root));
-  const hidden = (ctx.hiddenRoots ?? []).filter((root) => isPathInside(path, root));
+  const hidden = (ctx.hiddenRoots ?? []).filter((root) => insideEither(path, root));
   if (hidden.some((h) => !readable.some((r) => r !== h && isPathInside(r, h)))) {
-    return `${raw} is in the agile home or a private repo this node's project cannot read`;
+    return deny(`${raw} is in the agile home or a private repo this node's project cannot read`);
   }
-  if (readable.length > 0) return undefined;
-  return `${raw} is outside the worktree and every repo this node can read`;
+  if (readable.length > 0) return ALLOW;
+  if (ctx.posture === 'trusted') return ALLOW;
+  if (ctx.posture === 'ask') {
+    const root = alwaysReadRoot(path);
+    return {
+      action: 'hil',
+      reason: `${raw} is outside every repo this node can read, and reads elsewhere ask the human first (permissions: Ask)`,
+      readAsk: { path, ...(root !== undefined ? { root } : {}) },
+    };
+  }
+  return deny(`${raw} is outside the worktree and every repo this node can read`);
+}
+
+/** Deny beats hil beats allow. */
+function stricter(a: PolicyVerdict, b: PolicyVerdict): PolicyVerdict {
+  const rank = (v: PolicyVerdict) => (v.action === 'deny' ? 2 : v.action === 'hil' ? 1 : 0);
+  return rank(b) > rank(a) ? b : a;
 }
 
 /**
- * T213, T330 (projects-design §4.4, P20): a node's read scope, for the hook
- * and the ACP responder alike. Any registered repo is readable except a
- * private one its project isn't listed on; the agile home never is (the
- * session's own dir, its cwd, is allowed before any root is checked). An
- * unreadable registry reads nothing beyond the cwd.
+ * T213, T457: the verdict on a read of `raw` (absolute, relative to the
+ * worktree, or `~`-rooted). An allow-list: the own worktree (or session
+ * dir); never a credential location; never under a hidden root (the agile
+ * home, other projects' private repos); then any read root; then the
+ * posture: Trusted allows, Ask holds it for the human, none denies. A path
+ * with a `..` must pass both as written and as the kernel walks it.
+ */
+export function readVerdict(
+  raw: string,
+  ctx: ReadScopeContext,
+  options: ReadOptions = {},
+): PolicyVerdict {
+  const expanded = expandHome(raw);
+  if (expanded === undefined) return deny(`cannot resolve the path "${raw}"`);
+  const pattern = patternReadVerdict(expanded, raw, ctx);
+  if (pattern !== undefined) return pattern;
+  const climbs = expanded.split('/').includes('..');
+  const targets = [
+    resolve(ctx.worktreePath, expanded),
+    ...(climbs ? [physicalPath(expanded, ctx.worktreePath)] : []),
+  ];
+  if (options.walks !== undefined && options.walks !== false) {
+    for (const target of targets) {
+      if (options.walks === 'follows' && !isPathInside(target, ctx.worktreePath)) {
+        return deny(
+          `${raw}: a recursive read that follows symlinks (grep -R, rg -L, diff -r) can't be checked outside the worktree; drop that flag or search inside the worktree`,
+        );
+      }
+      const reached = walkReachesProtected(target, ctx);
+      if (reached !== undefined) {
+        return deny(
+          `a recursive read of ${raw} would reach ${reached} (the agile home, a private repo or credentials): search a narrower dir`,
+        );
+      }
+    }
+  }
+  return targets.map((target) => readVerdictAt(target, raw, ctx)).reduce((a, b) => stricter(a, b));
+}
+
+/** T457: how a read goes. */
+export interface ReadOptions {
+  /**
+   * It reads every file under the path (`grep -r`, `rg`, the Grep tool):
+   * nothing protected may be under it. `follows`: through symlinks too
+   * (`walkMode`), so only inside the worktree.
+   */
+  walks?: boolean | 'follows';
+}
+
+/** T213: why a read of `raw` is refused (a held Ask read included), or `undefined` when it may be read. */
+export function readDenyReason(raw: string, ctx: ReadScopeContext): string | undefined {
+  const verdict = readVerdict(raw, ctx);
+  return verdict.action === 'allow' ? undefined : verdict.reason;
+}
+
+/** T457: every path's verdict at once: any deny wins, then the first held read, else allow. */
+export function readPathsVerdict(
+  paths: readonly string[],
+  ctx: ReadScopeContext,
+  options: ReadOptions = {},
+): PolicyVerdict {
+  let held: PolicyVerdict | undefined;
+  for (const path of paths) {
+    const verdict = readVerdict(path, ctx, options);
+    if (verdict.action === 'deny') return verdict;
+    if (verdict.action === 'hil') held ??= verdict;
+  }
+  return held ?? ALLOW;
+}
+
+/** T457: a read the Ask posture holds; the rest of the command is still checked before it is asked. */
+function isHeldRead(verdict: PolicyVerdict): boolean {
+  return verdict.action === 'hil' && verdict.readAsk !== undefined;
+}
+
+/** T457: a project's read settings, as `nodeReadScope` needs them. */
+export interface ProjectReadSettings {
+  posture?: PermissionPosture;
+  /** The project's "Always" roots. */
+  readRoots?: readonly string[];
+}
+
+/**
+ * T213, T330 (projects-design §4.4, P20), T457: a node's read scope, for
+ * the hook and the ACP responder alike. Any registered repo is readable
+ * except a private one its project isn't listed on; the agile home never is
+ * (the session's own dir, its cwd, is allowed before any root is checked).
+ * The project's "Always" roots are read roots too, unless one lies inside a
+ * hidden root. The posture is the node's own (T463), else the project's,
+ * else the home's, else Ask (`settings`). An unreadable registry reads nothing beyond the cwd.
  */
 export function nodeReadScope(
-  node: Pick<Stream, 'repo' | 'project'> | undefined,
+  node: Pick<Stream, 'repo' | 'project' | 'permissions'> | undefined,
   readRepos: () => ReposConfig,
   agileHome: string | undefined,
-): { readRoots: string[]; hiddenRoots: string[] } {
+  settings?: (project: string | undefined) => ProjectReadSettings,
+): { readRoots: string[]; hiddenRoots: string[]; posture: PermissionPosture } {
   const readRoots: string[] = [];
   const hiddenRoots: string[] = [];
   let repos: ReposConfig = {};
@@ -104,7 +498,22 @@ export function nodeReadScope(
   }
   // The home holds the classifier key and every node's state: never a read target.
   if (agileHome !== undefined) hiddenRoots.push(agileHome);
-  return { readRoots, hiddenRoots };
+  let project: ProjectReadSettings = {};
+  try {
+    project = settings?.(node?.project) ?? {};
+  } catch {
+    // Unreadable settings: Ask, and no extra roots.
+  }
+  for (const root of project.readRoots ?? []) {
+    // An "Always" root inside a hidden one would open it (the nested-repo exception): never.
+    if (!hiddenRoots.some((hidden) => isPathInside(root, hidden))) readRoots.push(root);
+  }
+  // T463: the node's own posture, over its project's and the home's.
+  return {
+    readRoots,
+    hiddenRoots,
+    posture: node?.permissions ?? project.posture ?? DEFAULT_PERMISSION_POSTURE,
+  };
 }
 
 // Never-without-human (§14 "Never without a human"). Checked before any
@@ -314,7 +723,11 @@ function verifyBenignPaths(
   ctx: PolicyContext,
   reads = false,
   cwds: Cwds = [ctx.worktreePath],
+  /** T457: the tool reads every file under each path (`walkMode`). */
+  walks: ReadOptions['walks'] = false,
 ): PolicyVerdict {
+  // T457: a held Ask read waits until every other path has had its say (a deny wins).
+  let held: PolicyVerdict | undefined;
   for (const raw of paths) {
     const resolved = cmd.resolveTargetPath(raw);
     if (!resolved.safe) {
@@ -325,8 +738,12 @@ function verifyBenignPaths(
     for (const cwd of cwds) {
       const path = fromCwd(resolved.path, cwd, ctx);
       if (reads) {
-        const reason = readDenyReason(path, ctx);
-        if (reason !== undefined) return deny(reason);
+        const verdict = readVerdict(path, ctx, { walks });
+        if (verdict.action === 'deny') return verdict;
+        if (verdict.action === 'hil') held ??= verdict;
+      } else if (patternClimbs(resolved.path)) {
+        // T459: `touch a/{b,../../x}` reads as inside the worktree but writes outside it.
+        return deny(`"${raw}" is a pattern that may write outside the worktree: name each path`);
       } else if (!isPathInside(path, ctx.worktreePath)) {
         return deny(`${raw} is outside the worktree`);
       } else {
@@ -335,7 +752,7 @@ function verifyBenignPaths(
       }
     }
   }
-  return ALLOW;
+  return held ?? ALLOW;
 }
 
 /** The benign-command verdict for one atom, or `undefined` if it is none of these shapes (the caller denies). */
@@ -393,6 +810,7 @@ function engineerBenignCommandVerdict(
       ctx,
       true,
       cwds,
+      walkMode(tokens),
     );
   }
 
@@ -408,6 +826,7 @@ function engineerBenignCommandVerdict(
       ctx,
       ENGINEER_READ_ONLY_PATH_TOOLS.has(head),
       cwds,
+      walkMode(tokens),
     );
   }
 
@@ -537,9 +956,21 @@ function engineerCd(
 
 function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
   const cd = (tokens: string[], cwd: string) => engineerCd(tokens, ctx, cwd);
+  // T457: a held Ask read is asked only once every atom after it has passed.
+  let held: PolicyVerdict | undefined;
   for (const step of walkCwds(command, ctx.worktreePath, cd)) {
     if ('action' in step) return step;
     const { atom, cwds } = step;
+    // T459: `… | xargs cat` runs on paths no check here can see.
+    if (cmd.runsUnderXargs(atom)) {
+      return hil(
+        'xargs runs a command on paths known only when it runs: pass the paths directly (or use grep -r / find), or ask the human',
+      );
+    }
+    // T459: an input redirect's file is read like an argument (`cat <f`, `tr a b < f`).
+    const inputs = verifyBenignPaths(cmd.inputRedirectTargets(atom.tokens), ctx, true, cwds);
+    if (isHeldRead(inputs)) held ??= inputs;
+    else if (inputs.action !== 'allow') return inputs;
     if (cmd.hasRedirectionOrTee(atom.tokens)) {
       // Every non-benign redirection target (`>`, `1>`, `2>`, `&>`, a second
       // `>`, ...) must resolve inside the worktree. `tee`, an unresolvable
@@ -605,11 +1036,15 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
     const benign = engineerBenignCommandVerdict(atom, ctx, cwds);
     if (benign !== undefined) {
       if (benign.action === 'allow') continue;
+      if (isHeldRead(benign)) {
+        held ??= benign;
+        continue;
+      }
       return benign;
     }
     return deny(`${atom.tokens[0] ?? command} is not an allowed command for the engineer role`);
   }
-  return ALLOW;
+  return held ?? ALLOW;
 }
 
 function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): PolicyVerdict {
@@ -618,11 +1053,7 @@ function engineerVerdict(classified: PermissionRequest, ctx: PolicyContext): Pol
       // Reads are never gated by ACP (spike-findings §A), but answer
       // consistently: under a read scope (T330), as the hook's Read would.
       if (!hasReadScope(ctx)) return ALLOW;
-      for (const path of allTargetPaths(classified)) {
-        const reason = readDenyReason(path, ctx);
-        if (reason !== undefined) return deny(reason);
-      }
-      return ALLOW;
+      return readPathsVerdict(allTargetPaths(classified), ctx);
     }
     case 'edit': {
       // Every path must resolve inside the worktree, not just the first.
@@ -709,13 +1140,23 @@ function readsGitOrderFile(tokens: string[]): boolean {
   return tokens.some((t) => t.startsWith('-O'));
 }
 
-function reviewerExecuteVerdict(command: string): PolicyVerdict {
+function reviewerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
+  // T457: a held Ask read is asked only once the whole command has passed.
+  let held: PolicyVerdict | undefined;
   for (const atom of cmd.parseCommandIntoAtoms(command)) {
+    if (cmd.runsUnderXargs(atom)) {
+      return deny('reviewer role denies xargs: it runs a command on paths no check can see');
+    }
     // Benign redirects write nothing (`git diff 2>/dev/null` is a read);
     // any other redirection or tee is a write primitive.
     if (cmd.hasWritingRedirectionOrTee(atom.tokens)) {
       return deny('reviewer role denies exec with redirection/tee — those are write primitives');
     }
+    // T457: its reads keep to the read scope, as a coordinator's do (the
+    // agile home and credentials were one `cat` away before).
+    const reads = scopedReads(atom.tokens, ctx);
+    if (isHeldRead(reads)) held ??= reads;
+    else if (reads.action !== 'allow') return reads;
     // T343: git by T336's strict allowlist (no -c/--config-env, `GIT_*=` prefix,
     // pager, ext-diff, textconv, output), and no `-O<orderfile>`.
     if (cmd.isReadOnlyGitAtom(atom) && !readsGitOrderFile(atom.tokens)) continue;
@@ -724,21 +1165,21 @@ function reviewerExecuteVerdict(command: string): PolicyVerdict {
       'reviewer role denies all exec except read-only tools (git diff/log/show, grep, …)',
     );
   }
-  return ALLOW;
+  return held ?? ALLOW;
 }
 
-function reviewerVerdict(classified: PermissionRequest): PolicyVerdict {
+function reviewerVerdict(classified: PermissionRequest, ctx: PolicyContext): PolicyVerdict {
   switch (classified.toolClass) {
     case 'read':
-      // Read-only tools (§14).
-      return ALLOW;
+      // Read-only tools (§14), within the read scope when there is one (T457).
+      return hasReadScope(ctx) ? readPathsVerdict(allTargetPaths(classified), ctx) : ALLOW;
     case 'edit':
       return deny('reviewer role denies all writes — use read-only tools');
     case 'execute':
       if (classified.command === undefined) {
         return deny('reviewer role denies exec with no command to classify');
       }
-      return reviewerExecuteVerdict(classified.command);
+      return reviewerExecuteVerdict(classified.command, ctx);
     case 'fetch':
       return deny('reviewer role has no network access');
     default:
@@ -781,7 +1222,7 @@ function hasReadScope(ctx: PolicyContext): boolean {
 
 /**
  * T305 (P20): under a read scope, every path-like argument of a coordinator's
- * command must be readable (`readDenyReason`); an unresolvable one denies.
+ * command must be readable (`readVerdict`); an unresolvable one denies.
  */
 /**
  * T336 (review B4): the paths one argument may name. A flag carries its
@@ -801,21 +1242,27 @@ function pathCandidates(token: string): string[] {
   return start === -1 ? [token.slice(2)] : [token.slice(2), token.slice(start + 1)];
 }
 
-function coordinatorScopedReads(
+function scopedReads(
   tokens: string[],
   ctx: PolicyContext,
   cwd: string = ctx.worktreePath,
 ): PolicyVerdict {
   if (!hasReadScope(ctx)) return ALLOW;
+  const paths: string[] = [];
+  // T459: an input redirect's file (`cat <f`), whatever its spelling.
+  for (const raw of cmd.inputRedirectTargets(tokens)) {
+    const resolved = cmd.resolveTargetPath(raw);
+    if (!resolved.safe) return deny(`coordinator role cannot resolve the path "${raw}"`);
+    paths.push(resolve(cwd, resolved.path));
+  }
   for (const raw of tokens.slice(1).flatMap(pathCandidates)) {
     if (!(raw.includes('/') || raw.startsWith('.') || raw.startsWith('~'))) continue;
     const resolved = cmd.resolveTargetPath(raw);
     if (!resolved.safe) return deny(`coordinator role cannot resolve the path "${raw}"`);
     // T336: relative to where a `cd` left the command.
-    const reason = readDenyReason(resolve(cwd, resolved.path), ctx);
-    if (reason !== undefined) return deny(reason);
+    paths.push(resolve(cwd, resolved.path));
   }
-  return ALLOW;
+  return readPathsVerdict(paths, ctx, { walks: walkMode(tokens) });
 }
 
 /**
@@ -827,12 +1274,15 @@ function coordinatorCd(
   tokens: string[],
   ctx: PolicyContext,
   cwd: string,
+  hold: (verdict: PolicyVerdict) => void,
 ): { dir: string } | PolicyVerdict {
   const moved = cdTarget(tokens, cwd, 'coordinator');
   if ('action' in moved) return moved;
   if (hasReadScope(ctx)) {
-    const reason = readDenyReason(moved.dir, ctx);
-    if (reason !== undefined) return deny(reason);
+    const verdict = readVerdict(moved.dir, ctx);
+    // T457: a held Ask read keeps walking, so the atoms after the cd are still checked.
+    if (verdict.action === 'hil' && isHeldRead(verdict)) hold(verdict);
+    else if (verdict.action !== 'allow') return verdict;
   }
   return moved;
 }
@@ -841,15 +1291,24 @@ function coordinatorCd(
 const COORDINATOR_WRITE_TOOLS = new Set(['echo', 'printf']);
 
 function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerdict {
-  const cd = (tokens: string[], cwd: string) => coordinatorCd(tokens, ctx, cwd);
+  // T457: a held Ask read is asked only once the whole command has passed.
+  let held: PolicyVerdict | undefined;
+  const hold = (verdict: PolicyVerdict) => {
+    held ??= verdict;
+  };
+  const cd = (tokens: string[], cwd: string) => coordinatorCd(tokens, ctx, cwd, hold);
   for (const step of walkCwds(command, ctx.worktreePath, cd)) {
     if ('action' in step) return step;
     const { atom, cwds } = step;
+    if (cmd.runsUnderXargs(atom)) {
+      return deny('coordinator role denies xargs: it runs a command on paths no check can see');
+    }
     for (const cwd of cwds) {
       const redirect = coordinatorRedirectVerdict(atom.tokens, ctx, cwd);
       if (redirect.action !== 'allow') return redirect;
-      const reads = coordinatorScopedReads(atom.tokens, ctx, cwd);
-      if (reads.action !== 'allow') return reads;
+      const reads = scopedReads(atom.tokens, ctx, cwd);
+      if (isHeldRead(reads)) hold(reads);
+      else if (reads.action !== 'allow') return reads;
     }
     // T336: git by the strict allowlist (no -c/--config-env, pager, ext-diff, ...).
     if (cmd.isReadOnlyGitAtom(atom)) continue;
@@ -859,7 +1318,7 @@ function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyV
       'coordinator role denies exec except read-only tools and writes into its session dir',
     );
   }
-  return ALLOW;
+  return held ?? ALLOW;
 }
 
 /** P20 (T280): reads as visibility allows, writes only inside the session dir, no network. */
@@ -867,11 +1326,7 @@ function coordinatorVerdict(classified: PermissionRequest, ctx: PolicyContext): 
   switch (classified.toolClass) {
     case 'read': {
       if (!hasReadScope(ctx)) return ALLOW;
-      for (const path of allTargetPaths(classified)) {
-        const reason = readDenyReason(path, ctx);
-        if (reason !== undefined) return deny(reason);
-      }
-      return ALLOW;
+      return readPathsVerdict(allTargetPaths(classified), ctx);
     }
     case 'edit': {
       const paths = allTargetPaths(classified);
@@ -906,7 +1361,7 @@ export function roleVerdict(
     case 'engineer':
       return engineerVerdict(classified, ctx);
     case 'reviewer':
-      return reviewerVerdict(classified);
+      return reviewerVerdict(classified, ctx);
     case 'coordinator':
       return coordinatorVerdict(classified, ctx);
   }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   DEFAULT_PROTECTED_BRANCHES,
+  RepoCloneInputSchema,
   resolveDelivery,
   validateRepoEntry,
   validateReposConfig,
@@ -141,5 +142,17 @@ describe('resolveDelivery (T222, §14.8): repo, then project, then node', () => 
     });
     expect(entry.github).toEqual({ owner: 'o', repo: 'r' });
     expect(() => validateRepoEntry({ path: '/r', github: { owner: 'o' } })).toThrow();
+  });
+});
+
+describe('RepoCloneInput (T362)', () => {
+  test('url is required and trimmed; dest and name are optional; unknown keys are refused', () => {
+    expect(RepoCloneInputSchema.parse({ url: ' acme/shop ' })).toEqual({ url: 'acme/shop' });
+    expect(
+      RepoCloneInputSchema.parse({ url: 'git@github.com:a/b.git', dest: '~/x', name: 'b' }),
+    ).toEqual({ url: 'git@github.com:a/b.git', dest: '~/x', name: 'b' });
+    expect(RepoCloneInputSchema.safeParse({}).success).toBe(false);
+    expect(RepoCloneInputSchema.safeParse({ url: '  ' }).success).toBe(false);
+    expect(RepoCloneInputSchema.safeParse({ url: 'a/b', path: '/x' }).success).toBe(false);
   });
 });

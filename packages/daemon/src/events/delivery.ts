@@ -13,7 +13,7 @@
  * prompt after restart (at-least-once), never an event within one digest.
  */
 
-import { type RoutedEvent, ulid } from '@agile-agents/shared';
+import { QUIET_EVENT_TYPES, type RoutedEvent, ulid } from '@agile-agents/shared';
 import { summarize } from './producers';
 import type { RoutedEventService } from './service';
 
@@ -24,6 +24,18 @@ export interface DeliveryTarget {
   busy(): boolean;
   /** Queues a turn; `onDelivered` fires when it actually starts (the session accepted it). */
   prompt(text: string, opts: { onDelivered: () => void }): Promise<unknown>;
+  /**
+   * T461: whether a line runs as one of the vendor's slash commands
+   * (`/compact`): it is sent alone and as written, never inside a digest.
+   */
+  isCommand?(line: string): boolean;
+}
+
+/** T461: a human line that runs as a slash command on `target`. */
+function commandLine(target: DeliveryTarget, event: RoutedEvent): string | undefined {
+  if (event.type !== 'human_line' || target.isCommand === undefined) return undefined;
+  const body = String((event.payload as Record<string, unknown>).body ?? '').trim();
+  return target.isCommand(body) ? body : undefined;
 }
 
 export interface SessionDeliveryOptions {
@@ -38,6 +50,12 @@ export interface SessionDeliveryOptions {
   wake?(node: string, pending: readonly RoutedEvent[]): void;
   /** Names nodes in the summaries (T244); ids otherwise. */
   titleOf?(id: string): string | undefined;
+  /**
+   * T461: a human line's whole body from the thread, by its `ts` (the
+   * event's `ref`). The event's payload caps it at 800 characters and the
+   * composer takes 4,000, so the agent is told the thread's copy.
+   */
+  lineBody?(node: string, ts: string): string | undefined;
 }
 
 /** A digest lists at most this many summaries, newest last, plus "N earlier". */
@@ -45,7 +63,106 @@ export const DIGEST_MAX = 10;
 
 /** T174: what a human line tells the worker, after the line itself. */
 export const REPLY_FIRST =
-  'Reply to the operator on the stream first, with `progress`: if it is a question, answer it directly; if it is an instruction, acknowledge it and follow it. Then continue the work.';
+  'Reply to the operator on the stream first by calling the `progress` tool (what you pass is what they read; do not write the word "progress" into your message): if it is a question, answer it directly; if it is an instruction, acknowledge it and follow it. Then continue the work.';
+
+/**
+ * T502 (D62, design/chat-threads.md §5): what a reply in a question's thread
+ * tells the agent, after the line: settle the question if the reply decided
+ * it, else answer or ask again. `ids` are the questions the replies are about.
+ */
+export function settleHint(ids: readonly string[]): string {
+  const which = ids.length === 1 ? `question ${ids[0]}` : `the question (${ids.join(', ')})`;
+  return `That is a reply about your open question, not a pick: it stays open until you close it. Only if the operator's own words decide it, call \`settle_question\` with ${which} and what they decided. If it asks about the options or doesn't decide them, it is no answer: reply with \`progress\`, or \`ask\` again with better choices, and leave the question open.`;
+}
+
+/** T502: the question a human line is a reply about, when it is one. */
+function replyQuestionOf(event: RoutedEvent): { id: string; text: string } | undefined {
+  if (event.type !== 'human_line') return undefined;
+  const q = (event.payload as Record<string, unknown>).question;
+  if (typeof q !== 'object' || q === null) return undefined;
+  const { id, text } = q as Record<string, unknown>;
+  return typeof id === 'string' && typeof text === 'string' ? { id, text } : undefined;
+}
+
+/** T503: the chat thread a human line is a reply in, when it is one. */
+export interface LineThread {
+  id: string;
+  /** The turn the thread is on (its `ts`), and who wrote it. */
+  on: string;
+  of: 'agent' | 'human' | 'other';
+  quote?: string;
+}
+
+/** T503: the chat thread a human line is in (its payload's `thread`), when it is in one. */
+export function lineThreadOf(event: RoutedEvent): LineThread | undefined {
+  if (event.type !== 'human_line') return undefined;
+  const t = (event.payload as Record<string, unknown>).thread;
+  if (typeof t !== 'object' || t === null) return undefined;
+  const { id, on, of, quote } = t as Record<string, unknown>;
+  if (typeof id !== 'string' || typeof on !== 'string') return undefined;
+  return {
+    id,
+    on,
+    of: of === 'agent' || of === 'human' ? of : 'other',
+    ...(typeof quote === 'string' ? { quote } : {}),
+  };
+}
+
+/** T503: `10:02 UTC`, the time of the turn a thread is on (as the agent's own clock reads it). */
+function clockOf(ts: string): string {
+  const at = new Date(ts);
+  return Number.isNaN(at.getTime()) ? ts : `${at.toISOString().slice(11, 16)} UTC`;
+}
+
+/**
+ * T503 (D60, design/chat-threads.md §3a, §4.2): what a reply in a chat
+ * thread tells the agent: the turn it is on, the thread's id (to answer in
+ * it with `progress`'s `thread`) and the passage, quoted as data.
+ */
+export function threadLineText(thread: LineThread, body: string): string {
+  const whose =
+    thread.of === 'agent'
+      ? 'your message'
+      : thread.of === 'human'
+        ? 'the operator’s message'
+        : 'the message';
+  const passage =
+    thread.quote !== undefined ? `, about the passage ${JSON.stringify(thread.quote)}` : '';
+  return `In a thread on ${whose} of ${clockOf(thread.on)} (thread ${thread.id})${passage}: ${body}`;
+}
+
+/**
+ * T503 (§4.1, §4.2): a digest with lines from more than one thread (or the
+ * main chat and a thread) posts in the main chat unless the agent says
+ * where: the hint tells it how.
+ */
+export const BATCHED_THREADS_HINT =
+  'These lines come from different threads of the chat. Answer each where it was asked: pass its thread id to `progress` (or `ask`) as `thread`; a line from the main chat needs none.';
+
+/** T503: the threads (and the main chat, as `''`) a digest's human lines come from. */
+function threadsOfDigest(events: readonly RoutedEvent[]): Set<string> {
+  return new Set(
+    events.filter((e) => e.type === 'human_line').map((e) => lineThreadOf(e)?.id ?? ''),
+  );
+}
+
+/** What a digest (or a wake) ends with: the reply-first rule, and T502's settle hint. */
+function digestTail(events: readonly RoutedEvent[]): string {
+  if (!events.some((e) => e.type === 'human_line')) return 'Continue the work.';
+  const asked = [
+    ...new Set(
+      events.flatMap((e) => {
+        const about = replyQuestionOf(e);
+        return about !== undefined ? [about.id] : [];
+      }),
+    ),
+  ];
+  // T503: lines from several threads: say where each answer goes.
+  const threads = threadsOfDigest(events);
+  const batched = threads.size > 1 && [...threads].some((t) => t !== '');
+  const reply = batched ? `${BATCHED_THREADS_HINT}\n\n${REPLY_FIRST}` : REPLY_FIRST;
+  return asked.length > 0 ? `${settleHint(asked)}\n\n${reply}` : reply;
+}
 
 /** The one-line summary a recipient is told (§15). */
 export function summaryOf(
@@ -55,8 +172,16 @@ export function summaryOf(
 ): string {
   const p = event.payload as Record<string, unknown>;
   switch (event.type) {
-    case 'human_line':
-      return `The operator wrote on the stream: ${String(p.body)}`;
+    case 'human_line': {
+      // T502: a reply in a question's thread says what it is about (the question as data).
+      const about = replyQuestionOf(event);
+      if (about !== undefined) return `About your question "${about.text}": ${String(p.body)}`;
+      // T503: a reply in a chat thread says which, and what it is on.
+      const thread = lineThreadOf(event);
+      return thread !== undefined
+        ? threadLineText(thread, String(p.body))
+        : `The operator wrote on the stream: ${String(p.body)}`;
+    }
     case 'answer':
       return `Your question "${String(p.question)}" was answered: ${String(p.answer)}`;
     default:
@@ -71,7 +196,7 @@ export function digestPrompt(
   node?: string,
   titleOf?: (id: string) => string | undefined,
 ): string {
-  const tail = events.some((e) => e.type === 'human_line') ? REPLY_FIRST : 'Continue the work.';
+  const tail = digestTail(events);
   const line = (e: RoutedEvent) => summaryOf(e, node ?? e.subject ?? '', titleOf);
   if (events.length === 1) return `${line(events[0] as RoutedEvent)}\n\n${tail}`;
   const shown = events.slice(-DIGEST_MAX);
@@ -95,7 +220,7 @@ export function wakePrompt(
   node: string,
   titleOf?: (id: string) => string | undefined,
 ): string {
-  const tail = events.some((e) => e.type === 'human_line') ? REPLY_FIRST : 'Continue the work.';
+  const tail = digestTail(events);
   const shown = events.slice(-DIGEST_MAX);
   const earlier = events.length - shown.length;
   return [
@@ -114,6 +239,8 @@ export function wakePrompt(
 export interface WakeDelivery {
   /** The section appended to the brief (`wakePrompt`). */
   text: string;
+  /** T465 (D48): the same events as a live session's digest, for a resumed session (no brief). */
+  digest: string;
   /** The brief was accepted: the events are `delivered` to `sessionId`. */
   delivered(sessionId: string): void;
   /** The session ended (or never started): unclaimed events go with the next digest or wake. */
@@ -165,6 +292,17 @@ export class SessionDelivery {
     };
   }
 
+  /** T461: `events` with each human line's body as the thread has it, uncapped. */
+  private withFullLines(node: string, events: readonly RoutedEvent[]): RoutedEvent[] {
+    const lineBody = this.options.lineBody;
+    if (lineBody === undefined) return [...events];
+    return events.map((e) => {
+      if (e.type !== 'human_line' || e.ref === undefined) return e;
+      const body = lineBody(node, e.ref);
+      return body === undefined ? e : { ...e, payload: { ...e.payload, body } };
+    });
+  }
+
   private unsent(node: string): RoutedEvent[] {
     const sending = this.sending.get(node);
     return this.options.events
@@ -200,8 +338,10 @@ export class SessionDelivery {
       // Anything that arrived meanwhile (or went unmarked) goes now.
       if (this.waiting(node)) this.notify(node);
     };
+    const full = this.withFullLines(node, events);
     return {
-      text: wakePrompt(events, node, this.options.titleOf),
+      text: wakePrompt(full, node, this.options.titleOf),
+      digest: digestPrompt(full, node, this.options.titleOf),
       delivered: (sessionId) => {
         const events_ = this.options.events;
         const still = new Set(events_.pendingFor(node).map((p) => p.event.id));
@@ -270,8 +410,20 @@ export class SessionDelivery {
       events = this.unsent(node);
     }
     if (events.length === 0) return false;
+    // T504 (D65): quiet ones (an archive notice) never make a turn of their own.
+    if (events.every((e) => QUIET_EVENT_TYPES.has(e.type))) return false;
     // Re-checked after the await: a turn may have been queued meanwhile.
     if (busy(target) || this.options.target(node)?.sessionId !== target.sessionId) return false;
+    events = this.withFullLines(node, events);
+    // T461: a slash command is its own turn, as typed: what came before it
+    // goes first as a digest, what came after waits for the next turn end.
+    const command = commandLine(target, events[0] as RoutedEvent);
+    if (command !== undefined) {
+      events = events.slice(0, 1);
+    } else {
+      const at = events.findIndex((e) => commandLine(target, e) !== undefined);
+      if (at > 0) events = events.slice(0, at);
+    }
     const ids = events.map((e) => e.id);
     let sending = this.sending.get(node);
     if (sending === undefined) {
@@ -285,7 +437,7 @@ export class SessionDelivery {
     const digest = `D-${ulid()}`;
     // The prompt is reserved in the runner synchronously, before any await.
     void target
-      .prompt(digestPrompt(events, node, this.options.titleOf), {
+      .prompt(command ?? digestPrompt(events, node, this.options.titleOf), {
         onDelivered: () => {
           const events_ = this.options.events;
           // Only still-pending ones move (one may have been superseded meanwhile).

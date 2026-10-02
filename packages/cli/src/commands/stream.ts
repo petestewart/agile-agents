@@ -133,7 +133,7 @@ export function flattenTree(nodes: StreamNode[]): Stream[] {
 
 /** T201: the derived role (P1), from every stream the daemon knows (archived included). */
 export function roleIn(stream: Stream, all: readonly Stream[]): NodeRole {
-  return nodeRole(stream, liveChildrenOf(stream.id, all));
+  return nodeRole(stream, liveChildrenOf(stream.id, all), all);
 }
 
 async function allStreams(socketPath: string): Promise<Stream[]> {
@@ -209,7 +209,7 @@ export function showFields(stream: Stream, role?: NodeRole): Array<[string, stri
   const fields: Array<[string, string]> = [
     ['id', stream.id],
     ['title', stream.title],
-    ['goal', stream.goal],
+    ['goal', stream.goal ?? '-'],
     ['status', statusPair(stream)],
     ...(role !== undefined ? ([['role', role]] as Array<[string, string]>) : []),
     ...(stream.project !== undefined
@@ -340,9 +340,32 @@ export async function runStreamSay(
     kind: 'line',
     body: text,
   });
-  if (json) printJson(entry);
-  else console.log(`agile stream say: appended to ${id}`);
+  if (json) {
+    printJson(entry);
+    return 0;
+  }
+  console.log(`agile stream say: appended to ${id}`);
+  // T513: a line never reaches a reviewer; after one, say where it went.
+  const note = sayNote(
+    await callRpc<Stream>(socketPath, 'stream.get', { id }).catch(() => undefined),
+  );
+  if (note !== undefined) console.log(note);
   return 0;
+}
+
+/**
+ * T513: what `say` adds when the node's newest session is a reviewer. A
+ * line goes to the node's own agent (its worker or coordinator), never a
+ * reviewer, and a review is one turn: the daemon ends its session when its
+ * turn finishes (design/cockpit-design.md §2, D48). Undefined otherwise.
+ */
+export function sayNote(stream: Pick<Stream, 'id' | 'sessions'> | undefined): string | undefined {
+  const last = stream?.sessions.at(-1);
+  if (stream === undefined || last?.role !== 'reviewer') return undefined;
+  const live = last.status === 'starting' || last.status === 'running' || last.status === 'idle';
+  return live
+    ? `note: its reviewer takes no messages; this line is for the node's agent, not the reviewer`
+    : `note: its reviewer finished (a review is one turn); this line is for the node's agent, not the reviewer. For another review: agile review ${stream.id}`;
 }
 
 /**
@@ -406,6 +429,21 @@ export async function runStreamWait(
   console.log(
     `agile node wait: ${id} waits on ${open.length > 0 ? open.map((w) => w.node).join(', ') : 'nothing'}`,
   );
+  return 0;
+}
+
+/** T333 (D34): `node move <id> --parent <id|P-id>`; a project id moves it to the project's root. */
+export async function runStreamMove(
+  socketPath: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> {
+  const id = requirePositional(args, 0, 'node-id');
+  const parent = optionalString(args.options, 'parent');
+  if (parent === undefined) throw new Error('agile node move: --parent <node-id|P-id> is required');
+  const node = await callRpc<Stream>(socketPath, 'node.move', { id, parent });
+  if (json) printJson(node);
+  else console.log(`agile node move: ${id} is now under ${node.parent ?? '-'}`);
   return 0;
 }
 

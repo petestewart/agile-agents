@@ -459,6 +459,22 @@ describe('findSearchRoots / grepPathArgs / benignPathArgs', () => {
     expect(grepPathArgs(['grep', 'FAIL'])).toEqual([]);
   });
 
+  test('T457: a pattern from a flag (or none, rg --files) leaves every positional a path', () => {
+    expect(grepPathArgs(['grep', '-rekey', '/secret'])).toEqual(['/secret']);
+    expect(grepPathArgs(['grep', '-r', '--regexp=key', '/secret'])).toEqual(['/secret']);
+    expect(grepPathArgs(['grep', '--file=pats', '/secret'])).toEqual(['pats', '/secret']);
+    expect(grepPathArgs(['grep', '-e', 'key', '/secret'])).toEqual(['/secret']);
+    expect(grepPathArgs(['grep', '-e', '.*key', 'src'])).toEqual(['src']);
+    expect(grepPathArgs(['grep', '-rf', '/home/u/.agile/config.yaml', 'src'])).toEqual([
+      '/home/u/.agile/config.yaml',
+      'src',
+    ]);
+    expect(grepPathArgs(['grep', '-rf/x/pats', 'src'])).toEqual(['/x/pats', 'src']);
+    expect(grepPathArgs(['rg', '--files', '/secret'])).toEqual(['/secret']);
+    expect(grepPathArgs(['grep', '-rn', 'key', '/secret'])).toEqual(['/secret']);
+    expect(grepPathArgs(['grep', '-E', 'a|b', 'src'])).toEqual(['src']);
+  });
+
   test('benignPathArgs filters flags and the [ command trailing ]', () => {
     expect(benignPathArgs(['cp', 'a.ts', 'b.ts'])).toEqual(['a.ts', 'b.ts']);
     expect(benignPathArgs(['[', '-f', 'a.ts', ']'])).toEqual(['a.ts']);

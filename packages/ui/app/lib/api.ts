@@ -6,34 +6,61 @@
  */
 
 import type {
+  AgentCommand,
   Autonomy,
   AutonomyProposal,
   ClassifierKeyStatus,
   Contract,
+  FavouriteModel,
+  HarnessId,
+  HarnessStatus,
+  HarnessUpdateMode,
+  HarnessUpdateResult,
+  HarnessUpdatesStatus,
+  ModelPick,
+  ModelPickRecord,
+  ModelPolicyPartial,
+  ModelPolicyPatch,
+  ModelPolicyTryResult,
+  ModelProfile,
+  ModelProfilesPatch,
+  PermissionPosture,
   Plan,
   Policy,
   Project,
+  ProjectSessionDefaults,
+  Question,
+  RepoRemote,
+  ResolvedModelPolicy,
   RoutedEvent,
   KnowledgeItem as Rule,
   KnowledgeCreateInput as RuleCreateInput,
   KnowledgePatch as RulePatch,
   SessionDefaultsPatch,
   SessionDefaultsStatus,
+  SessionFlags,
+  SessionVendor,
+  StepUpView,
   Stream,
   StreamCreateInput,
+  ThreadAnchor,
   ThreadEntry,
   TrackerSettings,
   TrackerSettingsInput,
   TrackerSettingsStatus,
+  VendorCheckMode,
+  VendorChecksStatus,
 } from '@agile-agents/shared';
 import type {
   ActivityEntry,
   LandOutcome,
   RuleEvalReport,
   RulesPayload,
+  StepPage,
   StreamDiff,
   StreamPagePayload,
 } from './feed-types';
+import { noteFavourites } from './use-favourites';
 
 async function post(path: string, body: unknown = {}, signal?: AbortSignal): Promise<unknown> {
   const res = await fetch(path, {
@@ -62,14 +89,50 @@ export function setProjectTracker(id: string, tracker: TrackerSettings | null): 
   return post(`/api/projects/${encodeURIComponent(id)}`, { tracker });
 }
 
-/** T338: the event log, every routed event, newest first. */
-export async function getEvents(): Promise<RoutedEvent[]> {
-  return (await get<{ events: RoutedEvent[] }>('/api/events')).events;
+/** T383: one page of the event log, newest first. */
+export interface EventPage {
+  events: RoutedEvent[];
+  /** Older events (on `repo`, when asked) exist beyond this page. */
+  more: boolean;
+  /** Every event in the log (on `repo`, when asked), on any page. */
+  total: number;
+}
+
+/**
+ * T338, T383: a page of the event log, newest first: `before` an event id
+ * pages back (only older ones), `limit` 1–500 (default 200), `repo` one
+ * repo's events.
+ */
+export function getEvents(
+  query: { before?: string; limit?: number; repo?: string } = {},
+): Promise<EventPage> {
+  const params = new URLSearchParams();
+  if (query.before !== undefined) params.set('before', query.before);
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  if (query.repo !== undefined) params.set('repo', query.repo);
+  const search = params.toString();
+  return get<EventPage>(`/api/events${search ? `?${search}` : ''}`);
 }
 
 /** A question card: the typed text reaches the asking session verbatim (§3.3). */
 export function answerQuestion(id: string, answer: string): Promise<unknown> {
   return post(`/api/questions/${encodeURIComponent(id)}/answer`, { answer });
+}
+
+/**
+ * T502 (D62): what you typed in a question's own box. A choice question
+ * stays open (its agent settles it or asks again: `entry` is your line in its
+ * thread); one with no choices is answered by it (`answered`).
+ */
+export function replyToQuestion(
+  id: string,
+  text: string,
+): Promise<{ question: Question; entry?: ThreadEntry; answered?: true }> {
+  return post(`/api/questions/${encodeURIComponent(id)}/reply`, { text }) as Promise<{
+    question: Question;
+    entry?: ThreadEntry;
+    answered?: true;
+  }>;
 }
 
 /** A gate card (`classifier_review`, `land`): allow/deny, optionally with the typed reason. */
@@ -79,6 +142,11 @@ export function decideGate(
   note?: string,
 ): Promise<unknown> {
   return post(`/api/hil/${encodeURIComponent(id)}/${decision}`, note ? { note } : {});
+}
+
+/** T457: a held read's "Always for this project": the gate's dir joins the project's read roots, and the call goes through. */
+export function alwaysGate(id: string, note?: string): Promise<unknown> {
+  return post(`/api/hil/${encodeURIComponent(id)}/always`, note ? { note } : {});
 }
 
 /** A gate card's free text with no decision — recorded on the pending gate. */
@@ -152,7 +220,7 @@ export function decideRule(id: string, decision: 'accept' | 'retire'): Promise<u
   return post(`/api/rules/${encodeURIComponent(id)}/${decision}`);
 }
 
-/** A `done` card's Land button, and the stream page's (§8.2). A refusal rejects with the daemon's reason. */
+/** A `done` card's Merge button, and the stream page's (§8.2). A refusal rejects with the daemon's reason. */
 export function landStream(id: string): Promise<LandOutcome> {
   return post(`/api/streams/${encodeURIComponent(id)}/land`) as Promise<LandOutcome>;
 }
@@ -188,6 +256,11 @@ export function getStreamPlan(id: string): Promise<{ plan: Plan | null; contract
 /** T281: a `plan_approve` card's Approve, and the Plan tab's. */
 export function approvePlan(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/plan/approve`);
+}
+
+/** T344: a `plan_waiting` card's "Start parts anyway": the waiting parts start without a plan. */
+export function startWaitingParts(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/plan/start-parts`);
 }
 
 /** T282: a coordinator's `proposal` card: Apply performs it as you, Dismiss drops it. */
@@ -230,6 +303,8 @@ export interface DirectorPayload {
     session?: { id: string; status: string; vendor: string; model: string };
   };
   thread: ThreadEntry[];
+  /** T399: every line the thread has (the page holds the newest 500). */
+  thread_total?: number;
   live: boolean;
   activity: ActivityEntry[];
   /** T301: the Director's held changes; Create/Apply goes through `decideProposal`. */
@@ -252,22 +327,81 @@ export async function getStreamActivity(id: string): Promise<ActivityEntry[]> {
   return out.activity;
 }
 
-/** T245: the repo view's events. */
-export async function getRepoEvents(repo: string): Promise<RoutedEvent[]> {
-  const out = await get<{ events: RoutedEvent[] }>(`/api/repos/${encodeURIComponent(repo)}/events`);
-  return out.events;
-}
-
 /** T265: the repo's accepted standards and architecture. */
 export async function getRepoKnowledge(repo: string): Promise<Rule[]> {
   const res = await get<{ knowledge: Rule[] }>(`/api/repos/${encodeURIComponent(repo)}/knowledge`);
   return res.knowledge;
 }
 
-/** T161: the composer — a human line on the thread, and a prompt to the attached worker if there is one. */
-export function sayOnStream(id: string, body: string): Promise<{ prompted?: string }> {
-  return post(`/api/streams/${encodeURIComponent(id)}/say`, { body }) as Promise<{
-    prompted?: string;
+/**
+ * T161: the composer — a human line on the thread, and a prompt to the attached worker if there is one.
+ * T361: `start` starts an agent on a node with none live; the line is its first prompt.
+ */
+export function sayOnStream(
+  id: string,
+  body: string,
+  /** T423: `session` (the model chip's pick) names what a `start` runs. */
+  opts: { start?: boolean; session?: SessionFlags } = {},
+): Promise<{ prompted?: string; started?: true }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/say`, {
+    body,
+    ...(opts.start === true ? { start: true } : {}),
+    ...(opts.start === true && opts.session !== undefined ? { session: opts.session } : {}),
+  }) as Promise<{ prompted?: string; started?: true }>;
+}
+
+/**
+ * T503 (D60, D61, D64): a reply in a chat thread (`thread`), or the first
+ * of a new one on a turn or a passage of it (`anchor`). Queued like any
+ * line while the agent works; `start` wakes an agent that isn't running.
+ */
+export function sayInThread(
+  id: string,
+  body: string,
+  where: { thread: string } | { anchor: ThreadAnchor },
+  opts: { start?: boolean } = {},
+): Promise<{ entry: ThreadEntry; prompted?: string; started?: true }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/say`, {
+    body,
+    ...where,
+    ...(opts.start === true ? { start: true } : {}),
+  }) as Promise<{ entry: ThreadEntry; prompted?: string; started?: true }>;
+}
+
+/** T504 (§6): Move to thread (`to`: its id) / Move to main (`main`): display only, recorded. */
+export function moveLine(id: string, entry: string, to: string): Promise<{ entry: ThreadEntry }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/move-line`, { entry, to }) as Promise<{
+    entry: ThreadEntry;
+  }>;
+}
+
+/**
+ * T504 (D65, §6a): Archive a thread; with `forget`, Archive and forget
+ * (the agent restarts fresh from a brief without it).
+ */
+export function archiveThread(
+  id: string,
+  thread: string,
+  forget = false,
+): Promise<{ entry: ThreadEntry; withdrawn: string[]; restarted?: string }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/archive-thread`, {
+    thread,
+    ...(forget ? { forget: true } : {}),
+  }) as Promise<{ entry: ThreadEntry; withdrawn: string[]; restarted?: string }>;
+}
+
+/** T504 (§6a): Restore an archived thread. */
+export function restoreThread(id: string, thread: string): Promise<{ entry: ThreadEntry }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/restore-thread`, { thread }) as Promise<{
+    entry: ThreadEntry;
+  }>;
+}
+
+/** T504 (§6a): Compact now: the vendor's compact command, leaving the archived threads out. */
+export function compactNow(id: string): Promise<{ entry: ThreadEntry; command: string }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/compact`, {}) as Promise<{
+    entry: ThreadEntry;
+    command: string;
   }>;
 }
 
@@ -296,7 +430,25 @@ export async function getSessionDefaults(): Promise<SessionDefaultsStatus> {
   const res = await fetch('/api/settings/session');
   const payload = (await res.json()) as SessionDefaultsStatus & { error?: string };
   if (!res.ok) throw new Error(payload.error ?? `session defaults read failed (${res.status})`);
+  noteFavourites(payload.favourite_models);
   return payload;
+}
+
+/**
+ * T469: star (`on`) or unstar a favourite model. Every open picker takes
+ * the list back (`noteFavourites`).
+ */
+export async function setFavouriteModel(
+  ref: FavouriteModel,
+  on: boolean,
+): Promise<SessionDefaultsStatus> {
+  const next = (await post('/api/settings/favourite-models', {
+    vendor: ref.vendor,
+    ...(ref.model !== undefined ? { model: ref.model } : {}),
+    on,
+  })) as SessionDefaultsStatus;
+  noteFavourites(next.favourite_models);
+  return next;
 }
 
 /** T170: Settings' home-wide defaults (`null` clears a field). */
@@ -304,6 +456,19 @@ export function saveHomeSessionDefaults(
   patch: SessionDefaultsPatch,
 ): Promise<SessionDefaultsStatus> {
   return post('/api/settings/session', patch) as Promise<SessionDefaultsStatus>;
+}
+
+/**
+ * T467 (D46): Settings → Agents' Refresh models: the daemon starts the
+ * vendor with no prompt and keeps the models its session/new reply lists.
+ * `refreshed.listed` is false when the reply listed none.
+ */
+export function refreshVendorModels(
+  vendor: SessionVendor,
+): Promise<SessionDefaultsStatus & { refreshed: { vendor: string; listed: boolean } }> {
+  return post('/api/settings/models/refresh', { vendor }) as Promise<
+    SessionDefaultsStatus & { refreshed: { vendor: string; listed: boolean } }
+  >;
 }
 
 /** T170: one repo's defaults in `repos.yaml` (`null` clears a field). */
@@ -327,6 +492,11 @@ export function closeStream(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/close`);
 }
 
+/** T477: the Finished card's ✕: it stays away until the node's agent finishes again. */
+export function dismissFinished(id: string): Promise<unknown> {
+  return post(`/api/streams/${encodeURIComponent(id)}/dismiss`);
+}
+
 /** T166: a branch merged outside `land` — record it as landed. */
 export function markStreamLanded(id: string): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/mark-landed`);
@@ -338,6 +508,11 @@ export function checkStreamPr(id: string): Promise<unknown> {
 }
 
 /** T205: + Repo in place (projects-design §7); `switch` moves a work node with nothing committed. */
+/** T473: a work node goes back to just talking; its repo, branch and worktree are parked. */
+export function streamToTalk(id: string): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/to-talk`) as Promise<Stream>;
+}
+
 export function addRepoToStream(id: string, repo: string, switching = false): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/add-repo`, {
     repo,
@@ -348,6 +523,22 @@ export function addRepoToStream(id: string, repo: string, switching = false): Pr
 /** T228: the stream page's Link — delivery waits until `on` is merged (P8); `remove` drops it. */
 export function waitOnStream(id: string, on: string, remove = false): Promise<unknown> {
   return post(`/api/streams/${encodeURIComponent(id)}/wait`, { on, ...(remove ? { remove } : {}) });
+}
+
+/** T333 (D34): the rail's drag — move `id` under `parent` (a node, or a project id for its root). */
+/** T474: `id` just before or just after `anchor`, among `anchor`'s siblings. */
+export function reorderStream(
+  id: string,
+  anchor: string,
+  side: 'before' | 'after',
+): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/reorder`, {
+    [side]: anchor,
+  }) as Promise<Stream>;
+}
+
+export function moveStream(id: string, parent: string): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/move`, { parent }) as Promise<Stream>;
 }
 
 export async function getPolicy(): Promise<Policy> {
@@ -368,6 +559,8 @@ export interface RepoRow {
   auto_merge: boolean;
   visibility: { mode: 'public' } | { mode: 'private'; projects: string[] };
   github?: { owner: string; repo: string };
+  /** T362: where its remote lives (the repo icon); absent for a local-only repo. */
+  remote?: RepoRemote;
 }
 
 /** T222: one repo's delivery settings; `pr` is refused without a GitHub remote and auth. */
@@ -394,4 +587,472 @@ export async function addRepo(input: {
   protected_branches?: string[];
 }): Promise<RepoRow[]> {
   return ((await post('/api/repos', input)) as { repos: RepoRow[] }).repos;
+}
+
+/** T361: Delete — stops the node's and its subtree's agents and archives them (worktrees and branches stay). */
+export function archiveStream(
+  id: string,
+): Promise<{ node: Stream; archived: string[]; stopped: string[] }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/archive`) as Promise<{
+    node: Stream;
+    archived: string[];
+    stopped: string[];
+  }>;
+}
+
+/** T361: Restore — brings back a deleted node and what its delete archived; starts no agent. */
+export function unarchiveStream(id: string): Promise<{ node: Stream; restored: string[] }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/unarchive`) as Promise<{
+    node: Stream;
+    restored: string[];
+  }>;
+}
+
+/** T471: a closed node is open again, on the same branch and worktree. */
+export function reopenStream(id: string): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/reopen`) as Promise<Stream>;
+}
+
+/** T471: what Delete forever (or Empty trash) removes, keeps and loses. */
+export interface TrashPreview {
+  nodes: Array<{ id: string; title: string }>;
+  /** Branches with commits their target doesn't have (-1: couldn't count); kept unless asked. */
+  branches: Array<{ node: string; title: string; branch: string; unmerged: number }>;
+  /** Titles of nodes whose worktree has uncommitted changes. */
+  uncommitted: string[];
+}
+
+export function getTrashPreview(id: string): Promise<TrashPreview> {
+  return get<TrashPreview>(`/api/streams/${encodeURIComponent(id)}/trash-preview`);
+}
+
+export function getTrash(): Promise<TrashPreview> {
+  return get<TrashPreview>('/api/trash');
+}
+
+export interface PurgeResult {
+  deleted: string[];
+  kept_branches: string[];
+}
+
+/** T471: Delete forever; `deleteBranches` also deletes branches with unmerged commits. */
+export function purgeStream(id: string, deleteBranches = false): Promise<PurgeResult> {
+  return post(`/api/streams/${encodeURIComponent(id)}/purge`, {
+    ...(deleteBranches ? { delete_branches: true } : {}),
+  }) as Promise<PurgeResult>;
+}
+
+export function emptyTrash(deleteBranches = false): Promise<PurgeResult> {
+  return post('/api/trash/empty', {
+    ...(deleteBranches ? { delete_branches: true } : {}),
+  }) as Promise<PurgeResult>;
+}
+
+/** T362: mirror of `store/browse-dirs.ts`'s `DirEntry`. */
+export interface DirEntry {
+  name: string;
+  path: string;
+  /** A git work tree's toplevel. */
+  git: boolean;
+}
+
+/** T362: mirror of `store/browse-dirs.ts`'s `DirListing` (`GET /api/fs/dirs`). */
+export interface DirListing {
+  path: string;
+  /** Absent at `/`. */
+  parent?: string;
+  home: string;
+  is_git: boolean;
+  entries: DirEntry[];
+  /** More than 500 folders matched; narrow with `prefix`. */
+  truncated?: true;
+}
+
+/**
+ * T362: the folder picker. `path` is absolute or `~/…` (default: home);
+ * `prefix` keeps names starting with it (case-insensitive), for autocomplete.
+ */
+export function listDirs(path?: string, hidden?: boolean, prefix?: string): Promise<DirListing> {
+  const query = new URLSearchParams();
+  if (path !== undefined) query.set('path', path);
+  if (hidden) query.set('hidden', '1');
+  if (prefix) query.set('prefix', prefix);
+  const qs = query.toString();
+  return get(`/api/fs/dirs${qs ? `?${qs}` : ''}`);
+}
+
+/** T362: `POST /api/repos/clone`'s reply: every repo, and the one just cloned. */
+export interface CloneRepoResult {
+  repos: RepoRow[];
+  repo: string;
+  path: string;
+}
+
+/**
+ * T362: clone by URL (https, `git@host:o/r`, ssh://, GitHub `owner/repo`, or
+ * a local path) with the user's own git credentials, then register it. A
+ * refusal rejects with the daemon's reason (git's last lines on a failure).
+ */
+export function cloneRepo(input: {
+  url: string;
+  dest?: string;
+  name?: string;
+}): Promise<CloneRepoResult> {
+  return post('/api/repos/clone', input) as Promise<CloneRepoResult>;
+}
+
+/**
+ * T365: the rail's Rename (and a goal edit): the same patch as `stream.update`, stamped human.
+ * T435: `auto_title` marks `title` as a placeholder the cheap model names better (D41).
+ */
+export function updateStream(
+  id: string,
+  patch: { title?: string; goal?: string; auto_title?: boolean },
+): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/update`, patch) as Promise<Stream>;
+}
+
+/** T367: `GET /health` — Settings → General's daemon facts. */
+export interface DaemonHealth {
+  version: string;
+  /** The daemon's home folder. */
+  stateRoot: string;
+  pid: number;
+  /** Seconds. */
+  uptime: number;
+}
+
+/** T434: Settings' quick drafts switch: on, and whether a cheap model is there at all. */
+export interface QuickDrafts {
+  on: boolean;
+  available: boolean;
+}
+
+export function getQuickDrafts(): Promise<QuickDrafts> {
+  return get<QuickDrafts>('/api/settings/quick-drafts');
+}
+
+export function setQuickDrafts(on: boolean): Promise<QuickDrafts> {
+  return post('/api/settings/quick-drafts', { on }) as Promise<QuickDrafts>;
+}
+
+/** T480 (D49): one bridged agent's "use the installed CLI" switch, and what it finds on PATH. */
+export interface InstalledCliRow {
+  vendor: 'claude' | 'codex';
+  label: string;
+  on: boolean;
+  path?: string;
+}
+
+export function getInstalledCli(): Promise<{ vendors: InstalledCliRow[] }> {
+  return get<{ vendors: InstalledCliRow[] }>('/api/settings/installed-cli');
+}
+
+export function setInstalledCli(
+  vendor: InstalledCliRow['vendor'],
+  on: boolean,
+): Promise<{ vendors: InstalledCliRow[] }> {
+  return post('/api/settings/installed-cli', { vendor, on }) as Promise<{
+    vendors: InstalledCliRow[];
+  }>;
+}
+
+/** T454: Settings' "Let Jev decide" switch for accepted decisions (`knowledge_wake: jev`). */
+export interface KnowledgeWake {
+  on: boolean;
+}
+
+export function getKnowledgeWake(): Promise<KnowledgeWake> {
+  return get<KnowledgeWake>('/api/settings/knowledge-wake');
+}
+
+export function setKnowledgeWake(on: boolean): Promise<KnowledgeWake> {
+  return post('/api/settings/knowledge-wake', { on }) as Promise<KnowledgeWake>;
+}
+
+/** T478: New node's "Close it when its goal is met" default. */
+export interface AutoCloseDefault {
+  on: boolean;
+}
+
+export function getAutoCloseDefault(): Promise<AutoCloseDefault> {
+  return get<AutoCloseDefault>('/api/settings/auto-close');
+}
+
+export function setAutoCloseDefault(on: boolean): Promise<AutoCloseDefault> {
+  return post('/api/settings/auto-close', { on }) as Promise<AutoCloseDefault>;
+}
+
+/** T465 (D48): how long a finished turn's session stays alive for the next message. */
+export interface SessionIdle {
+  minutes: number;
+}
+
+export function getSessionIdle(): Promise<SessionIdle> {
+  return get<SessionIdle>('/api/settings/session-idle');
+}
+
+export function setSessionIdle(minutes: number): Promise<SessionIdle> {
+  return post('/api/settings/session-idle', { minutes }) as Promise<SessionIdle>;
+}
+
+/** T478: this node closes itself when its goal is met (the operator's). */
+export function setNodeAutoClose(id: string, on: boolean): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/auto-close`, { on }) as Promise<Stream>;
+}
+
+/** T457: the home's permission posture (a project may override it). */
+export interface PermissionsSetting {
+  posture: PermissionPosture;
+}
+
+export function getPermissions(): Promise<PermissionsSetting> {
+  return get<PermissionsSetting>('/api/settings/permissions');
+}
+
+export function setPermissions(posture: PermissionPosture): Promise<PermissionsSetting> {
+  return post('/api/settings/permissions', { posture }) as Promise<PermissionsSetting>;
+}
+
+export function getHealth(): Promise<DaemonHealth> {
+  return get('/health');
+}
+
+/**
+ * T372: rename a project or change its repos (registered names only).
+ * T379: `session` replaces the project's session defaults; `null` clears them.
+ */
+export function updateProject(
+  id: string,
+  patch: {
+    name?: string;
+    repos?: string[];
+    session?: ProjectSessionDefaults | null;
+    /** T457: `null` inherits the home's posture. */
+    permissions?: PermissionPosture | null;
+    /** T457: the whole list of "Always" read roots (Settings removes one). */
+    read_roots?: string[] | null;
+  },
+): Promise<Project> {
+  return post(`/api/projects/${encodeURIComponent(id)}`, patch) as Promise<Project>;
+}
+
+/** T422: a drafted goal and where it came from (the cheap model, its last reply, or its question). */
+export interface GoalDraft {
+  goal: string;
+  from: 'model' | 'reply' | 'question';
+}
+
+/** T422 (D42): a goal for the work a conversation concluded (drafted by the cheap model when there is one). */
+export function draftGoal(id: string): Promise<GoalDraft> {
+  return post(`/api/streams/${encodeURIComponent(id)}/draft-goal`) as Promise<GoalDraft>;
+}
+
+/** T421 (D42): a conversation's conclusion, sent up to the node above it as your line there. */
+export function sendUp(id: string, body: string): Promise<{ parent: string }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/send-up`, { body }) as Promise<{
+    parent: string;
+  }>;
+}
+
+/** T463: switch a knowledge item in this node's scope off (or back on) for this node alone. */
+export function setStreamRule(id: string, rule: string, on: boolean): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/rule`, { rule, on }) as Promise<Stream>;
+}
+
+/** T463: this node's permission posture; `null` inherits its project's (or the home's). */
+export function setStreamPermissions(
+  id: string,
+  posture: PermissionPosture | null,
+): Promise<Stream> {
+  return post(`/api/streams/${encodeURIComponent(id)}/permissions`, { posture }) as Promise<Stream>;
+}
+
+/** T461: the slash commands a node's live agent advertises (none when nothing runs). */
+export function getStreamCommands(
+  id: string,
+): Promise<{ running: boolean; vendor?: string; commands: AgentCommand[] }> {
+  return get(`/api/streams/${encodeURIComponent(id)}/commands`);
+}
+
+/** T392: a node's agent steps (its tool calls), newest first; the chat follows live events after. */
+export function getStreamSteps(id: string): Promise<StepPage> {
+  return get(`/api/streams/${encodeURIComponent(id)}/steps`);
+}
+
+/** T399: the Director's agent steps, the same shape as a node's. */
+export function getDirectorSteps(): Promise<StepPage> {
+  return get('/api/director/steps');
+}
+
+// ---------------------------------------------------------------- T481: vendor CLI updates
+
+/** T481 (D50): Settings → Agents → Updates: the mode, each CLI's last check, the bridges. */
+export function getHarnessUpdates(): Promise<HarnessUpdatesStatus> {
+  return get('/api/settings/harness-updates');
+}
+
+/** T481: Off, Alert or Auto for every vendor, or for one (`null` puts it back on the global mode). */
+export function setHarnessUpdateMode(
+  mode: HarnessUpdateMode | null,
+  vendor?: SessionVendor,
+): Promise<HarnessUpdatesStatus> {
+  return post('/api/settings/harness-updates', {
+    mode,
+    ...(vendor !== undefined ? { vendor } : {}),
+  }) as Promise<HarnessUpdatesStatus>;
+}
+
+/** T481: Check now. */
+export function checkHarnessUpdates(): Promise<HarnessUpdatesStatus> {
+  return post('/api/harness-updates/check') as Promise<HarnessUpdatesStatus>;
+}
+
+/** T481: runs a CLI's update; the result is in words (`ok: false` is a failure the daemon explains). */
+export function updateHarness(id: HarnessId): Promise<HarnessUpdateResult> {
+  return post(
+    `/api/harness-updates/${encodeURIComponent(id)}/update`,
+  ) as Promise<HarnessUpdateResult>;
+}
+
+/** T481: hides a CLI's update item until a newer version is out. */
+export function dismissHarnessUpdate(id: HarnessId): Promise<HarnessStatus> {
+  return post(`/api/harness-updates/${encodeURIComponent(id)}/dismiss`) as Promise<HarnessStatus>;
+}
+
+// ---------------------------------------------------------------- T489: the vendor self-check
+
+/** T489 (D58): Settings → Agents → Vendors: the switch and each vendor's latest check. */
+export function getVendorChecks(): Promise<VendorChecksStatus> {
+  return get('/api/settings/vendor-checks');
+}
+
+/** T489: Automatic (after an update or a new version) or only when asked. */
+export function setVendorCheckMode(mode: VendorCheckMode): Promise<VendorChecksStatus> {
+  return post('/api/settings/vendor-checks', { mode }) as Promise<VendorChecksStatus>;
+}
+
+/** T489: Check one vendor, or Check all; returns at once with the running state. */
+export function runVendorChecks(vendor?: SessionVendor): Promise<VendorChecksStatus> {
+  return post(
+    '/api/settings/vendor-checks/run',
+    vendor !== undefined ? { vendor } : {},
+  ) as Promise<VendorChecksStatus>;
+}
+
+/** T500: Install a vendor's downloaded ACP server (Antigravity's); returns at once, installing. */
+export function installVendor(vendor: SessionVendor): Promise<VendorChecksStatus> {
+  return post('/api/settings/vendor-checks/install', { vendor }) as Promise<VendorChecksStatus>;
+}
+
+/** T482: a layer's model choice: what it sets itself, and the whole policy resolved with sources. */
+export interface ModelPolicyPayload {
+  policy: ModelPolicyPartial;
+  resolved: ResolvedModelPolicy;
+}
+
+/** T482: the home's model choice, with the model profiles (shipped, and the home's own). */
+export interface HomeModelPolicyPayload extends ModelPolicyPayload {
+  profiles: Record<string, ModelProfile>;
+  own_profiles: Record<string, ModelProfile>;
+}
+
+/** T482: a node's model choice, and how its current model was picked. */
+export interface NodeModelPolicyPayload extends ModelPolicyPayload {
+  node: { id: string; title: string; project?: string };
+  pick?: ModelPickRecord;
+  choose_again: boolean;
+  /** T484: Step up's next rung, a step waiting for the next start, the Needs me card. */
+  step_up: StepUpView;
+}
+
+async function put(path: string, body: unknown): Promise<unknown> {
+  const res = await fetch(path, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const payload = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(payload.error ?? `${path} failed (${res.status})`);
+  return payload;
+}
+
+export function getHomeModelPolicy(): Promise<HomeModelPolicyPayload> {
+  return get<HomeModelPolicyPayload>('/api/settings/model-policy');
+}
+
+export function setHomeModelPolicy(patch: ModelPolicyPatch): Promise<HomeModelPolicyPayload> {
+  return put('/api/settings/model-policy', patch) as Promise<HomeModelPolicyPayload>;
+}
+
+export function setModelProfiles(patch: ModelProfilesPatch): Promise<HomeModelPolicyPayload> {
+  return put('/api/settings/model-profiles', patch) as Promise<HomeModelPolicyPayload>;
+}
+
+export function getProjectModelPolicy(id: string): Promise<ModelPolicyPayload> {
+  return get<ModelPolicyPayload>(`/api/projects/${encodeURIComponent(id)}/model-policy`);
+}
+
+export function setProjectModelPolicy(
+  id: string,
+  patch: ModelPolicyPatch,
+): Promise<ModelPolicyPayload> {
+  return put(
+    `/api/projects/${encodeURIComponent(id)}/model-policy`,
+    patch,
+  ) as Promise<ModelPolicyPayload>;
+}
+
+export function getNodeModelPolicy(id: string): Promise<NodeModelPolicyPayload> {
+  return get<NodeModelPolicyPayload>(`/api/streams/${encodeURIComponent(id)}/model-policy`);
+}
+
+export function setNodeModelPolicy(
+  id: string,
+  patch: ModelPolicyPatch,
+): Promise<NodeModelPolicyPayload> {
+  return put(
+    `/api/streams/${encodeURIComponent(id)}/model-policy`,
+    patch,
+  ) as Promise<NodeModelPolicyPayload>;
+}
+
+/** T482 (D55): "Let the policy choose again": the node's next start picks its model afresh. */
+export function chooseModelAgain(id: string): Promise<NodeModelPolicyPayload> {
+  return post(
+    `/api/streams/${encodeURIComponent(id)}/choose-again`,
+  ) as Promise<NodeModelPolicyPayload>;
+}
+
+/** T484 (§6): Step up: the node's next start runs the next rung of its preset models. */
+export function stepUpModel(id: string): Promise<NodeModelPolicyPayload> {
+  return post(`/api/streams/${encodeURIComponent(id)}/step-up`) as Promise<NodeModelPolicyPayload>;
+}
+
+/** T484: dismiss the node's "stuck on the strongest model" card. */
+export function dismissModelStuck(id: string): Promise<NodeModelPolicyPayload> {
+  return post(
+    `/api/streams/${encodeURIComponent(id)}/dismiss-stuck`,
+  ) as Promise<NodeModelPolicyPayload>;
+}
+
+/** T483 Try it: a pasted task's scores and pick under the home's policy; nothing starts. */
+export function tryModelPolicy(
+  text: string,
+  where: { project?: string; node?: string } = {},
+): Promise<ModelPolicyTryResult> {
+  return post('/api/model-policy/try', { text, ...where }) as Promise<ModelPolicyTryResult>;
+}
+
+/** T482: what a node made here with no model would start on (New node's line). */
+export function previewNewNodeModel(where: {
+  project?: string;
+  parent?: string;
+  repo?: string;
+}): Promise<ModelPick> {
+  const q = new URLSearchParams();
+  if (where.project) q.set('project', where.project);
+  if (where.parent) q.set('parent', where.parent);
+  if (where.repo) q.set('repo', where.repo);
+  return get<ModelPick>(`/api/model-policy/preview?${q.toString()}`);
 }

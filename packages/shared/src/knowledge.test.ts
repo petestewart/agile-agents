@@ -173,6 +173,27 @@ describe('classifierQuestion (cockpit §5.1 default)', () => {
     );
   });
 
+  test('reads as plain words: no code ticks, one line, one closing "?" (T371)', () => {
+    expect(classifierQuestion({ text: 'Keep money in `cents`, never `float`.' })).toBe(
+      'Does this action violate: Keep money in cents, never float?',
+    );
+    expect(classifierQuestion({ text: 'Is it tested?' })).toBe(
+      'Does this action violate: Is it tested?',
+    );
+    expect(classifierQuestion({ text: 'Two lines\n  and ``a code`` span ...  ' })).toBe(
+      'Does this action violate: Two lines and a code span?',
+    );
+  });
+
+  test('a ship check reads a diff, so it asks about "this change" (T371)', () => {
+    expect(classifierQuestion({ text: 'src changes come with tests.', enforcement: 'ship' })).toBe(
+      'Does this change violate: src changes come with tests?',
+    );
+    expect(classifierQuestion({ text: 'no rm -rf', enforcement: 'action' })).toBe(
+      'Does this action violate: no rm -rf?',
+    );
+  });
+
   test("keeps the check's explicit question", () => {
     expect(
       classifierQuestion({

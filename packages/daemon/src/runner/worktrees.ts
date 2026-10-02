@@ -17,13 +17,23 @@ interface GitResult {
 
 const textDecoder = new TextDecoder();
 
-/** Stream title -> kebab slug, capped (the worktree/branch name's readable half). */
+/**
+ * Stream title -> kebab slug, capped (the worktree/branch name's readable
+ * half). T445 (audit r7 #11): a cut ends at a word (`…-src-index-ts`, not
+ * `…-ts-tha`), unless that would leave less than half; one long word is cut
+ * at the cap.
+ */
 export function slugify(title: string, maxLen = 40): string {
   const slug = title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
-  return slug.slice(0, maxLen).replace(/-+$/g, '') || 'stream';
+  let cut = slug.slice(0, maxLen);
+  if (slug.length > maxLen && slug[maxLen] !== '-') {
+    const word = cut.lastIndexOf('-');
+    if (word >= maxLen / 2) cut = cut.slice(0, word);
+  }
+  return cut.replace(/-+$/g, '') || 'stream';
 }
 
 // Hardened creation (D11, after KiroCrew's worktree handler). No shell:
@@ -194,6 +204,15 @@ function worktreeDirName(name: WorktreeName): string {
 
 /** Every daemon-cut branch lives under `stream/`. */
 export const STREAM_BRANCH_PREFIX = 'stream/';
+
+/**
+ * A branch as a person reads it (T371): a daemon-cut `stream/<id>-<slug>`
+ * is its slug; any other branch (or one with no slug) is itself.
+ */
+export function branchLabel(branch: string): string {
+  const match = /^stream\/[0-9a-z]{26}-(.+)$/i.exec(branch);
+  return match?.[1] ?? branch;
+}
 
 /**
  * Creates the worktree on a freshly claimed branch off `baseRef`, with no

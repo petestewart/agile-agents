@@ -1,955 +1,507 @@
 /**
- * The stream page (design/cockpit-design.md §9.3, T161) — opened from the
- * stream tree or an inbox card's "Open stream".
+ * A node's page (T161, redesigned in T363 — design/cockpit-ui.md §1.3, §3,
+ * §7): a conversation with its agent.
  *
- *  - **Needs you** — this stream's open questions, gates and proposed
- *    rules as inbox cards with their *full* text (the inbox clips at 200
- *    chars, §3.2), answerable here exactly as in the inbox.
- *  - **Sessions strip** — vendor/model/role/status per session, with
- *    Start/Restart (a worker), Review (a reviewer) and Stop.
- *  - **Thread** — the spine: every line, markdown, live (re-read on every
- *    pushed cockpit frame), with a thinking indicator while a session is
- *    mid-turn; the composer under it writes a human line and, when a
- *    worker is attached, prompts it too.
- *  - **Diff / Rules / Docs** tabs — the worktree diff against the landing
- *    target, exactly `rulesInScope(stream)`, and the repo + stream docs.
- *  - **Delivery** (§14.7, direct path; was Land) — the `delivery_state`, the "before" (would `land` refuse right now, and which
- *    diff-stage rules it checks) and the "after" (the outcome line, or the
- *    refusal's reason, shown on the page).
+ *  - **Header** (`NodeHeader`): path, title, status in words, role, repo and
+ *    branch; one primary action by state (Start agent, Stop, Merge), the
+ *    details toggle and the ⋯ menu with everything else.
+ *  - **Overview** (T387, a project's root only, and its first tab): the
+ *    project at a glance (`ProjectOverview`).
+ *  - **Chat** (any other node's first tab): the goal, the thread as a conversation,
+ *    "<Agent> is working…", then whatever needs you on this node (questions,
+ *    gates, plans, proposals, proposed knowledge) as decision cards right
+ *    above the composer. T499: a question is answered in its own card; the
+ *    composer sends messages only, and Quote puts selected text in either.
+ *    Sending to a node whose agent isn't running starts it (T361).
+ *  - **Changes / Plan / Activity / Knowledge / Docs** — only where they apply.
+ *  - **Details** (`NodeDetails`, a panel on the right): Delivery, Agent,
+ *    Children, Waits on, Tracker, Autonomy, Project, Findings, About.
+ *  - T423: the composer's model chip is the one place a model is picked (the
+ *    header's Start with… aside): a pick goes with the next message only.
+ *
+ * The chat pieces (`Chat.tsx`, `Composer.tsx`) know nothing about streams,
+ * so the Director reuses them.
  */
 
 import {
-  type Autonomy,
+  type ChatThread,
   type InboxItem,
-  formatKnowledgeScope,
+  type ResolvedSessionDefaults,
+  type SessionDefaultsStatus,
+  type ThreadAnchor,
+  compactCommandFor,
   isAgentRole,
 } from '@agile-agents/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  type RepoRow,
   addRepoToStream,
-  approvePlan,
+  archiveStream,
+  archiveThread,
   attachSession,
-  checkStreamPr,
   closeStream,
-  createNodeIssue,
-  getStreamActivity,
-  getStreamDiff,
+  compactNow,
+  createStream,
+  getSessionDefaults,
   getStreamPage,
-  getStreamPlan,
-  importChildren,
-  landStream,
-  linkNode,
-  listRepos,
-  markStreamLanded,
+  moveLine,
+  reopenStream,
   resolveConflict,
+  restoreThread,
+  sayInThread,
   sayOnStream,
-  setNodeAutonomy,
-  setProjectAutonomy,
-  setProjectTracker,
+  setNodeAutoClose,
   stopSessions,
+  streamToTalk,
+  unarchiveStream,
+  updateStream,
   waitOnStream,
 } from '../lib/api';
+import { coordinatesIt, hasReplied, sendUpTarget, takeComposerFocus } from '../lib/ask';
+import {
+  type NodeTab,
+  agentFailed,
+  agentLabel,
+  agentName,
+  agentStateText,
+  chatAuthor,
+  chatVariant,
+  detailsOpenFrom,
+  headerActions,
+  liveAgentOf,
+  nodeTabs,
+  openQuestions,
+  placeQuestionThreads,
+  proposedNext,
+  questionIdOfRef,
+  sendIntent,
+  sessionIdText,
+  showGoalCard,
+  tidyIds,
+  uncheckedWarning,
+  vendorLabel,
+  withQuestion,
+  workingAs,
+} from '../lib/chat';
+import { useAgentCommands } from '../lib/commands';
+import { choiceOf, keptChoice, modelChip, resolvedFor } from '../lib/defaults';
+import { draftOf, useDraftSetter } from '../lib/drafts';
+import {
+  type MergeFix,
+  type MergeRefusal,
+  RECONNECTING,
+  SEND_UNREACHABLE,
+  isNetworkMessage,
+  mergeConflict,
+  mergeRefusal,
+  writeFailure,
+} from '../lib/errors';
 import { useFeed } from '../lib/feed-context';
-import type {
-  ActivityEntry,
-  CockpitCardError,
-  CockpitProjectRow,
-  CockpitStatusCard,
-  LandOutcome,
-  StreamDiff,
-  StreamPagePayload,
-} from '../lib/feed-types';
+import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
+import { proposalLineAction, stopCardOfItem } from '../lib/inbox';
+import { withQuote } from '../lib/quote';
+import { appendToDraft, roomAfter, useReview } from '../lib/review';
 import { DEFAULT_RULES_FILTER } from '../lib/rules';
 import { useShell } from '../lib/shell';
+import { type StatusInput, ownStatusKey, partsSummary } from '../lib/status';
+import { groupSteps, narrationFolds, turnStartedAt } from '../lib/steps';
+import { isLiveSession, isThinking } from '../lib/streams';
 import {
-  DOT_LABEL,
-  diffLineKind,
-  isLiveSession,
-  isThinking,
-  ruleHitOf,
-  streamDot,
-  threadAuthorLabel,
-} from '../lib/streams';
+  anchorFor,
+  anchorLabel,
+  moveTargets,
+  movesByLine,
+  openThreadsChip,
+  placeChatThreads,
+  threadNarration,
+  threadReadAt,
+  threadReadKey,
+  threadRepliesText,
+  threadUnread,
+} from '../lib/threads';
+import { splitRepos, titleFromGoal } from '../lib/tree';
+import { markRead, useThreadReadUpTo } from '../lib/use-unread';
+import {
+  ArchivedThreads,
+  type ChatEntry,
+  ChatScroll,
+  ContextMeter,
+  MessageList,
+  QuestionThreadView,
+  QuoteSelection,
+  StepsFold,
+  Thinking,
+  ThreadLinks,
+  ThreadMarks,
+  ThreadPanel,
+  useSteps,
+} from './Chat';
+import { type NodeCommands, useNodeCommands } from './CommandPalette';
+import { type ComposerHandle, DraftComposer } from './Composer';
+import { addReviewToDraft, quoteIntoAnswer, useMergeAsk } from './DecisionCard';
+import { DeliveryPanel, isMergeable, outcomeTone, useDelivery } from './Delivery';
+import { TabBoundary, lazyNamed } from './ErrorBoundary';
+import { Icon, type IconName } from './Icon';
 import { Card } from './Inbox';
-import { Linked, Markdown } from './Markdown';
-import { SessionPicker, sessionModelText } from './SessionPicker';
+import { Markdown, type PassageMark } from './Markdown';
+import { ModelChoiceSection } from './ModelPolicy';
+import { useRepoList } from './NewStream';
+import {
+  AboutSection,
+  AgentSection,
+  AutonomySection,
+  ChildCards,
+  DetailsPanel,
+  FindingsSection,
+  ProjectSection,
+  TrackerSection,
+  WaitsOnSection,
+} from './NodeDetails';
+import { type Crumb, NodeHeader } from './NodeHeader';
+import { type PickOption, PickerField } from './Pickers';
+import { SendUpDialog } from './SendUp';
+import { EffortChip, ModelChip, SessionPicker, nextEffort } from './SessionPicker';
+import { MoveDialog, RenameDialog } from './StreamTree';
+import { TurnIntoWorkDialog } from './TurnIntoWork';
+import {
+  Button,
+  ConfirmDialog,
+  Dialog,
+  EmptyState,
+  Field,
+  IconButton,
+  Menu,
+  type MenuItem,
+  RepoIcon,
+  Tabs,
+  UncheckedMark,
+  repoKindLabel,
+  useCopy,
+  useToast,
+} from './ui';
 
-type Tab = 'thread' | 'diff' | 'activity' | 'plan' | 'rules' | 'docs';
-const TABS: ReadonlyArray<{ tab: Tab; label: string }> = [
-  { tab: 'thread', label: 'Thread' },
-  { tab: 'diff', label: 'Diff' },
-  { tab: 'activity', label: 'Activity' },
-  { tab: 'plan', label: 'Plan' },
-  { tab: 'rules', label: 'Knowledge in scope' },
-  { tab: 'docs', label: 'Docs' },
-];
+// T394: loaded on demand; a throw in any tab stays in that tab (`TabBoundary`).
+const DiffView = lazyNamed(() => import('./DiffView'), 'DiffView');
+const ProjectOverview = lazyNamed(() => import('./ProjectOverview'), 'ProjectOverview');
+// T413: Activity and Knowledge read as the Events and Knowledge screens, with their rows.
+const loadNodeViews = () => import('./NodeViews');
+const ActivityView = lazyNamed(loadNodeViews, 'ActivityView');
+const PlanView = lazyNamed(loadNodeViews, 'PlanView');
+const KnowledgeView = lazyNamed(loadNodeViews, 'KnowledgeView');
+const DocsView = lazyNamed(loadNodeViews, 'DocsView');
 
-/** Decision cards only: `blocked`/`done` are this page's own status and Land button. */
-function needsYou(items: readonly InboxItem[], stream: string): InboxItem[] {
+// The Director (and older imports) read these from here.
+export { THREAD_COLLAPSE_LINES, ThreadBody, isLongThreadBody } from './Chat';
+
+/** Decision cards only: `blocked`/`done` are this page's own status and Merge button. */
+function needsYou(items: readonly InboxItem[], stream: string, noChanges = false): InboxItem[] {
+  // The header has Merge; T380: with nothing to merge, the card's Close is the move.
+  // T508: a stop the daemon made is a card here too (what happened, why, Restart agent).
   return items.filter(
-    (item) => item.stream === stream && item.kind !== 'blocked' && item.kind !== 'done',
+    (item) =>
+      item.stream === stream &&
+      (item.kind !== 'blocked' || stopCardOfItem(item) !== undefined) &&
+      (item.kind !== 'done' || noChanges),
   );
-}
-
-/** T330: past ~12 lines a thread entry renders collapsed, with a Show more / Show less toggle. */
-export const THREAD_COLLAPSE_LINES = 12;
-
-/** Long enough to collapse: more than 12 source lines, or ~12 wrapped lines of prose. */
-export function isLongThreadBody(body: string): boolean {
-  return (
-    body.split('\n').length > THREAD_COLLAPSE_LINES || body.length > THREAD_COLLAPSE_LINES * 100
-  );
-}
-
-export function ThreadBody({ body }: { body: string }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  if (!isLongThreadBody(body)) return <Markdown text={body} />;
-  return (
-    <>
-      <Markdown
-        text={body}
-        className={expanded ? undefined : 'cr-collapsed'}
-        testId="thread-body"
-      />
-      <button
-        type="button"
-        className="cr-link"
-        data-testid="thread-expand"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((open) => !open)}
-      >
-        {expanded ? 'Show less' : 'Show more'}
-      </button>
-    </>
-  );
-}
-
-/** T205: the registered repos a proposal names, so its card can offer "Add <repo>" (§7). */
-export function reposNamedIn(body: string, repos: readonly RepoRow[], current?: string): string[] {
-  return repos
-    .map((r) => r.name)
-    .filter((name) => name !== current)
-    .filter((name) =>
-      new RegExp(`(^|[^\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\w-]|$)`).test(body),
-    );
 }
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** T338: a node by its title, as a link that opens its page (never the raw id). */
-function NodeLink({ id, titleOf }: { id: string; titleOf: (id: string) => string }): JSX.Element {
-  const { select } = useShell();
-  return (
-    <a
-      href={`#${id}`}
-      className="cr-ref"
-      data-node={id}
-      title={id}
-      onClick={(e) => {
-        e.preventDefault();
-        select(id);
-      }}
-    >
-      {titleOf(id)}
-    </a>
-  );
+const TAB_LABEL: Record<NodeTab, string> = {
+  overview: 'Overview',
+  thread: 'Chat',
+  diff: 'Changes',
+  plan: 'Plan',
+  activity: 'Activity',
+  rules: 'Knowledge',
+  docs: 'Docs',
+};
+
+/** T416: the tabs' glyphs, for "Open Changes" and the like in ⌘K's "This node". */
+const TAB_ICON: Record<NodeTab, IconName> = {
+  overview: 'layers',
+  thread: 'message-square',
+  diff: 'file-diff',
+  plan: 'list',
+  activity: 'activity',
+  rules: 'book-open',
+  docs: 'file-text',
+};
+
+const DETAILS_KEY = 'agile.node.details';
+
+/** The details panel's open state: remembered per viewer on a wide window, closed on a narrow one. */
+function useDetailsOpen(): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(() => {
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem(DETAILS_KEY);
+    } catch {
+      // Private mode or blocked storage: the default.
+    }
+    return detailsOpenFrom(stored, typeof window === 'undefined' ? 1440 : window.innerWidth);
+  });
+  const set = useCallback((next: boolean) => {
+    setOpen(next);
+    if (typeof window !== 'undefined' && window.innerWidth < 1200) return;
+    try {
+      localStorage.setItem(DETAILS_KEY, next ? 'open' : 'closed');
+    } catch {
+      // Not remembered; it still toggles.
+    }
+  }, []);
+  return [open, set];
 }
 
-/** T281 (§9.1): who owns what, the contracts between the children, and the draft's Approve. */
-function PlanView({
-  id,
-  tick,
-  onChanged,
-  titleOf,
-}: {
-  id: string;
-  tick: unknown;
-  onChanged: () => void;
-  titleOf: (id: string) => string;
-}): JSX.Element {
-  const [data, setData] = useState<Awaited<ReturnType<typeof getStreamPlan>> | undefined>();
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [busy, setBusy] = useState(false);
-  const [seq, setSeq] = useState(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` and `seq` are re-read triggers.
-  useEffect(() => {
-    let live = true;
-    getStreamPlan(id)
-      .then((r) => live && setData(r))
-      .catch((err: unknown) => live && setError(errorText(err)));
-    return () => {
-      live = false;
-    };
-  }, [id, tick, seq]);
-  if (error) return <p className="cr-dim">{error}</p>;
-  if (!data) return <p className="cr-dim">Loading…</p>;
-  const { plan, contracts } = data;
-  if (!plan && contracts.length === 0) {
-    return (
-      <p className="cr-dim" data-testid="plan-empty">
-        No plan yet — the coordinator writes one when it splits the work.
-      </p>
-    );
-  }
+/** T445 (audit r7 #21): the Plan tab's "Ask it to plan", as your message to the node. */
+const PLAN_REQUEST =
+  'Please write the plan: split the work into parts, say which paths each part owns, and the contracts between them.';
+
+/**
+ * T445 (audit r7 #26): a project root's composer with no agent running. It
+ * holds whether a line there adds a note or starts the root's agent.
+ */
+const ROOT_PLACEHOLDER = 'Write to the project — or press A to ask it a question';
+
+type Picker = 'start' | 'reviewer' | 'resolve';
+type Modal = 'repo' | 'wait' | 'close' | 'delete' | 'rename' | 'move' | 'talk';
+
+function PageSkeleton(): JSX.Element {
   return (
-    <section className="cr-docs cr-plan" data-testid="plan">
-      {plan && (
-        <p data-testid="plan-status" data-status={plan.status}>
-          Plan v{plan.version} · {plan.status}
-          {plan.approved_by ? ` by ${plan.approved_by}` : ''}{' '}
-          {plan.status === 'draft' && (
-            <button
-              type="button"
-              className="cr-btn signal"
-              data-testid="plan-tab-approve"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                approvePlan(id)
-                  .catch((err: unknown) => setError(errorText(err)))
-                  .finally(() => {
-                    setBusy(false);
-                    setSeq((n) => n + 1);
-                    onChanged();
-                  });
-              }}
-            >
-              Approve
-            </button>
-          )}
-        </p>
-      )}
-      {plan && (
-        <>
-          <h3>Owners</h3>
-          <ul data-testid="plan-owners">
-            {plan.owners.map((o) => (
-              <li key={o.child} data-testid="plan-owner" data-child={o.child}>
-                <NodeLink id={o.child} titleOf={titleOf} />
-                {': '}
-                {o.owns.length === 0 ? (
-                  'nothing'
-                ) : (
-                  <code data-testid="plan-owner-paths">{o.owns.join(', ')}</code>
-                )}
-                {plan.status === 'draft' && plan.approved
-                  ? (() => {
-                      const before = plan.approved.owners.find((a) => a.child === o.child);
-                      const same = before?.owns.join(', ') === o.owns.join(', ');
-                      return same ? null : (
-                        <span className="cr-dim" data-testid="plan-owner-was">
-                          {' '}
-                          (approved v{plan.approved.version}:{' '}
-                          {before ? before.owns.join(', ') || 'nothing' : 'not in the plan'})
-                        </span>
-                      );
-                    })()
-                  : null}
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-      <ul data-testid="contracts">
-        {contracts.map((c) => (
-          <li key={c.id} data-testid="contract" data-contract={c.id}>
-            <h3>
-              Contract: <span data-testid="contract-title">{c.title}</span>{' '}
-              <span className="cr-dim">v{c.version}</span>
-            </h3>
-            <p className="cr-dim" data-testid="contract-parties">
-              Parties:{' '}
-              {c.parties.length === 0
-                ? 'none'
-                : c.parties.map((p, i) => (
-                    <span key={p}>
-                      {i > 0 ? ', ' : ''}
-                      <NodeLink id={p} titleOf={titleOf} />
-                    </span>
-                  ))}
-            </p>
-            <Markdown text={c.body} />
-          </li>
-        ))}
-      </ul>
+    <section className="cr-node" data-testid="stream-page" aria-busy="true">
+      <div className="cr-node-main">
+        <div className="cr-node-hd">
+          <div className="cr-skel" style={{ width: 140, height: 10 }} />
+          <div className="cr-skel" style={{ width: 280, height: 20, marginTop: 10 }} />
+          <div className="cr-skel" style={{ width: 220, height: 10, marginTop: 10 }} />
+        </div>
+        <div className="cr-chat">
+          <div className="cr-chat-col cr-skel-chat">
+            <div className="cr-skel" style={{ width: '60%', height: 44 }} />
+            <div className="cr-skel" style={{ width: '45%', height: 32, alignSelf: 'flex-end' }} />
+            <div className="cr-skel" style={{ width: '75%', height: 64 }} />
+          </div>
+        </div>
+      </div>
     </section>
   );
 }
 
-/** T245: what woke this node and why — every routed event, its reason, and what carried it. */
-function ActivityView({ id, tick }: { id: string; tick: unknown }): JSX.Element {
-  const [rows, setRows] = useState<ActivityEntry[] | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` (the pushed frame) is the re-read trigger.
-  useEffect(() => {
-    let live = true;
-    getStreamActivity(id)
-      .then((r) => live && setRows(r))
-      .catch((err: unknown) => live && setError(errorText(err)));
-    return () => {
-      live = false;
-    };
-  }, [id, tick]);
-  if (error) return <p className="cr-dim">{error}</p>;
-  if (!rows) return <p className="cr-dim">Loading…</p>;
-  if (rows.length === 0)
-    return (
-      <p className="cr-dim" data-testid="activity-empty">
-        No events routed here yet.
-      </p>
-    );
-  return (
-    <ul className="cr-docs" data-testid="activity">
-      {rows.map((row) => (
-        <li key={row.event.id} data-testid="activity-row" data-event={row.event.id}>
-          <span data-testid="activity-type">{row.event.type.replace(/_/g, ' ')}</span>
-          {row.event.repo ? <span className="cr-dim"> · {row.event.repo}</span> : null}
-          <span className="cr-dim"> · </span>
-          <span className="cr-dim" data-testid="activity-because">
-            {row.because.replace(/_/g, ' ')}
-          </span>
-          <span className="cr-dim" data-testid="activity-status">
-            {' '}
-            · {row.status}
-            {row.session ? ` in session ${row.session}` : ''}
-            {row.digest ? ` in digest ${row.digest}` : ''}
-          </span>
-          <span className="cr-dim"> · {row.event.at}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function DiffView({ id }: { id: string }): JSX.Element {
-  const [diff, setDiff] = useState<StreamDiff | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    let live = true;
-    getStreamDiff(id)
-      .then((d) => live && setDiff(d))
-      .catch((err: unknown) => live && setError(errorText(err)));
-    return () => {
-      live = false;
-    };
-  }, [id]);
-  if (error)
-    return (
-      <p className="cr-dim" data-testid="diff-empty">
-        {error}
-      </p>
-    );
-  if (!diff) return <p className="cr-dim">Loading…</p>;
-  return (
-    <div data-testid="diff">
-      <p className="cr-dim">
-        {diff.branch} against {diff.target}
-        {diff.worktree ? ` · ${diff.worktree}` : ''} ·{' '}
-        {diff.stat.split('\n').pop()?.trim() || 'no changes'}
-      </p>
-      {diff.patch ? (
-        <pre className="cr-diff">
-          {diff.patch.split('\n').map((line, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: a patch's lines are positional and never reordered.
-            <span key={i} data-line={diffLineKind(line)}>
-              {line}
-              {'\n'}
-            </span>
-          ))}
-        </pre>
-      ) : (
-        <p className="cr-dim">No changes yet.</p>
-      )}
-      {diff.truncated && <p className="cr-dim">Truncated — the patch is over the page's cap.</p>}
-    </div>
-  );
-}
-
-/** T340: a PR url is GitHub data; it is a link only when it is http(s). */
-function isWebUrl(url: string): boolean {
-  try {
-    const { protocol } = new URL(url);
-    return protocol === 'http:' || protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-/** T338: how a delivery result reads: a pushed PR is a success, a gate is news, not an error. */
-const OUTCOME_TONE: Record<LandOutcome['status'], 'ok' | 'info' | 'bad'> = {
-  landed: 'ok',
-  pr_open: 'ok',
-  gated: 'info',
-  refused: 'bad',
-  blocked: 'bad',
-};
-
-function LandPanel({
-  page,
-  onChanged,
-  onResolve,
+/**
+ * The node's goal, at the head of its conversation (long goals fold).
+ * T385: Edit changes it in place; the agent reads the change on its thread.
+ */
+function GoalCard({
+  goal,
+  onSave,
 }: {
-  page: StreamPagePayload;
-  onChanged: () => void;
-  /** T176: opens the session picker for a Resolve worker. */
-  onResolve: () => void;
-}): JSX.Element | null {
+  goal: string;
+  onSave?: (goal: string) => Promise<void>;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
-  const [outcome, setOutcome] = useState<LandOutcome | undefined>(undefined);
-  const [refused, setRefused] = useState<string | undefined>(undefined);
-  const { stream, land } = page;
-  if (stream.repo === undefined) return null;
-  const finished = stream.human.status === 'landed' || stream.human.status === 'closed';
-  // T176: a failed land's own line replaces the preflight, never "Ready" beside it.
-  const failed =
-    refused !== undefined || (outcome !== undefined && OUTCOME_TONE[outcome.status] === 'bad');
-  const pr = stream.delivery_state?.pr;
-  const conflicts = land?.conflicts;
-  // T340 (§4.1, P19): with a PR open the merge happens on GitHub; the panel shows the PR, not Merge.
-  const openPr =
-    stream.delivery_state?.mode === 'pr' && stream.delivery_state.pr?.state === 'open'
-      ? stream.delivery_state.pr
-      : undefined;
-
-  async function doCheckPr(): Promise<void> {
-    setBusy(true);
-    setOutcome(undefined);
-    setRefused(undefined);
-    try {
-      await checkStreamPr(stream.id);
-    } catch (err) {
-      setRefused(errorText(err));
-    } finally {
-      setBusy(false);
-      onChanged();
+  const [error, setError] = useState<string | undefined>(undefined);
+  const long = goal.split('\n').length > 8 || goal.length > 700;
+  const editing = draft !== undefined;
+  const save = (): void => {
+    const next = (draft ?? '').trim();
+    if (!onSave || busy) return;
+    if (next === '' || next === goal.trim()) {
+      setDraft(undefined);
+      return;
     }
-  }
-
-  async function doMarkLanded(): Promise<void> {
     setBusy(true);
-    setRefused(undefined);
-    try {
-      await markStreamLanded(stream.id);
-    } catch (err) {
-      setRefused(errorText(err));
-    } finally {
-      setBusy(false);
-      onChanged();
-    }
-  }
-
-  async function doLand(): Promise<void> {
-    setBusy(true);
-    setOutcome(undefined);
-    setRefused(undefined);
-    try {
-      setOutcome(await landStream(stream.id));
-    } catch (err) {
-      setRefused(errorText(err));
-    } finally {
-      setBusy(false);
-      onChanged();
-    }
-  }
-
+    setError(undefined);
+    onSave(next)
+      .then(() => setDraft(undefined))
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBusy(false));
+  };
   return (
-    <section className="cr-land" data-testid="land-panel">
-      <div className="cr-land-hd">
-        <h2>Delivery</h2>
-        {!finished && land?.merged && (
+    <div
+      className="cr-goal-card"
+      data-testid="goal-card"
+      data-folded={long && !open && !editing ? 'true' : undefined}
+      data-editing={editing ? 'true' : undefined}
+    >
+      <div className="cr-goal-label">
+        <Icon name="scroll-text" size={13} />
+        Goal
+        {onSave && !editing && (
           <button
             type="button"
-            className="cr-btn signal"
-            data-testid="stream-mark-landed"
-            disabled={busy}
-            onClick={() => void doMarkLanded()}
+            className="cr-goal-edit"
+            data-testid="goal-edit"
+            title={goal === '' ? 'Set the goal' : 'Edit the goal'}
+            onClick={() => setDraft(goal)}
           >
-            Mark landed
-          </button>
-        )}
-        {!finished && openPr && (
-          <button
-            type="button"
-            className="cr-btn"
-            data-testid="stream-pr-check"
-            disabled={busy}
-            onClick={() => void doCheckPr()}
-          >
-            {busy ? 'Checking…' : 'Check now'}
-          </button>
-        )}
-        {!finished && !land?.merged && !openPr && (
-          <button
-            type="button"
-            className="cr-btn signal"
-            data-testid="stream-land"
-            disabled={busy}
-            onClick={() => void doLand()}
-          >
-            {busy ? 'Merging…' : 'Merge'}
+            <Icon name="pencil" size={12} />
+            {goal === '' ? 'Set a goal' : 'Edit'}
           </button>
         )}
       </div>
-      {stream.human.status === 'landed' ? (
-        <p data-testid="land-before" data-ready="landed">
-          Landed.
-        </p>
-      ) : conflicts && conflicts.length > 0 ? (
-        <div data-testid="land-conflict">
-          <p data-testid="land-before" data-ready="conflict">
-            Conflict: landing into {land?.target ?? 'the target'} conflicted in {conflicts.length}{' '}
-            file{conflicts.length === 1 ? '' : 's'}. Resolve attaches a worker to merge the target
-            in and fix them; then land again.
-          </p>
-          <ul>
-            {conflicts.map((file) => (
-              <li key={file} data-testid="land-conflict-file">
-                <code>{file}</code>
-              </li>
-            ))}
-          </ul>
-          <button
-            type="button"
-            className="cr-btn"
-            data-testid="stream-resolve"
-            disabled={
-              busy || page.stream.sessions.some((s) => s.role === 'worker' && isLiveSession(s))
-            }
-            onClick={onResolve}
-          >
-            Resolve
-          </button>
-        </div>
-      ) : failed ? null : openPr ? (
-        <p data-testid="land-before" data-ready="pr">
-          PR #{openPr.number} into {openPr.base}:{' '}
-          {openPr.review === 'none' ? 'no review' : openPr.review.replace('_', ' ')} · CI{' '}
-          {openPr.checks} · auto-merge {openPr.auto_merge}. It merges on GitHub.{' '}
-          {isWebUrl(openPr.url) ? (
-            <a data-testid="stream-pr-link" href={openPr.url} target="_blank" rel="noreferrer">
-              Open PR
-            </a>
-          ) : (
-            <span data-testid="stream-pr-link">{openPr.url}</span>
-          )}
-        </p>
-      ) : land?.merged ? (
-        <p data-testid="land-before" data-ready="merged">
-          Already merged into {land.target}.
-        </p>
-      ) : land ? (
-        <p data-testid="land-before" data-ready={land.ready ? 'yes' : 'no'}>
-          {land.ready
-            ? `Ready: ${land.branch} is ${land.ahead} commit${land.ahead === 1 ? '' : 's'} ahead of ${land.target}${
-                land.gated ? ' — this repo asks for a land gate' : ''
-              }.`
-            : `Not landable yet: ${land.reason}`}
-        </p>
-      ) : null}
-      {stream.delivery_state && (
-        <p
-          className="cr-dim"
-          data-testid="delivery-state"
-          data-status={stream.delivery_state.status}
+      {editing ? (
+        <form
+          className="cr-goal-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save();
+          }}
         >
-          Delivery: {stream.delivery_state.mode} · {stream.delivery_state.status.replace('_', ' ')}
-          {stream.delivery_state.held_by?.map((h) => (
-            <span key={`${h.reason}:${h.detail}`}>
-              {' — '}
-              <Linked text={h.detail} />
-            </span>
-          ))}
+          <textarea
+            className="cr-goal-input"
+            data-testid="goal-input"
+            aria-label="Goal"
+            value={draft}
+            rows={Math.min(12, Math.max(3, draft.split('\n').length + 1))}
+            // biome-ignore lint/a11y/noAutofocus: the user just asked to edit it.
+            autoFocus
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setDraft(undefined);
+                setError(undefined);
+              } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                save();
+              }
+            }}
+          />
+          {error && <p className="cr-field-error">{error}</p>}
+          <div className="cr-goal-actions">
+            <span className="cr-goal-hint">The agent reads the new goal on its next turn.</span>
+            <Button size="sm" variant="ghost" onClick={() => setDraft(undefined)}>
+              Cancel
+            </Button>
+            <Button size="sm" variant="primary" type="submit" busy={busy} data-testid="goal-save">
+              Save goal
+            </Button>
+          </div>
+        </form>
+      ) : goal === '' ? (
+        <p className="cr-goal cr-goal-none" data-testid="goal-none">
+          No goal yet. The agent talks it through with you; set a goal when you know what it is, and
+          finishing it then counts.
         </p>
+      ) : (
+        <Markdown className="cr-goal" text={goal} />
       )}
-      {pr && (
-        <p className="cr-dim" data-testid="delivery-pr" data-state={pr.state}>
-          {isWebUrl(pr.url) ? (
-            <a
-              href={pr.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              data-testid="delivery-pr-link"
-            >
-              PR #{pr.number}
-            </a>
-          ) : (
-            <span data-testid="delivery-pr-link">PR #{pr.number}</span>
-          )}{' '}
-          {pr.state}
-          {pr.draft ? ' (draft)' : ''} · review {pr.review.replace(/_/g, ' ')} · checks {pr.checks}{' '}
-          · auto-merge {pr.auto_merge}
-          {pr.mergeable !== 'clean' && pr.mergeable !== 'unknown' ? ` · ${pr.mergeable}` : ''}
-        </p>
-      )}
-      <p className="cr-dim" data-testid="land-diff-rules">
-        {page.diff_rules.length === 0
-          ? 'No diff-stage rules in scope.'
-          : `Ship check rules: ${page.diff_rules.join(', ')}`}
-      </p>
-      {outcome && !(conflicts && conflicts.length > 0) && (
-        <p
-          className={`cr-land-result ${OUTCOME_TONE[outcome.status]}`}
-          data-testid="land-result"
-          data-status={outcome.status}
-          aria-live="polite"
-        >
-          <Linked text={outcome.line} />
-        </p>
-      )}
-      {refused && (
-        <p
-          className="cr-land-result bad"
-          data-testid="land-result"
-          data-status="refused"
-          role="alert"
-        >
-          {openPr ? 'Check failed' : 'Land refused'}: {refused}
-        </p>
-      )}
-    </section>
-  );
-}
-
-/** T321 (§10): the node's Jira/Linear link; linking sets the goal from the issue. */
-function TrackerLinkField({
-  stream,
-  rollup,
-  busy,
-  act,
-}: {
-  stream: StreamPagePayload['stream'];
-  rollup: StreamPagePayload['rollup'];
-  busy: boolean;
-  act: (fn: () => Promise<unknown>) => Promise<void> | void;
-}): JSX.Element {
-  const [key, setKey] = useState('');
-  const link = stream.external_link;
-  if (link !== undefined) {
-    return (
-      <p className="cr-dim" data-testid="tracker-link">
-        Linked to{' '}
-        <a href={link.url} target="_blank" rel="noreferrer noopener">
-          {link.key}
-        </a>{' '}
-        ({link.system}){' '}
-        {rollup !== undefined && (
-          <span data-testid="tracker-rollup">
-            · {rollup.merged}/{rollup.total} merged{' '}
-          </span>
-        )}
+      {long && !editing && (
         <button
           type="button"
-          className="cr-btn"
-          data-testid="tracker-unlink"
-          disabled={busy}
-          onClick={() => void act(() => linkNode(stream.id, null))}
+          className="cr-fold"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
         >
-          Unlink
+          {open ? 'Show less' : 'Show all'}
+          <Icon name={open ? 'chevron-up' : 'chevron-down'} size={13} />
         </button>
-        {link.kind === 'epic' ? (
-          <>
-            {' '}
-            <button
-              type="button"
-              className="cr-btn"
-              data-testid="tracker-import-children"
-              disabled={busy}
-              onClick={() => void act(() => importChildren(stream.id))}
-            >
-              Import children
-            </button>
-          </>
-        ) : null}
-      </p>
-    );
-  }
-  return (
-    <form
-      className="cr-actions"
-      data-testid="tracker-link-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        const k = key.trim();
-        if (k) void act(() => linkNode(stream.id, k).then(() => setKey('')));
-      }}
-    >
-      <label className="cr-dim">
-        Link{' '}
-        <input
-          data-testid="tracker-link-input"
-          placeholder="SHOP-11"
-          value={key}
-          disabled={busy}
-          onChange={(e) => setKey(e.target.value)}
-        />
-      </label>
-      <button type="submit" className="cr-btn" disabled={busy || key.trim() === ''}>
-        Link
-      </button>
-      <button
-        type="button"
-        className="cr-btn"
-        data-testid="tracker-create-issue"
-        title="Create an issue from this node (type a project key like SHOP, or leave empty to use the linked parent's)"
-        disabled={busy || /-\d+$/.test(key.trim())}
-        onClick={() =>
-          void act(() => createNodeIssue(stream.id, key.trim() || undefined).then(() => setKey('')))
-        }
-      >
-        Create issue
-      </button>
-    </form>
-  );
-}
-
-const AUTONOMY_LEVELS = ['advise', 'organise', 'run'] as const;
-
-/**
- * T282 (§9 Autonomy): how far this node's coordinator acts on its own. On
- * a project root it sets the project's level; elsewhere it overrides it.
- */
-function AutonomyPicker({
-  stream,
-  project,
-  busy,
-  act,
-}: {
-  stream: StreamPagePayload['stream'];
-  project: CockpitProjectRow | undefined;
-  busy: boolean;
-  act: (fn: () => Promise<unknown>) => Promise<void> | void;
-}): JSX.Element | null {
-  if (project === undefined) return null;
-  const isRoot = project.root === stream.id;
-  const inherited = project.autonomy?.coordinator ?? 'advise';
-  const value = isRoot ? inherited : (stream.autonomy ?? 'inherit');
-  return (
-    <label className="cr-dim" data-testid="autonomy">
-      Coordinator autonomy{' '}
-      <select
-        data-testid="autonomy-select"
-        value={value}
-        disabled={busy}
-        onChange={(e) => {
-          const next = e.target.value;
-          void act(() =>
-            isRoot
-              ? setProjectAutonomy(project.id, { coordinator: next as Autonomy })
-              : setNodeAutonomy(stream.id, next === 'inherit' ? null : (next as Autonomy)),
-          );
-        }}
-      >
-        {!isRoot && <option value="inherit">inherit ({inherited})</option>}
-        {AUTONOMY_LEVELS.map((l) => (
-          <option key={l} value={l}>
-            {l}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-type StatusMapKey = 'in_progress' | 'in_review' | 'done';
-const STATUS_MAP_FIELDS: ReadonlyArray<{ key: StatusMapKey; label: string }> = [
-  { key: 'in_progress', label: 'In progress' },
-  { key: 'in_review', label: 'In review' },
-  { key: 'done', label: 'Done' },
-];
-
-/**
- * T338: a project's own controls, on its root node's page: the Director's
- * autonomy level (§12) and the tracker block (§10: system, push status,
- * status map). Credentials stay in Settings → Trackers.
- */
-function ProjectControls({
-  project,
-  busy,
-  act,
-}: {
-  project: CockpitProjectRow;
-  busy: boolean;
-  act: (fn: () => Promise<unknown>) => Promise<void> | void;
-}): JSX.Element {
-  const tracker = project.tracker;
-  const [system, setSystem] = useState<'' | 'jira' | 'linear'>(tracker?.system ?? '');
-  const [push, setPush] = useState(tracker?.push_status ?? false);
-  const [map, setMap] = useState<Record<StatusMapKey, string>>({
-    in_progress: tracker?.status_map?.in_progress ?? '',
-    in_review: tracker?.status_map?.in_review ?? '',
-    done: tracker?.status_map?.done ?? '',
-  });
-  function save(): void {
-    if (system === '') {
-      void act(() => setProjectTracker(project.id, null));
-      return;
-    }
-    const statusMap = Object.fromEntries(
-      STATUS_MAP_FIELDS.map((f) => [f.key, map[f.key].trim()]).filter(([, v]) => v !== ''),
-    );
-    void act(() =>
-      setProjectTracker(project.id, {
-        system,
-        ...(tracker?.base_url !== undefined ? { base_url: tracker.base_url } : {}),
-        push_status: push,
-        ...(Object.keys(statusMap).length > 0 ? { status_map: statusMap } : {}),
-      }),
-    );
-  }
-  return (
-    <div className="cr-project-controls" data-testid="project-controls">
-      <label className="cr-dim">
-        Director autonomy{' '}
-        <select
-          data-testid="director-autonomy-select"
-          value={project.autonomy?.director ?? 'advise'}
-          disabled={busy}
-          onChange={(e) =>
-            void act(() => setProjectAutonomy(project.id, { director: e.target.value as Autonomy }))
-          }
-        >
-          {AUTONOMY_LEVELS.map((l) => (
-            <option key={l} value={l}>
-              {l}
-            </option>
-          ))}
-        </select>
-      </label>
-      {project.repos !== undefined && (
-        <p className="cr-dim" data-testid="project-repos">
-          Repos: {project.repos.length === 0 ? 'none' : project.repos.join(', ')}
-        </p>
       )}
-      <form
-        className="cr-actions"
-        data-testid="project-tracker-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          save();
-        }}
-      >
-        <label className="cr-dim">
-          Tracker{' '}
-          <select
-            data-testid="project-tracker-system"
-            value={system}
-            disabled={busy}
-            onChange={(e) => setSystem(e.target.value as '' | 'jira' | 'linear')}
-          >
-            <option value="">none</option>
-            <option value="jira">Jira</option>
-            <option value="linear">Linear</option>
-          </select>
-        </label>
-        {system !== '' && (
-          <>
-            <label className="cr-dim">
-              <input
-                type="checkbox"
-                data-testid="project-tracker-push"
-                checked={push}
-                disabled={busy}
-                onChange={(e) => setPush(e.target.checked)}
-              />{' '}
-              push status
-            </label>
-            {STATUS_MAP_FIELDS.map((f) => (
-              <label key={f.key} className="cr-dim">
-                {f.label}{' '}
-                <input
-                  data-testid={`project-tracker-map-${f.key}`}
-                  value={map[f.key]}
-                  placeholder="tracker status"
-                  disabled={busy}
-                  onChange={(e) => setMap((m) => ({ ...m, [f.key]: e.target.value }))}
-                />
-              </label>
-            ))}
-          </>
-        )}
-        <button type="submit" className="cr-btn" data-testid="project-tracker-save" disabled={busy}>
-          Save tracker
-        </button>
-      </form>
     </div>
-  );
-}
-
-/** T283 (§14.5): the children's status cards, on the parent's page. */
-function ChildCards({
-  cards,
-  titleOf,
-}: {
-  cards: Array<CockpitStatusCard | CockpitCardError>;
-  titleOf: (id: string) => string;
-}): JSX.Element | null {
-  if (cards.length === 0) return null;
-  return (
-    <section className="cr-findings" data-testid="child-cards">
-      <h2>Children</h2>
-      <ul>
-        {cards.map((card) =>
-          'error' in card ? (
-            <li key={card.node} data-testid="status-card-error" data-node={card.node}>
-              <strong>{titleOf(card.node)}</strong>{' '}
-              <span className="sev" data-testid="status-card-error-text">
-                {card.error}
-              </span>
-            </li>
-          ) : (
-            <li
-              key={card.node}
-              data-testid="status-card"
-              data-node={card.node}
-              data-state={card.state}
-            >
-              <strong>{titleOf(card.node)}</strong> <span className="cr-dim">{card.state}</span>
-              {card.doing !== '' && (
-                <>
-                  {' — '}
-                  <span data-testid="status-card-doing">{card.doing}</span>
-                </>
-              )}
-              {card.files.length > 0 && (
-                <p className="cr-dim" data-testid="status-card-files">
-                  {card.files.join(', ')}
-                </p>
-              )}
-              {card.relies_on.length > 0 && (
-                <p className="cr-dim" data-testid="status-card-relies">
-                  relies on <Linked text={card.relies_on.join(', ')} />
-                </p>
-              )}
-            </li>
-          ),
-        )}
-      </ul>
-    </section>
   );
 }
 
 export function StreamPage({ id }: { id: string }): JSX.Element {
-  const { cockpit, refresh } = useFeed();
-  const { openRules } = useShell();
+  const { cockpit, refresh, offline } = useFeed();
+  const { openRules, select, tab, setTab, openAsk, openNewStream } = useShell();
+  const toast = useToast();
+  const copy = useCopy();
   const [page, setPage] = useState<StreamPagePayload | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
-  const [tab, setTab] = useState<Tab>('thread');
-  const [draft, setDraft] = useState('');
+  // `tab` (the shell's, in the URL: T436 #21) is `undefined` for the node's own first tab (T387:
+  // a project root's Overview, else the chat); T403: a Needs me card asks for the chat.
+  // T436 (#11): the draft is kept per node, across a reload too (`lib/drafts.ts`).
+  // T447 (audit r7 #15): the page writes the draft but doesn't hold it: `DraftComposer` does, so a
+  // keystroke re-renders the composer alone, not this page and its chat.
+  const setDraft = useDraftSetter(id);
   const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
-  // T170: Attach/Review open the session picker first.
-  const [picker, setPicker] = useState<'worker' | 'reviewer' | 'resolve' | undefined>(undefined);
-  // T205: + Repo in place — the registered repos, and the open picker's choice.
-  const [repos, setRepos] = useState<RepoRow[]>([]);
-  const [addingRepo, setAddingRepo] = useState(false);
+  // T416 (finding 7): a failed send says so under the composer, with Retry; the draft stays.
+  const [sendError, setSendError] = useState<string | undefined>(undefined);
+  // T416 (finding 6): a refused merge says why under the header's Merge, with the fix it names.
+  const [mergeError, setMergeError] = useState<MergeRefusal | undefined>(undefined);
+  const [mergeNote, setMergeNote] = useState<string | undefined>(undefined);
+  const [fixing, setFixing] = useState(false);
+  const mergeTarget = useRef('main');
+  const mergeAsk = useMergeAsk();
+  // T416 (finding 21): the header's and the ⋯ menu's actions, for ⌘K's "This node".
+  const commands = useRef<NodeCommands | undefined>(undefined);
+  useNodeCommands(useCallback(() => commands.current, []));
+  const [picker, setPicker] = useState<Picker | undefined>(undefined);
+  const [modal, setModal] = useState<Modal | undefined>(undefined);
+  // T445 (audit r7 #23): every repository, with its kind, for Add repository…'s picker.
+  const repos = useRepoList();
   const [repoChoice, setRepoChoice] = useState('');
-  const [linking, setLinking] = useState(false);
   const [linkChoice, setLinkChoice] = useState('');
-  // T176: the server refused a worker on a parent with open children; this is its reason.
-  const threadRef = useRef<HTMLOListElement | null>(null);
+  // T332 (D33): "Branch off" — the thread line (0-based, whole thread) and the tangent's question.
+  const [branching, setBranching] = useState<number | undefined>(undefined);
+  // T504 (§6, §6a, §7): the line whose Move to thread picker is open; the thread whose Archive
+  // and forget awaits your confirm; the thread being promoted to a tangent (its question).
+  const [moving, setMoving] = useState<string | undefined>(undefined);
+  const [forgetting, setForgetting] = useState<string | undefined>(undefined);
+  const [promoting, setPromoting] = useState<string | undefined>(undefined);
+  // T503 (D60, D64): the chat thread the side panel shows, or a new one on a turn (or passage).
+  const [threadView, setThreadView] = useState<
+    { id: string } | { anchor: ThreadAnchor } | undefined
+  >(undefined);
+  const readThreadUpTo = useThreadReadUpTo();
+  const openThreadId = threadView !== undefined && 'id' in threadView ? threadView.id : undefined;
+  // T513: how far a thread is read when it is opened, or while it is open: its newest reply
+  // the page or the rail row knows of (the mark, the chip and the rail row read to one point).
+  const readAtOf = (thread: string): string | undefined => {
+    const shown = page?.stream.id === id ? page : undefined;
+    const lines = new Map((shown?.thread ?? []).map((e) => [e.ts, e.by]));
+    return threadReadAt(
+      shown?.chat_threads?.find((t) => t.id === thread),
+      (ts) => lines.get(ts),
+      cockpit?.streams.find((row) => row.id === id)?.thread_replies,
+      thread,
+    );
+  };
+  const openReadAt = openThreadId !== undefined ? readAtOf(openThreadId) : undefined;
+  // T503 (§6): a thread open in the panel, in a visible tab, is read up to its last reply.
+  // T513: also when the window comes back into focus.
+  useEffect(() => {
+    if (openThreadId === undefined || openReadAt === undefined) return;
+    const read = (): void => {
+      if (document.visibilityState === 'visible') {
+        markRead(threadReadKey(id, openThreadId), openReadAt);
+      }
+    };
+    read();
+    document.addEventListener('visibilitychange', read);
+    window.addEventListener('focus', read);
+    return () => {
+      document.removeEventListener('visibilitychange', read);
+      window.removeEventListener('focus', read);
+    };
+  }, [id, openThreadId, openReadAt]);
+  // T421 (D42): Send to parent's dialog, with the words it starts from.
+  const [sendingUp, setSendingUp] = useState<string | undefined>(undefined);
+  // T422 (D42): Turn into work's dialog.
+  const [turning, setTurning] = useState(false);
+  const [tangentQuestion, setTangentQuestion] = useState('');
+  const [trackerOpen, setTrackerOpen] = useState(false);
+  const [defaults, setDefaults] = useState<SessionDefaultsStatus | undefined>(undefined);
+  // T423: the composer chip's pick for the next message only (undefined: the default, or what runs).
+  const [nextSession, setNextSession] = useState<ResolvedSessionDefaults | undefined>(undefined);
+  const [detailsOpen, setDetailsOpen] = useDetailsOpen();
+  const composer = useRef<ComposerHandle>(null);
+  // T499: the chat, where a selection offers Quote.
+  const chatRef = useRef<HTMLDivElement>(null);
+  // T393: review comments on the Changes tab (counted on its tab).
+  const reviewCount = useReview(id).comments.length;
+  // T392: the agent's steps, live.
+  const agentSteps = useSteps(id);
+  // T461: the live agent's slash commands, for the composer's `/` menu.
+  const agentCommands = useAgentCommands(
+    id,
+    page?.stream.id === id ? liveAgentOf(page.stream.sessions)?.id : undefined,
+  );
 
   // Every pushed frame and every action re-reads the page, so reads
   // overlap, and their responses can arrive in any order. Only the latest
@@ -978,576 +530,2516 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     load();
   }, [load, cockpit]);
 
+  // T435 (#20): Ask just opened this conversation: its composer takes focus once it shows.
+  const shownId = page?.stream.id;
   useEffect(() => {
-    listRepos()
-      .then(setRepos)
-      .catch(() => setRepos([]));
-  }, []);
+    if (shownId === id && takeComposerFocus(id)) {
+      requestAnimationFrame(() => composer.current?.focus());
+    }
+  }, [shownId, id]);
 
-  // A different stream opened: back to its thread.
+  // A different node opened: nothing half-open (its tab is the shell's, its draft its own).
   // biome-ignore lint/correctness/useExhaustiveDependencies: `id` is the trigger.
   useEffect(() => {
-    setTab('thread');
-    setDraft('');
     setActionError(undefined);
+    setSendError(undefined);
+    setMergeError(undefined);
+    setMergeNote(undefined);
     setPicker(undefined);
-    setAddingRepo(false);
+    setModal(undefined);
     setRepoChoice('');
+    setLinkChoice('');
+    setBranching(undefined);
+    setThreadView(undefined);
+    setMoving(undefined);
+    setForgetting(undefined);
+    setPromoting(undefined);
+    setTangentQuestion('');
+    setTrackerOpen(false);
+    setNextSession(undefined);
+    getSessionDefaults()
+      .then(setDefaults)
+      .catch(() => setDefaults(undefined));
   }, [id]);
 
-  const threadLength = page?.thread.length ?? 0;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: scrolls when the thread grows.
-  useEffect(() => {
-    const el = threadRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [threadLength]);
+  const onDeliveryResult = useCallback(
+    (result: { outcome?: LandOutcome; refused?: string }) => {
+      // T416 (finding 6): a refusal is said under the header's Merge, where it was pressed,
+      // in words and with the fix it names; never a toast over the composer.
+      const outcome = result.outcome;
+      if (result.refused !== undefined) {
+        setMergeError(
+          mergeRefusal(
+            isNetworkMessage(result.refused)
+              ? 'Couldn’t reach the daemon; nothing was merged.'
+              : result.refused,
+            mergeTarget.current,
+          ),
+        );
+        return;
+      }
+      if (outcome?.status === 'blocked') {
+        setMergeError(mergeConflict(outcome.target, outcome.conflicts));
+        return;
+      }
+      if (outcome?.status === 'refused' && !outcome.held) {
+        setMergeError(mergeRefusal(outcome.reason, mergeTarget.current));
+        return;
+      }
+      // Good news and holds: the Delivery section says it; with the panel shut, a toast does.
+      if (detailsOpen || !outcome) return;
+      const tone = outcomeTone(outcome);
+      toast({
+        title: tone === 'ok' ? 'Delivered' : tone === 'info' ? 'Held' : 'Not merged',
+        // T413: a branch by its name, no ids.
+        body: tidyIds(outcome.line),
+        tone: tone === 'bad' ? 'error' : tone === 'ok' ? 'success' : 'info',
+      });
+    },
+    [detailsOpen, toast],
+  );
+  const onDeliveryChanged = useCallback(() => {
+    load();
+    refresh();
+  }, [load, refresh]);
+  const delivery = useDelivery(
+    id,
+    `${id}:${page?.stream.id === id ? page.stream.sessions.length : 0}`,
+    onDeliveryChanged,
+    onDeliveryResult,
+  );
 
-  async function act(fn: () => Promise<unknown>, after?: () => void): Promise<void> {
-    setBusy(true);
+  const act = useCallback(
+    async (fn: () => Promise<unknown>, after?: () => void): Promise<void> => {
+      setBusy(true);
+      setActionError(undefined);
+      try {
+        await fn();
+        after?.();
+      } catch (err) {
+        setActionError(errorText(err));
+      } finally {
+        setBusy(false);
+        load();
+        refresh();
+      }
+    },
+    [load, refresh],
+  );
+
+  const titleOf = useCallback(
+    (nodeId: string) => cockpit?.streams.find((r) => r.id === nodeId)?.title ?? nodeId,
+    [cockpit],
+  );
+
+  const threadTick = page?.thread_total ?? 0;
+
+  if (loadError && !page) {
+    commands.current = undefined;
+    return (
+      <section className="cr-node" data-testid="stream-page">
+        <div className="cr-node-main cr-node-failed">
+          <EmptyState
+            icon="alert-circle"
+            title="Couldn’t open this node"
+            actions={
+              <>
+                <Button icon="refresh" onClick={load}>
+                  Try again
+                </Button>
+                <Button variant="ghost" onClick={() => select(undefined)}>
+                  Back to Needs me
+                </Button>
+              </>
+            }
+          >
+            <span className="cr-error" role="alert">
+              {loadError}
+            </span>
+          </EmptyState>
+        </div>
+      </section>
+    );
+  }
+  if (!page || page.stream.id !== id) {
+    commands.current = undefined;
+    return <PageSkeleton />;
+  }
+
+  // ---------------------------------------------------------------- derived state
+  const { stream } = page;
+  const rows = cockpit?.streams ?? [];
+  const row = rows.find((r) => r.id === stream.id);
+  const role = row?.role;
+  // T421 (D42): a conversation can send what it concludes to the node it sits under;
+  // T435 (#19): not to a merged or closed one, where nothing acts on it.
+  const sendUpTo = sendUpTarget({ role, parent: stream.parent }, rows);
+  const parentRow =
+    stream.parent !== undefined ? rows.find((r) => r.id === stream.parent) : undefined;
+  const grandparentRow =
+    parentRow?.parent !== undefined ? rows.find((r) => r.id === parentRow.parent) : undefined;
+  const project = cockpit?.projects.find((p) => p.id === stream.project);
+  const rootOf = cockpit?.projects.find((p) => p.root === stream.id);
+  const children = rows.filter((r) => r.parent === stream.id);
+  const open = stream.human.status !== 'landed' && stream.human.status !== 'closed';
+  const merged = stream.human.status === 'landed';
+  // T471: closed is inactive, not read-only: Reopen (or a message) brings it back.
+  const closedNode = stream.human.status === 'closed' && stream.archived !== true;
+  const live = stream.sessions.filter(isLiveSession);
+  const liveAgent = liveAgentOf(stream.sessions);
+  const liveReviewer = live.find((s) => s.role === 'reviewer');
+  const agentWorking =
+    liveAgent !== undefined && (liveAgent.status === 'starting' || liveAgent.status === 'running');
+  const thinking = isThinking(stream);
+  const hasRun = stream.sessions.some((s) => isAgentRole(s.role));
+  // T361: a line starts an agent anywhere; T443: a project's root too (its coordinator, parts or
+  // not). Only a parentless single stream with no project waits for Start agent.
+  const lineStarts = !(role === 'project' && children.length === 0 && stream.project === undefined);
+  const waitingForPlan = row?.waiting_for_plan === true;
+  // T174: human lines sent mid-turn, not yet delivered to the live worker.
+  const queuedLines = new Set(live.flatMap((s) => s.queued ?? []));
+  const cards = needsYou(cockpit?.inbox ?? [], stream.id, row?.nothing_to_merge === true);
+  const questions = openQuestions(cockpit?.inbox ?? [], stream.id);
+  const name = agentName(stream.sessions);
+  const byDefaults = defaults ? resolvedFor(defaults, stream.repo, project?.session) : undefined;
+  // T464: a node that has run starts again on what it last ran; the defaults choose only for
+  // a node that never ran. Every "starts as" below names this.
+  const kept = byDefaults
+    ? keptChoice(stream.sessions, byDefaults.effort, defaults?.not_installed)
+    : undefined;
+  // T482: a start the policy picks for (a node that never ran, or a choose-again) runs its pick.
+  const routed = page.next_pick;
+  const resolved = routed
+    ? { vendor: routed.vendor, model: routed.model, effort: routed.effort }
+    : (kept ?? byDefaults);
+  // T423: what the live agent runs, and the chip: the next message's model (a pick lasts one
+  // message). It picks only where a line starts (or restarts) the agent; elsewhere it only names
+  // what runs. Picking never starts anything by itself.
+  const canPick = open && !waitingForPlan && lineStarts;
+  const running = liveAgent ? choiceOf(liveAgent, resolved?.effort ?? 'low') : undefined;
+  const chip = resolved
+    ? modelChip({
+        fallback: resolved,
+        ...(running ? { live: running } : {}),
+        ...(nextSession && canPick ? { chosen: nextSession } : {}),
+      })
+    : undefined;
+  const pending = chip?.pending;
+  // What a start by the header's Start agent runs: what the node last ran, else the default.
+  // A line starts with the chip's pick.
+  // T483: under Choose with a key, Jev picks at the start; the routed pick is only its fallback.
+  const defaultLabel = resolved
+    ? routed?.chooses === true
+      ? `the model Jev picks (${agentLabel(resolved)} if it can’t)`
+      : agentLabel(resolved)
+    : undefined;
+  const startWith = pending && !liveAgent ? agentLabel(pending) : defaultLabel;
+  // T505: Details → Agent warns for the agent that runs, else the one a start runs.
+  const agentWarning = uncheckedWarning(liveAgent?.vendor ?? resolved?.vendor);
+  const statusInput: StatusInput = row ?? {
+    agent_status: stream.agent.status,
+    human_status: stream.human.status,
+    ...(live.length > 0 ? { live: true as const } : {}),
+  };
+  // T447 (audit r7 #2): a coordinating node's parts in one line: "2 of 4 merged · waiting for web part".
+  const partsLine = partsSummary(row?.parts);
+  const intent = sendIntent({
+    open,
+    merged,
+    ...(liveAgent ? { live: { name: vendorLabel(liveAgent.vendor), working: agentWorking } } : {}),
+    waitingForPlan,
+    canStart: lineStarts,
+    hasRun,
+    ...(row?.stopped ? { stopped: true } : {}),
+    ...(startWith ? { startWith } : {}),
+    ...(pending && liveAgent ? { restartWith: agentLabel(pending) } : {}),
+  });
+  const mergeable = isMergeable(page, delivery);
+  // T436 (audit r6 #24): a reviewer reads commits; until the branch has some there is nothing to review.
+  const hasCommits = stream.repo !== undefined && (page.land?.ahead ?? 0) > 0;
+  const actions = headerActions({
+    open,
+    liveAgent: liveAgent !== undefined,
+    anyLive: live.length > 0,
+    anyBusy: live.some((s) => s.status === 'starting' || s.status === 'running'),
+    canStart: !waitingForPlan,
+    // T390: a project root's next step is a node, not its coordinator: Start stays plain there.
+    startIsNext: rootOf === undefined && (!hasRun || row?.stopped === true),
+    mergeable,
+    landReady: page.land?.ready === true,
+    decisionOpen: cards.length > 0,
+  });
+  // T435 (#16): an answered conversation's next step is what follows from its answer — Turn into
+  // work…, Send to <parent> — not Restart agent, which would ask its question again (⋯ keeps it).
+  const convoNext = open && hasReplied(role, page.thread) && actions.agent !== 'stop';
+  const shownActions: typeof actions = convoNext ? { merge: actions.merge } : actions;
+  // T387: a project's root, known from the page itself (no parent, a project) before the frame names it.
+  const projectRoot =
+    rootOf !== undefined || (stream.parent === undefined && stream.project !== undefined);
+  const tabs = nodeTabs({
+    role,
+    projectRoot,
+    hasRepo: stream.repo !== undefined,
+    hasChildren: children.length > 0,
+    hasPlanItem: cards.some((c) => c.kind === 'plan_approve'),
+    knowledge: page.rules.length,
+    docs: page.docs.length,
+  });
+  const shownTab: NodeTab = tab !== undefined && tabs.includes(tab) ? tab : (tabs[0] ?? 'thread');
+  const waits = stream.waits_on ?? [];
+  const linkOptions = rows.filter((r) => r.id !== stream.id && !waits.some((w) => w.node === r.id));
+  const chosenLink = linkChoice || linkOptions[0]?.id || '';
+  // T445 (audit r7 #23): the project's repositories first, as New node lists them.
+  const { inProject: projectRepos, others: otherRepos } = splitRepos(
+    repos.filter((r) => r.name !== stream.repo),
+    project?.repos,
+  );
+  const repoOptions = [...projectRepos, ...otherRepos].map((r) => r.name);
+  const chosenRepo = repoChoice || repoOptions[0] || '';
+  // T332 (D33): only a conversation branches off; its tangents are conversations too.
+  const canBranch = open && role === 'conversation';
+  const threadBase = page.thread_total - page.thread.length;
+  const question = tangentQuestion.trim();
+  const conversation = page.thread.some((e) => {
+    const v = chatVariant(e);
+    return v === 'you' || v === 'agent';
+  });
+  const isRoot = rootOf !== undefined || role === 'project';
+  // "Waits on" holds a delivery: it applies where something merges.
+  const canWait = role === 'work' || role === 'coordinating' || waits.length > 0;
+
+  // The path: the node's ancestors, root first, each one opening its page.
+  const crumbs: Crumb[] = [];
+  {
+    const seen = new Set<string>([stream.id]);
+    let at = row?.parent !== undefined ? rows.find((r) => r.id === row.parent) : undefined;
+    while (at && !seen.has(at.id)) {
+      seen.add(at.id);
+      crumbs.unshift({ id: at.id, title: at.title });
+      const parent: string | undefined = at.parent;
+      at = parent !== undefined ? rows.find((r) => r.id === parent) : undefined;
+    }
+    if (crumbs.length === 0 && row === undefined) {
+      for (const title of page.path.slice(0, -1)) crumbs.push({ title });
+    }
+  }
+
+  // ---------------------------------------------------------------- actions
+  const branchOff = (line: number) =>
+    act(async () => {
+      const created = await createStream({
+        // T425: cut at a word like New node's; the cheap model names it better (D41).
+        title: titleFromGoal(question) || question.slice(0, 60),
+        goal: question,
+        parent: stream.id,
+        seed_line: line,
+        auto_title: true,
+      });
+      setBranching(undefined);
+      setTangentQuestion('');
+      select(created.id);
+    });
+
+  /** T445: scrolls to one of this node's decision cards and puts focus on its first action. */
+  function showCard(id: string): void {
+    const card = document.querySelector<HTMLElement>(
+      `[data-testid="stream-needs"] .cr-card[data-id="${CSS.escape(id)}"]`,
+    );
+    if (!card) return;
+    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    card.querySelector<HTMLButtonElement>('.cr-card-ft button:not(:disabled)')?.focus({
+      preventScroll: true,
+    });
+    // A moment's ring, so the eye finds it too (a focus a click moved shows none).
+    card.dataset.flash = 'true';
+    setTimeout(() => delete card.dataset.flash, 1200);
+  }
+
+  function addRepo(repo: string, switching = false): void {
+    void act(
+      () => addRepoToStream(stream.id, repo, switching),
+      () => setModal(undefined),
+    );
+  }
+
+  const start = () => void act(() => attachSession(stream.id, 'worker'));
+  const stop = () => void act(() => stopSessions(stream.id));
+  // ⋯ Restart agent: a fresh session with the same model.
+  const restart = () =>
+    act(async () => {
+      const previous = liveAgent;
+      await stopSessions(stream.id);
+      await attachSession(
+        stream.id,
+        'worker',
+        previous
+          ? {
+              vendor: previous.vendor,
+              ...(previous.model !== 'default' ? { model: previous.model } : {}),
+              ...(previous.effort ? { effort: previous.effort } : {}),
+            }
+          : {},
+      );
+    });
+
+  async function send(): Promise<void> {
+    const text = draftOf(stream.id).trim();
+    if (!text || intent.action === 'none') return;
+    if (offline) {
+      setSendError(SEND_UNREACHABLE);
+      return;
+    }
+    setSending(true);
     setActionError(undefined);
+    setSendError(undefined);
     try {
-      await fn();
-      after?.();
+      // T423: the chip's pick goes with this line only: it starts the agent with it, or
+      // restarts the live one with it (stop, then a start the line is the first prompt of).
+      const session = pending
+        ? {
+            vendor: pending.vendor,
+            ...(pending.model !== undefined ? { model: pending.model } : {}),
+            effort: pending.effort,
+          }
+        : undefined;
+      if (intent.action === 'restart' && session) {
+        await stopSessions(stream.id);
+        const said = await sayOnStream(stream.id, text, { start: true, session });
+        if (said.started)
+          toast({ title: `Restarted with ${agentLabel(session)}`, tone: 'success' });
+        setNextSession(undefined);
+      } else if (intent.action === 'start') {
+        const said = await sayOnStream(stream.id, text, {
+          start: true,
+          ...(session ? { session } : {}),
+        });
+        if (said.started) toast({ title: `Started ${startWith ?? 'the agent'}`, tone: 'success' });
+        setNextSession(undefined);
+      } else {
+        await sayOnStream(stream.id, text);
+      }
+      setDraft('');
     } catch (err) {
+      // T416 (finding 7): under the composer, in words, with Retry; the draft stays as typed.
+      setSendError(writeFailure(err));
+    } finally {
+      setSending(false);
+      load();
+      refresh();
+    }
+  }
+
+  // T416 (finding 38): the first Merge asks, remembered per browser.
+  mergeTarget.current = page.land?.target ?? 'main';
+  const merge = (): void => {
+    setMergeError(undefined);
+    setMergeNote(undefined);
+    mergeAsk.ask(
+      {
+        node: stream.title,
+        id: stream.id,
+        // T436 (#11): unsent review comments join the draft, and the chat opens on it.
+        onAddReview: () => {
+          addReviewToDraft(stream.id)
+            .then((result) => {
+              setTab(result === 'added' ? 'thread' : 'diff');
+              if (result === 'added') requestAnimationFrame(() => composer.current?.focusEnd());
+            })
+            .catch(() => setTab('diff'));
+        },
+        ...(page.land?.target !== undefined ? { target: page.land.target } : {}),
+        ...(row?.diff_stat !== undefined ? { files: row.diff_stat.files } : {}),
+        pr:
+          stream.delivery_state?.mode === 'pr' ||
+          cockpit?.repos.find((r) => r.name === stream.repo)?.delivery === 'pr',
+      },
+      () => void delivery.land(),
+    );
+  };
+
+  /** The fix a refused merge named: a prepared message to the agent, or stopping it. */
+  async function applyFix(fix: MergeFix): Promise<void> {
+    setFixing(true);
+    try {
+      if (fix.kind === 'stop') {
+        await stopSessions(stream.id);
+        setMergeNote('The agent is stopped. Merge again when you’re ready.');
+      } else {
+        await sayOnStream(stream.id, fix.message, { start: true });
+        setMergeNote('Sent to the agent. Merge again once it says the branch is ready.');
+      }
+      setMergeError(undefined);
+    } catch (err) {
+      setMergeError((before) =>
+        before
+          ? { ...before, text: writeFailure(err, 'Couldn’t reach the daemon; nothing was sent.') }
+          : before,
+      );
+    } finally {
+      setFixing(false);
+      load();
+      refresh();
+    }
+  }
+
+  async function deleteNode(): Promise<void> {
+    const title = stream.title;
+    const nodeId = stream.id;
+    setBusy(true);
+    try {
+      await archiveStream(nodeId);
+      setModal(undefined);
+      refresh();
+      select(undefined);
+      toast({
+        title: `Moved “${title}” to the trash`,
+        body: 'Its worktree and branch are kept until you delete it forever.',
+        tone: 'info',
+        duration: 8000,
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            unarchiveStream(nodeId)
+              .then(() => {
+                refresh();
+                select(nodeId);
+              })
+              .catch((err: unknown) =>
+                toast({ title: 'Could not restore it', body: errorText(err), tone: 'error' }),
+              );
+          },
+        },
+      });
+    } catch (err) {
+      setModal(undefined);
       setActionError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // T471: Reopen: open again on the same branch and worktree; its agent wakes with your next message.
+  async function reopen(): Promise<void> {
+    setBusy(true);
+    try {
+      await reopenStream(stream.id);
+      toast({ title: 'Reopened', body: 'Your next message wakes its agent.', tone: 'success' });
+      composer.current?.focus();
+    } catch (err) {
+      toast({ title: 'Couldn’t reopen it', body: errorText(err), tone: 'error' });
     } finally {
       setBusy(false);
       load();
       refresh();
     }
   }
+  // T478: this node closes itself when its goal is met; the operator's, while it is open.
+  const changeAutoClose = open
+    ? async (on: boolean) => {
+        try {
+          await setNodeAutoClose(stream.id, on);
+        } catch (err) {
+          toast({ title: 'Couldn’t change auto-close', body: errorText(err), tone: 'error' });
+        }
+        load();
+        refresh();
+      }
+    : undefined;
+  const menu: MenuItem[] = [
+    {
+      // T421 (D42): what this conversation concluded, to the node it is about.
+      label: sendUpTo !== undefined ? `Send to ${sendUpTo.title}…` : 'Send to parent…',
+      icon: 'send',
+      testid: 'send-up',
+      title: 'Send a conclusion up: it arrives there as your message, and its agent acts on it',
+      hidden: sendUpTo === undefined,
+      onSelect: () => setSendingUp(lastAgentLine(page.thread) ?? ''),
+    },
+    {
+      // T422 (D42): what the conversation concluded becomes the work, here.
+      label: 'Turn into work…',
+      icon: 'play',
+      testid: 'turn-into-work-menu',
+      title: 'State the goal (drafted from the talk), pick a repository or none, and start',
+      hidden: !open || role !== 'conversation',
+      onSelect: () => setTurning(true),
+    },
+    {
+      // T419 (D42): a question about this node, in its own thread.
+      label: 'Ask about this…',
+      icon: 'message-square',
+      testid: 'ask-about',
+      title: 'A conversation under this node, in its own thread (A)',
+      onSelect: () => openAsk(stream.id),
+    },
+    {
+      label: 'Restart agent',
+      icon: 'refresh',
+      testid: 'restart',
+      title: liveAgent
+        ? 'Stop the agent and start a fresh session with the same model'
+        : 'Start a fresh session: it answers the question again',
+      // T435 (#16): an answered conversation's header offers what follows instead.
+      hidden: !open || (liveAgent === undefined && !convoNext),
+      disabled: busy,
+      onSelect: () => (liveAgent ? void restart() : start()),
+    },
+    {
+      // T413: "Review" is what you do on the Changes tab; this starts a reviewer agent.
+      label: 'Ask an agent to review…',
+      icon: 'eye',
+      testid: 'review',
+      title: hasCommits
+        ? 'A read-only reviewer agent reads the diff and reports findings'
+        : 'Nothing to review yet: the branch has no commits',
+      // T438: shown from the first render once there is a branch, and disabled until its commits
+      // are known, so the menu never grows under the pointer while the page's merge check loads.
+      hidden: stream.repo === undefined || stream.branch === undefined,
+      disabled: busy || liveReviewer !== undefined || !hasCommits,
+      onSelect: () => setPicker('reviewer'),
+    },
+    {
+      label: 'Stop agent',
+      icon: 'square',
+      testid: 'menu-stop',
+      hidden: live.length === 0,
+      disabled: busy,
+      onSelect: stop,
+    },
+    'separator',
+    {
+      label: 'Waits on…',
+      icon: 'clock',
+      testid: 'link-wait',
+      title: "Hold this node's delivery until another node is merged",
+      hidden: !open || !canWait,
+      disabled: busy || linkOptions.length === 0,
+      onSelect: () => setModal('wait'),
+    },
+    {
+      label: 'Add repository…',
+      icon: 'folder-git',
+      testid: 'add-repo',
+      title:
+        role === 'coordinating'
+          ? 'Add a part on another repository'
+          : 'Work on a repo here: a conversation becomes a work node, a second repo splits it',
+      hidden: !open || stream.parent === undefined,
+      disabled: busy || repoOptions.length === 0,
+      onSelect: () => setModal('repo'),
+    },
+    {
+      label: 'Tracker issue…',
+      icon: 'ticket',
+      testid: 'tracker-menu',
+      hidden: project?.tracker === undefined || stream.external_link !== undefined,
+      onSelect: () => {
+        setDetailsOpen(true);
+        setTrackerOpen(true);
+      },
+    },
+    'separator',
+    {
+      // T445 (audit r7 #22): the rail row's Rename and Move to…, here and in ⌘K's "This node".
+      label: 'Rename…',
+      icon: 'pencil',
+      testid: 'menu-rename',
+      hidden: !open || projectRoot,
+      disabled: busy || row === undefined,
+      onSelect: () => setModal('rename'),
+    },
+    {
+      label: 'Move to…',
+      icon: 'corner-down-right',
+      testid: 'menu-move',
+      hidden: projectRoot,
+      disabled: busy || row === undefined,
+      onSelect: () => setModal('move'),
+    },
+    {
+      // T478: the Details switch, from the menu.
+      label: stream.auto_close === true ? 'Turn off auto-close' : 'Close when its goal is met',
+      icon: 'check-circle',
+      testid: 'menu-auto-close',
+      hidden: projectRoot || changeAutoClose === undefined,
+      disabled: busy,
+      onSelect: () => void changeAutoClose?.(stream.auto_close !== true),
+    },
+    'separator',
+    {
+      label: 'Copy branch name',
+      icon: 'git-branch',
+      hidden: stream.branch === undefined,
+      onSelect: () => copy(stream.branch ?? '', 'Copied the branch name'),
+    },
+    {
+      label: 'Copy node id',
+      icon: 'copy',
+      onSelect: () => copy(stream.id, 'Copied the node id'),
+    },
+    'separator',
+    {
+      // T473: work and talk are one kind of node; switching is one step either way.
+      label: 'Back to just talk…',
+      icon: 'message-square',
+      testid: 'menu-to-talk',
+      hidden: !open || role !== 'work' || stream.helper_of !== undefined,
+      disabled: busy,
+      onSelect: () => setModal('talk'),
+    },
+    {
+      label: `Back to work on ${stream.parked?.repo ?? ''}`,
+      icon: 'git-branch',
+      testid: 'menu-to-work',
+      hidden: !open || role !== 'conversation' || stream.parked === undefined,
+      disabled: busy,
+      onSelect: () => {
+        const parked = stream.parked;
+        if (parked === undefined) return;
+        void act(
+          () => addRepoToStream(stream.id, parked.repo),
+          () => toast({ title: `Back to work on ${parked.repo}`, tone: 'success' }),
+        );
+      },
+    },
+    {
+      label: 'Reopen',
+      icon: 'undo',
+      testid: 'menu-reopen',
+      hidden: !closedNode,
+      disabled: busy,
+      onSelect: () => void reopen(),
+    },
+    {
+      label: 'Close node…',
+      icon: 'x-circle',
+      testid: 'stream-close',
+      hidden: !open,
+      disabled: busy,
+      onSelect: () => setModal('close'),
+    },
+    {
+      label: 'Move to trash…',
+      icon: 'trash',
+      testid: 'stream-delete',
+      danger: true,
+      hidden: isRoot,
+      disabled: busy,
+      onSelect: () => setModal('delete'),
+    },
+  ];
 
-  if (loadError && !page) {
-    return (
-      <section className="cr-stream" data-testid="stream-page">
-        <p className="cr-error" role="alert">
-          {loadError}
-        </p>
-      </section>
+  // T416 (finding 21): ⌘K's "This node" — the header's own buttons, the other tabs, then the
+  // ⋯ menu — the same items (and the same handlers), so the palette never decides anything itself.
+  const headerItems: MenuItem[] = [
+    {
+      label: 'Merge',
+      icon: 'git-merge',
+      hidden: !actions.merge,
+      disabled: delivery.busy || offline,
+      onSelect: merge,
+    },
+    {
+      label: hasRun ? 'Restart agent' : 'Start agent',
+      icon: 'play',
+      hidden: shownActions.agent !== 'start',
+      disabled: busy || offline,
+      onSelect: start,
+    },
+    {
+      // T423: the split button's other half, the one place to start with another model.
+      label: 'Start with…',
+      icon: 'sliders',
+      hidden: shownActions.agent !== 'start',
+      disabled: busy || offline,
+      onSelect: () => setPicker('start'),
+    },
+    {
+      label: 'Stop agent',
+      icon: 'square',
+      hidden: actions.agent !== 'stop',
+      disabled: busy || offline,
+      onSelect: stop,
+    },
+    ...tabs
+      .filter((t) => t !== shownTab)
+      .map(
+        (t): MenuItem => ({
+          label: `Open ${TAB_LABEL[t]}`,
+          icon: TAB_ICON[t],
+          onSelect: () => setTab(t),
+        }),
+      ),
+    {
+      label: detailsOpen ? 'Hide details' : 'Show details',
+      icon: 'panel-right',
+      onSelect: () => setDetailsOpen(!detailsOpen),
+    },
+  ];
+  commands.current = { node: stream.id, title: stream.title, items: [...headerItems, ...menu] };
+
+  // ---------------------------------------------------------------- the chat
+  // T502 (D62): each question is its thread: nested under the line that asked it, its other
+  // lines out of the main flow. D63: on a coordinator's chat each child's question is a thread,
+  // with the coordinator's own lines it caused (its notes) nested under it.
+  const questionThreads = placeQuestionThreads(page.question_threads ?? [], page.thread);
+  const childThreads = page.child_questions ?? [];
+  const childNotes = placeQuestionThreads(childThreads, page.thread, { notesOnly: true });
+  const lineAt = new Map(page.thread.map((e) => [e.ts, e]));
+  const linesAt = (ts: readonly string[]) =>
+    ts.flatMap((t) => {
+      const e = lineAt.get(t);
+      return e ? [e] : [];
+    });
+  // T503 (D60, D64, §6): chat threads on its turns: a mark under each turn they're on, their
+  // lines in the side panel (a question asked in one stays here too), a batched reply linked.
+  const chatThreads = page.chat_threads ?? [];
+  const chatPlaced = placeChatThreads(chatThreads, page.chat_batches ?? [], page.thread);
+  const chatThreadOf = new Map(chatThreads.map((t) => [t.id, t]));
+  // T513 (T509): what the agent said on the way to its reply in a thread folds into it there.
+  const narrationOf = new Map(chatThreads.map((t) => [t.id, threadNarration(page.thread, t)]));
+  const threadUnreadOf = (thread: ChatThread): number =>
+    threadUnread(
+      thread,
+      (ts) => lineAt.get(ts)?.by,
+      readThreadUpTo(threadReadKey(stream.id, thread.id)),
+      narrationOf.get(thread.id),
     );
-  }
-  if (!page || page.stream.id !== id) {
-    return (
-      <section className="cr-stream" data-testid="stream-page">
-        <p className="cr-dim">Loading…</p>
-      </section>
+  const openThread = (thread: string) => {
+    setThreadView({ id: thread });
+    // T513: opening it is reading it (a click: you are here), whatever the tab's visibility says.
+    const at = readAtOf(thread);
+    if (at !== undefined) markRead(threadReadKey(stream.id, thread), at);
+  };
+  // T504 (§6): moved lines (display only), and where a main-flow line can go.
+  const moved = movesByLine(page.chat_moves);
+  const moveTo = (entry: string, to: string) => act(() => moveLine(stream.id, entry, to));
+  // T504 (§6a): Compact now, where the live agent's vendor has a compact command that takes
+  // instructions (Claude Code's `/compact`, T461); not offered otherwise.
+  const compactCmd = agentCommands.running
+    ? compactCommandFor(agentCommands.vendor, agentCommands.commands)
+    : undefined;
+  /** Whether the main flow has thread line `e` (a line nested in a thread doesn't). */
+  const inFlow = (e: StreamPagePayload['thread'][number]): boolean =>
+    !(
+      questionThreads.nested.has(e.ts) ||
+      childNotes.nested.has(e.ts) ||
+      chatPlaced.nested.has(e.ts) ||
+      // T504: a move is shown on the line it moved, not as a row of its own.
+      e.op?.type === 'move'
     );
-  }
-
-  const { stream } = page;
-  const dot = streamDot({ agent_status: stream.agent.status, human_status: stream.human.status });
-  const live = stream.sessions.filter(isLiveSession);
-  const liveWorker = live.find((s) => isAgentRole(s.role));
-  const liveReviewer = live.find((s) => s.role === 'reviewer');
-  // T174: human lines sent mid-turn, not yet delivered to the live worker.
-  const queuedLines = new Set(live.flatMap((s) => s.queued ?? []));
-  const cards = needsYou(cockpit?.inbox ?? [], stream.id);
-  const findings = stream.agent.findings ?? [];
-  const text = draft.trim();
-  const open = stream.human.status !== 'landed' && stream.human.status !== 'closed';
-  const repoOptions = repos.map((r) => r.name).filter((name) => name !== stream.repo);
-  const chosenRepo = repoChoice || repoOptions[0] || '';
-  const waits = stream.waits_on ?? [];
-  // T336: a part is not started until its coordinator's plan is approved.
-  const waitingForPlan = cockpit?.streams.find((r) => r.id === stream.id)?.waiting_for_plan;
-  const titleOf = (id: string) => cockpit?.streams.find((r) => r.id === id)?.title ?? id;
-  const linkOptions = (cockpit?.streams ?? []).filter(
-    (r) => r.id !== stream.id && !waits.some((w) => w.node === r.id),
-  );
-  const chosenLink = linkChoice || linkOptions[0]?.id || '';
-  function addRepo(repo: string, switching = false): void {
-    void act(
-      () => addRepoToStream(stream.id, repo, switching),
-      () => setAddingRepo(false),
-    );
-  }
-
-  return (
-    <section className="cr-stream" data-testid="stream-page" data-stream={stream.id}>
-      <header className="cr-stream-hd">
-        <p className="cr-dim cr-path" data-testid="stream-path">
-          {page.path.join(' / ')}
-        </p>
-        <h1>
-          <span className="cr-dot" data-dot={dot} aria-label={DOT_LABEL[dot]} />
-          <span data-testid="stream-title">{stream.title}</span>
-        </h1>
-        <p className="cr-dim" data-testid="stream-status">
-          agent {waitingForPlan ? 'waiting for the plan' : stream.agent.status} · you{' '}
-          {stream.human.status.replace(/_/g, ' ')}
-          {stream.branch ? ` · ${stream.branch}` : ''}
-        </p>
-        <Markdown className="cr-goal" text={stream.goal} />
-      </header>
-
-      <section className="cr-needs" data-testid="stream-needs">
-        <h2>Needs you</h2>
-        {cards.length === 0 && (
-          <p className="cr-dim" data-testid="stream-needs-empty">
-            Nothing waiting on you.
-          </p>
-        )}
-        {cards.map((item) => (
-          <Card
-            key={item.id}
-            item={item}
-            full
-            onDone={() => {
-              load();
-              refresh();
+  // T509: the agent's messages before its turn's reply fold into the reply's steps (display
+  // only); a line a thread hangs on stays where it is.
+  const narration = narrationFolds(page.thread, {
+    shown: (i) => {
+      const e = page.thread[i];
+      return e !== undefined && inFlow(e);
+    },
+    keep: (i) => {
+      const ts = page.thread[i]?.ts ?? '';
+      return (
+        chatPlaced.marksOn.has(ts) ||
+        chatPlaced.alsoIn.has(ts) ||
+        chatPlaced.repliesTo.has(ts) ||
+        chatPlaced.archivedOn.has(ts)
+      );
+    },
+  });
+  /** The thread lines the main flow shows (by index into `page.thread`). */
+  const shownLines = page.thread.flatMap((e, i) => (inFlow(e) && !narration.has(i) ? [i] : []));
+  const renderActions = (entry: StreamPagePayload['thread'][number], i: number) => (
+    <>
+      {intent.action !== 'none' && (
+        // T503 (D64, §3a): every turn, yours or the agent's: a thread on it (one already in a
+        // thread, a question asked there, opens that thread: one level only).
+        <button
+          type="button"
+          className="cr-msg-btn"
+          data-testid="reply-in-thread"
+          title="Reply in a thread on this message (select some of it first to anchor the thread to that passage)"
+          onClick={() => {
+            const inThread = chatPlaced.alsoIn.get(entry.ts);
+            setThreadView(inThread ? { id: inThread.id } : { anchor: { entry: entry.ts } });
+          }}
+        >
+          <Icon name="message-square" size={13} />
+          Reply in thread
+        </button>
+      )}
+      {intent.action !== 'none' &&
+        moving !== entry.ts &&
+        moveTargets(chatThreads, entry).length > 0 && (
+          // T504 (§6): into the thread open in the panel, else pick one.
+          <button
+            type="button"
+            className="cr-msg-btn"
+            data-testid="move-to-thread"
+            title="Show this line in a thread instead (display only: what the agent received doesn’t change)"
+            disabled={busy}
+            onClick={() => {
+              const targets = moveTargets(chatThreads, entry);
+              const open = targets.find((t) => t.id === openThreadId);
+              if (open !== undefined) void moveTo(entry.ts, open.id);
+              else if (targets.length === 1) void moveTo(entry.ts, (targets[0] as ChatThread).id);
+              else setMoving(entry.ts);
             }}
-          />
-        ))}
-      </section>
-
-      <ChildCards
-        cards={(cockpit?.cards ?? []).filter(
-          (c) => cockpit?.streams.find((r) => r.id === c.node)?.parent === stream.id,
+          >
+            <Icon name="corner-down-right" size={13} />
+            Move to thread
+          </button>
         )}
-        titleOf={titleOf}
-      />
+      {canBranch && entry.kind === 'line' && branching !== threadBase + i && (
+        <button
+          type="button"
+          className="cr-msg-btn"
+          data-testid="branch-off"
+          title="Start a tangent from this line: a new conversation seeded with it"
+          disabled={busy}
+          onClick={() => {
+            setBranching(threadBase + i);
+            setTangentQuestion('');
+          }}
+        >
+          <Icon name="git-fork" size={13} />
+          Branch off
+        </button>
+      )}
+      {sendUpTo !== undefined && entry.kind === 'line' && entry.by.startsWith('agent:') && (
+        // T421 (D42): this reply, sent up to the node the conversation is about.
+        <button
+          type="button"
+          className="cr-msg-btn"
+          data-testid="send-up-line"
+          title={`Send this to ${sendUpTo.title}: it arrives there as your message`}
+          onClick={() => setSendingUp(entry.body)}
+        >
+          <Icon name="send" size={13} />
+          Send to {sendUpTo.title}
+        </button>
+      )}
+    </>
+  );
 
-      <section className="cr-sessions" data-testid="sessions">
-        <ul>
-          {stream.sessions.length === 0 && <li className="cr-dim">No sessions yet.</li>}
-          {stream.sessions.map((session) => (
-            <li
-              key={session.id}
-              data-testid="session"
-              data-role={session.role}
-              data-status={session.status}
-              title={session.id}
-            >
-              <strong>{session.role}</strong> {session.vendor}/{sessionModelText(session)}
-              {session.effort ? ` · ${session.effort}` : ''} · {session.status}
-              {session.ended_reason && (
-                <span className="cr-dim" data-testid="session-ended-reason">
-                  {' '}
-                  — {session.ended_reason}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-        <div className="cr-actions">
-          <button
-            type="button"
-            className="cr-btn"
-            data-testid="attach"
-            disabled={busy || liveWorker !== undefined || stream.human.status === 'landed'}
-            onClick={() => setPicker('worker')}
-          >
-            {/* T204: a new node starts its own agent; this is for "Start later" or after one ended. */}
-            {stream.sessions.some((s) => isAgentRole(s.role)) ? 'Restart' : 'Start'}
-          </button>
-          <button
-            type="button"
-            className="cr-btn"
-            data-testid="review"
-            disabled={busy || liveReviewer !== undefined}
-            onClick={() => setPicker('reviewer')}
-          >
-            Review
-          </button>
-          <button
-            type="button"
-            className="cr-btn danger"
-            data-testid="stop"
-            disabled={busy || live.length === 0}
-            onClick={() => void act(() => stopSessions(stream.id))}
-          >
-            Stop
-          </button>
-          {stream.human.status !== 'landed' && stream.human.status !== 'closed' && (
+  const renderExtra = (entry: StreamPagePayload['thread'][number], i: number) => (
+    <>
+      {(() => {
+        // T503 (§6, §4.1): the threads on this turn; a question asked in one; a batched reply.
+        const marks = chatPlaced.marksOn.get(entry.ts);
+        const alsoIn = chatPlaced.alsoIn.get(entry.ts);
+        const repliesTo = chatPlaced.repliesTo.get(entry.ts);
+        return (
+          <>
+            {alsoIn && (
+              <ThreadLinks
+                lead="Asked in a thread:"
+                threads={[alsoIn]}
+                onOpen={openThread}
+                testid="thread-origin"
+                whole="open it"
+              />
+            )}
+            {repliesTo && (
+              <ThreadLinks
+                lead="Replies to:"
+                threads={repliesTo}
+                onOpen={openThread}
+                testid="thread-batch"
+                whole="a thread on a message"
+              />
+            )}
+            {marks && (
+              <ThreadMarks
+                threads={marks}
+                unreadOf={threadUnreadOf}
+                onOpen={openThread}
+                {...(openThreadId !== undefined ? { open: openThreadId } : {})}
+              />
+            )}
+            {chatPlaced.archivedOn.get(entry.ts) && (
+              <ArchivedThreads
+                threads={chatPlaced.archivedOn.get(entry.ts) ?? []}
+                onOpen={openThread}
+                onRestore={(thread) => void act(() => restoreThread(stream.id, thread))}
+              />
+            )}
+          </>
+        );
+      })()}
+      {(() => {
+        // T504 (§6): a line moved here from a thread says so, and moves back.
+        const move = moved.get(entry.ts);
+        if (move === undefined || move.to !== 'main' || move.from === 'main') return null;
+        const from = chatThreadOf.get(move.from);
+        return (
+          <div className="cr-tlinks cr-faint" data-testid="moved-line" data-thread-on="">
+            <Icon name="corner-down-left" size={12} />
+            <span>Moved here from a thread by you</span>
+            {from !== undefined && from.archived === undefined && (
+              <button
+                type="button"
+                className="cr-link"
+                data-testid="move-back"
+                disabled={busy}
+                onClick={() => void moveTo(entry.ts, move.from)}
+              >
+                Move back
+              </button>
+            )}
+          </div>
+        );
+      })()}
+      {moving === entry.ts && (
+        // T504 (§6): which thread the line goes to.
+        <div className="cr-tlinks" data-testid="move-picker" data-thread-on="">
+          <Icon name="corner-down-right" size={12} />
+          <span>Move to the thread on:</span>
+          {moveTargets(chatThreads, entry).map((t) => (
             <button
+              key={t.id}
               type="button"
-              className="cr-btn"
-              data-testid="stream-close"
+              className="cr-link"
+              data-testid="move-target"
+              data-thread={t.id}
               disabled={busy}
-              onClick={() => void act(() => closeStream(stream.id))}
+              onClick={() => void moveTo(entry.ts, t.id).then(() => setMoving(undefined))}
             >
-              Close
+              {anchorLabel(t.anchor, 40, 'a whole message')}
             </button>
-          )}
-          {open && (
-            <button
-              type="button"
-              className="cr-btn"
-              data-testid="link-wait"
-              title="Hold this node's delivery until another node is merged"
-              disabled={busy || linkOptions.length === 0}
-              onClick={() => setLinking((v) => !v)}
-            >
-              Link
-            </button>
-          )}
-          {open && stream.parent !== undefined && (
-            <button
-              type="button"
-              className="cr-btn"
-              data-testid="add-repo"
-              disabled={busy || repoOptions.length === 0}
-              onClick={() => setAddingRepo((v) => !v)}
-            >
-              + Repo
-            </button>
-          )}
+          ))}
+          <button type="button" className="cr-link cr-faint" onClick={() => setMoving(undefined)}>
+            Cancel
+          </button>
         </div>
-        {waits.length > 0 && (
-          <ul className="cr-dim" data-testid="waits-on">
-            {waits.map((w) => (
-              <li key={w.node}>
-                waits on {titleOf(w.node)}
-                {w.satisfied_at ? ' · satisfied' : ''}
-                {open && (
-                  <button
-                    type="button"
-                    className="cr-btn"
-                    data-testid="waits-on-remove"
-                    disabled={busy}
-                    onClick={() => void act(() => waitOnStream(stream.id, w.node, true))}
-                  >
-                    Unlink
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-        <TrackerLinkField stream={stream} rollup={page.rollup} busy={busy} act={act} />
-        <AutonomyPicker
-          stream={stream}
-          project={cockpit?.projects.find((p) => p.id === stream.project)}
-          busy={busy}
-          act={act}
-        />
-        {(() => {
-          const project = cockpit?.projects.find((p) => p.root === stream.id);
-          return project ? (
-            <ProjectControls key={project.id} project={project} busy={busy} act={act} />
+      )}
+      {(() => {
+        // T502 (D62): a question is its thread, nested under the line that asked it.
+        const thread = questionThreads.hostOf.get(entry.ts);
+        return thread ? (
+          <QuestionThreadView
+            thread={thread}
+            lines={linesAt(questionThreads.linesOf.get(thread) ?? [])}
+            authorOf={(by) => chatAuthor(by, stream.sessions)}
+          />
+        ) : null;
+      })()}
+      {open &&
+        (() => {
+          // T427: what a worker proposes next is one click from being a node. T435 (#14): next
+          // to this one, on its repository — under it, this node would coordinate it (New node's
+          // Parent picker can still nest it).
+          const next = proposedNext(entry);
+          return next ? (
+            <div className="cr-msg-extra">
+              <Button
+                size="sm"
+                icon="plus"
+                data-testid="proposal-create-node"
+                title={`Open New node with its title and goal, next to ${stream.title}`}
+                onClick={() =>
+                  openNewStream({
+                    ...(stream.parent !== undefined
+                      ? { parent: stream.parent }
+                      : stream.project !== undefined
+                        ? { project: stream.project }
+                        : {}),
+                    title: next.title,
+                    goal: next.goal,
+                    ...(stream.repo !== undefined ? { repo: stream.repo } : {}),
+                  })
+                }
+              >
+                Create node…
+              </Button>
+            </div>
           ) : null;
         })()}
-        {linking && (
-          <div className="cr-actions" data-testid="link-wait-form">
-            <select
-              data-testid="link-wait-select"
-              value={chosenLink}
-              onChange={(e) => setLinkChoice(e.target.value)}
+      {open &&
+        (() => {
+          // T445 (audit r7 #3): only a line that proposes a repo (its `ref`) offers + Repo; an
+          // autonomy proposal points to its card below, a contract proposal to the plan.
+          const action = proposalLineAction(entry, {
+            repos: repos.map((r) => r.name),
+            current: stream.repo,
+            // T455: once added, a split node holds the repo in a part; the button goes.
+            partRepos: children.flatMap((c) =>
+              c.repo !== undefined && c.human_status !== 'closed' ? [c.repo] : [],
+            ),
+            projectRoot,
+            cards: cards.map((c) => c.id),
+            hasPlan: tabs.includes('plan'),
+          });
+          if (action === undefined) return null;
+          return (
+            <div className="cr-msg-extra">
+              {action.kind === 'add_repo' ? (
+                <Button
+                  size="sm"
+                  icon="plus"
+                  data-testid="proposal-add-repo"
+                  disabled={busy}
+                  onClick={() => addRepo(action.repo)}
+                >
+                  Add {action.repo}
+                </Button>
+              ) : action.kind === 'decide' ? (
+                <Button
+                  size="sm"
+                  icon="arrow-down"
+                  data-testid="proposal-decide"
+                  title="Apply or dismiss it on its card, above the composer"
+                  onClick={() => showCard(action.card)}
+                >
+                  Decide below
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  icon="list"
+                  data-testid="proposal-see-plan"
+                  onClick={() => setTab('plan')}
+                >
+                  See the plan
+                </Button>
+              )}
+            </div>
+          );
+        })()}
+      {canBranch && branching === threadBase + i && (
+        <form
+          className="cr-branch-form"
+          data-testid="branch-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (question) void branchOff(threadBase + i);
+          }}
+        >
+          <div className="cr-branch-label">
+            <Icon name="git-fork" size={13} />
+            Branch off into a new conversation
+          </div>
+          <textarea
+            data-testid="branch-question"
+            aria-label="The tangent's question"
+            placeholder="What should the tangent look into?"
+            rows={2}
+            // biome-ignore lint/a11y/noAutofocus: the form opens on a click, for typing at once.
+            autoFocus
+            value={tangentQuestion}
+            onChange={(e) => setTangentQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setBranching(undefined);
+            }}
+          />
+          <div className="cr-branch-actions">
+            <Button size="sm" variant="ghost" onClick={() => setBranching(undefined)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              size="sm"
+              variant="primary"
+              data-testid="branch-start"
+              disabled={busy || !question}
             >
-              {linkOptions.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.title}
-                </option>
-              ))}
-            </select>
+              Start tangent
+            </Button>
+          </div>
+        </form>
+      )}
+      {entry.by === 'human' && entry.kind === 'line' && queuedLines.has(entry.ts) && (
+        <div className="cr-queued" data-testid="thread-queued">
+          <Icon name="clock" size={12} />
+          Not sent yet — queued until {name}’s current step ends
+        </div>
+      )}
+    </>
+  );
+
+  // T468: the effort on the right of the bar, stepped by a click or Shift+Tab; a pick for the
+  // next message, as the model chip's is.
+  const stepEffort =
+    canPick && chip
+      ? () => {
+          const shown = chip.shows;
+          setNextSession({ ...(nextSession ?? shown), effort: nextEffort(shown.effort) });
+        }
+      : undefined;
+  const effortChipEl =
+    stepEffort && chip ? (
+      <EffortChip
+        value={chip.shows.effort}
+        vendor={chip.shows.vendor}
+        chosen={chip.pending !== undefined && chip.pending.effort !== (running ?? resolved)?.effort}
+        onStep={stepEffort}
+      />
+    ) : undefined;
+  // T411: the live agent's context window, when its vendor reports it (the row's agent is this one).
+  const context =
+    liveAgent !== undefined && row?.live_agent?.role === liveAgent.role
+      ? row.live_agent.context
+      : undefined;
+  // T505: the chip's agent runs shell commands that nothing checks (Codex, Grok, Antigravity):
+  // an amber mark beside it, the sentence its tooltip.
+  const chipWarning = uncheckedWarning(
+    canPick && chip && resolved ? chip.shows.vendor : liveAgent?.vendor,
+  );
+  const modelChipBare =
+    canPick && chip && resolved ? (
+      <ModelChip
+        status={defaults}
+        chip={chip}
+        {...(running ? { running } : {})}
+        fallback={resolved}
+        onPick={setNextSession}
+        onReset={() => setNextSession(undefined)}
+        modelOnly
+      />
+    ) : liveAgent !== undefined ? (
+      <span
+        className="cr-model-chip"
+        data-testid="composer-model"
+        data-live="true"
+        title={`Running ${sessionIdText(liveAgent)}`}
+      >
+        <span className="cr-model-dot" aria-hidden="true" />
+        <span className="cr-model-chip-text">{agentLabel(liveAgent)}</span>
+      </span>
+    ) : undefined;
+  const modelChipEl =
+    modelChipBare && chipWarning !== undefined ? (
+      <>
+        {modelChipBare}
+        <UncheckedMark warning={chipWarning} testid="composer-unchecked" />
+      </>
+    ) : (
+      modelChipBare
+    );
+
+  // T385: the goal changes in place. T413: not as a card when it only repeats the title (or on a
+  // project's root, whose goal is its name); the details panel's About keeps it and its Edit then.
+  const saveGoal = open
+    ? async (goal: string) => {
+        await updateStream(stream.id, { goal });
+        load();
+        refresh();
+      }
+    : undefined;
+  // T419 (D42): a conversation shows its goal as your first message, so it never has the card.
+  const goalCard =
+    role !== 'conversation' &&
+    showGoalCard({ goal: stream.goal, title: stream.title, projectRoot });
+
+  // T445 (audit r7 #26): a project's root with no agent: Ask (A) is how to question the project.
+  const askFirst = projectRoot && open && liveAgent === undefined;
+  // T438 (audit r6 #4): under a failure's warning, "Tell the agent what to do" would contradict it.
+  const emptyChat =
+    !conversation &&
+    !thinking &&
+    cards.length === 0 &&
+    childThreads.length === 0 &&
+    !agentFailed(page.thread);
+  // The open questions whose own line the chat shows (an older one may be above the loaded lines).
+  const askedInChat = new Set(
+    page.thread
+      .filter((e) => e.kind === 'question')
+      .map((e) => questionIdOfRef(e.ref))
+      .filter((q): q is string => q !== undefined),
+  );
+  // T392: each reply's steps fold before it; the running turn's show live.
+  const steps = groupSteps(agentSteps.steps, page.thread, {
+    live: thinking,
+    truncated: page.thread_total > page.thread.length,
+    partial: agentSteps.partial,
+    folded: narration,
+  });
+  // T419 (D42): a conversation's goal is the question you asked: your first message. T435 (#10):
+  // in the thread's own list (one day divider), after "Node created".
+  // T441: one turned into work keeps the question it was asked (the record's `question`).
+  const asked = stream.question ?? (role === 'conversation' ? stream.goal : undefined);
+  const listed = withQuestion(
+    shownLines.map((i) => page.thread[i] as StreamPagePayload['thread'][number]),
+    asked !== undefined && asked.trim() !== ''
+      ? { ts: stream.created_at, by: 'human', kind: 'line' as const, body: asked }
+      : undefined,
+  );
+  // T502: a list index back to the whole loaded thread's (a question thread's lines are nested).
+  const threadIndexOf = (i: number): number | undefined => {
+    const at = listed.threadIndex(i);
+    return at === undefined ? undefined : shownLines[at];
+  };
+  const shownAt = new Map(shownLines.map((at, i) => [at, i]));
+  const listSteps = new Map(
+    [...steps.before].flatMap(([i, led]) => {
+      const at = shownAt.get(i);
+      return at === undefined ? [] : [[listed.listIndex(at), led] as const];
+    }),
+  );
+  // T509: each reply's folded narration, by its list index, in thread order.
+  const listNarration = new Map<number, StreamPagePayload['thread'][number][]>();
+  for (const [line, reply] of narration) {
+    const at = shownAt.get(reply);
+    const entry = page.thread[line];
+    if (at === undefined || entry === undefined) continue;
+    const key = listed.listIndex(at);
+    listNarration.set(key, [...(listNarration.get(key) ?? []), entry]);
+  }
+
+  // T503 (D64, §3a): each passage a thread is anchored to, highlighted with its count.
+  const passageMarks = (entry: StreamPagePayload['thread'][number]): PassageMark[] | undefined => {
+    const on = chatPlaced.marksOn.get(entry.ts);
+    if (on === undefined || on[0]?.anchor.entry !== entry.ts) return undefined;
+    const marks = on.flatMap((t): PassageMark[] =>
+      t.anchor.quote === undefined
+        ? []
+        : [
+            {
+              id: t.id,
+              quote: t.anchor.quote,
+              ...(t.anchor.start !== undefined && entry.body.length > 0
+                ? { near: t.anchor.start / entry.body.length }
+                : {}),
+              count: t.replies,
+              ...(t.state === 'waits_on_you' ? { amber: true } : {}),
+              title: `Thread: ${threadRepliesText(t.replies)}`,
+            },
+          ],
+    );
+    return marks.length > 0 ? marks : undefined;
+  };
+  // T503 (§6): "Open threads (2)" at the top of the chat jumps to the first unread one.
+  const threadsChip = openThreadsChip(chatThreads, threadUnreadOf);
+  // T503: the thread the panel shows, what it is on, and its lines.
+  const panelThread = openThreadId !== undefined ? chatThreadOf.get(openThreadId) : undefined;
+  const panelAnchor =
+    threadView === undefined
+      ? undefined
+      : 'anchor' in threadView
+        ? threadView.anchor
+        : panelThread?.anchor;
+  const panelLines =
+    openThreadId === undefined
+      ? []
+      : linesAt(
+          [
+            ...new Set([
+              ...(panelThread?.entries ?? []),
+              // T504: not a line moved out of it, nor a record or a line for the agent.
+              ...page.thread
+                .filter(
+                  (e) =>
+                    e.thread === openThreadId &&
+                    moved.get(e.ts) === undefined &&
+                    e.op === undefined &&
+                    e.agent_only !== true,
+                )
+                .map((e) => e.ts),
+            ]),
+          ].sort(),
+        );
+  const sendInThread = async (text: string): Promise<void> => {
+    if (threadView === undefined) return;
+    const where = 'id' in threadView ? { thread: threadView.id } : { anchor: threadView.anchor };
+    const said = await sayInThread(stream.id, text, where, { start: true });
+    if ('anchor' in threadView) setThreadView({ id: said.entry.thread ?? said.entry.ts });
+    load();
+    refresh();
+  };
+  // T504 (D65, §6a, §7): the thread's ⋯: Archive, Archive and compact / Compact now, Archive
+  // and forget (confirmed: it restarts the agent), Promote to tangent; Restore when archived.
+  const panelArchived = panelThread?.archived !== undefined;
+  const threadMenu = (thread: ChatThread): MenuItem[] => {
+    const archived = thread.archived !== undefined;
+    const vendor = agentCommands.vendor ?? liveAgent?.vendor;
+    return [
+      {
+        label: 'Archive',
+        icon: 'archive',
+        testid: 'thread-archive',
+        hidden: archived,
+        title:
+          'Hide it; it is never sent to the agent again, and the agent is told once to treat it as closed',
+        onSelect: () => void act(() => archiveThread(stream.id, thread.id)),
+      },
+      {
+        label: archived ? 'Compact now' : 'Archive and compact now',
+        icon: 'layers',
+        testid: 'thread-compact',
+        hidden: compactCmd === undefined,
+        title: `Runs ${vendor !== undefined ? vendorLabel(vendor) : 'the agent'}’s /${compactCmd ?? 'compact'}, told to leave the archived threads out of its summary`,
+        onSelect: () =>
+          void act(async () => {
+            if (!archived) await archiveThread(stream.id, thread.id);
+            await compactNow(stream.id);
+          }),
+      },
+      {
+        label: 'Archive and forget…',
+        icon: 'refresh',
+        testid: 'thread-forget',
+        hidden: archived || !hasRun,
+        disabled: agentWorking,
+        title: agentWorking
+          ? 'Waits for the agent’s turn to end'
+          : 'Archive it, then restart the agent fresh without it',
+        onSelect: () => setForgetting(thread.id),
+      },
+      {
+        label: 'Promote to tangent…',
+        icon: 'git-fork',
+        testid: 'thread-promote',
+        hidden: archived || !canBranch || thread.promoted !== undefined,
+        title: 'Start a new conversation from this thread: its passage and lines, quoted',
+        onSelect: () => setPromoting(thread.id),
+      },
+      {
+        label: 'Restore',
+        icon: 'undo',
+        testid: 'thread-restore',
+        hidden: !archived,
+        title: 'Bring it back (the agent is told it is open again)',
+        onSelect: () => void act(() => restoreThread(stream.id, thread.id)),
+      },
+    ];
+  };
+  const promoteQuestion = tangentQuestion.trim();
+  const promote = (thread: string) =>
+    act(async () => {
+      const created = await createStream({
+        title: titleFromGoal(promoteQuestion) || promoteQuestion.slice(0, 60),
+        goal: promoteQuestion,
+        parent: stream.id,
+        seed_thread: thread,
+        auto_title: true,
+      });
+      setPromoting(undefined);
+      setTangentQuestion('');
+      select(created.id);
+    });
+  const panelNotice =
+    panelThread === undefined ? null : (
+      <>
+        {panelThread.promoted !== undefined && (
+          <div className="cr-tpanel-note" data-testid="thread-promoted">
+            <Icon name="git-fork" size={12} />
+            Promoted to a tangent:{' '}
             <button
               type="button"
-              className="cr-btn"
-              data-testid="link-wait-submit"
-              disabled={busy || chosenLink === ''}
-              onClick={() =>
-                void act(
-                  () => waitOnStream(stream.id, chosenLink),
-                  () => {
-                    setLinking(false);
-                    setLinkChoice('');
-                  },
-                )
-              }
+              className="cr-link"
+              data-testid="thread-promoted-link"
+              onClick={() => select((panelThread.promoted as { node: string }).node)}
             >
-              Wait on
+              {titleOf(panelThread.promoted.node)}
             </button>
           </div>
         )}
-        {addingRepo && (
-          <div className="cr-actions" data-testid="add-repo-form">
-            <select
-              data-testid="add-repo-select"
-              value={chosenRepo}
-              onChange={(e) => setRepoChoice(e.target.value)}
-            >
-              {repoOptions.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
+        {panelArchived && (
+          <div className="cr-tpanel-note" data-testid="thread-archived-note">
+            <Icon name="archive" size={12} />
+            {panelThread.archived?.forget
+              ? 'Archived, and the agent restarted without it.'
+              : 'Archived: never sent to the agent again; it was told to treat it as closed.'}
             <button
               type="button"
-              className="cr-btn"
-              data-testid="add-repo-submit"
-              disabled={busy || chosenRepo === ''}
-              onClick={() => addRepo(chosenRepo)}
+              className="cr-link"
+              data-testid="thread-restore-note"
+              disabled={busy}
+              onClick={() => void act(() => restoreThread(stream.id, panelThread.id))}
             >
-              Add
+              Restore
             </button>
+          </div>
+        )}
+        {promoting === panelThread.id && (
+          <form
+            className="cr-branch-form"
+            data-testid="promote-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (promoteQuestion) void promote(panelThread.id);
+            }}
+          >
+            <div className="cr-branch-label">
+              <Icon name="git-fork" size={13} />
+              Promote to a tangent: a new conversation that starts with this thread
+            </div>
+            <textarea
+              data-testid="promote-question"
+              aria-label="The tangent's question"
+              placeholder="What should the tangent look into?"
+              rows={2}
+              // biome-ignore lint/a11y/noAutofocus: the form opens on a click, for typing at once.
+              autoFocus
+              value={tangentQuestion}
+              onChange={(e) => setTangentQuestion(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.stopPropagation();
+                  setPromoting(undefined);
+                }
+              }}
+            />
+            <div className="cr-branch-actions">
+              <Button size="sm" variant="ghost" onClick={() => setPromoting(undefined)}>
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                size="sm"
+                variant="primary"
+                data-testid="promote-start"
+                disabled={busy || !promoteQuestion}
+              >
+                Start tangent
+              </Button>
+            </div>
+          </form>
+        )}
+      </>
+    );
+  /** T504 (§6): under a line in the panel: moved here (Move back), or Move to main. */
+  const panelLineExtra = (entry: ChatEntry): JSX.Element | null => {
+    if (panelThread === undefined || panelArchived) return null;
+    const move = moved.get(entry.ts);
+    if (move !== undefined && move.to === panelThread.id) {
+      return (
+        <div className="cr-tlinks cr-faint" data-testid="moved-line">
+          <Icon name="corner-down-right" size={12} />
+          <span>Moved here by you</span>
+          <button
+            type="button"
+            className="cr-link"
+            data-testid="move-back"
+            disabled={busy}
+            onClick={() => void moveTo(entry.ts, move.from)}
+          >
+            Move back
+          </button>
+        </div>
+      );
+    }
+    if (entry.ts === panelThread.id || entry.kind === 'question' || entry.kind === 'answer') {
+      return null;
+    }
+    return (
+      <button
+        type="button"
+        className="cr-link cr-faint"
+        data-testid="move-to-main"
+        title="Show this line in the main chat instead (display only)"
+        disabled={busy}
+        onClick={() => void moveTo(entry.ts, 'main')}
+      >
+        Move to main
+      </button>
+    );
+  };
+  const threadPanel =
+    shownTab === 'thread' && panelAnchor !== undefined ? (
+      <ThreadPanel
+        key={openThreadId ?? `new:${panelAnchor.entry}:${panelAnchor.quote ?? ''}`}
+        {...(panelThread ? { thread: panelThread } : {})}
+        anchor={panelAnchor}
+        {...(lineAt.get(panelAnchor.entry) ? { on: lineAt.get(panelAnchor.entry) } : {})}
+        lines={panelLines}
+        {...(openThreadId !== undefined && narrationOf.has(openThreadId)
+          ? { folded: narrationOf.get(openThreadId) }
+          : {})}
+        authorOf={(by) => chatAuthor(by, stream.sessions)}
+        queued={queuedLines}
+        {...(panelArchived
+          ? { sendBlocked: 'Restore the thread to reply in it' }
+          : intent.action === 'none'
+            ? { sendBlocked: intent.hint ?? 'Nothing can be sent here now' }
+            : offline
+              ? { sendBlocked: RECONNECTING }
+              : {})}
+        onSend={sendInThread}
+        onClose={() => setThreadView(undefined)}
+        {...(panelThread !== undefined
+          ? {
+              actions: (
+                <Menu items={threadMenu(panelThread)} label="Thread actions" testid="thread-menu" />
+              ),
+            }
+          : {})}
+        lineExtra={panelLineExtra}
+        notice={panelNotice}
+      />
+    ) : null;
+
+  const chat = (
+    <div className="cr-chat" data-tab-body="thread" ref={chatRef}>
+      {threadsChip.count > 0 && (
+        <div className="cr-threads-bar">
+          <button
+            type="button"
+            className="cr-threads-chip"
+            data-testid="open-threads"
+            data-unread={threadsChip.unread > 0 ? 'true' : undefined}
+            title={
+              threadsChip.unread > 0
+                ? 'Open the first thread with a reply you haven’t read'
+                : 'Open a thread'
+            }
+            onClick={() => {
+              if (threadsChip.target) openThread(threadsChip.target.id);
+            }}
+          >
+            <Icon name="message-square" size={12} />
+            Open threads ({threadsChip.count})
+            {threadsChip.unread > 0 && (
+              <>
+                <span className="cr-faint">· {threadsChip.unread} unread</span>
+                <span className="cr-threads-chip-dot" aria-hidden="true" />
+              </>
+            )}
+          </button>
+        </div>
+      )}
+      <ChatScroll
+        tick={`${threadTick}:${thinking}:${cards.length}`}
+        resetKey={stream.id}
+        label="Conversation"
+      >
+        {goalCard && (
+          <GoalCard goal={stream.goal ?? ''} {...(saveGoal ? { onSave: saveGoal } : {})} />
+        )}
+        {page.thread_total > page.thread.length && (
+          <p className="cr-chat-older">
+            Showing the newest {page.thread.length} of {page.thread_total} lines.
+          </p>
+        )}
+        <MessageList
+          entries={listed.entries}
+          authorOf={(by) => chatAuthor(by, stream.sessions)}
+          renderActions={(entry, i) => {
+            const at = threadIndexOf(i);
+            return at === undefined ? null : renderActions(entry, at);
+          }}
+          renderExtra={(entry, i) => {
+            const at = threadIndexOf(i);
+            return at === undefined ? null : renderExtra(entry, at);
+          }}
+          entryAttrs={(entry, i): Record<string, string> | undefined =>
+            i === listed.at
+              ? { 'data-testid': 'chat-question', 'data-question': 'true' }
+              : threadIndexOf(i) !== undefined
+                ? // T503: a selection in this turn can start a thread on it.
+                  { 'data-thread-on': entry.ts }
+                : undefined
+          }
+          marksOf={(entry, i) => (threadIndexOf(i) === undefined ? undefined : passageMarks(entry))}
+          onMark={openThread}
+          onOpenRule={(rule) => openRules({ ...DEFAULT_RULES_FILTER, rule })}
+          openQuestions={new Set(questions.map((q) => q.id))}
+          steps={listSteps}
+          narration={listNarration}
+          windowKey={stream.id}
+        />
+        {thinking && (
+          <Thinking
+            {...workingAs(stream.sessions)}
+            steps={steps.current}
+            since={turnStartedAt(page.thread, steps.current)}
+          />
+        )}
+        {!thinking && steps.current.length > 0 && (
+          <div className="cr-steps-tail">
+            <StepsFold steps={steps.current} />
+          </div>
+        )}
+        {emptyChat && open && (
+          <div className="cr-chat-empty" data-testid="chat-empty">
+            <span className="cr-chat-empty-icon">
+              <Icon name="sparkles" size={20} />
+            </span>
+            <div className="cr-chat-empty-title">
+              {liveAgent
+                ? `${name} is ready`
+                : hasRun
+                  ? 'Tell the agent what to do next'
+                  : 'Tell the agent what to do'}
+            </div>
+            <p>
+              {liveAgent
+                ? 'Send it a message below.'
+                : intent.action === 'start'
+                  ? `Your message ${hasRun ? 'wakes' : 'starts'} it with ${startWith ?? 'the default model'}.${goalCard ? ' The goal above is its brief.' : ''}`
+                  : intent.hint}
+            </p>
+            {askFirst && (
+              // T445 (audit r7 #26): a question about the project goes in its own thread.
+              <Button
+                size="sm"
+                icon="message-square"
+                data-testid="chat-empty-ask"
+                title="A conversation under the project, in its own thread (A)"
+                onClick={() => openAsk(stream.id)}
+              >
+                Ask the project a question
+              </Button>
+            )}
+          </div>
+        )}
+        {childThreads.length > 0 && (
+          // T502 (D63): each part's question as a thread, one row each; its node answers it.
+          <section
+            className="cr-child-questions"
+            data-testid="child-questions"
+            aria-label="Questions from the parts"
+          >
+            <div className="cr-child-questions-hd">
+              <Icon name="help-circle" size={13} />
+              {childThreads.length === 1
+                ? 'A question from a part'
+                : `${childThreads.length} questions from the parts`}
+            </div>
+            {childThreads.map((thread) => (
+              <QuestionThreadView
+                key={thread.question}
+                testid="child-question-thread"
+                thread={thread}
+                lines={linesAt(childNotes.linesOf.get(thread) ?? [])}
+                authorOf={(by) => chatAuthor(by, stream.sessions)}
+                head={
+                  <div className="cr-qthread-head">
+                    <button
+                      type="button"
+                      className="cr-link cr-qthread-node"
+                      data-testid="child-question-open"
+                      title={`Open ${thread.node_title ?? 'the part'}’s chat`}
+                      onClick={() => select(thread.stream, { tab: 'thread' })}
+                    >
+                      {thread.node_title ?? 'A part'}
+                    </button>
+                    <p className="cr-qthread-text" title={thread.text}>
+                      {thread.text.replace(/\s+/g, ' ').trim()}
+                    </p>
+                  </div>
+                }
+              />
+            ))}
+          </section>
+        )}
+        <section
+          className="cr-decisions"
+          data-testid="stream-needs"
+          aria-label="Needs you"
+          hidden={cards.length === 0}
+        >
+          {cards.length > 0 && (
+            <div className="cr-decisions-hd">
+              <span className="cr-decisions-dot" aria-hidden="true" />
+              {cards.length === 1 ? 'Waiting on you' : `${cards.length} things wait on you`}
+            </div>
+          )}
+          {cards.map((item) => (
+            <Card
+              key={item.id}
+              item={item}
+              full
+              // T416 (finding 12): the chat's line above reads the question; the card
+              // repeats a line of it only to tell several apart (T499: whole, once you reply).
+              {...(item.kind === 'question' && askedInChat.has(item.id)
+                ? { questionText: questions.length > 1 ? ('line' as const) : ('none' as const) }
+                : {})}
+              onDone={() => {
+                load();
+                refresh();
+              }}
+            />
+          ))}
+        </section>
+      </ChatScroll>
+      {intent.action !== 'none' && (
+        // T499: a selection in a question (its card or its line) quotes into its answer box;
+        // anywhere else in the chat, into the composer.
+        <QuoteSelection
+          scope={chatRef}
+          onQuote={(text, question) => {
+            if (question !== undefined) {
+              quoteIntoAnswer(question, text);
+              return;
+            }
+            setDraft((before) => withQuote(before, text));
+            requestAnimationFrame(() => composer.current?.focusEnd());
+          }}
+          onThread={(text, on) => {
+            // T503 (D64, §3a): a thread anchored to the passage (one level: a line already
+            // in a thread opens that thread).
+            const entry = lineAt.get(on);
+            if (entry === undefined) return;
+            const inThread = chatPlaced.alsoIn.get(on);
+            setThreadView(inThread ? { id: inThread.id } : { anchor: anchorFor(entry, text) });
+          }}
+        />
+      )}
+      <div className="cr-chat-foot">
+        <div className="cr-chat-col">
+          <DraftComposer
+            ref={composer}
+            node={stream.id}
+            onSend={() => void send()}
+            {...(agentWorking && open ? { onStop: stop } : {})}
+            busy={sending}
+            disabled={intent.action === 'none'}
+            placeholder={askFirst ? ROOT_PLACEHOLDER : intent.placeholder}
+            hint={intent.hint}
+            chip={
+              context !== undefined ? (
+                <>
+                  {modelChipEl}
+                  <ContextMeter context={context} />
+                </>
+              ) : (
+                modelChipEl
+              )
+            }
+            {...(effortChipEl ? { effort: effortChipEl } : {})}
+            {...(stepEffort && effortChipEl ? { onShiftTab: stepEffort } : {})}
+            label="Message the agent"
+            {...(offline ? { sendBlocked: RECONNECTING } : {})}
+            {...(intent.action !== 'none'
+              ? {
+                  slash: {
+                    running: agentCommands.running,
+                    commands: agentCommands.commands,
+                    ...((liveAgent?.vendor ?? pending?.vendor ?? resolved?.vendor)
+                      ? { vendor: liveAgent?.vendor ?? pending?.vendor ?? resolved?.vendor }
+                      : {}),
+                  },
+                  onSlash: agentCommands.refresh,
+                }
+              : {})}
+            after={(draft) =>
+              sendError && (
+                <div className="cr-send-error" role="alert" data-testid="send-error">
+                  <Icon name="alert-circle" size={14} />
+                  <span>{sendError}</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon="refresh"
+                    data-testid="send-retry"
+                    busy={sending}
+                    disabled={offline || draft.trim() === ''}
+                    title={offline ? RECONNECTING : 'Send it again'}
+                    onClick={() => void send()}
+                  >
+                    Retry
+                  </Button>
+                  <IconButton
+                    icon="x"
+                    size="sm"
+                    label="Dismiss"
+                    onClick={() => setSendError(undefined)}
+                  />
+                </div>
+              )
+            }
+          />
+        </div>
+      </div>
+    </div>
+  );
+
+  // T445 (audit r7 #21): the Plan tab's empty state gets the plan written. A coordinator never
+  // started (a project's root is one, T443) starts, its brief asking for the plan; one that ran
+  // is asked for it.
+  const planStart =
+    open && liveAgent === undefined && !waitingForPlan && (role === 'coordinating' || isRoot)
+      ? !hasRun
+        ? { label: 'Start the coordinator', busy, onStart: start }
+        : {
+            label: 'Ask it to plan',
+            busy,
+            onStart: () => void act(() => sayOnStream(stream.id, PLAN_REQUEST, { start: true })),
+          }
+      : undefined;
+
+  // ---------------------------------------------------------------- the page
+  return (
+    <section
+      className="cr-node"
+      data-testid="stream-page"
+      data-stream={stream.id}
+      data-details={detailsOpen ? 'open' : 'closed'}
+    >
+      <div className="cr-node-main">
+        <NodeHeader
+          title={stream.title}
+          crumbs={crumbs}
+          onOpen={select}
+          status={statusInput}
+          role={role}
+          {...(partsLine !== undefined ? { parts: partsLine } : {})}
+          agentText={agentStateText({
+            agent_status: stream.agent.status,
+            human_status: stream.human.status,
+            waiting_for_plan: waitingForPlan,
+            live: live.length > 0,
+            never_started: row?.never_started === true,
+            stopped: row?.stopped === true,
+          })}
+          {...(stream.repo ? { repo: stream.repo } : {})}
+          {...(stream.branch ? { branch: stream.branch } : {})}
+          actions={shownActions}
+          {...(convoNext
+            ? {
+                extra: (
+                  <>
+                    {sendUpTo !== undefined && (
+                      <Button
+                        icon="send"
+                        className="cr-send-up-btn"
+                        data-testid="header-send-up"
+                        disabled={offline}
+                        title={
+                          offline
+                            ? RECONNECTING
+                            : `Send its last reply to ${sendUpTo.title}: it arrives there as your message`
+                        }
+                        onClick={() => setSendingUp(lastAgentLine(page.thread) ?? '')}
+                      >
+                        <span className="cr-btn-clip">Send to {sendUpTo.title}</span>
+                      </Button>
+                    )}
+                    <Button
+                      icon="play"
+                      data-testid="header-turn-into-work"
+                      disabled={offline}
+                      title={
+                        offline
+                          ? RECONNECTING
+                          : 'State the goal (drafted from the talk), pick a repository or none, and start'
+                      }
+                      onClick={() => setTurning(true)}
+                    >
+                      Turn into work…
+                    </Button>
+                  </>
+                ),
+              }
+            : closedNode
+              ? {
+                  extra: (
+                    <Button
+                      icon="undo"
+                      variant="primary"
+                      data-testid="header-reopen"
+                      busy={busy}
+                      disabled={offline}
+                      title={
+                        offline
+                          ? RECONNECTING
+                          : 'Open it again on the same branch and worktree; your next message wakes its agent'
+                      }
+                      onClick={() => void reopen()}
+                    >
+                      Reopen
+                    </Button>
+                  ),
+                }
+              : {})}
+          startLabel={hasRun ? 'Restart agent' : 'Start agent'}
+          busy={busy}
+          merging={delivery.busy}
+          offline={offline}
+          onStart={start}
+          onChooseStart={() => setPicker('start')}
+          onStop={stop}
+          onMerge={merge}
+          {...(page.land && !page.land.ready && page.land.reason
+            ? { mergeTitle: page.land.reason }
+            : {})}
+          detailsOpen={detailsOpen}
+          onToggleDetails={() => setDetailsOpen(!detailsOpen)}
+          menu={menu}
+          {...(open && role !== 'project'
+            ? {
+                onRename: async (title: string) => {
+                  await updateStream(stream.id, { title });
+                  load();
+                  refresh();
+                },
+              }
+            : {})}
+        >
+          {mergeError && (
+            <div className="cr-node-error cr-merge-error" role="alert" data-testid="merge-error">
+              <Icon name="alert-circle" size={15} />
+              <span>
+                <strong>Couldn’t merge.</strong> {mergeError.text}
+              </span>
+              {mergeError.fix && (
+                <Button
+                  size="sm"
+                  icon={mergeError.fix.kind === 'stop' ? 'square' : 'send'}
+                  data-testid="merge-fix"
+                  data-fix={mergeError.fix.kind}
+                  busy={fixing}
+                  disabled={offline}
+                  title={
+                    offline
+                      ? RECONNECTING
+                      : mergeError.fix.kind === 'stop'
+                        ? undefined
+                        : mergeError.fix.message
+                  }
+                  onClick={() => {
+                    const fix = mergeError.fix;
+                    if (fix) void applyFix(fix);
+                  }}
+                >
+                  {mergeError.fix.label}
+                </Button>
+              )}
+              <IconButton
+                icon="x"
+                size="sm"
+                label="Dismiss"
+                onClick={() => setMergeError(undefined)}
+              />
+            </div>
+          )}
+          {mergeNote && !mergeError && (
+            <output className="cr-node-note" data-testid="merge-note">
+              <Icon name="check" size={15} />
+              <span>{mergeNote}</span>
+              <IconButton
+                icon="x"
+                size="sm"
+                label="Dismiss"
+                onClick={() => setMergeNote(undefined)}
+              />
+            </output>
+          )}
+          {actionError && (
+            <div className="cr-node-error" role="alert" data-testid="stream-error">
+              <Icon name="alert-circle" size={15} />
+              <span>{actionError}</span>
+              <IconButton
+                icon="x"
+                size="sm"
+                label="Dismiss"
+                onClick={() => setActionError(undefined)}
+              />
+            </div>
+          )}
+        </NodeHeader>
+        <Tabs
+          items={tabs.map((t) => ({
+            id: t,
+            label: TAB_LABEL[t],
+            ...(t === 'rules' ? { count: page.rules.length } : {}),
+            ...(t === 'docs' ? { count: page.docs.length } : {}),
+            // T426: the count on Changes is your review comments, not its files: it says so.
+            ...(t === 'diff' && reviewCount > 0
+              ? {
+                  count: reviewCount,
+                  countOf: {
+                    icon: 'message-square' as const,
+                    title: `${reviewCount} review ${reviewCount === 1 ? 'comment' : 'comments'} not sent yet`,
+                  },
+                }
+              : {}),
+          }))}
+          value={shownTab}
+          // T436 (#21): the first tab is the plain node link; any other is `&tab=` in the URL.
+          onChange={(t) => setTab(t === tabs[0] ? undefined : t)}
+          label="Node views"
+          className="cr-node-tabs"
+        />
+        <TabBoundary tab={shownTab} node={stream.id}>
+          {shownTab === 'thread' ? (
+            chat
+          ) : shownTab === 'overview' && stream.project !== undefined ? (
+            <div className="cr-node-pane" data-tab-body="overview">
+              <div className="cr-node-pane-col">
+                <ProjectOverview
+                  key={stream.id}
+                  project={stream.project}
+                  root={stream.id}
+                  waiting={cards.length}
+                  onOpenChat={() => setTab('thread')}
+                  onEditRepos={() => {
+                    // The project's repositories are a checklist in the details panel.
+                    setDetailsOpen(true);
+                    requestAnimationFrame(() =>
+                      document
+                        .querySelector('[data-testid="project-repos"]')
+                        ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
+                    );
+                  }}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="cr-node-pane">
+              <div className="cr-node-pane-col">
+                {shownTab === 'diff' &&
+                  (stream.branch ? (
+                    <DiffView
+                      id={stream.id}
+                      version={threadTick}
+                      {...(intent.action !== 'none'
+                        ? {
+                            // T393: the review joins the draft; the chat opens on it, unsent.
+                            onAddToMessage: (text: string) => {
+                              setDraft((before) => appendToDraft(before, text));
+                              setTab('thread');
+                              requestAnimationFrame(() => composer.current?.focusEnd());
+                            },
+                            room: roomAfter(draftOf(stream.id)),
+                          }
+                        : {})}
+                    />
+                  ) : (
+                    <div data-testid="diff-empty">
+                      <EmptyState icon="file-diff" title="No changes yet">
+                        This node gets its branch when its agent starts.
+                      </EmptyState>
+                    </div>
+                  ))}
+                {shownTab === 'activity' && (
+                  <ActivityView id={stream.id} tick={cockpit} sessions={stream.sessions} />
+                )}
+                {shownTab === 'plan' && (
+                  <PlanView
+                    id={stream.id}
+                    tick={cockpit}
+                    onChanged={refresh}
+                    titleOf={titleOf}
+                    running={liveAgent !== undefined}
+                    {...(planStart ? { start: planStart } : {})}
+                  />
+                )}
+                {shownTab === 'rules' && (
+                  <KnowledgeView node={stream} rules={page.rules} onChanged={load} />
+                )}
+                {shownTab === 'docs' && <DocsView docs={page.docs} />}
+              </div>
+            </div>
+          )}
+        </TabBoundary>
+      </div>
+
+      {detailsOpen && (
+        <DetailsPanel onClose={() => setDetailsOpen(false)}>
+          <DeliveryPanel
+            page={page}
+            delivery={delivery}
+            onResolve={() => setPicker('resolve')}
+            status={ownStatusKey(statusInput)}
+          />
+          <AgentSection
+            stream={stream}
+            {...(liveAgent ? { live: liveAgent } : {})}
+            {...(defaultLabel ? { startWith: defaultLabel } : {})}
+            {...(agentWarning !== undefined ? { warning: agentWarning } : {})}
+            busy={busy}
+            canReview={liveReviewer === undefined}
+            {...(hasCommits ? { onReview: () => setPicker('reviewer') } : {})}
+          />
+          {/* T482: who picks this node's model at a start, and how it was picked. */}
+          <ModelChoiceSection
+            key={`model-choice:${stream.id}`}
+            stream={stream}
+            {...((rootOf?.id ?? stream.project) !== undefined
+              ? { projectId: (rootOf?.id ?? stream.project) as string }
+              : {})}
+            isRoot={rootOf !== undefined}
+          />
+          {/* T413: every child, by the status words used everywhere; a root's Overview lists them. */}
+          {!projectRoot && <ChildCards parent={stream.id} cards={cockpit?.cards ?? []} />}
+          {canWait && (
+            <WaitsOnSection
+              stream={stream}
+              open={open}
+              busy={busy}
+              act={act}
+              titleOf={titleOf}
+              canAdd={linkOptions.length > 0}
+              onAdd={() => setModal('wait')}
+            />
+          )}
+          <TrackerSection
+            key={`tracker:${stream.id}`}
+            stream={stream}
+            project={project}
+            rollup={page.rollup}
+            busy={busy}
+            act={act}
+            opened={trackerOpen}
+            setOpened={setTrackerOpen}
+          />
+          <AutonomySection stream={stream} role={role} project={project} busy={busy} act={act} />
+          {rootOf && <ProjectSection key={rootOf.id} project={rootOf} busy={busy} act={act} />}
+          <FindingsSection findings={stream.agent.findings ?? []} />
+          <AboutSection
+            stream={stream}
+            role={role}
+            {...(goalCard ? {} : { goal: saveGoal ? { onSave: saveGoal } : {} })}
+            {...(projectRoot
+              ? {}
+              : { autoClose: changeAutoClose ? { onChange: changeAutoClose } : {} })}
+          />
+        </DetailsPanel>
+      )}
+      {detailsOpen && (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: the panel closes with its own button too.
+        <div className="cr-node-scrim" onClick={() => setDetailsOpen(false)} />
+      )}
+      {threadPanel}
+      <ConfirmDialog
+        open={forgetting !== undefined}
+        title="Archive and forget this thread?"
+        confirmLabel="Archive and restart the agent"
+        danger
+        busy={busy}
+        testid="forget-confirm"
+        onCancel={() => setForgetting(undefined)}
+        onConfirm={() => {
+          const thread = forgetting;
+          setForgetting(undefined);
+          if (thread !== undefined) void act(() => archiveThread(stream.id, thread, true));
+        }}
+      >
+        <p>
+          This archives the thread and <strong>restarts the agent</strong>: it starts fresh, from a
+          brief without the archived threads, so the thread is really out of what it sees.
+        </p>
+        <p className="cr-faint">
+          What the agent knew only from its own session (never written in the chat) is gone too.
+        </p>
+      </ConfirmDialog>
+
+      {turning && (
+        <TurnIntoWorkDialog
+          node={stream.id}
+          title={stream.title}
+          goal={stream.goal ?? stream.question ?? stream.title}
+          repos={cockpit?.repos ?? []}
+          {...(project ? { project } : {})}
+          {...(parentRow ? { parent: parentRow } : {})}
+          {...(grandparentRow ? { grandparent: grandparentRow } : {})}
+          {...(sendUpTo !== undefined
+            ? {
+                onSendUp: () => {
+                  setTurning(false);
+                  setSendingUp(lastAgentLine(page.thread) ?? '');
+                },
+              }
+            : {})}
+          onClose={() => setTurning(false)}
+          onDone={({ repo, where }) => {
+            setTurning(false);
+            load();
+            refresh();
+            toast({
+              tone: 'success',
+              title: repo
+                ? where === 'next-to' && parentRow
+                  ? `Now a work node on ${repo}, next to ${parentRow.title}`
+                  : `Now a work node on ${repo}`
+                : 'Now researching its goal',
+              duration: 4000,
+            });
+          }}
+        />
+      )}
+      {sendingUp !== undefined && sendUpTo !== undefined && (
+        <SendUpDialog
+          node={stream.id}
+          parentTitle={sendUpTo.title}
+          initial={sendingUp}
+          onClose={() => setSendingUp(undefined)}
+          onSent={(parent) => {
+            setSendingUp(undefined);
+            load();
+            refresh();
+            toast({
+              tone: 'success',
+              title: `Sent to ${sendUpTo.title}`,
+              duration: 5000,
+              action: { label: 'Open it', onClick: () => select(parent, { tab: 'thread' }) },
+            });
+          }}
+        />
+      )}
+      {picker && (
+        <SessionPicker
+          key={picker}
+          role={picker === 'reviewer' ? 'reviewer' : 'worker'}
+          purpose={picker === 'reviewer' ? 'reviewer' : picker === 'resolve' ? 'resolve' : 'worker'}
+          repo={stream.repo}
+          {...(project?.session ? { project: project.session } : {})}
+          {...(picker === 'start' && hasRun ? { submitLabel: 'Restart agent' } : {})}
+          busy={busy}
+          onCancel={() => setPicker(undefined)}
+          onStart={(choice) => {
+            if (picker === 'resolve') {
+              void act(
+                () => resolveConflict(stream.id, choice),
+                () => setPicker(undefined),
+              );
+              return;
+            }
+            void act(
+              () => attachSession(stream.id, picker === 'reviewer' ? 'reviewer' : 'worker', choice),
+              () => setPicker(undefined),
+            );
+          }}
+        />
+      )}
+
+      <Dialog
+        open={modal === 'wait'}
+        onClose={() => setModal(undefined)}
+        title="Wait on another node"
+        description="This node’s merge is held until the node you pick is merged."
+        size="sm"
+        testid="link-wait-form"
+        onSubmit={() => {
+          if (chosenLink === '') return;
+          void act(
+            () => waitOnStream(stream.id, chosenLink),
+            () => {
+              setModal(undefined);
+              setLinkChoice('');
+            },
+          );
+        }}
+        footer={
+          <>
+            <Button onClick={() => setModal(undefined)}>Cancel</Button>
+            <Button
+              type="submit"
+              variant="primary"
+              data-testid="link-wait-submit"
+              disabled={busy || chosenLink === ''}
+            >
+              Wait on
+            </Button>
+          </>
+        }
+      >
+        <Field label="Node" htmlFor="link-wait-select">
+          <select
+            id="link-wait-select"
+            data-testid="link-wait-select"
+            value={chosenLink}
+            onChange={(e) => setLinkChoice(e.target.value)}
+          >
+            {linkOptions.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.title}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </Dialog>
+
+      <Dialog
+        open={modal === 'repo'}
+        onClose={() => setModal(undefined)}
+        title="Add a repository"
+        description={
+          role === 'conversation' ? (
+            <>
+              This conversation becomes a work node on the repo, with its own branch. The thread
+              stays.
+              {coordinatesIt(parentRow) !== undefined && (
+                // T435 (#3): under a work node, that node then coordinates it.
+                <>
+                  {' '}
+                  <span data-testid="add-repo-coordinates">{coordinatesIt(parentRow)}</span>
+                </>
+              )}
+            </>
+          ) : role === 'coordinating' ? (
+            // T445 (audit r7 #23): a coordinating node gains a part; it isn't split again.
+            <span data-testid="add-repo-part">
+              Adds a part on {chosenRepo || 'the repository you pick'}, under this node, which
+              coordinates it.
+            </span>
+          ) : (
+            'A second repo splits this node: each repo gets a part, and this node coordinates them.'
+          )
+        }
+        size="sm"
+        testid="add-repo-form"
+        onSubmit={() => chosenRepo !== '' && addRepo(chosenRepo)}
+        footer={
+          <>
             {stream.branch !== undefined && (
-              <button
-                type="button"
-                className="cr-btn"
+              <Button
                 data-testid="switch-repo-submit"
                 title="Only when nothing is committed on this branch"
                 disabled={busy || chosenRepo === ''}
                 onClick={() => addRepo(chosenRepo, true)}
               >
-                Switch
-              </button>
+                Switch to it
+              </Button>
             )}
-          </div>
-        )}
-        {picker && (
-          <SessionPicker
-            key={picker}
-            role={picker === 'reviewer' ? 'reviewer' : 'worker'}
-            repo={stream.repo}
-            busy={busy}
-            onCancel={() => setPicker(undefined)}
-            onStart={(choice) => {
-              if (picker === 'resolve') {
-                void act(
-                  () => resolveConflict(stream.id, choice),
-                  () => setPicker(undefined),
-                );
-                return;
-              }
-              void act(
-                () => attachSession(stream.id, picker, choice),
-                () => setPicker(undefined),
-              );
-            }}
-          />
-        )}
-        {actionError && (
-          <p className="cr-error" role="alert" data-testid="stream-error">
-            {actionError}
-          </p>
-        )}
-      </section>
-
-      {findings.length > 0 && (
-        <section className="cr-findings" data-testid="findings">
-          <h2>Findings</h2>
-          <ul>
-            {findings.map((finding, i) => (
-              <li
-                // biome-ignore lint/suspicious/noArrayIndexKey: findings are append-only.
-                key={i}
-                data-testid="finding"
-                data-severity={finding.severity}
-              >
-                <span className="sev">{finding.severity}</span>{' '}
-                <code>
-                  {finding.file}
-                  {finding.line !== undefined ? `:${finding.line}` : ''}
-                </code>{' '}
-                — {finding.text}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <LandPanel
-        // A new session (Resolve, Attach) starts the panel over: the last land's result is stale.
-        key={`${stream.id}:${stream.sessions.length}`}
-        page={page}
-        onChanged={load}
-        onResolve={() => setPicker('resolve')}
-      />
-
-      <nav className="cr-tabs" aria-label="Stream views">
-        {TABS.map((each) => (
-          <button
-            key={each.tab}
-            type="button"
-            data-tab={each.tab}
-            aria-current={tab === each.tab ? 'page' : undefined}
-            className={tab === each.tab ? 'on' : undefined}
-            onClick={() => setTab(each.tab)}
-          >
-            {each.label}
-            {each.tab === 'rules' ? ` (${page.rules.length})` : ''}
-            {each.tab === 'docs' ? ` (${page.docs.length})` : ''}
-          </button>
-        ))}
-      </nav>
-
-      {tab === 'thread' && (
-        <section className="cr-thread-wrap">
-          {page.thread_total > page.thread.length && (
-            <p className="cr-dim">
-              Showing the newest {page.thread.length} of {page.thread_total} lines.
-            </p>
-          )}
-          <ol className="cr-thread" data-testid="thread" ref={threadRef}>
-            {page.thread.map((entry, i) => {
-              const hit = ruleHitOf(entry);
-              if (hit !== undefined) {
-                return (
-                  <li
-                    // biome-ignore lint/suspicious/noArrayIndexKey: the thread is append-only, so an index is stable.
-                    key={i}
-                    className="cr-rule-hit"
-                    data-testid="thread-rule-hit"
-                    data-kind={entry.kind}
-                    data-by="daemon"
-                    data-rule={hit}
-                  >
-                    <div className="who">blocked by rule</div>
-                    <Markdown text={entry.body.slice('rule_hit:'.length).trim()} />
-                    <button
-                      type="button"
-                      className="cr-link"
-                      data-testid="thread-rule-link"
-                      onClick={() => openRules({ ...DEFAULT_RULES_FILTER, rule: hit })}
-                    >
-                      Open rule {hit}
-                    </button>
-                  </li>
-                );
-              }
-              return (
-                <li
-                  // biome-ignore lint/suspicious/noArrayIndexKey: the thread is append-only, so an index is stable.
-                  key={i}
-                  data-testid="thread-entry"
-                  data-kind={entry.kind}
-                  data-by={entry.by === 'human' || entry.by === 'daemon' ? entry.by : 'agent'}
-                >
-                  <div className="who">
-                    {threadAuthorLabel(entry.by, stream.sessions)}
-                    {entry.kind !== 'line' ? ` · ${entry.kind}` : ''}
-                  </div>
-                  <ThreadBody body={entry.body} />
-                  {entry.kind === 'proposal' &&
-                    open &&
-                    reposNamedIn(entry.body, repos, stream.repo).map((name) => (
-                      <button
-                        key={name}
-                        type="button"
-                        className="cr-btn"
-                        data-testid="proposal-add-repo"
-                        disabled={busy}
-                        onClick={() => addRepo(name)}
-                      >
-                        Add {name}
-                      </button>
-                    ))}
-                  {entry.by === 'human' && entry.kind === 'line' && queuedLines.has(entry.ts) && (
-                    <div className="cr-dim cr-queued" data-testid="thread-queued">
-                      queued — the worker reads it after its current step
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-            {isThinking(stream) && (
-              <li className="cr-thinking" data-testid="thinking" aria-label="agent is thinking">
-                <span />
-                <span />
-                <span />
-              </li>
-            )}
-          </ol>
-          <form
-            className="cr-composer"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (text)
-                void act(
-                  () => sayOnStream(stream.id, text),
-                  () => setDraft(''),
-                );
-            }}
-          >
-            <textarea
-              data-testid="composer-input"
-              aria-label="Write on the stream"
-              rows={2}
-              maxLength={800}
-              value={draft}
-              disabled={busy}
-              placeholder={
-                liveWorker
-                  ? 'Write on the stream — the attached worker reads it too…'
-                  : 'Write on the stream…'
-              }
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                // Enter sends; Shift+Enter is a newline; never mid-IME composition.
-                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  if (busy) return;
-                  if (text)
-                    void act(
-                      () => sayOnStream(stream.id, text),
-                      () => setDraft(''),
-                    );
-                }
-              }}
-            />
-            <button
+            <Button
               type="submit"
-              className="cr-btn signal"
-              data-testid="composer-send"
-              disabled={busy || text.length === 0}
+              variant="primary"
+              data-testid="add-repo-submit"
+              disabled={busy || chosenRepo === ''}
             >
-              Send
-            </button>
-          </form>
-        </section>
+              Add
+            </Button>
+          </>
+        }
+      >
+        <Field label="Repository">
+          {/* T445 (audit r7 #23): the searchable picker every other repository choice uses. */}
+          <PickerField
+            testid="add-repo-select"
+            label="Repository"
+            value={chosenRepo}
+            display={
+              chosenRepo ? (
+                <>
+                  <RepoIcon remote={repos.find((r) => r.name === chosenRepo)?.remote} size={14} />
+                  <span className="cr-pickfield-text">{chosenRepo}</span>
+                  <span className="cr-pickfield-sub">
+                    {repoKindLabel(repos.find((r) => r.name === chosenRepo)?.remote)}
+                  </span>
+                </>
+              ) : (
+                <span className="cr-pickfield-text">Pick a repository</span>
+              )
+            }
+            options={[
+              ...projectRepos.map(
+                (r): PickOption => ({
+                  value: r.name,
+                  text: r.name,
+                  icon: <RepoIcon remote={r.remote} size={14} />,
+                  sub: repoKindLabel(r.remote),
+                  group: `In ${project?.name ?? 'this project'}`,
+                  attrs: { 'data-repo': r.name },
+                }),
+              ),
+              ...otherRepos.map(
+                (r): PickOption => ({
+                  value: r.name,
+                  text: r.name,
+                  icon: <RepoIcon remote={r.remote} size={14} />,
+                  sub: repoKindLabel(r.remote),
+                  group: projectRepos.length > 0 ? 'Other repositories' : 'Repositories',
+                  attrs: { 'data-repo': r.name },
+                }),
+              ),
+            ]}
+            placeholder="Search repositories…"
+            search={repoOptions.length > 6}
+            onPick={setRepoChoice}
+          />
+        </Field>
+      </Dialog>
+      {modal === 'rename' && row !== undefined && (
+        // T445 (audit r7 #22): the rail's own dialogs, from the header's ⋯ menu and ⌘K.
+        <RenameDialog
+          row={row}
+          onClose={() => {
+            setModal(undefined);
+            load();
+          }}
+        />
+      )}
+      {modal === 'move' && row !== undefined && (
+        <MoveDialog
+          row={row}
+          rows={rows}
+          projectName={project?.name}
+          onClose={() => {
+            setModal(undefined);
+            load();
+          }}
+        />
       )}
 
-      {tab === 'diff' &&
-        (stream.branch ? (
-          <DiffView id={stream.id} />
-        ) : (
-          <p className="cr-dim" data-testid="diff-empty">
-            {stream.repo
-              ? 'No branch yet — attach a worker to cut one.'
-              : 'This stream has no repo.'}
-          </p>
-        ))}
+      <ConfirmDialog
+        open={modal === 'talk'}
+        title={`Back to just talking in “${stream.title}”?`}
+        confirmLabel="Back to talk"
+        busy={busy}
+        testid="to-talk"
+        onCancel={() => setModal(undefined)}
+        onConfirm={() =>
+          void act(
+            () => streamToTalk(stream.id),
+            () => {
+              setModal(undefined);
+              toast({
+                title: 'Back to talking',
+                body: `Its work on ${stream.repo ?? 'the repository'} is kept; pick that repository again to carry on.`,
+                tone: 'success',
+              });
+            },
+          )
+        }
+      >
+        <p className="cr-confirm-text">
+          Its agent stops. Its branch, commits and worktree stay as they are; the conversation
+          carries on without a repository, and its next agent reads and researches rather than
+          edits.
+        </p>
+      </ConfirmDialog>
 
-      {tab === 'activity' && <ActivityView id={stream.id} tick={cockpit} />}
+      <ConfirmDialog
+        open={modal === 'close'}
+        title={`Close “${stream.title}”?`}
+        confirmLabel="Close node"
+        busy={busy}
+        testid="close-node"
+        onCancel={() => setModal(undefined)}
+        onConfirm={() =>
+          void act(
+            () => closeStream(stream.id),
+            () => {
+              setModal(undefined);
+              toast({ title: 'Node closed', tone: 'success' });
+            },
+          )
+        }
+      >
+        <p className="cr-confirm-text">
+          Closing puts it away without merging: it leaves Needs me and its agent stops. A message or
+          Reopen brings it back; the branch and worktree stay.
+        </p>
+      </ConfirmDialog>
 
-      {tab === 'plan' && (
-        <PlanView id={stream.id} tick={cockpit} onChanged={refresh} titleOf={titleOf} />
-      )}
-
-      {tab === 'rules' && (
-        <ul className="cr-rules" data-testid="rules">
-          {page.rules.length === 0 && <li className="cr-dim">No accepted knowledge in scope.</li>}
-          {page.rules.map((rule) => (
-            <li key={rule.id} data-testid="rule" data-rule={rule.id}>
-              <div className="cr-dim">
-                {rule.name ?? rule.id} · <Linked text={formatKnowledgeScope(rule.scope)} /> ·{' '}
-                {rule.kind} · {rule.enforcement}
-                {rule.critical ? ' · critical' : ''}
-              </div>
-              <Markdown text={rule.text} />
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {tab === 'docs' && (
-        <ul className="cr-docs" data-testid="docs">
-          {page.docs.length === 0 && (
-            <li className="cr-dim">No docs — repo docs and stream docs appear here.</li>
-          )}
-          {page.docs.map((doc) => (
-            <li key={doc.path} data-testid="doc">
-              <details>
-                <summary>
-                  {doc.name} <span className="cr-dim">· {doc.source}</span>
-                </summary>
-                <Markdown text={doc.body} />
-              </details>
-            </li>
-          ))}
-        </ul>
-      )}
+      <ConfirmDialog
+        open={modal === 'delete'}
+        title={`Move “${stream.title}” to the trash?`}
+        confirmLabel="Move to trash"
+        danger
+        busy={busy}
+        testid="delete-node"
+        onCancel={() => setModal(undefined)}
+        onConfirm={() => void deleteNode()}
+      >
+        <p className="cr-confirm-text">
+          {children.length > 0
+            ? `It and its ${children.length} sub-node${children.length === 1 ? '' : 's'} leave the tree, and their agents stop.`
+            : 'It leaves the tree, and its agent stops.'}{' '}
+          Worktrees and branches are kept. Restore it from Trash at the foot of the sidebar.
+        </p>
+      </ConfirmDialog>
+      {mergeAsk.dialog}
     </section>
   );
+}
+
+/** T421: the conversation's last reply, where Send to parent starts. */
+function lastAgentLine(thread: StreamPagePayload['thread']): string | undefined {
+  for (let i = thread.length - 1; i >= 0; i--) {
+    const e = thread[i];
+    if (e !== undefined && e.kind === 'line' && e.by.startsWith('agent:')) return e.body;
+  }
+  return undefined;
 }

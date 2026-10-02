@@ -5,7 +5,7 @@
  * routed to `hil`, never `allow` (`hasUnsafeShellConstruct`).
  */
 
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join as joinPath, relative, resolve, sep } from 'node:path';
 
@@ -200,10 +200,104 @@ function isShellDashC(tokens: string[]): boolean {
   return SHELL_RUNNERS.has(tokens[0] ?? '') && tokens[1] === '-c' && tokens.length >= 3;
 }
 
+/** T462: a `for` loop is unrolled only up to these sizes; a larger one stays refused. */
+const FOR_WORDS_MAX = 50;
+const FOR_UNROLLED_MAX = 200;
+/** Shell keywords that open or close a compound command: a loop body holding one isn't unrolled. */
+const COMPOUND_KEYWORDS = new Set([
+  'for',
+  'while',
+  'until',
+  'if',
+  'then',
+  'elif',
+  'else',
+  'fi',
+  'case',
+  'esac',
+  'do',
+  'done',
+  'select',
+  'function',
+]);
+/** A loop word unrolled as written: no quoting, variable, substitution or brace to reinterpret. */
+const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./~*?-]+$/;
+
+/**
+ * T462: `for NAME in WORD…; do BODY; done`, unrolled into BODY once per
+ * word with `$NAME` / `${NAME}` written out, so every command the loop runs
+ * is checked as if typed (a loop was refused outright before: `for` is no
+ * command). Unrolled only when the words are plain, the body holds no other
+ * compound command and never quotes `$NAME` in single quotes, and the sizes
+ * stay small; anything else keeps its `for`/`do`/`done` atoms, which no role
+ * allows. `undefined` when `segments[at]` doesn't open such a loop.
+ */
+function unrollFor(
+  segments: RawSegment[],
+  at: number,
+): { unrolled: RawSegment[]; next: number } | undefined {
+  const head = tokenizeSegment(segments[at]?.raw ?? '');
+  if (head[0] !== 'for' || head[2] !== 'in') return undefined;
+  const name = head[1] ?? '';
+  const words = head.slice(3);
+  if (!/^[A-Za-z_]\w*$/.test(name) || words.length === 0 || words.length > FOR_WORDS_MAX) {
+    return undefined;
+  }
+  if (!words.every((w) => PLAIN_WORD.test(w))) return undefined;
+  // `do` opens the body on its own line or before the first command.
+  const opener = segments[at + 1];
+  if (opener === undefined || !/^do(?:\s|$)/.test(opener.raw)) return undefined;
+  const body: RawSegment[] = [];
+  const firstCommand = opener.raw.replace(/^do\s*/, '');
+  if (firstCommand !== '') body.push({ ...opener, raw: firstCommand });
+  let end = at + 2;
+  for (; end < segments.length; end++) {
+    const seg = segments[end] as RawSegment;
+    if (seg.raw === 'done') break;
+    body.push(seg);
+  }
+  if (end >= segments.length || body.length === 0) return undefined;
+  const ref = new RegExp(`\\$\\{${name}\\}|\\$${name}(?![A-Za-z0-9_])`, 'g');
+  for (const seg of body) {
+    const tokens = tokenizeSegment(seg.raw);
+    if (tokens.length === 0 || COMPOUND_KEYWORDS.has(tokens[0] ?? '')) return undefined;
+    if (seg.raw.includes("'") && ref.test(seg.raw)) return undefined;
+    ref.lastIndex = 0;
+  }
+  if (words.length * body.length > FOR_UNROLLED_MAX) return undefined;
+  const unrolled: RawSegment[] = [];
+  for (const [i, word] of words.entries()) {
+    for (const [j, seg] of body.entries()) {
+      unrolled.push({
+        raw: seg.raw.replace(ref, word),
+        delimiterBefore:
+          j > 0 ? seg.delimiterBefore : i === 0 ? (segments[at]?.delimiterBefore ?? 'start') : ';',
+      });
+    }
+  }
+  return { unrolled, next: end + 1 };
+}
+
+/** T462: `segments` with each simple `for` loop unrolled (`unrollFor`). */
+function unrollForLoops(segments: RawSegment[]): RawSegment[] {
+  const out: RawSegment[] = [];
+  for (let i = 0; i < segments.length; ) {
+    const loop = unrollFor(segments, i);
+    if (loop === undefined) {
+      out.push(segments[i] as RawSegment);
+      i += 1;
+      continue;
+    }
+    out.push(...loop.unrolled);
+    i = loop.next;
+  }
+  return out;
+}
+
 /** Splits `command` into prefix-stripped atoms, recursing into `sh|bash|zsh -c "..."`. */
 export function parseCommandIntoAtoms(command: string): CommandAtom[] {
   const atoms: CommandAtom[] = [];
-  const rawSegments = splitCommandSegments(command);
+  const rawSegments = unrollForLoops(splitCommandSegments(command));
 
   for (const seg of rawSegments) {
     const raw = tokenizeSegment(seg.raw);
@@ -262,7 +356,7 @@ export function isPipedIntoBareShell(atom: CommandAtom): boolean {
  * or among the root's own ancestors) is followed before the containment
  * check. Never throws: falls back to the plain resolved path.
  */
-function realpathNearestExisting(p: string): string {
+export function realpathNearestExisting(p: string, depth = 0): string {
   const target = resolve(p);
   const missingSegments: string[] = [];
   let current = target;
@@ -271,11 +365,36 @@ function realpathNearestExisting(p: string): string {
       const real = realpathSync(current);
       return missingSegments.length > 0 ? resolve(real, ...missingSegments.reverse()) : real;
     } catch {
+      // T457b: a dangling symlink (its target doesn't exist yet) still names
+      // where it points: follow its text, or a link into `~/.ssh` (absent now)
+      // or out of the worktree would read as the dir it sits in.
+      if (depth < SYMLINK_DEPTH_MAX) {
+        const pointsTo = danglingLinkTarget(current);
+        if (pointsTo !== undefined) {
+          return realpathNearestExisting(
+            resolve(pointsTo, ...[...missingSegments].reverse()),
+            depth + 1,
+          );
+        }
+      }
       const parent = dirname(current);
       if (parent === current) return target; // even the fs root failed: give up safely
       missingSegments.push(basename(current));
       current = parent;
     }
+  }
+}
+
+/** The kernel's own limit on symlinks followed in one path (Linux: 40). */
+const SYMLINK_DEPTH_MAX = 40;
+
+/** T457b: where `p` points when it is a symlink `realpath` couldn't follow; `undefined` otherwise. */
+function danglingLinkTarget(p: string): string | undefined {
+  try {
+    if (!lstatSync(p).isSymbolicLink()) return undefined;
+    return resolve(dirname(p), readlinkSync(p));
+  } catch {
+    return undefined;
   }
 }
 
@@ -849,6 +968,36 @@ function redirectionOccurrences(tokens: string[]): RedirectionOccurrence[] {
   return occurrences;
 }
 
+/**
+ * T459: an input redirect (`<`, `0<`, fused or its own token): the file it
+ * names is read, so it is read-checked like an argument. Not `<<` (a heredoc),
+ * `<<<`, `<(` (process substitution), `<>` (a write, above) or `<&` (an fd).
+ */
+const INPUT_REDIRECT_RE = /^\d*<(?![<(>&])/;
+
+/** T459: every file an input redirect reads (`cat <f`, `tr a b < f`, `cmd 0<f`). */
+export function inputRedirectTargets(tokens: string[]): string[] {
+  const targets: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i] ?? '';
+    const m = INPUT_REDIRECT_RE.exec(t);
+    if (!m) continue;
+    const rest = t.slice(m[0].length);
+    if (rest.length > 0) targets.push(rest);
+    else if (tokens[i + 1] !== undefined) targets.push(tokens[++i] as string);
+  }
+  return targets;
+}
+
+/**
+ * T459: `xargs` was stripped from the front of this atom (`… | xargs cat`):
+ * the command runs on paths that only exist at run time, so no check of its
+ * arguments can see what it reads or writes.
+ */
+export function runsUnderXargs(atom: CommandAtom): boolean {
+  return (atom.prefix ?? []).some((t) => normalizeToken(t) === 'xargs');
+}
+
 /** A redirection with nothing after it is unresolvable, never benign. */
 export function hasUnresolvedRedirection(tokens: string[]): boolean {
   return redirectionOccurrences(tokens).some((o) => o.target === undefined);
@@ -900,10 +1049,47 @@ export function benignPathArgs(tokens: string[]): string[] {
   return tokens.slice(1).filter((t) => !isFlagToken(t) && !isTestBracketClose(t, head));
 }
 
-/** `grep`/`rg` path arguments: the first non-flag token is the pattern, the rest are paths. */
+/**
+ * `grep`/`rg` path arguments: the first non-flag token is the pattern, the
+ * rest are paths. T457: unless the pattern comes from a flag (`-e`/`-f` in
+ * any bundle or fused spelling, `--regexp`, `--file`) or there is none (`rg
+ * --files`): then every non-flag token is a path, and so is a pattern
+ * file's name (`-f`), fused or not. Only an `-e`/`--regexp` value is
+ * skipped. Lowercase `e`/`f` only (`-E`, `-F` are grep's syntax switches).
+ */
 export function grepPathArgs(tokens: string[]): string[] {
-  const rest = tokens.slice(1).filter((t) => !isFlagToken(t));
-  return rest.slice(1);
+  const args = tokens.slice(1);
+  const positionals: string[] = [];
+  let fromFlag = false;
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i] ?? '';
+    if (t === '--files' || /^--regexp=/.test(t)) {
+      fromFlag = true;
+    } else if (t === '--regexp') {
+      fromFlag = true;
+      i++; // its value is the pattern
+    } else if (t === '--file') {
+      fromFlag = true; // its value, the next token, is a path
+    } else if (/^--file=/.test(t)) {
+      fromFlag = true;
+      positionals.push(t.slice('--file='.length));
+    } else if (/^-[^-]/.test(t)) {
+      const letters = t.slice(1);
+      const at = letters.search(/[ef]/);
+      if (at >= 0) {
+        fromFlag = true;
+        const value = letters.slice(at + 1);
+        if (letters[at] === 'f') {
+          if (value.length > 0) positionals.push(value);
+        } else if (value.length === 0) {
+          i++; // `-e PATTERN`
+        }
+      }
+    } else if (!isFlagToken(t)) {
+      positionals.push(t);
+    }
+  }
+  return fromFlag ? positionals : positionals.slice(1);
 }
 
 /**

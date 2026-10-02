@@ -20,6 +20,7 @@ import {
   useState,
 } from 'react';
 import type { CockpitFrame, FeedSnapshot } from './feed-types';
+import { withParts } from './status';
 import { connectFeedSocket } from './ws';
 
 /** Cap on the in-memory event tail (the Feed panel renders it). */
@@ -29,6 +30,12 @@ export interface FeedContextValue {
   snapshot: FeedSnapshot | undefined;
   events: Event[];
   connected: boolean;
+  /**
+   * T416: the socket has been down for a moment (not a blip, and not the
+   * first connect's few hundred ms): the banner shows, and write buttons are
+   * off with "Reconnecting to the daemon…" until it is back.
+   */
+  offline: boolean;
   /** T160: the latest inbox + stream tree push; `undefined` until the first frame. */
   cockpit: CockpitFrame | undefined;
   /**
@@ -43,6 +50,32 @@ export interface FeedContextValue {
 
 const FeedContext = createContext<FeedContextValue | undefined>(undefined);
 
+/**
+ * T447 (audit r7 #2): the frame as the cockpit reads it — each coordinating
+ * node's and project root's parts rolled up once here, so the rail, the
+ * header, the Overview and Children agree on its status.
+ */
+export function readFrame(frame: CockpitFrame): CockpitFrame {
+  return { ...frame, streams: withParts(frame.streams) };
+}
+
+/** How long the socket may be down before the cockpit says so (a reconnect blip says nothing). */
+export const OFFLINE_AFTER_MS = 2000;
+
+/** True once `connected` has been false for `OFFLINE_AFTER_MS`; false again the moment it is back. */
+function useOffline(connected: boolean): boolean {
+  const [offline, setOffline] = useState(false);
+  useEffect(() => {
+    if (connected) {
+      setOffline(false);
+      return;
+    }
+    const timer = setTimeout(() => setOffline(true), OFFLINE_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [connected]);
+  return offline;
+}
+
 export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
   const [snapshot, setSnapshot] = useState<FeedSnapshot | undefined>(undefined);
   const [events, setEvents] = useState<Event[]>([]);
@@ -50,6 +83,7 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
   const [cockpit, setCockpit] = useState<CockpitFrame | undefined>(undefined);
   // Refs, not state: a new subscriber must never re-open the socket.
   const eventHandlers = useRef(new Set<(event: Event) => void>());
+  const offline = useOffline(connected);
 
   useEffect(() => {
     const handle = connectFeedSocket({
@@ -61,7 +95,7 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
         setEvents((prev) => [...prev, event].slice(-MAX_EVENTS));
         for (const handler of eventHandlers.current) handler(event);
       },
-      onCockpit: (frame) => setCockpit(frame),
+      onCockpit: (frame) => setCockpit(readFrame(frame)),
       onStatusChange: (status) => setConnected(status === 'open'),
     });
     return () => handle.close();
@@ -78,7 +112,7 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
     fetch('/api/cockpit')
       .then((res) => (res.ok ? (res.json() as Promise<CockpitFrame>) : undefined))
       .then((frame) => {
-        if (frame) setCockpit(frame);
+        if (frame) setCockpit(readFrame(frame));
       })
       .catch(() => {
         // The next pushed frame carries the same state.
@@ -86,8 +120,8 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
   }, []);
 
   const value = useMemo<FeedContextValue>(
-    () => ({ snapshot, events, connected, cockpit, refresh, onEvent }),
-    [snapshot, events, connected, cockpit, refresh, onEvent],
+    () => ({ snapshot, events, connected, offline, cockpit, refresh, onEvent }),
+    [snapshot, events, connected, offline, cockpit, refresh, onEvent],
   );
 
   return <FeedContext.Provider value={value}>{children}</FeedContext.Provider>;

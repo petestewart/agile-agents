@@ -1,7 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { EVENT_KINDS } from './event';
 import { ulid } from './ids';
-import { type Question, QuestionSchema, validateQuestion } from './question';
+import {
+  type Question,
+  QuestionSchema,
+  QuestionThreadSchema,
+  questionIdOfThreadRef,
+  validateQuestion,
+} from './question';
 
 function open(overrides: Partial<Question> = {}): unknown {
   return {
@@ -75,6 +81,42 @@ describe('QuestionSchema', () => {
         }).success,
       ).toBe(false);
     }
+  });
+
+  test('T502: settled is a resolution; superseded_by only on an answered question', () => {
+    const answered = (extra: Partial<Question>) =>
+      QuestionSchema.safeParse(
+        open({ status: 'answered', answer: 'cents', ...extra } as Partial<Question>),
+      ).success;
+    expect(answered({ resolved_as: 'settled', answered_by: `agent:${ulid()}` })).toBe(true);
+    const newer = `Q-${ulid()}`;
+    expect(answered({ resolved_as: 'superseded', superseded_by: newer })).toBe(true);
+    expect(answered({ resolved_as: 'superseded', superseded_by: 'Q-1' })).toBe(false);
+    expect(() => validateQuestion(open({ superseded_by: newer } as Partial<Question>))).toThrow(
+      /must not carry "superseded_by"/,
+    );
+  });
+
+  test('T502: a question thread is strict, and a line ref names its question', () => {
+    const id = `Q-${ulid()}`;
+    const thread = {
+      question: id,
+      earlier: [],
+      stream: ulid(),
+      text: 'Store amounts how?',
+      options: ['Integer cents', 'Floats'],
+      state: 'waiting_on_agent',
+      vendor: 'codex',
+      replies: 1,
+      entries: [new Date().toISOString()],
+      raised_at: new Date().toISOString(),
+    };
+    expect(QuestionThreadSchema.safeParse(thread).success).toBe(true);
+    expect(QuestionThreadSchema.safeParse({ ...thread, state: 'pending' }).success).toBe(false);
+    expect(QuestionThreadSchema.safeParse({ ...thread, extra: 1 }).success).toBe(false);
+    expect(questionIdOfThreadRef(`questions/${id}.yaml`)).toBe(id);
+    expect(questionIdOfThreadRef(`gates/${id}.yaml`)).toBeUndefined();
+    expect(questionIdOfThreadRef(undefined)).toBeUndefined();
   });
 
   test('stream is required and must be a ULID', () => {

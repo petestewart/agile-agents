@@ -14,10 +14,13 @@
  *   than the subject.
  * - `party` / `sibling`: named by the producer (contract parties, knowledge
  *   scope, plan children; the other sibling).
+ * - The Director (`director`): its own types, and (T446) any event the
+ *   producer marks `director` (a change the Director made).
  */
 
 import {
   DIRECTOR_NODE,
+  RECORD_ONLY_EVENT_TYPES,
   type RoutedEvent,
   type RoutedEventType,
   type RoutingEntry,
@@ -66,6 +69,20 @@ export const ROUTES: Record<RoutedEventType, readonly Rule[]> = {
   external_changed: ['self'],
   // T300 (P16): the Director is not a node; its queue is `director`.
   director_request: ['director'],
+  // T332 (D33): a tangent reports to the conversation it branched off, no higher.
+  tangent_summary: ['parent'],
+  // T446: the node that changed and every ancestor (the Director's feed when it
+  // acted: `RouteInput.director`). Record-only: nobody is woken or sent it.
+  autonomy_applied: ['self', 'ancestors'],
+  // T456: the node's own record (Events, its Activity). A switch is not a status
+  // change, so the parent is not told; a spent list blocks it (child_status).
+  agent_restarted: ['self'],
+  // T481 (D50): a vendor's CLI was updated. It is about no node: recorded in Events, routed to nobody.
+  harness_updated: [],
+  // T484: a node's model stepped up (or it is stuck on the strongest): its own record, like a restart.
+  model_escalated: ['self'],
+  // T504 (D65): the node's own agent is told a thread is closed (quiet: it rides the next digest).
+  thread_archived: ['self'],
 };
 
 /** Types whose parties also bring their own ancestors (overlap: "both nodes, their ancestors"). */
@@ -79,6 +96,8 @@ export interface RouteInput {
   parties?: readonly string[];
   /** The other sibling (ask/reply) or the importing sibling (symbol_changed). */
   siblings?: readonly string[];
+  /** T446: also the Director's queue (its Activity), for a change the Director made or drafted. */
+  director?: boolean;
 }
 
 export interface Route {
@@ -117,13 +136,15 @@ export function routeEvent(input: RouteInput, all: readonly Stream[]): Route {
     routing.push({ node, because });
   };
   const { subject } = input;
+  const addDirector = (): void => {
+    if (seen.has(DIRECTOR_NODE)) return;
+    seen.add(DIRECTOR_NODE);
+    routing.push({ node: DIRECTOR_NODE, because: 'self' });
+  };
   for (const rule of ROUTES[input.type]) {
     switch (rule) {
       case 'director':
-        if (!seen.has(DIRECTOR_NODE)) {
-          seen.add(DIRECTOR_NODE);
-          routing.push({ node: DIRECTOR_NODE, because: 'self' });
-        }
+        addDirector();
         break;
       case 'self':
         add(subject, 'self');
@@ -160,6 +181,7 @@ export function routeEvent(input: RouteInput, all: readonly Stream[]): Route {
   if (PARTY_ANCESTORS.has(input.type)) {
     for (const p of input.parties ?? []) for (const a of ancestorsOf(p, byId)) add(a, 'ancestor');
   }
+  if (input.director === true) addDirector();
   const expired = routing
     .flatMap((r) => byId.get(r.node) ?? [])
     .filter((s) => s.archived === true || s.human.status === 'closed')
@@ -169,7 +191,7 @@ export function routeEvent(input: RouteInput, all: readonly Stream[]): Route {
 }
 
 export type RouteEmitInput = Omit<RoutedEvent, 'id' | 'at' | 'routing' | 'coalesce_key'> &
-  Pick<RouteInput, 'parties' | 'siblings'>;
+  Pick<RouteInput, 'parties' | 'siblings' | 'director'>;
 
 /**
  * Routes over `all`, emits, expires deliveries to closed nodes, and marks
@@ -181,7 +203,7 @@ export async function routeAndEmit(
   input: RouteEmitInput,
   all: readonly Stream[],
 ): Promise<RoutedEvent> {
-  const { parties, siblings, ...rest } = input;
+  const { parties, siblings, director, ...rest } = input;
   const route = routeEvent(
     {
       type: rest.type,
@@ -189,6 +211,7 @@ export async function routeAndEmit(
       ...(rest.repo !== undefined ? { repo: rest.repo } : {}),
       ...(parties !== undefined ? { parties } : {}),
       ...(siblings !== undefined ? { siblings } : {}),
+      ...(director !== undefined ? { director } : {}),
     },
     all,
   );
@@ -208,7 +231,8 @@ export async function routeAndEmit(
     routing: route.routing,
     ...(key !== undefined ? { coalesce_key: key } : {}),
   });
-  const expired = new Set(route.expired);
+  // T446: a record-only event is never pending, so nothing expires (it is on the record either way).
+  const expired = new Set(RECORD_ONLY_EVENT_TYPES.has(event.type) ? [] : route.expired);
   for (const node of expired) await events.mark(node, [event.id], 'expired');
   for (const [node, ids] of older) {
     if (!expired.has(node)) await events.mark(node, ids, 'superseded');

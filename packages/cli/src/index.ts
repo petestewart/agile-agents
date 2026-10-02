@@ -40,6 +40,13 @@ import {
   runKnowledgeTest,
 } from './commands/knowledge';
 import { runLand } from './commands/land';
+import {
+  runPolicyChooseAgain,
+  runPolicySet,
+  runPolicyShow,
+  runPolicyStepUp,
+  runPolicyTry,
+} from './commands/policy';
 import { runProjectList, runProjectNew, runProjectSet, runProjectShow } from './commands/project';
 import { runQuestionAnswer, runQuestionList, runQuestionRaise } from './commands/question';
 import { runRepoAdd, runRepoList, runRepoSet } from './commands/repo';
@@ -52,6 +59,7 @@ import {
   runStreamImportChildren,
   runStreamLink,
   runStreamList,
+  runStreamMove,
   runStreamNew,
   runStreamSay,
   runStreamSetAutonomy,
@@ -60,6 +68,7 @@ import {
 } from './commands/stream';
 import { runDirectorTail, runNodeEvents, runTail } from './commands/tail';
 import { runTrackerClear, runTrackerSet, runTrackerStatus } from './commands/tracker';
+import { runVendors, runVendorsCheck, runVendorsInstall } from './commands/vendors';
 
 export const PACKAGE_NAME = '@agile-agents/cli';
 
@@ -97,6 +106,7 @@ function usage(): string {
     '  node add-repo <id> <repo>  + Repo in place: conversation → work, work → coordinating with parts',
     '  node switch-repo <id> <repo>  move a work node with nothing committed to another repo',
     '  node wait <id> --on <id>… [--remove]  hold delivery until each --on node is merged',
+    '  node move <id> --parent <id|P-id>  move a node under another in its project (a P-id: its root)',
     '  node link <id> <KEY> [--system jira|linear] | --remove  link a tracker issue; its text becomes the goal',
     '  node import-children <id>        one linked child per issue in the linked epic (idempotent)',
     '  node set <id> --autonomy advise|organise|run|inherit  this node\u2019s coordinator autonomy',
@@ -132,6 +142,19 @@ function usage(): string {
     '  tail --node <id> --events  the node\u2019s routed events: reason, delivery status, session or digest (--follow)',
     '  tail --director            the Director\u2019s thread (--follow)',
     '  director say "<line>"      a line to the Director; its reply lands on its thread',
+    '  policy show [--project <P-id> | --node <id>]   model choice: each field, its value and where it comes from',
+    '  policy set <field> <value> [--project <P-id> | --node <id>]   the home when neither; `inherit` clears it there',
+    '  policy set vendor_order claude,codex   which vendor wins a tie inside a tier (`none`: no preference)',
+    '  policy set vendor_order_by_role.<role> codex,claude   a role\u2019s own order (worker, coordinator, conversation, reviewer; `same` clears)',
+    '                             fields: mode default|inherit|choose · quality 0-100 · presets vendor/model,…|any',
+    '                             effort_ceiling low|medium|high|max · escalation start_cheap|strongest_first',
+    '                             guidance "<text>" · weights clarity=2,stakes=3 · pinned_rules <JSON>',
+    '  policy choose-again --node <id>   the node\u2019s next start picks its model afresh',
+    '  policy step-up --node <id>   the node\u2019s next start runs one rung up its preset models (effort, then model)',
+    '  policy try "<task text>" [--project <P-id> | --node <id>]   the chooser\u2019s scores and pick for a task; nothing starts',
+    '  vendors                    each vendor\u2019s latest self-check: version, model, effort, usage, resume, rate limits',
+    '  vendors check [vendor]     run the self-check (every installed vendor, or one): one session and one tiny prompt each',
+    '  vendors install antigravity   download its pinned ACP server into the home (records the archive\u2019s SHA-256)',
     '  tracker status             Jira/Linear: base URL, email, whether each token is set (never the token)',
     '  tracker set jira|linear [--base-url <url>] [--email <addr>|--no-email] [--no-token]',
     '                             token read from stdin or a no-echo prompt, never an argument',
@@ -143,7 +166,7 @@ function usage(): string {
     '  question raise --stream <id> --text <text> [--by <agent>]',
     '  question answer <id> --answer <text> [--by <agent>]',
     '  breaker clear <signal>',
-    '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-open] [--timeout <ms>, default 2000]',
+    '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-open] [--timeout <ms>, default 2000] [--vendor codex [--repo <root>]]',
     "  mcp --session <id> [--timeout <ms>, default 60000]   stdio MCP bridge to the daemon's agent.* verbs",
     '',
     'flags:',
@@ -304,6 +327,27 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         return 1;
       }
 
+      // T489 (D58): the vendor self-check.
+      case 'vendors': {
+        if (sub === undefined) return await runVendors(socketPath, json);
+        if (sub === 'check') return await runVendorsCheck(socketPath, restArgv[0], json);
+        if (sub === 'install') return await runVendorsInstall(socketPath, restArgv[0], json);
+        console.error(usage());
+        return 1;
+      }
+
+      // T482: model choice (design/model-routing.md §4).
+      case 'policy': {
+        const policyArgs = parseArgs(restArgv);
+        if (sub === 'show') return await runPolicyShow(socketPath, policyArgs, json);
+        if (sub === 'set') return await runPolicySet(socketPath, policyArgs, json);
+        if (sub === 'choose-again') return await runPolicyChooseAgain(socketPath, policyArgs, json);
+        if (sub === 'step-up') return await runPolicyStepUp(socketPath, policyArgs, json);
+        if (sub === 'try') return await runPolicyTry(socketPath, policyArgs, json);
+        console.error(usage());
+        return 1;
+      }
+
       case 'project': {
         const projectArgs = parseArgs(restArgv);
         if (sub === 'new') return await runProjectNew(socketPath, projectArgs, json);
@@ -325,6 +369,7 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         if (sub === 'archive') return await runStreamArchive(socketPath, parseArgs(restArgv), json);
         if (sub === 'say') return await runStreamSay(socketPath, parseArgs(restArgv), json);
         if (sub === 'wait') return await runStreamWait(socketPath, parseArgs(restArgv), json);
+        if (sub === 'move') return await runStreamMove(socketPath, parseArgs(restArgv), json);
         if (sub === 'link') return await runStreamLink(socketPath, parseArgs(restArgv), json);
         if (sub === 'import-children') {
           return await runStreamImportChildren(socketPath, parseArgs(restArgv), json);
@@ -384,8 +429,15 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
 
       case 'hook': {
         const args: ParsedArgs = parseArgs(rest.slice(1));
-        const { event, failClosed, timeoutMs } = parseHookArgs(args);
-        return await runHook({ socketPath, event, failClosed, timeoutMs });
+        const { event, failClosed, timeoutMs, vendor, repo } = parseHookArgs(args);
+        return await runHook({
+          socketPath,
+          event,
+          failClosed,
+          timeoutMs,
+          ...(vendor !== undefined ? { vendor } : {}),
+          ...(repo !== undefined ? { repo } : {}),
+        });
       }
 
       case 'mcp': {

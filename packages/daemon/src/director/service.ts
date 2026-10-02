@@ -36,15 +36,18 @@ import {
   threadBodyMaxFor,
   ulid,
 } from '@agile-agents/shared';
-import { resolveSessionSettings } from '../attach/resolve';
+import { providerTakesEffort, resolveSessionSettings } from '../attach/resolve';
+import { providerIn } from '../bridges/bridges';
 import { readHomeConfigFile } from '../config';
 import type { AutonomyService } from '../coordination/autonomy';
 import type { DeliveryTarget, SessionDelivery } from '../events/delivery';
 import { routeAndEmit } from '../events/router';
 import type { RoutedEventService } from '../events/service';
 import { WakeBudget } from '../events/wake';
+import type { HookSightings } from '../hook/codex';
 import { directorReadScope } from '../permissions/visibility';
 import type { CliInvocation } from '../runner/cli-bin';
+import { type InstalledCli, installedCliFor } from '../runner/installed-cli';
 import { type AgentSessionHandle, startAgentSession } from '../runner/session';
 import type { StateStore } from '../store';
 import type { StreamService } from '../streams/service';
@@ -74,6 +77,9 @@ export function directorRetryDelayMs(failures: number): number {
 }
 
 export interface DirectorServiceOptions {
+  /** T506: Codex's home (trusted projects) and the hook's per-session counts, as for attach. */
+  codexHome?: string;
+  hookSightings?: Pick<HookSightings, 'count' | 'forget'>;
   store: StateStore;
   streams: StreamService;
   events: RoutedEventService;
@@ -82,6 +88,10 @@ export interface DirectorServiceOptions {
   cliBin?: string | CliInvocation;
   /** Test seam: inject a fake `spawnSession`. */
   spawn?: typeof spawnSession;
+  /** T480 (D49) test seam: the installed CLI a vendor's bridge runs (default: PATH and the home's switch). */
+  installedCli?: (vendor: string) => InstalledCli | undefined;
+  /** T467 (D46): each vendor's model list, kept from every session's `session/new` reply. */
+  models?: { record(vendor: string, state: unknown, session?: string): void };
   /** Test seam: the provider the resolved vendor maps to. */
   provider?: (vendor: string, fallback: AcpProviderConfig) => AcpProviderConfig;
   now?: () => Date;
@@ -96,6 +106,8 @@ export interface DirectorServiceOptions {
 export interface DirectorView {
   record: DirectorRecord | undefined;
   thread: ThreadEntry[];
+  /** T399: every line the thread has; more than `thread` holds when it was cut to the limit. */
+  thread_total: number;
   live: boolean;
 }
 
@@ -244,9 +256,11 @@ export class DirectorService {
 
   view(limit = 500): DirectorView {
     const { store } = this.options;
+    const thread = store.readDirectorThread();
     return {
       record: store.getDirector(),
-      thread: store.readDirectorThread().slice(-limit),
+      thread: thread.slice(-limit),
+      thread_total: thread.length,
       live: this.liveHandle() !== undefined,
     };
   }
@@ -394,9 +408,11 @@ export class DirectorService {
     const { store, streams, home } = this.options;
     await this.ensureRecord();
     const settings = resolveSessionSettings({ home: readHomeConfigFile(home) });
+    // T500: a downloaded bridge (Antigravity's) runs from the home.
+    const registered = providerIn(home, settings.provider);
     const provider = this.options.provider
-      ? this.options.provider(settings.vendor, settings.provider)
-      : settings.provider;
+      ? this.options.provider(settings.vendor, registered)
+      : registered;
     // T329: a retry after a failed start writes nothing until it works.
     const quiet = this.failedStarts > 0;
     const sessionId = ulid();
@@ -415,7 +431,7 @@ export class DirectorService {
       model: settings.model,
       role: 'coordinator',
       status: 'starting',
-      ...(provider.effort !== undefined ? { effort: settings.effort } : {}),
+      ...(providerTakesEffort(provider) ? { effort: settings.effort } : {}),
     };
     if (!quiet) {
       await this.setSession(session);
@@ -445,6 +461,31 @@ export class DirectorService {
       ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
       ...(this.options.socketPath !== undefined ? { socketPath: this.options.socketPath } : {}),
       ...(this.options.now !== undefined ? { now: this.options.now } : {}),
+      ...(this.options.codexHome !== undefined ? { codexHome: this.options.codexHome } : {}),
+      ...(this.options.hookSightings !== undefined
+        ? { hookSightings: this.options.hookSightings }
+        : {}),
+      ...(() => {
+        const cli =
+          this.options.installedCli !== undefined
+            ? this.options.installedCli(provider.id)
+            : installedCliFor(provider.id, readHomeConfigFile(home));
+        return cli !== undefined ? { installedCli: cli } : {};
+      })(),
+      ...(this.options.models !== undefined
+        ? {
+            onSessionState: (state: Record<string, unknown>) =>
+              this.options.models?.record(provider.id, state, sessionId),
+          }
+        : {}),
+      // T467: a picked model the vendor did not take is said on the Director's thread.
+      onModel: (result) => {
+        if (!result.ok) void this.append('daemon', 'event', result.line, sessionId).catch(() => {});
+      },
+      // T488: likewise a picked effort it did not take (Codex's ACP option).
+      onEffort: (result) => {
+        if (!result.ok) void this.append('daemon', 'event', result.line, sessionId).catch(() => {});
+      },
       onTurnEnd: (info) => {
         void (async () => {
           if (!turnEnded) {

@@ -8,40 +8,78 @@
  * store the feed routes 503 and `/ws` sends only the hello frame.
  */
 
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  AutoCloseInputSchema,
   ClassifierKeyInputSchema,
+  DEFAULT_SESSION_IDLE_MINUTES,
   DIRECTOR_NODE,
+  FavouriteModelInputSchema,
+  HarnessIdSchema,
+  HarnessUpdatesInputSchema,
   type HilDecision,
+  type HilId,
   HilIdSchema,
+  type HilRequest,
+  InstalledCliInputSchema,
   KnowledgeCreateInputSchema,
   KnowledgeIdSchema,
   KnowledgePatchSchema,
   KnowledgeTestInputSchema,
+  KnowledgeWakeInputSchema,
   MESSAGE_BODY_MAX_CHARS,
+  ModelPolicyPatchSchema,
+  ModelPolicyTryInputSchema,
+  ModelProfilesPatchSchema,
+  PermissionsInputSchema,
+  ProjectIdSchema,
   type QuestionId,
   QuestionIdSchema,
+  QuickDraftsInputSchema,
+  RefreshModelsInputSchema,
   SessionDefaultsPatchSchema,
+  SessionIdleInputSchema,
+  type SessionVendor,
   type Stream,
   StreamAddRepoRequestSchema,
+  StreamArchiveThreadInputSchema,
   StreamAttachRequestSchema,
+  StreamAutoCloseRequestSchema,
   StreamAutonomyRequestSchema,
   StreamCreateInputSchema,
+  StreamMoveLineInputSchema,
+  StreamMoveRequestSchema,
+  StreamPermissionsRequestSchema,
+  StreamReorderRequestSchema,
+  StreamRestoreThreadInputSchema,
+  StreamRuleRequestSchema,
   StreamSayInputSchema,
+  StreamSendUpInputSchema,
+  StreamUpdateRequestSchema,
   StreamWaitRequestSchema,
+  TrashPurgeRequestSchema,
   UlidSchema,
+  VendorCheckModeInputSchema,
+  VendorCheckRunInputSchema,
+  VendorInstallInputSchema,
   formatZodError,
+  liveChildrenOf,
+  nodeRole,
+  questionOfChatThread,
+  sendUpText,
   validatePolicy,
 } from '@agile-agents/shared';
 import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import {
+  AgentWorkingError,
   type AttachService,
   SessionDefaultsService,
   StreamBusyError,
   UnknownVendorError,
   UnregisteredRepoError,
 } from './attach';
-import type { ClassifierKeyService } from './classifier';
+import type { Classifier, ClassifierKeyService } from './classifier';
 import {
   type AutonomyService,
   ProposalClosedError,
@@ -49,19 +87,25 @@ import {
 } from './coordination/autonomy';
 import type { ContractService } from './coordination/contracts';
 import { PlanNotDraftError, type PlanService } from './coordination/plans';
-import { type DeliveryService, LandRefusedError } from './delivery';
+import { type DeliveryService, LandRefusedError, git, mainBranch } from './delivery';
 import type { DirectorService } from './director/service';
 import type { DocsService } from './docs';
 import type { RoutedEventService } from './events';
+import { EVENT_PAGE_MAX, type EventPageQuery, UnknownEventError } from './events/service';
 import {
   type CockpitFrame,
   type EventTailerHandle,
+  NothingToMergeCache,
+  RecentEvents,
+  StepIndex,
   buildCockpitFrame,
   buildSnapshot,
   buildStreamPage,
   startEventTailer,
 } from './feed';
 import { GateAlreadyResolvedError, GateNotFoundError, type GateService } from './gates';
+import { isLoopbackUrl } from './github/rest';
+import { HarnessBusyError, type HarnessUpdateService } from './harness';
 import type { InboxService } from './inbox';
 import {
   KnowledgeAlreadyDecidedError,
@@ -70,22 +114,46 @@ import {
   buildRuleReport,
   testRules,
 } from './knowledge';
+import { NotAReadGateError, answerReadAlways } from './permissions/posture';
 import type { ProjectService } from './projects';
 import {
+  ChatThreadOps,
+  ChatThreads,
+  CompactUnavailableError,
   QuestionAlreadyAnsweredError,
   QuestionNotFoundError,
   type QuestionService,
+  QuestionThreads,
   parseAnswerParams,
   sayAndAnswer,
 } from './questions';
+import { CHOOSE_AGAIN_END_REASON, ModelPolicyService, StepUpRefusedError } from './routing';
+import { installedCliStatus } from './runner/installed-cli';
+import type { ModelCatalog } from './runner/model-catalog';
+import { type VendorCheckService, VendorNotInstalledError } from './runner/vendor-check';
 import {
+  CloneError,
+  DirListError,
   NotFoundError,
+  RepoRemoteCache,
   type StateStore,
   buildStateRpcMethods,
-  resolveMainBranch,
+  cloneRepo,
+  listDirs,
+  resolveMainBranchAsync,
   setRepoSettings,
 } from './store';
-import type { RepoInPlaceService, StreamService } from './streams';
+import {
+  type RepoInPlaceService,
+  type StreamService,
+  type TitleNamer,
+  type TitleRun,
+  TrashError,
+  TrashService,
+  cleanGoal,
+  draftGoalPrompt,
+  draftedGoal,
+} from './streams';
 import type { TrackerLinks } from './trackers/link';
 import { TrackerError } from './trackers/port';
 import {
@@ -104,6 +172,9 @@ const INSTALLABLE_FILES: Record<string, string> = {
   '/icons/maskable-512.png': 'image/png',
   '/icons/apple-touch-icon.png': 'image/png',
 };
+
+/** T394: the cache policy for the cockpit's content-hashed build assets. */
+const IMMUTABLE = 'public, max-age=31536000, immutable';
 
 /**
  * The configured port is taken: one actionable line (the address, how to
@@ -149,11 +220,19 @@ export interface HttpServerOptions {
   gates?: GateService;
   /** `/api/questions` and the snapshot's open questions; without it those routes 503. */
   questions?: QuestionService;
+  /** T502: question threads on the node page; built over `streams`, `questions` and `events` when absent. */
+  questionThreads?: QuestionThreads;
+  /** T503: chat threads on the node page and the rail rows; built over `streams` and `events` when absent. */
+  chatThreads?: ChatThreads;
   /** `GET /api/inbox` (§3); without it the route 503s. */
   inbox?: InboxService;
   streams?: StreamService;
   /** T208: `GET/POST /api/projects` and the cockpit frame's projects. */
   projects?: ProjectService;
+  /** T482: the model policy routes (default: one over `store` and `streams`). */
+  routing?: ModelPolicyService;
+  /** T483: the classifier the default policy's chooser (Try it) asks; absent reads as no key. */
+  chooserClassifier?: Classifier;
   /** T300: `GET /api/director`, `POST /api/director/say`. */
   director?: DirectorService;
   /** The rules routes (`/api/rules...`). */
@@ -164,6 +243,16 @@ export interface HttpServerOptions {
   classifierKey?: ClassifierKeyService;
   /** `POST /api/streams/:id/land`. */
   landing?: DeliveryService;
+  /** T414 (D41): names a node created with `auto_title` (absent: the placeholder stays). */
+  titleNamer?: TitleNamer;
+  /** T422 (D42): the cheap model call (the same as titles) that drafts a goal from a conversation. */
+  cheapModel?: TitleRun;
+  /** T434: a cheap model is there to switch (the `claude` command was found); Settings says so. */
+  quickDraftsAvailable?: boolean;
+  /** T437: why a vendor can't start here (its command isn't on PATH); the model lists say so. */
+  vendorMissing?: (vendor: SessionVendor) => string | undefined;
+  /** T467 (D46): each vendor's own model list, and Settings' Refresh models. */
+  models?: Pick<ModelCatalog, 'all' | 'refresh'>;
   /** T340: `POST /api/streams/:id/pr-check`, the Delivery panel's Check now (`PrPoller.pollNow`). */
   prCheck?: (id: string) => Promise<Stream>;
   /** The stream page's sessions strip and composer. */
@@ -183,8 +272,16 @@ export interface HttpServerOptions {
   autonomy?: AutonomyService;
   /** T321: the stream page's Link field. */
   trackerLinks?: TrackerLinks;
+  /** T481 (D50): Settings → Agents → Updates, and Needs me's update items. */
+  harnessUpdates?: HarnessUpdateService;
+  /** T489 (D58): Settings → Agents → Vendors, the vendor self-check. */
+  vendorChecks?: VendorCheckService;
   /** Test hook: the tailer's poll interval (default 250ms). */
   feedPollIntervalMs?: number;
+  /** Test hook: the operator's home folder for the folder picker and clone destinations (default `os.homedir()`). */
+  userHome?: string;
+  /** Test hook: the repo remote cache (default: one reading `git remote get-url`, 60s TTL). */
+  repoRemotes?: RepoRemoteCache;
 }
 
 export interface HttpServerHandle {
@@ -207,6 +304,14 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function errorResponse(status: number, message: string): Response {
   return jsonResponse({ error: message }, status);
+}
+
+/** T385: a "goal changed" thread line carries the new goal on one line, clipped. */
+const GOAL_LINE_MAX = 400;
+
+function clip(text: string, max: number): string {
+  const one = text.replace(/\s+/g, ' ').trim();
+  return one.length > max ? `${one.slice(0, max - 1).trimEnd()}…` : one;
 }
 
 function messageOf(err: unknown): string {
@@ -246,11 +351,22 @@ function isSameOriginRequest(req: Request, port: number): boolean {
   return true;
 }
 
-/** `/api/hil/<id>/<action>`, action approve|deny|note. */
-type HilAction = 'approve' | 'deny' | 'note';
+/**
+ * T362: the request's `Host` names this machine (or is absent). The
+ * filesystem routes add this to the same-origin check: a page that
+ * DNS-rebinds its own name to 127.0.0.1 is same-origin to the browser, but
+ * its requests still carry that name as `Host`.
+ */
+function isLoopbackHost(req: Request): boolean {
+  const host = req.headers.get('host');
+  return host === null || isLoopbackUrl(`http://${host}`);
+}
+
+/** `/api/hil/<id>/<action>`, action approve|deny|note, or (T457) always: a held read's "Always for this project". */
+type HilAction = 'approve' | 'deny' | 'note' | 'always';
 
 function matchHilAction(pathname: string): { id: string; action: HilAction } | undefined {
-  const match = pathname.match(/^\/api\/hil\/([^/]+)\/(approve|deny|note)$/);
+  const match = pathname.match(/^\/api\/hil\/([^/]+)\/(approve|deny|note|always)$/);
   if (!match || match[1] === undefined || match[2] === undefined) return undefined;
   return {
     id: decodeURIComponent(match[1]),
@@ -276,6 +392,8 @@ async function handleHilAction(
   gates: GateService,
   id: string,
   action: HilAction,
+  /** T457: the Always answer (`answerReadAlways`), when projects and streams are wired. */
+  always?: (id: HilId, note: string | undefined) => Promise<HilRequest>,
 ): Promise<Response> {
   const parsedId = HilIdSchema.safeParse(id);
   if (!parsedId.success) {
@@ -295,6 +413,11 @@ async function handleHilAction(
   }
 
   try {
+    if (action === 'always') {
+      if (always === undefined) return errorResponse(503, 'projects not available');
+      // The actor is always `human` for a browser write (bound in by the caller).
+      return jsonResponse(await always(parsedId.data, note));
+    }
     if (action === 'approve' || action === 'deny') {
       const decision: HilDecision = action === 'approve' ? 'approve' : 'deny';
       // The actor is always `human` for a browser write, never read from the body.
@@ -309,6 +432,7 @@ async function handleHilAction(
   } catch (err) {
     if (err instanceof GateNotFoundError) return errorResponse(404, err.message);
     if (err instanceof GateAlreadyResolvedError) return errorResponse(409, err.message);
+    if (err instanceof NotAReadGateError) return errorResponse(409, err.message);
     return errorResponse(400, messageOf(err));
   }
 }
@@ -317,6 +441,43 @@ async function handleHilAction(
 function matchQuestionAnswer(pathname: string): string | undefined {
   const match = pathname.match(/^\/api\/questions\/([^/]+)\/answer$/);
   return match?.[1] ? decodeURIComponent(match[1]) : undefined;
+}
+
+/** T502: `/api/questions/<id>/reply`. */
+function matchQuestionReply(pathname: string): string | undefined {
+  const match = pathname.match(/^\/api\/questions\/([^/]+)\/reply$/);
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined;
+}
+
+/**
+ * T502 (D62): `POST /api/questions/<id>/reply` `{ text }`: what you typed in
+ * a question's own box. A choice question stays open and its agent is told
+ * (it settles it or asks again); one with no choices is answered by it.
+ * The actor is always `human`.
+ */
+async function handleQuestionReply(
+  req: Request,
+  questions: QuestionService,
+  id: string,
+): Promise<Response> {
+  const parsedId = QuestionIdSchema.safeParse(id);
+  if (!parsedId.success) return errorResponse(400, `invalid question id: ${id}`);
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+  const text = readQuestionText(body.text, 'text');
+  if (typeof text !== 'string') return errorResponse(400, text.error);
+  try {
+    const result = await questions.reply(parsedId.data as QuestionId, { text, by: 'human' });
+    return jsonResponse(result);
+  } catch (err) {
+    if (err instanceof QuestionNotFoundError) return errorResponse(404, err.message);
+    if (err instanceof QuestionAlreadyAnsweredError) return errorResponse(409, err.message);
+    return errorResponse(400, messageOf(err));
+  }
 }
 
 /** Free text on a question, capped here so an over-long body is a 400. */
@@ -402,8 +563,14 @@ interface FeedContext {
   gates: GateService;
   streams?: StreamService;
   projects?: ProjectService;
+  /** T482: model choice (home, project, node) and "Let the policy choose again". */
+  routing?: ModelPolicyService;
   director?: DirectorService;
   questions?: QuestionService;
+  /** T502: question threads (the node page's, and a coordinator's children's). */
+  questionThreads?: QuestionThreads;
+  /** T503: chat threads on a node's turns. */
+  chatThreads?: ChatThreads;
   inbox?: InboxService;
   rules?: KnowledgeService;
   ruleEvals?: RuleRpcEvalDeps;
@@ -420,6 +587,23 @@ interface FeedContext {
   contracts?: ContractService;
   autonomy?: AutonomyService;
   trackerLinks?: TrackerLinks;
+  /** T362: each repo's remote for the repo rows, never read on the frame's path. */
+  remotes: RepoRemoteCache;
+  /** T380: which finished nodes have nothing to merge, never read on the frame's path. */
+  mergeState?: NothingToMergeCache;
+  /** T392: every node's agent steps, folded from the event log as it grows. */
+  steps: StepIndex;
+  /** T422 (D42): the cheap model call that drafts a goal from a conversation. */
+  cheapModel?: TitleRun;
+  /** T435: names a node whose title the cockpit re-derived (`update` with `auto_title`). */
+  titleNamer?: TitleNamer;
+  /** T437: why a vendor can't start here. */
+  vendorMissing?: (vendor: SessionVendor) => string | undefined;
+  /** T467 (D46): each vendor's own model list, and Settings' Refresh models. */
+  models?: Pick<ModelCatalog, 'all' | 'refresh'>;
+  /** T471: the trash: Delete forever and Empty trash. */
+  trash?: TrashService;
+  userHome?: string;
 }
 
 /** The cockpit frame (§9), as `/api/cockpit` and the `/ws` push send it. */
@@ -432,18 +616,100 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     (id) => feed.store.getCard(id),
     feed.contracts,
     (s) => feed.plans?.waitingForPlan(s) === true,
+    (entry) => feed.remotes.peek(entry),
+    feed.mergeState ? (s) => feed.mergeState?.peek(s) === true : undefined,
+    (id) => feed.store.threadUpdatedAt(id),
+    feed.mergeState ? (s) => feed.mergeState?.peekState(s) : undefined,
+    feed.attach ? (session) => feed.attach?.contextFor(session) : undefined,
+    feed.director ? () => feed.store.directorReplyAt() : undefined,
+    (id) => feed.store.answeredAt(id),
+    // T503: a node's threads with a reply (its rail row's unread), only where it has a thread.
+    feed.chatThreads
+      ? (id) =>
+          feed.store.hasChatThreads(id)
+            ? feed.chatThreads?.repliesFor(id, feed.store.threadUpdatedAt(id))
+            : undefined
+      : undefined,
   );
 }
 
 function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined {
   if (!options.store || !options.gates) return undefined;
+  const { store, streams } = options;
+  // T471: Delete forever runs git as delivery does, against the node's merge target.
+  const trash = streams
+    ? new TrashService({
+        store,
+        streams,
+        home: options.stateRoot,
+        git,
+        targetOf: (node, root) => {
+          if (node.helper_of !== undefined) {
+            return streams.list({ include_archived: true }).find((s) => s.id === node.helper_of)
+              ?.branch;
+          }
+          const entry = node.repo !== undefined ? store.getRepos()[node.repo] : undefined;
+          return entry !== undefined ? mainBranch(entry, root) : undefined;
+        },
+      })
+    : undefined;
+  // T482: the daemon's policy service, or one over this store (a test's server).
+  const routing =
+    options.routing ??
+    (streams
+      ? new ModelPolicyService({
+          store,
+          streams,
+          ...(options.models ? { models: () => options.models?.all() ?? {} } : {}),
+          ...(options.vendorMissing
+            ? { installed: (v) => options.vendorMissing?.(v) === undefined }
+            : {}),
+          ...(options.attach
+            ? {
+                onChooseAgain: (id: string) =>
+                  options.attach?.endResting(id, CHOOSE_AGAIN_END_REASON) ?? Promise.resolve(),
+                // T484: a Step up ends a resting session too.
+                endResting: (id: string, why: string) =>
+                  options.attach?.endResting(id, why) ?? Promise.resolve(),
+              }
+            : {}),
+          ...(options.chooserClassifier ? { classifier: options.chooserClassifier } : {}),
+          ...(options.plans ? { plans: options.plans } : {}),
+        })
+      : undefined);
   return {
+    ...(trash ? { trash } : {}),
+    ...(routing ? { routing } : {}),
     store: options.store,
     gates: options.gates,
     streams: options.streams,
     projects: options.projects,
     director: options.director,
     questions: options.questions,
+    ...(() => {
+      const threads =
+        options.questionThreads ??
+        (options.questions && options.streams
+          ? new QuestionThreads({
+              streams: options.streams,
+              questions: options.questions,
+              ...(options.events ? { events: options.events } : {}),
+            })
+          : undefined);
+      return threads ? { questionThreads: threads } : {};
+    })(),
+    ...(() => {
+      const chat =
+        options.chatThreads ??
+        (options.streams
+          ? new ChatThreads({
+              streams: options.streams,
+              ...(options.questions ? { questions: options.questions } : {}),
+              ...(options.events ? { events: options.events } : {}),
+            })
+          : undefined);
+      return chat ? { chatThreads: chat } : {};
+    })(),
     inbox: options.inbox,
     rules: options.rules,
     ruleEvals: options.ruleEvals,
@@ -459,6 +725,21 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
     contracts: options.contracts,
     autonomy: options.autonomy,
     trackerLinks: options.trackerLinks,
+    remotes: options.repoRemotes ?? new RepoRemoteCache(),
+    ...(options.landing
+      ? {
+          mergeState: new NothingToMergeCache({
+            preflight: (id) => options.landing?.preflight(id) ?? {},
+            stat: (id) => options.landing?.diffStat(id),
+          }),
+        }
+      : {}),
+    steps: new StepIndex(`${options.stateRoot}/log/events.jsonl`),
+    ...(options.cheapModel ? { cheapModel: options.cheapModel } : {}),
+    ...(options.titleNamer ? { titleNamer: options.titleNamer } : {}),
+    ...(options.vendorMissing ? { vendorMissing: options.vendorMissing } : {}),
+    ...(options.models ? { models: options.models } : {}),
+    userHome: options.userHome,
   };
 }
 
@@ -514,6 +795,347 @@ async function handleSettingsRoute(
   } catch {
     // Store errors are generic already; this keeps any future one from quoting the key.
     return errorResponse(500, 'could not save the classifier key');
+  }
+}
+
+/**
+ * T434: Settings' quick drafts switch (D41's titles, T422's goal drafts):
+ *
+ *   GET  /api/settings/quick-drafts  `{on, available}` (available: the `claude` command was found)
+ *   POST /api/settings/quick-drafts  `{on}`, live at once; same-origin only
+ */
+async function handleQuickDraftsRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  available: boolean,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/quick-drafts') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (req.method === 'GET') {
+    return jsonResponse({ on: feed.store.getHomeConfig().quick_drafts !== false, available });
+  }
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = QuickDraftsInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('quick drafts', input.error));
+  try {
+    const config = await feed.store.setQuickDrafts(input.data.on, { by: 'human' });
+    return jsonResponse({ on: config.quick_drafts !== false, available });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T480 (D49): Settings' "Use the installed Claude Code / Codex" switches:
+ *
+ *   GET  /api/settings/installed-cli  `{vendors: [{vendor, label, on, path?}]}`
+ *   POST /api/settings/installed-cli  `{vendor, on}`, used by the next session; same-origin only
+ */
+async function handleInstalledCliRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/installed-cli') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (req.method === 'GET') {
+    return jsonResponse({ vendors: installedCliStatus(feed.store.getHomeConfig()) });
+  }
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = InstalledCliInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('installed cli', input.error));
+  try {
+    const config = await feed.store.setInstalledCli(input.data.vendor, input.data.on, {
+      by: 'human',
+    });
+    return jsonResponse({ vendors: installedCliStatus(config) });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T454: Settings' "Let Jev decide which conversations hear an accepted
+ * decision" switch (`knowledge_wake` in config.yaml; on = `jev`):
+ *
+ *   GET  /api/settings/knowledge-wake  `{on}`
+ *   POST /api/settings/knowledge-wake  `{on}`, live at once; same-origin only
+ */
+async function handleKnowledgeWakeRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/knowledge-wake') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (req.method === 'GET') {
+    return jsonResponse({ on: feed.store.getHomeConfig().knowledge_wake === 'jev' });
+  }
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = KnowledgeWakeInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('knowledge wake', input.error));
+  try {
+    const config = await feed.store.setKnowledgeWake(input.data.on ? 'jev' : 'source', {
+      by: 'human',
+    });
+    return jsonResponse({ on: config.knowledge_wake === 'jev' });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T471: the trash as a whole:
+ *
+ *   GET  /api/trash        `{nodes, branches, uncommitted}`: what Empty trash removes, keeps and loses
+ *   POST /api/trash/empty  `{delete_branches?}`: every node in the trash, deleted forever; same-origin only
+ */
+async function handleTrashRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  const empty = url.pathname === '/api/trash/empty';
+  if (url.pathname !== '/api/trash' && !empty) return undefined;
+  if (req.method !== (empty ? 'POST' : 'GET')) return undefined;
+  const trash = feed?.trash;
+  if (!trash) return errorResponse(503, 'the trash is not available');
+  try {
+    if (!empty) {
+      const previews = trash.roots().map((root) => trash.preview(root.id));
+      return jsonResponse({
+        nodes: previews.flatMap((p) => p.nodes),
+        branches: previews.flatMap((p) => p.branches),
+        uncommitted: previews.flatMap((p) => p.uncommitted),
+      });
+    }
+    if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+    const input = TrashPurgeRequestSchema.safeParse(
+      (await readJsonBody(req).catch(() => undefined)) ?? {},
+    );
+    if (!input.success) return errorResponse(400, formatZodError('empty trash', input.error));
+    return jsonResponse(await trash.empty({ deleteBranches: input.data.delete_branches === true }));
+  } catch (err) {
+    return errorResponse(err instanceof TrashError ? 409 : 400, messageOf(err));
+  }
+}
+
+/**
+ * T478: Settings' default for New node's "Close it when its goal is met"
+ * (`auto_close` in config.yaml; absent = off):
+ *
+ *   GET  /api/settings/auto-close  `{on}`
+ *   POST /api/settings/auto-close  `{on}`; same-origin only
+ */
+async function handleAutoCloseRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/auto-close') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (req.method === 'GET') {
+    return jsonResponse({ on: feed.store.getHomeConfig().auto_close === true });
+  }
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = AutoCloseInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('auto-close', input.error));
+  try {
+    const config = await feed.store.setAutoCloseDefault(input.data.on, { by: 'human' });
+    return jsonResponse({ on: config.auto_close === true });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T481 (D50): keeping each vendor's CLI up to date. Settings → Agents →
+ * Updates, and the Update and Dismiss on a Needs me update item:
+ *
+ *   GET  /api/settings/harness-updates          the mode, each CLI's last check, the bridges
+ *   POST /api/settings/harness-updates          `{mode}` or `{vendor, mode | null}`; same-origin only
+ *   POST /api/harness-updates/check             Check now: runs the check, returns the status
+ *   POST /api/harness-updates/:harness/update   runs its update: `{ok, message, status}` (a failure is `ok: false`, in words)
+ *   POST /api/harness-updates/:harness/dismiss  hides its item until a newer version
+ *
+ * Every POST is same-origin only; the actor is the operator.
+ */
+async function handleHarnessUpdatesRoute(
+  req: Request,
+  url: URL,
+  harness: HarnessUpdateService | undefined,
+  sameOrigin: () => boolean,
+  noTimeout: () => void,
+): Promise<Response | undefined> {
+  const path = url.pathname;
+  const settings = path === '/api/settings/harness-updates';
+  const action = path.match(/^\/api\/harness-updates\/(?:check|([^/]+)\/(update|dismiss))$/);
+  if (!settings && !action) return undefined;
+  if (settings && req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!settings && req.method !== 'POST') return undefined;
+  if (!harness) return errorResponse(503, 'update checks are not available');
+  if (settings && req.method === 'GET') return jsonResponse(harness.status());
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  if (settings) {
+    const input = HarnessUpdatesInputSchema.safeParse(
+      await readJsonBody(req).catch(() => undefined),
+    );
+    if (!input.success) return errorResponse(400, formatZodError('harness-updates', input.error));
+    try {
+      return jsonResponse(await harness.setMode(input.data));
+    } catch (err) {
+      return errorResponse(400, messageOf(err));
+    }
+  }
+  // A check reads every CLI and an update may take minutes: no idle timeout on this request.
+  noTimeout();
+  const [, rawId, verb] = action as RegExpMatchArray;
+  if (rawId === undefined) return jsonResponse(await harness.check('manual'));
+  const id = HarnessIdSchema.safeParse(decodeURIComponent(rawId));
+  if (!id.success) return errorResponse(404, `no such CLI: ${rawId}`);
+  try {
+    if (verb === 'dismiss') return jsonResponse(await harness.dismiss(id.data));
+    return jsonResponse(await harness.update(id.data, { by: 'human' }));
+  } catch (err) {
+    if (err instanceof HarnessBusyError) return errorResponse(409, err.message);
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T489 (D58): the vendor self-check. Settings → Agents → Vendors:
+ *
+ *   GET  /api/settings/vendor-checks       the switch, one row per vendor with its latest result
+ *   POST /api/settings/vendor-checks       `{mode: auto|manual}`: the automatic trigger's switch
+ *   POST /api/settings/vendor-checks/run   `{vendor?}`: Check (one vendor) or Check all; returns
+ *                                          at once with the running state (the page polls)
+ *   POST /api/settings/vendor-checks/install  `{vendor}` (T500): Install a server this app
+ *                                          downloads (Antigravity's); returns at once, the row
+ *                                          shows it installing, then its manifest or the failure
+ *
+ * Every POST is same-origin only; the actor is the operator. A named vendor
+ * that isn't installed is 409, in words.
+ */
+async function handleVendorChecksRoute(
+  req: Request,
+  url: URL,
+  checks: VendorCheckService | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  const path = url.pathname;
+  const settings = path === '/api/settings/vendor-checks';
+  const run = path === '/api/settings/vendor-checks/run';
+  const install = path === '/api/settings/vendor-checks/install';
+  if (!settings && !run && !install) return undefined;
+  if (settings && req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if ((run || install) && req.method !== 'POST') return undefined;
+  if (!checks) return errorResponse(503, 'vendor checks are not available');
+  if (settings && req.method === 'GET') return jsonResponse(checks.status());
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  if (settings) {
+    const input = VendorCheckModeInputSchema.safeParse(
+      await readJsonBody(req).catch(() => undefined),
+    );
+    if (!input.success) return errorResponse(400, formatZodError('vendor-checks', input.error));
+    try {
+      return jsonResponse(await checks.setMode(input.data.mode));
+    } catch (err) {
+      return errorResponse(400, messageOf(err));
+    }
+  }
+  if (install) {
+    // T500: the operator's Install; the actor is human (the manifest says so).
+    const input = VendorInstallInputSchema.safeParse(
+      await readJsonBody(req).catch(() => undefined),
+    );
+    if (!input.success) {
+      return errorResponse(400, formatZodError('vendor-checks install', input.error));
+    }
+    try {
+      return jsonResponse(checks.startInstall(input.data.vendor));
+    } catch (err) {
+      if (err instanceof VendorNotInstalledError) return errorResponse(409, err.message);
+      return errorResponse(400, messageOf(err));
+    }
+  }
+  const input = VendorCheckRunInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('vendor-checks run', input.error));
+  try {
+    return jsonResponse(checks.start(input.data.vendor, { reason: 'manual', by: 'human' }));
+  } catch (err) {
+    if (err instanceof VendorNotInstalledError) return errorResponse(409, err.message);
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T465 (D48): Settings → Agents' idle session timeout: how long a finished
+ * turn's session stays alive for the next message (`session_idle_minutes`
+ * in config.yaml; absent = 30). It applies to the next finished turn.
+ *
+ *   GET  /api/settings/session-idle  `{minutes}`
+ *   POST /api/settings/session-idle  `{minutes}`; same-origin only
+ */
+async function handleSessionIdleRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/session-idle') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  const minutesOf = (config: { session_idle_minutes?: number }) =>
+    config.session_idle_minutes ?? DEFAULT_SESSION_IDLE_MINUTES;
+  if (req.method === 'GET') return jsonResponse({ minutes: minutesOf(feed.store.getHomeConfig()) });
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = SessionIdleInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('session-idle', input.error));
+  try {
+    const config = await feed.store.setSessionIdleMinutes(input.data.minutes, { by: 'human' });
+    return jsonResponse({ minutes: minutesOf(config) });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T457: Settings' permission posture for the home (a project overrides it
+ * with `POST /api/projects/:id` `{permissions}`):
+ *
+ *   GET  /api/settings/permissions  `{posture}`: `trusted` or `ask` (the default)
+ *   POST /api/settings/permissions  `{posture}`, live at the next tool call; same-origin only
+ */
+async function handlePermissionsRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/permissions') return undefined;
+  if (req.method !== 'GET' && req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  try {
+    if (req.method === 'GET') {
+      return jsonResponse({ posture: feed.store.getHomeConfig().permissions ?? 'ask' });
+    }
+    if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+    const input = PermissionsInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+    if (!input.success) return errorResponse(400, formatZodError('permissions', input.error));
+    const config = await feed.store.setPermissionPosture(input.data.posture, { by: 'human' });
+    return jsonResponse({ posture: config.permissions ?? 'ask' });
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
   }
 }
 
@@ -587,7 +1209,7 @@ async function handleSessionSettingsRoute(
   if (req.method === 'GET' && repo === undefined) {
     if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
     try {
-      return jsonResponse(new SessionDefaultsService(feed.store).status());
+      return jsonResponse(sessionDefaults(feed).status());
     } catch (err) {
       return errorResponse(500, messageOf(err));
     }
@@ -603,7 +1225,7 @@ async function handleSessionSettingsRoute(
   }
   const input = SessionDefaultsPatchSchema.safeParse(body);
   if (!input.success) return errorResponse(400, formatZodError('session defaults', input.error));
-  const service = new SessionDefaultsService(feed.store);
+  const service = sessionDefaults(feed);
   try {
     return jsonResponse(
       repo === undefined
@@ -617,11 +1239,222 @@ async function handleSessionSettingsRoute(
   }
 }
 
+/** D17's session defaults over the feed's store, with T437's missing vendors and T467's model lists. */
+function sessionDefaults(feed: FeedContext): SessionDefaultsService {
+  const models = feed.models;
+  return new SessionDefaultsService(
+    feed.store,
+    feed.vendorMissing,
+    models !== undefined ? () => models.all() : undefined,
+  );
+}
+
+/**
+ * T467 (D46): Settings → Agents' Refresh models: start the vendor with no
+ * prompt, keep its `session/new` reply (its model list), stop it. No node,
+ * no repo. Same-origin only.
+ *
+ *   POST /api/settings/models/refresh  `{vendor}` → the session defaults, with the new list
+ */
+async function handleRefreshModelsRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/models/refresh' || req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = RefreshModelsInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('refresh models', input.error));
+  if (feed.models === undefined) return errorResponse(503, 'model lists are not available');
+  const vendor = input.data.vendor;
+  const missing = feed.vendorMissing?.(vendor);
+  if (missing !== undefined) return errorResponse(409, missing);
+  try {
+    const listed = await feed.models.refresh(vendor);
+    return jsonResponse({
+      ...sessionDefaults(feed).status(),
+      refreshed: { vendor, listed: listed !== undefined },
+    });
+  } catch (err) {
+    return errorResponse(502, messageOf(err));
+  }
+}
+
+/**
+ * T469: star or unstar a favourite model (Settings → Agents → Models, and
+ * the star on each row of the model picker). Same-origin only.
+ *
+ *   POST /api/settings/favourite-models  `{vendor, model?, on}` → the session defaults, with the list
+ */
+async function handleFavouriteModelsRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  if (url.pathname !== '/api/settings/favourite-models' || req.method !== 'POST') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  const input = FavouriteModelInputSchema.safeParse(await readJsonBody(req).catch(() => undefined));
+  if (!input.success) return errorResponse(400, formatZodError('favourite model', input.error));
+  const { on, ...ref } = input.data;
+  try {
+    await feed.store.setFavouriteModel(ref, on, { by: 'human' });
+    return jsonResponse(sessionDefaults(feed).status());
+  } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T482 (design/model-routing.md §4, D54): model choice, per layer.
+ *
+ *   GET  /api/settings/model-policy         the home's own fields, resolved with sources, the profiles
+ *   PUT  /api/settings/model-policy         `ModelPolicyPatchSchema` (a field, or `null` for what ships)
+ *   GET  /api/settings/model-profiles       the same view
+ *   PUT  /api/settings/model-profiles       `{"vendor/model": {tier, cost} | null}`
+ *   GET  /api/projects/:id/model-policy     the project's own fields, resolved with sources
+ *   PUT  /api/projects/:id/model-policy     a patch (`null` inherits the home's again)
+ *   GET  /api/streams/:id/model-policy      the node's own, resolved with sources, its pick
+ *   PUT  /api/streams/:id/model-policy      a patch (`null` inherits again)
+ *   POST /api/streams/:id/choose-again      "Let the policy choose again" (D55)
+ *   POST /api/streams/:id/step-up           T484: Step up, the next rung at the next start (409 when
+ *                                           there is none: the top, Strongest first, never started)
+ *   POST /api/streams/:id/dismiss-stuck     T484: dismiss the "stuck on the strongest model" card
+ *   GET  /api/model-policy/preview          `?project&parent&repo`: what a new node there starts on
+ *   POST /api/model-policy/try              T483 Try it: `{text, project?, node?}` → the scores and the
+ *                                           pick, nothing started (it may call Jev)
+ *
+ * Every write is same-origin only and the operator's (`human`).
+ */
+async function handleModelPolicyRoute(
+  req: Request,
+  url: URL,
+  feed: FeedContext | undefined,
+  sameOrigin: () => boolean,
+): Promise<Response | undefined> {
+  const path = url.pathname;
+  const home = path === '/api/settings/model-policy';
+  const profiles = path === '/api/settings/model-profiles';
+  // New node's line: what a node made there with no model would start on.
+  if (path === '/api/model-policy/preview' && req.method === 'GET') {
+    if (!feed?.routing) return errorResponse(503, 'model choice is not available');
+    const q = url.searchParams;
+    const parent = q.get('parent') ?? undefined;
+    const projectParam = q.get('project') ?? undefined;
+    if (parent !== undefined && !UlidSchema.safeParse(parent).success) {
+      return errorResponse(400, `invalid node id: ${parent}`);
+    }
+    if (projectParam !== undefined && !ProjectIdSchema.safeParse(projectParam).success) {
+      return errorResponse(400, `invalid project id: ${projectParam}`);
+    }
+    try {
+      return jsonResponse(
+        feed.routing.previewNew({
+          ...(parent !== undefined ? { parent } : {}),
+          ...(projectParam !== undefined ? { project: projectParam } : {}),
+          ...(q.get('repo') ? { repo: q.get('repo') as string } : {}),
+        }),
+      );
+    } catch (err) {
+      if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
+      return errorResponse(400, messageOf(err));
+    }
+  }
+  // T483 Try it: a pasted task's scores and pick, without starting anything.
+  if (path === '/api/model-policy/try') {
+    if (req.method !== 'POST') return undefined;
+    if (!feed?.routing) return errorResponse(503, 'model choice is not available');
+    if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+    const body = await readJsonBody(req).catch(() => undefined);
+    const input = ModelPolicyTryInputSchema.safeParse(body);
+    if (!input.success) return errorResponse(400, formatZodError('try', input.error));
+    try {
+      return jsonResponse(await feed.routing.tryTask(input.data));
+    } catch (err) {
+      if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
+      return errorResponse(400, messageOf(err));
+    }
+  }
+  const project = path.match(/^\/api\/projects\/([^/]+)\/model-policy$/);
+  const node = path.match(
+    /^\/api\/streams\/([^/]+)\/(model-policy|choose-again|step-up|dismiss-stuck)$/,
+  );
+  if (!home && !profiles && !project && !node) return undefined;
+  const again = node?.[2] === 'choose-again';
+  const stepUp = node?.[2] === 'step-up';
+  const dismissStuck = node?.[2] === 'dismiss-stuck';
+  const action = again || stepUp || dismissStuck;
+  const write = action ? 'POST' : 'PUT';
+  if (req.method !== 'GET' && req.method !== write) return undefined;
+  if (action && req.method === 'GET') return undefined;
+  if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+  const routing = feed.routing;
+  if (!routing) return errorResponse(503, 'model choice is not available');
+  let projectId: string | undefined;
+  let nodeId: string | undefined;
+  if (project) {
+    const id = ProjectIdSchema.safeParse(decodeURIComponent(project[1] ?? ''));
+    if (!id.success) return errorResponse(400, `invalid project id: ${project[1]}`);
+    projectId = id.data;
+  }
+  if (node) {
+    const id = UlidSchema.safeParse(decodeURIComponent(node[1] ?? ''));
+    if (!id.success) return errorResponse(400, `invalid node id: ${node[1]}`);
+    nodeId = id.data;
+  }
+  try {
+    if (req.method === 'GET') {
+      return jsonResponse(
+        projectId !== undefined
+          ? routing.projectView(projectId)
+          : nodeId !== undefined
+            ? routing.nodeView(nodeId)
+            : routing.homeView(),
+      );
+    }
+    if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+    if (again && nodeId !== undefined) {
+      return jsonResponse(await routing.chooseAgain(nodeId));
+    }
+    if (stepUp && nodeId !== undefined) {
+      return jsonResponse(await routing.stepUp(nodeId));
+    }
+    if (dismissStuck && nodeId !== undefined) {
+      return jsonResponse(await routing.dismissStuck(nodeId));
+    }
+    const body = await readJsonBody(req).catch(() => undefined);
+    if (profiles) {
+      const input = ModelProfilesPatchSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('model profiles', input.error));
+      return jsonResponse(await routing.setProfiles(input.data, 'human'));
+    }
+    const input = ModelPolicyPatchSchema.safeParse(body);
+    if (!input.success) return errorResponse(400, formatZodError('model policy', input.error));
+    return jsonResponse(
+      projectId !== undefined
+        ? await routing.setProject(projectId, input.data)
+        : nodeId !== undefined
+          ? await routing.setNode(nodeId, input.data)
+          : await routing.setHome(input.data, 'human'),
+    );
+  } catch (err) {
+    if (err instanceof NotFoundError) return errorResponse(404, messageOf(err));
+    if (err instanceof StepUpRefusedError) return errorResponse(409, messageOf(err));
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+const DIRECTOR_PATHS = new Set(['/api/director', '/api/director/steps', '/api/director/say']);
+
 /**
  * T300 (projects-design §12, P16): the Director page.
  *
- *   GET  /api/director      `{record, thread, live, activity, proposals}`
- *   POST /api/director/say  `{body}`: a human line and `director_request`
+ *   GET  /api/director        `{record, thread, thread_total, live, activity, proposals}`
+ *   GET  /api/director/steps  T399: the Director's agent steps, newest first, `{steps, total}`
+ *   POST /api/director/say    `{body}`: a human line and `director_request`
  */
 async function handleDirectorRoute(
   req: Request,
@@ -629,8 +1462,12 @@ async function handleDirectorRoute(
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
-  if (url.pathname !== '/api/director' && url.pathname !== '/api/director/say') return undefined;
+  if (!DIRECTOR_PATHS.has(url.pathname)) return undefined;
   if (!feed?.director) return errorResponse(503, 'director not available');
+  if (url.pathname === '/api/director/steps' && req.method === 'GET') {
+    // Its tool calls are indexed under its own node id, as a node's are (T392).
+    return jsonResponse(feed.steps.stepsFor(DIRECTOR_NODE));
+  }
   if (url.pathname === '/api/director' && req.method === 'GET') {
     return jsonResponse({
       ...feed.director.view(),
@@ -656,8 +1493,10 @@ async function handleDirectorRoute(
  * T245 (projects-design §8): read-only event views.
  *
  *   GET /api/streams/:id/activity  every event routed to the node: reason, delivery status, session or digest
- *   GET /api/repos/:name/events    every event on the repo
- *   GET /api/events                T338: the event log, every routed event, newest first
+ *   GET /api/events                T338: the event log, every routed event, newest first.
+ *                                  T383: a page of it, `{events, more, total}`: `?before=<event id>`
+ *                                  (only older ones), `?limit=` (1–500, default 200), `?repo=<name>`
+ *   GET /api/repos/:name/events    the repo's events: T407, `/api/events?repo=<name>`, paged the same
  *   GET /api/repos/:name/knowledge T265: the repo's accepted standards and architecture
  */
 function handleActivityRoute(
@@ -668,9 +1507,23 @@ function handleActivityRoute(
   if (req.method !== 'GET') return undefined;
   const node = url.pathname.match(/^\/api\/streams\/([^/]+)\/activity$/);
   const repo = url.pathname.match(/^\/api\/repos\/([^/]+)\/events$/);
-  if (url.pathname === '/api/events') {
+  if (url.pathname === '/api/events' || repo) {
     if (!feed?.events) return errorResponse(503, 'events not available');
-    return jsonResponse({ events: feed.events.recent() });
+    const query = eventPageQuery(url.searchParams);
+    if (typeof query === 'string') return errorResponse(400, query);
+    // T407: a repo's events are `/api/events?repo=<name>` under their own path, paged the same.
+    if (repo) query.repo = decodeURIComponent(repo[1] ?? '');
+    try {
+      return jsonResponse(feed.events.page(query));
+    } catch (err) {
+      if (err instanceof UnknownEventError) {
+        return errorResponse(
+          400,
+          `no event ${quoted(err.id)} in the log: before must be the id of an event a page listed`,
+        );
+      }
+      return errorResponse(500, messageOf(err));
+    }
   }
   const norms = url.pathname.match(/^\/api\/repos\/([^/]+)\/knowledge$/);
   if (norms) {
@@ -682,18 +1535,44 @@ function handleActivityRoute(
         .filter((k) => k.kind !== 'decision'),
     });
   }
-  if (!node && !repo) return undefined;
+  if (!node) return undefined;
   if (!feed?.events) return errorResponse(503, 'events not available');
   try {
-    if (node) {
-      const id = UlidSchema.safeParse(decodeURIComponent(node[1] ?? ''));
-      if (!id.success) return errorResponse(400, `invalid stream id: ${node[1]}`);
-      return jsonResponse({ activity: feed.events.activityFor(id.data) });
-    }
-    return jsonResponse({ events: feed.events.forRepo(decodeURIComponent(repo?.[1] ?? '')) });
+    const id = UlidSchema.safeParse(decodeURIComponent(node[1] ?? ''));
+    if (!id.success) return errorResponse(400, `invalid stream id: ${node[1]}`);
+    return jsonResponse({ activity: feed.events.activityFor(id.data) });
   } catch (err) {
     return errorResponse(500, messageOf(err));
   }
+}
+
+/** A query value as it reads in an error: quoted, and cut short when long. */
+function quoted(value: string): string {
+  return JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value);
+}
+
+/** T383: `/api/events`'s query, or what is wrong with it in words. */
+function eventPageQuery(params: URLSearchParams): EventPageQuery | string {
+  const query: EventPageQuery = {};
+  const limit = params.get('limit');
+  if (limit !== null) {
+    const n = /^\d{1,6}$/.test(limit) ? Number(limit) : Number.NaN;
+    if (!(n >= 1 && n <= EVENT_PAGE_MAX)) {
+      return `limit must be a whole number from 1 to ${EVENT_PAGE_MAX}, not ${quoted(limit)}`;
+    }
+    query.limit = n;
+  }
+  const before = params.get('before');
+  if (before !== null) {
+    if (before.trim() === '') return 'before must be the id of an event, not empty';
+    query.before = before;
+  }
+  const repo = params.get('repo');
+  if (repo !== null) {
+    if (repo.trim() === '') return 'repo must be a repo name, not empty';
+    query.repo = repo;
+  }
+  return query;
 }
 
 /**
@@ -701,6 +1580,7 @@ function handleActivityRoute(
  *
  *   GET  /api/streams/:id/plan          `{plan, contracts}`: the node's plan (or null) and its contracts
  *   POST /api/streams/:id/plan/approve  the human approves the draft plan (the inbox card's button)
+ *   POST /api/streams/:id/plan/start-parts  T344: "Start parts anyway": the parts waiting for the plan start without one
  */
 async function handlePlanRoute(
   req: Request,
@@ -708,16 +1588,18 @@ async function handlePlanRoute(
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
-  const match = url.pathname.match(/^\/api\/streams\/([^/]+)\/plan(\/approve)?$/);
+  const match = url.pathname.match(/^\/api\/streams\/([^/]+)\/plan(?:\/(approve|start-parts))?$/);
   if (!match) return undefined;
-  const approve = match[2] !== undefined;
-  if (req.method !== (approve ? 'POST' : 'GET')) return undefined;
+  const write = match[2] !== undefined;
+  const approve = match[2] === 'approve';
+  if (req.method !== (write ? 'POST' : 'GET')) return undefined;
   if (!feed?.plans || !feed.contracts) return errorResponse(503, 'plans not available');
   const id = UlidSchema.safeParse(decodeURIComponent(match[1] ?? ''));
   if (!id.success) return errorResponse(400, `invalid stream id: ${match[1]}`);
-  if (approve && !sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+  if (write && !sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
   try {
     if (approve) return jsonResponse(await feed.plans.approve(id.data, 'human'));
+    if (write) return jsonResponse({ started: await feed.plans.startWaitingParts(id.data) });
     return jsonResponse({
       plan: feed.plans.get(id.data) ?? null,
       contracts: feed.contracts.forNode(id.data),
@@ -734,7 +1616,7 @@ async function handlePlanRoute(
  *
  *   POST /api/proposals/:id/apply|dismiss  the human decides a coordinator's proposal card
  *   POST /api/streams/:id/autonomy         `{autonomy: level|null}`: the node's override
- *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null}`: the project's levels and (T338) tracker settings
+ *   POST /api/projects/:id                 `{autonomy?: {coordinator?, director?}, tracker?: {…} | null, name?, repos?}`: the project's levels, (T338) tracker settings, (T372) name and repos, (T379) `session` defaults, and (T457) `permissions` and `read_roots`
  */
 async function handleAutonomyRoute(
   req: Request,
@@ -766,10 +1648,18 @@ async function handleAutonomyRoute(
     }
     if (!feed?.projects) return errorResponse(503, 'projects not available');
     const body = await readJsonBody(req);
+    // T372: the cockpit also renames a project and changes its repos.
     return jsonResponse(
       await feed.projects.update(decodeURIComponent(project?.[1] ?? ''), {
         autonomy: body.autonomy,
         ...(body.tracker !== undefined ? { tracker: body.tracker } : {}),
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.repos !== undefined ? { repos: body.repos } : {}),
+        // T379: the project's session defaults (P5); `null` clears them.
+        ...(body.session !== undefined ? { session: body.session } : {}),
+        // T457: its permission posture (`null` inherits the home's) and its "Always" read roots.
+        ...(body.permissions !== undefined ? { permissions: body.permissions } : {}),
+        ...(body.read_roots !== undefined ? { read_roots: body.read_roots } : {}),
       }),
     );
   } catch (err) {
@@ -825,15 +1715,25 @@ async function handleLinkRoute(
 /**
  * T206: Settings → Repos, over the same `state.repo_add` RPC as `agile repo add`:
  *
- *   GET  /api/repos   every registered repo with its resolved `main_branch`
- *   POST /api/repos   `{name, path, protected_branches?}`; a bad path is the RPC's one-line 400
+ *   GET  /api/repos        every registered repo with its resolved `main_branch`, and (T362)
+ *                          its `remote` (`RepoRemote`, absent for a local-only repo)
+ *   POST /api/repos        `{name, path, protected_branches?}`; a bad path is the RPC's one-line 400
+ *   POST /api/repos/clone  T362: `{url, dest?, name?}` (`RepoCloneInputSchema`): `git clone`, then
+ *                          `state.repo_add`; `{repos, repo, path}`. A taken name or a non-empty
+ *                          destination is 409, a git failure 400 with its stderr's last lines
  *   POST /api/repos/:name  T222: delivery settings (`RepoSettingsPatchSchema`), same checks as `agile repo set`
+ *
+ * `/api/repos/clone` is a repo's settings only when a repo named `clone` is
+ * registered and the body has no `url` (a settings patch never has one).
+ * Clone is same-origin and loopback-`Host` only, and may run for minutes, so
+ * its request has no idle timeout.
  */
 async function handleRepoRoute(
   req: Request,
   url: URL,
   feed: FeedContext | undefined,
   sameOrigin: () => boolean,
+  noTimeout: () => void,
 ): Promise<Response | undefined> {
   const one = url.pathname.match(/^\/api\/repos\/([^/]+)$/);
   if (url.pathname !== '/api/repos' && !one) return undefined;
@@ -841,46 +1741,149 @@ async function handleRepoRoute(
   if (one && req.method !== 'POST') return undefined;
   if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
   const list = () =>
-    Object.entries(feed.store.getRepos()).map(([name, entry]) => ({
-      name,
-      path: entry.path,
-      protected_branches: entry.protected_branches,
-      main_branch: resolveMainBranch(entry),
-      delivery: entry.delivery ?? 'direct',
-      auto_merge: entry.auto_merge ?? false,
-      visibility: entry.visibility ?? { mode: 'public' },
-      ...(entry.github ? { github: entry.github } : {}),
-    }));
+    Promise.all(
+      Object.entries(feed.store.getRepos()).map(async ([name, entry]) => {
+        const [remote, mainBranch] = await Promise.all([
+          feed.remotes.get(entry),
+          resolveMainBranchAsync(entry),
+        ]);
+        return {
+          name,
+          path: entry.path,
+          protected_branches: entry.protected_branches,
+          main_branch: mainBranch,
+          delivery: entry.delivery ?? 'direct',
+          auto_merge: entry.auto_merge ?? false,
+          visibility: entry.visibility ?? { mode: 'public' },
+          ...(entry.github ? { github: entry.github } : {}),
+          ...(remote !== undefined ? { remote } : {}),
+        };
+      }),
+    );
+  const forget = (name: unknown) => {
+    const entry = typeof name === 'string' ? feed.store.getRepos()[name] : undefined;
+    if (entry !== undefined) feed.remotes.invalidate(entry.path);
+  };
   if (one?.[1] !== undefined) {
     if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
-    let patch: unknown;
+    const name = decodeURIComponent(one[1]);
+    let body: Record<string, unknown>;
     try {
-      patch = await readJsonBody(req);
+      body = await readJsonBody(req);
     } catch {
-      return errorResponse(400, 'invalid repo settings: body must be JSON');
+      return errorResponse(
+        400,
+        name === 'clone'
+          ? 'invalid clone request: body must be JSON {url, dest?, name?}'
+          : 'invalid repo settings: body must be JSON',
+      );
+    }
+    if (name === 'clone' && ('url' in body || !Object.hasOwn(feed.store.getRepos(), 'clone'))) {
+      return handleRepoClone(req, feed, body, list, noTimeout);
     }
     try {
-      await setRepoSettings(feed.store, decodeURIComponent(one[1]), patch, {
+      await setRepoSettings(feed.store, name, body, {
         by: 'human',
         ...(feed.githubAuth ? { githubAuth: feed.githubAuth } : {}),
       });
-      return jsonResponse({ repos: list() });
+      forget(name);
+      return jsonResponse({ repos: await list() });
     } catch (err) {
       return errorResponse(400, messageOf(err));
     }
   }
-  if (req.method === 'GET') return jsonResponse({ repos: list() });
+  if (req.method === 'GET') return jsonResponse({ repos: await list() });
   if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
-  let body: unknown;
+  let body: Record<string, unknown>;
   try {
     body = await readJsonBody(req);
   } catch {
     return errorResponse(400, 'invalid repo: body must be JSON {name, path, protected_branches?}');
   }
+  // T378: from the cockpit, a name already registered for another folder is a
+  // clash, not a replace (the CLI keeps `agile repo add` re-registering).
+  const taken =
+    typeof body.name === 'string' && typeof body.path === 'string'
+      ? feed.store.getRepos()[body.name]
+      : undefined;
+  if (taken !== undefined && !samePath(taken.path, body.path as string)) {
+    return errorResponse(
+      409,
+      `a repository named ${String(body.name)} is already registered (${taken.path}); pick another name`,
+    );
+  }
   try {
     await buildStateRpcMethods(feed.store)['state.repo_add']?.(body);
-    return jsonResponse({ repos: list() });
+    forget(body.name);
+    return jsonResponse({ repos: await list() });
   } catch (err) {
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/** T378: two spellings of one folder (symlinks, a trailing slash) are the same path. */
+function samePath(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
+  }
+}
+
+/** T362: `POST /api/repos/clone`, after the same-origin check. */
+async function handleRepoClone(
+  req: Request,
+  feed: FeedContext,
+  body: Record<string, unknown>,
+  list: () => Promise<unknown[]>,
+  noTimeout: () => void,
+): Promise<Response> {
+  if (!isLoopbackHost(req)) return errorResponse(403, 'cross-origin request rejected');
+  noTimeout();
+  try {
+    const cloned = await cloneRepo(feed.store, body, {
+      ...(feed.userHome !== undefined ? { home: feed.userHome } : {}),
+    });
+    feed.remotes.invalidate(cloned.path);
+    return jsonResponse({ repos: await list(), repo: cloned.name, path: cloned.path });
+  } catch (err) {
+    if (err instanceof CloneError) return errorResponse(err.status, err.message);
+    return errorResponse(400, messageOf(err));
+  }
+}
+
+/**
+ * T362: Settings' folder picker:
+ *
+ *   GET /api/fs/dirs?path=&hidden=1&prefix=  the child folders of `path` (absolute or `~/…`;
+ *       default the home folder), each flagged `git` when it is a git toplevel, with `parent`
+ *       and `home` to navigate by (`DirListing`); a missing folder is 404, any other refusal 400
+ *
+ * A read, but it shows the filesystem: same-origin only, and only on a
+ * loopback `Host` (a DNS-rebound page is same-origin to the browser and a
+ * GET carries no `Origin`).
+ */
+function handleFsRoute(
+  req: Request,
+  url: URL,
+  userHome: string | undefined,
+  sameOrigin: () => boolean,
+): Response | undefined {
+  if (url.pathname !== '/api/fs/dirs' || req.method !== 'GET') return undefined;
+  if (!sameOrigin() || !isLoopbackHost(req)) {
+    return errorResponse(403, 'cross-origin request rejected');
+  }
+  const prefix = url.searchParams.get('prefix');
+  try {
+    return jsonResponse(
+      listDirs(url.searchParams.get('path') ?? undefined, {
+        hidden: url.searchParams.get('hidden') === '1',
+        ...(prefix ? { prefix } : {}),
+        ...(userHome !== undefined ? { home: userHome } : {}),
+      }),
+    );
+  } catch (err) {
+    if (err instanceof DirListError) return errorResponse(err.status, err.message);
     return errorResponse(400, messageOf(err));
   }
 }
@@ -983,14 +1986,33 @@ async function handleRuleRoute(
  *
  *   GET  /api/streams/:id         the page read (`feed/stream-page.ts`)
  *   GET  /api/streams/:id/diff    the diff tab
- *   POST /api/streams/:id/say     the composer: a human line, and a prompt to the attached worker
+ *   GET  /api/streams/:id/steps   T392: the agent's steps (its tool calls), newest first, `{steps, total}`
+ *   GET  /api/streams/:id/commands  T461: the live agent's slash commands, `{running, vendor?, commands}`
+ *   POST /api/streams/:id/say     the composer: a human line, and a prompt to the attached worker;
+ *                                 `{body, start?}`: `start` (T361) starts an agent on a node with none live
  *   POST /api/streams/:id/attach  the sessions strip's attach / review (`role: reviewer`)
  *   POST /api/streams/:id/stop    the sessions strip's stop (a human detach)
  *   POST /api/streams/:id/close   the page's Close
+ *   POST /api/streams/:id/to-talk T473: a work node goes back to just talking; its work is parked
+ *   POST /api/streams/:id/reopen  T471: a closed node is open again (a message does it too)
+ *   GET  /api/streams/:id/trash-preview  T471: what Delete forever removes, keeps and loses
+ *   POST /api/streams/:id/purge   T471: Delete forever `{delete_branches?}`
+ *   POST /api/streams/:id/dismiss T477: the Finished card's ✕: `human.dismissed_at`, until it finishes again
  *   POST /api/streams/:id/mark-landed  merged outside `land`
  *   POST /api/streams/:id/pr-check     Check now (T340): poll the node's open PR at once
  *   POST /api/streams/:id/add-repo     + Repo in place (T205): `{repo, switch?}`
  *   POST /api/streams/:id/wait         Link (T228, P8): `{on, remove?}` a `waits_on` edge
+ *   POST /api/streams/:id/rule         T463: `{rule, on}` a knowledge item in scope, on or off for this node
+ *   POST /api/streams/:id/permissions  T463: `{posture}` this node's Trusted or Ask; `null` inherits
+ *   POST /api/streams/:id/auto-close   T478: `{on}` this node closes itself when its goal is met
+ *   POST /api/streams/:id/move         Move (T333, D34): `{parent}` a node or a project id
+ *   POST /api/streams/:id/reorder      T474: `{before}` or `{after}` a node: its place among the siblings
+ *   POST /api/streams/:id/update       Rename (T365): `{title?, goal?, auto_title?}`, as `stream.update`
+ *                                      (T435: `auto_title` has the cheap model name it better)
+ *   POST /api/streams/:id/archive      Delete (T361): stops the subtree's sessions, archives it
+ *                                      → `{node, archived: [ids], stopped: [session ids]}`
+ *   POST /api/streams/:id/unarchive    Restore (T361): the node and what its delete archived
+ *                                      → `{node, restored: [ids]}`; no agent is started
  *
  * `land` is matched before this. Every write is same-origin only
  * and stamps `human`; no principal is ever read from the body (§2.2).
@@ -1003,11 +2025,16 @@ async function handleStreamRoute(
   sameOrigin: () => boolean,
 ): Promise<Response | undefined> {
   const match = url.pathname.match(
-    /^\/api\/streams\/([^/]+)(?:\/(diff|say|attach|resolve|stop|close|mark-landed|pr-check|add-repo|wait))?$/,
+    /^\/api\/streams\/([^/]+)(?:\/(diff|steps|commands|say|send-up|rule|permissions|auto-close|reorder|draft-goal|attach|resolve|stop|close|reopen|to-talk|purge|trash-preview|dismiss|mark-landed|pr-check|add-repo|wait|move|update|archive|unarchive|move-line|archive-thread|restore-thread|compact))?$/,
   );
   if (!match) return undefined;
   const action = match[2];
-  const isGet = action === undefined || action === 'diff';
+  const isGet =
+    action === undefined ||
+    action === 'diff' ||
+    action === 'steps' ||
+    action === 'commands' ||
+    action === 'trash-preview';
   if (isGet ? req.method !== 'GET' : req.method !== 'POST') return undefined;
   if (!feed?.streams) return errorResponse(503, 'streams not available');
   const parsedId = UlidSchema.safeParse(decodeURIComponent(match[1] ?? ''));
@@ -1024,6 +2051,9 @@ async function handleStreamRoute(
             ...(feed.rules ? { rules: feed.rules } : {}),
             ...(feed.docs ? { docs: feed.docs } : {}),
             ...(feed.landing ? { landing: feed.landing } : {}),
+            ...(feed.routing ? { nextPick: (s: Stream) => feed.routing?.nextPick(s) } : {}),
+            ...(feed.questionThreads ? { threads: feed.questionThreads } : {}),
+            ...(feed.chatThreads ? { chatThreads: feed.chatThreads } : {}),
           },
           id,
         ),
@@ -1033,9 +2063,46 @@ async function handleStreamRoute(
       if (!feed.landing) return errorResponse(503, 'landing not available');
       return jsonResponse(feed.landing.diff(id));
     }
+    if (action === 'steps') {
+      // T392: its own read, not a field of the page: the page is re-read on
+      // every pushed frame, and a node's steps change on nearly every one. The
+      // chat reads them once and follows the live `tool_call` events after.
+      feed.streams.get(id);
+      return jsonResponse(feed.steps.stepsFor(id));
+    }
+    if (action === 'trash-preview') {
+      if (!feed.trash) return errorResponse(503, 'the trash is not available');
+      return jsonResponse(feed.trash.preview(id));
+    }
+    if (action === 'commands') {
+      feed.streams.get(id);
+      return jsonResponse(feed.attach?.commandsFor(id) ?? { running: false, commands: [] });
+    }
 
-    // Close, Mark landed and Check now take no body.
+    // T504 (D65, design/chat-threads.md §6, §6a): the operator's changes to the chat's threads.
+    if (
+      action === 'move-line' ||
+      action === 'archive-thread' ||
+      action === 'restore-thread' ||
+      action === 'compact'
+    ) {
+      return await threadOpRoute(req, action, id, feed, feed.streams);
+    }
+
+    // Close, Dismiss, Mark landed, Check now, Delete and Restore take no body.
     if (action === 'close') return jsonResponse(await feed.streams.close('human', id));
+    if (action === 'reopen') return jsonResponse(await feed.streams.reopen('human', id));
+    if (action === 'to-talk') {
+      if (!feed.repoInPlace) return errorResponse(503, 'sessions not available');
+      return jsonResponse(await feed.repoInPlace.toTalk(id));
+    }
+    if (action === 'dismiss') {
+      return jsonResponse(
+        await feed.streams.update('human', id, {
+          human: { dismissed_at: new Date().toISOString() },
+        }),
+      );
+    }
     if (action === 'pr-check') {
       if (!feed.prCheck) return errorResponse(503, 'PR polling not available');
       return jsonResponse(await feed.prCheck(id));
@@ -1043,6 +2110,28 @@ async function handleStreamRoute(
     if (action === 'mark-landed') {
       if (!feed.landing) return errorResponse(503, 'landing not available');
       return jsonResponse(await feed.landing.markLanded(id));
+    }
+    if (action === 'archive') {
+      // T361: Delete. The human pulls the plug on every agent in the subtree first.
+      const attach = feed.attach;
+      const stopped: string[] = [];
+      const archived = await feed.streams.archiveTree('human', id, async (ids) => {
+        if (attach === undefined) return;
+        const each = await Promise.all(ids.map((n) => attach.stop(n, undefined, { detach: true })));
+        stopped.push(...each.flat());
+      });
+      return jsonResponse({
+        node: archived[0] ?? feed.streams.get(id),
+        archived: archived.map((s) => s.id),
+        stopped,
+      });
+    }
+    if (action === 'unarchive') {
+      const restored = await feed.streams.unarchiveTree('human', id);
+      return jsonResponse({
+        node: restored[0] ?? feed.streams.get(id),
+        restored: restored.map((s) => s.id),
+      });
     }
     const body = await readJsonBody(req);
     if (action === 'add-repo') {
@@ -1061,19 +2150,186 @@ async function handleStreamRoute(
       const { on, remove } = input.data;
       return jsonResponse(await feed.streams.wait('human', id, on, remove ? { remove } : {}));
     }
+    if (action === 'rule') {
+      const input = StreamRuleRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('rule', input.error));
+      if (!feed.rules) return errorResponse(503, 'knowledge not available');
+      const { rule, on } = input.data;
+      const item = feed.rules
+        .inScope(id, undefined, undefined, { includeOff: true })
+        .find((each) => each.id === rule);
+      if (item === undefined)
+        return errorResponse(400, 'that knowledge item does not apply to this node');
+      return jsonResponse(await feed.streams.setRuleOn(id, item, on));
+    }
+    if (action === 'permissions') {
+      const input = StreamPermissionsRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('permissions', input.error));
+      return jsonResponse(await feed.streams.setPermissions(id, input.data.posture));
+    }
+    if (action === 'purge') {
+      if (!feed.trash) return errorResponse(503, 'the trash is not available');
+      const input = TrashPurgeRequestSchema.safeParse(body ?? {});
+      if (!input.success) return errorResponse(400, formatZodError('purge', input.error));
+      return jsonResponse(
+        await feed.trash.purge(id, { deleteBranches: input.data.delete_branches === true }),
+      );
+    }
+    if (action === 'auto-close') {
+      const input = StreamAutoCloseRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('auto-close', input.error));
+      return jsonResponse(await feed.streams.setAutoClose(id, input.data.on));
+    }
+    if (action === 'reorder') {
+      const input = StreamReorderRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('reorder', input.error));
+      const { before, after } = input.data;
+      return jsonResponse(
+        await feed.streams.reorder(id, (before ?? after) as string, before ? 'before' : 'after'),
+      );
+    }
+    if (action === 'move') {
+      const input = StreamMoveRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('move', input.error));
+      return jsonResponse(await feed.streams.move(id, input.data.parent));
+    }
+    if (action === 'update') {
+      // T365: the same `StreamService.update` as the RPC's `stream.update`, title and goal only.
+      const input = StreamUpdateRequestSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('update', input.error));
+      const { auto_title: autoTitle, ...patch } = input.data;
+      const before = feed.streams.get(id);
+      // T441 (D42): a conversation's goal is the question you asked; the first new goal (Turn
+      // into work) keeps it on the record, so its chat still opens with it.
+      const all = feed.streams.list();
+      const keepsQuestion =
+        patch.goal !== undefined &&
+        patch.goal.trim() !== (before.goal ?? '').trim() &&
+        before.question === undefined &&
+        nodeRole(before, liveChildrenOf(before.id, all), all) === 'conversation';
+      const updated = await feed.streams.update('human', id, {
+        ...patch,
+        ...(keepsQuestion && before.goal !== undefined ? { question: before.goal } : {}),
+      });
+      // T385: a new goal is news for the agent: its next turn reads it on the thread.
+      if (patch.goal !== undefined && patch.goal.trim() !== (before.goal ?? '').trim()) {
+        await feed.streams.appendThread('human', id, {
+          kind: 'event',
+          // T477: a node's first goal is set, not changed.
+          body: `${before.goal === undefined ? 'goal set' : 'goal changed'}: ${clip(patch.goal, GOAL_LINE_MAX)}`,
+        });
+      }
+      // T435 (D41): a title the cockpit derived from the new goal is a placeholder; the cheap
+      // model names it better, off this path (a rename meanwhile wins).
+      if (autoTitle === true && patch.title !== undefined) feed.titleNamer?.name(updated);
+      return jsonResponse(updated);
+    }
+    if (action === 'draft-goal') {
+      // T422 (D42): the goal of the work a conversation concluded, drafted by the cheap
+      // model; without one (or on a failed call), its last reply, else its question.
+      const node = feed.streams.get(id);
+      const { entries } = feed.streams.readThread(id, { limit: 200 });
+      const lines = entries
+        .filter((e) => e.kind === 'line' && (e.by === 'human' || e.by.startsWith('agent:')))
+        .map((e) => ({
+          who: e.by === 'human' ? ('you' as const) : ('agent' as const),
+          text: e.body,
+        }));
+      const run = feed.cheapModel;
+      const reply = run
+        ? await run(draftGoalPrompt(node.goal ?? node.title, lines)).catch(() => undefined)
+        : undefined;
+      // T435: a draft that asks, talks to you, lists or rambles (or says NONE) is no goal.
+      const drafted = draftedGoal(reply);
+      if (drafted !== undefined) return jsonResponse({ goal: drafted, from: 'model' });
+      const last = cleanGoal([...lines].reverse().find((l) => l.who === 'agent')?.text);
+      if (last !== undefined) return jsonResponse({ goal: last, from: 'reply' });
+      return jsonResponse({ goal: node.goal ?? node.title, from: 'question' });
+    }
+    if (action === 'send-up') {
+      // T421 (D42): a conversation's conclusion goes to the node above it, as your line there.
+      const input = StreamSendUpInputSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('send-up', input.error));
+      const node = feed.streams.get(id);
+      if (node.parent === undefined) {
+        return errorResponse(400, `${node.title} has nothing above it to send to`);
+      }
+      const parent = feed.streams.get(node.parent);
+      const text = sendUpText(node.title, input.data.body);
+      if (feed.attach) {
+        // As if typed into the parent's composer: its agent reads it (or starts on it).
+        const attach = feed.attach;
+        await sayAndAnswer(
+          {
+            say: (streamId, line, opts) => attach.say(streamId, line, opts),
+            ...(feed.questions ? { questions: feed.questions } : {}),
+          },
+          parent.id,
+          text,
+          { start: true },
+        );
+      } else {
+        await feed.streams.appendThread('human', parent.id, { kind: 'line', body: text });
+      }
+      await feed.streams.appendThread('human', node.id, {
+        kind: 'event',
+        body: `sent to ${parent.title}: ${input.data.body.replace(/\s+/g, ' ').slice(0, 200)}`,
+        ref: parent.id,
+      });
+      return jsonResponse({ parent: parent.id }, 201);
+    }
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('say', input.error));
+      const { thread, anchor } = input.data;
+      if (thread !== undefined || anchor !== undefined) {
+        // T503 (D60, D61, D64): a reply in a chat thread, or the first of a new one. It
+        // answers no open question (a question is answered in its card), so not `sayAndAnswer`.
+        if (thread !== undefined && questionOfChatThread(thread) !== undefined) {
+          return errorResponse(400, 'reply to a question in its own card');
+        }
+        const where = anchor !== undefined ? { anchor } : { thread: thread as string };
+        try {
+          if (feed.attach) {
+            const said = await feed.attach.say(id, input.data.body, {
+              ...where,
+              ...(input.data.start === true
+                ? {
+                    start: true,
+                    ...(input.data.session !== undefined ? { session: input.data.session } : {}),
+                  }
+                : {}),
+            });
+            return jsonResponse(said, 201);
+          }
+          const entry = await feed.streams.appendThread('human', id, {
+            kind: 'line',
+            body: input.data.body,
+            ...where,
+          });
+          return jsonResponse({ entry }, 201);
+        } catch (err) {
+          if (err instanceof NotFoundError) throw err;
+          return errorResponse(400, messageOf(err));
+        }
+      }
       if (feed.attach) {
         // The same path as `agile stream say` (`sayAndAnswer`).
         const attach = feed.attach;
         const said = await sayAndAnswer(
           {
-            say: (streamId, text) => attach.say(streamId, text),
+            say: (streamId, text, opts) => attach.say(streamId, text, opts),
             ...(feed.questions ? { questions: feed.questions } : {}),
           },
           id,
           input.data.body,
+          input.data.start === true
+            ? {
+                start: true,
+                // T423: the composer's model chip names what the start runs.
+                ...(input.data.session !== undefined ? { session: input.data.session } : {}),
+              }
+            : {},
         );
         return jsonResponse(said, 201);
       }
@@ -1111,13 +2367,75 @@ async function handleStreamRoute(
   } catch (err) {
     const message = messageOf(err);
     if (err instanceof NotFoundError) return errorResponse(404, message);
-    if (err instanceof StreamBusyError || err instanceof LandRefusedError) {
+    if (
+      err instanceof StreamBusyError ||
+      err instanceof LandRefusedError ||
+      err instanceof TrashError
+    ) {
       return errorResponse(409, message);
     }
     if (err instanceof UnregisteredRepoError || err instanceof UnknownVendorError) {
       return errorResponse(400, message);
     }
     return errorResponse(400, message);
+  }
+}
+
+/**
+ * T504 (D65, design/chat-threads.md §6, §6a): Move to thread / Move to
+ * main, Archive (and forget), Restore and Compact now. Same-origin is
+ * checked by the caller; every change is recorded as yours.
+ *
+ *   POST /api/streams/:id/move-line       {entry, to}      → {entry}
+ *   POST /api/streams/:id/archive-thread  {thread, forget?} → {entry, withdrawn, restarted?}
+ *   POST /api/streams/:id/restore-thread  {thread}         → {entry}
+ *   POST /api/streams/:id/compact         {}               → {entry, command}
+ */
+async function threadOpRoute(
+  req: Request,
+  action: 'move-line' | 'archive-thread' | 'restore-thread' | 'compact',
+  id: string,
+  feed: FeedContext,
+  streams: StreamService,
+): Promise<Response> {
+  const body = await readJsonBody(req).catch(() => ({}));
+  const ops = new ChatThreadOps({
+    streams,
+    chatThreads: feed.chatThreads ?? new ChatThreads({ streams }),
+    ...(feed.events ? { events: feed.events } : {}),
+    ...(feed.questions ? { questions: feed.questions } : {}),
+    ...(feed.attach ? { attach: feed.attach } : {}),
+  });
+  streams.get(id);
+  try {
+    if (action === 'move-line') {
+      const input = StreamMoveLineInputSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('move-line', input.error));
+      return jsonResponse({ entry: await ops.move(id, input.data.entry, input.data.to) }, 201);
+    }
+    if (action === 'archive-thread') {
+      const input = StreamArchiveThreadInputSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('archive-thread', input.error));
+      return jsonResponse(
+        await ops.archive(id, input.data.thread, { forget: input.data.forget === true }),
+        201,
+      );
+    }
+    if (action === 'restore-thread') {
+      const input = StreamRestoreThreadInputSchema.safeParse(body);
+      if (!input.success) return errorResponse(400, formatZodError('restore-thread', input.error));
+      return jsonResponse({ entry: await ops.restore(id, input.data.thread) }, 201);
+    }
+    if (body !== undefined && body !== null && Object.keys(body as object).length > 0) {
+      return errorResponse(400, 'compact takes no body');
+    }
+    return jsonResponse(await ops.compact(id), 201);
+  } catch (err) {
+    if (err instanceof NotFoundError) throw err;
+    if (err instanceof AgentWorkingError || err instanceof CompactUnavailableError) {
+      return errorResponse(409, messageOf(err));
+    }
+    return errorResponse(400, messageOf(err));
   }
 }
 
@@ -1138,6 +2456,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
   const feed = resolveFeedContext(options);
 
   let tailer: EventTailerHandle | undefined;
+  // T404: what a `/ws` connect's snapshot sends, without reading the log again.
+  let recent: RecentEvents | undefined;
 
   const server = rethrowPortInUse(options, hostname, () =>
     Bun.serve({
@@ -1194,8 +2514,12 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           if (!(await file.exists())) return new Response('not found', { status: 404 });
           // Vite rewrites index.html's manifest/icon links onto this prefix.
           const type = INSTALLABLE_FILES[`/${rel}`];
-          return type
-            ? new Response(file, { headers: { 'content-type': type } })
+          if (type) return new Response(file, { headers: { 'content-type': type } });
+          // T394: Vite's chunks are named by their content hash, so a name
+          // never changes what it serves: cached for good, a reload fetches
+          // only what a rebuild changed (the page itself is `no-cache`).
+          return rel.startsWith('assets/')
+            ? new Response(file, { headers: { 'cache-control': IMMUTABLE } })
             : new Response(file);
         }
 
@@ -1238,13 +2562,54 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           }
         }
 
+        const installedCliRoute = await handleInstalledCliRoute(req, url, feed, sameOrigin);
+        if (installedCliRoute) return installedCliRoute;
+        const draftsRoute = await handleQuickDraftsRoute(
+          req,
+          url,
+          feed,
+          options.quickDraftsAvailable === true,
+          sameOrigin,
+        );
+        if (draftsRoute) return draftsRoute;
+        const knowledgeWakeRoute = await handleKnowledgeWakeRoute(req, url, feed, sameOrigin);
+        if (knowledgeWakeRoute) return knowledgeWakeRoute;
+        const modelPolicyRoute = await handleModelPolicyRoute(req, url, feed, sameOrigin);
+        if (modelPolicyRoute) return modelPolicyRoute;
+        const favouritesRoute = await handleFavouriteModelsRoute(req, url, feed, sameOrigin);
+        if (favouritesRoute) return favouritesRoute;
+        const autoCloseRoute = await handleAutoCloseRoute(req, url, feed, sameOrigin);
+        if (autoCloseRoute) return autoCloseRoute;
+        const sessionIdleRoute = await handleSessionIdleRoute(req, url, feed, sameOrigin);
+        if (sessionIdleRoute) return sessionIdleRoute;
+        const harnessRoute = await handleHarnessUpdatesRoute(
+          req,
+          url,
+          options.harnessUpdates,
+          sameOrigin,
+          () => srv.timeout(req, 0),
+        );
+        if (harnessRoute) return harnessRoute;
+        const vendorChecksRoute = await handleVendorChecksRoute(
+          req,
+          url,
+          options.vendorChecks,
+          sameOrigin,
+        );
+        if (vendorChecksRoute) return vendorChecksRoute;
+        const trashRoute = await handleTrashRoute(req, url, feed, sameOrigin);
+        if (trashRoute) return trashRoute;
         const trackerRoute = await handleTrackerSettingsRoute(req, url, feed, sameOrigin);
         if (trackerRoute) return trackerRoute;
+        const permissionsRoute = await handlePermissionsRoute(req, url, feed, sameOrigin);
+        if (permissionsRoute) return permissionsRoute;
         const settingsRoute = await handleSettingsRoute(req, url, feed, sameOrigin);
         if (settingsRoute) return settingsRoute;
 
         const sessionSettingsRoute = await handleSessionSettingsRoute(req, url, feed, sameOrigin);
         if (sessionSettingsRoute) return sessionSettingsRoute;
+        const refreshModelsRoute = await handleRefreshModelsRoute(req, url, feed, sameOrigin);
+        if (refreshModelsRoute) return refreshModelsRoute;
 
         const autonomyRoute = await handleAutonomyRoute(req, url, feed, sameOrigin);
         if (autonomyRoute) return autonomyRoute;
@@ -1261,8 +2626,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         const directorRoute = await handleDirectorRoute(req, url, feed, sameOrigin);
         if (directorRoute) return directorRoute;
 
-        const repoRoute = await handleRepoRoute(req, url, feed, sameOrigin);
+        const repoRoute = await handleRepoRoute(req, url, feed, sameOrigin, () =>
+          srv.timeout(req, 0),
+        );
         if (repoRoute) return repoRoute;
+
+        const fsRoute = handleFsRoute(req, url, options.userHome, sameOrigin);
+        if (fsRoute) return fsRoute;
 
         const ruleRoute = await handleRuleRoute(req, url, feed, sameOrigin, () =>
           srv.timeout(req, 0),
@@ -1309,7 +2679,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             const create = feed.attach
               ? feed.attach.createNode.bind(feed.attach)
               : feed.streams.create.bind(feed.streams);
-            return jsonResponse(await create('human', input.data, { requireProject: true }), 201);
+            const created = await create('human', input.data, { requireProject: true });
+            if (input.data.auto_title === true) options.titleNamer?.name(created);
+            return jsonResponse(created, 201);
           } catch (err) {
             // An unknown parent or repo, or a bad body: the human's to fix.
             return errorResponse(400, messageOf(err));
@@ -1342,11 +2714,28 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
           return handleQuestionAnswer(req, feed.questions, questionAnswerMatch);
         }
 
+        const questionReplyMatch = matchQuestionReply(url.pathname);
+        if (questionReplyMatch && req.method === 'POST') {
+          if (!feed?.questions) return errorResponse(503, 'questions store not available');
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
+          return handleQuestionReply(req, feed.questions, questionReplyMatch);
+        }
+
         const hilMatch = matchHilAction(url.pathname);
         if (hilMatch && req.method === 'POST') {
           if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
           if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
-          return handleHilAction(req, feed.gates, hilMatch.id, hilMatch.action);
+          const { projects, streams } = feed;
+          return handleHilAction(
+            req,
+            feed.gates,
+            hilMatch.id,
+            hilMatch.action,
+            projects !== undefined && streams !== undefined
+              ? (id, note) =>
+                  answerReadAlways({ gates: feed.gates, streams, projects }, id, 'human', note)
+              : undefined,
+          );
         }
 
         if (url.pathname === '/ws') {
@@ -1381,6 +2770,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                   feed.questions,
                   options.repoRoot,
                   tailer?.getOffset(),
+                  recent?.list(),
                 ),
               ),
             );
@@ -1396,11 +2786,50 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
     }),
   );
 
+  // T362: a repo's remote is read in the background; when one changes, re-push the frame once.
+  // T380: the same for a finished node's "nothing to merge".
+  let remotePush: ReturnType<typeof setTimeout> | undefined;
+  if (feed?.streams) {
+    const streams = feed.streams;
+    const repush = (): void => {
+      if (remotePush !== undefined) return;
+      remotePush = setTimeout(() => {
+        remotePush = undefined;
+        try {
+          server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, streams)));
+        } catch (err) {
+          console.error(messageOf(err));
+        }
+      }, 50);
+    };
+    feed.remotes.onChange = repush;
+    if (feed.mergeState) feed.mergeState.onChange = repush;
+    // T481: an update item comes and goes with a check or an update, not with the event log.
+    if (options.harnessUpdates) options.harnessUpdates.onChange = repush;
+    try {
+      feed.remotes.warm(Object.values(feed.store.getRepos()));
+    } catch {
+      // A corrupt repos.yaml is refused, with its path, wherever it is read.
+    }
+  }
+
   if (feed) {
+    const eventsPath = `${options.stateRoot}/log/events.jsonl`;
+    const start = existsSync(eventsPath) ? statSync(eventsPath).size : 0;
+    try {
+      const kept = new RecentEvents();
+      kept.load(feed.store, start);
+      recent = kept;
+    } catch (err) {
+      // A corrupt log: each connect reads it again, and is refused with its path, as before.
+      console.error(messageOf(err));
+    }
     tailer = startEventTailer({
-      path: `${options.stateRoot}/log/events.jsonl`,
+      path: eventsPath,
+      startOffset: start,
       pollIntervalMs: options.feedPollIntervalMs,
       onEvents: (newEvents) => {
+        recent?.add(newEvents, (err) => console.error(`event tailer: ${err.message}`));
         for (const event of newEvents) {
           server.publish(FEED_WS_TOPIC, JSON.stringify({ type: 'event', event }));
         }
@@ -1425,6 +2854,10 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
     hostname,
     async stop() {
       tailer?.stop();
+      if (feed) feed.remotes.onChange = undefined;
+      if (feed?.mergeState) feed.mergeState.onChange = undefined;
+      if (options.harnessUpdates) options.harnessUpdates.onChange = undefined;
+      clearTimeout(remotePush);
       server.stop(true);
     },
   };

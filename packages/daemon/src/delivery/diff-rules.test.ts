@@ -170,11 +170,18 @@ describe('ClassifierDiffRules (§8.2)', () => {
     expect(gate?.stream).toBe(stream.id);
     expect(gate?.call?.tool).toBe('land');
     expect(rules.get(rule.id).stats).toMatchObject({ fired: 1, routed: 1 });
+    // T371: the reason is for the operator: no gate id in it.
+    expect(verdict.reason).toBe(
+      `${rule.id}: do not add a dependency without asking (probability 0.6) — waiting on your answer; the merge waits`,
+    );
 
     // Pressing Land again while the card is open reuses it rather than
     // raising a second one (§3.3 "empty is the goal state").
     const again = await subject.check(contextFor(FILE_A));
     expect(again.decision).toBe('route');
+    if (again.decision === 'allow') throw new Error('unreachable');
+    expect(again.reason).toStartWith('waiting on your answer — ');
+    expect(again.reason).not.toContain(gate?.id ?? 'HIL-');
     expect(gates.list().filter((g) => g.gate === 'classifier_review')).toHaveLength(1);
     expect(classifier.calls).toHaveLength(1);
 
@@ -195,7 +202,7 @@ describe('ClassifierDiffRules (§8.2)', () => {
     const verdict = await subject.check(contextFor(FILE_A));
     expect(verdict.decision).toBe('deny');
     if (verdict.decision === 'allow') throw new Error('unreachable');
-    expect(verdict.reason).toContain('not this way');
+    expect(verdict.reason).toBe('denied at the ship check: not this way');
   });
 
   test('a denied landing route is attributed to the rule that routed it (T155)', async () => {

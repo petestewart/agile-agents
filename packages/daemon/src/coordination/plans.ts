@@ -17,6 +17,7 @@ import {
   type PlanOwner,
   type Stream,
   UlidSchema,
+  isConversationNode,
   liveChildrenOf,
   nodeRole,
   ulid,
@@ -24,7 +25,7 @@ import {
 } from '@agile-agents/shared';
 import type { EmitRouted } from '../events/producers';
 import { NotFoundError, type StateStore } from '../store/store';
-import type { StreamService } from '../streams/service';
+import type { MoveCoordination, StreamService } from '../streams/service';
 import { type ContractService, assertChildren } from './contracts';
 
 export interface PlanServiceOptions {
@@ -72,6 +73,11 @@ function isLive(s: Stream['sessions'][number]): boolean {
 /** The children an approved plan gives paths to. */
 function approvedOwners(plan: Plan | undefined): Set<string> {
   return new Set((plan?.approved?.owners ?? []).map((o) => o.child));
+}
+
+/** "1 part", "2 parts". */
+function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`;
 }
 
 function planPath(node: string): string {
@@ -140,9 +146,12 @@ export class PlanService {
       updated_at: this.now(),
     });
     const saved = await store.putEntity(planPath(node), validatePlan, plan);
+    // T446 (audit r7 #6): in words, not "(2 children, 0 contracts)".
     await streams.appendThread('daemon', node, {
       kind: 'event',
-      body: `plan drafted (${owners.length} ${owners.length === 1 ? 'child' : 'children'}, ${ids.length} ${ids.length === 1 ? 'contract' : 'contracts'}); waiting for approval`,
+      body: `Plan drafted for ${count(owners.length, 'part')}${
+        ids.length > 0 ? ` and ${count(ids.length, 'contract')}` : ''
+      }; waiting for approval`,
       ref: planPath(node),
     });
     return saved;
@@ -165,9 +174,10 @@ export class PlanService {
       updated_at: this.now(),
     });
     const saved = await this.options.store.putEntity(planPath(node), validatePlan, plan);
-    await this.options.streams.appendThread('daemon', node, {
+    // T446 (audit r7 #6): who approved it writes the line: "You approved plan v1".
+    await this.options.streams.appendThread(by, node, {
       kind: 'event',
-      body: `plan v${saved.version} approved by ${by}`,
+      body: `${by === 'human' ? 'You approved' : 'Approved'} plan v${saved.version}`,
       ref: planPath(node),
     });
     const contracts = saved.contracts.map((id) => this.options.contracts.find(id));
@@ -176,7 +186,7 @@ export class PlanService {
       // T338: each part reads its share on its own thread too.
       await this.options.streams.appendThread('daemon', owner.child, {
         kind: 'event',
-        body: `plan v${saved.version} approved: you own ${owner.owns.join(', ') || 'no paths'}`.slice(
+        body: `Plan v${saved.version} approved: this part owns ${owner.owns.join(', ') || 'no paths'}`.slice(
           0,
           800,
         ),
@@ -222,9 +232,10 @@ export class PlanService {
     } catch {
       return false;
     }
-    if (
-      nodeRole(parent, liveChildrenOf(parent.id, this.options.streams.list())) !== 'coordinating'
-    ) {
+    const all = this.options.streams.list();
+    // D42: a conversation under a coordinator is not one of its parts.
+    if (isConversationNode(child, all)) return false;
+    if (nodeRole(parent, liveChildrenOf(parent.id, all), all) !== 'coordinating') {
       return false;
     }
     if (!parent.sessions.some((s) => s.role === 'coordinator')) return false;
@@ -239,6 +250,43 @@ export class PlanService {
     // waits. Sessions from before the line (the node's own, moved to its first part) don't count.
     const since = ulidTimePrefix(Date.parse(line.ts));
     return !child.sessions.some((s) => s.id.slice(0, ULID_TIME_CHARS) >= since);
+  }
+
+  /** T344: the node's live parts still waiting for its plan (`waitingForPlan`). */
+  waitingParts(node: string): Stream[] {
+    const owned = approvedOwners(this.get(node));
+    return liveChildrenOf(node, this.options.streams.list()).filter((c) =>
+      this.waitingForPlan(c, owned),
+    );
+  }
+
+  /**
+   * T344: the human's "Start parts anyway": every part still waiting for
+   * the node's plan starts now, without one. Returns the parts started.
+   */
+  async startWaitingParts(node: string): Promise<string[]> {
+    const start = this.options.start;
+    if (start === undefined) throw new Error('parts cannot be started here');
+    this.options.streams.get(node);
+    const parts = this.waitingParts(node);
+    if (parts.length === 0) return [];
+    await this.options.streams.appendThread('human', node, {
+      kind: 'event',
+      body: `You started ${parts.map((p) => p.title).join(', ')} without a plan`.slice(0, 800),
+    });
+    const started: string[] = [];
+    for (const part of parts) {
+      try {
+        await start(part.id);
+        started.push(part.id);
+      } catch (err) {
+        await this.options.streams.appendThread('daemon', part.id, {
+          kind: 'event',
+          body: `could not start the agent: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+    return started;
   }
 
   /** T336: every part the approved `saved` first gives paths to, and still waiting, starts now. */
@@ -345,4 +393,30 @@ export class PlanService {
       contracts,
     };
   }
+}
+
+/**
+ * T333 (D34): what a node move asks of plans and contracts. A draft plan
+ * refuses the move; a plan (draft or approved) or contract of the old
+ * parent that still names the moved node is reported on its thread, not
+ * rewritten: changing either is a decision about what gets built.
+ */
+export function planMoveCoordination(
+  plans: PlanService,
+  contracts: ContractService,
+): MoveCoordination {
+  return {
+    planAwaitingApproval: (node) => plans.get(node)?.status === 'draft',
+    namedIn: (parent, child) => {
+      const plan = plans.get(parent);
+      const owners = [...(plan?.owners ?? []), ...(plan?.approved?.owners ?? [])];
+      return [
+        ...(plan && owners.some((o) => o.child === child) ? [`plan v${plan.version}`] : []),
+        ...contracts
+          .forNode(parent)
+          .filter((c) => c.parties.includes(child))
+          .map((c) => `contract ${c.id}`),
+      ];
+    },
+  };
 }

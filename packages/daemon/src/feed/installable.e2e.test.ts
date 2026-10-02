@@ -4,6 +4,7 @@
  * the icons it names load as PNGs, the service worker registers and
  * controls `/`, Chromium reports no installability errors
  * (`Page.getInstallabilityErrors` over CDP), and the page opens on the inbox.
+ * T394: the code-split build's chunks are served, typed and cached for good.
  * Same Chromium discovery as the sibling suites (fails loudly without one).
  */
 
@@ -106,6 +107,41 @@ test('the daemon serves the manifest, icons and service worker with their types'
     expect(href).toBeDefined();
     const linked = await fetch(`${cockpit.base}${href}`);
     expect(linked.headers.get('content-type')).toBe('application/manifest+json');
+  } finally {
+    await cockpit.stop();
+  }
+});
+
+test('the code-split build: the page names its chunks, each served as JavaScript and cached for good; a gone one is a 404', async () => {
+  const cockpit = startCockpit();
+  try {
+    const html = await (await fetch(`${cockpit.base}/`)).text();
+    const main = html.match(/<script type="module" crossorigin src="([^"]+)"/)?.[1];
+    expect(main).toMatch(/^\/control-room\/assets\/index-[\w-]+\.js$/);
+    const entry = await fetch(`${cockpit.base}${main}`);
+    expect(entry.status).toBe(200);
+    expect(entry.headers.get('content-type')).toStartWith('text/javascript');
+    // T394: content-hashed, so a name never changes what it serves.
+    expect(entry.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    // The views that load on demand are their own files, named in the entry.
+    const code = await entry.text();
+    const lazy = [...code.matchAll(/assets\/((?:Settings|Rules|Lenses|Director)-[\w-]+\.js)/g)].map(
+      (m) => m[1],
+    );
+    expect(new Set(lazy.map((name) => name?.split('-')[0]))).toEqual(
+      new Set(['Settings', 'Rules', 'Lenses', 'Director']),
+    );
+    for (const name of new Set(lazy)) {
+      const chunk = await fetch(`${cockpit.base}/control-room/assets/${name}`);
+      expect(chunk.status).toBe(200);
+      expect(chunk.headers.get('content-type')).toStartWith('text/javascript');
+      expect(chunk.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+      await chunk.arrayBuffer();
+    }
+    // A chunk a rebuild deleted: a plain 404, which the page reads as "a new version".
+    const gone = await fetch(`${cockpit.base}/control-room/assets/Settings-deleted0.js`);
+    expect(gone.status).toBe(404);
+    await gone.arrayBuffer();
   } finally {
     await cockpit.stop();
   }

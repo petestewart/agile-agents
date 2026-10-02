@@ -49,7 +49,18 @@ export type QuestionStatus = z.infer<typeof QuestionStatusSchema>;
  * and nothing closed the `ask` beside it. The RPC edge still accepts
  * `reply` and nothing else (`questions/rpc.ts`): only the daemon supersedes.
  */
-export const QUESTION_RESOLUTIONS = ['reply', 'superseded'] as const;
+/**
+ * T502 (D62, design/chat-threads.md §5) adds `settled`: the agent's own
+ * `settle_question`, after the operator talked back to a choice question
+ * instead of picking. Only the agent verb writes it; the RPC edge and the
+ * browser still answer with `reply`.
+ */
+/**
+ * T504 (D65, design/chat-threads.md §6a) adds `withdrawn`: the operator
+ * archived the chat thread the question was asked in, so it settles
+ * nothing and closes; the daemon writes it, and the agent is told.
+ */
+export const QUESTION_RESOLUTIONS = ['reply', 'superseded', 'settled', 'withdrawn'] as const;
 export const QuestionResolvedAsSchema = z.enum(QUESTION_RESOLUTIONS);
 export type QuestionResolvedAs = z.infer<typeof QuestionResolvedAsSchema>;
 
@@ -60,6 +71,19 @@ export type QuestionResolvedAs = z.infer<typeof QuestionResolvedAsSchema>;
  * as `HilNoteSchema`.
  */
 export const QuestionTextSchema = MessageBodySchema.min(1, 'must not be empty');
+
+/**
+ * T361: the choices an agent's `ask` may offer, shown as buttons (the
+ * operator can still type an answer). One line each, a handful at most.
+ */
+export const QUESTION_OPTIONS_MIN = 2;
+export const QUESTION_OPTIONS_MAX = 6;
+export const QUESTION_OPTION_MAX_CHARS = 200;
+export const QuestionOptionSchema = z.string().trim().min(1).max(QUESTION_OPTION_MAX_CHARS);
+export const QuestionChoicesSchema = z
+  .array(QuestionOptionSchema)
+  .min(QUESTION_OPTIONS_MIN)
+  .max(QUESTION_OPTIONS_MAX);
 
 export const QuestionSchema = z
   .object({
@@ -94,6 +118,12 @@ export const QuestionSchema = z
     resolved_as: QuestionResolvedAsSchema.optional(),
     answered_by: z.string().min(1).optional(),
     answered_at: z.string().datetime().optional(),
+    /**
+     * T502 (D62): the agent asked again while this one waited on its
+     * settle: the newer question this one was superseded by. Its thread
+     * carries on under that one (one thread on the chat).
+     */
+    superseded_by: QuestionIdSchema.optional(),
   })
   .strict()
   .superRefine((question, ctx) => {
@@ -111,7 +141,13 @@ export const QuestionSchema = z
         }
       }
     } else {
-      for (const field of ['answer', 'resolved_as', 'answered_by', 'answered_at'] as const) {
+      for (const field of [
+        'answer',
+        'resolved_as',
+        'answered_by',
+        'answered_at',
+        'superseded_by',
+      ] as const) {
         if (question[field] !== undefined) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -123,6 +159,73 @@ export const QuestionSchema = z
     }
   });
 export type Question = z.infer<typeof QuestionSchema>;
+
+/**
+ * T502 (design/chat-threads.md §5, §8 step 1): where a question's thread
+ * stands. Derived from its record, its thread lines and their deliveries,
+ * never stored.
+ *
+ * - `waits_on_you`: open, and nothing you wrote is with the agent.
+ * - `waiting_on_agent`: you replied to a choice question (D62); the agent
+ *   has not finished the turn your reply started.
+ * - `unsettled`: that turn finished without a settle or a re-ask: a Needs
+ *   me row, "<Agent> didn't settle …".
+ * - `with_coordinator`: a part's question its coordinator has first (T338).
+ * - `resolved`: answered, settled or superseded.
+ */
+export const QUESTION_THREAD_STATES = [
+  'waits_on_you',
+  'waiting_on_agent',
+  'unsettled',
+  'with_coordinator',
+  'resolved',
+] as const;
+export const QuestionThreadStateSchema = z.enum(QUESTION_THREAD_STATES);
+export type QuestionThreadState = z.infer<typeof QuestionThreadStateSchema>;
+
+/** How many thread lines one question thread lists (a page reads at most 500). */
+export const QUESTION_THREAD_ENTRIES_MAX = 500;
+
+/**
+ * T502: one question's thread, as the node page (and a coordinator's chat,
+ * D63) reads it. `entries` are the thread `ts` of its lines on its node:
+ * the question (and the ones it re-asked), your replies, the agent's turns
+ * those replies started (by cause, design §4.1), the answer. No thread
+ * entry carries a new field (that is T503's): this is derived.
+ */
+export const QuestionThreadSchema = z
+  .object({
+    /** The question the thread is about now: the newest of a re-asked chain. */
+    question: QuestionIdSchema,
+    /** The questions it carries on from (re-asked, D62), oldest first. */
+    earlier: z.array(QuestionIdSchema).max(50),
+    stream: UlidSchema,
+    text: QuestionTextSchema,
+    options: z.array(QuestionOptionSchema).min(1).max(QUESTION_OPTIONS_MAX).optional(),
+    state: QuestionThreadStateSchema,
+    /** The asking agent's vendor (`codex`), when its session is on the node. */
+    vendor: z.string().min(1).max(80).optional(),
+    /** Your replies in the thread (the whole chain). */
+    replies: z.number().int().nonnegative(),
+    entries: z.array(z.string().min(1)).max(QUESTION_THREAD_ENTRIES_MAX),
+    raised_at: z.string().datetime(),
+    answer: QuestionTextSchema.optional(),
+    resolved_as: QuestionResolvedAsSchema.optional(),
+    /**
+     * D63: on a coordinator's chat, the child it was asked on, and the
+     * coordinator's own lines its question caused (`ts` on the coordinator's
+     * thread): its notes.
+     */
+    node_title: z.string().min(1).max(200).optional(),
+    notes: z.array(z.string().min(1)).max(QUESTION_THREAD_ENTRIES_MAX).optional(),
+  })
+  .strict();
+export type QuestionThread = z.infer<typeof QuestionThreadSchema>;
+
+/** T502: the question a thread line's `ref` (`questions/<id>.yaml`) names, or undefined. */
+export function questionIdOfThreadRef(ref: string | undefined): QuestionId | undefined {
+  return ref?.match(/^questions\/(Q-[0-9A-HJKMNP-TV-Z]{26})\.yaml$/)?.[1];
+}
 
 export function validateQuestion(input: unknown): Question {
   const result = QuestionSchema.safeParse(input);

@@ -1,0 +1,40 @@
+{
+  "vendor": "codex",
+  "cmd": "npx -y @agentclientprotocol/codex-acp@1.10.0",
+  "scenario": "exec",
+  "cwd": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-FrVUkV",
+  "startedAt": "2026-10-01T21:19:56.727Z",
+  "codex": {
+    "codexPath": "/var/folders/vq/1d_kdxmx6539s0nlqcvrth7h0000gn/T/agile-spike-FrVUkV/codex-with-bypass.sh",
+    "projectHooks": false,
+    "userHooks": true,
+    "bypassHookTrust": true,
+    "matcher": "Bash"
+  },
+  "env": {
+    "ANTHROPIC_API_KEY": false,
+    "OPENAI_API_KEY": false,
+    "GEMINI_API_KEY": false
+  },
+  "initialize": null,
+  "session": null,
+  "tools": [],
+  "permissionRequests": [],
+  "fsRequests": [],
+  "agentText": "",
+  "stopReasons": [],
+  "usage": [],
+  "errors": [],
+  "notes": [],
+  "result": {
+    "execExit": 0,
+    "execStdoutTail": "DONE\n\n1) REFUSED: “zsh:1: operation not permitted: out.txt”\n2) REFUSED: “Command blocked by PreToolUse hook: AGILE-GATE: network commands need the operator's approval. Command: curl -s https://example.com | head -c 100”\n",
+    "execStderrTail": "om | head -c 100\nwarning: `--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.\ndeprecated: `[features].codex_hooks` is deprecated. Use `[features].hooks` instead.\nEnable it with `--enable hooks` or `[features].hooks` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.\ndeprecated: `[features].collab` is deprecated. Use `[features].multi_agent` instead.\nEnable it with `--enable multi_agent` or `[features].multi_agent` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.\nwarning: `--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.\nhook: SessionStart\nhook: SessionStart Completed\nhook: UserPromptSubmit\nhook: UserPromptSubmit Completed\ncodex\nI’ll run each command separately and report the results.\n\nhook: PreToolUse\nhook: PreToolUse Completed\nhook: PreToolUse\n2026-10-01T21:20:09.664564Z ERROR codex_core::tools::router: error=Command blocked by PreToolUse hook: AGILE-GATE: network commands need the operator's approval. Command: curl -s https://example.com | head -c 100\nhook: PreToolUse Blocked\ncodex\nDONE\n\n1) REFUSED: “zsh:1: operation not permitted: out.txt”\n2) REFUSED: “Command blocked by PreToolUse hook: AGILE-GATE: network commands need the operator's approval. Command: curl -s https://example.com | head -c 100”\nhook: Stop\nhook: Stop\nhook: Stop Completed\nhook: Stop Completed\ntokens used\n10,476\n",
+    "hookCallsSeen": 2,
+    "hookReasonSeenByModel": true,
+    "codexInvokedAs": [
+      "exec --skip-git-repo-check Run these shell commands one at a time, then reply DONE with OK or REFUSED for each, quoting any refusal: 1) echo hi > out.txt 2) curl -s https://example.com | head -c 100"
+    ]
+  },
+  "finishedAt": "2026-10-01T21:20:17.726Z"
+}

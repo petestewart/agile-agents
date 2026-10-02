@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { TYPESAFE_API_KEY_ENV } from './classifier/jev';
 import {
   DAEMON_CACHE_DIR,
   sandboxedSubprocessEnv,
@@ -41,6 +42,16 @@ describe('sandboxedSubprocessEnv', () => {
     expect(existsSync(env.XDG_CONFIG_HOME as string)).toBe(true);
     expect(existsSync(env.XDG_DATA_HOME as string)).toBe(true);
     expect(existsSync(env.XDG_STATE_HOME as string)).toBe(true);
+  });
+
+  test('T448: the cache ignores itself, so git status in the repo never lists it', () => {
+    Bun.spawnSync(['git', 'init', '-q'], { cwd: repoRoot });
+    sandboxedSubprocessEnv(repoRoot, 'git');
+    expect(existsSync(join(repoRoot, DAEMON_CACHE_DIR, '.gitignore'))).toBe(true);
+    const status = Bun.spawnSync(['git', 'status', '--porcelain', '--untracked-files=all'], {
+      cwd: repoRoot,
+    });
+    expect(status.stdout.toString()).toBe('');
   });
 
   test('namespaces different callers under different <name> subdirectories', () => {
@@ -139,6 +150,24 @@ describe('sandboxedSubprocessEnvOrTemp (review round 1 B2 fix)', () => {
       expect(existsSync(injectedBase)).toBe(true);
     } finally {
       rmSync(injectedBase, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("T486b: the daemon's secrets stay out of sandboxed subprocesses", () => {
+  test('sandboxedSubprocessEnv drops TYPESAFE_API_KEY and keeps PATH', () => {
+    const previous = process.env[TYPESAFE_API_KEY_ENV];
+    // A dummy, never a real key.
+    process.env[TYPESAFE_API_KEY_ENV] = 'test-dummy-not-a-key';
+    try {
+      const env = sandboxedSubprocessEnv(repoRoot, 'test-run');
+      expect(Object.keys(env)).not.toContain(TYPESAFE_API_KEY_ENV);
+      expect(env.PATH).toBe(process.env.PATH);
+      // The daemon keeps its own copy.
+      expect(process.env[TYPESAFE_API_KEY_ENV]).toBe('test-dummy-not-a-key');
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(process.env, TYPESAFE_API_KEY_ENV);
+      else process.env[TYPESAFE_API_KEY_ENV] = previous;
     }
   });
 });

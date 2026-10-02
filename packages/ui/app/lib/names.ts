@@ -84,3 +84,50 @@ export function tokenize(text: string, names: Names): Token[] {
   push(text.slice(last));
   return out;
 }
+
+/** T446: what `distinctTitle` reads of a node's row. */
+export interface TitledRow {
+  id: string;
+  title: string;
+  parent?: string;
+  project?: string;
+}
+
+/** The node's ancestors' titles, nearest first. */
+function ancestorsOf(id: string, byId: ReadonlyMap<string, TitledRow>): TitledRow[] {
+  const out: TitledRow[] = [];
+  const seen = new Set([id]);
+  let at = byId.get(id)?.parent;
+  while (at !== undefined && !seen.has(at)) {
+    const row = byId.get(at);
+    if (row === undefined) break;
+    out.push(row);
+    seen.add(at);
+    at = row.parent;
+  }
+  return out;
+}
+
+/**
+ * T446 (audit r7 #18): a node's title where two nodes share it — an overlap
+ * mark, an Events row, a card — with the path that tells them apart: its
+ * project ("Shop › Rotate the API keys · api") when the other is in another
+ * project, its parent when it is in the same one. The bare title when no
+ * other node has it; `undefined` for a node `rows` doesn't hold.
+ */
+export function distinctTitle(id: string, rows: readonly TitledRow[]): string | undefined {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const row = byId.get(id);
+  if (row === undefined) return undefined;
+  const same = rows.filter((r) => r.id !== id && r.title === row.title);
+  if (same.length === 0) return row.title;
+  const up = ancestorsOf(id, byId);
+  const path: string[] = [];
+  const root = up.at(-1);
+  if (root !== undefined && same.some((r) => r.project !== row.project)) path.push(root.title);
+  const parent = up[0];
+  if (parent !== undefined && parent !== root && same.some((r) => r.project === row.project)) {
+    path.push(parent.title);
+  }
+  return path.length === 0 ? row.title : `${path.join(' › ')} › ${row.title}`;
+}

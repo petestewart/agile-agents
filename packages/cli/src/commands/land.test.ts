@@ -136,7 +136,7 @@ describe('agile land <stream>', () => {
   test('a refusal surfaces as a CLI error, not a stack trace', async () => {
     const stream = await streams.create('human', { title: 'planning', goal: 'think' });
     expect(runLand(socketPath, parseArgs([stream.id]), false)).rejects.toThrow(
-      /there is nothing to land/,
+      'planning has no repo — there is nothing to merge',
     );
   });
 

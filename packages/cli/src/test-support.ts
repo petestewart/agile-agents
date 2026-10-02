@@ -37,6 +37,7 @@ import {
   buildHookRpcMethods,
   buildInboxRpcMethods,
   buildKnowledgeRpcMethods,
+  buildModelPolicyRpcMethods,
   buildProjectRpcMethods,
   buildQuestionRpcMethods,
   buildStateRpcMethods,
@@ -177,6 +178,8 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     // T138: same wiring as `daemon.ts` — an open routed call keeps a
     // session alive at turn end.
     gates: gateService,
+    // T483: the chooser asks the same fake (unscripted: "no classifier key").
+    classifier,
   });
   // T137: an answer is delivered by prompting the live session, exactly as
   // `daemon.ts` wires it.
@@ -220,6 +223,8 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
         reply: { say: (id, body) => attachService.say(id, body), questions: questionService },
       }),
       ...buildProjectRpcMethods(new ProjectService(store, streamService)),
+      // T482: `agile policy`, over the attach service's own policy service.
+      ...buildModelPolicyRpcMethods(attachService.routing()),
       ...buildInboxRpcMethods(
         new InboxService({
           streams: streamService,

@@ -18,6 +18,7 @@ import { HilKindSchema, MessageBodySchema } from './agent-message';
 import { AgentIdSchema, ULID_PATTERN, UlidSchema, formatZodError } from './ids';
 import { KnowledgeIdSchema } from './knowledge';
 import { GateOwnerSchema } from './policy';
+import { ReadRootSchema } from './posture';
 import { LegacyRuleIdSchema } from './rule';
 
 /**
@@ -158,6 +159,13 @@ export const HilRequestSchema = z
      */
     /** The knowledge item named; a gate raised before T260 names its `R-` rule. */
     rule: z.union([KnowledgeIdSchema, LegacyRuleIdSchema]).optional(),
+    /**
+     * T457: a read the Ask posture routed (outside every root the node may
+     * read). The card offers "Always for this project", which adds this
+     * directory to the project's `read_roots`. Never sourced from vendor
+     * data: the daemon derives it from the path it resolved.
+     */
+    read_root: ReadRootSchema.optional(),
     /** T138: set when an approved gate's one allowed retry has been spent — the allowance is once, not standing. */
     consumed_at: z.string().datetime().optional(),
     decision: HilDecisionSchema.optional(),

@@ -7,16 +7,25 @@
  *   other events wait for its next turn. A parent's `coordinator_note`
  *   (`note_child`, T287) is one of them (T290), so a child always gets its
  *   coordinator's distilled note, within the same stop rule and budget.
- * - A conversation node is woken only by `human_line` and `answer`.
+ * - A conversation node is woken by `human_line` and `answer`, and (D36
+ *   D10, narrowed by T453 / Q25) by `knowledge_accepted` only for an item
+ *   it proposed itself (the event's `source`): it hears at once that its
+ *   proposal was accepted. Every other conversation in scope gets the item
+ *   on its next turn, unless (T454, `knowledge_wake: jev`) Jev judged the
+ *   item relevant to it and it still current (`heard`).
  * - A project root is woken like a coordinating node once it has had a
  *   coordinator (P20, T280); before that it has no agent and never wakes.
  * - A node the human stopped is never woken; its events stay pending.
+ * - T446: a record-only type (`autonomy_applied`) wakes nobody; its
+ *   deliveries are `recorded`, never pending, so it cannot reach here anyway.
  * - A wake budget (default 20 per node per hour) stops event loops: past
  *   it the node goes to the inbox and its events stay pending.
  */
 
 import {
   type NodeRole,
+  QUIET_EVENT_TYPES,
+  RECORD_ONLY_EVENT_TYPES,
   type RoutedEventType,
   type Stream,
   isAgentRole,
@@ -39,10 +48,15 @@ const WORK_WAKE_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEventType>([
 const CONVERSATION_WAKE_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEventType>([
   'human_line',
   'answer',
+  'knowledge_accepted',
 ]);
 
 /** P11's table: does an event of `type` wake a node of `role` with no live session? */
 export function wakesRole(role: NodeRole, type: RoutedEventType): boolean {
+  // T446: a record (`autonomy_applied`) wakes nobody, not even a coordinator.
+  if (RECORD_ONLY_EVENT_TYPES.has(type)) return false;
+  // T504: a quiet one (an archive notice) rides along with what does wake it.
+  if (QUIET_EVENT_TYPES.has(type)) return false;
   switch (role) {
     case 'coordinating':
       return true;
@@ -108,7 +122,9 @@ export class WakeBudget {
 export function wakeVerdict(
   node: Stream,
   role: NodeRole,
-  pending: readonly { type: RoutedEventType }[],
+  pending: readonly PendingForWake[],
+  /** T454: Jev said this conversation should hear this accepted item (`knowledge-wake.ts`). */
+  heard?: (event: PendingForWake) => boolean,
 ): Exclude<WakeVerdict, 'budget'> {
   // A project root has "an agent" once it has had a coordinator (P20).
   if (role === 'project' && !node.sessions.some((s) => s.role === 'coordinator')) {
@@ -118,5 +134,28 @@ export function wakeVerdict(
     return 'no_agent';
   }
   if (stoppedByHuman(node)) return 'stopped';
-  return pending.some((e) => wakesRole(role, e.type)) ? 'wake' : 'no_trigger';
+  return pending.some(
+    (e) => wakesRole(role, e.type) && (!notItsKnowledge(node, role, e) || heard?.(e) === true),
+  )
+    ? 'wake'
+    : 'no_trigger';
+}
+
+/** What the verdict reads of a pending event. */
+export interface PendingForWake {
+  id?: string;
+  type: RoutedEventType;
+  payload?: Record<string, unknown>;
+}
+
+/**
+ * T453 (Q25): accepted knowledge wakes a conversation only when it proposed
+ * the item; another conversation in scope gets it on its next turn.
+ */
+export function notItsKnowledge(node: Stream, role: NodeRole, event: PendingForWake): boolean {
+  return (
+    role === 'conversation' &&
+    event.type === 'knowledge_accepted' &&
+    (event.payload?.source === undefined || event.payload.source !== node.id)
+  );
 }

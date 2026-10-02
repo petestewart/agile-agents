@@ -13,6 +13,11 @@
  * `./assets/...` against `/` (the last path *segment*, "control-room", is
  * dropped), 404ing every asset. An absolute base is correct regardless of
  * the trailing slash.
+ *
+ * T394: the views not on the first screen are split off with `import()`
+ * (`App.tsx`, `StreamPage.tsx`), and React is its own chunk: it changes
+ * far less often than the app, so a rebuild leaves it cached (the daemon
+ * serves the hashed `assets/` as immutable).
  */
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
@@ -24,5 +29,13 @@ export default defineConfig({
   build: {
     outDir: '../dist-app',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (/[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return 'react';
+          return undefined;
+        },
+      },
+    },
   },
 });

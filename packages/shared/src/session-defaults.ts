@@ -22,9 +22,45 @@ import type { HomeConfig } from './home-config';
 import type { RepoEntry } from './repos';
 
 /** Every vendor the provider registry knows (`@agile-agents/acp-client`'s `ACP_PROVIDERS`). */
-export const SESSION_VENDORS = ['claude', 'gemini', 'cursor', 'grok', 'pi', 'codex'] as const;
+export const SESSION_VENDORS = [
+  'claude',
+  'gemini',
+  'cursor',
+  'grok',
+  'pi',
+  'codex',
+  'antigravity',
+] as const;
 export const SessionVendorSchema = z.enum(SESSION_VENDORS);
 export type SessionVendor = z.infer<typeof SessionVendorSchema>;
+
+/** T467: whether `vendor` is one of `SESSION_VENDORS`. */
+export function isSessionVendor(vendor: string): vendor is SessionVendor {
+  return (SESSION_VENDORS as readonly string[]).includes(vendor);
+}
+
+/**
+ * T401 (D12): the vendors whose adapter maps an effort level to something:
+ * a spawn-time mapping (`ACP_PROVIDERS[v].effort`, Claude) or, since T488,
+ * the vendor's own ACP effort option (`effortOption`, Codex). A daemon
+ * test keeps the list and the registry in step. For any other the level is
+ * recorded but never sent ("effort … ignored by …"), so the cockpit leaves
+ * it out of labels.
+ */
+export const EFFORT_VENDORS: readonly SessionVendor[] = ['claude', 'codex'];
+
+/**
+ * T488: vendors with no effort setting of their own that build it into
+ * each model instead: Cursor lists `claude-opus-5-5[…,effort=medium,…]` and
+ * `gpt-5.6-sol[…,reasoning=medium,…]` (LIVE-CHECKLIST §12). The cockpit
+ * says to pick the model with the effort wanted.
+ */
+export const EFFORT_IN_MODEL_VENDORS: readonly SessionVendor[] = ['cursor'];
+
+/** T401: whether `vendor` does anything with an effort level. */
+export function vendorTakesEffort(vendor: string): boolean {
+  return (EFFORT_VENDORS as readonly string[]).includes(vendor);
+}
 
 /** D17's step 4. */
 export const BUILTIN_SESSION_DEFAULTS = {
@@ -38,6 +74,7 @@ export const KNOWN_MODEL_IDS: Readonly<Record<SessionVendor, readonly string[]>>
   claude: [
     'claude-opus-5-5',
     'claude-fable-5-1',
+    'claude-sonnet-5-5',
     'claude-opus-4-8',
     'claude-sonnet-4-6',
     'claude-haiku-4-5',
@@ -50,19 +87,259 @@ export const KNOWN_MODEL_IDS: Readonly<Record<SessionVendor, readonly string[]>>
   grok: [],
   pi: [],
   codex: [],
+  antigravity: [],
 };
 
 export const SESSION_MODEL_MAX_CHARS = 200;
 
 /**
+ * T467 (D46): one model a vendor reported for itself in its `session/new`
+ * reply (its `configOptions` model option, else ACP's `models` list):
+ * `value` is the id a session is set to, `name` what the picker shows.
+ */
+export const VendorModelSchema = z
+  .object({
+    value: z.string().min(1).max(SESSION_MODEL_MAX_CHARS),
+    name: z.string().min(1).max(200),
+    description: z.string().max(300).optional(),
+  })
+  .strict();
+export type VendorModel = z.infer<typeof VendorModelSchema>;
+
+/** T467: at most this many models are kept per vendor (Cursor reported 43). */
+export const VENDOR_MODELS_MAX = 200;
+
+/**
+ * T467 (D46): a vendor's model list, as its most recent `session/new` (or
+ * `session/load`) reply reported it. `current` is the model that session
+ * ran on, which may be missing from `options` (Grok, LIVE-CHECKLIST §12).
+ */
+export const VendorModelsSchema = z
+  .object({
+    options: z.array(VendorModelSchema).max(VENDOR_MODELS_MAX),
+    current: z.string().min(1).max(SESSION_MODEL_MAX_CHARS).optional(),
+    /** When the vendor said it (the session-state file's `at`). */
+    at: z.string().min(1).max(64),
+    /** The session whose reply it was (a Refresh's too). */
+    session: z.string().min(1).max(64).optional(),
+  })
+  .strict();
+export type VendorModels = z.infer<typeof VendorModelsSchema>;
+
+/**
+ * T469: a favourite model, one row of `favourite_models` in the home
+ * config. No `model` is the vendor's own default (a vendor that lists none).
+ */
+export const FavouriteModelSchema = z
+  .object({
+    vendor: SessionVendorSchema,
+    model: z.string().min(1).max(SESSION_MODEL_MAX_CHARS).optional(),
+  })
+  .strict();
+export type FavouriteModel = z.infer<typeof FavouriteModelSchema>;
+
+/** T469: at most this many favourites. */
+export const FAVOURITE_MODELS_MAX = 100;
+
+/** T469: `POST /api/settings/favourite-models`: star (`on`) or unstar one model. */
+export const FavouriteModelInputSchema = z
+  .object({
+    vendor: SessionVendorSchema,
+    model: z.string().min(1).max(SESSION_MODEL_MAX_CHARS).optional(),
+    on: z.boolean(),
+  })
+  .strict();
+export type FavouriteModelInput = z.infer<typeof FavouriteModelInputSchema>;
+
+/** T469: `default` (and no model) is the vendor's own default; kept as no `model`. */
+export function favouriteKey(ref: { vendor: string; model?: string | undefined }): string {
+  const model = ref.model === undefined || ref.model === 'default' ? '' : ref.model;
+  return `${ref.vendor}/${model}`;
+}
+
+/** T467: `POST /api/settings/models/refresh`: ask one vendor for its models. */
+export const RefreshModelsInputSchema = z.object({ vendor: SessionVendorSchema }).strict();
+export type RefreshModelsInput = z.infer<typeof RefreshModelsInputSchema>;
+
+/**
+ * T456: vendors whose tool calls pass the daemon's pre-tool check (Claude's
+ * `PreToolUse` hook, Pi's `agile` extension; design/spike-findings.md §B,
+ * §C4; T506: Codex's own `PreToolUse` hook, §C5). The others are gated by
+ * ACP permission (or a sandbox) only, a lower enforcement floor (T229's
+ * visibility advisory reads the same list).
+ */
+export const HOOKED_VENDORS: readonly SessionVendor[] = ['claude', 'codex', 'pi'];
+
+/** T456: whether `vendor` has pre-tool hooks. */
+export function vendorHasHooks(vendor: string): boolean {
+  return (HOOKED_VENDORS as readonly string[]).includes(vendor);
+}
+
+/**
+ * T506: the daemon's words when it stops a Codex session whose `PreToolUse`
+ * hook never saw its commands (the session's end, the thread, Needs me).
+ * T508: shared so the cockpit's card can tell this stop from others.
+ */
+export const CODEX_UNGATED_REASON =
+  "Codex ran a command its gate never saw: its hook isn't trusted or didn't fire";
+
+/**
+ * T506: how the refusal of a Codex start in a worktree Codex doesn't trust
+ * begins ("Codex's gate isn't trusted here: trust <repo> in Codex"). T508:
+ * the cockpit's card reads the repo to trust from it.
+ */
+export const CODEX_UNTRUSTED_LEAD = "Codex's gate isn't trusted here: trust ";
+
+/**
+ * T505: vendors whose ACP bridge runs a shell command without asking (no
+ * ACP permission request, and no pre-tool hook the daemon installs yet;
+ * design/spike-findings.md §C3). T506: Codex left the list: the daemon
+ * installs its own `PreToolUse` hook (§C5).
+ * The providers mark them `requiresSandbox`, but no sandbox is wired to
+ * the spawn yet, so nothing checks their commands. They still run as they
+ * are; the cockpit, the CLI and the thread say so. A daemon test keeps the
+ * list and the registry's `requiresSandbox` in step.
+ */
+export const UNCHECKED_COMMAND_VENDORS: readonly SessionVendor[] = ['grok', 'antigravity'];
+
+/** T505: whether `vendor` runs shell commands that nothing checks. */
+export function vendorRunsUnchecked(vendor: string): boolean {
+  return (UNCHECKED_COMMAND_VENDORS as readonly string[]).includes(vendor);
+}
+
+/** T505: the warning for such a vendor, by its label ("Codex runs shell commands without asking, …"). */
+export function uncheckedCommandsWarning(label: string): string {
+  return `${label} runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.`;
+}
+
+/** T505: the thread line when such a vendor's agent starts. */
+export function uncheckedCommandsLine(label: string): string {
+  return `${label} runs commands unchecked`;
+}
+
+/**
+ * T460: how to log a vendor back in. Its harness runs headless over ACP,
+ * so an interactive `/login` can't run in the cockpit; it runs in a
+ * terminal, with the user's own login (no vendor credentials in the daemon).
+ */
+const VENDOR_LOGIN_HOW: Partial<Record<string, string>> = {
+  claude: 'run `claude` and type /login',
+  gemini: 'run `gemini` and sign in',
+  codex: 'run `codex login`',
+  cursor: 'run `cursor-agent login`',
+  antigravity: 'run `agy` and sign in',
+};
+
+/** T460: the way to log `vendor` in, in words ("run `claude` and type /login"). */
+export function vendorLoginHow(vendor: string, label: string): string {
+  return VENDOR_LOGIN_HOW[vendor] ?? `log in to ${label}`;
+}
+
+/**
+ * T461: one slash command a live agent advertises over ACP
+ * (`available_commands_update`): its name without the slash, what it does,
+ * and the hint for its argument, if it takes one.
+ */
+export const AgentCommandSchema = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[\w][\w:.-]*$/),
+    description: z.string().max(300),
+    hint: z.string().max(200).optional(),
+  })
+  .strict();
+export type AgentCommand = z.infer<typeof AgentCommandSchema>;
+
+/** T461: the command a line starts with (`/compact now` → `compact`), or undefined. */
+export function slashCommandOf(text: string): string | undefined {
+  return /^\/([\w][\w:.-]*)(?:\s|$)/.exec(text.trimStart())?.[1];
+}
+
+/**
+ * T504 (D65, design/chat-threads.md §6a): the vendors whose compact command
+ * is known to take instructions, and its name. Only Claude Code's: its own
+ * docs give `/compact [instructions]`, and T461 passes it through. Nothing
+ * else is assumed (design/spike-findings.md "Compaction routes"):
+ * LIVE-CHECKLIST §23 measures each route on a real login before another
+ * vendor is added here.
+ */
+export const COMPACT_COMMANDS: Readonly<Partial<Record<string, string>>> = {
+  claude: 'compact',
+};
+
+/**
+ * T504: the command Compact now sends to `vendor`'s live agent, when it
+ * has one known to take instructions and the agent advertises it (T461).
+ */
+export function compactCommandFor(
+  vendor: string | undefined,
+  commands: readonly Pick<AgentCommand, 'name'>[],
+): string | undefined {
+  const name = vendor !== undefined ? COMPACT_COMMANDS[vendor] : undefined;
+  return name !== undefined && commands.some((c) => c.name === name) ? name : undefined;
+}
+
+/**
+ * T456 (D43 follow-up): what happens when a node's agent crashes (its
+ * vendor exits non-zero on its own). `vendor_failure:` in the home
+ * `config.yaml`, a repo's entry in `repos.yaml` and a project record; each
+ * field resolves project, then repo, then home, then the built-in
+ * (`BUILTIN_VENDOR_FAILURE`).
+ *
+ * - `retry`: start the same vendor and model again, once (not for a login
+ *   or model refusal, which a retry can't fix);
+ * - `fallback`: then the next of these vendors that is installed;
+ * - `allow_hookless`: a vendor with pre-tool hooks may fall back to one
+ *   without (`HOOKED_VENDORS`). Off, it never lowers the enforcement floor.
+ */
+export const VendorFailureSchema = z
+  .object({
+    retry: z.boolean().optional(),
+    fallback: z.array(SessionVendorSchema).max(SESSION_VENDORS.length).optional(),
+    allow_hookless: z.boolean().optional(),
+  })
+  .strict();
+export type VendorFailureSettings = z.infer<typeof VendorFailureSchema>;
+
+export interface ResolvedVendorFailure {
+  retry: boolean;
+  fallback: SessionVendor[];
+  allow_hookless: boolean;
+}
+
+export const BUILTIN_VENDOR_FAILURE: Readonly<ResolvedVendorFailure> = Object.freeze({
+  retry: true,
+  fallback: [],
+  allow_hookless: false,
+});
+
+/** T456: field by field, the first step that says (most specific first), else the built-in. */
+export function resolveVendorFailure(
+  ...steps: ReadonlyArray<VendorFailureSettings | undefined>
+): ResolvedVendorFailure {
+  const pick = <K extends keyof VendorFailureSettings>(key: K) =>
+    steps.find((step) => step?.[key] !== undefined)?.[key];
+  return {
+    retry: pick('retry') ?? BUILTIN_VENDOR_FAILURE.retry,
+    fallback: [...new Set(pick('fallback') ?? BUILTIN_VENDOR_FAILURE.fallback)],
+    allow_hookless: pick('allow_hookless') ?? BUILTIN_VENDOR_FAILURE.allow_hookless,
+  };
+}
+
+/**
  * A Settings write: absent = unchanged, `null` = remove (fall through to
- * the next step of the order), a value = set.
+ * the next step of the order), a value = set. T456: `vendor_failure` is
+ * replaced whole.
  */
 export const SessionDefaultsPatchSchema = z
   .object({
     vendor: SessionVendorSchema.nullable().optional(),
     model: z.string().trim().min(1).max(SESSION_MODEL_MAX_CHARS).nullable().optional(),
     effort: EffortSchema.nullable().optional(),
+    vendor_failure: VendorFailureSchema.nullable().optional(),
   })
   .strict();
 export type SessionDefaultsPatch = z.infer<typeof SessionDefaultsPatchSchema>;
@@ -72,6 +349,8 @@ export interface SessionDefaultsFields {
   vendor?: string;
   model?: string;
   effort?: Effort;
+  /** T456: what it says about a crashed agent. */
+  vendor_failure?: VendorFailureSettings;
 }
 
 export interface ResolvedSessionDefaults {
@@ -98,13 +377,26 @@ export function resolveSessionDefaults(
   input: ResolveSessionDefaultsInput = {},
 ): ResolvedSessionDefaults {
   const { flags = {}, project, repo, home } = input;
-  const vendor =
-    firstDefined(flags.vendor, project?.vendor, repo?.vendor, home?.default_vendor) ??
+  // Most specific first; the built-in last.
+  const steps: Array<{ vendor?: string; model?: string }> = [
+    flags,
+    project ?? {},
+    repo ?? {},
+    { vendor: home?.default_vendor, model: home?.default_model },
+    BUILTIN_SESSION_DEFAULTS,
+  ];
+  // The vendor a step runs: its own, else what the steps below it say.
+  const vendorAt = (from: number): string =>
+    firstDefined(...steps.slice(from).map((step) => step.vendor)) ??
     BUILTIN_SESSION_DEFAULTS.vendor;
-  const named = firstDefined(flags.model, project?.model, repo?.model, home?.default_model);
-  const model =
-    named ??
-    (vendor === BUILTIN_SESSION_DEFAULTS.vendor ? BUILTIN_SESSION_DEFAULTS.model : undefined);
+  const vendor = vendorAt(0);
+  // T402 (D40): a model counts only where that step runs the same vendor, so a
+  // Claude model named in the home never reaches a repo set to Gemini.
+  const model = firstDefined(
+    ...steps.map((step, index) =>
+      step.model !== undefined && vendorAt(index) === vendor ? step.model : undefined,
+    ),
+  );
   // The flag is a raw string; the records are schema-checked already.
   const effortRaw = firstDefined(flags.effort, project?.effort, repo?.effort, home?.default_effort);
   const effort =
@@ -127,4 +419,14 @@ export interface SessionDefaultsStatus {
   repos: Record<string, SessionDefaultsFields & { resolved: ResolvedSessionDefaults }>;
   vendors: readonly SessionVendor[];
   known_models: Readonly<Record<SessionVendor, readonly string[]>>;
+  /**
+   * T467 (D46): each vendor's own model list, from its most recent
+   * `session/new` reply; the pickers show it in place of `known_models`.
+   * A vendor that never reported one is absent.
+   */
+  vendor_models?: Readonly<Partial<Record<SessionVendor, VendorModels>>>;
+  /** T469: the models starred as favourites (home config); absent or empty = none. */
+  favourite_models?: readonly FavouriteModel[];
+  /** T437: vendors whose command isn't on the daemon's PATH, with why in words. Absent: all found (or an older daemon). */
+  not_installed?: Readonly<Partial<Record<SessionVendor, string>>>;
 }

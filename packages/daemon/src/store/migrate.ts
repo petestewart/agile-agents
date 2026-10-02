@@ -33,6 +33,8 @@ import {
 } from '@agile-agents/shared';
 import type { ProjectService } from '../projects/service';
 import type { QuestionService } from '../questions/service';
+import { PREDATES_ROUTING } from '../routing/policy';
+import { branchLabel } from '../runner/worktrees';
 import type { StreamService } from '../streams/service';
 import { buildEvent } from './events';
 import type { StateStore } from './store';
@@ -198,7 +200,7 @@ export async function migrateHome(deps: HomeMigrationDeps): Promise<HomeMigratio
         s.human.status !== 'landed' &&
         s.human.status !== 'closed',
     )
-    .map((s) => `${s.branch} (${s.repo ?? 'no repo'}, stream ${s.id} "${s.title}")`)
+    .map((s) => `${s.title}: branch ${branchLabel(s.branch ?? '')} in ${s.repo ?? 'no repo'}`)
     .sort();
   result.parent_branches = parentBranches;
   if (parentBranches.length > 0) {
@@ -230,5 +232,9 @@ async function unfiledProject(projects: ProjectService): Promise<Project> {
   const existing = projects
     .list({ include_archived: true })
     .find((p) => projectNameKey(p.name) === key);
-  return existing ?? projects.create({ name: UNFILED_PROJECT });
+  // T482 (D54): work that predates model routing keeps Default.
+  return (
+    existing ??
+    projects.create({ name: UNFILED_PROJECT }, 'human', { modelPolicy: { ...PREDATES_ROUTING } })
+  );
 }

@@ -74,6 +74,15 @@ describe('the three pruning signals (§5.7)', () => {
     expect(flagOf(fixture({ created_at: daysAgo(3) }), 2)).toBe('never fired');
   });
 
+  test('guidance (tell) never fires, so it is never flagged never fired (T371)', () => {
+    const tell: Partial<KnowledgeItemInput> = { enforcement: 'tell', check: undefined };
+    expect(flagOf(fixture({ ...tell, created_at: daysAgo(90) }))).toBe('-');
+    // A review item is read by the ship review, which records a firing.
+    const review: Partial<KnowledgeItemInput> = { enforcement: 'review', check: undefined };
+    expect(flagOf(fixture({ ...review, created_at: daysAgo(90) }))).toBe('never fired');
+    expect(flagOf(fixture({ ...review, stats: { fired: 3 } }))).toBe('-');
+  });
+
   test('only an accepted rule can be flagged never fired — a proposed one never had the chance', () => {
     expect(flagOf(fixture({ status: 'proposed' }))).toBe('-');
     expect(flagOf(fixture({ status: 'retired' }))).toBe('-');
@@ -226,7 +235,11 @@ describe('rule.report over the store', () => {
       streams,
       clock: () => new Date(Date.now() - 2 * DAY),
     });
-    const rule = await dated.create('human', { text: 'keep commits scoped' });
+    // A review item: the ship review records its firings (a tell item never fires).
+    const rule = await dated.create('human', {
+      text: 'keep commits scoped',
+      enforcement: 'review',
+    });
     await dated.accept(rule.id, 'pete');
     expect((await call<RuleReport>('rule.report', {})).rows[0]?.flag).toBe('-');
     const narrow = await call<RuleReport>('rule.report', { days: 1 });

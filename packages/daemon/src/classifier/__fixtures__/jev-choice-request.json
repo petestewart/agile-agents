@@ -1,0 +1,24 @@
+{
+  "state": "Task: Rename getUser to fetchUser\nGoal: Rename the function and its call sites; the tests must pass.\nRole: a worker: it writes the code on its own branch\nSiblings starting now: 6",
+  "model": "jev-latest",
+  "questions": {
+    "clarity": {
+      "type": "choice",
+      "instructions": "How well specified is the task?",
+      "criteria": {
+        "1": "Open-ended: the goal is vague and what done looks like is not said.",
+        "3": "Partly specified: the goal is clear; some scope or acceptance is missing.",
+        "5": "Well defined: the exact goal and scope, with acceptance stated."
+      }
+    },
+    "model": {
+      "type": "choice",
+      "instructions": "Which model should run this task?",
+      "criteria": {
+        "claude/claude-haiku-4-5": "Claude Haiku 4.5: fast tier, relative cost 0.3.",
+        "claude/claude-sonnet-5-5": "Claude Sonnet 5.5: balanced tier, relative cost 1.",
+        "claude/claude-opus-5-5": "Claude Opus 5.5: strongest tier, relative cost 2."
+      }
+    }
+  }
+}

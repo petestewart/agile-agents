@@ -97,7 +97,9 @@ describe('migrateHome (§17.1)', () => {
 
     const open = deps.questions.listOpen();
     expect(open).toHaveLength(1);
-    expect(open[0]?.text).toContain('stream/epic');
+    expect(open[0]?.text).toContain('- epic: branch stream/epic in shop');
+    // T371: the node by its title, never its id.
+    expect(open[0]?.text).not.toContain(epic.id);
 
     // A second start changes nothing.
     const before = readFileSync(join(home, 'log', 'events.jsonl'), 'utf8');

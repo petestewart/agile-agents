@@ -48,6 +48,34 @@ Target shape, in one paragraph: a **stream** is the unit (goal, status, parent, 
 - **D35** (2026-09-26, Pete): a part's question about shared things (a sibling, a contract, owned paths, the plan) goes to its coordinator first (`child_question` event, coordinator-only `answer_child` verb). The coordinator answers or passes it up; a stopped coordinator sends it to the inbox; plan approval supersedes held (not passed-up) questions. As built in T338.
 - **D36** (2026-09-26, Pete): the T341 walkthrough decisions, as recommended. D1 "Waits on…" / "Tracker issue…" labels, tracker field only with a project tracker. D2 the open node and filter live in the URL. D3 a "question" state on Children cards. D4 coordinator wakes stay; ended sessions collapse in the list. D5 a direct merge's event is "merged". D6 the coordinator autonomy picker only on coordinating nodes and project roots. D7 "Merge" everywhere, not "Land". D8 deferred to real-agent QA (T342). D9 a ship-check hold is neutral, not error red. D10 accepting a decision wakes the conversation. D11 part titles aren't truncated by "waiting for the plan". D12 daemon lines meant for the agent are hidden from the human thread.
 - **D37** (2026-09-26, Pete): upgrade Bun past 1.3.11 if a release fixes the child-process pipe bugs (fd double-close, EBADF on epoll_ctl); verified on a branch with the full suite and CI before the pin moves. Otherwise stay on 1.3.11 with the existing workarounds.
+- **D38** (2026-09-26, Pete): no global `Host` check on the daemon's read routes. The cockpit must stay reachable from a phone through a tunnel (D15). Writes keep their same-origin check (403 otherwise); the folder browser and clone keep their loopback-`Host` check (T362). A Host allowlist (loopback plus configured tunnel names) stays an option if DNS rebinding ever matters more than reach.
+- **D39** (2026-09-26, Pete; confirmed 2026-09-27): a browser notification fires every time a node finishes (or asks, or is blocked), including a second finish after your reply; the same card only leaving a frame and coming back does not notify again. As built in T391.
+- **D40** (2026-09-26; confirmed by Pete 2026-09-27): in the D17 order a model belongs to its vendor. A model named at a step counts only when that step runs the resolved vendor (its own vendor, else the vendor of the steps below it). A repo set to Gemini no longer inherits the home's Claude model: it gets Gemini's own default. Vendor and effort still resolve field by field. As built in T402.
+- **D41** (2026-09-26, Pete): a node created without a title gets one from a one-shot cheap LLM call (Haiku) through the user's own `claude` login, off the create path; the first-line title stands until it returns, and stays if the CLI is missing or the call fails. The daemon still holds no vendor credentials. As built in T414.
+- **D42** (2026-09-26, Pete): a conversation can be asked at any level (the Director, a project root, a coordinator, a work node) as its own node, and never reshapes the tree: a node's parts are its live children that are neither helpers nor conversations, and only parts make a node coordinating, wait for a plan or ask a coordinator first. A side conversation's status doesn't wake its parent; its conclusion goes up when the human sends it. It can grow into work in place. Widens D33 (design/projects-design.md §2). Built in T418–T422: the rule, Ask from anywhere, the parent's state in its brief, Send to parent, Turn into work.
+- **D43** (2026-09-26; confirmed by Pete 2026-09-27 as the end state once T456's retry and fallback are spent): a vendor process that exits non-zero on its own (not a stop of the daemon's, not after its turn finished) crashed or refused (a login, a bad model): the node is `blocked`, its session `error`, and the thread line carries the vendor's last stderr line. Narrows cockpit-design §2.3's "exit ⇒ done", which let a first run with a logged-out vendor read as finished work ("Ready to merge", "Replied"). A clean exit (code 0) is still `done`. A vendor whose command isn't on the daemon's PATH is named before anything spawns. Built in T432.
+- **D44** (2026-09-27, Pete): Q25 answered. Accepting a knowledge item wakes only the conversation that proposed it (the item's `source.node`); every other conversation in scope gets it with its next message, and coordinators still wake as before. Narrows D36 D10; the per-item fan-out cap goes. Built in T453. Follow-up T454: behind a config setting, Jev decides whether an accepted item merits waking a conversation (does it change the answer given or settle something left open, and is the conversation still current).
+- **D45** (2026-09-27, Pete): an agent reads every registered repo it can see (every repo not private, plus private ones listing its project), not only its project's; the project's own repos are the ones it is pointed at. Agents may propose adding a repo to their node (T455).
+- **D46** (2026-09-28, Pete): one way to choose a model, for every vendor (Claude included). The model list comes from the vendor (ACP's reply when a session opens), and the chosen model is set through that same ACP model option. A vendor-specific switch (Claude's `ANTHROPIC_MODEL`, a CLI flag) is a fallback only where a live run has measured that the ACP option is missing. A vendor with no way to set a model shows "default" in the picker, with the reason. Measured first (LIVE-CHECKLIST §12). (T467)
+- **D47** (2026-09-28, Pete): T471's Delete forever keeps a branch with unmerged commits unless the operator ticks "Also delete its branch"; a merged branch always goes. As built.
+- **D48** (2026-09-28, Pete): go ahead with T465. A finished turn no longer stops the vendor session: it stays alive and idle, so the next message reaches the same session and keeps its context and prompt cache. It ends on an idle timeout, a Stop or the daemon stopping, and an ended session resumes through ACP `session/load` where the vendor supports it. Narrows cockpit-design §2.3's "a finished turn stops the session".
+- **D49** (2026-09-29, Pete): one install per vendor. The daemon runs the vendor CLI the operator installed, not a second copy bundled inside an ACP bridge: Claude's bridge gets `CLAUDE_CODE_EXECUTABLE`, Codex's gets `CODEX_PATH`, pointing at the `claude`/`codex` on PATH, with the bundled copy only as the fallback when none is installed. Gemini, Cursor, Grok and Pi already run the installed CLI. The bridges stay pinned in code. (T480)
+- **D50** (2026-09-29, Pete): harness updates are a setting with three modes. **Off** does no version check. **Alert** checks regularly and puts an update in Needs me, with a button that installs it. **Auto** installs new versions in the background. Running sessions keep the version they started on; the next start uses the new one. (T481)
+- **D51** (2026-09-30, Pete, MR1): a model-routing budget is counted in **weighted tokens** (tokens × the model profile's relative cost), per session and per node, and built only after LIVE-CHECKLIST §16 measures which vendors report usage. (T485)
+- **D52** (2026-09-30, Pete, MR2): the chooser is **Jev**, using TypeSafe's choice primitive: one call scores the five criteria, reads the topic, and picks the model and effort from the preset models, with a confidence. Below 0.5 confidence, or with no key or a failed call, the rule fallback decides and the chat says why. No Haiku step in between: Pete confirmed the fixed rule is the fallback. (T483)
+- **D53** (2026-09-30, Pete, MR3): the operator's explicit pick always wins; the lock binds agents, the chooser and escalation. The set is called **preset models**, and a pick outside it reads "Running <model>, as you picked", never as refused. (T482)
+- **D54** (2026-09-30, Pete, MR4): new projects default to `choose`, quality 50, `start cheap`, presets = favourites, no pinned rules, and that default is a setting (Settings → Agents → Model choice). Projects that existed before T482 are stamped `default` once and change only when the operator changes them. (T482)
+- **D55** (2026-09-30, Pete, MR5): a routed pick is made once, when the node's agent first starts, and again only on escalation or "Let the policy choose again"; never silently on a later wake (T464 stands). (T482, T483)
+- **D56** (2026-09-30, Pete, MR6): an agent may ask to step up with `escalate {why}`; it can never pick its own model. (T484)
+- **D57** (2026-09-30, Pete): Choose asks Jev for a **tier** (fast, balanced, strongest), not a model; the model is then the preset in that tier chosen by the vendor order (D59), then cost. Replaces T483's model question, whose confidence split between near-equivalent models of different vendors. (T490)
+- **D58** (2026-09-30, Pete): the daemon checks each vendor itself (the **vendor self-check**): a session with no node, a model and effort set and read back, one tiny prompt, a resume, and the usage fields it reports, kept per vendor and CLI version. It runs on demand and after a CLI update, and routing uses it. It replaces the live checks that measure vendors (LIVE-CHECKLIST §12's last column, §12.2, §14, §16). (T489)
+- **D59** (2026-09-30, Pete): the operator sets a **vendor order** for ties ("Anthropic, then OpenAI"), and may set it per role (reviews prefer Codex, code prefers Claude). (T490)
+- **D60** (2026-10-01, Pete): chat threads that aren't questions open in a **side panel** (Slack's); the main chat keeps one mark per thread at its place in time. design/chat-threads.md (T503)
+- **D61** (2026-10-01, Pete): a reply in a thread while the agent works is **queued** until its turn ends, like a composer line. (T503)
+- **D62** (2026-10-01, Pete): a question has **one box**; typing to a choice question instead of picking keeps it open, and the agent re-asks or settles it (`settle_question`). (T502)
+- **D63** (2026-10-01, Pete): a coordinator's chat shows its **children's questions as threads**. (T502)
+- **D64** (2026-10-01, Pete): threads work like **Slack's, with Confluence's inline anchors**: every chat turn has a Reply in thread icon; selecting text first anchors the thread to that passage (quoted, highlighted in the turn with a count), so one turn can carry several threads. design/chat-threads.md §3a (T503)
+- **D65** (2026-10-01, Pete): a thread can be **archived**: hidden, never re-sent, the agent told once to treat it as closed; **Archive and forget** also restarts the agent fresh from a brief without archived threads, the only real way to take it out of the model's context (a vendor session's turns can't be deleted). design/chat-threads.md §6a (T504) Pete also: whenever the agent compacts (a Compact now action through the vendor's own `/compact <instructions>`, or its auto-compaction via a PreCompact hook or standing instructions where the vendor has one), the archived threads are left out of the summary.
 - D11. KiroCrew is not adopted. Borrowed as designs only: hardened worktree creation, the push detector that cannot be dodged by spelling, agent-owned vs human-owned ledger fields, a fail-closed credential scrub before the external classifier, mechanical scope filtering of injected rules, an append-only log.
 
 ## 3. Non-goals for the reshape
@@ -1772,12 +1800,12 @@ agile tail --director
 
 ### Ticket: T344 Nudge when parts wait on a plan that never comes
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done
 - **Owner:** Unassigned
 - **Scope:** After T336, parts made by a split wait for the coordinator's plan. If the coordinator stops or never writes a plan, they wait silently. Surface it: a "waiting for the plan" inbox card on the node once its coordinator is idle with no plan, or after a timeout.
 - **Acceptance Criteria:** Test: coordinator ends with no plan → a card; plan approved → card gone.
 - **Validation Steps:** `bun test packages/daemon/src/inbox packages/daemon/src/coordination`.
-- **Notes:** From the T336 worker.
+- **Notes:** Branch T344-plan-nudge off phase-14, merged. Derived `plan_waiting` Needs me card on a coordinating node (parts waiting, no live coordinator, no plan awaiting approval) with Wake coordinator and Start parts anyway (POST /api/streams/:id/plan/start-parts, same-origin). Review found T336's waitingForPlan re-firing after a started part went idle → ci-fix-waiting-started. Review+QA (sonnet): APPROVE/PASS after the fix.
 
 ### Ticket: T345 Workers may cd within their worktree
 - **Priority:** P2
@@ -1834,30 +1862,1663 @@ Pete's requests from the walkthrough (D33, D34). Branch `claude/phase-14`, stack
 
 ### Ticket: T332 ∥ Conversation tangents
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T332
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Per D33: `nodeRole()` keeps a conversation whose children are all conversations as `conversation`; a "Branch off" action on a thread line (cockpit) and `node new --parent` on a conversation create a child conversation seeded with that line and its own question; the parent's agent is not replaced by a coordinator; a finished tangent emits a short summary event to the parent (routed, capped, the tangent's own words as data). Update design/projects-design.md §6/P1.
 - **Acceptance Criteria:** Role tests (conversation with conversation children stays conversation; becomes coordinating when a child gets a repo); e2e: Branch off from a line creates the child with the seed; a finished tangent's summary reaches the parent.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/streams packages/daemon/src/events`; `bun run test:e2e`.
-- **Notes:** —
+- **Notes:** Branch T332-tangents, merge d78af48. Review (sonnet): blocker (+ Repo on a conversation with tangents orphaned a worktree) fixed: it takes the part path; APPROVE. QA (sonnet): feature PASS; merging with T333 broke two T333 tests that assumed any child makes a coordinator. Manager call: roles stay structural (a repo-less child of a conversation is a tangent however it got there); T333 tests and design §7.1 updated.
 
 ### Ticket: T333 ∥ Move nodes by hand
 - **Priority:** P1
-- **Status:** In Progress
-- **Owner:** opus:worker-T333
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Per D34: `agile node move <id> --parent <id|project>`, an HTTP route (same-origin, actor human) and drag-and-drop in the rail. Refuse moves into its own subtree, across projects, or while the parent's plan awaits approval. Re-derive roles; a thread line on the old and new parent; a work node keeps its branch and worktree. Update design/projects-design.md §6.
 - **Acceptance Criteria:** Service tests for every refusal and for roles after a move; CLI test; e2e drag moves a node and the rail updates.
 - **Validation Steps:** `bun test packages/daemon/src/streams packages/cli`; `bun run test:e2e`.
-- **Notes:** —
+- **Notes:** Branch T333-move-nodes, merge ca402d0. Review (sonnet): APPROVE. QA (sonnet): PASS; low: a drop the rail refuses client-side (own subtree, other project) shows no message, only a server refusal does.
 
 ### Ticket: T334 Phase 14 QA and Pete's look
 - **Priority:** P0
-- **Status:** Todo
-- **Owner:** —
+- **Status:** Done
+- **Owner:** Unassigned
 - **Scope:** Black-box QA of tangents and moves; daemon line count.
 - **Acceptance Criteria:** QA ACCEPT.
 - **Validation Steps:** QA script; Pete in the cockpit.
-- **Notes:** After T332 and T333.
+- **Notes:** QA (sonnet): PASS on claude/phase-14. Typecheck, lint, bun test 2510/0, test:walkthrough pass; tangents, + Repo on a conversation with tangents, drag/CLI moves and refusals, rail collapse driven in a real cockpit. Low: a drop refused client-side (own subtree, other project) shows no message (known, T333). Low: + Repo on a conversation with tangents starts its part without waiting for a plan → T346. Draft PR petestewart/agile-agents#11 (14→13).
+
+### Ticket: T346 A conversation's first part waits for the plan too
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Found in T334 QA: "+ Repo" on a conversation with tangents makes it coordinating with an "<repo> part" child, but the part starts at once, while T336 makes split parts wait for the coordinator's approved plan. Same gate here, or say why one part needs no plan.
+- **Acceptance Criteria:** Test: the part shows "waiting for the plan" and starts on approval.
+- **Validation Steps:** `bun test packages/daemon/src/streams packages/daemon/src/coordination`.
+- **Notes:** Branch T346-first-part-waits, merge 0bd8875. repo-in-place `split = !inPlace && !switching` gates coordinator start and plan wait, so + Repo on a conversation with tangents gets a coordinator and a waiting part; a human-stopped node still starts its part at once. Review+QA (sonnet): APPROVE/PASS.
+
+### Ticket: T353 Walkthrough step 8.5 is load-sensitive
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** `test:walkthrough` step 8.5 ("the Parent defaults to the open node, Tracker epic") failed twice under machine load (other Chromium runs) and passes when idle; seen on phase-14 at c7c4164. Root-cause it (a race in the New stream form's default parent, or the walkthrough reading before the cockpit update lands) and fix the product or the wait, not a timeout bump.
+- **Acceptance Criteria:** 5 walkthrough runs under parallel load, 0 failures at 8.5.
+- **Validation Steps:** `bun run build && bun run test:walkthrough`.
+- **Notes:** Branch T353-walkthrough-85, merge fec366e. Product race: the New stream form reset its default parent in an effect after mount, so the first render (and a quick submit) held the last opening's parent (11/15 fast reads). Now a fresh form per opening/open node with the parent as initial state (0/15). Also a best-effort "Check now" click in the walkthrough (the poller can merge first). 5/5 walkthroughs under 4-core load. Manager read the diff. Separate load flake at 7.3 → T354.
+
+### Ticket: T354 Walkthrough step 7.3 under parallel load
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Seen once with three walkthroughs in parallel: step 7.3's Director thread lacked "Started Changelog in ledger-lite". Root-cause (product race vs. test reading early) and fix at the cause.
+- **Acceptance Criteria:** 5 parallel-load walkthroughs, 0 failures at 7.3.
+- **Validation Steps:** `bun run build && bun run test:walkthrough`.
+- **Notes:** From T353. Branch T354-walkthrough-73, merge 0f8a630. Root cause: the fake agent polls for `turn-N.txt` and can read it after creation but before the write, so the reply is lost (a Director "Started …" line at 7.3); proved with a standalone test under CPU load (12/3000 empty reads with a plain write, 0/3000 with rename). Fix: the walkthrough writes each reply aside and renames it in; test-only, no product change. 6/6 walkthroughs passed under 3-parallel load; full suite 2580 pass. Manager-reviewed (4-line diff).
+
+### Ticket: T347 Cockpit wording and small UI (D36: D1, D5, D6, D7, D9, D11, D12)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** D1 rename the two "Link" buttons to "Waits on…" and "Tracker issue…"; the tracker field only when the project has a tracker. D5 a direct merge event reads "merged". D6 the coordinator autonomy picker only on coordinating nodes and project roots. D7 "Merge" on the Needs me card too. D9 a ship-check hold styled neutral. D11 part titles in the rail not cut off by "waiting for the plan". D12 daemon lines addressed to the agent hidden from the human thread (still delivered to the agent).
+- **Acceptance Criteria:** UI tests per item; walkthrough still clean.
+- **Validation Steps:** `bun test packages/ui`; `bun run build && bun run test:walkthrough`.
+- **Notes:** Branch T347-cockpit-wording, merge 0dd30ce. D1 "Waits on…"/"Tracker issue…" (field only with a project tracker); D5 a direct merge reads "merged" (event type unchanged); D6 autonomy picker on roots and coordinating nodes; D7 "Merge"/"Merged." throughout the cockpit (CLI `land` verb unchanged); D9 holds (ship check, waits-on, helper waits-on-parent) carry `held` and render neutral; D11 rail badge on its own line; D12 optional `agent_only` on thread entries (daemon-only writer), hidden in the cockpit. Review+QA (sonnet): blockers (helper hold still red, leftover "Landed"/"land again") fixed.
+
+### Ticket: T348 The open node and filter live in the URL (D36: D2)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Reload or a shared link reopens the same node and project filter; back/forward move between nodes.
+- **Acceptance Criteria:** E2E: open a node, filter, reload → same view; back returns to the previous node.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** Branch T348-url-state, merge 34beea0. `?node=`/`?view=` + `&project=` (extends T112); node/view changes push history, filter replaces; unknown URL ids fall back to the inbox with a clean URL. Review+QA (sonnet): APPROVE/PASS (no injection, no open redirect, no push loops).
+
+### Ticket: T349 A "question" state on Children cards (D36: D3)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** A child waiting on the human shows "question" (not "blocked") on its parent's Children card. Schema: add the state to the card status enum (.strict()); older homes still load.
+- **Acceptance Criteria:** Tests: a child with an open question renders "question"; a real block still "blocked".
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/coordination packages/ui`.
+- **Notes:** Branch T349-question-card-state, merge 3286bbd. CardState gains "question" (amber dot); open gates also read "question"; refreshQuestionCards rewrites stored stale "blocked" cards after migrateHome (idempotent). An older daemon refuses a stored "question" card. Review+QA (sonnet): APPROVE/PASS.
+
+### Ticket: T350 Collapse ended sessions in the session list (D36: D4)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Coordinator wakes stay as they are. The sessions list shows live sessions plus one "N earlier sessions" row that expands.
+- **Acceptance Criteria:** E2E: 8 ended coordinator sessions collapse to one row; expand shows them.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** Branch T350-collapse-ended-sessions, merge f04500d. Two or more ended sessions fold into one "N earlier sessions" row (a single ended one stays visible); live sessions always shown; fold resets per node. Review+QA (sonnet): APPROVE/PASS.
+
+### Ticket: T351 Accepting a decision wakes the conversation (D36: D10)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** When the human accepts knowledge scoped to a conversation whose turn has ended, the conversation is woken with the decision (same wake path as a human line), so it is delivered at once instead of staying "pending".
+- **Acceptance Criteria:** Test: accept → the conversation is woken and the item is delivered.
+- **Validation Steps:** `bun test packages/daemon/src/knowledge packages/daemon/src/events`.
+- **Notes:** Branch T351-wake-on-accepted-knowledge, merge e82200c. knowledge_accepted wakes an ended, not human-stopped conversation (work nodes unchanged, P11); ≤5 conversation wakes per item (in memory, resets on restart); the item text reaches the agent quoted as data (≤200 chars). Startup replays pending items like other wake types. Design P11 and §15 updated. Review+QA (sonnet): APPROVE/PASS.
+
+### Ticket: T352 Upgrade Bun if a release fixes the pipe bugs (D37)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Find the newest Bun release; check its changelog for the child_process fd double-close / EBADF-on-epoll_ctl fixes; run the full suite, test:integration and test:walkthrough under it, and the fd reproduction tests in chromium.test.ts and acp-client with the workarounds disabled. If fixed: move the pin (CI workflow, CLAUDE.md "1.3.11", engines) on phase-7 and forward. Keep the workarounds unless proven unneeded. If not fixed: report and stay.
+- **Acceptance Criteria:** CI green on the new pin; the reproductions pass without workarounds, or a written finding that no release fixes it.
+- **Validation Steps:** CI; `bun test`; `bun run test:integration`.
+- **Notes:** Bun 1.4.2 (newest stable). Measured: fd double-close 19/20 rounds on 1.3.11 and 1.3.14, 0/20 on 1.4.0–1.4.2; the in-repo repro with pinnedStdio off fails 10/10 on 1.3.11, passes 10/10 on 1.4.2; a 10k-spawn stress loses exits/pipes on 1.3.11, none on 1.4.x. Pin moved on phase-7 and forward (CI, engines, CLAUDE.md, LIVE-CHECKLIST); workarounds kept. Also fixed a chromium.test.ts fd-count check that compared fd numbers only. Manager read the 6-file diff.
+
+### Phase 15 — Cockpit UX overhaul
+
+Pete (2026-09-26): the cockpit works but is rough; take it to a polished, professional app that a developer is productive in. His list: repo picker instead of free text (folder browse, GitHub/SSH URL, like T3 Code); repo icons (local / GitHub / SSH); New project repos as a vertical checklist and land on All projects; a chat like the Claude/Codex desktop apps; a new node starts with the default model, no picker; say what Knowledge holds (rules vs other items) and fix the rule cards; show not-started nodes in the rail; questions answered in the chat, not above it, with clickable choices; a role change takes effect without a restart; a way to delete a node. Design and vocabulary: `design/cockpit-ui.md`. Built on `claude/phase-14` (the session's designated branch); tickets `T###-<slug>` branch from it and merge back `--no-ff`. The UI keeps its `data-testid`s where the element survives, so the e2e suites move with the UI rather than being rewritten.
+
+### Ticket: T360 UI foundation: design system and sidebar shell
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Tokens (light/dark), type scale, the primitives every screen uses (`components/ui.tsx`: Button, IconButton, Menu, Dialog with focus trap, Tabs, Badge, StatusDot, EmptyState, Toast; `components/Icon.tsx` inline SVG), and the shell: a left sidebar (Needs me, Director, views, the project tree, Settings) replaces the top bar; pages own their headers. "Node" everywhere in UI text (not "stream"). `design/cockpit-ui.md`.
+- **Acceptance Criteria:** Every view renders in the new shell in light and dark; e2e and walkthrough green with selectors moved from the top bar to the sidebar.
+- **Validation Steps:** `bun run build && bun run typecheck && bun run lint && bun test packages/ui && bun run test:e2e`.
+- **Notes:** Branch T360-ui-foundation, merge 8469594. control-room e2e 49/49 (one fix: a project-role row keeps its dot when its status is news), feed/installable green, walkthrough 1/1. Quick capture removed (New node is the one path); its four tests moved to the New node dialog. Also `.cr-thread li` styled markdown list items inside messages (fixed to `> li`).
+
+### Ticket: T361 ∥ Agents follow role changes; question choices; delete and restore; a message starts a stopped node
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** (1) A move or a new child that changes a node's derived role restarts its live agent in the new role (worker ↔ coordinator), as + Repo already does, with a thread line saying so. (2) An agent's `ask` may carry `options` (the Question schema has them); the inbox item carries them (InboxItem `options`, question kind only, `.strict()`), so the cockpit can offer them as buttons. (3) HTTP `POST /api/streams/:id/archive` (stops live sessions, archives the subtree, removes clean worktrees; branches kept) and `.../unarchive`; `GET /api/streams?archived=1` or a cockpit field listing archived nodes. (4) `POST /api/streams/:id/say` with `start: true`: on a node with no live agent that is open, the line starts its agent with the session defaults and is its first prompt. (5) Cockpit rows (`feed/snapshot.ts` `CockpitStreamRow`) carry `never_started: true` (a work node or conversation whose agent never ran) and `stopped: true` (`stoppedByHuman` with nothing live, and not closed/landed/archived), so the rail can show them.
+- **Acceptance Criteria:** Service tests for each; existing suites green.
+- **Validation Steps:** `bun test packages/shared packages/daemon`; `bun run typecheck`.
+- **Notes:** Branch T361-daemon-ux, merge f47bece. `StreamService.onTreeChanged` → `AttachService.followRoles`: move, create-child, close, archive, restore re-check the node and its ancestors and restart a live agent whose role changed (same vendor/model/effort, a daemon stop, a thread line). `ask` takes 2–6 `options`; InboxItem `options` (question only). `POST /api/streams/:id/archive|unarchive` (subtree, one `archive_id` per delete, refuses a root; worktrees/branches kept; cockpit `archived`). `say {start}` starts a node with no live agent with its line in the brief. Rows carry `never_started`/`stopped`. Daemon +379. Open: `say {start}` would start a part waiting for its plan (the cockpit never sends it there); `stopAll()` on daemon shutdown may mark mid-work nodes done (read, not reproduced); archived nodes' items still counted in `buildSnapshot`'s `needs_you`.
+
+### Ticket: T362 ∥ Browse folders, clone by URL, a repo's remote kind
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** `GET /api/fs/dirs?path=` (same-origin; child directories of an absolute path, each flagged when it is a git toplevel; home and parent for navigation); `POST /api/repos/clone {url, dest?, name?}` (https, ssh `git@host:o/r`, `owner/repo` shorthand for GitHub; clones with the user's own git credentials into `dest`, default a projects folder, then registers it); repo rows (`/api/repos`, cockpit `repos`) carry `remote: {kind: 'github' | 'gitlab' | 'other' | 'none', protocol?: 'https' | 'ssh', url?}`.
+- **Acceptance Criteria:** Unit tests with temp dirs and a local bare repo as the clone source; no network in tests.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts packages/daemon/src/store`; `bun run typecheck`.
+- **Notes:** Branch T362-repo-picker-api, merge 6fcde72. `GET /api/fs/dirs` (same-origin + loopback Host; `prefix` for autocomplete; 500 cap), `POST /api/repos/clone` (https, ssh, file, `o/r`; user's own git credentials, no prompts, 10 min timeout, credentials stripped from errors; registers through `state.repo_add`), repo rows and the cockpit carry `remote {kind, protocol, url, owner?, name?}` from a 60s background cache. Daemon +870. Open: GET routes lack the loopback Host check (DNS rebinding); repo names unvalidated (`__proto__`); `resolveMainBranch` runs git per `GET /api/repos`.
+
+### Ticket: T363 A node's page is a chat
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Header (path, title, status in words, role, primary action, overflow menu with the rest); tabs only where they apply; the thread as a chat (your lines as bubbles, the agent's as prose, daemon lines as compact system rows that group); questions, gates and plans inline at the end of the chat, answered there (choices as buttons, the composer answers an open question); the composer (grows, Enter sends, Stop while running, the session model as a chip; a message to a stopped node starts it); a details panel (delivery and Merge, sessions, children, waits on, tracker, autonomy, project settings on a root). Start with defaults in one click; the picker is optional.
+- **Acceptance Criteria:** e2e for chat, inline answer, choice click, send-starts-agent; walkthrough green.
+- **Validation Steps:** `bun run build && bun run test:e2e && bun run test:walkthrough`.
+- **Notes:** Branch T363-node-chat, merge e14de3da. Header: path, title, status, role, repo/branch (copy), one filled action (Start agent with a model chevron / Stop / Merge), details toggle, ⋯ (Review changes…, Restart agent, Waits on…, Add repository…, Tracker issue…, Copy branch, Close node… (confirms), Delete node… (Undo)). Chat: your bubbles, the agent's prose with name, one-line system rows (three noisy ones reworded), hover Copy/Branch off/time, stick-to-bottom with a New messages pill, goal card, empty state. What needs you sits above the composer; the composer answers an open question (a chip picks which) and a message to a never-started or stopped node starts it (not a part waiting for its plan). Tabs Chat, Changes, Plan, Activity, Knowledge, Docs only where they apply. Details panel (Delivery, Agent, Children, Waits on, Tracker, Autonomy, project controls), remembered per viewer. Reusable `Chat.tsx`/`Composer.tsx`; rules in `lib/chat.ts`. Branch e2e 54/54 + feed/installable, walkthrough 1/1; merged tip (with T364–T367) control-room 64/64, feed, installable, walkthrough no findings. Open: a finished work node with no commits reads Ready to merge; `startWithPending` repeats the line in the brief; the question's thread line and its card both show.
+
+### Ticket: T364 ∥ Needs me and the decision cards
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** One `Card` for every item kind with a clear title, the node path, its age and its actions; a question's choices as buttons; grouped by project then node; an empty state that says what to do next (first run: add a repo, make a project).
+- **Acceptance Criteria:** e2e per card kind still green; choice click answers.
+- **Validation Steps:** `bun test packages/ui`; `bun run test:e2e`.
+- **Notes:** Branch T364-needs-me, merge 6db025cc. `DecisionCard` (re-exported as `Card`): one anatomy for every kind, titles in words, choices as lettered buttons (the agent's `options`, else `choicesOf` parses older `(A) … (B) …` / lettered / numbered lists conservatively, 41 unit tests); `full` cards have no input (the node's composer answers). Gates explain themselves; notes behind "Add a note"; a Merge refusal shows on the card. Needs me grouped by project then node, a kind filter, j/k/Enter; first-run steps (repo, project, node) and "all caught up". Branch: control-room 51/51, walkthrough 0 findings; after merge UI 134/0, Needs-me e2e 13/13. Open: `groupInbox` now unused; daemon wording "worker finished — merge or close the stream" / "proposed rules from migration" reworded client-side; gate/knowledge items carry rule, call and scope only inside `context` (structured fields would be sturdier); an acted card stays disabled until the next frame.
+
+### Ticket: T365 ∥ Rail, projects and the new-node flow
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Rail status per node (not started, working, needs you, ready, merged, blocked, closed) with a legend in the tooltip; projects as collapsible groups; New project with repos as a vertical checklist (repo icons) that lands on All projects with the project open; New node (title/goal, project, parent, repo picker, start now with the default model, on by default); project overview on the root; Delete (archive) with confirm and Undo, and an Archived list to restore; a refused drag says why.
+- **Acceptance Criteria:** e2e for each flow.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** Branch T365-rail-projects, merge 860ee518. Rows with status dot (not started: dashed ring, faded title), role icon, hover `+` and ⋯ (Open, New child node, Rename F2, Move to…, Copy id, Delete…; project rows: New node, Show only this project, Project settings), right-click menu; arrow-key tree navigation. Delete confirms, archives the subtree, Undo toast; Deleted (n) with Restore. A refused drag says why. The project `<select>` is replaced by a chip ("Only Shop ▾ ×"); nothing switches the filter by itself (Pete). Legend (?) for dots and icons. New project: vertical repo checklist with icons; lands on All projects with the root open. New node: goal first, title from it, project only when not implied, searchable parent, repo picker (none = Conversation), Start the agent now (on) with the model shown and Change. `POST /api/streams/:id/update {title?, goal?}`. testid changes: `new-stream-start` (checked = start), pickers `new-stream-parent|repo(-option|-search)`, `project-filter*`, `tree-menu-*`, `archived-*`. Branch e2e 55/55 ×2, walkthrough clean; merged tip (T364+T365+T366) control-room 57/57, walkthrough no findings. Open: project overview page (node-page area); project session defaults not in `/api/settings/session`, so New node's model line can differ; Popover stays open on Tab out.
+
+### Ticket: T366 ∥ Knowledge, explained
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** The screen says what knowledge is (rules, standards, architecture, decisions) and separates it: Proposed (to review) first, then by kind; each item's enforcement in words (checked on every action, checked before merge, on the reviewer's checklist, guidance only); compact rows with a detail panel for text, check, examples, stats, Edit and Test.
+- **Acceptance Criteria:** e2e for filter, accept, edit, test still green.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** Branch T366-knowledge, merge on phase-14. Tabs All · To review · Rules (enforced: action + ship) · Standards · Architecture · Decisions; rows with scope and enforcement in words, quiet stats, flags as icons; a Linear-style detail panel (text, scope, enforcement explained, the check, examples and test results, activity); the editor grouped What / Where / How it's enforced with only the fields that apply. Refreshes on `knowledge_*` events too (it went stale on agent proposals). e2e 49/49, walkthrough 1/1 on the branch; knowledge e2e 9/9 after merge. Open: default classifier question keeps markdown backticks and says "action" for ship checks (`shared/src/knowledge.ts`); built-ins named after their pattern kind (`knowledge/builtins.ts`); `report.ts` flags guidance items "never fired".
+
+### Ticket: T367 ∥ Settings and the repo picker
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Settings in sections (General, Agents, Repositories, Classifier, Trackers, Permissions); Add repository: a path with folder autocomplete and a browser, or a GitHub/SSH URL to clone (T362); every repo listed with its icon (local, GitHub over https or ssh, other remote); theme (system/light/dark).
+- **Acceptance Criteria:** e2e: add by browsing; add by URL against a local bare repo.
+- **Validation Steps:** `bun run test:e2e`.
+- **Notes:** Branch T367-settings-repos, merge 5ebbb1a2. Settings with a section nav (General: theme, daemon facts from `/health`; Agents; Repositories; Classifier; Trackers; Permissions), the section in the URL. Repositories: rows with `RepoIcon`, host · protocol, owner/name link, short path, main branch; Delivery/Visibility as segmented controls (private: projects by name), protected branches; saves inline. `AddRepoDialog` (portal): Local folder with autocomplete + folder browser (git repos marked, "inside a repo" and "already added" hints) and Clone from URL (live preview, destination, progress, readable git errors with SSH hint); a pasted URL switches mode. Branch control-room 53/53, walkthrough clean; after merge, settings/repo e2e 20/20. Open: `store.addRepo` silently replaces an existing name (`POST /api/repos`, `agile repo add`); `Dialog` renders in place so a Dialog inside a form nests forms; a `file` remote shows a globe; `n`/`/` fire while a dialog is open with focus off an input; Pull request offered for a local-only repo (daemon refuses it).
+
+### Ticket: T368 Lenses, Events and the Director
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Repos, Running, Dependencies and Events as clean lists with status and links; the Director page uses the node chat's components.
+- **Acceptance Criteria:** walkthrough green.
+- **Validation Steps:** `bun run test:walkthrough`.
+- **Notes:** Branch T368-lenses-palette. Repos as cards (remote kind, delivery in words, live work, overlaps, recent events linking to Events filtered to the repo, norms); Running as a table with your move first; Dependencies as edges with "Remove link" (Undo); Events as a day-grouped timeline with search, type and repo filters and routing chips in words. Also the ⌘K command palette (nodes, projects, views, actions, recents), the `?` shortcut list and `g` jumps; the Director on `ChatScroll`/`MessageList`/`Composer` with drafts as decision cards and a details panel. Pure logic in `lib/lenses.ts`, `lib/palette.ts`, `lib/director.ts` with tests. control-room 66/0, walkthrough 39 steps, 0 findings.
+
+### Ticket: T370 A daemon shutdown leaves mid-work nodes idle
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by the T361 worker: `AttachService.stopAll()` (the daemon's shutdown) stopped sessions with no reason, so a killed worker's exit read as a finished turn: `agent.status: done`, an inbox "worker finished" card and "Ready to merge" on the rail after every restart. Stop with a daemon reason instead.
+- **Acceptance Criteria:** Test: a node mid-work when the daemon stops is `idle`, its session `stopped: the daemon stopped`, not stopped by the human.
+- **Validation Steps:** `bun test packages/daemon/src/attach`; CLI daemon e2e.
+- **Notes:** Branch T370-daemon-shutdown. Non-e2e daemon+CLI 2080/0; `daemon.e2e`, `stream.e2e` green. Daemon +10.
+
+### Ticket: T371 ∥ Daemon text the cockpit shows: no ids, no "stream"
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** Unassigned
+- **Scope:** Found by T364/T366: daemon-written text the cockpit displays leaks ids and old vocabulary. Inbox items ("worker finished — merge or close the stream", "3 proposed rules from migration"), delivery preflight/refusal reasons ("stream <id> has a live session (<id>)"), land-gate text with raw `stream/<id>-slug` branches, the default classifier question (markdown backticks, ".?", "action" for a ship check that reads a diff), guidance items flagged "never fired", built-ins named after their pattern kind. Say nodes by title and "node", keep ids only where a machine reads them. Update the tests and LIVE-CHECKLIST lines that quote the old strings.
+- **Acceptance Criteria:** Unit tests for each reworded string; e2e and walkthrough still green.
+- **Validation Steps:** `bun test packages/shared packages/daemon` (non-e2e); `bun run build && bun run test:walkthrough`.
+- **Notes:** Branch T371-daemon-text (rebased on a198ef78), merge on phase-14. Inbox cards, merge preflight/refusals, land-gate summaries (`land <slug> into main`), holds and ship-check lines, attach/move/tangent refusals and Director proposals name nodes and projects by title and say node/merge; `branchLabel` strips `stream/<ulid>-`. `classifierQuestion` strips code ticks and trailing punctuation and asks "this change" for ship checks (Test examples ask the same). `tell` items are never flagged "never fired" (`review` items do fire, so they still can be). Built-ins renamed `no-push-to-protected`, `no-push`, `stay-in-worktree` with plain reasons; existing homes updated only where a record still matches what an older daemon wrote. Kept on purpose: the `land:`/`classifier_review:` prefixes and scope ids the cockpit parses, thread lines the walkthrough quotes, agent-only messages. Non-e2e 2339/0, control-room 65/0, walkthrough 1/1. Daemon +94. Follow-up merged with it: the Knowledge editor's placeholder is the real default question. `lib/inbox.ts` STOCK_TEXT is now dead (the daemon sends that text).
+
+### Ticket: T372 The cockpit can rename a project and change its repos
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by T365: `POST /api/projects/:id` forwarded only autonomy and tracker, so a project's repos couldn't change after creation from the cockpit although `ProjectService.update` validates `name` and `repos`. Forward them; `updateProject()` in the cockpit API.
+- **Acceptance Criteria:** http test: rename, repos, unknown repo 400, cross-origin 403.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts`.
+- **Notes:** Branch T372-project-route, merged after T367. The UI to edit a project's repos rides the node page's project settings (T363) or a follow-up.
+
+### Ticket: T373 Integration polish: dialogs, shortcuts, Add repository everywhere
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the T365/T367 reports: `Dialog` rendered in place, so a dialog inside another dialog's form nested forms (a page reload); `n`/`/` fired while a dialog was open; a `file` remote read as a globe "Remote"; New project's "Add a repository…" left for Settings.
+- **Acceptance Criteria:** e2e: New project → Add a repository… → pick a folder → ticked; Esc closes only the top dialog; the inner submit doesn't create the project.
+- **Validation Steps:** `bun test packages/daemon/src/feed/control-room.e2e.test.ts -t "T373|New project"`.
+- **Notes:** Branch T373-integration-polish, merged after T363. `Dialog` portals to `document.body` and stops its submit from bubbling (React bubbles through portals); `isShortcut` is off while `[aria-modal]` exists; a `file` remote is "Local clone" with a folder icon; New project and New node embed `AddRepoDialog`. Related e2e 15/15 after merge.
+
+### Ticket: T378 A repo name taken by another folder is a clash, not a silent replace
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From T367: `POST /api/repos` with a name already registered for another folder silently replaced that repo, and any re-add reset its delivery, visibility and GitHub settings to a fresh repo's.
+- **Acceptance Criteria:** http test: 409 on a clash; the same folder (another spelling) re-registers keeping its settings.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts packages/daemon/src/store`; CLI `repo.e2e`.
+- **Notes:** Branch T378-repo-name-clash. `state.repo_add` merges onto the existing entry; the HTTP route answers 409 for a different folder (the CLI keeps re-registering, since there is no `repo remove`). Also T376 (a question reads once on its page) and T377 (a project's repos editable on its root) were merged by the manager with their own tests.
+
+### Ticket: T379 A project's own session defaults are shown and editable
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups doc: attach applies a project's `session` (P5) before the repo's, but the cockpit never showed it. New node's "Starts with", the composer's model chip and the picker's prefill could name the wrong model, and Settings could not edit it.
+- **Acceptance Criteria:** The frame's project rows carry `session`; `POST /api/projects/:id` takes `session` (`null` clears); Settings → Agents has a "Per project" card per project; New node, the composer and the picker resolve with the project step (`lib/defaults.ts` `resolvedFor`).
+- **Validation Steps:** `bun test packages/ui/app/lib/defaults.test.ts packages/daemon/src/http.test.ts`; control-room e2e "T379: a project's own defaults…" (Settings save → the composer chip → Send starts that model → back to inherit clears the block).
+- **Notes:** Branch T379-project-session-defaults. A project card's "starts with" reads "Varies by repository" when its repos resolve differently. `startStreamCockpit` in the e2e now wires `ProjectService` as the daemon does.
+
+### Ticket: T380 A finished node with nothing to merge says so, and offers Close
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups doc: a work node whose agent finished without committing read *Ready to merge* on the rail and got a Merge card in Needs me, while its Delivery panel said there was nothing to merge.
+- **Acceptance Criteria:** The frame's row carries `nothing_to_merge` (from `DeliveryService.preflight`, cached in `feed/merge-state.ts` off the frame's path and re-pushed when it changes); the node reads "No changes" (amber, your move); its card reads "Finished, no changes" with Close node, in Needs me and at the end of its chat. `done` itself is unchanged, so coordinators, auto-review and the tracker push react as before.
+- **Validation Steps:** `bun test packages/daemon/src/feed/merge-state.test.ts packages/ui`; control-room e2e "a finished node with no commits reads No changes…".
+- **Notes:** Branch T380-no-changes. The check is keyed on the agent's last status change, the branch and a recorded conflict, with a 30 s TTL for commits made by hand; a node merged outside the cockpit keeps Merge (the click records it).
+
+### Ticket: T381 QA wording: Knowledge's link, "Can't merge yet", a proposal in words
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the T369 screenshot pass: Knowledge's deep link read `?view=rules`; the Delivery line said "Not landable yet" and "a land gate"; a held proposal's thread line read `director (advise) proposes: …` in the Director's chat.
+- **Acceptance Criteria:** `?view=knowledge` (and the old `?view=rules`) opens Knowledge and the URL it writes says `knowledge`; the Delivery line says "Can’t merge yet" and "asks you to approve each merge"; the proposal line reads "Proposed, waiting for your approval: …".
+- **Validation Steps:** `bun test packages/ui/app/lib/shell.test.ts packages/daemon/src/coordination`; the Director, rules and delivery e2e.
+- **Notes:** Branch T381-qa-wording.
+
+### Ticket: T382 ∥ Running shows each node's agent and model; model names read one way
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** From T368 and T369: the cockpit row carries no session fields, so Running can't say which agent/model/effort a live node runs; and model names read two ways (`Claude Opus 5.5 · low` in the composer and header, `claude/claude-opus-5-5 · low` in the details panel's session rows and Settings' "starts with" chips).
+- **Acceptance Criteria:** `CockpitStreamRow` carries the live agent's vendor, model and effort (additive, absent when nothing is live); Running shows it in words; every place a person reads a model uses `sessionLabel`; the e2e pins move with it.
+- **Validation Steps:** `bun test packages/ui packages/daemon/src/feed/snapshot.test.ts`; the Running, session-defaults and node-page e2e; the whole control-room e2e and the walkthrough.
+- **Notes:** Branch T382-running-model. The row's `live_agent` is the node's own worker or coordinator first, else a live reviewer, else lessons. Running has an Agent column; `agentLabel` names the agent only when the model's name doesn't. T386 (branch T386-model-labels) carried it to New node, the composer, the picker's "Default here" and removed the dead `sessionModelText`. control-room 68/0, walkthrough 0 findings.
+
+### Ticket: T383 ∥ Events pages through the whole log
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** From T368: `/api/events` is capped at 200 (`ACTIVITY_MAX`), so Events' "Show more" ends there and a repo card's recent events filter that global list (a quiet repo's older events fall outside it).
+- **Acceptance Criteria:** `GET /api/events` takes a cursor (`before=<event id>`) and a limit, newest first; Events' "Show more" fetches the next page until the log ends and says so; a repo card asks for its own repo's events.
+- **Validation Steps:** `bun test packages/daemon/src/events packages/daemon/src/http.test.ts packages/ui`; the Events and Repos e2e; the whole control-room e2e and the walkthrough.
+- **Notes:** Branch T383-events-paging. `GET /api/events?before=&limit=&repo=` answers `{events, more, total}` (400 in words for a bad limit or an unknown cursor); Events loads 100 a page and says "That's everything." at the end; search and type filter the loaded pages and offer "Search older events"; repo cards fetch `repo=<name>&limit=5`. New e2e "the event log pages (T383)"; control-room 69/0, walkthrough 0 findings.
+
+### Ticket: T384 P2 polish: pull requests need GitHub, Stop while it waits, popovers, dead code
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups doc: Pull request delivery offered for a repo with no GitHub remote (the daemon refuses it); Stop as a header button while the agent is idle waiting on you; a popover that stays open when Tab leaves it; the rail legend not following a window resize; dead `STOCK_TEXT`, `groupInbox` and old modal styles.
+- **Acceptance Criteria:** "Pull request" is disabled with the reason for a repo whose remote isn't GitHub; the header shows Stop only while something is mid-turn (⋯ → Stop agent otherwise); Tab out of a popover closes it without pulling focus back; the legend re-places on resize; the dead code is gone.
+- **Validation Steps:** `bun test packages/ui`; the settings, rail, menu and node-page e2e (T222 now checks the disabled option).
+- **Notes:** Branch T384-p2-polish. `Segmented` items take `disabled` and `title`; `headerActions` takes `anyBusy`.
+
+### Ticket: T385 Rename and re-goal a node from its page
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups' "not built": a node's title and goal could only be changed through the rail's Rename… (title only); a changed goal never reached a running agent.
+- **Acceptance Criteria:** A click on the page's title edits it in place (Enter or leaving saves, Esc cancels; not on a project root); the goal card's Edit changes the goal; `POST /api/streams/:id/update` adds a "goal changed: …" thread line when the goal changes, which the chat shows as "Goal changed: …".
+- **Validation Steps:** `bun test packages/ui`; control-room e2e "a click on the title renames the node; Edit on the goal…"; the whole control-room e2e (69/0) and the walkthrough.
+- **Notes:** Branch T385-edit-title-goal.
+
+### Ticket: T386 Model names in words in New node, the composer and the picker
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From T382: New node's "starts with" line still read `claude-opus-5-5 · claude · low effort`; the composer and the picker used `sessionLabel` where `agentLabel` names a vendor the model doesn't; `sessionModelText` was dead.
+- **Acceptance Criteria:** New node, the composer chip and the picker's "Default here" use `agentLabel`, with the raw ids on hover.
+- **Validation Steps:** `bun test packages/ui`; the New stream, T363 and session-defaults e2e.
+- **Notes:** Branch T386-model-labels.
+
+### Ticket: T387 ∥ A project's root page opens on an overview
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** From the follow-ups' "not built": a project root opens on the root node's chat, so a project has no at-a-glance view of what its nodes are doing.
+- **Acceptance Criteria:** A project root has an **Overview** tab, first and default: counts by status (your move first), its nodes as rows by status with path, repo and age, its repos with their icons, and its recent events; the chat stays one tab away; each row opens its node.
+- **Validation Steps:** `bun test packages/ui`; a new control-room e2e; the whole control-room e2e and the walkthrough.
+- **Notes:** Branch T387-project-overview. `components/ProjectOverview.tsx`, `lib/overview.ts` (tested); only a real project root gets it (a project-less top-level node keeps its chat); the chips filter in place; Done folds; repos with what Merge does there; recent activity is the project's own events from the newest pages; a question on the root shows an "Open chat" banner. control-room 71/0, walkthrough 8.2 checks Shop's Overview.
+
+### Ticket: T390 Overview polish: the root's primary, child cards in words, "You wrote"
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From T387's report: Start agent was the filled button on a project root (the next step there is a node); the details panel's child cards showed the raw card state ("question", "done" for a closed node); a typed line read "Human line" in Events, Activity and the Overview; the design doc didn't name the Overview.
+- **Acceptance Criteria:** Start agent is a plain button on a project root; child cards read Working, Needs you, Blocked, Done, Idle, or Merged/Closed from the node itself; a typed line reads "You wrote"; `design/cockpit-ui.md` names the Overview, editing in place and notifications.
+- **Validation Steps:** `bun test packages/ui`; the status-cards and event-log e2e.
+- **Notes:** Branch T390-overview-polish.
+
+### Ticket: T388 ∥ Opt-in browser notifications when something new needs you
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** From the follow-ups' "not built": the cockpit is a tab you keep open all day, but nothing tells you when a new question, gate or merge arrives while you are elsewhere.
+- **Acceptance Criteria:** Settings → General has a Notifications switch (per browser, off by default, asks the browser's permission on turning on, says when the browser blocks it); with it on and the tab hidden, a new Needs me item raises one notification naming what and where, a click focuses the tab on that node; nothing for items already there at load, nothing while the tab is visible; the title's `(n)` count stays.
+- **Validation Steps:** `bun test packages/ui` (the pure "which items are new" logic); a control-room e2e with a granted permission.
+- **Notes:** Branch T388-notifications. `lib/notify.ts` (pure, 24 tests) and `lib/use-notify.ts`; one notification at a time (tag `agile-needs-me`), several items become "N new things need you"; a click opens the node or Needs me; Settings → General's Notifications card says On, Off, Blocked or Not available in words, with Send a test. Two e2e tests (granted, blocked/dismissed/missing); control-room 72/0, walkthrough green.
+
+### Ticket: T389 P3 hardening: repo names, a waiting part's line, deleted nodes' asks
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups doc: repo names were not validated (`__proto__` is lost when the registry parses); `say {start}` would start a part waiting for its coordinator's plan; the snapshot counted a deleted node's questions and gates in `needs_you`; `getRepoEvents` was dead.
+- **Acceptance Criteria:** `state.repo_add` and clone refuse a name that isn't letters, digits, `.`, `_`, `-` (starting with a letter or digit) in words, clone before git runs; `say {start}` leaves a waiting part to its plan (the line stays pending); the snapshot leaves archived nodes' asks out.
+- **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/feed/snapshot.test.ts`; `bun test packages/daemon/src/attach/service.test.ts -t T389`.
+- **Notes:** Branch T389-p3-hardening. `RepoNameSchema`/`REPO_NAME_RULE` in `packages/shared/src/repos.ts`.
+
+### Ticket: T391 A node that finishes again notifies again
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** D39: T388 keyed a notification on the item's kind and id, and a node's `done` item carries the node's id, so a node that finished, got a reply and finished again stayed silent the second time.
+- **Acceptance Criteria:** The key includes the item's time (a `done` item's is the agent's last finish); a new finish notifies, a card that only leaves and comes back does not.
+- **Validation Steps:** `bun test packages/ui/app/lib/notify.test.ts`; the T388 e2e.
+- **Notes:** Branch T391-notify-each-finish. Also records D38 (no global Host check on read routes).
+
+### Ticket: T392 ∥ The chat shows what the agent is doing
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** While an agent works, the chat shows only "Claude is working…": you can't tell whether it is reading, editing or running tests. The daemon already records each ACP tool call (`tool_call` events: kind, title, status) and the feed pushes them live.
+- **Acceptance Criteria:** During a turn the chat shows the agent's latest steps live (kind icon, title, status); after the turn a folded "N steps" row sits before the reply and expands to the list; titles are clipped, nothing raw; a daemon read gives a node's steps without scanning the whole log each time.
+- **Validation Steps:** `bun test packages/ui packages/daemon/src/http.test.ts`; a control-room e2e with a scripted fake agent; the whole control-room e2e and the walkthrough.
+- **Notes:** Branch T392-agent-steps. `feed/steps.ts` `StepIndex` folds `tool_call` events once and then tails `events.jsonl`; `GET /api/streams/:id/steps` → `{steps, total}` (300 newest). `lib/steps.ts` merges live events and groups steps into turns. The live block keeps `data-testid="thinking"`; a finished turn shows "Worked through N steps · 1 failed" inside its reply. Scrolling up is never moved by new steps. control-room 74/0 (run twice), walkthrough green.
+
+### Ticket: T393 ∥ Review the diff with the agent
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** The Changes tab shows the diff, but feedback on it means retyping file names and lines in the chat.
+- **Acceptance Criteria:** A line's gutter offers Comment; comments collect in a review bar ("3 comments"); "Add to message" puts one formatted message (path:line, the line, the comment) in the node's composer and opens the chat; comments survive tab switches and clear when sent.
+- **Validation Steps:** `bun test packages/ui`; a control-room e2e; the whole control-room e2e and the walkthrough.
+- **Notes:** Branch T393-diff-review. `lib/review.ts` (store and `formatReview`, capped at the thread's 800 characters: quotes shorten, then drop); comments inline like GitHub's with Edit and Delete (Undo), outdated ones kept with the old line; keyboard: each file one Tab stop, ↑/↓ lines, `C` comments. `lib/markdown.ts` now keeps an indented line in its list item, continues an interrupted numbered list and reads double-backtick code spans. control-room 74/0, walkthrough green.
+
+### Ticket: T394 ∥ Resilience and load: error boundaries, code-split views, service-worker notifications
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** One component throwing blanks the whole cockpit (no error boundary); the app ships as one 590 KB script; notifications can't show on Android or an installed iOS app (they need the service worker).
+- **Acceptance Criteria:** Each view and a node page's tab body sit in an error boundary with a card in words (Try again, Reload, Copy details) that resets on navigation; the heavy views load on demand with a quiet fallback and the main chunk shrinks (no Vite size warning); notifications go through `registration.showNotification` when a worker is active, with clicks focusing the tab on the node, and fall back to `new Notification`.
+- **Validation Steps:** `bun test packages/ui`; the installable e2e; new e2e for the boundary; the whole control-room e2e and the walkthrough.
+- **Notes:** Branch T394-resilience (worker), merged. `ErrorBoundary.tsx` (page, tab, overlay, app) with `lib/boundary.ts`; a failed chunk download reads "A new version of the cockpit is available". Knowledge, Settings, the lenses, the Director, New project, DiffView and ProjectOverview load on demand (`lazyNamed`); React is its own chunk; the rest are warmed 1.5 s after load. The main file went from 591 KB (175 KB gzip) to about 359 KB (108 KB gzip); no Vite warning. The daemon serves `assets/` as immutable. A deep link to a lazy view preloads it before the first render (Settings' `section` survives). Notifications go through the worker when one is active, and `sw.js` handles `notificationclick`. New e2e: the page, tab and chunk-failure cards, and the fallback without a worker; T388's test runs through the worker. Two flaky tests fixed on the way (T388's close check, T367's Permissions race). Deferred items are in the follow-ups.
+
+### Ticket: T395 Rows say when they last changed; j/k in the tree
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** The Overview's and Running's age is the node's creation time (the row has no last-change time); the rail's keyboard walk is arrow keys only.
+- **Acceptance Criteria:** The cockpit row carries `updated_at` (the latest of the node's creation and its agent's last change); the Overview and Running say "updated 3m ago" and sort within a group by it; `j`/`k` move through the rail like ↓/↑ when it has focus.
+- **Validation Steps:** `bun test packages/ui packages/daemon/src/feed/snapshot.test.ts`; the overview and rail e2e.
+- **Notes:** Branch T395-updated-and-jk. `StateStore.threadUpdatedAt` keeps each thread's last line time from appends, else the file's mtime (read once); the row's `updated_at` is the latest of creation, the agent's last status and that. Running has an Updated column (hidden on a phone) and sorts most recent first within a rank; the Overview does the same within a group. The shortcut list names J/K for the tree.
+
+### Ticket: T396 Two starts at once give one agent
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups (pre-existing race): "one agent per node" was checked before the async work of a start (worktree, spawn), so a wake and a click, or a line with `start` and a click, could both pass it and start two agents on one node.
+- **Acceptance Criteria:** Starts are serialized per node and slot (worker and coordinator share one): a second start waits for the first, then is refused as busy; a wake or a line with `start` skips quietly while a start is in flight.
+- **Validation Steps:** `bun test packages/daemon/src/attach/service.test.ts -t T396` (fails on the old code: two sessions); the attach, events and coordination suites.
+- **Notes:** Branch T396-one-agent-per-node.
+
+### Ticket: T397 A clone that times out stops its ssh too
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: a clone past its timeout killed git but could leave its ssh child running (git wasn't in its own process group).
+- **Acceptance Criteria:** git runs in its own process group; the timeout's SIGTERM and SIGKILL go to the group.
+- **Validation Steps:** `bun test packages/daemon/src/store/clone.test.ts` (the timeout test fails on the old code: the "ssh" ran on).
+- **Notes:** Branch T397-clone-group-kill.
+
+### Ticket: T398 `agile stream archive` stops the node's agent first
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: the RPC `stream.archive` (`agile stream archive`) hid a node without stopping its sessions, so an agent could run on a node nobody sees; the cockpit's Delete stops them.
+- **Acceptance Criteria:** `stream.archive` stops the node's live sessions (detached) before archiving it; an unknown node stops nothing. What it archives is unchanged (the node, not its subtree, as before).
+- **Validation Steps:** `bun test packages/daemon/src/streams/rpc.test.ts`; CLI `stream.e2e` and `daemon.e2e`.
+- **Notes:** Branch T398-archive-stops-agents. Whether the CLI archive should take the subtree like the cockpit's Delete stays open.
+
+### Ticket: T399 The Director's chat shows its steps
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: the Director's tool calls were indexed (T392) under its own id but its page never showed them.
+- **Acceptance Criteria:** `GET /api/director/steps` returns the Director's steps, as a node's route does (503 without a Director); `/api/director` says how long the thread is (`thread_total`), so a cut thread keeps its oldest reply's steps out. The Director page folds each reply's steps before it, shows the running turn's live under "Director is working", and folds steps after the last reply at the end. `useSteps` takes the read to use.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T399`; control-room e2e `T399` (the fold before a reply, and a step pushed after it).
+- **Notes:** Branch T399-director-steps.
+
+### Ticket: T400 A running reviewer is named in the live block
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: while only a reviewer ran, the chat's live block said "Claude is working" under the idle worker's name.
+- **Acceptance Criteria:** With the worker idle and a reviewer running, the block reads "<reviewer's vendor> is reviewing"; with the worker running it still names the worker.
+- **Validation Steps:** `bun test packages/ui/app/lib/chat.test.ts`.
+- **Notes:** Branch T400-reviewer-working.
+
+### Ticket: T401 Effort only where the vendor uses it
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: a Gemini session read "Gemini default model · low" though only Claude's adapter maps an effort level (D12); the pickers offered a level that is never sent.
+- **Acceptance Criteria:** `EFFORT_VENDORS` in `packages/shared` names the vendors with an effort mapping, and a daemon test keeps it equal to the provider registry's. Labels drop the level for any other vendor (the tooltip says "(ignored)"); the Effort control is disabled there, and says why.
+- **Validation Steps:** `bun test packages/ui packages/daemon/src/attach/resolve.test.ts`; control-room e2e `T379` (picking Gemini disables Effort; the label reads "Gemini default model").
+- **Notes:** Branch T401-effort-where-used.
+
+### Ticket: T402 A model belongs to its vendor
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: `resolveSessionDefaults` took the first named model at any step, so a repo set to Gemini with a Claude model in the home config started Gemini with `claude-sonnet-4-6`, and Settings showed that model as the repo's inherited placeholder.
+- **Acceptance Criteria:** Per D40, a step's model counts only when that step runs the resolved vendor; otherwise the vendor's own default (the built-in model for Claude). The Settings and picker placeholders name what an empty model field inherits for the vendor picked there.
+- **Validation Steps:** `bun test packages/shared/src/session-defaults.test.ts`; control-room e2e `T379` (picking Gemini makes the placeholder "inherit (Gemini default model)").
+- **Notes:** Branch T402-model-follows-vendor. D40 is to confirm.
+
+### Ticket: T403 A Needs me card opens the chat
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: a Needs me card for something on a project root opened the root on its Overview, one click short of the card (at the end of its chat).
+- **Acceptance Criteria:** A card's Open goes to its node's chat, root or not; the tree and a deep link still open a root on its Overview.
+- **Validation Steps:** control-room e2e `T387`.
+- **Notes:** Branch T403-card-opens-chat. The shell's `select(id, {tab})` carries the tab; the page reads it when it opens.
+
+### Ticket: T404 A connect doesn't re-read the event log
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: every `/ws` connect read and validated the whole `events.jsonl` to send its newest 200 events.
+- **Acceptance Criteria:** `RecentEvents` holds the newest events up to the tailer's offset: the log is read once when the server starts, then each tailer batch is added. A connect's snapshot comes from it, so a line is still either in the snapshot or published afterwards, never both. With a corrupt log each connect reads it and is refused, as before. `/api/snapshot` is unchanged.
+- **Validation Steps:** `bun test packages/daemon/src/feed/snapshot.test.ts packages/daemon/src/http.test.ts` (the log is read once across two connects); feed e2e.
+- **Notes:** Branch T404-snapshot-ring.
+
+### Ticket: T405 The live block says how long the turn has run
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: while an agent works, nothing said for how long, so a stuck turn looked like a busy one.
+- **Acceptance Criteria:** "Claude is working · 1m 12s" on a node and on the Director, from your line that woke the turn or its first step, whichever came first; it ticks each second without re-rendering the chat; the timer sits outside the live region, so a screen reader isn't read every second.
+- **Validation Steps:** `bun test packages/ui/app/lib/steps.test.ts`; control-room e2e `T392`.
+- **Notes:** Branch T405-turn-timer.
+
+### Ticket: T406 The repo list doesn't block on git
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: `GET /api/repos` ran up to three synchronous git calls per repo to name its main branch, blocking the daemon's event loop for every open page that lists repos.
+- **Acceptance Criteria:** The route resolves each repo's main branch asynchronously, in parallel with its remote, with the same answer as `resolveMainBranch`.
+- **Validation Steps:** `bun test packages/daemon/src/store/rpc-methods.test.ts packages/daemon/src/http.test.ts`.
+- **Notes:** Branch T406-main-branch-async.
+
+### Ticket: T407 A repo's events page like the log
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From the follow-ups: `GET /api/repos/:name/events` (T245) capped at 200 with no paging, unlike `/api/events` (T383).
+- **Acceptance Criteria:** The route is `/api/events?repo=<name>` under its own path: `{events, more, total}`, `before` and `limit`, the same 400s in words.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T407`.
+- **Notes:** Branch T407-repo-events-paged. The response gains `more` and `total`; `events` is unchanged.
+
+### Ticket: T408 Add repository loads when opened
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From T394's report: `AddRepo` sat in the main script because New node (always mounted, for `n`) imported it statically.
+- **Acceptance Criteria:** New node renders `AddRepoDialog` only while it is open, loaded on demand and warmed after the first screen; the main script shrinks; the flow is unchanged.
+- **Validation Steps:** control-room e2e `T408` (new: New node → Add a repository… adds the repo and picks it; opened again, it starts fresh), `T367`, `T373`.
+- **Notes:** Branch T408-addrepo-lazy. Main script 359 KB → 337 KB (108 → 101 KB gzip).
+
+### Ticket: T409 The shell keeps a screen's own URL params
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** From T394's report: the shell's URL sync rewrote the query to its own params (`node`, `view`, `project`) even when nothing moved, so a lazily loaded screen reading its own param (Settings' `section`) could lose it on load.
+- **Acceptance Criteria:** A rewrite that stays on the same view and node keeps every param the shell doesn't own; moving to another view drops them.
+- **Validation Steps:** `bun test packages/ui/app/lib/shell.test.ts`; control-room e2e `T348|T367|T394`.
+- **Notes:** Branch T409-shell-keeps-screen-params.
+
+### Ticket: T410 A Merge card says how much it merges; View changes opens the changes
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** A "Ready to merge" card gave no sense of the change's size, and its View changes button opened the node's chat, not its Changes tab.
+- **Acceptance Criteria:** The row carries `diff_stat` (files, lines added and removed) for a finished node with commits to merge, measured by the T380 check off the frame's path (`git diff --shortstat target...branch`: committed work only), with a re-push when it changes. The card shows "2 files +2 −1", with the words on hover. View changes opens the Changes tab.
+- **Validation Steps:** `bun test packages/daemon/src/delivery/service.test.ts packages/daemon/src/feed/merge-state.test.ts packages/ui/app/lib/inbox.test.ts`; control-room e2e `T347`.
+- **Notes:** Branch T410-merge-card-diff.
+
+### Ticket: T411 How full the agent's context is
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Vendors report their context window in `usage_update` (tokens used of its size; `design/spike-findings.md`'s raw reports), and the runner dropped it, so nothing said when a long session was near its limit.
+- **Acceptance Criteria:** The runner keeps each session's last reading in memory (no stored state, no writes); `AttachService.contextFor(session)` reads it; the frame's `live_agent.context` carries it. The composer shows a small ring and the share by the live model chip ("23%", the numbers on hover), amber from 75%, red from 90%; Running shows it by each live agent. A vendor that reports nothing shows nothing.
+- **Validation Steps:** `bun test packages/daemon/src/runner/context-usage.test.ts packages/ui/app/lib/chat.test.ts`; control-room e2e `T392` (a fake agent's `usage_update` reads "23%").
+- **Notes:** Branch T411-context-meter. Cost (`usage_update.cost`) is not shown: whether it is per turn or running is not measured yet.
+
+### Ticket: T412 One verdict on a finished branch
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Audit round 5, finding 1: a node read "Ready to merge" in the header, the tree and Needs me (with an enabled Merge) while its Delivery panel said "Already merged into main", and while it still waited on a node that hadn't started.
+- **Acceptance Criteria:** The T380 merge check also records a branch already in its target (`merged_outside` on the row). A finished work node reads "Already merged" (your move: its card offers Mark as merged) or, with open waits, "Waiting" (its card names what it waits on, links there, and has no Merge). `lib/status.ts` stays the one mapper (legend, Running, Overview follow). The daemon's preflight reports open waits for a direct merge, so the header and Delivery panel agree with `land`.
+- **Validation Steps:** `bun test packages/ui packages/daemon/src/feed/merge-state.test.ts packages/daemon/src/delivery/service.test.ts`; control-room e2e `T412`, and the merge/waits e2e.
+- **Notes:** Branch T412-one-merge-verdict.
+
+### Ticket: T415 A saved diff comment doesn't take the keyboard back
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** CI failed about half the time on the T393 e2e ("2 comments on 1 file"): after Add, the comment box returned focus to its line a frame later, and on a slow runner that frame came after the next line had focus, so C opened the next comment on the previous file.
+- **Acceptance Criteria:** Focus returns to the commented line only when nothing else has it (it fell to the page when the box closed).
+- **Validation Steps:** control-room e2e `T393` now holds frames and lets them go after the next line has focus: it fails on the old code with CI's message and passes with the fix.
+- **Notes:** Branch T415-diff-focus-race.
+
+### Ticket: T414 Untitled nodes are named by a cheap model (D41)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete: a node made without a title should get one from a cheap LLM reading its description, not its first line.
+- **Acceptance Criteria:** New node sends `auto_title` when you left the derived title as is; the daemon creates the node with that placeholder and, off the create path, asks `claude -p --model haiku` (no tools, so one reply; no MCP servers; a scratch cwd, 30 s timeout; the user's own login) for a title of at most six words, then renames the node unless you renamed or deleted it meanwhile. No CLI, a failed call or an unusable reply leaves the placeholder. Off under `bun test`; `startDaemon({ titleRun })` injects or (`null`) disables it. The dialog says a title will be written for you.
+- **Validation Steps:** `bun test packages/daemon/src/streams/titles.test.ts packages/daemon/src/http.test.ts -t T414`; control-room e2e `T204` (New node sends `auto_title` for a derived title).
+- **Notes:** Branch T414-auto-titles. A Settings switch to turn it off is in the follow-ups.
+
+### Ticket: T417 Needs me stays in sight in the sidebar
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Audit round 5, finding 4: Needs me, Director and Knowledge shared the tree's scroll area, so opening a node low in a long tree scrolled Needs me and its count out of the sidebar.
+- **Acceptance Criteria:** Needs me, Director and Knowledge sit in a fixed block under New node; Views, the projects and the tree scroll below it, with a line under the block once they have scrolled.
+- **Validation Steps:** control-room e2e `audit r5 #4` (40 nodes, the last one open: its row and Needs me are both on screen; fails on the old sidebar).
+- **Notes:** Branch T417a-sidebar-pinned.
+
+### Ticket: T413 ∥ The node page in words (audit round 5)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Audit round 5 findings 2, 3, 8, 9, 10, 11, 14, 19, 22, 32, 35 on the node page: the details panel's Children spoke its own status words and left children out; a comment being written jumped to another file; ids, full branches and paths in primary text; system rows and details in the daemon's words; an Activity tab unlike Events; raw enums on the Knowledge tab; "Review changes…" meant starting a reviewer; a tall phone header; long titles wrapping the pills; a Goal card repeating the title; role badges that looked like buttons.
+- **Acceptance Criteria:** Children lists every child with `StatusPill` from `nodeStatus` (none on a root); a draft never moves files (its text is added where it was written; Shift in the same hunk makes a range; the footer names the file); branches read as their slug everywhere with the full name on hover and in Copy; system rows and Details in plain words; Activity rows are the Events rows with the routing reason as a chip; the Knowledge tab reuses the Knowledge list row; "Ask an agent to review…"; the phone header about half as tall; a long title truncates with the pills beside it and `titleFromGoal` cuts at a word ≤60 with no "…"; no Goal card on roots or when it repeats the title (the goal moves to Details → About with Edit); role badges are muted text with an icon.
+- **Validation Steps:** `bun test packages/ui`; the whole control-room e2e (84/0) and the walkthrough, with the new draft-comment e2e.
+- **Notes:** Branch T413-node-page-words (worker), merged. The Activity, Plan, Knowledge and Docs tabs load on demand (main script 339 → 331 KB).
+
+### Ticket: T416 ∥ Needs me, errors and chrome (audit round 5)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Audit round 5 findings 6, 7, 12, 13, 18, 20, 21, 24, 29, 30, 31, 33, 34, 38: a refused merge as a raw toast; nothing said while the daemon was away; a question shown three times; blocked cards with no way to answer; page headers of five shapes; faint text and focus rings under contrast; a palette that knew nothing of the open node or Needs me; a stale link opening nothing; Ready cards repeating a stock sentence; the Director's load failure under an empty state; two path separators; Settings pills that never changed; phone overflow; a first merge with no confirm.
+- **Acceptance Criteria:** A refused merge reads "Couldn't merge." with the reason in words and its fix as a button (Ask the agent to rebase / to fix the conflicts / Stop the agent), on the card and under the header, no toast; the daemon away for 2 s disables writes with "Reconnecting to the daemon…", a failed send keeps the draft with Retry; a question reads once (its chat line), the card holds its choices, the composer bar says which it answers; a blocked card has "Reply to unblock…"; A/B and 1/2 pick a choice on a focused card; one `PageHeader` everywhere but node pages; `--text-faint` ≥ 4.2:1, a solid focus ring, dark accent 4.84:1 under white; ⌘K has "This node" (the page's own actions) and "Needs me" groups and a Recent list filled from recent changes; a missing node says so (Restore when deleted); Ready cards show the agent's progress and overlaps; the Director's failed read shows only the error and Try again; "›" as the path separator; Settings shows a notifications pill only when blocked or unavailable, Permissions folded into General; phone tabs fade at the edge, no keycaps on touch; the first Merge asks, with "Don't ask again" per browser.
+- **Validation Steps:** `bun test packages/ui` (errors, inbox, palette); the whole control-room e2e (93/0 after the merge) and the walkthrough; full `bun test` 3118/0.
+- **Notes:** Branch T416-needs-me-chrome (worker), merged. Left over: Delivery's "Merge refused:" label, the header's Start and Merge while offline, Ask's `a` and a focused card's A (handled with stopPropagation).
+
+### Ticket: T418 A conversation never reshapes the tree (D42)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete's model: ask a question at any level, as its own thread. Today a repo-less child counted as a part: under a work node it made the node coordinating and restarted its agent as a coordinator; under a coordinator it waited for the plan and asked the coordinator first.
+- **Acceptance Criteria:** `partsOf` / `isConversationNode` in shared; `nodeRole` counts parts only; a root gets its coordinator only for parts; `waitingForPlan`, coordinator-first and Needs me's "has parts" leave conversations out; a conversation under a non-conversation sends no `child_status`; "+ Repo" on a conversation with tangents makes it work in place.
+- **Validation Steps:** `bun test` (0 fail; new D42 tests in shared, attach, coordination, inbox, producers, repo-in-place), the walkthrough.
+- **Notes:** Branch T418-conversations-never-parts. Tests that built parts without a repo now give them one.
+
+### Ticket: T419 Ask from anywhere (D42)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete: asking a question at the level you choose (the Director, the project root, a coordinator, the developer on a ticket) should not mean New node's five fields, and the question should read as what you asked, not a goal.
+- **Acceptance Criteria:** `a` (or "Ask about this…" in a node's ⋯ menu) opens one box aimed at the open node, or the Director elsewhere; a picker re-aims it at any node or the Director; Enter asks (Shift+Enter a new line). About a node: a conversation under it, named for you (D41), its agent started with the question, opened on its chat. About the Director: a line in its thread. A conversation's chat opens with its question as your message; it never shows the Goal card (its question stays editable in Details).
+- **Validation Steps:** `bun test packages/ui/app/lib/ask.test.ts`; control-room e2e `T419` (two tests) and `T385`.
+- **Notes:** Branch T419-ask. The palette entry and the `?` sheet line come with T416's palette and shortcut work.
+
+### Ticket: T420 A conversation knows what it was asked about (D42)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** A question asked under a node got only that node's title and goal in its brief, so "what is the developer on this ticket doing?" couldn't be answered; and its goal read as a task.
+- **Acceptance Criteria:** A conversation's brief opens with "The human asked:" and the question quoted, then "What you were asked about": the parent's goal, state and last progress, repo, branch and worktree (to read, never to change), its status card, its parts with their state, its plan (owners by title) and its newest dozen lines; it answers here, and its conclusion reaches the parent only when the human sends it. A coordinator's "Your children" lists its parts only (D42).
+- **Validation Steps:** `bun test packages/daemon/src/runner/brief.test.ts packages/daemon/src/attach/service.test.ts -t T420`; full `bun test`.
+- **Notes:** Branch T420-parent-context.
+
+### Ticket: T421 Send to parent (D42)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** What a side conversation concludes ("the plan should change", "stream the file") had no way to reach the node it was about, except retyping it there.
+- **Acceptance Criteria:** On a conversation under another node, each agent reply has "Send to <parent>" and the ⋯ menu "Send to <parent>…" (starting from the last reply). The box is editable; Send posts `POST /api/streams/:id/send-up`: your line on the parent ("From the conversation “…”:" then the words), through the same path as the parent's composer (its agent reads it, or starts on it), and a "Sent to …" row on the conversation. A root has nothing above it (400); same-origin only.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T421 packages/ui/app/lib/chat.test.ts`; control-room e2e `T421`.
+- **Notes:** Branch T421-send-up. A coordinator acts on it at its autonomy level, as on any line of yours.
+
+### Ticket: T422 Turn into work (D42)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete: when a question concludes that something should be built, it should be built right there, in that node. "+ Repo" made a conversation work in place, but its goal was still the question and nothing told its agent to start.
+- **Acceptance Criteria:** On an open conversation, ⋯ "Turn into work…" opens one box: the goal, drafted from the conversation by the cheap model (D41's call) when there is one, else its last reply, else its question, always editable, the hint saying which; a repository picker whose first choice is "No repository" (research: the goal is what it finds out). Start the work: the goal is updated (a "Goal changed" line), the repository added in place (branch, worktree, the live agent restarted in it), and your line "Now work on the goal above…" starts its agent. `POST /api/streams/:id/draft-goal` returns `{goal, from: model|reply|question}`, same-origin only; a failed model call falls back.
+- **Validation Steps:** `bun test packages/daemon/src/streams/titles.test.ts packages/daemon/src/http.test.ts -t T422`; control-room e2e `T422`.
+- **Notes:** Branch T422-turn-into-work. `START_ON_GOAL` lives in shared, so the cockpit and the tests say the same line.
+
+### Ticket: T423 ∥ One model picker; the root's autonomy panel (audit round 5)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Audit round 5 findings 5 and 15. The composer's model chip opened a blocking "Start the agent" dialog that started the agent at once, with a free-text model field; the same choice had four more entry points under four labels; Settings → Agents showed raw values with a Save per row. A root's Details had two lowercase autonomy dropdowns (one without a hint) that saved on change, Run included, and a Save per field.
+- **Acceptance Criteria:** The chip opens a popover of models by name grouped by vendor (Default and Running tags, "Other model…", Effort only where the vendor takes it); picking starts nothing; Send starts the agent with the pick, restarts a live one on another model (stop, then `say {start, session}`), or just sends; the hint says which. `StreamSayInputSchema.session` (`SessionFlagsSchema`, strict; refused without `start`). One **Start with…** in the header's split button; the ⋯ and Details model items are gone. Settings → Agents by name ("Inherits Claude Opus 5.5"), saved on change through a queue. The header's Start, Stop and Merge are off while the daemon is away. One **Autonomy** group (Coordinator; Director on a root), capitalised with the Director panel's words, "Inherits Advise from the project"; a change up to **Run** asks first; the Project group (repos, tracker "None") has one **Save changes**.
+- **Validation Steps:** `bun test` (3161/0 on the integrated tip); control-room e2e (96/0); the walkthrough.
+- **Notes:** Branch T423-model-picker (worker), merged. Model names from `KNOWN_MODEL_IDS` (served as `known_models`).
+
+### Ticket: T424 ∥ Overview counts, the tree's marks, Dependencies and Running (audit round 5)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Audit round 5 findings 16, 17, 23, 36, 37: Overview chips that counted other statuses than the list under them; roots and coordinators that never ran reading "Idle"; an overlap mark in the Blocked triangle that named no one and did nothing; a draggable tree with no grip; two status styles in Dependencies; a Running Node column truncated beside slack.
+- **Acceptance Criteria:** Each Overview chip counts one status key with that key's dot and word, from the same grouping as the list (Your move · In progress · Not running · Finished, folded), a chip filters to its rows; `never_started` for any open node without a worker or coordinator session (a root or a coordinator reads "Not started"); the overlap mark is a neutral two-squares button naming the other node and files, opening it (a menu for several; a folded parent speaks for the node inside); a grip and `cursor: grab` on row hover (not on touch), the legend and the `?` sheet say "Drag a row to move it (or ⋯ → Move to…)"; Dependencies uses `StatusPill` on both sides; Running sizes Status to its pill, gives Node `minmax(280px, 2fr)`, follows the rail's project filter and drops the project from paths when filtered.
+- **Validation Steps:** `bun test` (snapshot never_started tests); control-room e2e (the chips, the overlap button, Dependencies, Running's filter, the grip); the walkthrough.
+- **Notes:** Branch T424-overview-tree (worker), merged. Running now follows the rail's "Show only this project". Left: the Repos lens rows still show plain status text.
+
+### Ticket: T425 Loose ends from T416 and T419
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Delivery read "Merge refused: merge refused: …"; `a` opened Ask on top of a focused card's choice; Ask had no palette entry or `?` line; a branched-off tangent's title was its first 80 characters.
+- **Acceptance Criteria:** Delivery says "Couldn’t merge." (or "Check failed.") and the reason in words (`mergeRefusal`); Ask's key yields to a handler that took it; ⌘K "Ask a question…" (A) opens Ask aimed at the open node, else the Director; the `?` sheet lists A; a tangent's title is `titleFromGoal` of its question, then named by the cheap model (D41).
+- **Validation Steps:** `bun test packages/ui`; control-room e2e `T368` (palette), `T332`, `T419`, `T416`.
+- **Notes:** Branch T425-leftovers.
+
+### Ticket: T426 Forms that check as you type (audit round 5)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Audit round 5 findings 25, 26, 27, 28: New project's duplicate-name error came after submit, under the repo list, and its "Add a repository…" row hid below the list's scroll edge; the repo picker ignored typing; the diff comment box took Ctrl+Enter where everything else takes Enter, and "Changes 1" read as one file; knowledge you wrote needed your own acceptance.
+- **Acceptance Criteria:** A taken project name (ignoring case, the daemon's rule) shows under Name as you type and Create waits; "Add a repository…" is pinned below the scroll; a picker without a search box takes type-ahead (`typeAheadMatch`: prefix, then substring; a repeated letter cycles) and Enter picks; in a diff comment Enter adds, Shift+Enter is a new line (Ctrl+Enter still adds), the hint says so, and the Changes count carries a comment glyph and "n review comments not sent yet"; Add knowledge's primary is **Add** (create, then accept; a refusal leaves it proposed with the reason), with **Save as proposal** secondary; a checked rule without its two examples can only be saved as a proposal.
+- **Validation Steps:** `bun test packages/ui/app/lib/tree.test.ts`; control-room e2e `T393`, `T367`, `T373`, the knowledge tests; the walkthrough (its 6.2 and 7 steps use Save as proposal, then Accept).
+- **Notes:** Branch T426-forms. LIVE-CHECKLIST names Save as proposal.
+
+### Ticket: T427 What a worker proposes next is one click from a node
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete: agents should be able to spawn their own children and work autonomously. Coordinators (at Organise/Run) and the Director already create nodes; a worker's `propose_next` only left a "Proposal" line with nothing to act on, so its follow-up work had to be retyped into New node.
+- **Acceptance Criteria:** A `propose_next` line ("next: <title> — <goal>", by an agent) shows **Create node…**, which opens New node with that title and goal (editable), under the proposing node; other proposal lines keep what they had (T205's Add <repo>). The verb's description tells the agent when to use it and what the human sees.
+- **Validation Steps:** `bun test packages/ui/app/lib/chat.test.ts packages/shared`; control-room e2e `T427`, `T205`.
+- **Notes:** Branch T427-proposed-next.
+
+### Ticket: T428 A picker's name outlasts its sub-label
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found in the T422 screenshot pass: on a phone, Turn into work's repo picker cut "No repository" to "No r…" to keep its long sub-label whole (a zero flex basis on the name).
+- **Acceptance Criteria:** A pick option's name takes its width first and the muted sub-label truncates before it; the research option's sub-label reads "Research, no branch".
+- **Validation Steps:** Screenshots at 390px, light and dark; control-room e2e `T422`, `T365`.
+- **Notes:** Branch T428-picker-sub.
+
+### Ticket: T429 Replies you haven't read
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete: questions have to work in flow state. You ask (D42) and go back to your work; when the answer lands nothing said so. A conversation's, a root's or a coordinator's finished turn has no Needs me card (T336, T341), so the only sign was a dot changing colour in the rail.
+- **Acceptance Criteria:** A node that answered (open, agent done, not a work node) is unread until its page is open in a visible tab, read up to its row's `updated_at`; per browser (localStorage `agile.seen`, capped at 400 marks, other tabs follow); a first visit starts with everything read. Needs me lists unread replies first ("Replies": path › title, "Replied · 3m", ✓ Mark read, Mark all read; a click opens the chat); with nothing else waiting it reads "Nothing else waits on you". The sidebar's Needs me shows a dot ("2 replies to read"). A reply that lands while you're away raises one notification ("Replied: <title>", click opens it) when notifications are on.
+- **Validation Steps:** `bun test packages/ui/app/lib/unread.test.ts`; control-room e2e `T429` (95/0 whole file); the walkthrough; screenshots light, dark, phone.
+- **Notes:** Branch T429-unread-replies. Pure rules in `lib/unread.ts`, the store and hooks in `lib/use-unread.ts`. The rail's own unread mark waits for T424 (it owns `StreamTree.tsx`).
+
+### Ticket: T430 A README for the app
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** The README was one line. Someone opening the repo couldn't tell what the app is, how to install and start it, or where to read more.
+- **Acceptance Criteria:** README.md says what the app does (roles, Needs me, Ask, coordinators and autonomy, the chat, knowledge, delivery, the Director, trackers), what it needs, how to install, start and set up a first project, the keys, a short CLI tour, where state lives and the session default order (P5, D40), the development commands and the package layout, and links the design docs. Every claim checked against the code or the design.
+- **Validation Steps:** `bun run lint`; read through against `agile` usage, `DEFAULT_DAEMON_PORT`, `resolveSessionDefaults` and projects-design §12.
+- **Notes:** Branch T430-readme.
+
+### Ticket: T431 Turn into work's goal is yours while it drafts
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Timed on the demo: the goal draft (one Haiku call) takes about 6 s, and the Goal box was disabled until it came back.
+- **Acceptance Criteria:** The Goal box is editable at once ("Drafting from the conversation…" as its placeholder, "…or write your own" as its hint). The draft fills it only if you haven't typed; otherwise the hint says a draft is ready, with **Use it instead**. Start waits only for a non-empty goal.
+- **Validation Steps:** control-room e2e `T422` (a held draft request: typing survives it, Use it instead swaps it in); a screenshot of both states against the real model.
+- **Notes:** Branch T431-draft-while-typing.
+
+### Ticket: T432 A vendor that fails says so (D43)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Probed the first run with a broken vendor. A vendor that exits on a login error ("Invalid API key · Please run /login", exit 1) left the node `done`, so it read as finished work ("Ready to merge", or "Replied" for a conversation), and the thread said only "process exited (code 1)"; the reason sat in the sessions strip. A vendor whose command isn't installed said "ACP initialize failed: ACP agent stdin unavailable".
+- **Acceptance Criteria:** A non-zero exit that isn't the daemon's own stop (`stop()`, a detach, a stop reason) or the end after a finished turn leaves the node `blocked` and its session `error`, starts no auto-review, and its thread line reads `session ended: process exited (code N): <the vendor's last stderr line>`; the chat shows it as a warning ("The agent stopped with an error: … Check its vendor is installed and logged in, then send a message to start it again."). A clean exit (code 0) and every stop of the daemon's stay as before. A vendor command missing from the daemon's PATH fails the start with "<Vendor> can't start: `<command>` is not on the daemon's PATH." (npx adds "install Node.js"), written on the thread as "could not start the agent: …".
+- **Validation Steps:** `bun test packages/daemon/src/attach/service.test.ts -t T432 packages/ui/app/lib/chat.test.ts`; full `bun test`. Tests that ended a session by killing its process from outside now end it through the daemon's `stop()`, as the daemon does.
+- **Notes:** Branch T432-vendor-failures. `AgentExitInfo.exitCode`; `missingVendorCommand` in `runner/session.ts`.
+
+### Ticket: T433 Unread marks in the rail, and the Director's replies
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T429's follow-ups: the rail (T424 owned it then) didn't mark a node with an unread reply, and a Director reply (you asked it with `A`, then went back to work) marked nothing.
+- **Acceptance Criteria:** A rail row with an unread reply has a bold title and a blue dot (`data-unread`). The frame carries `director.replied_at` (`StateStore.directorReplyAt`: the Director's last line of its own, cached from appends, read from its thread once); a newer reply than your read mark puts a dot on the sidebar's Director, heads Needs me's Replies ("The Director · Replied · 2m", Mark read, and Mark all read), and notifies while you're away ("The Director replied"); the Director's page on screen reads it.
+- **Validation Steps:** `bun test packages/ui/app/lib/unread.test.ts packages/daemon/src/store/store.test.ts -t "T433|T395"`; control-room e2e `T429`, `T433`.
+- **Notes:** Branch T433-unread-marks.
+
+### Ticket: T434 An off switch for quick drafts
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Deferred from T414: the cheap model call behind untitled nodes' titles (D41) and Turn into work's goal draft (T422) had no off switch.
+- **Acceptance Criteria:** `quick_drafts: false` in the home's config.yaml (strict schema; absent = on) turns both off, read per call so it holds at once. `GET/POST /api/settings/quick-drafts` (`{on}` in, `{on, available}` out; same-origin; 400 on a bad body). Settings → General → **Quick drafts**: a switch with what it does and what off means; "Not available" (disabled, with the reason) when the `claude` command isn't on the daemon's PATH.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T434 packages/daemon/src/daemon.test.ts -t T434`; control-room e2e "General picks the theme…".
+- **Notes:** Branch T434-quick-drafts-switch.
+
+### Ticket: T437 Audit r6: failed starts, vendors, caps, and what counts as needing you
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Audit round 6's daemon-side findings (the integrated app, D42 flows). A start that failed before the vendor ran (its command missing, the spawn throwing) left the node `working` with a `starting` session no Stop could end. The picker offered vendors that couldn't start. A pasted message over 800 characters was refused. A done node with its own branch and parts lost its Merge card. A plan waiting on approval, or a gate, read as "Working". A conversation node "replied" whenever its agent spoke, even when nobody had asked.
+- **Acceptance Criteria:** (1) A vendor whose command isn't on the daemon's PATH is refused before any session is recorded: the node goes `blocked`, its progress reads "The agent couldn't start: <reason>", and the error reaches the caller. A spawn that throws ends its session `error` with the reason and blocks the node the same way. The next start clears either failure line (and T432's "The agent stopped with an error: …"). Stop ends a `starting` session left without a process (`stopped`, node `idle`), never one still starting. (2) Session defaults carry `not_installed` (vendor → reason); the picker tags such a vendor "Not installed" (`data-missing`) and its option reads "(not installed)". The failure card's placeholder says "Fix its login or install, then reply to start it again…". (3) A human line is capped at `HUMAN_LINE_MAX_CHARS` (4000); Send to parent at `SEND_UP_MAX_CHARS` (3000); agent and Director lines keep 16000, the rest 800. (4) A done node with its own repo and branch keeps its Merge card even when it has parts. (5) Frame rows carry `pending_decision` (an open gate, plan approval or proposal in its inbox) and read "Needs you". (6) Frame rows carry `answered_at`: the time an agent, coordinator or Director line followed a human line (a new node's goal is the first question), cached in the store from appends; Replies, the rail's unread marks and notifications key on it, and the Director's `replied_at` follows the same rule.
+- **Validation Steps:** `bun test packages/daemon/src/attach/service.test.ts -t T437 packages/daemon/src/store/store.test.ts -t "T437|T433" packages/daemon/src/http.test.ts -t T437 packages/daemon/src/inbox/service.test.ts -t T437 packages/ui/app/lib`; control-room e2e `T429`, `T433` (the Director answers a human line); full `bun test` 3176/0, control-room 97/0, walkthrough clean.
+- **Notes:** Branch T437-failed-starts. D36's D10 wake (an agent's line wakes an idle parent) is Pete's decision and stays. The UI halves of findings #2 (a counter on the Send dialog) and #3 (where the work goes) are T435's; Details' ended reason and the empty-chat hero are T438's.
+
+### Ticket: T435 Conversation flows (audit r6)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker (manager reviewed)
+- **Scope:** Audit round 6's conversation findings: #2 (Send to failed on real replies), #3 and #14 (Turn into work or Create node… under a work node made it a coordinator, its Merge card gone), #6 (a drafted goal that was the model talking), #7 (typing then Enter in a picker picked the pinned option), #10 ("Today" twice), #12 (two submit keys), #13 (Turn into work's repo list ignored the project), #16 (an answered conversation offered only Restart), #19 (Send to a merged parent), #20 (Ask's picker without status, focus lost), #26 (a proposal as the raw verb), #27 (a turned conversation kept its question as title).
+- **Acceptance Criteria:** Send to counts down from 85% of `SEND_UP_MAX_CHARS`, blocks past it ("Shorten it, or send the key point."), and puts errors in words (`sendUpFailure`). Under a work node, Turn into work asks **Where** (Next to <parent>, the default, moves it up first; Under <parent> says it will coordinate) and points to Send to; Create node… on a proposal defaults to a sibling on the proposer's repo; New node and ⋯ Add repository… say the consequence. `draftedGoal` rejects a question, a draft talking to you, a list, over 600 characters or NONE (the prompt's escape). A picker's typed query highlights the first unpinned match (`pickHighlight`). The question sits in the thread's list after "Node created". Send to and Turn into work submit on Enter. Turn into work groups repos as New node does and adds an outside repo to the project. An answered conversation's header offers Send to and Turn into work… (Restart in ⋯). Send to is hidden for a merged or closed parent. Ask's targets carry status dots (finished last) and the new conversation's composer takes focus. A proposal reads "Next: **title**" and the goal. A title that is still the question (or ends in "?") is re-derived from the new goal and named by the cheap model (`update {auto_title}`).
+- **Validation Steps:** `bun test packages/daemon/src/streams/titles.test.ts packages/daemon/src/http.test.ts packages/shared/src/stream.test.ts packages/ui/app/lib`; control-room e2e T419, T421, T422, T427 and "where the work goes under a work node".
+- **Notes:** Branch T435-conversation-flows. Worker gate: `bun test` 3195/0, control-room 98/0, walkthrough clean. Screenshots light, dark and phone.
+
+### Ticket: T436 Views and polish (audit r6)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** worker (manager reviewed)
+- **Scope:** Audit round 6's view findings: #11 (unsent review comments lost on reload, Merge silent about them), #15 (the status enum and "no progress line" in Events), #17 (Replies said too little), #18 (overlap's alert triangle), #21 (a node's tab not in the URL), #22 (unsaved Project changes dropped), #23 (no "Replied" in the legend), #24 (Details spoke before anything happened), #25 (Settings → Agents order and length), #28 (two primary buttons), #29 (⌘K without replies).
+- **Acceptance Criteria:** Review comments and composer drafts are kept per node in `sessionStorage` (`lib/drafts.ts`, every access guarded); leaving with unsent comments asks; Merge asks "N review comment(s) on <node> isn't sent. Merge anyway?" with Add to message. `child_status` reads in status words and carries no stand-in progress. A reply row shows a one-line preview (one page read, cached per reply) and the tree's role glyph. Overlap is neutral everywhere. `&tab=` keeps a node's tab across reload and Back. A root's Project changes are kept per project until saved or cancelled. The legend lists Replied. Details' Delivery badge uses the status word and tone and waits for a branch; the reviewer waits for commits. Settings → Agents: Global, Per project, Per repository, with repositories that set nothing folded. The header's Start is secondary beside an open decision card. ⌘K lists unread replies ("Read reply: …").
+- **Validation Steps:** `bun test packages/ui/app/lib packages/daemon/src/events/producers.test.ts`; control-room e2e "views and polish (T436)" and the updated T170, legend and T227 tests.
+- **Notes:** Branch T436-views-polish. Worker gate: `bun test` 3227/0, control-room 104/0, walkthrough clean. Screenshots light, dark and phone.
+
+### Ticket: T438 A failed agent reads in words everywhere (audit r6 #4)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T437 put the failure on the node's progress; the chat still read "could not start the agent: …" raw, the empty-chat hero ("Tell the agent what to do next") sat under the warning, and Details → Agent showed "process exited (code 1): …" in red for every ended reason.
+- **Acceptance Criteria:** A failed start reads "The agent couldn't start: <why>. Fix its install or login, then send a message to start it again." The empty-chat hero is hidden when the thread has a failed start or a non-zero exit (`agentFailed`). Details reads "Stopped with an error: <vendor line>" (red), and a clean end, a finished turn or a stop in grey (`endedReasonText`; the raw reason on hover). Turn into work under a work node with nothing above it offers no "Next to" and says the parent will coordinate it.
+- **Validation Steps:** `bun test packages/ui/app/lib/chat.test.ts`; control-room e2e T438, T171.
+- **Notes:** Branches T438-turn-edge-empty-hero, T438b-details-ended-reason, T438c-menu-stable-review. T438c: after T436, "Ask an agent to review…" waited on the page's merge check to show, so it could appear in an open ⋯ menu and push the items under it down; the walkthrough's 4.1 clicked "Waits on…" and hit "Add repository…" about half the time (seen in its screenshot). It now shows once the node has a branch, disabled until commits are known: 5 of 5 walkthrough runs clean. Gate on the integrated tip: `bun test` 3233/0, `test:integration` green (control-room 105/0).
+
+### Ticket: T440 LIVE-CHECKLIST §10 and the walkthrough: Ask at any level (D42)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** The live checklist, and the fake-agent walkthrough that clicks through it, had no step for D42's flows (Ask, Replies, Send to, Turn into work) or for a vendor that fails.
+- **Acceptance Criteria:** LIVE-CHECKLIST §10: 10.1 Ask about a new work node (the conversation under it, the question first, focus in its composer, the node still Work); 10.2 the reply in Needs me's Replies with its first line and dots, reading it, Send to the node (its line on the node's chat); 10.3 a question under the project root turned into work in place (a repo, the title following the goal, the question kept). 9.4's "An agent never starts" names the chat's and Details' words and **Not installed**. The walkthrough runs 10.1–10.3 after 9.2 (now "3.4–10"); its rail helpers match titles literally (a `?` or `.` in a title).
+- **Validation Steps:** `bun run test:walkthrough`: 0 findings.
+- **Notes:** Branch T440-d42-checklist. Writing it found T441.
+
+### Ticket: T441 A conversation turned into work keeps its question
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by T440's walkthrough: a conversation's question lived only in its goal, so Turn into work (a new goal) dropped the question from the chat; the thread read as an answer to nothing.
+- **Acceptance Criteria:** The stream record has an optional `question` (strict schema). The update route sets it to the old goal when a conversation's goal first changes (never for a root or work node, never again after); the chat opens with `question ?? (conversation ? goal : none)` after "Node created".
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts -t T441`; control-room e2e T422; the walkthrough's 10.3.
+- **Notes:** Branch T441-keep-the-question.
+
+### Ticket: T442 A conversation reads the repos it's asked about (read-only git -C)
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete, running LIVE-CHECKLIST 3.2 ("Plan this with me before any code… Explain how you would split it"), saw the conversation's agent denied reading the repos: T336 lets only a coordinator's read-only `git -C` leave the worktree, and a conversation's agent is a worker on a node with no repo, so it has no worktree to read from and every `git -C <repo> log` was a worktree escape. D42 says a conversation answers, researches and explains.
+- **Acceptance Criteria:** A worker on a node with no repo of its own (`noOwnRepo` on the hook context, set by the hook service; never for the Director) gets the coordinator's read-only `git -C` (T336's allowlist: diff, log, show, status; no config, no pager, no output), only into dirs its read scope allows (not hidden, unregistered or the agile home). Writes stay denied. A worker on a node with a repo, and a reviewer, keep T336's rule.
+- **Validation Steps:** `bun test packages/daemon/src/hook` (decide: T442 allow/deny tables; pattern-rules: the hook service end to end); each new test fails with its half of the change reverted.
+- **Notes:** Branch T442-conversation-git-reads. The bug exists from Phase 7's T336, but conversations as D42 has them (research at any level) are Phase 14's, so it is fixed here; the other session watching PRs #4–#11 had it noted as open.
+
+### Ticket: T443 Autonomy spawns running work (audit r7 #1, #4, #8)
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Audit round 7: no path from a coordinator ended with a running child. `add_child` created nodes idle ("starting stays the human's call"), Apply at Advise too; the Director's `create_tree`/`create_node` made idle trees; coordinators had no `start_node`; a project root ran a worker until it had a part, so "plan this and split it" couldn't add one (`add_child`: only a coordinator can); the Director's drafts for new nodes never reached Needs me. §12 says Organise creates nodes and starts agents.
+- **Acceptance Criteria:** A node an applied change creates (a coordinator's `add_child` at Organise/Run, Apply at Advise, the Director's `create_node`) starts its agent off the caller's path (`AutonomyService.run`; `settled()` for tests); a part (it has a repo) under a node whose plan waits for the operator (a draft, or parts waiting) gets the `WAITING_FOR_PLAN` line instead and starts on approval; a conversation child always starts. `create_tree` starts its node's coordinator and its parts wait for that plan (the worked example). `start_node`/`restart_node` take a coordinator for its own children, gated like `add_child`; `start_node` on a running node is `{already: true}`. A project's root (a project, no repo) runs a coordinator from the start and a line to it starts it; a parentless node with its own repo stays a worker. A Director draft that makes nodes sits in Needs me on the node it goes under (or the project's root). Briefs and verb descriptions say so.
+- **Validation Steps:** `bun test packages/daemon/src/coordination/autonomy.test.ts -t T443 packages/daemon/src/director/tools.test.ts packages/daemon/src/attach/service.test.ts -t T361`; full `bun test`, control-room e2e, walkthrough.
+- **Notes:** Branch T443-autonomy-starts. The UI half of "tell the user" (the Apply card's words, a Needs me item for anything left unstarted) is T446's and T445's.
+
+### Ticket: T444 Sessions a dead daemon left running end at start (audit r7 #16)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** After a daemon died mid-turn (not a clean stop), its nodes read "Working" for good on restart, Running listed them, Delivery said "still has a live agent", and a line to them only queued; only Stop cleared it (T437's orphan clean-up ran inside `stop()` alone).
+- **Acceptance Criteria:** `AttachService.endOrphansAtStart()` runs at daemon start, before `wakePending()`: every `starting`/`running` session on record ends `stopped` with `stopped: the daemon restarted during this turn` (the daemon's prefix, so the node isn't "stopped by the human" and its next event wakes it), the node goes `idle`, and its thread says `session ended: the daemon restarted during this turn`.
+- **Validation Steps:** `bun test packages/daemon/src/attach/service.test.ts -t T444 packages/daemon/src/daemon.test.ts -t T444` (the daemon test fails with the call removed).
+- **Notes:** Branch T444-orphans-at-start.
+
+### Ticket: T448 First-run nits (audit r7 #24, #25)
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Adding a repository left an untracked `.agile-daemon-cache/` in it; `agile init` said nothing about what comes next.
+- **Acceptance Criteria:** The cache writes its own `.gitignore` (`*`) once, so `git status` never lists it and nothing of the operator's is edited. `agile init` ends with "Next: `agile daemon start`, then open the cockpit it prints (http://127.0.0.1:4600/ by default)." README says what sits beside your code.
+- **Validation Steps:** `bun test packages/daemon/src/subprocess-env.test.ts packages/cli`.
+- **Notes:** Branch T448-first-run-nits.
+
+### Ticket: T445 Flow and focus (audit r7)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker (manager reviewed)
+- **Scope:** Audit round 7's flow findings: #3 (any repo name in a proposal line grew an "Add <repo>" button that reshaped the node), #5 (after Merge the next card's Merge slid under the pointer), #13 (focus fell to `<body>` after actions), #14 (j/k did nothing outside the rail), #10 (the welcome's Add repository opened Settings → General), #11 (a title "written for you" that wasn't; titles and branches cut mid-word), #12 (New node defaulted to No repository in a one-repo project), #21 (the Plan tab's empty state had no action), #22 (no keyboard path to Rename/Move), #23 (a native select for Add repository…), #26 (a bare root's composer "adds a note").
+- **Acceptance Criteria:** "Add <repo>" only on a proposal line whose ref is `repo:<name>` (`repoProposalRef` in shared; nothing writes one yet), never on a root; an autonomy proposal line offers **Decide below**, a contract proposal **See the plan**. A decided Needs me card stays ~1.5 s collapsed to its outcome, and pointer clicks on the list are ignored ~400 ms after one leaves. Focus goes to the next card, the new node's composer, New project after a first repo; dialogs restore focus. Global j/k on a node page walk the tree. The welcome opens Add repository in place and then offers step 2; ⌘K has Add repository…. The Title hint follows quick drafts; `titleFromGoal` cuts at a clause and drops an unbalanced quote; `slugify` cuts at a word. A one-repo project's New node starts on that repo (**Just talk instead**). The Plan tab offers Start the coordinator / Ask it to plan. The header ⋯ has Rename… and Move to…. Add repository… uses the picker and says "Adds a part on <repo>" on a coordinating node. A root's composer points to Ask.
+- **Validation Steps:** Worker gate on the merged tree: `bun test` 3258/0, control-room 110/0, walkthrough 0 findings.
+- **Notes:** Branch T445-flow-focus.
+
+### Ticket: T447 Honest coordinator status, and scale (audit r7)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker (manager reviewed and merged)
+- **Scope:** Audit round 7: #2 (a coordinating node read "Done" while its parts worked; every turn told its parent "done"), #9 (a grey dot for Needs you from a plan or proposal), #15 (60 ms per keystroke on a 324-row thread), #19 (the Overview didn't scale past a few dozen nodes), #20 (the rail cut alike titles to the same text).
+- **Acceptance Criteria:** A coordinating node or a root with parts reads as the most urgent of its own and its open parts' states (Needs you > Blocked > Ready to merge > Working > … ), Done only when every part is merged or closed, with "2 of 4 merged · waiting for web part" in its header and Children cards; the Delivery panel reads the node's own status. A coordinator's own `child_status: done` goes up only when its subtree is finished. The dot follows the status (Needs you amber). The composer owns its draft and the chat renders the newest 80 rows with Show earlier (typing 40 chars on 324 rows: ~2.5 s → ~0.3 s). The Overview groups by top-level node, folds finished branches (all past 30 nodes), and filters (`/`); Recent activity uses the Events words. Rail titles truncate in the middle, keeping their last words.
+- **Validation Steps:** Gate on the merged tree (with T445): `bun test` 3277/0, control-room green, walkthrough 0 findings.
+- **Notes:** Branch T447-status-scale. Merging it with T445 needed a manual resolution of both appending tests at the end of control-room.e2e.test.ts (first attempt dropped T447's edits to T387; caught by the gate, fixed). Follow-up: the "waiting for the plan" item doesn't set `pending_decision`, so its part reads Waiting rather than Needs you.
+
+### Ticket: T446 What the agents did on their own (audit r7)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker (manager reviewed and merged)
+- **Scope:** Audit round 7: #6 (a coordinator's or the Director's own changes read as its chat message in the daemon's words, with ids), #7 (no event recorded them; no undo), #17 (a coordinator's chat was mostly its own wake-ups), #18 (two nodes named "api part").
+- **Acceptance Criteria:** A coordinator's, the Director's or your applied change is a system row in words with its actor's icon and the node it made linked ("Added a part: **X** (web)", "Created **Newsletter signup** in Blog with 2 parts", "You approved plan v1"); daemon lines meant for the agent are `agent_only`; the contract proposal line has no id; old lines re-read into the new words. The autonomy-proposal card says the level and what Apply does. A record-only routed event `autonomy_applied` (strict; delivery status `recorded`, never pending, so it wakes no one) shows in Events, Activity and the Director's Activity with a link per node and Undo (archive) while nothing it made has started. A coordinator's routine wake folds into its reply's header ("Woke for a merge · 01:14"); a wake with no reply is one muted row. Parts are named "<node> · <repo>" (the rail shows the repo under its node); clashing titles get their project or parent in overlap marks, Events and Needs me.
+- **Validation Steps:** Gate on the merged tree (with T445, T447): `bun test` 3309/0, walkthrough 0 findings.
+- **Notes:** Branch T446-agent-actions. Merging with T447 needed: rail titles (a part's short name, else T447's middle truncation), MessageList (T447's window plus T446's links), both new chat.test blocks, the checklist paragraph, and the parts line reading a part by its short name ("waiting for ledger-lite"). Follow-ups: the Director's Events rows use the bot glyph; a node-level autonomy override isn't in the frame, so its card can show the project's level.
+
+### Ticket: T449 CI: the Needs me click guard dropped deliberate clicks
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** CI failed on 2b2b4ed7: "waiting for the plan (T344)" clicked Start parts anyway and the card never left. T445 ignored every pointer click on the Needs me list for 400 ms after a card left; under load the test's click came right after the woken card finished lingering, and was dropped with no sign. A person clicking a different card quickly would lose that click too.
+- **Acceptance Criteria:** Only a click within 6 px of the previous one (a double-click, or a second click while the first was slow) is dropped in the settle window; a click aimed elsewhere goes through. Keys are never guarded.
+- **Validation Steps:** control-room e2e "T449: a click aimed elsewhere…" fails on the old guard and passes now; T445's "…never slides under the pointer" (its second click now at the first one's spot) still passes and fails with the guard removed; full `bun test` 3310/0.
+- **Notes:** Branch T449-steady-list-guard. T449b (branch T449b-events-words-race): the next CI run (fac4e8d8) failed T436's "#15 #18" test, which read an Events row's words once, before the first cockpit frame brought the node's row ("finished" instead of "is ready to merge"); it now waits for the words, in Events and in Activity.
+
+### Ticket: T450 A plan waiting with no coordinator reads Needs you
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T447's follow-up: the "Waiting for the plan" card (parts wait for a plan and no coordinator is running to write it) is your move, but it didn't set the row's `pending_decision` (T437), so the coordinator and its rolled-up status read Waiting, with no amber dot.
+- **Acceptance Criteria:** `plan_waiting` is one of the snapshot's decision kinds: the coordinator's row carries `pending_decision` while the card is up, and reads Needs you in the rail.
+- **Validation Steps:** snapshot test "T450: a plan its parts wait for…" (fails without the kind); control-room e2e "waiting for the plan (T344)" checks the rail row reads Needs you; full `bun test` 3311/0; lint and typecheck clean.
+- **Notes:** Branch T450-plan-waiting-needs-you.
+
+### Ticket: T451 An applied change's glyph names who made it
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T446's follow-up: every `autonomy_applied` row (Events, a node's Activity, the Director's activity, the Overview) showed the coordinator's bot, even for the Director's change or your own Apply.
+- **Acceptance Criteria:** `EventGlyph` takes the event: an applied change shows its principal's icon (the Director's sparkles, a coordinator's bot, a person for you); other types are unchanged.
+- **Validation Steps:** control-room e2e T446 (a coordinator's row: bot) and T301 (your Create: user; the Director's own create_node at Organise: sparkles); full `bun test` 3311/0; lint and typecheck clean.
+- **Notes:** Branch T451-applied-glyph.
+
+### Ticket: T452 A proposal card reads its node's own autonomy
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T446's follow-up: the cockpit row didn't carry a node's autonomy override, so a coordinator's held proposal on a node set to Organise said "Shop is at Advise" and linked to the project root, while the daemon held it at the node's own level.
+- **Acceptance Criteria:** A row carries `autonomy` when its node overrides the project's coordinator level. A coordinator's proposal card names that node and its level, and the link opens the node (where the level is set). A Director's card, and a node that inherits, read as before.
+- **Validation Steps:** snapshot test "T452: a node's own autonomy"; control-room e2e "coordinator autonomy (T282)" (after the node's override to Organise, a held restart reads "Show sale prices is at Organise: …" and its link opens the node with Organise selected); full `bun test` 3312/0; lint and typecheck clean.
+- **Notes:** Branch T452-node-autonomy-row.
+
+### Ticket: T453 Accepted knowledge wakes only the conversation it came from (D44)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Q25 / D44: D36 D10 (T351) woke every finished conversation in an accepted item's scope, up to five per item, each a vendor turn and a reply nobody asked for.
+- **Acceptance Criteria:** `knowledge_accepted` carries `source` (the node the item came from, when it has one). A conversation with no live session wakes on it only when it is that node; any other conversation in scope keeps it pending and gets it with its next message. Coordinators, roots and work nodes are unchanged (P11). `WakeFanout` and `KNOWLEDGE_WAKE_FANOUT` are gone (one conversation per item at most).
+- **Validation Steps:** `events/wake.test.ts` T453 block; `attach/service.test.ts` "another ended conversation is not woken; your next line brings the item" (fails on the old rule: a second session starts) and "the ended conversation that proposed it is woken"; `knowledge/service.test.ts` checks `source`; walkthrough 6.4b and LIVE-CHECKLIST 6.4b follow (not woken, then read with your next message).
+- **Notes:** Branch T453-narrow-knowledge-wake.
+
+### Ticket: T454 Jev decides whether accepted knowledge wakes a conversation (D44 follow-up)
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** worker (manager reviews)
+- **Scope:** Behind a config setting (off by default: T453's narrow rule), ask Jev, per conversation in an accepted item's scope, whether to wake it now. The state: the item (kind, text, scope), the conversation's question, its last reply (capped), when it last changed, and whether a newer conversation covers the same ground. The questions: does this decision change the answer given or settle something it left open; is the conversation still current (not moved on from, not covered by a newer one, not too old, not treated as finished). Pete also raised a later step: Jev reviewing threads on its own (e.g. after X minutes idle) to flag stale or settled conversations.
+- **Acceptance Criteria:** A `wake_on_knowledge: jev` style setting (Settings and config.yaml). On yes, the conversation wakes as the source does; on no, or Jev unavailable, it waits for its next message. Offline tests use `FakeClassifier`; a real Jev check via `agile rules test` or equivalent.
+- **Validation Steps:** Unit tests with `FakeClassifier` for yes / no / unavailable; the setting off keeps T453's behaviour.
+- **Notes:** Pete, 2026-09-27: build it, gated behind a config setting in the UI (off by default: T453's narrow rule). Jev calls are cheap (Pete); conversation text goes through the existing scrubber. Branch T454-jev-knowledge-wake (worker; manager reviewed). `knowledge_wake: source | jev` in config.yaml, default `source` (T453). Settings → Classifier → Accepted decisions: "Let Jev decide which conversations hear an accepted decision", disabled with the reason until a TypeSafe key is loaded. With it on, a conversation that didn't propose the item is asked about once per (event, node), off the wake path (`events/knowledge-wake.ts`): state = the item, the conversation's question, last reply, age, status and newer conversations in the project; Nouls `relevant` and `stale` (asked as "stale" because real Jev scored "still current" in the route band for a current conversation). Wakes when relevant is a confident yes and stale a confident no; unsure, unavailable or no key leaves the item for the next message. At most 5 Jev wakes per item; in memory. Real Jev runs: an open related conversation wakes (0.97 / 0.29); one covered by a newer conversation or 30 days old doesn't (stale 0.80); an unrelated one doesn't (0.03). Deferred: `agile daemon status` doesn't show the setting; Jev reviewing idle threads by itself (Pete's later idea).
+
+### Ticket: T455 Agents propose adding a repo to their node (D45)
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** worker (manager reviews)
+- **Scope:** T445 left the `repo:<name>` proposal ref with no writer. A conversation's or worker's agent gets a verb to propose a repo for its node (name and why); it writes a `proposal` line with `ref: repo:<name>`, which shows **Add <repo>** in the cockpit. Clicking it runs Add repository in place (T205).
+- **Acceptance Criteria:** The verb, validated in `packages/shared` like the others; refused for an unknown repo, the node's own repo, or a project root; the line reads in words; the button is the only way it changes anything.
+- **Validation Steps:** Verb unit tests; a control-room e2e from the agent's proposal line to the reshaped node.
+- **Notes:** Pete agreed (a), 2026-09-27. Branch T455-propose-repo (worker; manager reviewed). `propose_repo {session, repo, why}` for a conversation's or work node's worker writes one `proposal` line (`Proposes adding **web**: …`, ref `repo:web`); the chat's **Add web** runs Add repository in place. Refused for the Director, coordinators, reviewers, closed/merged/archived/helper nodes, roots, coordinating nodes, the node's own repo, a repo it can't read (same words as an unregistered one) and a duplicate. The button also hides once a split node has a part on that repo. LIVE-CHECKLIST §10.4 and a walkthrough step. Gate on the merged tree (T454 + T455 + T458): lint, typecheck clean, `bun test` 3411/0, walkthrough 43 steps, 0 findings.
+
+### Ticket: T456 Retry a failed vendor, then fall back to another (D43 follow-up)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** worker (manager reviews)
+- **Scope:** Pete, 2026-09-27. Today a vendor that exits non-zero on its own blocks the node at once (D43, T432); nothing is retried. Add, behind a setting (home, project, repo): retry the same vendor once for a crash (not for a missing command or a login refusal), then start the next installed vendor on a fallback list (`fallback: [gemini, codex]`) on the same node, thread and worktree. The node stays working; its thread says "Claude failed (<reason>); switched to Gemini"; Events records it; the model label follows. Blocked (D43) only when the list is spent. The new agent is told the last one stopped mid-turn (check `git status`). Only what the daemon holds carries over (thread, worktree, plan, brief); the failed vendor's own session context does not.
+- **Acceptance Criteria:** The setting in `packages/shared` and Settings; the fallback skips a vendor that isn't installed and, unless allowed, one without pre-tool hooks (a lower enforcement floor); a per-node cap on switches; the parent is told only when the list is spent (a switch is not a status change).
+- **Validation Steps:** Fake-agent tests: crash → retry → fallback → working; login refusal → no retry, fallback; list spent → blocked as D43; the cap.
+- **Notes:** Branch T456-vendor-fallback (worker; manager reviewed, fixed a key shown in the Settings text). `vendor_failure` {retry (default on), fallback [], allow_hookless} at home, repo and project (resolved project → repo → home; Settings → Agents → If the agent fails covers the home; repo and project through the API). No retry for a login or model refusal in the vendor's last stderr line or exit 126/127 (`attach/fallback.ts`); hooked vendors are Claude and Pi. A record-only `agent_restarted` event (Events, Activity; the parent isn't told). Cap 3 restarts per node per hour. Deferred: a failed prompt or transport error (not a crash) still blocks without a retry; a switch doesn't change the node's default vendor, so its next start uses the default again. Gate on the merged tree: lint, typecheck clean, `bun test` 3335/0. D43 stays the end state once retries and fallbacks are spent.
+
+### Ticket: T457 Permission posture: Trusted or Ask (D45 follow-up)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** worker (manager reviews)
+- **Scope:** Pete, 2026-09-27. Vendors keep their default permission mode (the daemon answers every ask; a vendor bypass flag would switch the daemon's gating off, and a hook-less vendor would have none). Add a daemon-side posture per home, project or repo. **Trusted** (like Claude's bypass or Codex's yolo): an agent reads anything on disk except the agile home and secrets, without asking. **Ask**: a read outside the registered repos is a Needs me card (Allow once, Always for this project, Deny) instead of today's deny. Both: the project's own repos lead the brief's readable list; writes stay in the node's own worktree; the never-without-human list (protected-branch pushes, deletes outside the worktree, the agile home) is unchanged.
+- **Acceptance Criteria:** The setting in `packages/shared`, Settings and config.yaml; the hook and ACP responder both apply it (one decision function); the card's Always adds a read root for the project.
+- **Validation Steps:** `permissions/decide.test.ts` and hook tests for both postures; a control-room e2e for the Ask card.
+- **Notes:** Branch T457-permission-posture (worker; manager reviewed; merged after T456 with three import/key-list conflicts kept both sides). `permissions: trusted | ask` (default Ask) at home and per project (`packages/shared/src/posture.ts`); one `readVerdict` in `policy-tables.ts` serves the hook, the ACP responder, the benign-command table, the coordinator's `cd` and the `git -C` read allowlist: worktree, then `CREDENTIAL_PATHS`, then hidden roots, then read roots, then the posture. Ask raises an "Allow this read?" card (Allow once, Always for this project, Deny); Always stores the dir in the project's `read_roots` (never `/` or the home dir). Hardened: `~`, `..` through symlinks, globs and braces, recursive reads (`grep -r`, `rg`), case variants, the reviewer's reads, `grep -e`. Settings → General → Permissions, and per project. Repo level not added (the node's project decides). Gate on the merged tree (with T456): lint, typecheck clean, `bun test` 3367/0. The worker's review found three older Bash classifier holes; confirmed by the manager and filed as T459.
+
+### Ticket: T458 A conversation knows the work in progress
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** worker (manager reviews)
+- **Scope:** Pete, 2026-09-27. A conversation's brief lists the repos it can read (paths only) and, when asked about a node, that node's branch and worktree; it doesn't know what else is in flight. Add a capped "Work in progress" section: the project's open work nodes with repo, branch, worktree, status and progress line, so a question like "is anyone touching the export code?" is answered from the right worktree.
+- **Acceptance Criteria:** Capped by count and characters like the other brief sections; ids only where the agent needs them; closed and merged nodes left out.
+- **Validation Steps:** `runner/brief.test.ts` for the section and its caps.
+- **Notes:** Branch T458-wip-brief (worker; manager reviewed). A "Work in progress" section in a conversation's brief: the project's open work nodes on repos it can read (not itself or its parent), newest first, with repo, branch, worktree, statuses, when it last changed and its latest line; at most 15 nodes and 6,000 characters, then "and N more". Conversations only (a coordinator's brief already lists its parts). T458b (branch T458b-about-hidden-parts, manager): the worker found that T420's "What you were asked about" listed the parent's parts on repos the conversation can't read (titles and progress, no paths); they are now left out too. Full `bun test` 3382/0 on the merged tree.
+
+### Ticket: T459 Bash classifier holes: input redirects, xargs, braces in write paths
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by T457's review, confirmed on the merged tree with `decidePermission` (engineer, Ask): `cat </root/.agile/config.yaml`, `tr a b < file` and `echo <path> | xargs cat` are allowed although `cat <path>` of the agile home is denied; `echo a /tmp/x | xargs cp` and `touch a/{b,../../x}` are allowed although they write outside the worktree. The agile home holds the classifier key and every node's state.
+- **Acceptance Criteria:** An input redirect's file (`<f`, `0<f`, `< f`, fused or spaced) is read-checked like an argument. `xargs` is not stripped as a harmless wrapper: its command runs on paths the checker can't see, so an `xargs` pipeline is held for the human (or denied), whatever it runs. A write path with a brace or glob pattern is checked after expansion or refused when a branch can leave the worktree. Existing allowed shapes stay allowed.
+- **Validation Steps:** `permissions/decide.test.ts` cases for each spelling above (they allow on the old code); full `bun test`.
+- **Notes:** Branch T459-classifier-holes. `cmd.inputRedirectTargets` (fused `<f`, `0<f` or spaced; not heredocs, `<(`, `<>`, `<&`) is read-checked for the engineer and through `scopedReads` for the coordinator and reviewer. `xargs` is still stripped so the never-without-human and push checks see the command, but `cmd.runsUnderXargs` holds an engineer's atom for the human and denies a reviewer's or coordinator's. A write path whose pattern can climb (`patternClimbs`, shared with T457's read check) is denied; `cp src/*.ts out/` and `touch src/{a,b}.ts` stay allowed. Tests: `decide.test.ts` T459 block (6 of 9 fail on the old code). Full `bun test` 3376/0, lint and typecheck clean.
+
+### Ticket: T460 A refused turn reads in words and falls back; no gate ids to the agent
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by Pete in the live walkthrough (2026-09-27). Claude Code's expired login answers a prompt with "Failed to authenticate: OAuth session expired and could not be refreshed" and fails the turn, its process alive. The node blocked with "Session ended: prompt failed: The turn did not finish cleanly (prompt rejected): [session/create] sessionId=… phase=register durationMs=1 totalMs=1073", which names no cause and no fix. T456's retry and fallback only covered a process exit, so no fallback vendor was tried. Typing `/login` in the composer started the agent again and failed the same way. Separately, a read held for the human (T457 Ask) told the agent "routed to your inbox as HIL-…", and the agent repeated the id to Pete in its reply.
+- **Acceptance Criteria:** A failed turn (not a stop of ours) is recovered like a crash: a login or model refusal skips the retry and goes to the fallback list; anything else is retried once. The agent's own words in the failed turn are the evidence and the reason. Once the list is spent, the node blocks with a line in words: a login refusal says "<Vendor> isn't logged in. Log in from a terminal (run `claude` and type /login), then send a message to start it again."; anything else says what the agent said. The chat, Details and Needs me show it. A held call's refusal to the agent names no gate id, and the worker and coordinator briefs say to talk in words, not ids. The chat leaves out a parenthesised gate id.
+- **Validation Steps:** `attach/service.test.ts` T460 cases (a fake agent that says the refusal, then rejects the prompt): blocked in words with no retry; switched to the fallback; any other failure retried once, then blocked. `fallback.test.ts` wording. `chat.test.ts` T460. The route band tests assert no id. Full `bun test`.
+- **Notes:** Branch T460-refused-turn. The runner passes the failed turn's text as `agentSaid` (`TurnFailedError`). `turnFailureWords` in `attach/fallback.ts` gives the words and the per-vendor login hint (claude, gemini, codex, cursor; others "log in to <label>"). The thread line is `session ended: turn failed: …`. The fake agent gained a `reject_prompt` step. The composer's `/login` hint is part of T461.
+
+### Ticket: T460b A decided gate reaches the agent in words, not by id
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Two more places told the agent a gate's id, which it could repeat to Pete. The approval or denial prompt said "`HIL-…` approved — retry the call now.", and a retry after a denial was refused with "`HIL-…` was denied: …".
+- **Acceptance Criteria:** The prompt names the call itself ("The human approved your held Edit call: <path> — retry the call now."). The refused retry reads "The human denied this call: <note>". Neither carries the id.
+- **Validation Steps:** `hook/route-band.test.ts` asserts the words and no id; `hook/service.test.ts`.
+- **Notes:** Branch T460b-gate-decision-words. `heldCallWords` in `attach/service.ts`.
+
+### Ticket: T461 Slash commands in the composer
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-27): "definitely ticket this, it's essential". A composer line never reaches the vendor as a slash command. The daemon wraps every line ("The operator wrote on the stream: /login …") so the slash isn't at the start of the prompt. It also drops the ACP `available_commands_update` notification, so the cockpit never knows which commands the vendor offers. Interactive commands (`/login`, `/model`, `/config`) can't run at all over ACP: the harness is headless.
+- **Acceptance Criteria:** The daemon keeps each session's advertised commands (in memory, per session) and serves them to the cockpit. Typing `/` in a node's composer opens a menu of that agent's commands, with descriptions, filtered as you type. A line that starts with an advertised command is sent to the vendor as-is (not wrapped), so the vendor runs it; its output reads in the chat like any turn. A known interactive command that can't run headless (`/login`, `/logout`, and whichever others the vendor doesn't advertise) is not sent: the composer says what to do instead (for `/login`, T460's "log in from a terminal" words for that vendor). An unknown `/word` is sent as a normal message, and the hint says so. The cockpit's own shortcuts are unchanged. No node running: the menu says the commands load when the agent starts, and the first message still starts it.
+- **Validation Steps:** Fake agent advertising commands; daemon tests for pass-through versus wrapping; cockpit e2e for the menu, a pass-through, and the `/login` hint. LIVE-CHECKLIST gets a step with real Claude (`/compact` or a custom `.claude/commands` entry).
+- **Notes:** Branch T461-slash-commands. The commands Claude advertises over ACP are to be measured live at LIVE-CHECKLIST §11 (claude-agent-acp lists built-ins such as `/compact`, `/init`, `/review`, plus the repo's own `.claude/commands` and skills). Nothing is assumed about Gemini or Codex until measured.
+  - Daemon: the runner keeps each session's `available_commands_update` (`advertisedCommands`, at most 200, in memory). `AttachService.commandsFor` serves them, and `GET /api/streams/:id/commands` returns `{running, vendor?, commands}`. `SessionDelivery` sends a human line that starts with an advertised command as its own turn, as typed. Lines before it go first as a digest; lines after it wait for the next turn end.
+  - Found on the way and fixed here: a `human_line` event carries the line capped at 800 characters, while the composer takes 4,000, so a long message reached the agent cut off. Delivery now reads the line from the thread (`lineBody`), in digests and in a woken session's brief alike.
+  - Shared: `AgentCommandSchema`, `slashCommandOf` and `vendorLoginHow` (T460's login words, now used by the daemon and the cockpit).
+  - Cockpit: `lib/commands.ts` (`commandMenu`, `heldCommand`, `commandHint`, `useAgentCommands`). The composer's `slash` prop gives the menu (arrows, Enter or Tab, Escape), the hint and the held note. The node page re-reads the commands when a line starts with `/`, since a vendor lists them only after its session opens. Only a command the vendor doesn't advertise is held (`/login`, `/logout`, `/model`).
+  - Tests: `attach/service.test.ts` T461 (the command's own turn, a 1,500-character line whole, an unknown command wrapped), `runner/commands.test.ts`, `ui/app/lib/commands.test.ts`, and the control-room e2e "slash commands in the composer".
+  - Not done: the Director's composer has no `/` menu yet.
+
+### Ticket: T462 A simple for loop runs; a refused call reads in words
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by Pete in the live walkthrough (2026-09-28). A worker's `for t in 1790274589 …; do date -r $t "+%F %R %Z"; done` was refused with "hook_deny: denied `…` — for is not an allowed command for the engineer role". The command splitter cut the loop at `;`, so `for`, `do …` and `done` were checked as commands, and no role allows `for`. The chat showed the daemon's raw line, with its "hook_deny" and role jargon.
+- **Acceptance Criteria:** `for NAME in WORD…; do BODY; done` over plain words is unrolled before any check: BODY once per word, with `$NAME` and `${NAME}` written out. Every check (the role tables, the never-without-human list, push detection, pattern rules) sees the commands the loop runs. Each unrolled loop gets the verdict its commands would get typed one by one. The loop stays unrunnable on its own when its words hold substitutions or quoting, its body quotes `$NAME` in single quotes or holds `while`/`if`/another loop, or it has more than 50 words or 200 unrolled commands. The chat reads a hook line as "Refused: `…` — <reason>" or "Held for your approval: `…` — <reason>", with the role names in words. The worker brief says plain loops are fine.
+- **Validation Steps:** `permissions/decide.test.ts` T462 (Pete's loop allowed, and fails on the old code; loop and typed-out verdicts equal for engineer and reviewer; the refused shapes never allowed). `ui/app/lib/chat.test.ts` T462. Full `bun test`.
+- **Notes:** Branch T462-loops-and-refusal-words. `unrollForLoops` in `permissions/command.ts`, applied in `parseCommandIntoAtoms`, which is how every caller splits a command. Reads outside the worktree in a loop follow T457 like any read: a registered repo reads freely, any other folder asks under Ask (Always for this project stops it asking), and reads anywhere under Trusted.
+
+### Ticket: T463 A node's own rules and permissions
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28), on a node's Knowledge tab: "i should have the ability to manually uncheck individual rules for this node", and "i also should be able to change that individual node between trusted and ask … this screen would make sense for that". Knowledge applied by scope alone, and the posture was set only at the home and on projects.
+- **Acceptance Criteria:**
+  - Each item on a node's Knowledge tab has a checkbox (checked = applies here). Unchecking switches the item off for that node alone; a critical rule asks first. The item stays listed, dimmed, so it can be switched back on.
+  - The Knowledge tab opens with a Permissions row: Inherit (names what it inherits), Trusted or Ask. A node's posture wins over its project's and the home's.
+  - Both are the operator's alone: the store refuses a change from an agent, a coordinator or the Director. Each change is a thread line.
+- **Validation Steps:** `shared/src/stream.test.ts` T463 (only a human or the daemon), `knowledge/scope.test.ts` (off here, still listed with `includeOff`, children unaffected), `permissions/posture.test.ts` (node → project → home; `setPermissions`), `http.test.ts` (both routes: strict, 403 cross-origin, 400 for an item out of scope), the control-room e2e "a node’s own rules and permissions". Full `bun test`.
+- **Notes:** Branch T463-rules-off-per-node.
+  - The node record gains `rules_off` (knowledge ids) and `permissions` (T457's posture), both human-only (`HUMAN_ONLY_FIELDS` in `assertStreamWrite`).
+  - `knowledgeInScope` leaves `rules_off` out (the one scope filter: hook, brief, delivery, wakes), unless `includeOff` (the node page). `nodeReadScope` takes the node's posture first.
+  - Routes: `POST /api/streams/:id/rule {rule, on}` and `POST /api/streams/:id/permissions {posture | null}`.
+  - A switched-off built-in rule doesn't lift the role tables: writes still stay in the worktree, and the never-without-human list still asks. The confirm says so.
+  - The ACP responder (vendors without a pre-tool hook) reads the posture when the session starts, so a change there applies from the next start. The hook reads it on every call.
+
+### Ticket: T466 Codex wrote "progress —" into its text; lookup_knowledge on the repo root failed
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by Pete in the live walkthrough (2026-09-28). Codex had the agile MCP tools (`mcp.agile.search_docs` ran) but began both of its messages with "progress — ", copying REPLY_FIRST's "Reply … with `progress`" instead of calling the verb. Its `mcp.agile.lookup_knowledge` call failed: most likely it passed the repo root, which `lookupPath` refused as "not a path inside this stream's worktree".
+- **Acceptance Criteria:** REPLY_FIRST says to call the `progress` tool and not to write the word into the message. The chat drops a leading "progress —"/"progress:" from an agent's message. `lookup_knowledge` with `.` (or the worktree itself) answers with every item in scope, path-limited items included.
+- **Validation Steps:** `attach/verbs.test.ts` T466 and `lookupPath`; `attach/service.test.ts` (the REPLY_FIRST words); `ui/app/lib/chat.test.ts` T466. Full `bun test`.
+- **Notes:** Branch T466-progress-prefix-and-lookup-root. The failed call's arguments weren't visible in the chat, so the root path is the likeliest cause, not a measured one; the next live Codex run shows whether it recurs.
+
+### Ticket: T464 A node keeps the model it ran on
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): changing the global default model made every existing node show, and start with, the new model. A node stores no model; an idle node resolves the defaults again at each start (D17).
+- **Acceptance Criteria:** A node that has run starts again on its last session's vendor, model and effort. The defaults choose only for a node that has never run. The model chip (T423) still switches a node, and the switch sticks. The chip and "Starts as …" name what a start will really run.
+- **Validation Steps:** attach tests (a changed default leaves a node that ran on its model; a node that never ran takes the new default; a chip pick sticks); the node page e2e.
+- **Notes:** Branch T464-node-keeps-model. `lastAgentSession` in `attach/service.ts`: a start with no vendor or model picked takes the newest worker or coordinator session's vendor, model and effort, unless that vendor is no longer installed. The cockpit's `keptChoice` (`lib/defaults.ts`) names the same thing on the chip, in "Starts as …" and in the composer hint. A T456 switch to a fallback vendor now sticks too, since that vendor ran last.
+
+### Ticket: T465 Keep a finished turn's session alive, and resume an ended one
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28) asked whether a thread is one vendor session that keeps its context and prompt cache. Only while the agent runs: the turn-end rule stops the session when a turn ends with nothing open, and the next message starts a fresh session from a brief, cold.
+- **Acceptance Criteria:** A finished turn leaves the session alive and idle ("Waiting for you"); the next message goes into the same session. It ends after an idle timeout (Settings, default 30 minutes), a Stop, or the daemon stopping. An ended session is resumed with ACP `session/load` where the vendor supports it (Claude, Grok: spike-findings §C), else started fresh from the brief.
+- **Validation Steps:** A worker's or coordinator's finished turn now "rests" (`AttachService.rest`): the session goes `idle`, the node `done` (Replies, Ready to merge, auto-close unchanged), the thread says "turn finished" (the chat: "Agent finished its turn"). A message (`say`) or a wake the policy allows (`wake`) prompts the same session (`rouse`: `working`, `goal_met` cleared); an event that would not wake the node waits for its next turn. The idle timer (`session_idle_minutes`, default 30; Settings → Agents → Idle sessions, `GET/POST /api/settings/session-idle`), a Stop, a role change, a close, merge or trash, a new start on the node, and the daemon stopping end it with the node still `done` and the reason in words on the thread. The next start with something to hand over resumes the last agent session with `session/load` (runner `resume`: the replay stays off the thread, the digest goes instead of the brief) when the provider has `loadSession`, the session ended `stopped` with its `acp_session_id` on record, and the role, vendor, model and effort match; a failed load starts fresh from the brief, and stderr.log and the thread say so. Tests: attach `T465 (D48)` block (one session two prompts; a non-waking event waits; idle timeout keeps `done`; the home setting; resume via `session/load` with the replay suppressed; load failure → fresh; a picked model → fresh; `resumableSession`; merge with a resting session ends it; a working agent still holds a merge; auto-close ignores an earlier turn's `goal_met` and closes on the turn's own; daemon stop then resume; T444 idle orphan; Stop and a role change keep `done`), the existing wake, answer, gate, queued-line, coordinator and route-band tests moved to the new rule, snapshot (`live` leaves a resting node out of Running), http (`session-idle` route), chat (new lines, the coordinator wake fold in a resting session). Full `bun test` 3508 pass, 3 skip, 0 fail; control-room e2e 131/0; walkthrough 1/0; typecheck and lint clean.
+- **Notes:** Branch T465-keep-sessions-alive. Choices:
+  - "Resting" is kept in memory by the attach service and read from the record elsewhere as `isRestingSession` (`@agile-agents/shared`): an agent session `idle` on a node whose agent is `done` (a question keeps the node `question`, so that idle session is not resting). The session stays `idle` as the design asked; no new status.
+  - Live checks: `requireLandable` (and so preflight, auto-close's merge check) ignores a resting worker, and the `landed`/`closed`/archived update ends it (awaited in `onUpdated`, before the worktree goes); the cockpit row's `live` (Running lens) leaves it out, `live_agent` still names it; the inbox's "no coordinator is running" plan card and + Repo's `wasLive` treat it as not running; Delivery's Resolve button is not blocked by it; `attach` ends it before a new start (Resolve, Start, Wake coordinator); `startFor`/`say` rouse it; delivery's `target` skips it so only the wake policy prompts it; `orphanSessions` and T444's start-up sweep now also end `idle` records with no process, keeping the node's status.
+  - Reviewer and lessons roles keep today's rule: their turn end ends the session.
+  - `goal_met` per turn: a rouse clears it, so auto-close counts only the turn that just ended.
+  - Resume sends the pending events as the live digest, only when there is something to hand over (a line, a wake); a plain Start agent, a crash retry or a Resolve (a brief appendix) starts fresh. A resting coordinator's wake keeps the chat fold (the "woken by" line names the session).
+  - The Director keeps its own session handling.
+
+### Ticket: T467a Keep the vendor's session/new reply, so §12 can be measured
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete ran the vendors and sent `log/events.jsonl`: it has no `session/new` reply, because the daemon never kept one. It read the current model out of `configOptions` and dropped the rest, and the ACP client forwarded `modes` and `configOptions` but not `models`. His log shows Claude reporting its model and Codex, Cursor, Gemini and Grok all reading "default", with no way to tell whether they sent nothing or something the parser didn't know.
+- **Acceptance Criteria:** Each session writes the vendor's `session/new` (or `session/load`) reply to `<home>/sessions/<id>/session-state.json`, with `modes`, `configOptions` and `models`. The ACP client forwards `models`, including a reply that carries only it. The current model is also read from ACP's `models.currentModelId`. LIVE-CHECKLIST §12 points at the file.
+- **Validation Steps:** attach test T467a (the file holds the reply as sent); `runner/session-state.test.ts` (configOptions, a model record, `models.currentModelId`, none). acp-client tests green; full `bun test` 3493/0.
+- **Notes:** Branch T467a-save-session-reply. Reading, not setting: D46's "measure first" still holds for how a model is set.
+
+### Ticket: T467b Write session-state.json for every vendor, and say how to get a daemon that does
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete ran ten sessions and found no `session-state.json` in any of them. His search of the code found no file by that name either, so his checkout or running daemon predates T467a (43099a46). There was also a real gap: the ACP client sent `_agile/session_state` only when the reply carried `modes`, `configOptions` or `models`. A vendor whose `session/new` reply has none of them (just a session id) wrote no file. That is the very case §12 needs to see.
+- **Acceptance Criteria:** Every `session/new` or `session/load` reply writes the file. Missing fields read `null`, and `keys` lists what the reply did carry. LIVE-CHECKLIST §12 starts with the steps to get a daemon that writes it: fetch, check out and pull `claude/phase-14`; check with `git grep`; build; restart the daemon. It also says old sessions have no file and a new node is needed.
+- **Validation Steps:** attach test T467b: a fake Cursor replying `{sessionId}` alone writes the file with `keys: ["sessionId"]`. It fails on the T467a code (no file within 5 s). Typecheck and lint are clean; the full `bun test` passes 3511/0.
+- **Notes:** Branch T467b-session-state-always.
+
+### Ticket: T467 Models come from the vendor, set through ACP (D46)
+- **Priority:** P1
+- **Status:** Done (offline; whether each vendor honours `session/set_config_option` is for the live run: LIVE-CHECKLIST §12's "Accepts a model via ACP?" column)
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): only Claude lists models; every other vendor shows "default model". `KNOWN_MODEL_IDS` is hand-written for Claude alone, and only Claude's adapter can set a model (`ANTHROPIC_MODEL`). That's left over from building, not a design: Claude's switch was the only one measured. ACP vendors report their models in `session/new`'s reply, which the daemon reads for the current model but otherwise discards.
+- **Acceptance Criteria (D46), for every vendor, Claude included:**
+  1. The model list comes from the vendor: the daemon keeps the list from the reply ACP returns when a session opens (it already reads the current model there), and the pickers show it. A vendor that hasn't run yet can be asked with a Refresh that opens a session without prompting.
+  2. The chosen model is set through that same ACP model option.
+  3. A vendor-specific switch is a fallback only where the ACP option is missing, and only once a live run has measured that it's missing. Claude's `ANTHROPIC_MODEL` stays only if its bridge turns out not to support the ACP route.
+  4. A vendor with no way to set a model shows "default" in the picker, with the reason.
+- **Measured (§12, 2026-09-29):** Claude, Codex, Cursor and Grok all send a `configOptions` entry with `category: "model"` (select: `currentValue`, `options[{value, name, description?}]`). That one shape is the list for every vendor. Claude and Codex also send a `category: "thought_level"` option for effort (`effort`, `reasoning_effort`), each with its own levels. Grok's list is short (one option, and the current value is not in it). Cursor's values carry their settings in brackets. Gemini's account was refused and Pi didn't run: they keep today's behaviour until measured.
+- **Validation Steps:** LIVE-CHECKLIST §12 filled in for each installed vendor before building. Then fake-agent tests (a vendor reporting a list; one accepting the ACP model option; one without it), and the picker e2e. Built: `runner/model-catalog.test.ts` (11: the option read from `configOptions` before `models`, `models` as the fallback, grouped options, none; newest file per vendor, a reply with no list keeps the older one, Grok's off-list current kept, a corrupt file skipped, an old file mapped through the session records; `record`; Refresh with auth and no prompt, a reply with no list, a vendor that can't open), attach `T467 (D46)` block (7: a listed pick set through the option before the first prompt, in the log order authenticate → set_mode → set_config_option → prompt; ignored → the thread line and the session's model is the vendor's; refused → the line, the session carries on; Claude's full id → `ANTHROPIC_MODEL`, no option call; a Claude pick from the bridge's list not current → the option too; no model option → nothing set, catalog empty; a resume sets it again after `session/load`), acp-client (`setConfigOption` and its forwarded state), http (the `vendor_models` field; Refresh: 403 cross-origin, 400, 409 not installed, 502 failure, 200; 503 with no catalog), UI lib (the vendor's names in the groups, the select and a vendor change; the "No list yet" reason; bracket settings left off labels), control-room e2e "Models come from the vendor (T467)" (Cursor's names in the picker, the pick starts the node on its value, Settings → Agents → Models shows the list and Refresh fills Gemini's). The attach block fails 5 of 7 with the set step disabled. Full `bun test` 3535 pass, 3 skip, 0 fail; control-room e2e 132/0; walkthrough 1/0; typecheck and lint clean.
+- **Notes:** Branch T467-vendor-models. Choices:
+  - The catalog (`runner/model-catalog.ts`) is built from the `session-state.json` files, no new file: at start-up the newest session dirs (ULIDs sort by age) are read until each vendor has a list (at most 500 files), then kept in memory as sessions open (`onSessionState` from the runner, attach and Director). A file now names its `vendor`; an older one is mapped through the node records' sessions (`sessionVendorIndex`). A reply whose model option has no `options` (the old fake agent) is not a list. `GET /api/settings/session` carries it as `vendor_models` (`VendorModelsSchema`, shared, strict).
+  - The pick: once the session is open (after `session/new`, or `session/load` on a resume, or the fresh start after a failed load) and before the first prompt, a pick the vendor lists and doesn't run is sent with `session/set_config_option` (`setConfigOption` in the acp-client; its reply is forwarded as `_agile/session_state` with `source`, merged into the saved state). The reply's `currentValue` decides; a miss or an error is one thread line and the session record's `model` becomes the vendor's. A non-Claude pick the vendor doesn't list gets a line too. A fresh session's first turn now waits for the open (with authenticate where the vendor needs it); a session that can't open fails that turn as its prompt did (T171's set_mode refusal still ends it with the vendor line).
+  - Claude keeps `ANTHROPIC_MODEL` for every pick (unchanged); the option is only used when the pick is one of the bridge's own values and not its current one.
+  - Pickers: a vendor with a list is a group of its names (values stored); the current one shows even when the list lacks it; with none, the built-in list (Claude) or the default row, tagged "No list yet" with the reason. A label drops bracketed settings (`grok-4.7[…]` → "grok-4.7").
+  - Refresh: `POST /api/settings/models/refresh {vendor}` (same-origin) spawns the vendor in a new `sessions/<id>/` dir with no MCP server and no prompt, authenticates where needed, keeps the `session/new` reply, and stops it (60 s bound). Settings → Agents → Models has a Refresh per vendor.
+  - Follow-ups: effort through ACP (Claude's `effort` and Codex's `reasoning_effort`, both `category: "thought_level"`; Grok's in `models._meta.reasoningEfforts`) is untouched (Claude still uses `MAX_THINKING_TOKENS`); Codex's `models` pairs are ignored; ACP `session/set_model` isn't used (no vendor measured needing it).
+
+### Ticket: T479 Claude bridge 0.84.0, so Sonnet 5.5 is offered
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-29): Sonnet 5.5 is in Claude Code but missing from the list Claude reported in §12. That list comes from the ACP bridge we pin, not from the installed Claude Code. `claude-agent-acp@0.81.1` bundles `claude-agent-sdk` 0.3.280, which doesn't know `claude-sonnet-5-5`; 0.84.0 bundles 0.3.284, which does.
+- **Acceptance Criteria:** The pin is 0.84.0. Everything the daemon relies on was re-checked in the 0.84.0 dist and is unchanged: `ANTHROPIC_MODEL`, `MAX_THINKING_TOKENS` through `resolveThinkingConfig`, `loadSession`, the session config-option setter, the six mode ids, and the default `settingSources` user/project/local that the hook settings file depends on. The built-in Claude list suggests `claude-sonnet-5-5`.
+- **Validation Steps:** acp-client tests (the pinned args) 146/0; typecheck and lint clean; full `bun test` 3511/0. Live: LIVE-CHECKLIST §12's Claude row should list Sonnet 5.5 after `npx` fetches 0.84.0 (the first start after the pull takes a little longer).
+
+### Ticket: T480 Run the installed Claude Code and Codex, not the bridges' bundled copies (D49)
+- **Priority:** P1
+- **Status:** Done (offline; LIVE-CHECKLIST §12.1 for the live run)
+- **Owner:** manager
+- **Scope:** Pete (2026-09-29): "no good reason for 2 different claude installations". `claude-agent-acp` bundles its own Claude Code (through `claude-agent-sdk`), and `codex-acp` bundles `@openai/codex`, so a model the operator's Claude Code already has (Sonnet 5.5) was missing until the bridge moved (T479). Both bridges take an override, checked in their dists: `CLAUDE_CODE_EXECUTABLE` (claude-agent-acp 0.84.0, `acp-agent.js`) and `CODEX_PATH` (codex-acp 1.10.0, README: "run a specific Codex executable instead of the bundled package dependency").
+- **Acceptance Criteria:** When `claude` or `codex` is on PATH, the session env sets the override to its resolved path. When it isn't, the bundled copy runs, as today. `agile daemon status` and Settings → Agents say which is used, with the path and `--version`. A start that fails with the installed CLI, where the bundled copy would work, says so in words on the thread. A per-vendor switch ("Use the installed Claude Code") is on by default. The Claude hook settings path is unchanged: the installed CLI reads the same `.claude/settings*.json`.
+- **Validation Steps:** Runner tests (the env carries the override when the binary resolves, none when it doesn't, and the switch turns it off). LIVE-CHECKLIST: Claude's §12 model list matches the installed Claude Code's `/model` list, and a hooked tool call is still held.
+- **Notes:** Branch T480-installed-cli.
+  - `runner/installed-cli.ts` finds `claude`/`codex` on PATH with `Bun.which` (the PATH path itself, so a native installer's symlink follows its updates) and builds `{CLAUDE_CODE_EXECUTABLE|CODEX_PATH: path}`.
+  - The runner adds it to the session env only when the session isn't sandboxed (`installedCliForSpawn`: a sandbox backend may not see the host's binary). stderr.log says which copy ran.
+  - A session that can't open while running the installed CLI says so in its failure, and names the switch.
+  - Wired through attach, the Director and Refresh models (`ModelCatalog.installedCli`), so the list Refresh reads is the installed CLI's.
+  - Home config `installed_cli: {claude?, codex?}`, absent = on. `store.setInstalledCli`, `GET/POST /api/settings/installed-cli` (same-origin), and a Settings → Agents **Installed agents** card.
+  - `agile daemon status` isn't changed: Settings shows the path.
+  - Tests: `installed-cli.test.ts` 5/0; the attach test (the bridge env and the stderr.log line); the http test (the switch; 400 for gemini; 403 cross-origin); the control-room e2e (the switch saves).
+  - Validation: typecheck and lint are clean; full `bun test` 3542/0 (one run failed the T467 e2e on a stale UI build and passed after `bun run build`); control-room e2e 132/0; walkthrough 1/0.
+
+### Ticket: T481 Keep each vendor's CLI up to date: Off, Alert or Auto (D50)
+- **Priority:** P1
+- **Status:** Done (the LIVE-CHECKLIST §15 run on a real machine is still Pete's)
+- **Owner:** manager
+- **Scope:** Pete (2026-09-29): "a regular check of some kind for any vendor harness with an automatic update feature … configured in settings. it can either be off/alert/auto. off does no version check. alert creates pop-up or 'needs you' that allows me to just click a button and have the new version … installed. auto installs the new version behind the scenes automatically. … existing sessions will be running on the old version and that's fine."
+- **Acceptance Criteria:**
+  1. Settings → Agents → **Updates**: Off, Alert (the default) or Auto, kept in the home config. A vendor can override it.
+  2. For each installed vendor CLI (claude, codex, gemini, cursor-agent, grok, pi), the daemon finds the installed version (`--version`) and how it was installed, from where the binary resolves: Homebrew, a global npm package, or the vendor's own installer with its own update command. It then finds the newest version the same way. A vendor or install method it can't check says so in Settings, with how to update by hand. Nothing is guessed.
+  3. The check runs at daemon start and then daily, plus **Check now**. Off runs no check at all.
+  4. **Alert:** a Needs me item, "Claude Code 2.3.1 is available (you have 2.2.9)", with **Update**, which runs the update and reports the result in words. It can be dismissed until the next version.
+  5. **Auto:** the update runs in the background and leaves a line in Events. A failure becomes a Needs me item, with the command to run by hand.
+  6. Updates run fixed argv, never through a shell and never with sudo, with a timeout. A permission error is reported, not retried. Running sessions are untouched.
+  7. Settings also shows each ACP bridge's pinned version and the newest published one, as information only. A bridge moves by a code change (as T479 did), never by the updater.
+- **Validation Steps:** Unit tests with an injected command runner (no network, no real installs): install-method detection, version parsing, each mode's behaviour, a failed update, Off running nothing. HTTP route tests (same-origin). Settings and Needs me e2e. LIVE-CHECKLIST: one real Alert-mode update of a vendor that is behind.
+  - Built: `packages/daemon/src/harness/` (`methods.ts`: the runner, version parsing, and `UPDATE_METHODS`, the one table of vendor + method → detect, newest, update; `service.ts`: `HarnessUpdateService`). Methods, read from the realpath of the binary: Homebrew formula or cask (`<prefix>/Cellar|Caskroom/<name>/`: `brew info --json=v2`, `brew upgrade [--cask]`, the prefix's own `brew`); Claude's own installer (`~/.local/share/claude/`, `~/.claude/local/`: `claude update`, newest unknown); global npm (`<prefix>/lib/node_modules/<pkg>`: `npm view <pkg> version`, `npm install -g --prefix <prefix> <pkg>@latest`). Anything else (cursor-agent's and grok's installers, a bun global, the npx cache) is "Can't check <CLI> automatically; update it the way you installed it (<path>)". CLIs: claude, codex, gemini, cursor-agent, grok, pi, and pi-acp (its version from its npm package.json: it is an ACP server, never started to read one).
+  - State: the mode, a vendor's own mode and the dismissed version per CLI are `harness_updates` in config.yaml (`StateStore.setHarnessUpdateMode`, `setHarnessUpdateDismissed`); the last check per CLI is in memory. Needs me kind `harness_update` (no node; `harness: {id, label, failed?}`). Events type `harness_updated`, record-only, routed to nobody.
+  - Alert shows an item only for a known newer version; `claude update` (newest unknown) is offered only on Check now. Auto runs updates one at a time after the check and does not retry a version that failed. Updates: fixed argv, `Bun.spawn` with no shell, stdin closed, 10 min timeout then SIGKILL. Under `bun test` the daemon's runner runs nothing and schedules no check unless a test injects one.
+  - Routes: `GET/POST /api/settings/harness-updates`, `POST /api/harness-updates/check`, `POST /api/harness-updates/:harness/update|dismiss` (same-origin, actor human). `agile daemon status` prints one line per CLI.
+  - Tests: `harness/methods.test.ts` 10 (incl. the real runner's timeout, no shell), `harness/service.test.ts` 13, http T481 ×3, shared inbox/home-config +4, ui `lib/updates.test.ts` 3 and `lib/inbox.test.ts` +1, cli +1, e2e T481 (Settings mode switch, Check now, Needs me Update and Dismiss over a fake runner). Removing the Off guard fails "Off runs no command at all"; reading npm before Homebrew fails the gemini-cli detection tests.
+  - Validation (after merging `claude/phase-14` at 2ca9a0ab, T467): typecheck and lint clean; `bun test` 3575 pass, 3 skip, 0 fail; build, then control-room e2e 133/133; walkthrough 43 steps, 0 findings.
+- **Notes:** Branch T481-harness-updates. LIVE-CHECKLIST §15 (one Alert-mode and one Auto-mode update). The dismissed versions live in the home config beside the mode (no new home file).
+
+### Ticket: T486b The sandboxed subprocess env drops the daemon's secrets too
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found in https://github.com/petestewart/agile-agents/pull/12 (T178 on `main`, a separate session's fix for the same leak as T486). T486 scrubbed every vendor spawn, but `sandboxedSubprocessEnv` (test runs, the sandbox probe, worktree and delivery git) still spread the daemon's whole env, and a test run or a git hook runs code an agent wrote.
+- **Acceptance Criteria:** `sandboxedSubprocessEnv` builds from `withoutDaemonSecrets()`; `PATH` and the rest pass through; the daemon keeps its own copy.
+- **Validation Steps:** `subprocess-env.test.ts` T486b (fails without the change); typecheck, lint; the delivery, worktree, sandbox and tools tests.
+- **Notes:** Branch T486b-sandboxed-env. PR #12 itself targets `main`, which the stacked phase branches replace; its vendor-session part is T486 here.
+
+### Ticket: T505 Say plainly that Codex, Grok and Antigravity run commands unchecked
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Found 2026-10-01: providers mark Codex, Grok and Antigravity `requiresSandbox: true` (their bridges never ask before running a command, design §6), but nothing passes that to `startAgentSession`, so they run unsandboxed and ungated (pattern rules and hooks never see their shell commands). Pete (2026-10-01): leave it as it is for now, add a warning; the real fix for Codex is OpenAI's native `codex app-server` (T506).
+- **Acceptance Criteria:** One shared list of these vendors in packages/shared (with a test that it equals the providers' `requiresSandbox` set, so it can't drift). The warning, in plain words ("Codex runs shell commands without asking, and nothing checks them yet. Use it on repos you trust."), shows: on the vendor's row in Settings → Agents → Vendors; on a node whose agent runs one of them (beside the model chip in the header, with the sentence as its tooltip and in Details → Agent); on the model picker's entries for them (a small mark, same tooltip); in `agile vendors` notes; once on the thread when such an agent starts ("… runs commands unchecked"). README and LIVE-CHECKLIST say it too. Nothing is blocked or changed in how they run.
+- **Validation Steps:** Unit tests for the shared list and the words; UI tests for the row and the chip; control-room e2e: a Codex node shows the mark and the tooltip, a Claude node doesn't; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T505-ungated-warning.
+  - Shared (`session-defaults.ts`): `UNCHECKED_COMMAND_VENDORS` (`grok`, `codex`, `antigravity`), `vendorRunsUnchecked`, `uncheckedCommandsWarning(label)` ("<Label> runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.") and `uncheckedCommandsLine(label)` ("<Label> runs commands unchecked"). `attach/resolve.test.ts` keeps the list equal to the providers with `requiresSandbox: true` (the same place the effort list is kept in step with the registry).
+  - Thread: `AttachService` writes one `event` line per start, beside the "effort … ignored by …" line, labelled from the registry provider (`settings.provider.label`, so a test's fake provider can't rename it): "Codex runs commands unchecked", "Grok CLI …", "Antigravity …". The cockpit reads it as an amber system row (`systemLine`). Nothing about how they run changed.
+  - Cockpit: `UncheckedMark` (`ui.tsx`, amber `alert-triangle`, `role="img"` with the sentence as `aria-label` and `title`) beside the composer's model chip (the chip's vendor: the live agent, else the pick or default it shows) and on each Codex/Grok/Antigravity entry of the model picker; Details → Agent shows the sentence (the live agent's vendor, else what a start runs); Settings → Agents → Vendors shows it on the row as an amber `cr-set-note`, whatever the check found (`vendorRowView().unchecked`). The node page header has no model chip; the composer's chip is the one model chip, so the mark sits there. UI labels use `vendorLabel` ("Codex", "Grok", "Antigravity"); Settings and the CLI use the vendor-check row label ("Grok CLI").
+  - CLI: `agile vendors` puts the sentence first among the notes under the row.
+  - Docs: README (Permissions bullet and the vendor requirements line), LIVE-CHECKLIST §19 (new, [vendor]).
+  - Tests: shared +1 (list and words); resolve +1 (list equals `requiresSandbox`); attach service: the Codex start writes the line once, a Claude start doesn't; UI lib: `uncheckedWarning`, the system row, `vendorRowView().unchecked`; CLI: the note for Codex, none for Claude, and the table puts it under Codex's row; control-room e2e +2 (a Codex node shows the mark with the sentence as tooltip and name, Details → Agent and the amber thread line; a Claude node shows none; the picker marks Codex's entries and not Claude's, and picking Codex puts the mark beside the chip; Settings → Vendors warns on Codex's row, not Claude's).
+  - Validation: typecheck and lint clean; build; full `bun test` 3874 pass, 3 skip, 0 fail (3877 tests, 236 files).
+
+### Ticket: T506 Gate Codex with its own PreToolUse hook
+- **Priority:** P1
+- **Status:** Done (merged 2026-10-02; live check LIVE-CHECKLIST §24) — `.codex/hooks.json` + gate script per Codex session, `agile hook pre-tool-use --vendor codex` (exit 2 + stderr), read-only trust check of `$CODEX_HOME/config.toml` (refusal in Needs me), fail-closed stop on unseen execute/edit calls, Codex off the unchecked list; live check LIVE-CHECKLIST §24.
+- **Owner:** worker
+- **Scope:** Pete (2026-10-01) pointed at Codex's hooks (learn.chatgpt.com/docs/hooks): Codex CLI now has `PreToolUse` (and `PermissionRequest`, `PostToolUse`, …) hooks, configured in `~/.codex/hooks.json` or `<repo>/.codex/hooks.json`, covering shell commands (`Bash`), file edits (`apply_patch`/`Edit`/`Write`) and MCP tools; a hook denies with exit 2 or `{"permissionDecision":"deny"}`. That is the same tier-1 gate Claude has (`agile hook pre-tool-use`), so Codex needs no new adapter. design/spike-findings.md tested only ACP permission requests and `approval_policy` (codex-acp 1.10.0), never hooks; the earlier "use `codex app-server`" note came from there and is superseded. Two things the docs leave open and the spike must answer: (1) do hooks fire when Codex runs under `codex-acp` (since T480 the bridge runs the operator's installed Codex through `CODEX_PATH`)? (2) trust: non-managed hooks run only once trusted (recorded against the hook's hash), project hooks only in a trusted project `.codex/` layer, and an **untrusted hook is skipped, not blocking**: fail-open. Options: `--dangerously-bypass-hook-trust` per invocation (needs a way through codex-acp), or trusting the worktree project and the exact hook (a stable hash, since the daemon writes the same hook every time).
+- **Acceptance Criteria:** The daemon writes `<worktree>/.codex/hooks.json` for a Codex session (as it writes Claude's settings), its `PreToolUse` hooks (matchers Bash, apply_patch, MCP) calling `agile hook pre-tool-use` with the session's env, so Codex's commands go through the same rules, classifier and Needs me as Claude's. **Fail closed:** the daemon sees every tool call over ACP; a Codex tool call that ran without its hook having been consulted stops the agent and raises a Needs me item ("Codex ran a command its gate never saw: its hook isn't trusted or didn't fire"), so a skipped hook can never pass silently. Codex leaves T505's unchecked list once this holds. The spike's findings go in design/spike-findings.md.
+- **Validation Steps:** Spike on a real Codex login: LIVE-CHECKLIST §20, `spike/permission-matrix.ts --vendor codex --hooks | --user-hooks | --bypass-hook-trust | --fixture` (added 2026-10-01); offline tests with the fake agent for the hooks.json writer, the env, and the fail-closed check (a tool call with no hook record stops the session); typecheck, lint; build then full `bun test`.
+- **Notes:** Antigravity's `agy` has the same kind of hook (`PreToolUse` with allow/deny/ask in `.agents/hooks.json`); once Codex's path works, a sibling ticket does Antigravity. Grok: unknown.
+  - Spike round 2 (2026-10-01, design/spike-findings.md C5): with a user hook, matcher `Bash` and the trust bypass, `codex exec` ran the hook on both shell commands and blocked `curl` with our reason; the same setup through codex-acp 1.10.0 (`codex app-server`) called it 0 times and `curl` ran. Not yet known whether `app-server` ignores hooks or skips them as untrusted. Next: `--bypass-at end` and codex-acp 2.1.0 (T506c added Codex's stderr to the report). The hooks.json writer must use `[features].hooks` (`codex_hooks` is deprecated).
+  - Spike round 3 (2026-10-02, C5): **the hook works under codex-acp.** A project `.codex/hooks.json` (matcher `Bash`, no bypass) in `~/agile-codex-spike` fired 7 times through the bridge, blocked the `curl` with our reason, and the model quoted it; the blocked call never appears over ACP. It fired before anything was trusted in Codex, while the same hook in a temp dir saw 0 calls: project trust by path (probably a trusted parent in `~/.codex/config.toml`) decides it, and the bypass flag appears to do nothing under `app-server`. T506 goes ahead: hook in the worktree's `.codex/hooks.json` with `Bash` and `apply_patch` matchers, the worktree trusted, plus the fail-closed check.
+  - Trust (Pete, 2026-10-02, option b): **the daemon never edits `~/.codex/config.toml`.** It reads it: a worktree is covered when it or an ancestor is `trust_level = "trusted"` (Pete trusts `/Users/petestewart`, so every repo under home is covered, which is why round 3 fired before `/hooks`). A Codex start in an uncovered worktree is refused with "Codex's gate isn't trusted here: trust <repo> in Codex" (a Needs me item), never started ungated.
+
+### Ticket: T508 A stopped agent says why, in a card
+- **Priority:** P1
+- **Status:** Done (merged 2026-10-02) — a daemon stop (failed start, stopped with an error, T506's Codex fail-closed stop and untrusted refusal) is a card in Needs me and under "Waiting on you": title, why, **How to fix:**, Restart agent / Try again (`lib/inbox.ts` `stopCardOf`; Codex stop words moved to shared); grey line kept.
+- **Owner:** worker
+- **Scope:** Pete (2026-10-02, live T506 check): when the daemon stops an agent (T506's fail-closed stop "Codex ran a command its gate never saw", and any other daemon stop that blocks the node), the chat shows only a grey system line "Worker stopped: …" and a Blocked badge. It should be a card under "Waiting on you", like "Finished, no changes": what happened in plain words, why, and what to do (for the Codex gate: "Codex's hook didn't run in this worktree, so its commands weren't checked. Nothing it ran after that was allowed through." plus Restart agent and a "How to fix" line), and the same item in Needs me.
+- **Acceptance Criteria:** A fail-closed stop and an untrusted-worktree refusal each show a card with the reason and actions; the grey line stays as the record. Unit + control-room e2e.
+- **Validation Steps:** typecheck, lint; build then full `bun test`; `test:e2e`.
+
+### Ticket: T509 The agent's narration between steps folds into its steps
+- **Priority:** P1
+- **Status:** Done (merged 2026-10-02) — `lib/steps.ts` `narrationFolds`: within a turn (bounded by your lines, "turn finished"/"session ended", a session start/stop) only the last agent message is the reply; earlier plain `line`s fold into its "Worked through N steps" in order with the steps. Display only. A turn that waited on a held call or a routed event with no boundary line reads as one turn.
+- **Owner:** worker
+- **Scope:** Pete (2026-10-02): "I'm seeing thinking steps in the transcript". These are not thoughts (the daemon never shows `agent_thought_chunk`); they are the agent's own messages between tool calls ("Let me ask the operator for approval:", "I need to ask for approval…"). Within one agent turn, only the last message reads as the reply; the earlier ones fold into that turn's "Worked through N steps" (expanding shows them in order with the steps). A turn with one message is unchanged. A question or gate raised in the turn still shows in full.
+- **Acceptance Criteria:** As above; unit tests in `lib/chat`/`lib/steps`; control-room e2e: a fake turn with two messages and steps shows one message, the other inside the fold.
+- **Validation Steps:** typecheck, lint; build then full `bun test`; `test:e2e`.
+
+### Ticket: T510 One approval ask, not two
+- **Priority:** P1
+- **Status:** Done (merged 2026-10-02) — `ask` refuses with the actionable reason while the caller has an open `classifier_review` gate raised in its current turn (runner `onTurnStart` → `AttachService.heldCallThisTurn`, which snapshots the session's held calls at each turn start; no snapshot ⇒ any open one counts); worker and coordinator briefs say the same.
+- **Owner:** worker
+- **Scope:** Pete (2026-10-02): a held call (the route band's "Allow this action?" card, e.g. writing `package.json`) was followed by the agent's own `ask` "Create package.json…? Approve / Cancel": two cards for one decision. The held-call reason already says to wait (route-band.ts `routedReason`); prompts aren't enforcement. The daemon refuses an `ask` from a session that has an open held-call gate raised in its current turn, with a reason the model can act on ("Your call is already waiting for the operator's approval (a card in their Needs me); don't ask about it, wait for the answer, then retry the call"), and the brief says the same. The refusal shows nothing extra in the chat.
+- **Acceptance Criteria:** Unit tests on the verb (open gate this turn → refused; no gate, or a gate from an earlier turn → allowed); the e2e or a daemon test for the held write followed by an ask.
+- **Validation Steps:** typecheck, lint; build then full `bun test`.
+### Ticket: T511 Codex's hook goes at the repo root (Codex reads a worktree's hooks from its main repo)
+- **Priority:** P0
+- **Status:** Done (merged 2026-10-02; live re-check LIVE-CHECKLIST §24) (2026-10-02) — hook and script at `<repo>/.codex/` (repo root from the node's `repos.yaml` entry; no worktree copy; others' hooks kept; unchanged files not rewritten), script runs `agile hook pre-tool-use --vendor codex --repo <repo>` (cwd outside `<repo>/.worktrees/` allowed with no daemon call; missing cwd gated), trust checked at the repo root; live re-check owed, LIVE-CHECKLIST §24.
+- **Owner:** worker
+- **Scope:** Pete's live check (2026-10-02): on a real Codex node T506's fail-closed check stopped the agent; the hook never ran. Spike `--worktree` (design/spike-findings.md C5 round 4): with the agent in a git worktree, a hook in the worktree's `.codex/hooks.json` saw **0** calls (curl ran); the same hook in the main repo's `<repo>/.codex/hooks.json` saw **9** and blocked curl with our reason. So for a worktree Codex loads project hooks from the main repo root. The daemon writes the Codex hook (and gate script) at `<repo>/.codex/` (the repo the node's worktree belongs to), merged with any hooks already there, `.codex/` added to that repo's git `info/exclude`, and a repo that tracks `.codex/hooks.json` is refused with a clear message (as T506 does for the worktree). The script must not gate the operator's own Codex use in that repo: the CLI is called with `--repo <root>` and allows (exit 0, no daemon call) when the hook input's `cwd` is not inside `<root>/.worktrees/`; inside one it gates as T506 does, fail-closed. Keep or drop the worktree copy (harmless); the fail-closed watch stays the backstop.
+- **Acceptance Criteria:** A Codex node's start writes `<repo>/.codex/hooks.json` with T506's matchers and a script calling `agile hook pre-tool-use --vendor codex --repo <root>`; git status of the repo stays clean; a hook call with `cwd` outside `<root>/.worktrees/` exits 0 without contacting the daemon; inside, it behaves as T506. LIVE-CHECKLIST §24 updated.
+- **Validation Steps:** Unit tests (writer at the repo root, merge with existing hooks, exclude, tracked-file refusal, the `--repo` guard both ways); typecheck, lint; build then full `bun test`; `test:e2e`.
+
+### Ticket: T513 Fixes from the 2026-10-02 live check (§21–§24)
+- **Priority:** P1
+- **Status:** Done (merged 2026-10-02; re-check §22 unread live) — thread replies leave out the agent's on-the-way lines (folded above its answer in the panel, not unread) and opening a thread reads it on the click, to the newest reply the page or rail knows of (the live non-clearing did not reproduce with the fake agent); a refused start writes no "attached" line; `settle_question` only on the operator's own decision (verb, briefs, reply hint); a reviewer is one-shot by design (cockpit-design §2): its line now says its turn finished and `agile node say` notes the line went to the node's agent. typecheck, lint, build; `bun test` 4048 pass / 3 skip / 0 fail; `test:e2e` 2+157+3 pass.
+- **Owner:** worker
+- **Scope:** Pete's local live check of `claude/phase-14` @ f7c20417 (§21–§24) found, besides the Codex hook (T512):
+  1. §22: a thread's mark read "3 replies" for two replies (an extra agent chatter line counted); "Open threads (1) · 1 unread" and the count dot did not clear when the thread was opened.
+  2. A refused start (untrusted or tracked-hook Codex) first writes "worker attached: codex/default …" on the thread, then the refusal: no "attached" line for a start that never ran.
+  3. §21: Claude called `settle_question` on an informational reply ("What does Stripe use?" to a choice question) in 2 of 2 runs. The verb's description and the briefs must say a question about the options (or any reply that doesn't decide it) is answered with `progress` and leaves the question open; settle only when the operator's words decide it.
+  4. §24: a Codex reviewer ended after its first turn ("review finished: 0 findings (process exited (code -1))") and a following `agile node say` woke a worker: check whether a reviewer is meant to be one-shot (design §4) and, if so, make `say` to a node whose last session was a finished reviewer say so; if not, find why the process exited -1.
+- **Acceptance Criteria:** each item fixed or, for 4, explained with a test; unit/e2e coverage for 1–3.
+- **Validation Steps:** typecheck, lint; build then full `bun test`; `test:e2e`.
+
+### Ticket: T502 Question threads (D62, D63)
+- **Priority:** P1
+- **Status:** Done (merged 2026-10-01; the live settle_question check is LIVE-CHECKLIST §21). Landed: `settle_question` verb (`resolved_as: settled`), `POST /api/questions/<id>/reply` (a choice question stays open; the agent is told it is a reply about it and how to settle; a re-ask supersedes it, `superseded_by`), derived question threads by ref and by cause (`questions/threads.ts`) on the node page and a coordinator's `child_questions`, the unsettled Needs me row (`unsettled_by`), and the cockpit's nested thread under the question, Reply on a choice card, and "N questions from the parts" on a coordinator's chat; LIVE-CHECKLIST §21.
+- **Owner:** worker
+- **Scope:** design/chat-threads.md §5 and §8 step 1. A question card is its thread: the question, your replies, the agent's clarifications and the answer, grouped by `ref: questions/<id>` and by the turns the question's lines caused. A choice question stays open on a typed reply; the agent re-asks (superseding it, the thread carrying on) or calls a new verb `settle_question {question, answer}`; an open question with your reply unanswered for one finished turn is a Needs me row. A coordinator's chat shows each child question as a thread (D63).
+- **Acceptance Criteria:** As in the design. No new thread-entry field yet.
+- **Validation Steps:** Unit tests for the grouping and the settle path; control-room e2e: a choice question replied to by typing stays open and is settled by the fake agent; the coordinator's chat shows two child questions as two threads; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T502-question-threads.
+
+### Ticket: T503 Reply in a thread on any message (D60, D61)
+- **Priority:** P2
+- **Status:** Done (merged 2026-10-02; live check LIVE-CHECKLIST §22) — `thread` and `anchor` on a thread entry (strict, checked by the store: one level, passage inside its turn), threads started and replied to through `POST /api/streams/<id>/say`, delivered lines labelled with their thread, `thread` on `progress`/`ask`, threads derived by field and by cause with batched turns linked (`questions/chat-threads.ts`), and the cockpit's Reply in thread (every turn and the selection bar), highlighted passages, marks with state and unread, side panel, Open threads chip and rail-row unread; LIVE-CHECKLIST §22.
+- **Owner:** worker
+- **Scope:** design/chat-threads.md §3a, §4, §6, §7 and §8 step 2: a Reply in thread icon on every turn and in the selection bar, threads anchored to a selected passage (quoted, highlighted with a count, several per turn, D64), the optional `thread` field and `anchor` on a thread entry (shared schema, strict), placement of the agent's reply by cause (the line that woke the turn; a batched turn goes to the main flow with links), an optional `thread` on `say`/`ask`, delivered lines labelled with their thread, the side panel, a mark per thread in the main flow, derived thread state, unread on the mark and the rail row, the "Open threads" chip. One level of nesting. Anything that needs the operator inside a thread also shows in the main flow and Needs me.
+- **Acceptance Criteria:** As in the design.
+- **Validation Steps:** Unit tests (placement by cause, batched turns, derived state, unread); control-room e2e: reply in a thread, the fake agent's answer lands in it, the mark shows the count and state, a question raised inside a thread also shows in the main flow; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T503-chat-threads.
+
+### Ticket: T504 Move a line to a thread or back; promote a thread to a tangent; archive a thread
+- **Priority:** P3
+- **Status:** Done (merged 2026-10-02; live check LIVE-CHECKLIST §23) — moves, archive (quiet one-time notice, left out of briefs and `read_stream`, questions withdrawn), Archive and forget (fresh restart, never resumed), Compact now (Claude `/compact` only, assumed: spike-findings C6, LIVE-CHECKLIST §23) and Promote to tangent (`seed_thread`), as append-only `op` lines; design/chat-threads.md §7a.
+- **Owner:** worker
+- **Scope:** design/chat-threads.md §6 (Move to thread / Move to main, recorded, display only), §6a (Archive, Compact now, Archive and forget, and archived threads left out of the vendor's own compactions where it lets the daemon in, D65) and §7 (promote to a tangent, T332). Measure per vendor first which compaction route exists.
+- **Acceptance Criteria:** As in the design.
+- **Validation Steps:** Unit and e2e tests for both; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T504-thread-moves.
+
+### Ticket: T499 Answer a question in its own card (and quote from it)
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Pete (2026-10-01), on a node with "4 things wait on you": each question card only says "Type your answer below", and the composer's "Answering question 1 of 4" means scrolling between a long question and the box. Approved design, kept concise: every question card (on the node's chat, and the expanded card in Needs me) gets its own answer box, collapsed by default to a one-line "Reply…" field (or a small reply/chat icon) that expands into a multi-line box on focus/click. Choice cards keep their buttons; the same box sits under them ("or write your own answer / ask about it"); what you type goes to the agent as written (`resolved_as: reply`). Enter sends that card's answer, Shift+Enter is a new line, Esc collapses it. Selecting text inside a question (or any message in the chat) shows a small **Quote** button by the selection; it inserts `> the selected text` (each line prefixed) into the answer box of that card (expanding it), or, outside a card, into the composer. The question text shows in full in the card (no one-line cut) when the box is open. The composer's "Answering question N of M" mode and the "Type your answer below" line go away; the composer is for messages only.
+- **Acceptance Criteria:** The above, with focus and a half-written answer kept per card across re-renders (and a reload, like the composer's draft). No new HTTP routes: answers go through the existing answer path. Same-origin checks unchanged.
+- **Validation Steps:** UI unit tests for the quote formatting and the per-card draft; control-room e2e: two questions on a node, answer the second in its card without touching the composer, quote a selection into the first and send it, a choice card answered by typing; existing Needs me/answer e2e updated; typecheck, lint; build then full `bun test`.
+  - Built (UI only; no daemon, schema or route change): `DecisionCard.tsx` `AnswerBox` on every question card (node chat and Needs me): a one-line `Reply…` textarea (under choices, `Or write your own answer, or ask about it…`) that opens on focus into a 3–10 line box with a key hint and **Answer** (secondary while empty). Enter sends through the existing `answerQuestion` (`POST /api/questions/:id/answer`, `resolved_as: reply`, same-origin as before), Shift+Enter is a new line, Esc folds it (keeps the text; stops propagation); an empty box folds on blur. While open, a `line` question (several open on a node) and a long question in Needs me read whole. A card with its text in the chat and no choices is the box alone.
+  - Drafts: `lib/drafts.ts` `answerDrafts` (`agile.answer-drafts`, the same `KeptDrafts`/`sessionStorage` as the composer), `useAnswerDraft(question)`, `updateDraft` (shared by the composer's setter). A card with a kept answer opens with it after a reload; a sent answer (typed or a choice) clears it.
+  - Quote: `lib/quote.ts` (`tidySelection`, `quoteLines`, `withQuote`: each line `> `, a blank line inside a bare `>`, then a blank line; after existing text a blank line first; cut with `…` to the 800-char message cap). `Chat.tsx` `QuoteSelection` shows a fixed **Quote** button (portal) by a non-collapsed selection inside its scope, not while dragging and not in a text box; the target is the nearest `data-quote-target` (a question card, or an open question's own chat line) → that card's box (`quoteIntoAnswer`, opens it, caret at the end), else the composer (node chat). In Needs me only cards quote. New `quote` icon.
+  - Removed: the composer's answering mode (`answerChoice`, the "Answering question N of M" chip and menu, "Answer the open question instead", the card click that picked a question, `sendIntent`'s `answer` action, `answerTarget`, `oneLine`, Composer `above`/`mode`), the cards' "Type your answer below" hint, and their CSS.
+  - Tests: `lib/quote.test.ts` 6, `lib/drafts.test.ts` +3, `lib/chat.test.ts` (answering cases removed). control-room e2e: the T363 test rewritten as "questions … each answered in its own card (T499)" (two questions: Esc folds and keeps, a reload keeps half an answer, Quote from the first card's text into its box then Answer — the record's answer is `> comma or semicolon for the CSV dialect?\n\nsemicolon`; the second answered with Shift+Enter and a Quote from its own chat line, the composer untouched; Quote from a message goes to the composer) and new "a choice question is answered by typing in its card, as written (T499)"; updated: phone width, choices one-click (node card has the box), the long-question stream test, Needs me "Answer fills in", and the daemon-going-away test (the card's Answer off with why, an aborted answer shows the card's error and keeps the text, then sends). Walkthrough 3.4e reads `Reply…`.
+  - Validation: typecheck and lint clean; build; the 10 affected control-room e2e tests 10/0; full `bun test` 3831 pass, 3 skip, 0 fail (3834 tests, 234 files).
+- **Notes:** Branch T499-answer-in-card. UI only unless the answer path needs a field. LIVE-CHECKLIST §3 (answering and Quote) and `design/cockpit-ui.md` §7 Composer updated. Not done: Quote in the Director's chat (it has no question cards).
+
+### Ticket: T500 Antigravity as a vendor, its ACP server installed by the daemon
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Pete (2026-10-01): Gemini CLI no longer serves free accounts; he uses Antigravity (`agy` 1.2.14). `agy` has no ACP mode, but Google publishes an ACP server, `agy_acp_server` (ACP registry entry `antigravity-acp` 1.2.1, authors "Google LLC", binary archives per platform from `https://dl.google.com/agy-extensions/releases/<macos|linux|windows>/agy-acp-server-1.2.1-<platform>.zip`, cmd `./agy_acp_server.par` (`.exe` on Windows), linux args `["--uid="]`). Google staff confirmed (forum, 2026-09-16) a local single-user bridge on the user's own login is ToS-compliant. Pete chose option 2: the daemon downloads it into the home (approved: a new home folder, `bridges/`).
+- **Acceptance Criteria:** A new session vendor `antigravity` (label "Antigravity") everywhere vendors are listed (shared vendor lists, providers, labels, login hint "run `agy` and sign in", Settings, model picker, vendor self-check, routing profiles left empty until measured). Its provider runs `<home>/bridges/antigravity/<version>/agy_acp_server.par` with the platform's args; the version and the per-platform URLs are pinned in code (moves by a code change, like the npx pins). Install: Settings → Agents → Vendors shows Antigravity with **Install** while missing, and `agile vendors install antigravity`; the daemon downloads the archive over HTTPS (fixed URL only), records its SHA-256 in an install manifest beside it (shown in Settings; a later re-download of the same version with a different hash is refused), unpacks it with a fixed argv (no shell), makes the server executable, and never runs it during install. A missing install reads "Antigravity can't start: its ACP server isn't installed. Install it in Settings → Agents → Vendors." Not installed automatically. `loadSession`, effort and model mapping, auth methods and permission behaviour are unmeasured: loadSession false, no effort mapping, models through T467's config-option path, and the provider is marked like Codex (`requiresSandbox: true`) until measured — note in the ticket that `requiresSandbox` is not yet enforced (see the security note). Gemini stays as a vendor.
+- **Validation Steps:** Unit tests with a fake downloader and fake unzip (never the network, never the real binary): install writes the manifest and the executable, a hash mismatch on reinstall is refused, a missing install names the fix, the provider resolves the path per platform; the vendor shows in the self-check table and Settings (e2e with the fake agent standing in for the server); typecheck, lint; build then full `bun test`. LIVE-CHECKLIST gains a short Antigravity section (install, sign in with `agy`, `agile vendors check antigravity`).
+- **Notes:** Branch T500-antigravity. No downloads or vendor binaries in tests or in the cloud session: every test uses a fake downloader and a fake unzip, and where a "server" has to run it is a shell script that runs the fake agent. Done:
+  - **Pin** (`acp-client/providers.ts`): `ANTIGRAVITY_BRIDGE` (registry `antigravity-acp`, version 1.2.1, one HTTPS `dl.google.com` URL per platform, server file, argv; `--uid=` on Linux; `.exe` on Windows) and `acpBridgePlatform()` (Node's platform/arch → `linux-x86_64` etc.). Provider `antigravity`: label "Antigravity", `command: 'agy_acp_server.par'` (only a name), new optional `bridge` field = the pin, `loadSession: false`, `authMethods: []`, no `defaultModeId`, no effort/model mapping (models come through T467's config-option path), `requiresSandbox: true`.
+  - **Shared**: `antigravity` is added to `SESSION_VENDORS`, `KNOWN_MODEL_IDS` (empty) and `harness_updates.vendors`, with the login hint "run `agy` and sign in". `isHarnessId` is new (`agy` is not in the CLI update check). New `bridges.ts`: `BRIDGES_DIR`, `BRIDGE_MANIFEST_FILE`, `BridgeManifestSchema` (strict: vendor, registry_id, version, platform, https url, archive and command as plain file names, sha256 as lowercase hex, size, installed_at, `by: human`), `VendorInstallInputSchema`, `VendorInstallView`. `VendorCheckRow` gains an optional `install`. UI label "Antigravity". Gemini stays a vendor.
+  - **Daemon** (`packages/daemon/src/bridges/`): `providerIn(home, provider)` resolves to `<home>/bridges/antigravity/1.2.1/<file>` with the platform's args. It is applied everywhere a provider is resolved: attach (spawn, the installed check, routing), the Director, the self-check, the model Refresh, the model policy's `installed`, and the HTTP `vendorMissing`. `missingVendorCommand` hands a bridged provider to `missingBridge`, which never looks on PATH: the server must be a plain file with `manifest.yaml` beside it, and otherwise the ticket's words are returned. A host with no build reads "…has no build for this computer (os arch)". `installBridge` does these steps in order: fetch the pinned URL into a `.<archive>.tmp-…` file in the version folder (the store's temp marker, so a leftover is swept at the next start); take its SHA-256 and size; refuse with `BridgeHashMismatchError` if the same version is installed with another hash, leaving the install untouched; return the install as it is if the hash matches and the server is there, so a running server is never overwritten; rename to the archive's own name (the archive is kept); unpack with `unzip -q -o <zip> -d <dir>` through `bunCommandRunner` (a fixed argv, no shell); check the server is a plain file at the top; `chmod 755`; write the manifest last through `store.putEntity` (the validating store, which records an `entity_put` event). The server is never run during install. The binaries themselves are written by `unzip` straight into the folder, because the store writes YAML/JSON entities, not binaries; only the manifest goes through it. `httpsDownload` refuses anything but `https://`, uses `redirect: 'error'` and caps the size at 1 GiB. `BridgeInstallService` keeps one install per vendor and remembers the last failure in words. Under `bun test` the daemon's download and unzip throw unless a test injects fakes (`StartDaemonOptions.bridgeDownload`/`bridgeUnzip`).
+  - **Install**, never automatic: `POST /api/settings/vendor-checks/install {vendor}` (same-origin, otherwise 403; 400 for a bad body; 409 for a vendor with nothing to download; returns at once and the row polls), RPC `vendors.install` (waits) and `agile vendors install antigravity` (prints the manifest, then "Next: sign in (run `agy` and sign in), then run `agile vendors check antigravity`"). In Settings → Agents → Vendors the row has **Install** while the server is missing, then shows "ACP server 1.2.1 (platform), installed <date> · SHA-256 <hash>", and the last failure (for example a refused hash) in red. `agile vendors` prints the same under the row. A self-check result names the bridge as `{package: antigravity-acp, version: 1.2.1}`. Antigravity has no CLI version, so it is never checked automatically after an install.
+  - Docs: README vendor list and self-check paragraph; LIVE-CHECKLIST §18 (install, `agy` sign-in, `agile vendors check antigravity`, report) and §9.3; cockpit-design §7 home layout (`bridges/<name>/<version>/`).
+  - **Unmeasured** (no live run, no download here): whether `agy_acp_server` 1.2.1 starts with `--uid=` empty as the registry gives it; `loadSession`; its `authMethods` (it may need an ACP `authenticate` round trip, which would show as a login failure in the check); its modes; its model and effort config options; its permission requests (`requiresSandbox: true` is a mark only); its usage (Google's tracker says it sends none, so the check should read usage "none"); where `agy` keeps its login (it is not in the sandbox's login paths or the credential-deny list yet). Also unmeasured: whether `dl.google.com` serves the archives without a redirect (a redirect fails the install, in words) and whether macOS's `unzip` keeps the server executable (the daemon `chmod`s it anyway). There is no Windows unzip fallback.
+  - **Security note**: `requiresSandbox` is **not yet enforced**. No caller passes the provider's `requiresSandbox` (or `vendors.yaml`'s `requires_sandbox`) into `startAgentSession`, so Codex, Grok and now Antigravity engineers run unsandboxed, gated only by ACP permission requests and the pattern rules.
+  - **Results**: typecheck and lint clean; build ok; full `bun test` 3856 pass, 0 fail (3859 tests, 235 files; the other 3 are skipped, as on the branch before). 34 new tests: `bridges/bridges.test.ts` (16: the path per platform, the missing words, install writes the manifest and an executable server, a hash mismatch is refused and the install is left untouched, the same hash keeps what is installed, a bad archive, a failed or empty download, the unzip argv, HTTPS only, the service), `shared/bridges.test.ts` (4), session-defaults (1), providers (3), vendor-check (2, including a check running the installed fake server from the home), http (1: 403/400/409, then Install), CLI (2), UI `vendor-checks` (4), and control-room e2e "Install Antigravity's ACP server" (fake installer: the row reads not installed, Install, then the SHA-256, then Check). The T489 daemon test now expects `antigravity` among the vendors, and a `vendors.install` call under bun test fetches nothing.
+
+### Ticket: T501 Pi's bridge runs through npx, pinned
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** worker
+- **Scope:** Pete (2026-10-01): run Pi's ACP bridge through `npx` like Codex's and Claude's, so nothing extra is installed. The ACP registry lists `pi-acp` 0.0.34 (npx). Pi's own CLI (`pi`) must still be on PATH (pi-acp spawns `pi --mode rpc`).
+- **Acceptance Criteria:** The Pi provider runs `npx -y pi-acp@0.0.34`. "Can't start" for Pi names `pi` when the Pi CLI is missing (a provider can name a required command besides its own). The bridge shows in Settings → Agents → Updates as a pinned bridge (`bridgesOf`), not as an installed harness to update; `pi-acp` stays accepted in the home config's harness entries (strict schema: an existing `pi-acp` key must not make the config refuse) but is no longer checked or updated. Vendor self-check rows read correctly for Pi.
+- **Validation Steps:** providers, harness and vendor-check tests updated; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T501-pi-npx.
+  - `providers.ts`: Pi runs `npx -y pi-acp@0.0.34` (the registry's pin; T022 verified 0.0.33 offline, loadSession unchanged). New optional `AcpProviderConfig.requiresCommands` (frozen), `['pi']` for Pi only.
+  - `missingVendorCommand` checks the provider's command, then each `requiresCommands` entry, and names the first missing: "Pi can't start: `pi` is not on the daemon's PATH." (npx missing is named first, with the Node.js hint). Attach, the runner, routing's `installed` and the vendor self-check all go through it, so the self-check row reads "Not installed" with that line when `pi` is missing, and "Can't start" with the npx line when `pi` is there and Node isn't. A Pi self-check result names its bridge `pi-acp 0.0.34` (`bridgeOf`).
+  - Harness updates: `pi-acp` left `HARNESS_IDS`, `HARNESS_VENDOR` and `HARNESSES`; it shows as a pinned bridge through `bridgesOf(ACP_PROVIDERS)` (now Claude, Codex, Pi). The package.json version path (`version: 'package'`, `readText`) existed only for pi-acp and was removed; every CLI reads `--version`. `noteVersions` no longer filters pi-acp.
+  - Legacy config: `harness_updates.dismissed['pi-acp']` stays in the strict schema, documented as legacy and ignored, so an existing home keeps loading; no migration on read (least invasive: a store write of the block keeps its other entries as they are and validates the result, and nothing reads the key). Inbox `harness_update` items and the last check are in memory, never stored, so no stored `pi-acp` id can refuse; past `harness_updated` events carry the id as a plain string.
+  - Docs: README requirements (the npx bridges need Node.js; for Pi install only `pi`), LIVE-CHECKLIST §15 (the bridges row lists Pi's; pi-acp is not a CLI row). Neither described installing pi-acp before.
+  - Tests: providers +1 (and the Pi entry); `missingVendorCommand` +1 (attach/service.test.ts); harness: bridgesOf lists Pi's bridge and HARNESSES has no pi-acp, the npm-detection example moved to Pi's own CLI, the pi-acp package.json test replaced by "pi-acp on PATH is never checked"; vendor-check +1 (Pi's bridge) and Gemini has none; home-config +1 (a legacy `pi-acp` dismissed version loads; not a HarnessId); inbox, UI and CLI vendor-check examples moved to the npx case.
+  - Validation: typecheck and lint clean; build; full `bun test` 3826 pass, 3 skip, 0 fail.
+
+### Ticket: T498 The ⌘K e2e waits for the snapshot before reading the palette
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** CI red on b7cf40a1 (T497's merge; the change didn't touch it): "⌘K on a node lists … recent nodes" failed `groups.some(g => g.startsWith('Recent'))`. Root cause: the test opened the palette once the node page's Merge was visible and read the groups at once, but the node page renders from its own fetch (`getStreamPage`) while Needs me and Recent come from the cockpit snapshot (`/ws`, `/api/snapshot`), which can land later under load. Reproduced by delaying the snapshot 2.5 s: the old test fails, the palette fills in while open.
+- **Acceptance Criteria:** The test waits for the "Answer: …" item and the Recent group before reading the groups; with the snapshot delayed it passes.
+- **Validation Steps:** The test alone passes, and passes with the snapshot delayed 2.5 s (the old version fails there); lint, typecheck.
+- **Notes:** Branch T498-palette-recent-wait. Test only.
+
+### Ticket: T497 A coordinator is told what its child asked, and whose it is
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete's Shop root had 8 questions from its coordinator: "The codex child is waiting with a question, but I cannot see the question text…". A child that asks the operator moves to `question`, and its ancestors' `child_status` said only "Child codex is asking." So the coordinator asked the operator what the question was.
+- **Acceptance Criteria:** `child_status` on `question` carries the child's latest open question (capped) and `asks: you | operator` (T338's coordinator-first, not passed up, is `you`). The line: "Child codex asked the operator: "…". It is in their Needs me and they answer it there; don't ask them for it, and tell the child nothing unless it concerns the plan." or "Child web asks you first: "…". Answer with `answer_child`." With no open question found, the line is as before.
+- **Validation Steps:** `events/producers.test.ts` (+3); typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T497-child-question-text. The payload schema gains two optional fields (`question`, `asks`).
+
+### Ticket: T496 Needs me: closing a node takes its rows with it
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-10-01): closing a node from Needs me left its message there; with 9 rows selected the button read "Close 2", and closing removed none of them; the node column showed "S." for every row. Causes: (1) the inbox dropped a deleted node's questions and gates but not a closed or merged one's, though Close says it "leaves Needs me" (8 of the rows were questions from one node, the Shop root, so its close changed nothing on screen); (2) the bulk button counts nodes, not rows, and didn't say so; (3) the node name shrank with the long line beside it (flex weights by size).
+- **Acceptance Criteria:** A closed or merged node's open questions and pending gates leave Needs me; Reopen brings them back (derived, nothing deleted). The bulk button reads "Close N node(s)". The node name keeps its width up to 45% of the row, and the line gives way.
+- **Validation Steps:** `inbox/service.test.ts` (+1: close hides the question and the gate, reopen brings them back); control-room e2e "Needs me as an inbox (T470)" checks "Close 2 nodes"; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T496-needs-me-close.
+### Ticket: T495 A resting agent starts again on an updated CLI
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-10-01): a Codex node said "The 'gpt-6-astra' model requires a newer version of Codex"; he updated Codex and sent "try again" and got the same error, while a new node worked. Cause: a resting session (T465, D48) keeps its vendor process for up to 30 minutes, so the next line went to the process still running the old binary.
+- **Acceptance Criteria:** A session stamps the CLI binary it runs when it spawns (the installed CLI the bridge points at, or the vendor's own command; never an `npx` bridge's bundled copy): where it resolves, its mtime and size. A line to a resting session whose binary changed since ends that session ("session ended: Codex was updated since this agent started; it starts again on the new version") and starts the agent again with the session's own vendor, model and effort, so it resumes with `session/load` and the line. A working agent is left alone. Nothing changes when the binary didn't change.
+- **Validation Steps:** `runner/installed-cli.test.ts` (+2: a rewrite, a repointed symlink, a removal; which binary a session runs); `attach/service.test.ts` (+1: unchanged takes the line in the same session; after a rewrite the line ends it, resumes with one `session/load`, two sessions, same vendor and model); typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T495-restart-on-cli-update. Until it's pulled: ⋯ → Restart agent does the same by hand.
+
+### Ticket: T494 Self-check fixes from Pete's first run
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete's first `agile vendors check` (2026-10-01): Claude Code ✗ model ("refused the model: Internal error") while it ran `claude-opus-5-5`; Codex ✓✓✓; Cursor model ✓; Grok effort ✓ and resume ✓; Gemini not logged in; Pi "0.87.1 not installed". Four faults on our side: (1) the table padded every row to the widest note, hundreds of columns wide; (2) `_meta.quota.token_count` and `…model_usage` (the session's own token counts) were listed as rate limits because of the name `quota`; (3) a refused pick left the vendor out of Choose, so one bad test model would drop Claude; (4) Pi's CLI is installed but its `pi-acp` bridge isn't, which read as "not installed".
+- **Acceptance Criteria:** `agile vendors` prints short cells only (VENDOR, VERSION, CHECKED, MODEL, EFFORT, RESUME, USAGE as "per turn, context, cost"); notes (what didn't take, rate limits, errors, a missing command) go under the row, wrapped to the terminal; no line ends in padding; `--json` keeps every field name. A `token_count`/`model_usage` subtree is never a rate limit. Only `kept` leaves a vendor out (CLI, Settings and routing); the refusal error names the model tried. A vendor whose CLI version is known but whose command isn't on PATH reads "can't start" with the missing command (CLI and Settings).
+- **Validation Steps:** Affected suites (vendors CLI, vendor-check, routing, UI vendor-checks, shared) 71 pass; typecheck, lint; build then full `bun test`.
+- **Notes:** Branch T494-vendor-check-fixes. Why Claude Code refused its test model is still open: the next check's error names the model.
+
+### Ticket: T493 `agile` stays executable after a pull
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete got `zsh: permission denied: agile` on `agile daemon stop`. `bun link` puts `~/.bun/bin/agile` on the PATH as a link to `packages/cli/src/index.ts` and makes that file executable, but git tracked it as 100644, so a pull, or the checklist's own `git checkout -- packages/cli/src/index.ts`, dropped the bit again.
+- **Acceptance Criteria:** `packages/cli/src/index.ts` (it starts `#!/usr/bin/env bun`) is committed as 100755. LIVE-CHECKLIST §1.1 no longer needs `chmod +x` after a pull; its `git checkout --` line stays for checkouts from before this change, and does nothing otherwise.
+- **Validation Steps:** `git ls-files -s packages/cli/src/index.ts` shows 100755; a fresh `git checkout` of the file keeps it executable and `./packages/cli/src/index.ts` prints the usage.
+- **Notes:** Branch T493-cli-executable. File mode only, no code change.
+
+### Ticket: T492 The fake agent's log is append-only; tests read complete lines
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** CI red on f4075901 (T486b's merge; the change didn't touch it): T467's "a Claude pick from the bridge's own list goes through the option when it isn't current" failed with `JSON Parse error: Unterminated string` in its `logLines()`. Root cause: the fake agent logged by reading the whole file and writing it back (`writeFileSync(prior + line)`), which truncates first, so a test reading the log at that moment saw a cut or partial file. Any test reading a fake-agent log could hit it.
+- **Acceptance Criteria:** The fake agent appends each line with one `appendFileSync`; every test that parses a JSONL log takes only newline-terminated lines (`.split('\n').slice(0, -1)`), so a line still being written is never parsed.
+- **Validation Steps:** The failing test and its describe pass; typecheck, lint; build then full `bun test` 3747 pass, 3 skip, 0 fail.
+- **Notes:** Branch T492-fake-agent-log. Readers changed: attach/service.test.ts (14), model-catalog, route-band, walkthrough and control-room e2e.
+
+### Ticket: T487 New node picks its model with the model picker (favourites included)
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Left from T469: New node's **Change** control is `SessionFields`, three plain dropdowns per vendor. So it has no stars, no favourites view, no folds and no search, unlike the composer chip, Ask and Start with…, which use the model picker (`ModelChoice`).
+- **Acceptance Criteria:** New node's model choice is the model picker, with favourites, Show all, folds and type-ahead, and the effort chip beside it for a vendor with effort. What it creates is unchanged: the pick goes on the new node's first start, as today.
+- **Validation Steps:** The New node e2e picks a favourite and a non-favourite through search; the walkthrough still runs.
+  - Built: New node's model line under "Start the agent now" is the composer's `ModelChip` (`modelOnly`, so `ModelChoice` with T469's favourites, stars, Show all, folds and type-ahead) and `EffortChip` beside it (Claude only, T401); click steps low → medium → high → max. It names the resolved default until you pick (the ids on hover, as T386's line did), and "Use the default" shows once the pick differs. The pick is `modelChip`'s `pending` (a pick equal to the default is no pick) and goes the same way as before: `start: false` on create, then `attachSession(worker, {vendor, effort, model?})`, or with "No goal yet" on `sayOnStream`'s `session`. An untouched New node still starts through the create's own start on the resolved default. Talk/Work, "No goal yet", auto-close and the repo pickers are unchanged. `ModelChip` and `EffortChip` take optional `testid` (New node: `new-stream-model-chip`, `new-stream-effort`), `heading`/`note` and `title` (New node's popover says "Model its agent starts with"; no Shift+Tab in the tooltip). The Change button and `SessionFields` in New node are gone; `SessionFields` stays for Settings.
+  - Tests: control-room e2e T487 (favourites view shows the two starred models plus the default, pick starred Cursor grok-4.7, no effort chip for Cursor, Escape closes the list and not New node, create, first session is cursor/grok-4.7; a second New node starts on the default, typing on the list searches, Enter picks Claude Haiku 4.5 without submitting, the effort chip steps Low → Medium → High, first session is claude/claude-haiku-4-5/high). Updated T204 (the chip and effort chip name the default, ids on the chip's title, no reset) and T365 (steps the effort chip in place of the Change select; still asserts the session runs on high).
+  - Validation: typecheck and lint clean; full `bun test` 3606 pass, 3 skip, 0 fail; `bun run build` then control-room e2e 135/0; walkthrough 1/0 (it never drove the old selects).
+- **Notes:** Branch T487-new-node-model-picker.
+
+### Ticket: T488 Codex's effort, and Cursor's effort in its model
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-30): Codex and Cursor show no effort chip. T401 offered effort only where a spawn-time mapping existed (Claude's `MAX_THINKING_TOKENS`). Pete's §12 replies show Codex reports its own effort option, `reasoning_effort` (`category: "thought_level"`, values low, medium, high, xhigh, max, ultra), and Cursor has none: its effort is part of each model id (`claude-opus-5-5[…,effort=medium,…]`, `gpt-5.6-sol[…,reasoning=medium,…]`).
+- **Acceptance Criteria:** Codex gets the effort chip and picker levels; its level is set with `session/set_config_option` after the model and before the first turn, and read back. A level it keeps, refuses or doesn't list says so on the thread and never fails the session; the session records the level it runs. Cursor's chip place reads "In the model" (not a button) and the pickers say "Cursor sets effort as part of each model: pick the model with the effort you want". Claude is unchanged. D12's four levels stay (Codex lists all four; its xhigh and ultra aren't offered).
+- **Validation Steps:** Attach tests with the fake agent in Codex's shape; the T401 parity test; UI label tests; the New node e2e for Cursor's hint; full suite.
+  - Built: `AcpProviderConfig.effortOption` (Codex `true`); `EFFORT_VENDORS` = claude, codex, and `EFFORT_IN_MODEL_VENDORS` = cursor in shared; `providerTakesEffort` for attach, resume and the Director (no "effort … ignored by codex" line any more); the runner's `applyPickedEffort` after `applyPickedModel`, reading the model reply's `configOptions` first (a model change can change the levels), `vendorEffortOption` in `vendor-models.ts`; `onEffort` reports a refusal to the node's or the Director's thread and records a D12 level the vendor kept. UI: `noEffortLine`/`effortInModel` in `lib/chat.ts`; `EffortChip` renders a static "In the model" chip for Cursor; the picker's no-effort text uses the same words. The fake agent gained `effortOption`.
+  - Tests: attach T488 (set after the model and before the prompt, recorded, no ignored line; the current level not sent; kept → line and recorded level; refused → line, the turn runs; an unlisted level not sent; Cursor still "effort high ignored by cursor"). Four of the six fail with `applyPickedEffort` disabled. T401 parity test counts `effortOption`. `chat.test.ts`: Codex labels carry effort, Cursor's don't, `noEffortLine`. Control-room e2e T487 asserts Cursor's static chip and its title.
+  - Validation: typecheck and lint clean; `bun run build`, then full `bun test` 3612 pass, 3 skip, 0 fail (e2e included). Live check: LIVE-CHECKLIST §12.2.
+- **Notes:** Branch T488-vendor-effort. Unverified against real Codex: whether `reasoning_effort` set over ACP changes the turn (§12.2).
+
+### Ticket: T482 Model routing: the policy and the lock
+- **Priority:** P1
+- **Status:** Done (differences from the design in `design/model-routing.md` §11)
+- **Owner:** manager
+- **Scope:** Pete (2026-09-29): model choice is configurable per project or node, with inherit and choose as options, the operator's own parameters (free text and settings), a chooser that looks at the task being handed off, configurable effort, and choices lockable to a set of models and effort levels. Today no parent chooses: `add_child` and `start_node` carry no model, and a child resolves like any unpicked node (T464, then project, repo, home, built-in).
+- **Acceptance Criteria:** `design/model-routing.md` §3, §4 and §8: the policy schema (mode default/inherit/choose, quality priority, preset models, effort ceiling, escalation, pinned rules, guidance, weights), resolved node → ancestors → project → home, stored human-only. Every routed pick is clamped to the presets and under the effort ceiling, with a chat line when a clamp changes it. An explicit pick wins and reads "Running <model>, as you picked" (D53). The home default is edited in Settings → Agents → Model choice, and projects that existed before are stamped `default` once (D54). Project and node UI; `agile policy`. Depends on T467.
+- **Validation Steps:** Shared resolution unit tests; attach tests (routed vs explicit, inherit, clamp, a node write by an agent refused); UI e2e.
+  - Built: `shared` `model-policy.ts`: `ModelPolicySchema` (mode default/inherit/choose, quality 0–100, presets `{vendor, model}`, effort ceiling, escalation start_cheap/strongest_first, pinned rules `{when:{role|label|topic}, pick}`, guidance ≤ 2000, weights 0–3), `ModelPolicyPartialSchema` (every layer), `ModelPolicyPatchSchema` (`null` inherits again), `ModelProfileSchema` and home `model_profiles` (shipped: Opus/Fable 2 strongest, Sonnet 1 balanced, Haiku 0.3 fast, the aliases; Codex gpt-6-astra strongest 2, gpt-5.6-sol/terra and gpt-5.5 balanced 1, gpt-5.6-luna fast 0.3, a first guess; none reads balanced 1), `resolveModelPolicy` (node → ancestors nearest first → project → home → built-in = D54's shipped default, with each field's source), `pickModel` (§4: explicit, never clamped, with the D53 note outside the presets; kept; inherit; default; choose = §5's "Without Jev" rule; then the clamp into the installed presets and under the ceiling, with a note), `routedPickLine`, `ModelPickRecordSchema`. Home `model_policy`/`model_profiles`, project `model_policy`, stream `human.model_policy` and `human.choose_again` (human-only by the `human.*` split), `agent.pick` (the daemon's).
+  - Daemon: `routing/policy.ts` `ModelPolicyService` (views, writes, `pickForStart`, `nextPick`, `previewNew`, the one-time stamp) and `routing/rpc.ts` (`policy.show|set|choose_again`). `attach/service.ts`: any flag is an explicit pick; `carried` (a role change, a crash's retry or fallback) asks no policy; otherwise T464's kept pick, else a routed pick made once (and again after a choose-again, which the start clears). A routed start writes "Model: Claude Sonnet 5.5 · medium — start cheap: the cheapest balanced preset model (no chooser yet)"; an explicit pick outside the presets "Running Claude Opus 4.8, as you picked. Routed picks here use this project’s preset models."; every agent start records `agent.pick`. The stamp runs at daemon start before any wake: a project with no `model_policy` gets `{mode: default, presets: []}` and one root-thread line; new projects get `{}`. HTTP (same-origin writes, actor `human`): `GET/PUT /api/settings/model-policy`, `/api/settings/model-profiles`, `/api/projects/:id/model-policy`, `/api/streams/:id/model-policy`, `POST /api/streams/:id/choose-again` (it also ends a resting session), `GET /api/model-policy/preview`; the node page carries `next_pick`.
+  - UI: `components/ModelPolicy.tsx` + `lib/model-policy.ts`: Settings → Agents → **Model choice** (Mode with hints, Quality priority slider "Favor speed & cost" ↔ "Favor quality", **Preset models** from the T469 picker rows plus "Use my favourites" and "Any model", Effort ceiling, Escalation, Model profiles tier + cost, a plain note that Choose uses the rule until Jev); Details → **Model choice** on every node (a root's edits the project's): each field "set here" / "from Home" / "from <ancestor>" with "Use inherited", how the current model was picked, and **Let the policy choose again**. The composer's "Starts the agent with…" and New node's chip name the routed pick a start would make. Never "allowed".
+  - CLI: `agile policy show [--project P | --node N]`, `agile policy set <field> <value> [--project P | --node N]` (`inherit` clears), `agile policy choose-again --node N`; README and usage.
+  - Tests: shared `model-policy.test.ts` (27: schemas strict, limits, the human-only split, patches; resolution field by field with sources, ancestors before the project, a stamped project over the home; profiles; pick: explicit in/out of presets, kept, inherit, inherit with no parent, default, choose start cheap / no balanced / strongest first / no presets, the clamp by preset and by ceiling, a vendor without effort, an uninstalled preset); daemon `routing/policy.test.ts` (4: the stamp idempotent with one root line, nothing moves with favourites set; agent/coordinator/Director writes of `human.model_policy` and `choose_again` refused; ancestors over the project and a root's layer; `policy.*` RPC); attach T482 (5: routed first start + line + `agent.pick`, a later start keeps it, choose again re-picks and clears; choose again ends a resting session and the next message re-picks (fails without the fix); explicit wins outside the presets with the note, none inside; inherit + ceiling clamp; Default clamped into the presets, and a carried restart asks no policy); http T482 (every route, 403 cross-origin, 400/404); CLI `policy.test.ts` (3); UI `lib/model-policy.test.ts` (5); control-room e2e "Model choice (T482)" (2: Settings saves mode, escalation, ceiling, quality, favourites and a picked preset, Reset, a profile's tier; Details shows the pick, sets and clears a field, Let the policy choose again). Updated for D54 (a routed first start is now Choose): attach T464/T204, CLI stream e2e T130/T204 (now through `agile policy set`), control-room T363 (the hint and the start are the routed Sonnet 5.5 · medium), T379 and eight chip/defaults tests (set Default with no presets), the walkthrough's home (Default, no presets).
+  - Validation: typecheck and lint clean; full `bun test` 3653 pass, 3 skip, 0 fail; `bun run build`, then control-room e2e 137/0; walkthrough 1/0 (43 steps, 0 findings).
+- **Notes:** Branch T482-model-policy. Left for T483: the Jev choice call, pinned rules applied, guidance/weights/quality used, Try it, the scores in Details, and cockpit controls for guidance, weights and pinned rules (the CLI sets them now). LIVE-CHECKLIST has no Model choice step yet.
+
+### Ticket: T483 Model routing: the chooser
+- **Priority:** P1
+- **Status:** Done (differences from the design in `design/model-routing.md` §11, T483)
+- **Owner:** manager
+- **Scope:** `design/model-routing.md` §5 (D52): one Jev call with the choice primitive scores spec clarity, verifiability, horizon, stakes and volume, reads the topic, and picks a model and effort from the preset models, with a confidence. Pinned rules, guidance, weights and quality priority feed it. Model profiles (tier, relative cost) live in the home config. The rule fallback applies below 0.5 confidence, with no key, or when the call fails.
+- **Acceptance Criteria:** A chat line with the pick and why; Details shows the scores, the resolved policy's source, and "Let the policy choose again"; Settings has Try it. A reply that fails the schema, or picks outside the lock, is clamped or falls back, and says so.
+- **Validation Steps:** Unit tests with a fake choice classifier (a confident reply, a low-confidence one, an invalid one, an outside pick, a timeout, no key); the wire mapping against a recorded live reply; attach test that a routed start runs the chooser once and a later wake doesn't (D55); e2e for Try it; one real Jev run.
+  - Built: shared `model-chooser.ts`: `JevChoiceQuestionSchema`/`JevChoiceAnswerSchema` (strict; 2–255 options), `ChoiceQuestion`/`ChoiceAnswer`, `buildChooserState` (title, goal, role, repo, labels, the parent's title and goal, its approved plan entry, siblings starting now), `chooserQuestions` (`clarity`…`volume` 1–5 each described, `topic`, `model` keyed `vendor/model` with name, tier, relative cost and the vendor's description, under Start cheap only; `effort` up to the ceiling, only when a candidate's vendor takes effort; the default rule, quality priority, weights and guidance in the instructions), `readChooserAnswers` (scores = probability-weighted mean, renormalised; a missing answer or an option not asked fails), `taskFromText`, `ModelPolicyTryInputSchema`. `model-policy.ts`: `ChooserScoresSchema`, `ChooserTopicSchema`, `matchPinnedRule`, `chooserNeed`, `readScores`/`scoresRulePick` (weights scale the distance from 3, 0 drops a criterion; bar `3 + quality/100`), `scoresWords`; `pickModel` takes `task` and `chooser`: pinned → Jev at ≥ 0.5 (its effort) → the scores → the no-score rule "(no classifier key)"/"(Jev didn’t answer)", clamp last (a Jev model outside the candidates is moved, with a note); `PICK_HOWS` gains `pinned`, `jev`, `scores`; `agent.pick` gains `scores`, `topic`, `confidence`. Daemon: `buildJevChoiceRequest`/`parseJevChoiceResponse` in `jev-wire.ts`; `Classifier.choose` on `JevClassifier` (same key, base URL, scrubber, timeout, `onCall`) and `FakeClassifier` (`choice` script, `choiceCalls`; unscripted = not_configured); `routing/chooser.ts` `ModelChooser` (one call, raced against the classifier's timeout, never throws); `ModelPolicyService`: async `pickForStart` (asks the chooser only for a routed start that needs it), `pickForReviewer` (a `reviewer` pinned rule), `taskFor`, `tryTask`, previews never call Jev and carry `chooses` when a key is loaded. Attach awaits the pick before any spawn; roles coordinator/conversation/worker for pinned rules; a reviewer with no flags runs a matching `reviewer` rule. The daemon wires its classifier, timeout and plans in. HTTP `POST /api/model-policy/try` (same-origin; 400 on a bad body); RPC `policy.try`; CLI `agile policy try "<task>" [--project|--node]`. UI: Settings → Model choice gains Pinned rules (add, reorder, remove), Guidance (≤ 2,000, Save), Criterion weights (0–3), **Try it**, and the note that Choose needs the classifier key and what happens without it (also on project and node Details, with sources); Details shows the five scores, the confidence and what decided; the composer says "the model Jev picks (… if it can’t)" when a start will ask Jev. README.
+  - Tests: shared `model-chooser.test.ts` (8: scores and renormalising, weights, the rule and the quality bar, words, the state, the questions, a reading's failures, `chooserNeed`); daemon `classifier/jev-choice.test.ts` (8: the recorded request and reply, a whole live reply, a missing answer, malformed answers, 1 or 256 options refused, `JevClassifier.choose` POST with key and scrubbed state, no key/429/timeout); `fake.test.ts` (+1); `routing/chooser.test.ts` (13: confident; below 0.5 → scores, and high stakes → Opus · high; no key; 429, a bad reply, a bad topic and a timeout → "Jev didn’t answer"; outside the presets → clamped with a note; pinned by role, label (no call) and topic, a topic-only call under Default; a reviewer rule; the effort question and its ceiling, none for Gemini; weights, guidance and quality in the instructions; Strongest first; the task's parent, plan entry and siblings; previews; Try it and `policy.try`); attach T483 (3: a routed start asks once and runs Jev's pick, a wake doesn't ask, choose again does (D55); no key → the rule and its line, an explicit pick never asks; a reviewer rule); http T483 (Try it 403/400/no key/nothing started; guidance, weights and pinned rules save and validate); CLI e2e `agile policy try` (keyless and scripted, over the socket); UI `lib/model-policy.test.ts` (+4); control-room e2e "Model choice: the chooser (T483)" (2: Settings saves guidance, a weight and a pinned rule, and Try it shows the line, five scores, 0.82 and "Decided by Jev"; a node Jev picked for shows its line, the scores, the confidence and the source in Details). With the chooser call disabled in `pickForStart`, 13 of the routing and attach T483 tests fail (the ones that pass never go through `pickForStart`: Try it and the attach reviewer test); asking on a kept start fails the D55 test. Updated: attach T482 and the UI pick line ("(no chooser yet)" → "(no classifier key)").
+  - Validation: typecheck and lint clean; `bun run build`, then full `bun test` 3700 pass, 3 skip, 0 fail (control-room e2e included).
+  - Real Jev run (2026-09-30, `JevClassifier` through `ModelPolicyService.tryTask`/`pickForStart`, env key, 8 questions a call, 180–1,100 ms). Three Claude presets: the rename → Jev, Sonnet 5.5 · medium, confidence 0.63 (clarity 4.83, verifiability 4.81, horizon 1.73, stakes 2.0, volume 1.02); the float-to-cents money migration → Jev, Opus 5.5 · high, 0.77, topic migration (3.4, 2.89, 4.6, 5.0, 1.58); "Make the app better" → Jev, Opus 5.5 · medium, 0.81 (1.18, 1.7, 4.52, 2.65, 1.24); the rename as one of seven parts starting together → Jev, Sonnet 5.5 · medium, 0.52 (volume 4.93). Five presets (those plus Codex GPT-5.6 Sol and GPT-6 Astra): Jev's confidence split between the near-equivalent Claude and Codex models (rename: Sol 0.47, Sonnet 0.36) and stayed at 0.22–0.38, so the scores decided each time: Sonnet · medium, Opus · high, Opus · high, and Haiku · medium for the seven parts (volume ≥ 4 → the fastest).
+- **Notes:** Branch T483-jev-chooser. Found live: with equivalent models from two vendors in the presets, Jev's model confidence rarely reaches 0.5, so the rule over the scores decides; the threshold (D52) may want a look, or the question could ask a tier first. New node's chip still names the pick without Jev. Left for T484: escalation (the ladder can reuse `candidateForTier`).
+
+### Ticket: T484 Model routing: escalation
+- **Priority:** P2
+- **Status:** Done (differences from the design in `design/model-routing.md` §11, T484)
+- **Owner:** manager
+- **Scope:** `design/model-routing.md` §6 (D56): under "start cheap", step up the ladder (effort, then model, within the presets) at the next start when a merge is refused twice for the same reason, a turn stalls, or the agent calls `escalate {why}`; Details → Step up. At the top of the ladder, a Needs me card.
+- **Acceptance Criteria:** A thread line and a record-only event per step; "strongest first" never steps; a model change ends a resting session (T465).
+- **Validation Steps:** Unit tests per trigger with the fake agent; the ladder order; the top-of-ladder card.
+  - Built: shared `model-escalation.ts` (`escalationLadder`: presets, or any installed model, by tier, cost, listed order; each model's efforts low → ceiling; one rung for a vendor with no effort. `nextRung`: the next effort on the model, then the next model at the effort it ran on, capped; a model outside the presets steps to the first preset above it; `undefined` at the top. `EscalationStateSchema` strict: `pending`, `stuck`, `refusal`, `quiet`, `context`; `QUIET_TURNS_MAX` = 3 as a constant; `steppedUpLine`, `stuckLine`, `StepUpView`). `Stream.escalation` is top-level and daemon-only (`DAEMON_ONLY_FIELDS`). `PICK_HOWS` gains `escalation`. The `escalate {why}` verb (strict, why ≤ 400) is added. The record-only routed event `model_escalated` (`step: up|stuck`) is added, routed to `self`. The inbox kind `model_stuck` is added.
+  - Daemon: `routing/escalation.ts` `EscalationService` (`ModelPolicyService.escalation`). The triggers: `mergeRefused` through delivery's new `onRefused` (a ship check keyed by its rule or reason; a conflict keyed by its target; the same key after ≥ 1 turn between), `turnFailed` (T460, after T456's retry and fallback are spent), `turnEnded` (context > 90% without `goal_met`, once per session; quiet worker turns from the worktree HEAD, whose baseline is taken at the first start), `asked` (the verb), and `stepUp` (the operator). Start cheap records a pending step and ends a resting session. At the top, or under Strongest first, the node gets the Needs me card, a thread line and the event. The Default mode never escalates on its own. Attach's routed start takes the pending step in place of the kept pick and writes the "Stepped up to …" line, the event, and `agent.pick.how: escalation`. An explicit pick wins and spends it (and clears the card). A choose-again spends it. A carried start leaves it. After any turn end with a step waiting, the session ends instead of resting. `nextPick` names the step. The inbox derives `model_stuck`. HTTP `POST /api/streams/:id/step-up` and `/dismiss-stuck` are same-origin; a refusal returns 409. RPC `policy.step_up`; CLI `agile policy step-up --node N`. `VerbService.escalate` accepts a worker or coordinator session only (not a reviewer, the lessons pass or the Director). `progress` resets the quiet count. The worker brief lists `escalate`.
+  - UI: Details → Model choice shows **Step up**, the next rung, the step waiting, why Step up is disabled, and the stuck reason. The Needs me card "Stuck on the strongest model" (Open node, Dismiss) is filed under Blocked. Events and Activity show "Stepped up to …" or "Stuck on the strongest model". The pick reads "Stepped up the ladder".
+  - Tests: shared `model-escalation.test.ts` (16: ladder order, cost and listed order, vendors with no effort and uninstalled vendors, empty presets, duplicates, next effort, next model, top, over the ceiling, off the ladder, to and from a vendor with no effort, empty ladder, the daemon-only record, the verb can't carry a model, the schemas and the words). Daemon `routing/escalation.test.ts` (9: pending step, one per start, and a restart keeps it, with the `nextPick` preview; refused twice, same and different reasons; context; goal met; quiet turns, commit and progress; Default mode; top of the ladder, Needs me and Dismiss; Strongest first; Step up refusals and `policy.step_up`). Attach service T484 (10, fake agent: a failed turn, context over 90% ending the resting session, three quiet turns, a ship check refused twice with a turn between, `escalate` mid-turn changing nothing until the turn ends, Step up surviving a restart, an explicit pick winning, Strongest first going to Needs me, the top of the ladder and then an explicit pick clearing the card, and store refusals for agent, coordinator, Director and human). Verbs (2). http T484 (403 cross-origin, 409 before a start and at the top, 404, dismiss). CLI `policy step-up` (1). Control-room e2e T484 (2: Details → Step up shows the pending step and the chat line after the next start; the Needs me card at the top of the ladder, then Dismiss). Against the old `attach/service.ts`, 9 of the 10 attach tests fail. The one that passes is the store-level write refusal.
+  - Validation: typecheck and lint clean. After `bun run build`, the full `bun test` gave 3746 pass, 3 skip, 0 fail across 228 files, with the control-room e2e included.
+- **Notes:** Branch T484-escalation. The ladder didn't need `candidateForTier`: it sorts the presets itself. Not done: no live vendor run (none in the cloud), so LIVE-CHECKLIST §17's new escalation steps are unchecked. The reason text of a turn that failed quotes T460's words, which can be long; they are clipped at 500 characters.
+
+### Ticket: T489 The vendor self-check
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** D58. Pete (2026-09-30): the daemon runs the vendor checks itself and updates its own data. Per installed vendor: open a session with no node and no repo (like T467's Refresh), set a listed model other than its current one and read the reply back, set an effort level where the vendor reports a `thought_level` option and read it back, send one tiny prompt ("Reply with the single word OK."), record what usage it reported (T485a's fields), and where the provider supports it, stop and resume the session with `session/load`. Also record anything the vendor sends about rate limits or plan usage, for T491.
+- **Acceptance Criteria:** A result per vendor and CLI version (model switch honoured / kept / refused, effort the same, usage fields, resume, rate-limit fields, when, errors in words), kept as a file in the probe session's own dir beside `session-state.json` (no new home dir). Runs on **Check vendors** (Settings → Agents), `agile vendors check [vendor]`, and after a T481 update or a new CLI version. Never under `bun test` against a real vendor. A vendor that isn't logged in says so. Choose leaves out a vendor whose last check says it ignores model picks, and says why. Settings → Agents shows the table. LIVE-CHECKLIST §12's last column, §12.2, §14 and §16 point at it.
+- **Validation Steps:** Fake-agent tests for every outcome (honoured, ignored, refused, no effort option, usage present/absent, resume ok/failed, auth required); HTTP (403) and CLI; control-room e2e for the table and Check vendors.
+  - Built: `shared` `vendor-check.ts` (`VendorCheckResultSchema` and its parts, strict: vendor, label, probe session, CLI version, pinned bridge, started/finished, reason `manual|update|new_version`, by, `logged_in`, `opened`, model and effort `honoured|kept|refused|unclear|not_applicable|skipped` with from/to/after and words, prompt `finished|failed|timed_out|skipped`, usage (`usage_update` fields, reply keys, reply `usage` fields, `cost`, turn tokens, context fill), rate-limit fields (at most 20, `{where, name, value}`), resume `ok|failed|not_supported|skipped`, errors in words; `VENDOR_CHECK_FILE` `self-check.json`, `VENDOR_CHECK_PROMPT`, the run and switch inputs, the marks), home `vendor_checks: auto|manual` (absent = auto; `StateStore.setVendorCheckMode`, `home_config_put` by `human`).
+  - Daemon `runner/vendor-check.ts`: `runVendorCheck` opens a probe session like T467's Refresh (no node, no repo, its own session dir as cwd, `withoutDaemonSecrets()`, the installed CLI, no MCP; every tool call refused, client file reads/writes refused; authenticates where asked), sets a listed model other than the current (not the default/Auto when another is listed) through T467's path and an effort (the cheapest other D12 level a `thought_level` option lists) through T488's path, reading each back; sends exactly "Reply with the single word OK." (90 s bound), writes and reads back the session's `usage.jsonl`; keeps rate-limit/plan-looking fields from `usage_update`, the reply's `usage`/`_meta` and the session reply's `_meta` (names that look like credentials, and values that look like keys or tokens, never); where the provider has `loadSession`, stops the vendor and loads the same ACP session id (no second prompt); writes `self-check.json` beside `session-state.json`. A login refusal (an `AuthRequiredError`, or T460's rule on the words) stops it with "<Vendor> isn’t logged in. Log in from a terminal (…), then check it again." `runner/session.ts`: `setModelThroughOption`/`setEffortThroughOption` are the runner's own model and effort set (now shared with the check), `usageRecorder` its `usage.jsonl` writer.
+  - `VendorCheckService`: one check at a time (a vendor already queued shares it), the latest result per vendor rebuilt from the session dirs at start, `status()` (one row per vendor: installed, CLI version, running/queued, last), `run`/`start`, `stop` (the daemon stopping stops the running vendor; nothing queued starts), `noteVersions` (the automatic trigger: T481's harness service now hands over each vendor CLI version a check read and the one an update installed, `onVersions`; a vendor whose latest check is on another version is checked once per version, never when `manual`). A check's session replies also feed the model catalog. Under `bun test` the daemon's service refuses to spawn unless a test injects the fake agent, and the trigger isn't wired.
+  - Routing: `vendorCapabilities` (pure) and `vendorsLeftOut`; `ModelPolicyService` takes `leftOut` and, under Choose only, leaves those vendors out of the candidates (a start, the preview, Try it) and ends the pick's why with "left out Cursor: its last check kept its own model". No check, Default/Inherit, an explicit or kept pick, or a filter that would leave no preset: unchanged.
+  - HTTP: `GET /api/settings/vendor-checks`, `POST /api/settings/vendor-checks` (`{mode}`), `POST /api/settings/vendor-checks/run` (`{vendor?}`, returns at once with the running state; 409 for a vendor not installed), same-origin, actor `human`. RPC `vendors.status`/`vendors.check`; CLI `agile vendors` (the table) and `agile vendors check [vendor]` (runs and waits).
+  - UI: Settings → Agents → **Vendors** (`SettingsVendors.tsx`, pure half `lib/vendor-checks.ts`): the Automatic / Only when I ask switch, one row per vendor (version, state in words, when checked, Model/Effort/Resume ✓ ✗ — with the words in a tooltip, Usage fields, plan and rate-limit fields, errors in words, "Model choice leaves Cursor out …"), **Check** per row and **Check all**, polling while a check runs.
+  - Tests: shared `vendor-check.test.ts` (3); daemon `runner/vendor-check.test.ts` (20: what a check sets, rate-limit fields without credentials; everything honoured with usage, cost, `_meta` rate limits and resume ok, the file validating and round-tripping; the one prompt; model and effort kept; refused; model honoured and effort kept; no list and no option, no usage, resume not supported; resume `loadFails`; Cursor authenticating; auth required and refused → not logged in, nothing prompted; a login refused at the prompt; a prompt timeout; a tool call refused; the service's rebuild from files (a bad file skipped), one at a time and a vendor not installed refused, the automatic trigger once per version and not when manual, stop; capabilities and the left-out words); `routing/vendor-checks.test.ts` (3: no check unchanged; a vendor whose check kept its model left out with the note, Try it too; Default, explicit and a lone preset untouched); harness `service.test.ts` (+1, the versions handed over); http (+2: rows, the switch as `human`, 403 cross-origin, 400; run one and all, running state, 409, the results); daemon (+1: wired to the socket and HTTP, and under `bun test` a check spawns nothing); CLI `vendors.test.ts` (4); UI `lib/vendor-checks.test.ts` (5); control-room e2e "The vendor self-check (T489)" (the table, the switch saved in the home config, Check all running one at a time then Claude ✓/✓/✓ with its usage fields and Cursor ✗ "kept its own" with its rate-limit field and the left-out line, a row's Check). With the routing hook disabled the left-out test fails.
+  - Validation: typecheck and lint clean; `bun run build`; full `bun test` 3786 pass, 3 skip, 0 fail (the control-room e2e included).
+- **Notes:** Branch T489-vendor-self-check. LIVE-CHECKLIST §12 (the "Accepts a model via ACP?" column), §12.2, §14 and §16 each say what the check measures, the manual steps kept as the fallback. Left for T491: the rate-limit fields are recorded, not used.
+
+### Ticket: T490 Tier first, and the vendor order for ties
+- **Priority:** P1
+- **Status:** Done (differences from §12 in `design/model-routing.md` §11, T490)
+- **Owner:** manager
+- **Scope:** D57, D59. T483's Jev `model` question splits its confidence between near-equivalent models of different vendors (0.22–0.38 with mixed presets), so the scores always decided. Ask Jev for the tier instead; pick the model inside the tier by the operator's vendor order, then cost. Pete: "in a tie pick Anthropic > OpenAI", and "prefer OpenAI for review and Anthropic for code creation".
+- **Acceptance Criteria:** The `model` question becomes `tier` (only tiers the presets have). Confidence ≥ 0.5 takes Jev's tier; below, the scores' rule gives the tier. Inside the tier: the vendor order (policy `vendor_order`, per role `vendor_order_by_role` for worker, coordinator, conversation, reviewer), then cost. A reviewer with no pick is routed the same way. A pinned rule may name only a vendor. Settings → Model choice: "When models tie, prefer" (ordered vendors) and per-role rows; Try it shows the tier and why that model. Real Jev runs with mixed presets show the tier's confidence.
+- **Validation Steps:** Shared unit tests (tier pick, vendor order, per-role order, cost, a tier with one vendor, a vendor-only pinned rule); chooser tests with FakeClassifier; attach test for a routed reviewer; e2e for the settings; one real Jev run.
+  - Built: shared `model-chooser.ts`: the `tier` question replaces T483's `model` (only the tiers the candidates have, fast to strongest, each in words with its preset models and their cost; asked under Start cheap with two or more tiers; a tier outside the options is "Jev didn't answer"); `ChooserReading.tier`; Try it's result gains `tier`, `tier_by`, `in_tier`, `vendor_order`. `model-policy.ts`: `vendor_order` and `vendor_order_by_role` (worker, coordinator, conversation, reviewer; strict, each vendor once, resolved field by field, human-only on a node), `vendorOrderFor`, `modelForTier` (vendor order, then lowest cost, then listed order; the nearest tier when the tier has none; why in words), `tiersPresent`, `scoresTier`, `tierPick` (Jev's tier from 0.5, the only tier, the scores' tier, the no-score rule as a tier, Strongest first's highest tier), `scoresRulePick`/`ruleFallbackPick` tier first, pinned rules with `pick: {vendor}` alone (the tier from Jev or the rule inside that vendor; no match, with a note, when it has no preset), `chooserNeed` asks the whole reading for such a rule under any mode and routes a reviewer like any start; `ModelPickRecordSchema` gains `tier`, `tier_by` (jev/scores/rule/pinned/only), `in_tier` (`confidence` is now the tier's). `model-escalation.ts`: ties of tier and cost climb in the vendor order. Daemon: `pickForReviewer` is `pickForStart` with the `reviewer` role (Default resolves as before; an explicit pick never comes here); `ladderFor` passes the node's role's order; `tryTask` returns the tier; attach records the tier fields in `agent.pick`. UI: Settings → Model choice and project/node Details gain **When models tie, prefer** (installed vendors, up/down, No preference) and **By role** (Code, Coordinating, Conversations, Reviews: Same as above / Its own order), with sources; Details and Try it show the tier line; a pinned rule may pick "Any <vendor> model (the tier decides)". CLI: `agile policy set vendor_order claude,codex`, `agile policy set vendor_order_by_role.reviewer codex,claude` (merged into the layer's own; `same` clears a role), `agile policy try` prints the tier, how, confidence and why that model.
+  - Tests: shared `model-policy.test.ts` (+7: the new fields' strictness and the node write refusal for agent/coordinator/Director; field-by-field resolution and a role's order over the global one; the tier question's options (all three, two, none for one tier) and the tier answer; the model in a tier by vendor order, cost, listed order, only; the nearest-tier fallback and its words; Jev's tier at 0.5 and 0.49, the scores' tier, a reviewer's order, the no-key rule and Strongest first by the order; a vendor-only pinned rule matching, not matching with its note, needing the full reading under Default, a pinned model's tier), `model-chooser.test.ts` (tier in place of model), `model-escalation.test.ts` (+1: the vendor order breaks a tie of tier and cost, cost first). Daemon `routing/chooser.test.ts` (+7 T490 with FakeClassifier and the five mixed presets: a confident tier → the vendor order's model with Jev's effort; no order → listed, then cost, the order before cost; below 0.5 → the scores' tier by the order; no key → the rule's tier by the order; reviews prefer Codex while code prefers Claude; a vendor-only rule inside Jev's tier, under Default, and not applying with its note; Try it's tier; and the T483 tests moved to the tier, with a tier the presets lack now "Jev didn't answer" instead of a clamp); `classifier/jev-choice.test.ts` (the live fixture replaced by a T490 live reply with the tier question); attach T490 (3: a routed reviewer runs the reviewer order's model in Jev's tier and the worker the worker order's; an explicit reviewer pick wins and never asks; Default reviewers unchanged); http T490 (1: every layer, 403 cross-origin, 400 for a repeated or unknown vendor or role, a vendor-only rule, `null` inherits); CLI `policy.test.ts` (+2: parsing and words; over the socket, the order then two roles merged, `same` clearing, a node's own) and `stream.e2e` `agile policy try` (the tier lines); UI `lib/model-policy.test.ts` (+3); control-room e2e T490 (1: Settings moves Codex to the top, Try it shows "Balanced tier, by Jev (0.82). In the tier: Codex before Claude." and only the tiers present, Reviews' own order, No preference, Same as above) and the T483 e2e (the tier in Details, the vendor order rows inherited from Home on a node). With T483's reviewer routing put back (only a reviewer rule routes a reviewer), the attach reviewer test and 2 routing tests fail.
+  - Validation: typecheck and lint clean; after `bun run build`, the full `bun test` gave 3771 pass, 3 skip, 0 fail across 228 files (3774 tests), with the control-room e2e included.
+  - Real Jev run (2026-09-30, `JevClassifier` through `ModelPolicyService.tryTask`, env key, Choose, Start cheap, presets Claude Haiku 4.5, Sonnet 5.5, Opus 5.5 and Codex GPT-5.6 Sol, GPT-6 Astra; 8 questions a call, 155–461 ms). Vendor order Claude, then Codex: the rename → tier balanced by Jev at 0.97 (balanced 0.98, fast 0.02; scores clarity 4.71, verifiability 4.15, horizon 2.56, stakes 2.66, volume 1.15; effort medium 0.85) → Claude Sonnet 5.5 · medium, "Claude before Codex"; the float-to-cents money migration → Jev leaned balanced at 0.42 (balanced 0.62, strongest 0.38; topic migration; 3.23, 3.36, 4.42, 5.0, 1.34), so the scores gave strongest → Claude Opus 5.5 · high; "Make the app better" → strongest by Jev at 0.94 (strongest 0.96; 1.03, 2.14, 4.32, 1.88, 1.28; effort medium 0.93) → Claude Opus 5.5 · medium. Codex, then Claude: the rename → balanced 0.98 → GPT-5.6 Sol · medium; the migration → balanced 0.36 (0.58/0.42), the scores' strongest → GPT-6 Astra · high; the vague ask → strongest 0.94 → GPT-6 Astra · medium. Against T483's `model` question on the same presets (0.22–0.38, the scores always decided), Jev decided 4 of 6 at 0.94–0.98; the migration's split is now between two tiers, not two vendors.
+- **Notes:** Branch T490-tier-first. The money migration still lands below 0.5 (Jev splits balanced/strongest on a well-scoped but critical task); the scores' rule then gives strongest, which is right here. Codex model names read as their ids ("gpt-5.6-sol") where the vendor's own list hasn't been fetched (no Codex login in the cloud). Not done: no live vendor run, so LIVE-CHECKLIST §17's new tier/vendor-order steps are unchecked. The reviewer's pick is written as a "Model:" line only; it isn't kept on the node (`agent.pick` stays the node's agent's).
+
+### Ticket: T491 Ration across subscriptions
+- **Priority:** P2
+- **Status:** Todo (after T489 shows what each vendor reports about its plan limits, and T485's usage)
+- **Owner:** manager
+- **Scope:** Pete (2026-09-30): if one subscription has less left this week than another, routing should use that. Two sources: what the vendor itself reports about its plan limits (if any; T489 records it), and the daemon's own count of weighted tokens per vendor over a rolling week (T485a's `usage.jsonl`) against an allowance the operator sets per vendor. A vendor near its allowance moves down the vendor order for routed picks; one past it is left out of routed picks, with a line saying so; explicit picks are never blocked, only warned. Design in `design/model-routing.md` §12.
+
+### Ticket: T485a Record what each vendor reports about token usage
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** D51: budgets are built only after measuring which vendors report turn token usage (LIVE-CHECKLIST §16). The daemon kept only the context window's fill from `usage_update` (T411, in memory), and dropped the prompt reply's other fields, so there was nothing to measure with.
+- **Acceptance Criteria:** Each session writes `sessions/<id>/usage.jsonl`: every `usage_update` raw, and one `turn_end` line per turn with the prompt reply's keys and its `usage`/`_meta` when present. Capped (2,000 lines, 4,000 characters a line). LIVE-CHECKLIST §16 says how to collect it.
+- **Validation Steps:** Attach test with the fake agent reporting both; full suite.
+  - Built: `acp-client`'s turn-end marker carries the prompt reply's `replyKeys`, `usage` and `_meta`; the runner's `recordUsage` writes `usage.jsonl` (`USAGE_LOG_FILE`). The fake agent's `end_turn` step takes `usage`.
+  - Tests: attach T485a (a `usage_update` line with the raw update, then a `turn_end` line with `replyKeys` and `usage`).
+- **Notes:** Branch T485a-usage-record. §16 was cited by the routing design and T485 before it existed; this adds it.
+
+### Ticket: T485 Model routing: budget caps
+- **Priority:** P2
+- **Status:** Todo (measure first: LIVE-CHECKLIST §16 with T485a's `usage.jsonl`, which vendors report turn token usage)
+- **Owner:** manager
+- **Scope:** `design/model-routing.md` §7 (D51): budgets in weighted tokens (tokens × the model profile's cost), per session and per node. At 80% a chat line; at the cap the next turn waits and Needs me offers Raise the cap / Stop here. A vendor that reports no usage says so instead of estimating.
+- **Validation Steps:** After §16: unit tests on the weighting and cap, and an attach test that the capped node waits.
+
+### Ticket: T486 The classifier key never reaches a vendor's process
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found while reviewing T481. Every vendor spawn inherited the daemon's whole environment (`acp-client` `resolveAgentEnv` defaults to `process.env`), so when the operator supplied the TypeSafe key as `TYPESAFE_API_KEY`, every coding agent could read it with `env` and echo it into a thread, a file or a commit. That breaks D16 / design §6.1 (the key is the daemon's alone).
+- **Acceptance Criteria:** `packages/daemon/src/secret-env.ts` `withoutDaemonSecrets` (one list, `DAEMON_ONLY_ENV_NAMES`) builds the env for:
+  - node sessions and the Director (runner);
+  - Refresh models (the catalog probe);
+  - the quick drafts (`claude -p`);
+  - the CLI updater (T481).
+  `HOME`, `PATH` and vendor logins pass through untouched. `TYPESAFE_API_KEY` is the only daemon secret read from the environment; a key in `config.yaml` never enters the environment.
+- **Validation Steps:** `secret-env.test.ts`; attach test T486 (the fake agent reports `classifier_key: false` while the daemon's env has one; it fails without the fix). Typecheck and lint are clean; full `bun test` 3585/0 (the T481 e2e failed once on a stale UI build and passed after `bun run build`); control-room e2e 133/0; walkthrough 1/0.
+
+### Ticket: T469 Favourite models, and a picker that folds
+- **Priority:** P2
+- **Status:** Done (New node's Change keeps its three selects, with no stars: see Notes)
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "we need a way to have presets/favorites. so, if i wanted to select 2 claude models and 3 codex models and 2 cursor models as my main selections, i should easily be able to see just those in the selection menu, or i can see all models for all vendors … at the bottom is a "show all" toggle … the vendor is collapsible".
+- **Acceptance Criteria:** You mark models as favourites (a star in the picker, and in Settings → Agents), kept in the home config. With any favourites set, the model picker shows only those, grouped by vendor, plus the model a node runs now. A **Show all** switch at the bottom opens every vendor's models. Each vendor group folds, and the fold is remembered per browser. Typing still filters across everything. Builds on T467's lists.
+- **Validation Steps:** Settings and picker e2e (star, favourites only, Show all, fold a vendor, type-ahead across all).
+  - Built: `shared` `session-defaults.ts` (`FavouriteModelSchema` `{vendor, model?}`, no model = the vendor's own default; `FavouriteModelInputSchema` `{vendor, model?, on}`; `favouriteKey`; `SessionDefaultsStatus.favourite_models`), `home-config.ts` (`favourite_models`, at most 100, strict); `StateStore.setFavouriteModel` (a star goes at the end and keeps its place when starred again, `default` is stored as no model, the last unstar removes the key, `home_config_put` by `human`); `POST /api/settings/favourite-models` (same-origin, 400 on bad input) returns the session defaults, and `GET /api/settings/session` carries the list.
+  - Picker (`ModelChoice`, so the composer's chip, Ask and Start with… / review / resolve): `lib/favourites.ts` `pickerView` takes `modelGroups`' groups (T467's lists and the built-in fallback) and narrows them. Something typed: every model whose name, id or vendor matches every word, folds ignored. Else, with any favourites and Show all off: the favourites, plus the pick and the model the live agent runs (the default alone is not kept). A favourite its vendor's reported list no longer has still shows, tagged "Not in Cursor's list now". Each row has a star button (`aria-pressed`, "Add … to favourites"); Enter on a row still picks it. A search box sits on top; typing on a row goes into it, and Enter there takes the first match. Group headers are buttons with a caret; folds and Show all are kept per browser in localStorage `agile.model-picker` (`lib/use-favourites.ts`, every access in try/catch). Show all is a switch at the bottom ("Show all (N more)"), shown only when favourites exist. With none, the picker lists everything as before.
+  - The newest list reaches every open picker through `noteFavourites` (called by `getSessionDefaults` and `setFavouriteModel` in `api.ts`).
+  - Settings → Agents → Models: each vendor has **Favourites**, which opens its models (a starred one it dropped too, marked), each with the same star; the row says "N starred".
+  - Tests: shared `home-config.test.ts` T469 (4); `store.test.ts` T469 (3, one a hand-edited non-list refused, never replaced); http T469 (star/unstar, 403 cross-origin, 400 on a bad vendor, a missing `on`, an empty model or an extra key); `ui/app/lib/favourites.test.ts` (11: no favourites, favourites plus what runs, the pick kept, Show all, folds, search across all, an unlisted favourite, a vendor default, matching, prefs parsing, fold toggling); control-room e2e "Favourite models (T469)": star in Settings, the picker shows only the favourites and the default, Show all shows every vendor, Enter on a star stars grok-4.7, fold Cursor and reload (still folded, count shown), typing finds non-favourites (and one in the folded group), Enter picks, Enter on a row picks, unstar from the picker.
+  - Validation: typecheck and lint clean; full `bun test` 3605 pass, 3 skip, 0 fail; control-room e2e 134/0 (after `bun run build`); walkthrough 1/0 (43 steps, 0 findings).
+- **Notes:** Branch T469-favourite-models. Not done: New node's **Change** uses `SessionFields` (three native selects, per vendor), not the model picker, so it has no stars or favourites filter; stars there would mean moving New node onto `ModelChoice`, which is a separate change.
+
+### Ticket: T468 Model and effort as two controls; Shift+Tab cycles effort
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "separate the model and effort with model indicator on left and effort on right. shift-tab should be used to cycle through effort levels."
+- **Acceptance Criteria:** The composer bar shows the model chip on the left and an effort chip on the right (only for a vendor that takes effort, T401). Shift+Tab in the composer cycles low → medium → high → max, and the effort chip changes with it. The pick lasts like the model pick (T423, T464).
+- **Validation Steps:** The composer's model chip shows the model alone (`ModelChip modelOnly`). `EffortChip` sits right of it, before Stop and Send, and is absent for a vendor with no effort setting. A click or Shift+Tab in the box steps low → medium → high → max → low, with focus kept. The step sets the next message's pick, as the model chip does, so it lasts one message and restarts a live agent with it. It is highlighted only when the effort differs from what runs. The Ask box keeps its one combined chip. e2e T468 (position, Shift+Tab ×2, click, the start runs on max); the T423/T464 e2e and walkthrough 8.4 read the two chips. Full `bun test` 3486/0; walkthrough clean.
+- **Notes:** Branch T468-model-effort-chips.
+
+### Ticket: T468b Typecheck: the T468 e2e read `document` in a Node-typed file
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T468's e2e checked focus with `input.evaluate((el) => el === document.activeElement)`. The daemon package has no DOM lib, so `bun run typecheck` failed on 20eb79cc. I ran the suite, lint and the walkthrough before pushing, but not typecheck after adding the test.
+- **Acceptance Criteria:** The check reads the focused element's testid through a string `evaluate`, as the other focus checks in the file do. Typecheck is clean.
+- **Validation Steps:** `bun run typecheck` clean; e2e T468 passes.
+- **Notes:** Branch T468b-typecheck.
+
+### Ticket: T470 Needs me as a true inbox
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "this is lots of noise … not going to be scalable to have all these cards for every node that's finished when i have tens of projects going on. we should rethink this to be like a true inbox. i should see agent and subject and then can click to close the node or click to open it up (2 buttons). i can also select multiple … select all finished … close all finished."
+- **Acceptance Criteria:**
+  - One row per item: a checkbox, the kind's icon, the agent (the vendor it runs or last ran), the node's title as the subject, what it is and a one-line summary, and its age. Each row has **Close** (the node) and **Open**. Clicking the row itself expands the full card in place, where a question is answered or a merge made.
+  - Categories with counts: All, Questions, Decisions, Merges, Finished (nothing to merge), Blocked.
+  - Selecting: tick rows, or the header box selects everything shown. A bar then offers **Close N**, which asks once. **Close all finished** closes every Finished row.
+  - Keys: `j`/`k` move, `x` selects, Space expands, Enter opens.
+- **Validation Steps:** `ui/app/lib/inbox.test.ts` (categories, `nodesOf`); the control-room e2e for rows, the category tabs, a select and bulk close, Close all finished, and a row expanding to answer a question; the existing Needs me e2e tests follow the rows.
+- **Notes:** Branch T470-needs-me-inbox.
+  - `Inbox.tsx`: `InboxRow`, the selection bar and `useRowKeys` (focus on a row or its expanded card).
+  - `lib/inbox.ts`: `filterOf` with the Finished and Blocked categories, `nodesOf` and `inboxLine`.
+  - The cockpit row gains `last_agent` (the vendor and model its agent last ran), so a finished node names its agent.
+  - **Expand all** (per browser) opens every card. The control-room tests that act on cards and the walkthrough start with it on; the T470 test covers the rows as a new browser has them.
+  - Results: control-room e2e 123/123; walkthrough 43 steps, 0 findings.
+
+### Ticket: T471 Closed means inactive, not read-only; Trash with Delete forever
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): a closed node reads as read-only, yet "there's no reason we can't restart the thread". Deleted nodes can only be restored, never deleted for good. A deleted open node restores and resumes, while a deleted closed one restores but can't resume. "should closed really mean read-only? it seems more like we're done being active in this for now, and deleted/trash means we think we're done … for good (but still could revive it)".
+- **Acceptance Criteria:**
+  - **Closed** = inactive: out of Needs me and folded in the tree. A message to it (or **Reopen**) reopens it on the same branch and worktree and wakes its agent.
+  - Delete is renamed **Move to trash**. **Restore** brings a node back open and ready to resume, whatever state it was in.
+  - **Delete forever** (per node, and **Empty trash**) removes the node's record, thread, session files and worktree. Its branch goes too if merged. With unmerged commits the branch is kept unless you tick "Also delete its branch (N unmerged commits)" (D47: confirmed by Pete).
+  - A merged node is unchanged.
+- **Validation Steps:**
+  - Closed: `StreamService.reopen` (open again, thread line "reopened"). `say` reopens a closed node first, so a message wakes its agent (attach test "a merged node starts nothing, a closed one reopens"). The composer's hint reads "Reopens this node and wakes the agent…". The header has **Reopen**, as does ⋯. `POST /api/streams/:id/reopen`.
+  - Restore brings the node itself back open, even if it was closed; its parts keep their state.
+  - Move to trash replaces Delete (tree menu, node ⋯, dialogs, toasts). The sidebar's Deleted section is **Trash**, with Restore, a per-row Delete forever (✕) and Empty trash.
+  - Delete forever is `streams/trash.ts` (`TrashService`) plus `StateStore.removeStream`, a new `stream_deleted` event (log reconstruction forgets the node). It removes the node and its subtree: record, thread, card and event queue, questions, gates, plan, other nodes' waits on it, session logs and worktree. A merged branch goes too. One with unmerged commits is kept unless "Also delete its branch (N unmerged commits)" is ticked. The dialog also names worktrees with uncommitted changes, which are lost. Routes: `GET /api/streams/:id/trash-preview`, `POST /api/streams/:id/purge {delete_branches?}`, `GET /api/trash`, `POST /api/trash/empty`. Same-origin; refusals are 409 (not in the trash, a project's root).
+  - Tests: `streams/trash.test.ts` (6, real git), http T471, attach test updated, UI lib tests updated, e2e T471 (Reopen, Delete forever keeping the unmerged branch, Empty trash), T365/T361/T416 e2e updated for the new words. A worktree path outside `<repo>/.worktrees/` is never removed (a test that fails on the unguarded code, where it deleted the repo). Full `bun test` 3481/0; walkthrough clean.
+- **Notes:** Branch T471-trash-and-reopen. The unmerged-branch default (keep it unless ticked) is D47, confirmed by Pete.
+### Ticket: T476 Cursor's verbs and commands were refused
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Found by Pete in the live walkthrough (2026-09-28). The log showed that every Cursor call to our own verbs was refused: "unknown tool kind (agile-progress: progress) — safe default deny". Every exec was refused too: "execute request carries no command to classify at this tier". Cursor names MCP tools `agile-<verb>: <verb>` (Codex: `mcp.agile.<verb>`), and only Claude's `mcp__agile__<verb>` was recognised. Cursor's exec request doesn't carry `rawInput.command`, and a request with no command was refused with no card, although a hook-less vendor has no other gate to fall back on.
+- **Acceptance Criteria:**
+  - A verb titled the Cursor or Codex way passes when its input carries this agent's own daemon session id, so a lookalike "agile" server can't borrow the pass.
+  - An exec's command is read from `command`, `cmd`, `commandLine`, an argv array, a backtick or "Terminal: …" title, or the call's text content.
+  - A command still unreadable from a hook-less vendor is a card for you; a hooked vendor keeps the refusal, since its hook sees the command.
+  - The decision log records the request's kind, title and input keys.
+- **Validation Steps:** `permissions/decide.test.ts` T476, built from the log's shapes. The next live Cursor run confirms the exec shape from the new log fields.
+- **Notes:** Branch T476-cursor-verbs-and-commands. Cursor's exact exec shape isn't known yet; the new log fields name it.
+
+### Ticket: T473 Ask and Work are one kind of node
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "an ask agent knows how to do work … a work node knows how to do research. switching between modes should be painless. today it's a restriction." New node always makes a work node.
+- **Acceptance Criteria:** New node offers "No repository (just talk)". A work node can go back to talk: its branch and worktree are kept, and its role becomes conversation. `N` is New node (already); `a` stays Ask.
+- **Validation Steps:**
+  - New node opens with **Talk · Work** as its first choice. Talk = no repository; Work = the project's repository (or Add a repository when there is none). The picker's option reads "No repository (just talk)".
+  - ⋯ **Back to just talk…** on a work node (`RepoInPlaceService.toTalk`, `POST /api/streams/:id/to-talk`) stops its agent. It moves the repo, branch and worktree to `parked` on the record (nothing on disk changes), and the node is a conversation. Refused for a helper, an open PR, a coordinating node, or a closed or trashed one.
+  - ⋯ **Back to work on <repo>** (or Turn into work, or + Repo, with that repo) resumes the same branch and worktree. It checks the branch out again if the worktree was removed. Another repo starts fresh, and the parked work stays parked.
+  - Also fixed: the Close dialog still said "it can't be reopened" (T471).
+  - Tests: `repo-in-place.test.ts` T473 ×2 (real git: commits survive the round trip); e2e T473. Full `bun test` 3484/0.
+- **Notes:** Branch T473-talk-and-work. A node holds one parked repo: going back to talk from a second repo replaces the first parking (its branch stays on disk).
+
+### Ticket: T474 Reorder sibling nodes by dragging
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): dragging makes parent/child moves; it should also reorder siblings.
+- **Acceptance Criteria:** Dropping between two siblings places a node there. The order is kept on the node record (an `order` key among its siblings) and used by the rail and Overview.
+- **Validation Steps:** A drop on a row's top or bottom quarter places the node before or after it: a line shows where. The middle still nests under it, and a project's row only nests. `StreamService.reorder` moves the node to the anchor's parent first if needed (with `move`'s checks), then renumbers the siblings 0, 1, 2… and writes only those that changed (`order` on the record, `POST /api/streams/:id/reorder {before|after}`). The rail sorts siblings by `order`, with unordered nodes after, in creation order. The Overview uses it within a status. Tests: service T474 ×2, `tree.test.ts` (`dropZone`, `checkPlace`), e2e T474 (top edge → first, bottom edge → last); the T333 drag e2e still nests on the middle. Full `bun test` 3491/0.
+- **Notes:** Branch T474-reorder-siblings.
+
+### Ticket: T475 A finished reply is never folded
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "i should never have to click show more to see all the output. only if i have closed it on my own with show less first".
+- **Acceptance Criteria:** A long message shows in full, with **Show less** to fold it. A fold you made is kept for that message.
+- **Notes:** Branch T475-replies-unfolded. `ThreadBody` (Chat.tsx) opens whole. A fold you make is kept by the message's `ts` for as long as the page is open. The control-room e2e (T330's test, updated) checks the message opens whole, Show less folds it, and the fold survives a tab change.
+
+### Ticket: T477 A node without a goal; dismiss a Finished card
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "there can never not be a goal … i want to ask a question related to what its goal will be and THEN give it a goal. i should not see a finished card like this until i've explicitly given it a goal and it's finished with it. also whenever there is a finished card i should be able to discard the message with an X".
+- **Acceptance Criteria:** A node can be created with no goal. Its agent just talks, and a finished turn is not "Finished". Giving it a goal (the goal card, or Turn into work) makes finishing it count. A Finished card or row has an ✕ that dismisses it until the node finishes again.
+- **Validation Steps:** `goal` is optional in `StreamSchema`/`StreamCreateInputSchema`; every `.goal` reader handles none (brief `NO_GOAL_YET`, "(no goal yet)" for an ancestor, the first goal's thread line reads "goal set: …"). The inbox skips `done` for a node with no goal and for one whose `human.dismissed_at` is at or after `agent.updated_at`; the cockpit row carries `no_goal`, so Replies lists it. `POST /api/streams/:id/dismiss` (same-origin, human). The ✕ is on the Finished card (node page and Needs me) and on a Finished row. New node has "No goal yet: talk it through first": the text becomes your first message. Tests: inbox service (no goal, dismiss and re-finish), brief, http dismiss + goal set/changed, unread `no_goal`, e2e T477 ×2. Full `bun test` 3457/0; control-room e2e 125/125.
+- **Notes:** Branch T477-no-goal-and-dismiss.
+
+### Ticket: T478 Auto-close when the goal is met
+- **Priority:** P1
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): today nothing closes a node on its own. No agent can close its node, a coordinator can't close its parts, and the daemon never closes a finished node. "when i manually create a node and set a goal, there should be a toggle on the node to auto-close (when goal is met). this setting should exist and be able to change even after the node's been created."
+- **Acceptance Criteria:** New node and the node's page (header ⋯ and Details) have an **Auto-close** toggle, stored on the node and changeable any time. With it on, a node whose agent finishes its goal with nothing to merge closes itself, with a thread line; with changes, it stays Ready to merge. A coordinator's parts inherit it when it adds them, and a coordinating node with auto-close closes once every part is merged or closed. The default is a setting.
+- **Validation Steps:** "Goal met" needs a signal: every finished turn ends `done`, including one that stops to ask. So the agent reports it with a new verb, `goal_met` ({summary}), recorded as `agent.goal_met` with its session. The brief of an auto-close node tells the agent when to call it and when not to. `streams/auto-close.ts` runs from `onUpdated`: a node closes when its turn ends `done` having said `goal_met` in that session, with nothing to merge. Nothing to merge means preflight counted `ahead === 0` (or the branch was already merged), no conflict and no uncommitted tracked change; it fails closed when the preflight can't count. A coordinating node closes when every part is landed or closed. Never a root, a node with no goal, an archived one, or a running one. `auto_close` is human-only (the two-writer split) and a part inherits it at create. Routes: `POST /api/streams/:id/auto-close`, `GET/POST /api/settings/auto-close`. UI: Settings → General card, New node switch (seeded from the setting), node page Details switch and ⋯ item. Tests: `auto-close.test.ts` (8), goal_met verb (2), shared verb list, http ×2, daemon wiring (real git: a clean branch closes, a commit stays), e2e T478. Full `bun test` 3471/0; control-room e2e 126/126. LIVE-CHECKLIST §13.
+- **Notes:** Branch T478-auto-close. The daemon test caught a real bug: a preflight refusal (a live session) returned no `ahead` and read as "nothing to merge". Fixed to fail closed.
+
+### Ticket: T472 The Ask box has the model picker
+- **Priority:** P2
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** Pete (2026-09-28): "when i press 'a' to ask the regular model selector should be there".
+- **Acceptance Criteria:** The Ask box shows the composer's model chip, and the conversation starts on the pick.
+- **Validation Steps:** The Ask box shows `ModelChip` (T423's) under About, for any node target (not the Director, which runs its own agent). It reads the defaults for where the question is asked. A pick creates the conversation with `start: false` and attaches its worker on the pick, as New node does. `ModelChip` takes `placement`; Ask opens it downward, because upward it opened off the top of the dialog (the first e2e run couldn't click an option). e2e T472 checks the session runs `claude-sonnet-4-6`. Full `bun test` 3485/0.
+- **Notes:** Branch T472-ask-model-picker.
+
+### Ticket: T457b CI: a dangling symlink read as the dir it sits in
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** CI failed on 245d0beb: T457's "no spelling reaches the home or a credential under Trusted" allowed `<dir>/link-ssh/id_rsa` on the runner, whose home has no `~/.ssh`. `realpathNearestExisting` walked up from a symlink whose target doesn't exist and judged the path by the dir the link sits in. The same gap let a write through a dangling link inside the worktree that points outside pass the containment check.
+- **Acceptance Criteria:** A dangling symlink is followed by its text (up to 40 links), for reads and writes alike.
+- **Validation Steps:** Reproduced with `HOME` set to a dir without `.ssh` (the T457 test fails there on the old code, passes now); `decide.test.ts` "T457b: a dangling symlink is followed by its text" fails on the old resolver; full `bun test` 3377/0.
+- **Notes:** Branch T457b-dangling-symlinks.
+
+### Ticket: T423b CI: the picker's model read before it loaded
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** CI (runs 1353, 1355) failed "stream page (T161) › attach → question → answer → findings → land": `pickedModel` read the picker's checked model right after the dialog opened, before its session defaults arrived (a fetch on mount), and got `undefined`. It passed locally on faster timing.
+- **Acceptance Criteria:** `pickedModel` waits (up to the poll deadline) for a checked model before reading it. Reproduced with the fetch held 1.5 s in the page (the old helper fails with CI's exact `undefined`; the new one passes). `page.route` can't hold it: the cockpit's service worker makes the request.
+- **Validation Steps:** control-room e2e "attach → question…", the T423 picker tests.
+- **Notes:** Branch T423b-picked-model-race.
+
+### Ticket: T424c The Repos lens reads status as pills
+- **Priority:** P3
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** T424's leftover: the Repos lens's live-node rows showed status as plain coloured text beside a dot, while Dependencies and Running use `StatusPill`.
+- **Acceptance Criteria:** A repo card's node rows: the path, then the node's `StatusPill` at the right; the old `.cr-lens-status` style is gone.
+- **Validation Steps:** control-room e2e "two api nodes in different projects…" (the pill), the lens tests.
+- **Notes:** Branch T424c-repos-lens-pills.
+
+### Ticket: T369 Phase 15 QA
+- **Priority:** P0
+- **Status:** Done
+- **Owner:** manager
+- **Scope:** The whole offline gate on the integrated branch; a screenshot pass over every view, light and dark, desktop and phone width; deferred findings in `design/cockpit-ui-followups.md`.
+- **Acceptance Criteria:** Gate green; follow-ups written.
+- **Validation Steps:** `bun install && bun run build && bun run typecheck && bun run lint && bun test && bun run test:integration && bun run test:e2e && bun run test:walkthrough`.
+- **Notes:** Branches T369-phase-15-qa, T369-ci-card-order, T369-wrapup. Gate on the integrated tip: lint and typecheck clean, `bun test` 2869 pass / 0 fail, integration and e2e green (control-room 68/0 after T380), walkthrough 39 steps, 0 findings. QA fixes: a node's Activity reads like Events (titles, routing words), the walkthrough and checklist follow; the j/k e2e reads Needs me's order from the page (two cards raised in one millisecond sort by id, which failed CI twice); the design doc names the palette and keys. The screenshot pass (every view, light, dark, phone) found T381's wording. Remaining findings: `design/cockpit-ui-followups.md`.
 
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
@@ -1870,9 +3531,11 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 - Q3. Whether `bus/` survives as the thread's transport or is deleted; decided in T120 by whichever is less code.
 - Q4. Whether repo docs live in `.agile-docs/` (tracked) or under the home (untracked). Plan says tracked so a repo carries its own guidance; Pete to confirm at T134. Superseded by D24: docs move to the home (T207).
 - Q5–Q24. The proposed decisions P1–P20 in `design/projects-design.md` §19 are open until Pete confirms each one as a D-entry. Tickets assume them. P17 (tracker tokens in `config.yaml`, a second credential exception) must be approved before T320.
+- Q25. D36 D10 (T351) wakes every finished conversation in an accepted item's scope, so one project-wide decision starts up to five vendor turns (audit r6 #9). T437 stopped those turns from reading as unread replies. Narrowing the wake to the conversation the item came from (its `source.node`) or a subtree scoped to it would save the turns; the rest would get the item on their next turn, as before D10. Pete to decide; the walkthrough's "Cents check" step assumes the wide wake. **Answered by D44 (2026-09-27): narrowed, T453.**
 
 ## 10. Discovered Issues Log
 
+- 2026-09-26 Pete: the cockpit is rough; asked for a full UX overhaul (his list is in Phase 15's intro) → Phase 15 (T360–T369), design in `design/cockpit-ui.md`, on `claude/phase-14`.
 - 2026-09-26 (T345 worker): a lone `&` was not a command separator in `splitCommandSegments`, so `echo hi & cat /etc/passwd` and `true & rm -rf ~` were auto-allowed for engineers since phase 7. Fixed on ci-fix-lone-ampersand (6ea669a), merged 7→14; reviewed (sonnet) APPROVE.
 - 2026-09-26 (T344 review): T336's `waitingForPlan` re-flagged a part that had started and gone idle, so plan approval could restart it and the rail/card said "waiting" again. Fixed on ci-fix-waiting-started (3e8724d, phase-11): waiting ends once a session starts after the split's waiting line (ULID time). Merged 11→14; reviewed and QA'd (sonnet).
 - 2026-09-25 (CI, phase 9): T131's rule "a reviewer's exit sets `agent.status` done when no worker is live" reversed. A reviewer that died at spawn marked a never-worked stream done. A review is not work, so a reviewer exit now only posts "review finished: N findings"; only a worker (from phase 11, a coordinator) exit moves `agent.status`. Branch ci-fix-review-status (81569dc) on phase-7, merged forward 7→14.

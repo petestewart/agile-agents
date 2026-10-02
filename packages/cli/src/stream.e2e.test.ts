@@ -102,7 +102,8 @@ describe('agile node (T201)', () => {
     const role = async (id: string) =>
       (JSON.parse((await cli(['node', 'show', id, '--json'])).out) as { role: string }).role;
     expect(await role(projectRoot)).toBe('project');
-    expect(await role(epic.id)).toBe('coordinating');
+    // D33: its only child is a repo-less conversation (a tangent).
+    expect(await role(epic.id)).toBe('conversation');
     expect(await role(task.id)).toBe('conversation');
 
     const byParent = JSON.parse(
@@ -119,7 +120,7 @@ describe('agile node (T201)', () => {
       role: string;
     }>;
     expect(Array.isArray(unfiltered)).toBe(true);
-    expect(unfiltered.find((n) => n.id === epic.id)?.role).toBe('coordinating');
+    expect(unfiltered.find((n) => n.id === epic.id)?.role).toBe('conversation');
     expect(unfiltered.map((n) => n.id).sort()).toEqual([projectRoot, epic.id, task.id].sort());
   });
 });
@@ -295,17 +296,19 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     const original = console.error;
     console.error = (msg: string) => errors.push(String(msg));
     try {
-      expect(await runCli(['stream', 'say', stream.id, 'x'.repeat(801)], daemon.repo)).toBe(1);
+      expect(await runCli(['stream', 'say', stream.id, 'x'.repeat(4001)], daemon.repo)).toBe(1);
     } finally {
       console.error = original;
     }
-    expect(errors.join('\n')).toContain('the cap is 800');
+    expect(errors.join('\n')).toContain('the cap is 4000');
   });
 });
 
 describe('agile attach (T130) on a no-repo stream, against the fake driver', () => {
   test('prints the session line, records it, streams output onto the thread, and refuses a second attach', async () => {
     const stream = await newStream('Plan the migration');
+    // T482: `agile attach` with no flag is a routed pick; under Default it is the default.
+    expect((await cli(['policy', 'set', 'mode', 'default'])).code).toBe(0);
 
     const attached = await cli(['attach', stream.id]);
     expect(attached.code).toBe(0);
@@ -391,6 +394,11 @@ describe('agile attach (T130) on a no-repo stream, against the fake driver', () 
 
 describe('agile node new starts the agent (T204)', () => {
   test('a conversation node starts a session; --no-start starts none', async () => {
+    // T482 (D54): the project inherits the home's model choice; Default here, so the default runs.
+    expect((await cli(['policy', 'set', 'mode', 'default', '--project', projectId])).code).toBe(0);
+    const shownPolicy = await cli(['policy', 'show', '--project', projectId]);
+    expect(shownPolicy.out).toContain('mode');
+    expect(shownPolicy.out).toContain('default  (set here)');
     const started = await cli([
       'node',
       'new',
@@ -457,9 +465,10 @@ describe('agile node add-repo (T205)', () => {
         repo: string;
         role: string;
       }>;
+      // T446 (audit r7 #18): a part is named for its node, then its repo.
       expect(parts.map((p) => `${p.title}  ${p.repo}  ${p.role}`)).toEqual([
-        'ledger-lite part  ledger-lite  work',
-        'agile-test-repo part  agile-test-repo  work',
+        'Balance summary · ledger-lite  ledger-lite  work',
+        'Balance summary · agile-test-repo  agile-test-repo  work',
       ]);
       const status = Bun.spawnSync(['git', 'status', '--short'], { cwd: ledger });
       expect(new TextDecoder().decode(status.stdout).trim()).toBe('');
@@ -479,6 +488,33 @@ describe('agile node wait (T228)', () => {
     expect((await cli(['node', 'wait', a.id, '--on', b.id])).code).not.toBe(0);
     const removed = await cli(['node', 'wait', b.id, '--on', a.id, '--remove']);
     expect(removed.out).toContain('waits on nothing');
+  });
+});
+
+describe('agile node move (T333, D34)', () => {
+  test('moves under a node, back to the root with the project id, and refuses its own subtree', async () => {
+    Bun.spawnSync(['git', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: daemon.repo });
+    expect((await cli(['repo', 'add', daemon.repo, '--name', 'alpha'])).code).toBe(0);
+    const epic = await newStream('Epic');
+    const task = await newStream('Task', ['--repo', 'alpha']);
+    const note = await newStream('Note');
+    const role = async (id: string) =>
+      (JSON.parse((await cli(['node', 'show', id, '--json'])).out) as { role: string }).role;
+    // D33: a repo-less conversation moved under a conversation is a tangent.
+    expect((await cli(['node', 'move', note.id, '--parent', epic.id])).code).toBe(0);
+    expect(await role(epic.id)).toBe('conversation');
+    // A work node under it makes it coordinating.
+    const moved = await cli(['node', 'move', task.id, '--parent', epic.id]);
+    expect(moved.code).toBe(0);
+    expect(moved.out).toContain(`${task.id} is now under ${epic.id}`);
+    expect(await role(epic.id)).toBe('coordinating');
+    expect((await cli(['node', 'move', epic.id, '--parent', task.id])).code).not.toBe(0);
+    const back = JSON.parse(
+      (await cli(['node', 'move', task.id, '--parent', projectId, '--json'])).out,
+    ) as Stream;
+    expect(back.parent).toBe(projectRoot);
+    expect(await role(epic.id)).toBe('conversation');
+    expect(await role(note.id)).toBe('conversation');
   });
 });
 
@@ -551,5 +587,51 @@ describe('agile tail --node <id> --events (T248)', () => {
     );
     // The quiet node does have audit rows: the two logs are different things.
     expect((await cli(['tail', '--stream', quiet.id])).out).toContain('stream_created');
+  });
+});
+
+describe('agile policy try (T483, T490)', () => {
+  test('a task’s scores and pick over the socket; nothing starts; no key says so', async () => {
+    const before = JSON.parse((await cli(['stream', 'list', '--json'])).out) as unknown[];
+    const keyless = await cli(['policy', 'try', 'Rename getUser to fetchUser']);
+    expect(keyless.code).toBe(0);
+    expect(keyless.out).toContain(
+      'Model: Claude Sonnet 5.5 · medium — start cheap: balanced (no classifier key)',
+    );
+    expect(keyless.out).toMatch(/without Jev +no classifier key/);
+    expect(keyless.out).toMatch(/tier +balanced \(rule\)/);
+
+    const one = (n: string) => ({ choice: n, confidence: 0.9, probabilities: { [n]: 1 } });
+    daemon.classifier.setScript([], {
+      choice: {
+        clarity: one('5'),
+        verifiability: one('4'),
+        horizon: one('1'),
+        stakes: one('2'),
+        volume: one('1'),
+        topic: one('none'),
+        tier: one('fast'),
+        effort: one('low'),
+      },
+    });
+    const scored = await cli(['policy', 'try', 'Rename', 'getUser', '--project', projectId]);
+    expect(scored.code).toBe(0);
+    expect(scored.out.split('\n')[0]).toBe(
+      'Model: Claude Haiku 4.5 · low — fast (Jev 0.90): well specified and covered by tests; short, low stakes',
+    );
+    // T490 (D57): the tier first, how it was decided and Jev's confidence in it.
+    expect(scored.out).toMatch(/tier +fast \(jev\)/);
+    expect(scored.out).toContain(
+      'clarity 5.0 · verifiability 4.0 · horizon 1.0 · stakes 2.0 · volume 1.0',
+    );
+    expect(scored.out).toMatch(/confidence +0\.90/);
+    expect(scored.out).toMatch(/decided by +jev/);
+    expect(daemon.classifier.choiceCalls.at(-1)?.state).toContain('Task: Rename getUser');
+    const json = JSON.parse((await cli(['policy', 'try', 'Rename getUser', '--json'])).out) as {
+      scores: Record<string, number>;
+    };
+    expect(json.scores.clarity).toBe(5);
+    const after = JSON.parse((await cli(['stream', 'list', '--json'])).out) as unknown[];
+    expect(after).toHaveLength(before.length);
   });
 });

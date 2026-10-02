@@ -18,3 +18,5 @@ _to_delete_staging/
 .review-*.md
 .pipeline-*.md
 .qa-report.md
+.walkthrough-shots/
+.walkthrough-findings.md

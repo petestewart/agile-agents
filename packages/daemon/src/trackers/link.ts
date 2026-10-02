@@ -201,7 +201,7 @@ export class TrackerLinks {
     const issue = await this.options.tracker(system).createIssue({
       project,
       title: stream.title,
-      description: stream.goal,
+      description: stream.goal ?? stream.title,
       ...(ancestor?.kind === 'epic' && ancestor.system === system ? { parent: ancestor.key } : {}),
     });
     const updated = await this.options.streams.update('human', id, {

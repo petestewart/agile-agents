@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { WorktreeRefusedError, createWorktree, slugify, worktreePathFor } from './worktrees';
+import {
+  WorktreeRefusedError,
+  branchLabel,
+  createWorktree,
+  slugify,
+  worktreePathFor,
+} from './worktrees';
 
 let repo: string;
 
@@ -33,6 +39,27 @@ describe('slugify', () => {
     expect(slugify('Agent runner and worktree manager')).toBe('agent-runner-and-worktree-manager');
     expect(slugify('A'.repeat(60)).length).toBeLessThanOrEqual(40);
     expect(slugify('!!!')).toBe('stream');
+  });
+  test('T445: a cut ends at a word, never mid-word', () => {
+    expect(slugify('Add a greet() function to src/index.ts that returns "hello')).toBe(
+      'add-a-greet-function-to-src-index-ts',
+    );
+    // Cut right at a word's end: kept whole.
+    expect(slugify(`${'a'.repeat(40)} b`)).toBe('a'.repeat(40));
+    // One word past the cap is cut at the cap.
+    expect(slugify('x'.repeat(50))).toBe('x'.repeat(40));
+  });
+});
+
+describe('branchLabel (T371)', () => {
+  test('a daemon-cut branch reads as its slug; any other branch as itself', () => {
+    expect(branchLabel('stream/01k2abcdefghjkmnpqrstvwxyz-add-csv-import')).toBe('add-csv-import');
+    expect(branchLabel('stream/01K2ABCDEFGHJKMNPQRSTVWXYZ-x')).toBe('x');
+    expect(branchLabel('stream/01k2abcdefghjkmnpqrstvwxyz')).toBe(
+      'stream/01k2abcdefghjkmnpqrstvwxyz',
+    );
+    expect(branchLabel('main')).toBe('main');
+    expect(branchLabel('feature/stream/x')).toBe('feature/stream/x');
   });
 });
 

@@ -133,9 +133,10 @@ describe('knowledge show fields', () => {
       }),
     );
     expect(fields).toContainEqual(['check', 'classifier']);
+    // A ship check reads a diff: "this change" (T371).
     expect(fields).toContainEqual([
       'question',
-      'Does this action violate: never push to a protected branch?',
+      'Does this change violate: never push to a protected branch?',
     ]);
     expect(fields).toContainEqual(['decided', '2026-09-22T01:00:00.000Z by pete']);
   });
@@ -269,7 +270,12 @@ describe('knowledge report table (T142, §5.7)', () => {
   test('one cell per column, with the flag detail and `-` for a rule that never fired', () => {
     const rows = reportRowsFromDaemon(
       [
-        rule({ status: 'accepted', created_at: '2026-01-01T00:00:00.000Z' }),
+        // A review item (a tell item never fires, so it is never flagged: T371).
+        rule({
+          status: 'accepted',
+          enforcement: 'review',
+          created_at: '2026-01-01T00:00:00.000Z',
+        }),
         rule({
           id: 'K-01ABCDEFGHJKMNPQRSTVWXYZ01',
           status: 'accepted',
@@ -291,7 +297,7 @@ describe('knowledge report table (T142, §5.7)', () => {
       [
         'K-01ABCDEFGHJKMNPQRSTVWXYZ00',
         '-',
-        'tell',
+        'review',
         'accepted',
         '0',
         '0',

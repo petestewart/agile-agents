@@ -12,7 +12,8 @@
  * kind-only and the table's safe defaults (deny/hil) apply.
  */
 
-import type { KnowledgeItem } from '@agile-agents/shared';
+import type { KnowledgeItem, PermissionPosture } from '@agile-agents/shared';
+import type { ReadAsk } from './policy-tables';
 
 /** The permission-table role a session is judged under (`permissionRoleFor`): worker = `engineer`, reviewer/lessons = `reviewer`, coordinator = `coordinator` (P20). */
 export type PermissionRole = 'engineer' | 'reviewer' | 'coordinator';
@@ -45,6 +46,8 @@ export interface AcpToolCall {
   title?: string;
   rawInput?: Record<string, unknown>;
   locations?: AcpLocation[];
+  /** T476: the call's content blocks; a vendor may carry an exec's command only here. */
+  content?: unknown;
 }
 
 /** `session/request_permission` params, as forwarded by `SpawnedSession`'s `'request'` event. */
@@ -86,6 +89,8 @@ export interface DecisionContext {
   readRoots?: readonly string[];
   /** T213: private repos not shared with the node, and the agile home: never readable outside the worktree. */
   hiddenRoots?: readonly string[];
+  /** T457: the node's permission posture: a read outside every root is allowed (`trusted`) or held (`ask`). */
+  posture?: PermissionPosture;
   request: AcpPermissionRequestParams;
   /**
    * The pattern rules in scope (§5.3) and what their detectors need: this
@@ -99,6 +104,18 @@ export interface DecisionContext {
   upstreamBranch?: () => string | undefined;
   /** The worktree's checked-out branch. */
   headBranch?: () => string | undefined;
+  /**
+   * T476: this agent's own daemon session id. A daemon verb named the way a
+   * hook-less vendor names MCP tools (`agile-progress: progress`,
+   * `mcp.agile.progress`) passes only when its input carries this id.
+   */
+  session?: string;
+  /**
+   * T476: the vendor has a pre-tool hook (Claude, Pi), which sees an exec's
+   * command even when this request doesn't carry it. Without one, a command
+   * this tier can't read is held for the human instead of refused.
+   */
+  hooked?: boolean;
 }
 
 /** `decidePermission`'s outcomes. */
@@ -121,4 +138,6 @@ export interface HilRequestDraft {
   /** One-line summary, under the body cap. */
   summary: string;
   classified: PermissionRequest;
+  /** T457: a read the Ask posture held, and the dir "Always for this project" would add. */
+  readAsk?: ReadAsk;
 }

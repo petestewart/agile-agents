@@ -76,6 +76,13 @@ export function effortContribution(
   return provider.effort?.(effort);
 }
 
+/** D12, T488: whether this provider does anything with an effort level (a spawn mapping or its ACP option). */
+export function providerTakesEffort(
+  provider: Pick<AcpProviderConfig, 'effort' | 'effortOption'>,
+): boolean {
+  return provider.effort !== undefined || provider.effortOption === true;
+}
+
 /** The thread line when a vendor can't honour the requested effort (D12). */
 export function effortIgnoredLine(vendor: string, effort: Effort): string {
   return `effort ${effort} ignored by ${vendor}`;

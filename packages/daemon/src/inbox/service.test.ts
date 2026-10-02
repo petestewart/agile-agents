@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type Stream, ulid } from '@agile-agents/shared';
+import { type Stream, ulid, validateInboxItem } from '@agile-agents/shared';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
 import { ProjectService } from '../projects/service';
@@ -91,6 +91,123 @@ describe('InboxService.list', () => {
     expect(items.find((i) => i.id === short.id)?.detail).toBeUndefined();
   });
 
+  test("T361: a question's choices ride on its card when they fit one", async () => {
+    const q = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'comma or semicolon?',
+      options: ['comma', 'semicolon'],
+    });
+    // Over RPC a question may offer anything; a card shows at most six short ones.
+    const many = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'which letter?',
+      options: ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+    });
+    const items = inbox.list();
+    expect(items.find((i) => i.id === q.id)?.options).toEqual(['comma', 'semicolon']);
+    expect(items.find((i) => i.id === many.id)?.options).toBeUndefined();
+    expect(items.every((i) => validateInboxItem(i).id === i.id)).toBe(true);
+  });
+
+  test('T502 (D62): a choice question you replied to waits on its agent; unsettled, it is back, by whom', async () => {
+    const q = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'Store amounts how?',
+      options: ['Integer cents', 'Floats'],
+    });
+    const plain = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'And the currency?',
+    });
+    let state: 'waits_on_you' | 'waiting_on_agent' | 'unsettled' = 'waits_on_you';
+    const asked: string[] = [];
+    const threaded = new InboxService({
+      streams,
+      questions,
+      gates,
+      threads: {
+        stateOf: (question) => {
+          asked.push(question.id);
+          return { state, vendor: 'codex' };
+        },
+      },
+    });
+    expect(threaded.list().find((i) => i.id === q.id)?.unsettled_by).toBeUndefined();
+    state = 'waiting_on_agent';
+    expect(threaded.list().some((i) => i.id === q.id)).toBe(false);
+    state = 'unsettled';
+    const back = threaded.list().find((i) => i.id === q.id);
+    expect(back?.unsettled_by).toBe('codex');
+    expect(validateInboxItem(back).id).toBe(q.id);
+    // A question with no choices is answered by what you type: its thread is never asked.
+    expect(threaded.list().some((i) => i.id === plain.id)).toBe(true);
+    expect(asked.every((id) => id === q.id)).toBe(true);
+    // An unreadable thread leaves the question waiting on you.
+    const broken = new InboxService({
+      streams,
+      questions,
+      gates,
+      threads: {
+        stateOf: () => {
+          throw new Error('unreadable');
+        },
+      },
+    });
+    expect(broken.list().some((i) => i.id === q.id)).toBe(true);
+  });
+
+  test("T361: a deleted node's question, gate and done item leave the inbox, and come back on restore", async () => {
+    const q = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'comma or semicolon?',
+    });
+    const gate = await gates.request('land', {
+      policy: { gates: { land: 'human' }, breaker_signals: [] },
+      stream: child.id,
+      summary: 'merge parser into main',
+    });
+    const other = await streams.create('human', { title: 'writer', goal: 'g', parent: root.id });
+    await streams.update('daemon', other.id, { agent: { status: 'done' } });
+    const ids = () => inbox.list().map((i) => i.id);
+    expect(ids()).toEqual(expect.arrayContaining([q.id, gate.id, other.id]));
+
+    await streams.archiveTree('human', child.id);
+    await streams.archiveTree('human', other.id);
+    expect(ids()).not.toContain(q.id);
+    expect(ids()).not.toContain(gate.id);
+    expect(ids()).not.toContain(other.id);
+
+    await streams.unarchiveTree('human', child.id);
+    expect(ids()).toEqual(expect.arrayContaining([q.id, gate.id]));
+  });
+
+  test("T496: a closed node's question and gate leave Needs me, and come back on reopen", async () => {
+    const q = await questions.raise({
+      stream: child.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'comma or semicolon?',
+    });
+    const gate = await gates.request('land', {
+      policy: { gates: { land: 'human' }, breaker_signals: [] },
+      stream: child.id,
+      summary: 'merge parser into main',
+    });
+    const ids = () => inbox.list().map((i) => i.id);
+    expect(ids()).toEqual(expect.arrayContaining([q.id, gate.id]));
+
+    await streams.close('human', child.id);
+    expect(ids()).not.toContain(q.id);
+    expect(ids()).not.toContain(gate.id);
+
+    await streams.reopen('human', child.id);
+    expect(ids()).toEqual(expect.arrayContaining([q.id, gate.id]));
+  });
+
   test('a pending gate shows; a resolved one does not', async () => {
     const gate = await gates.request('land', {
       policy: { gates: { land: 'human' }, breaker_signals: [] },
@@ -113,12 +230,30 @@ describe('InboxService.list', () => {
     expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
   });
 
+  test('T371: with no progress line, a done or blocked card says what to do, in the cockpit’s words', async () => {
+    await streams.update('daemon', child.id, { agent: { status: 'done' } });
+    const done = inbox.list().find((i) => i.stream === child.id);
+    expect(done?.context).toBe(
+      'The agent finished. Look over the changes, then merge — or close the node if you won’t.',
+    );
+    await streams.update('daemon', child.id, { agent: { status: 'blocked' } });
+    const blocked = inbox.list().find((i) => i.stream === child.id);
+    expect(blocked?.context).toBe(
+      'The agent is stuck and needs a hand. Open the node to see where it stopped.',
+    );
+    // The agent's own last line wins over the stock one.
+    await streams.update('agent', child.id, { agent: { progress: 'need the API key' } });
+    expect(inbox.list().find((i) => i.stream === child.id)?.context).toBe('need the API key');
+  });
+
   test('T336: a coordinating node whose coordinator finished is not "ready to land"', async () => {
-    const grandchild = await streams.create('human', {
+    // A part has a repo (D42: a repo-less child is a conversation, not a part).
+    const made = await streams.create('human', {
       title: 'api part',
       goal: 'g',
       parent: child.id,
     });
+    const grandchild = await store.updateStream('daemon', made.id, (b) => ({ ...b, repo: 'api' }));
     await streams.update('daemon', child.id, { agent: { status: 'done' } });
     await streams.update('daemon', root.id, { agent: { status: 'done' } });
     expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
@@ -130,10 +265,102 @@ describe('InboxService.list', () => {
     expect(inbox.list().find((i) => i.stream === grandchild.id)?.kind).toBe('done');
   });
 
+  test('D42: a work node with a question asked under it still comes to you when it finishes', async () => {
+    const made = await streams.create('human', { title: 'work', goal: 'g', parent: root.id });
+    const work = await store.updateStream('daemon', made.id, (b) => ({ ...b, repo: 'api' }));
+    await streams.create('human', { title: 'why?', goal: 'g', parent: work.id });
+    await streams.update('daemon', work.id, { agent: { status: 'done' } });
+    expect(inbox.list().find((i) => i.stream === work.id)?.kind).toBe('done');
+  });
+
+  test('T437: a work node that gained a part keeps its own branch, and its Merge card', async () => {
+    const made = await streams.create('human', { title: 'work', goal: 'g', parent: root.id });
+    const work = await store.updateStream('daemon', made.id, (b) => ({
+      ...b,
+      repo: 'api',
+      branch: 'stream/work',
+    }));
+    // A conversation under it was turned into work: a part.
+    const part = await streams.create('human', { title: 'follow-up', goal: 'g', parent: work.id });
+    await store.updateStream('daemon', part.id, (b) => ({ ...b, repo: 'api' }));
+    await streams.update('daemon', work.id, { agent: { status: 'done' } });
+    expect(inbox.list().find((i) => i.stream === work.id)?.kind).toBe('done');
+  });
+
   test('T336: a project root\'s coordinator finishing is not "ready to land"', async () => {
     const project = await new ProjectService(store, streams).create({ name: 'Shop' });
     await streams.update('daemon', project.root, { agent: { status: 'done' } });
     expect(inbox.list().some((i) => i.stream === project.root)).toBe(false);
+  });
+
+  test('T341: a conversation that answered is not "ready to land" (it has no branch)', async () => {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const talk = await streams.create('human', {
+      title: 'Cents check',
+      goal: 'how are amounts stored?',
+      project: project.id,
+    });
+    await streams.update('daemon', talk.id, { agent: { status: 'done' } });
+    expect(inbox.list().some((i) => i.stream === talk.id)).toBe(false);
+    // Blocked still needs you.
+    await streams.update('daemon', talk.id, { agent: { status: 'blocked' } });
+    expect(inbox.list().find((i) => i.stream === talk.id)?.kind).toBe('blocked');
+  });
+
+  test('T477: a node with no goal yet that finished a turn answered you; it is no Finished card', async () => {
+    const open = await streams.create('human', { title: 'talk first', parent: root.id });
+    expect(open.goal).toBeUndefined();
+    await streams.update('daemon', open.id, { agent: { status: 'done' } });
+    expect(inbox.list().some((i) => i.stream === open.id)).toBe(false);
+    // Once it has a goal, finishing is finished work.
+    await streams.update('human', open.id, { goal: 'fix the parser' });
+    await streams.update('daemon', open.id, { agent: { status: 'done' } });
+    expect(inbox.list().find((i) => i.stream === open.id)?.kind).toBe('done');
+    // Blocked needs you with or without a goal.
+    const talk = await streams.create('human', { title: 'still talking', parent: root.id });
+    await streams.update('daemon', talk.id, { agent: { status: 'blocked' } });
+    expect(inbox.list().find((i) => i.stream === talk.id)?.kind).toBe('blocked');
+  });
+
+  test('T477: a dismissed Finished card stays away until the agent finishes again', async () => {
+    await streams.update('daemon', child.id, { agent: { status: 'done' } });
+    expect(inbox.list().find((i) => i.stream === child.id)?.kind).toBe('done');
+    await Bun.sleep(5);
+    await streams.update('human', child.id, { human: { dismissed_at: new Date().toISOString() } });
+    expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
+    // The human side is untouched: still open.
+    expect(streams.get(child.id).human.status).toBe('open');
+    await Bun.sleep(5);
+    await streams.update('daemon', child.id, { agent: { status: 'working' } });
+    await streams.update('daemon', child.id, { agent: { status: 'done' } });
+    expect(inbox.list().find((i) => i.stream === child.id)?.kind).toBe('done');
+  });
+
+  test('T341: a finished node whose PR is open is not "ready to land" (it merges on GitHub)', async () => {
+    const at = new Date().toISOString();
+    await streams.update('daemon', child.id, {
+      agent: { status: 'done' },
+      delivery_state: {
+        mode: 'pr',
+        status: 'pr_open',
+        at,
+        pr: {
+          number: 1,
+          url: 'https://github.com/o/r/pull/1',
+          head: 'stream/x',
+          base: 'main',
+          state: 'open',
+          draft: false,
+          review: 'none',
+          checks: 'pending',
+          mergeable: 'clean',
+          auto_merge: 'enabled',
+          last_seen: {},
+          polled_at: at,
+        },
+      },
+    });
+    expect(inbox.list().some((i) => i.stream === child.id)).toBe(false);
   });
 
   test('an answered question leaves the inbox', async () => {

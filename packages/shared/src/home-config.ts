@@ -15,7 +15,16 @@
 
 import { z } from 'zod';
 import { EffortSchema } from './effort';
+import { HarnessUpdatesConfigSchema } from './harness-updates';
 import { formatZodError } from './ids';
+import { ModelPolicyPartialSchema, ModelProfilesSchema } from './model-policy';
+import { PermissionPostureSchema } from './posture';
+import {
+  FAVOURITE_MODELS_MAX,
+  FavouriteModelSchema,
+  VendorFailureSchema,
+} from './session-defaults';
+import { VendorCheckModeSchema } from './vendor-check';
 
 /** Built-in default HTTP port for the cockpit/API when `config.yaml` names none. */
 export const DEFAULT_DAEMON_PORT = 4600;
@@ -214,6 +223,15 @@ export function trackerStatus(config: TrackersConfig | undefined): TrackerStatus
   };
 }
 
+/** T454: `knowledge_wake`'s two values; `source` is the default. */
+export const KNOWLEDGE_WAKE_MODES = ['source', 'jev'] as const;
+export type KnowledgeWakeMode = (typeof KNOWLEDGE_WAKE_MODES)[number];
+
+/** T465 (D48): a finished turn's session is kept this long (minutes) when the home sets nothing. */
+export const DEFAULT_SESSION_IDLE_MINUTES = 30;
+/** T465: the longest a finished turn's session may be kept (a day). */
+export const MAX_SESSION_IDLE_MINUTES = 1440;
+
 export const HomeConfigSchema = z
   .object({
     /** HTTP port for the localhost cockpit/API. `0` lets the OS pick. */
@@ -228,6 +246,8 @@ export const HomeConfigSchema = z
     default_vendor: z.string().min(1).optional(),
     default_model: z.string().min(1).optional(),
     default_effort: EffortSchema.optional(),
+    /** T456: retry and fall back on a crashed agent (home step; `VendorFailureSchema`). */
+    vendor_failure: VendorFailureSchema.optional(),
     /**
      * T150 (§6.2, **D5**): the classifier tier. Optional rather than
      * defaulted, so `HomeConfig` stays the shape of the *file* and every
@@ -240,6 +260,67 @@ export const HomeConfigSchema = z
     github: GitHubConfigSchema.optional(),
     /** T320 (D31): Jira/Linear connections and tokens. */
     trackers: TrackersConfigSchema.optional(),
+    /**
+     * T434 (D41): quick drafts by one cheap model call through the user's own
+     * `claude` login: an untitled node's title, and Turn into work's goal.
+     * `false` turns both off (the first line stays the title; the goal starts
+     * from the last reply). Absent = on.
+     */
+    quick_drafts: z.boolean().optional(),
+    /**
+     * T454 (D44 follow-up): who an accepted knowledge item wakes among the
+     * conversations in its scope. `source` (absent): only the one that
+     * proposed it (T453). `jev`: also any other the classifier judges it
+     * relevant to and still current (`events/knowledge-wake.ts`).
+     */
+    knowledge_wake: z.enum(KNOWLEDGE_WAKE_MODES).optional(),
+    /** T457: the permission posture (`posture.ts`); a project may override it. Absent = `ask`. */
+    permissions: PermissionPostureSchema.optional(),
+    /** T478: New node's "Close it when its goal is met" starts on. Absent = off. */
+    auto_close: z.boolean().optional(),
+    /**
+     * T480 (D49): run the Claude Code / Codex the operator installed (found on
+     * PATH) rather than the copy bundled in the ACP bridge. `false` for a
+     * vendor keeps its bundled copy. Absent = on.
+     */
+    installed_cli: z
+      .object({ claude: z.boolean().optional(), codex: z.boolean().optional() })
+      .strict()
+      .optional(),
+    /**
+     * T469: the models starred as favourites. With any, the model picker
+     * lists only these (and what runs), with a Show all switch.
+     */
+    favourite_models: z.array(FavouriteModelSchema).max(FAVOURITE_MODELS_MAX).optional(),
+    /**
+     * T482 (D54): the home's model choice, the default every project inherits
+     * field by field (Settings → Agents → Model choice). A field left out
+     * reads what ships: Choose, quality 50, Start cheap, the favourites as
+     * the preset models, no pinned rules.
+     */
+    model_policy: ModelPolicyPartialSchema.optional(),
+    /**
+     * T482: each model's tier and relative cost, keyed `vendor/model`, over
+     * the shipped ones (`DEFAULT_MODEL_PROFILES`). Only the operator sets them.
+     */
+    model_profiles: ModelProfilesSchema.optional(),
+    /**
+     * T465 (D48): how long an agent's session stays alive and idle after its
+     * turn finished, in minutes, so the next message keeps its context.
+     * Absent = `DEFAULT_SESSION_IDLE_MINUTES`.
+     */
+    session_idle_minutes: z.number().int().min(1).max(MAX_SESSION_IDLE_MINUTES).optional(),
+    /**
+     * T481 (D50): keeping each vendor's CLI up to date: Off, Alert (absent)
+     * or Auto, a vendor's own mode, and the dismissed versions.
+     */
+    harness_updates: HarnessUpdatesConfigSchema.optional(),
+    /**
+     * T489 (D58): whether the daemon checks a vendor by itself after a CLI
+     * update or on a CLI version it has no check for (`auto`, absent), or
+     * only on Check vendors / `agile vendors check` (`manual`).
+     */
+    vendor_checks: VendorCheckModeSchema.optional(),
     /** T243 (P11): routed-event settings. `wake_budget_per_hour` defaults to 20. */
     events: z
       .object({ wake_budget_per_hour: z.number().int().positive().optional() })
@@ -303,3 +384,31 @@ export function trackerSettingsStatus(config: TrackersConfig | undefined): Track
     linear: { token_set: config?.linear?.token !== undefined },
   };
 }
+
+/** T434: Settings' quick drafts switch (`POST /api/settings/quick-drafts`). */
+export const QuickDraftsInputSchema = z.object({ on: z.boolean() }).strict();
+export type QuickDraftsInput = z.infer<typeof QuickDraftsInputSchema>;
+
+/** T480 (D49): the vendors whose installed CLI can stand in for the bridge's bundled copy. */
+export const INSTALLED_CLI_VENDORS = ['claude', 'codex'] as const;
+export type InstalledCliVendor = (typeof INSTALLED_CLI_VENDORS)[number];
+
+/** T480: Settings' "Use the installed …" switch (`POST /api/settings/installed-cli`). */
+export const InstalledCliInputSchema = z
+  .object({ vendor: z.enum(INSTALLED_CLI_VENDORS), on: z.boolean() })
+  .strict();
+export type InstalledCliInput = z.infer<typeof InstalledCliInputSchema>;
+
+/** T454: Settings' "Let Jev decide" switch (`POST /api/settings/knowledge-wake`). */
+export const KnowledgeWakeInputSchema = z.object({ on: z.boolean() }).strict();
+export type KnowledgeWakeInput = z.infer<typeof KnowledgeWakeInputSchema>;
+
+/** T478: Settings' auto-close default for new nodes (`POST /api/settings/auto-close`). */
+export const AutoCloseInputSchema = z.object({ on: z.boolean() }).strict();
+export type AutoCloseInput = z.infer<typeof AutoCloseInputSchema>;
+
+/** T465 (D48): Settings' idle session timeout (`POST /api/settings/session-idle`). */
+export const SessionIdleInputSchema = z
+  .object({ minutes: z.number().int().min(1).max(MAX_SESSION_IDLE_MINUTES) })
+  .strict();
+export type SessionIdleInput = z.infer<typeof SessionIdleInputSchema>;
