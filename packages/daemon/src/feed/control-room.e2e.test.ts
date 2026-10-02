@@ -15003,11 +15003,13 @@ describe('Moving, archiving and promoting threads (Playwright e2e, T504)', () =>
       const cockpit = await startStreamCockpit([tangentAgent]);
       let page: Page | undefined;
       try {
-        const root = await cockpit.streams.create('human', { title: 'Shop', goal: 'g' });
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'Shop',
+        });
         const talk = await cockpit.streams.create('human', {
           title: 'Money talk',
           goal: 'how to store money',
-          parent: root.id,
+          project: shop.id,
         });
         const turn = await cockpit.streams.appendThread(
           'agent',
