@@ -307,6 +307,60 @@ describe('T160 cockpit routes', () => {
     ]);
   });
 
+  test('T504: move a line, archive and restore a thread over HTTP: same-origin, recorded as yours; compact needs an agent', async () => {
+    const node = await streams.create('human', { title: 'Ledger', goal: 'g' });
+    const session = ulid();
+    const turn = await streams.appendThread(
+      'agent',
+      node.id,
+      { kind: 'line', body: 'Use banker’s rounding.' },
+      session,
+    );
+    const first = await streams.appendThread('human', node.id, {
+      kind: 'line',
+      body: 'why?',
+      anchor: { entry: turn.ts },
+    });
+    const aside = await streams.appendThread('human', node.id, { kind: 'line', body: 'aside' });
+    const post = (action: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(url(`/api/streams/${node.id}/${action}`), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+    const evil = { origin: 'http://evil.example' };
+    expect((await post('move-line', { entry: aside.ts, to: first.ts }, evil)).status).toBe(403);
+    expect((await post('archive-thread', { thread: first.ts }, evil)).status).toBe(403);
+    expect((await post('restore-thread', { thread: first.ts }, evil)).status).toBe(403);
+    expect((await post('compact', {}, evil)).status).toBe(403);
+    expect((await post('move-line', { entry: aside.ts, to: 'side' })).status).toBe(400);
+    expect((await post('move-line', { entry: first.ts, to: 'main' })).status).toBe(400);
+
+    expect((await post('move-line', { entry: aside.ts, to: first.ts })).status).toBe(201);
+    let page = (await (await fetch(url(`/api/streams/${node.id}`))).json()) as {
+      chat_threads?: Array<{ id: string; entries: string[]; archived?: unknown }>;
+      chat_moves?: Array<{ entry: string; to: string }>;
+    };
+    expect(page.chat_threads?.[0]?.entries).toEqual([first.ts, aside.ts]);
+    expect(page.chat_moves).toEqual([
+      { entry: aside.ts, from: 'main', to: first.ts, at: expect.any(String) },
+    ]);
+
+    const archived = await post('archive-thread', { thread: first.ts, extra: 1 });
+    expect(archived.status).toBe(400);
+    const ok = await post('archive-thread', { thread: first.ts });
+    expect(ok.status).toBe(201);
+    expect(((await ok.json()) as { entry: { by: string } }).entry.by).toBe('human');
+    expect((await post('archive-thread', { thread: first.ts })).status).toBe(400);
+    page = (await (await fetch(url(`/api/streams/${node.id}`))).json()) as typeof page;
+    expect(page.chat_threads?.[0]?.archived).toBeDefined();
+    // No agent running: Compact now is not on offer.
+    expect((await post('compact', {})).status).toBe(409);
+    expect((await post('restore-thread', { thread: first.ts })).status).toBe(201);
+    page = (await (await fetch(url(`/api/streams/${node.id}`))).json()) as typeof page;
+    expect(page.chat_threads?.[0]?.archived).toBeUndefined();
+  });
+
   test('POST /api/rules/:id/accept decides as human; a second accept is 409; cross-origin is 403', async () => {
     const rule = await rules.create('agent', { text: 'use the repo scripts' });
     const foreign = await fetch(url(`/api/rules/${rule.id}/accept`), {
