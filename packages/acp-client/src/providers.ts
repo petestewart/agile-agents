@@ -396,9 +396,10 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // native `codex app-server` (which has approval request kinds)".
     // ACP permission (tier 2) can't gate this vendor. T506 (§C5 round 3):
     // Codex's own `PreToolUse` hook can, under codex-acp too: the daemon
-    // writes `<worktree>/.codex/hooks.json` (`hook/codex.ts`), refuses a
-    // worktree Codex doesn't trust, and stops a session whose calls the hook
-    // never saw. So it is tier-1 gated like Claude, not `requiresSandbox`.
+    // writes `<repo>/.codex/hooks.json` (T511: Codex reads a worktree's hooks
+    // from its main repo; `hook/codex.ts`), refuses a repo Codex doesn't
+    // trust, and stops a session whose calls the hook never saw. So it is
+    // tier-1 gated like Claude, not `requiresSandbox`.
     command: 'npx',
     args: ['-y', '@agentclientprotocol/codex-acp@1.10.0'],
     envOverrides: {},

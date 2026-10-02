@@ -2,7 +2,7 @@
  * T506: Codex's own `PreToolUse` hook, the same tier-1 gate as Claude's
  * (`settings.ts`), measured in design/spike-findings.md §C5 round 3:
  *
- * - Codex reads project hooks from `<worktree>/.codex/hooks.json`
+ * - Codex reads project hooks from `<project>/.codex/hooks.json`
  *   (`{hooks: {PreToolUse: [{matcher, hooks: [{type: 'command', command,
  *   statusMessage}]}]}}`), also under codex-acp (`codex app-server`).
  * - The hook gets `session_id, turn_id, transcript_path, cwd,
@@ -25,25 +25,29 @@
  *   would not run in. An untrusted hook is skipped silently, so the runner
  *   also watches for tool calls the hook never saw (`CodexGateWatch`).
  *
+ * - T511 (§C5 round 4): for a git worktree Codex loads project hooks from
+ *   the main repo, not the worktree: a hook in the worktree's `.codex/` saw
+ *   0 calls, the same hook at `<repo>/.codex/` saw 9. So a node in a
+ *   worktree gets its hook at `<repo>/.codex/` (`codexHookPlacement`), and
+ *   the script passes `--repo <repo>`: the CLI gates only calls whose `cwd`
+ *   is under `<repo>/.worktrees/`, so the operator's own Codex in that repo
+ *   runs as before. The worktree gets no copy. A session with no worktree
+ *   (the Director, a node with no repo) keeps T506's hook in its own `cwd`.
+ *
  * The command is a small script beside `hooks.json` rather than a shell
  * string: the spike measured Codex running an executable by its path, not
  * how it runs a command line. The script carries no session id (a worker
- * and its reviewer share one worktree); the session env's `AGILE_AGENT`
- * is the hint, as for Claude.
+ * and its reviewer share one worktree, and every Codex node of a repo
+ * shares the repo's file); the session env's `AGILE_AGENT` is the hint, as
+ * for Claude.
  */
 
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  writeFileSync,
-} from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { CODEX_UNGATED_REASON, CODEX_UNTRUSTED_LEAD } from '@agile-agents/shared';
 import { shellQuote } from '../runner/cli-bin';
+import { atomicWriteFile } from '../store/fs';
 import { excludeFromGit, isTracked } from './settings';
 import type { ClaudePreToolUsePayload } from './types';
 
@@ -74,8 +78,14 @@ export interface CodexHookMatcher {
   hooks: CodexHookEntry[];
 }
 
+/** The gate's own `hooks.json` content. */
+export interface CodexGateHooks {
+  hooks: { PreToolUse: CodexHookMatcher[] };
+}
+
+/** The file as written: ours merged with whatever else was there (other matchers and events kept as found). */
 export interface CodexHooksFile {
-  hooks: { PreToolUse: CodexHookMatcher[]; [event: string]: unknown };
+  hooks: { PreToolUse: unknown[]; [event: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -84,22 +94,29 @@ export interface CodexHookOptions {
   agileBin: string;
   /** Set as `AGILE_SOCKET_PATH` for the CLI, as Claude's hook command does. */
   socketPath?: string;
+  /**
+   * T511: the repo root the hook sits at, passed to the CLI as `--repo`: only
+   * calls from under `<repoRoot>/.worktrees/` are gated. Absent (a session
+   * with no worktree): every call through the file is gated, as in T506.
+   */
+  repoRoot?: string;
 }
 
 /** The script every matcher runs: the CLI in Codex's mode, and exit 2 if it can't run. */
 export function renderCodexGateScript(options: CodexHookOptions): string {
   const env = options.socketPath ? `AGILE_SOCKET_PATH=${shellQuote(options.socketPath)} ` : '';
+  const repo = options.repoRoot !== undefined ? ` --repo ${shellQuote(options.repoRoot)}` : '';
   return [
     '#!/bin/sh',
-    '# agile-agents: the Codex PreToolUse gate (T506). Written by the daemon on every Codex start; edits are overwritten.',
+    '# agile-agents: the Codex PreToolUse gate (T506, T511). Written by the daemon on every Codex start; edits are overwritten.',
     '# Exit 2 blocks the call; any other failure would let it run, so a CLI that cannot run blocks.',
-    `${env}${options.agileBin} hook pre-tool-use --vendor codex || exit 2`,
+    `${env}${options.agileBin} hook pre-tool-use --vendor codex${repo} || exit 2`,
     '',
   ].join('\n');
 }
 
 /** The `hooks.json` entries for a script at `scriptPath`. */
-export function renderCodexHooks(scriptPath: string): CodexHooksFile {
+export function renderCodexHooks(scriptPath: string): CodexGateHooks {
   return {
     hooks: {
       PreToolUse: CODEX_HOOK_MATCHERS.map((matcher) => ({
@@ -114,41 +131,124 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** True when a hook entry is one of ours: it runs a gate script by its file name. */
+function isOurHook(entry: unknown): boolean {
+  if (!isPlainObject(entry) || typeof entry.command !== 'string') return false;
+  const command = entry.command;
+  return command === CODEX_GATE_SCRIPT || command.endsWith(`${sep}${CODEX_GATE_SCRIPT}`);
+}
+
 /**
- * Writes `<worktree>/.codex/agile-pre-tool-use.sh` and merges the gate into
- * `<worktree>/.codex/hooks.json` (other keys and events kept, `PreToolUse`
- * replaced; byte-identical on repeat), and git-excludes `.codex/` as
- * Claude's `.claude/` is. A repo that tracks either file is refused: the
- * write would change a file the user owns.
+ * The file's `PreToolUse` with ours in it: every matcher of someone else's
+ * kept as it is (ours taken out of it; a matcher left with none of its own
+ * hooks dropped), then ours appended. Repeating it gives the same list.
  */
-export function writeCodexHooks(worktreePath: string, options: CodexHookOptions): CodexHooksFile {
+function mergePreToolUse(existing: unknown, ours: CodexHookMatcher[]): unknown[] {
+  const kept: unknown[] = [];
+  for (const matcher of Array.isArray(existing) ? existing : []) {
+    if (!isPlainObject(matcher) || !Array.isArray(matcher.hooks)) {
+      kept.push(matcher);
+      continue;
+    }
+    const theirs = matcher.hooks.filter((entry) => !isOurHook(entry));
+    if (theirs.length === matcher.hooks.length) kept.push(matcher);
+    else if (theirs.length > 0) kept.push({ ...matcher, hooks: theirs });
+  }
+  return [...kept, ...ours];
+}
+
+/** Writes `content` unless the file already holds it; a write is a rename, so a reader never sees half a file. */
+function writeIfChanged(path: string, content: string, mode?: number): void {
+  if (existsSync(path) && readFileSync(path, 'utf8') === content) {
+    if (mode !== undefined) chmodSync(path, mode);
+    return;
+  }
+  atomicWriteFile(path, content, mode);
+}
+
+/**
+ * Writes `<root>/.codex/agile-pre-tool-use.sh` and merges the gate into
+ * `<root>/.codex/hooks.json` (other keys, events and someone else's
+ * `PreToolUse` matchers kept; ours replaced; byte-identical on repeat), and
+ * git-excludes `.codex/` as Claude's `.claude/` is (`info/exclude` lives in
+ * the common git dir, so a worktree's is the repo's). A repo that tracks
+ * either file is refused: the write would change a file the user owns.
+ *
+ * T511: `root` is the repo root for a node in a worktree (`options.repoRoot`
+ * set), shared by every Codex node of that repo: they all write the same
+ * bytes, an unchanged file is not rewritten, and a changed one is replaced
+ * by a rename (a Codex reading it, or running the script, never sees half a
+ * file). The daemon is one process and this is synchronous, so two starts
+ * never interleave.
+ */
+export function writeCodexHooks(root: string, options: CodexHookOptions): CodexHooksFile {
   for (const file of [CODEX_HOOKS_FILE, CODEX_GATE_SCRIPT]) {
-    if (isTracked(worktreePath, `${CODEX_DIR}/${file}`)) {
+    if (isTracked(root, `${CODEX_DIR}/${file}`)) {
       throw new Error(
-        `${worktreePath} tracks ${CODEX_DIR}/${file}; Codex's gate would change a tracked file`,
+        `${root} tracks ${CODEX_DIR}/${file}; Codex's gate would change a tracked file (untrack it, or move your hooks to ~/.codex/hooks.json)`,
       );
     }
   }
-  const dir = join(worktreePath, CODEX_DIR);
-  mkdirSync(dir, { recursive: true });
+  const dir = join(root, CODEX_DIR);
   const script = join(dir, CODEX_GATE_SCRIPT);
-  writeFileSync(script, renderCodexGateScript(options));
-  chmodSync(script, 0o755);
-
   const path = join(dir, CODEX_HOOKS_FILE);
   let existing: Record<string, unknown> = {};
   if (existsSync(path)) {
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+      // Never overwritten: it may hold the operator's own hooks.
+      throw new Error(`${path} isn't valid JSON; Codex's gate can't be merged into it`);
+    }
     if (isPlainObject(parsed)) existing = parsed;
   }
   const existingHooks = isPlainObject(existing.hooks) ? existing.hooks : {};
   const merged: CodexHooksFile = {
     ...existing,
-    hooks: { ...existingHooks, ...renderCodexHooks(script).hooks },
+    hooks: {
+      ...existingHooks,
+      PreToolUse: mergePreToolUse(
+        existingHooks.PreToolUse,
+        renderCodexHooks(script).hooks.PreToolUse,
+      ),
+    },
   };
-  writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`);
-  excludeFromGit(worktreePath, `${CODEX_DIR}/`);
+  mkdirSync(dir, { recursive: true });
+  writeIfChanged(script, renderCodexGateScript(options), 0o755);
+  writeIfChanged(path, `${JSON.stringify(merged, null, 2)}\n`);
+  excludeFromGit(root, `${CODEX_DIR}/`);
   return merged;
+}
+
+/** Where a Codex session's hook goes, and whether the CLI is told the repo (`--repo`). */
+export interface CodexHookPlacement {
+  /** The directory `.codex/` is written in, and whose trust is checked. */
+  root: string;
+  /** Set when `root` is a repo the session's worktree belongs to. */
+  repoRoot?: string;
+}
+
+/**
+ * T511: a session in a worktree of `repoRoot` gets its hook at the repo
+ * root (Codex reads a worktree's project hooks from its main repo, §C5
+ * round 4); any other session at its own `cwd`. The CLI's `--repo` guard
+ * gates only calls from under `<repoRoot>/.worktrees/`, so a worktree
+ * anywhere else would run ungated: refused.
+ */
+export function codexHookPlacement(cwd: string, repoRoot?: string): CodexHookPlacement {
+  if (repoRoot === undefined) return { root: cwd };
+  const root = resolve(repoRoot);
+  const worktrees = join(root, '.worktrees');
+  const inside = [resolve(cwd), realOr(cwd)].some((form) =>
+    [worktrees, realOr(worktrees)].some((base) => form !== base && within(form, base)),
+  );
+  if (!inside) {
+    throw new Error(
+      `Codex's gate can't cover ${cwd}: it isn't a worktree under ${worktrees}, the only place the gate in ${root}/${CODEX_DIR} checks`,
+    );
+  }
+  return { root, repoRoot: root };
 }
 
 // Trust (option b): read, never written.

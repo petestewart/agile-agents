@@ -47,8 +47,19 @@
  * on stderr (the model sees "Command blocked by PreToolUse hook: <reason>").
  * Every failure is exit 2 too: Codex runs a call whose hook failed with any
  * other code.
+ *
+ * T511: `--repo <root>` (with `--vendor codex`). Codex reads a worktree's
+ * project hooks from its main repo (spike-findings §C5 round 4), so the
+ * daemon's hook sits at `<root>/.codex/` and also runs for the operator's
+ * own Codex in that repo. With `--repo`, a call whose input `cwd`
+ * (realpath'd where it can be) is not inside `<root>/.worktrees/` is
+ * allowed at once: exit 0, nothing printed, no daemon call. Inside, it is
+ * gated as above, fail-closed. A `cwd` that is missing, not a string or
+ * not absolute counts as inside: it is gated.
  */
 
+import { realpathSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { type ParsedArgs, hasFlag, optionalString, readStdin } from '../args';
 import { RpcCallError, callRpc } from '../client';
 import { printJson } from '../format';
@@ -107,12 +118,50 @@ export function denyReasonOf(reply: unknown): string | undefined {
   return typeof reason === 'string' && reason.length > 0 ? reason : 'AGILE-GATE: blocked';
 }
 
+/** A path as given (resolved) and its real path: its nearest existing ancestor's, with the rest appended. */
+function pathForms(path: string): string[] {
+  const resolved = resolve(path);
+  const rest: string[] = [];
+  let current = resolved;
+  for (;;) {
+    try {
+      return [...new Set([resolved, join(realpathSync(current), ...rest)])];
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return [resolved];
+      rest.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/** `path` is `base` or under it, comparing strings only. */
+function atOrUnder(path: string, base: string): boolean {
+  if (path === base) return true;
+  const rel = relative(base, path);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+/**
+ * T511: whether a Codex hook call with this input `cwd` comes from a node's
+ * worktree under `<repo>/.worktrees/`, and so must be gated. Any form of
+ * the `cwd` (as given, realpath) inside any form of the folder counts; a
+ * `cwd` that can't be read as an absolute path counts too (fail closed).
+ */
+export function codexCallInWorktrees(cwd: unknown, repo: string): boolean {
+  if (typeof cwd !== 'string' || cwd.length === 0 || !isAbsolute(cwd)) return true;
+  const bases = pathForms(join(resolve(repo), '.worktrees'));
+  return pathForms(cwd).some((form) => bases.some((base) => atOrUnder(form, base)));
+}
+
 export interface RunHookOptions {
   socketPath: string;
   event: string;
   failClosed: boolean;
   /** T506: whose hook contract to speak; default Claude's. */
   vendor?: HookVendor;
+  /** T511 (Codex only): the repo root the hook sits at; only calls from its `.worktrees/` are gated. */
+  repo?: string;
   /** Milliseconds to wait for the daemon before failing (open or closed per `failClosed`). Default 2000. */
   timeoutMs?: number;
   stdin?: NodeJS.ReadableStream;
@@ -137,6 +186,13 @@ export async function runHook(options: RunHookOptions): Promise<number> {
     if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
       console.error('AGILE-GATE: the hook input is not a JSON object');
       return CODEX_BLOCK_EXIT;
+    }
+    // T511: the operator's own Codex in the repo is not the daemon's to gate.
+    if (
+      options.repo !== undefined &&
+      !codexCallInWorktrees((payload as Record<string, unknown>).cwd, options.repo)
+    ) {
+      return 0;
     }
     (payload as Record<string, unknown>).agile_vendor = 'codex';
   }
@@ -205,6 +261,7 @@ export function parseHookArgs(args: ParsedArgs): {
   failClosed: boolean;
   timeoutMs?: number;
   vendor?: HookVendor;
+  repo?: string;
 } {
   const event = args.positionals[0];
   if (!event) throw new Error('usage: agile hook <event> (e.g. pre-tool-use)');
@@ -225,10 +282,16 @@ export function parseHookArgs(args: ParsedArgs): {
       `--vendor must be one of ${HOOK_VENDORS.join(', ')}, got ${JSON.stringify(vendorRaw)}`,
     );
   }
+  // T511: `--repo` scopes Codex's repo-root hook to the daemon's worktrees.
+  const repo = optionalString(args.options, 'repo');
+  if (repo !== undefined && (vendorRaw !== 'codex' || event !== 'pre-tool-use' || repo === '')) {
+    throw new Error('--repo <root> goes with pre-tool-use --vendor codex');
+  }
   return {
     event,
     failClosed,
     timeoutMs,
     ...(vendorRaw !== undefined ? { vendor: vendorRaw as HookVendor } : {}),
+    ...(repo !== undefined ? { repo } : {}),
   };
 }

@@ -190,6 +190,14 @@ Reports: `codex-defaultmode-perm-hooks-fixture.json`,
   and the worktree must be a trusted Codex project. The daemon checks the
   hook ran (fail-closed) for the case where it isn't.
 
+**Round 4 (2026-10-02, live check + `--worktree`):** on a real Codex node
+the daemon's T506 hook in the node's worktree never ran (the fail-closed check
+stopped the agent). Spike `--worktree` (agent in `<fixture>/.worktrees/w1`, a
+git worktree, as the daemon runs it): hook in the worktree's `.codex/` → **0**
+calls, curl ran; hook in the main repo's `.codex/` (`--hooks-at main`) → **9**
+calls, curl blocked with our reason. For a git worktree Codex loads project
+hooks from the main repo root. T511 moves the daemon's hook there.
+
 What those runs still show (none of it depends on the hook):
 
 - **codex-acp starts Codex as `<CODEX_PATH> app-server`**, and Codex accepts
@@ -221,6 +229,23 @@ trusted here: trust <repo> in Codex"). Fail closed: when a session's
 ("Codex ran a command its gate never saw: …"), blocked in Needs me, not
 restarted. Codex left `UNCHECKED_COMMAND_VENDORS` and joined
 `HOOKED_VENDORS`. Live check: LIVE-CHECKLIST §24.
+
+**As built (T511, 2026-10-02), after round 4.** A Codex session in a node's
+worktree gets the hook at the root of the repo the worktree belongs to
+(`<repo>/.codex/hooks.json` and `agile-pre-tool-use.sh`; the repo path is the
+node's `repos.yaml` entry, which the attach service already has; no copy in the
+worktree). Someone else's `PreToolUse` matchers and other events in that file
+are kept, ours replaced; an unchanged file is not rewritten and a changed one is
+renamed into place, so every Codex node of the repo shares one file. `.codex/`
+goes in the repo's `info/exclude` (the common git dir, which its worktrees
+share); a repo tracking either file is refused. The script runs `agile hook
+pre-tool-use --vendor codex --repo <repo>`: a call whose input `cwd` (realpath'd)
+is not under `<repo>/.worktrees/` is allowed with no daemon call (the operator's
+own Codex in the repo), anything else, including a missing `cwd`, is gated
+fail-closed as before. A worktree not under `<repo>/.worktrees/` is refused at
+start. Trust is checked at the repo root. A session with no worktree (the
+Director, a node with no repo) keeps T506's hook in its own `cwd`. Not yet
+confirmed live: LIVE-CHECKLIST §24 re-check.
 
 ### C6. Compaction routes (T504, D65): assumed, not measured
 

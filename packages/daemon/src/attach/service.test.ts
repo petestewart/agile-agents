@@ -5208,14 +5208,17 @@ describe("T506: Codex's own PreToolUse gate", () => {
     fakeProviderFor(ACP_PROVIDERS.codex, script);
   const inbox = () => new InboxService({ streams, questions, gates });
 
-  test('a Codex worker gets .codex/hooks.json in its worktree, out of git status; its reviewer the same gate', async () => {
+  test('a Codex worker gets its hook at the repo root (T511), out of git status; its reviewer the same gate', async () => {
     await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
     attachService = buildAttachService(codexProvider(SPEAKS_THEN_HANGS));
     const stream = await makeStream('demo');
     const { stream: updated } = await attachService.attach(stream.id, { vendor: 'codex' });
     const worktree = updated.worktree ?? '';
-    const hooks = join(worktree, '.codex', 'hooks.json');
+    expect(worktree.startsWith(join(repo, '.worktrees'))).toBe(true);
+    // T511: Codex reads a worktree's project hooks from its main repo (§C5 round 4).
+    const hooks = join(repo, '.codex', 'hooks.json');
     expect(existsSync(hooks)).toBe(true);
+    expect(existsSync(join(worktree, '.codex'))).toBe(false);
     const file = JSON.parse(readFileSync(hooks, 'utf8')) as {
       hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
     };
@@ -5225,18 +5228,56 @@ describe("T506: Codex's own PreToolUse gate", () => {
       'mcp__.*',
     ]);
     const script = file.hooks.PreToolUse[0]?.hooks[0]?.command ?? '';
-    expect(script).toBe(join(worktree, '.codex', 'agile-pre-tool-use.sh'));
-    expect(readFileSync(script, 'utf8')).toContain('hook pre-tool-use --vendor codex || exit 2');
+    expect(script).toBe(join(repo, '.codex', 'agile-pre-tool-use.sh'));
+    expect(readFileSync(script, 'utf8')).toContain(
+      `hook pre-tool-use --vendor codex --repo ${repo} || exit 2`,
+    );
+    // Neither the repo nor the worktree shows it.
+    expect(git(['status', '--porcelain'], repo)).toBe('');
     expect(git(['status', '--porcelain'], worktree)).not.toContain('.codex');
+    const before = readFileSync(hooks, 'utf8');
     await attachService.stop(stream.id);
 
-    // The read-only reviewer: the same gate, written at its own start.
-    rmSync(join(worktree, '.codex'), { recursive: true, force: true });
+    // The read-only reviewer in the same worktree: the same file, the same bytes.
     const review = await attachService.attach(stream.id, { role: 'reviewer', vendor: 'codex' });
     expect(review.session.role).toBe('reviewer');
-    const reviewCwd = review.session.worktree ?? join(home, 'sessions', review.session.id);
-    expect(existsSync(join(reviewCwd, '.codex', 'hooks.json'))).toBe(true);
+    expect(review.session.worktree).toBe(worktree);
+    expect(readFileSync(hooks, 'utf8')).toBe(before);
     await attachService.stop(stream.id);
+
+    // A second Codex node in the repo shares the file: still one set of our matchers.
+    const other = await makeStream('demo');
+    await attachService.attach(other.id, { vendor: 'codex' });
+    expect(readFileSync(hooks, 'utf8')).toBe(before);
+    await attachService.stop(other.id);
+  }, 30_000);
+
+  test('a Codex node with no repo keeps the hook in its own session dir, every call gated', async () => {
+    attachService = buildAttachService(codexProvider(SPEAKS_THEN_HANGS));
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id, { vendor: 'codex' });
+    const cwd = join(home, 'sessions', session.id);
+    const script = join(cwd, '.codex', 'agile-pre-tool-use.sh');
+    expect(existsSync(join(cwd, '.codex', 'hooks.json'))).toBe(true);
+    expect(readFileSync(script, 'utf8')).toContain('hook pre-tool-use --vendor codex || exit 2');
+    expect(readFileSync(script, 'utf8')).not.toContain('--repo');
+    await attachService.stop(stream.id);
+  }, 30_000);
+
+  test('a repo that tracks .codex/hooks.json is refused with a clear message, never changed', async () => {
+    mkdirSync(join(repo, '.codex'));
+    writeFileSync(join(repo, '.codex', 'hooks.json'), '{"theirs":true}\n');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'their codex hooks']);
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    attachService = buildAttachService(codexProvider());
+    const stream = await makeStream('demo');
+    const expected = `${repo} tracks .codex/hooks.json; Codex's gate would change a tracked file`;
+    await expect(attachService.attach(stream.id, { vendor: 'codex' })).rejects.toThrow(expected);
+    const after = streams.get(stream.id);
+    expect(after.agent.status).toBe('blocked');
+    expect(after.agent.progress).toContain(expected);
+    expect(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8')).toBe('{"theirs":true}\n');
   }, 30_000);
 
   test('a worktree Codex does not trust is refused, never started ungated; Needs me says how to fix it', async () => {
@@ -5257,6 +5298,7 @@ describe("T506: Codex's own PreToolUse gate", () => {
     expect(after.agent.status).toBe('blocked');
     expect(after.agent.progress?.startsWith(`${FAILED_START_PREFIX}${expected}`)).toBe(true);
     // Nothing ran: no hook file was written for a session that never started.
+    expect(existsSync(join(repo, '.codex', 'hooks.json'))).toBe(false);
     expect(existsSync(join(after.worktree ?? '', '.codex', 'hooks.json'))).toBe(false);
     const item = inbox()
       .list()
