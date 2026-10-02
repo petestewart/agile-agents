@@ -88,9 +88,13 @@ export function placeChatThreads(
 }
 
 /** What a thread is on, in a few words: its passage, quoted and cut, or "whole message". */
-export function anchorLabel(anchor: Pick<ThreadAnchor, 'quote'>, max = 40): string {
+export function anchorLabel(
+  anchor: Pick<ThreadAnchor, 'quote'>,
+  max = 40,
+  whole = 'whole message',
+): string {
   const quote = anchor.quote?.replace(/\s+/g, ' ').trim();
-  if (quote === undefined || quote === '') return 'whole message';
+  if (quote === undefined || quote === '') return whole;
   return `“${quote.length > max ? `${quote.slice(0, max - 1).trimEnd()}…` : quote}”`;
 }
 

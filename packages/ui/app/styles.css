@@ -4317,7 +4317,7 @@ input[type="checkbox"].cr-switch:focus-visible {
 }
 .cr-tmark-count {
   font-weight: 600;
-  color: var(--accent-text);
+  color: var(--accent-fg);
 }
 .cr-tmark-unread {
   display: inline-flex;
@@ -4328,7 +4328,7 @@ input[type="checkbox"].cr-switch:focus-visible {
   padding: 0 4px;
   font-size: 10px;
   font-weight: 600;
-  color: var(--accent-fg);
+  color: var(--accent-text);
   background: var(--accent);
   border-radius: 8px;
 }
@@ -4364,7 +4364,7 @@ mark.cr-anchor[data-tone="amber"] {
   font-weight: 600;
   line-height: 14px;
   vertical-align: super;
-  color: var(--accent-fg);
+  color: var(--accent-text);
   background: var(--accent);
   border-radius: 7px;
 }
@@ -4522,7 +4522,7 @@ mark.cr-anchor[data-tone="amber"] {
   flex-shrink: 0;
   font-size: 10px;
   font-weight: 600;
-  color: var(--accent-fg);
+  color: var(--accent-text);
   background: var(--accent);
   border-radius: 8px;
 }

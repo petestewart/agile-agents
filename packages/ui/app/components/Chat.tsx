@@ -811,11 +811,14 @@ export function ThreadLinks({
   threads,
   onOpen,
   testid,
+  whole,
 }: {
   lead: string;
   threads: readonly ChatThread[];
   onOpen: (thread: string) => void;
   testid: string;
+  /** How a thread on a whole message reads (it has no passage to quote). */
+  whole: string;
 }): JSX.Element {
   return (
     <div className="cr-tlinks" data-testid={testid} data-thread-on="">
@@ -831,7 +834,7 @@ export function ThreadLinks({
           onClick={() => onOpen(thread.id)}
         >
           {threads.length > 1 ? `${String.fromCharCode(9424 + i)} ` : ''}
-          {anchorLabel(thread.anchor)}
+          {anchorLabel(thread.anchor, 40, whole)}
         </button>
       ))}
     </div>

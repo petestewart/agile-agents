@@ -1339,6 +1339,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                 threads={[alsoIn]}
                 onOpen={openThread}
                 testid="thread-origin"
+                whole="open it"
               />
             )}
             {repliesTo && (
@@ -1347,6 +1348,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                 threads={repliesTo}
                 onOpen={openThread}
                 testid="thread-batch"
+                whole="a thread on a message"
               />
             )}
             {marks && (
@@ -1714,7 +1716,12 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
           >
             <Icon name="message-square" size={12} />
             Open threads ({threadsChip.count})
-            {threadsChip.unread > 0 && <span className="cr-threads-chip-dot" aria-hidden="true" />}
+            {threadsChip.unread > 0 && (
+              <>
+                <span className="cr-faint">· {threadsChip.unread} unread</span>
+                <span className="cr-threads-chip-dot" aria-hidden="true" />
+              </>
+            )}
           </button>
         </div>
       )}
