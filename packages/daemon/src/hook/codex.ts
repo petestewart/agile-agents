@@ -77,8 +77,14 @@ export interface CodexHookMatcher {
   hooks: CodexHookEntry[];
 }
 
+/** The gate's own `hooks.json` content. */
+export interface CodexGateHooks {
+  hooks: { PreToolUse: CodexHookMatcher[] };
+}
+
+/** The file as written: ours merged with whatever else was there (other matchers and events kept as found). */
 export interface CodexHooksFile {
-  hooks: { PreToolUse: CodexHookMatcher[]; [event: string]: unknown };
+  hooks: { PreToolUse: unknown[]; [event: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -109,7 +115,7 @@ export function renderCodexGateScript(options: CodexHookOptions): string {
 }
 
 /** The `hooks.json` entries for a script at `scriptPath`. */
-export function renderCodexHooks(scriptPath: string): CodexHooksFile {
+export function renderCodexHooks(scriptPath: string): CodexGateHooks {
   return {
     hooks: {
       PreToolUse: CODEX_HOOK_MATCHERS.map((matcher) => ({
@@ -194,7 +200,7 @@ export function writeCodexHooks(root: string, options: CodexHookOptions): CodexH
     if (isPlainObject(parsed)) existing = parsed;
   }
   const existingHooks = isPlainObject(existing.hooks) ? existing.hooks : {};
-  const merged = {
+  const merged: CodexHooksFile = {
     ...existing,
     hooks: {
       ...existingHooks,
@@ -203,7 +209,7 @@ export function writeCodexHooks(root: string, options: CodexHookOptions): CodexH
         renderCodexHooks(script).hooks.PreToolUse,
       ),
     },
-  } as CodexHooksFile;
+  };
   writeIfChanged(path, `${JSON.stringify(merged, null, 2)}\n`);
   excludeFromGit(root, `${CODEX_DIR}/`);
   return merged;
