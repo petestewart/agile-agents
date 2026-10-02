@@ -44,6 +44,7 @@ import { makeEmitter } from '../events/producers';
 import { RoutedEventService } from '../events/service';
 import { stoppedByHuman } from '../events/wake';
 import { GateService } from '../gates/service';
+import { CODEX_UNGATED_REASON, HookSightings } from '../hook/codex';
 import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
 import { KnowledgeService } from '../knowledge/service';
@@ -5112,6 +5113,138 @@ describe('T504 (D65): Archive and forget restarts the agent fresh, without the a
       AgentWorkingError,
     );
     expect(store.readThread(stream.id).some((e) => e.op !== undefined)).toBe(false);
+    await attachService.stop(stream.id);
+  }, 30_000);
+});
+
+describe("T506: Codex's own PreToolUse gate", () => {
+  const codexProvider = (script: FakeAgentScript = SPEAKS) =>
+    fakeProviderFor(ACP_PROVIDERS.codex, script);
+  const inbox = () => new InboxService({ streams, questions, gates });
+
+  test('a Codex worker gets .codex/hooks.json in its worktree, out of git status; its reviewer the same gate', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    attachService = buildAttachService(codexProvider(SPEAKS_THEN_HANGS));
+    const stream = await makeStream('demo');
+    const { stream: updated } = await attachService.attach(stream.id, { vendor: 'codex' });
+    const worktree = updated.worktree ?? '';
+    const hooks = join(worktree, '.codex', 'hooks.json');
+    expect(existsSync(hooks)).toBe(true);
+    const file = JSON.parse(readFileSync(hooks, 'utf8')) as {
+      hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
+    };
+    expect(file.hooks.PreToolUse.map((m) => m.matcher)).toEqual([
+      'Bash',
+      'apply_patch|Edit|Write',
+      'mcp__.*',
+    ]);
+    const script = file.hooks.PreToolUse[0]?.hooks[0]?.command ?? '';
+    expect(script).toBe(join(worktree, '.codex', 'agile-pre-tool-use.sh'));
+    expect(readFileSync(script, 'utf8')).toContain('hook pre-tool-use --vendor codex || exit 2');
+    expect(git(['status', '--porcelain'], worktree)).not.toContain('.codex');
+    await attachService.stop(stream.id);
+
+    // The read-only reviewer: the same gate, written at its own start.
+    rmSync(join(worktree, '.codex'), { recursive: true, force: true });
+    const review = await attachService.attach(stream.id, { role: 'reviewer', vendor: 'codex' });
+    expect(review.session.role).toBe('reviewer');
+    const reviewCwd = review.session.worktree ?? join(home, 'sessions', review.session.id);
+    expect(existsSync(join(reviewCwd, '.codex', 'hooks.json'))).toBe(true);
+    await attachService.stop(stream.id);
+  }, 30_000);
+
+  test('a worktree Codex does not trust is refused, never started ungated; Needs me says how to fix it', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const untrusted = join(scratch, 'codex-untrusted');
+    mkdirSync(untrusted, { recursive: true });
+    writeFileSync(
+      join(untrusted, 'config.toml'),
+      '[projects."/somewhere/else"]\ntrust_level = "trusted"\n',
+    );
+    attachService = buildAttachService(codexProvider(), { codexHome: untrusted });
+    const stream = await makeStream('demo');
+    const expected = `Codex's gate isn't trusted here: trust ${repo} in Codex`;
+    await expect(attachService.attach(stream.id, { vendor: 'codex' })).rejects.toThrow(expected);
+    const after = streams.get(stream.id);
+    expect(after.sessions.map((s) => s.status)).toEqual(['error']);
+    expect(after.sessions[0]?.ended_reason).toContain(expected);
+    expect(after.agent.status).toBe('blocked');
+    expect(after.agent.progress?.startsWith(`${FAILED_START_PREFIX}${expected}`)).toBe(true);
+    // Nothing ran: no hook file was written for a session that never started.
+    expect(existsSync(join(after.worktree ?? '', '.codex', 'hooks.json'))).toBe(false);
+    const item = inbox()
+      .list()
+      .find((i) => i.stream === stream.id);
+    expect(item?.kind).toBe('blocked');
+    expect(item?.context).toContain("Codex's gate isn't trusted here");
+
+    // No Codex config at all reads the same.
+    await attachService.stopAll();
+    attachService = buildAttachService(codexProvider(), { codexHome: join(scratch, 'no-codex') });
+    const other = await makeStream('demo');
+    await expect(attachService.attach(other.id, { vendor: 'codex' })).rejects.toThrow(
+      "Codex's gate isn't trusted here: trust",
+    );
+  }, 30_000);
+
+  const RUNS_TWO_COMMANDS: FakeAgentScript = {
+    steps: [
+      { type: 'agent_text', text: 'running the tests' },
+      { type: 'tool_call', toolCallId: 'read-1', kind: 'read', title: 'Read parser.ts' },
+      { type: 'tool_call', toolCallId: 'exec-1', kind: 'execute', title: 'Run bun test' },
+      { type: 'tool_call', toolCallId: 'edit-1', kind: 'edit', title: 'Editing files' },
+      { type: 'hang' },
+    ],
+  };
+
+  test('tool calls its hook never saw stop the agent and raise Needs me', async () => {
+    const sightings = new HookSightings();
+    attachService = buildAttachService(codexProvider(RUNS_TWO_COMMANDS), {
+      hookSightings: sightings,
+      codexGateGraceMs: 50,
+    });
+    const stream = await makeStream();
+    const { session, handle } = await attachService.attach(stream.id, { vendor: 'codex' });
+    const info = await handle.exited;
+    expect(info.reason).toBe(CODEX_UNGATED_REASON);
+    expect(info.ok).toBe(false);
+    await waitFor(() => streams.get(stream.id).agent.status === 'blocked');
+    const after = streams.get(stream.id);
+    expect(after.agent.progress).toBe(`${CRASHED_PREFIX}${CODEX_UNGATED_REASON}`);
+    expect(after.sessions.find((s) => s.id === session.id)?.status).toBe('error');
+    expect(threadBodies(stream.id)).toContain(`worker stopped: ${CODEX_UNGATED_REASON}`);
+    // Not restarted: a restart would run ungated again.
+    await Bun.sleep(200);
+    expect(streams.get(stream.id).sessions).toHaveLength(1);
+    const item = inbox()
+      .list()
+      .find((i) => i.stream === stream.id);
+    expect(item?.kind).toBe('blocked');
+    expect(item?.context).toContain('Codex ran a command its gate never saw');
+  }, 30_000);
+
+  test('with hook records for its calls, nothing happens', async () => {
+    const seen = { count: () => 10, forget: () => {} };
+    attachService = buildAttachService(
+      codexProvider({
+        steps: [
+          { type: 'tool_call', toolCallId: 'exec-1', kind: 'execute', title: 'Run bun test' },
+          { type: 'tool_call', toolCallId: 'edit-1', kind: 'edit', title: 'Editing files' },
+          { type: 'tool_call', toolCallId: 'exec-2', kind: 'execute', title: 'Run ls' },
+          { type: 'agent_text', text: 'still here' },
+          { type: 'tool_call', toolCallId: 'read-1', kind: 'read', title: 'Read a.ts' },
+          { type: 'hang' },
+        ],
+      }),
+      { hookSightings: seen, codexGateGraceMs: 20 },
+    );
+    const stream = await makeStream();
+    const { handle } = await attachService.attach(stream.id, { vendor: 'codex' });
+    await waitFor(() => threadBodies(stream.id).some((b) => b.includes('still here')));
+    await Bun.sleep(150);
+    expect(handle.stopped()).toBe(false);
+    expect(streams.get(stream.id).agent.status).toBe('working');
+    expect(threadBodies(stream.id).some((b) => b.includes('gate never saw'))).toBe(false);
     await attachService.stop(stream.id);
   }, 30_000);
 });

@@ -384,3 +384,138 @@ describe('runHook', () => {
     expect(errors.join('\n')).toMatch(/invalid JSON/);
   });
 });
+
+describe("T506: --vendor codex speaks Codex's hook contract", () => {
+  let dir: string;
+  let socketPath: string;
+  let rpc: RpcServerHandle | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agile-cli-hook-codex-'));
+    socketPath = join(dir, 'test.sock');
+  });
+
+  afterEach(async () => {
+    await rpc?.close();
+    rpc = undefined;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Runs the hook capturing stdout and stderr (both `console.*` and `process.stderr.write`). */
+  async function run(
+    stdin: NodeJS.ReadableStream,
+    opts: { failClosed?: boolean } = {},
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
+    const out: string[] = [];
+    const err: string[] = [];
+    const log = console.log;
+    const error = console.error;
+    const write = process.stderr.write.bind(process.stderr);
+    console.log = (msg: string) => out.push(String(msg));
+    console.error = (msg: string) => err.push(String(msg));
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      err.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const code = await runHook({
+        socketPath,
+        event: 'pre-tool-use',
+        failClosed: opts.failClosed ?? true,
+        vendor: 'codex',
+        stdin,
+      });
+      return { code, stdout: out.join('\n'), stderr: err.join('\n') };
+    } finally {
+      console.log = log;
+      console.error = error;
+      process.stderr.write = write;
+    }
+  }
+
+  function serve(reply: (params: Record<string, unknown>) => unknown): {
+    seen: Record<string, unknown>[];
+  } {
+    const seen: Record<string, unknown>[] = [];
+    rpc = startRpcServer({
+      socketPath,
+      version: 'test',
+      stateRoot: dir,
+      startedAt: Date.now(),
+      extraMethods: {
+        'hook.pre_tool_use': (params) => {
+          seen.push(params as Record<string, unknown>);
+          return reply(params as Record<string, unknown>);
+        },
+      },
+    });
+    return { seen };
+  }
+
+  const CODEX_INPUT = {
+    session_id: 'thread-1',
+    turn_id: 'turn-1',
+    cwd: '/w',
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Bash',
+    tool_input: { command: 'curl https://example.com' },
+    tool_use_id: 'call-1',
+  };
+
+  test('parses --vendor codex, and refuses an unknown vendor', () => {
+    expect(parseHookArgs(parseArgs(['pre-tool-use', '--vendor', 'codex']))).toEqual({
+      event: 'pre-tool-use',
+      failClosed: true,
+      timeoutMs: undefined,
+      vendor: 'codex',
+    });
+    expect(() => parseHookArgs(parseArgs(['pre-tool-use', '--vendor', 'gemini']))).toThrow(
+      /--vendor must be one of claude, codex/,
+    );
+  });
+
+  test('a deny is exit 2 with the reason on stderr and nothing on stdout; the input is marked codex', async () => {
+    const { seen } = serve(() => ({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'curl needs the operator: held in Needs me',
+      },
+    }));
+    const result = await run(stdinWith(CODEX_INPUT));
+    expect(result.code).toBe(2);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('curl needs the operator: held in Needs me');
+    expect(seen[0]).toMatchObject({ ...CODEX_INPUT, agile_vendor: 'codex' });
+  });
+
+  test('an allow is exit 0 with nothing on stdout or stderr', async () => {
+    serve(() => ({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+    }));
+    const result = await run(stdinWith(CODEX_INPUT));
+    expect(result).toEqual({ code: 0, stdout: '', stderr: '' });
+  });
+
+  test('a reply that is not an allow blocks', async () => {
+    serve(() => ({ something: 'else' }));
+    const result = await run(stdinWith(CODEX_INPUT));
+    expect(result.code).toBe(2);
+    expect(result.stderr).toBe('AGILE-GATE: blocked');
+  });
+
+  test('an unreachable daemon blocks with exit 2 (fail closed); --fail-open lets it run', async () => {
+    const closed = await run(stdinWith(CODEX_INPUT));
+    expect(closed.code).toBe(2);
+    expect(closed.stdout).toBe('');
+    expect(closed.stderr).toContain('AGILE-GATE: agile daemon unreachable');
+    const open = await run(stdinWith(CODEX_INPUT), { failClosed: false });
+    expect(open.code).toBe(0);
+    expect(open.stdout).toBe('');
+  });
+
+  test('bad input blocks with exit 2 (Codex runs a call whose hook exited 1)', async () => {
+    expect((await run(Readable.from(['{not json']))).code).toBe(2);
+    expect((await run(stdinWith([1, 2]))).code).toBe(2);
+  });
+});
