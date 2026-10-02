@@ -23,12 +23,14 @@ const CONVERSATION: RoutedEventType[] = ['human_line', 'answer', 'knowledge_acce
 
 describe('wakesRole (P11 table)', () => {
   // T446, T456, T481, T484: a record (`autonomy_applied`, `agent_restarted`, `harness_updated`,
-  // `model_escalated`) wakes nobody, a coordinator included.
+  // `model_escalated`) wakes nobody, a coordinator included. T504: nor a quiet one
+  // (`thread_archived`, which rides the next digest).
   const record = (t: RoutedEventType) =>
     t === 'autonomy_applied' ||
     t === 'agent_restarted' ||
     t === 'harness_updated' ||
-    t === 'model_escalated';
+    t === 'model_escalated' ||
+    t === 'thread_archived';
   const expected: Record<NodeRole, (t: RoutedEventType) => boolean> = {
     coordinating: (t) => !record(t),
     work: (t) => WORK.includes(t),
