@@ -13,7 +13,13 @@
  *    "Open threads (2)" chip's count and target.
  */
 
-import type { ChatBatch, ChatThread, ThreadAnchor, ThreadEntry } from '@agile-agents/shared';
+import type {
+  ChatBatch,
+  ChatMove,
+  ChatThread,
+  ThreadAnchor,
+  ThreadEntry,
+} from '@agile-agents/shared';
 import { THREAD_ANCHOR_QUOTE_MAX_CHARS } from '@agile-agents/shared';
 import { vendorLabel } from './chat';
 import { tidySelection } from './quote';
@@ -28,6 +34,8 @@ export interface ChatThreadPlacement {
   alsoIn: Map<string, ChatThread>;
   /** The first line of a batched turn (§4.1): the threads it replies to. */
   repliesTo: Map<string, ChatThread[]>;
+  /** T504 (§6a): the archived threads on each turn, folded into "Archived threads (n)". */
+  archivedOn: Map<string, ChatThread[]>;
 }
 
 /** Passage order: by where the passage starts; one placed only by its quote next; the whole turn last. */
@@ -62,8 +70,16 @@ export function placeChatThreads(
   const mark = (ts: string, thread: ChatThread) => {
     marksOn.set(ts, [...(marksOn.get(ts) ?? []), thread]);
   };
+  const archivedOn = new Map<string, ChatThread[]>();
   for (const thread of threads) {
     const lines = thread.entries.filter((ts) => kindOf.has(ts));
+    if (thread.archived !== undefined) {
+      // T504 (§6a): folded away: its lines out of the flow, no mark, no count.
+      for (const ts of lines) nested.add(ts);
+      const on = kindOf.has(thread.anchor.entry) ? thread.anchor.entry : undefined;
+      if (on !== undefined) archivedOn.set(on, [...(archivedOn.get(on) ?? []), thread]);
+      continue;
+    }
     if (kindOf.has(thread.anchor.entry)) {
       mark(thread.anchor.entry, thread);
       for (const ts of lines) {
@@ -84,7 +100,38 @@ export function placeChatThreads(
     });
     if (first !== undefined && linked.length > 0) repliesTo.set(first, linked);
   }
-  return { marksOn, nested, alsoIn, repliesTo };
+  return { marksOn, nested, alsoIn, repliesTo, archivedOn };
+}
+
+/** T504 (§6): each moved line (display only) and where it was and is. */
+export function movesByLine(moves: readonly ChatMove[] | undefined): Map<string, ChatMove> {
+  return new Map((moves ?? []).map((m) => [m.entry, m]));
+}
+
+/** T504 (§6): the kinds of line Move to thread offers on (the daemon checks it too). */
+const MOVABLE = new Set(['line', 'finding', 'proposal']);
+
+/**
+ * T504 (§6): the threads a main-flow line can move into: open ones on an
+ * earlier turn. None for a line threads are on (one level), a thread's
+ * first reply, or a kind that doesn't move.
+ */
+export function moveTargets(
+  threads: readonly ChatThread[],
+  entry: Pick<ThreadEntry, 'ts' | 'kind' | 'anchor' | 'op' | 'agent_only'>,
+): ChatThread[] {
+  if (
+    !MOVABLE.has(entry.kind) ||
+    entry.anchor !== undefined ||
+    entry.op !== undefined ||
+    entry.agent_only === true ||
+    threads.some((t) => t.anchor.entry === entry.ts)
+  ) {
+    return [];
+  }
+  return threads.filter(
+    (t) => t.archived === undefined && t.anchor.entry < entry.ts && !t.entries.includes(entry.ts),
+  );
 }
 
 /** What a thread is on, in a few words: its passage, quoted and cut, or "whole message". */
@@ -153,8 +200,10 @@ export function openThreadsChip(
   threads: readonly ChatThread[],
   unread: (thread: ChatThread) => number,
 ): { count: number; target?: ChatThread; unread: number } {
-  const open = threads.filter((t) => t.state !== 'resolved');
-  const unreadOnes = threads.filter((t) => unread(t) > 0);
+  // T504: an archived thread is out of "Open threads" and has nothing unread.
+  const live = threads.filter((t) => t.archived === undefined);
+  const open = live.filter((t) => t.state !== 'resolved');
+  const unreadOnes = live.filter((t) => unread(t) > 0);
   const target =
     unreadOnes[0] ?? open.find((t) => t.state === 'waits_on_you') ?? open.at(-1) ?? undefined;
   return {

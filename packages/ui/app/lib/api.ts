@@ -368,6 +368,43 @@ export function sayInThread(
   }) as Promise<{ entry: ThreadEntry; prompted?: string; started?: true }>;
 }
 
+/** T504 (§6): Move to thread (`to`: its id) / Move to main (`main`): display only, recorded. */
+export function moveLine(id: string, entry: string, to: string): Promise<{ entry: ThreadEntry }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/move-line`, { entry, to }) as Promise<{
+    entry: ThreadEntry;
+  }>;
+}
+
+/**
+ * T504 (D65, §6a): Archive a thread; with `forget`, Archive and forget
+ * (the agent restarts fresh from a brief without it).
+ */
+export function archiveThread(
+  id: string,
+  thread: string,
+  forget = false,
+): Promise<{ entry: ThreadEntry; withdrawn: string[]; restarted?: string }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/archive-thread`, {
+    thread,
+    ...(forget ? { forget: true } : {}),
+  }) as Promise<{ entry: ThreadEntry; withdrawn: string[]; restarted?: string }>;
+}
+
+/** T504 (§6a): Restore an archived thread. */
+export function restoreThread(id: string, thread: string): Promise<{ entry: ThreadEntry }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/restore-thread`, { thread }) as Promise<{
+    entry: ThreadEntry;
+  }>;
+}
+
+/** T504 (§6a): Compact now: the vendor's compact command, leaving the archived threads out. */
+export function compactNow(id: string): Promise<{ entry: ThreadEntry; command: string }> {
+  return post(`/api/streams/${encodeURIComponent(id)}/compact`, {}) as Promise<{
+    entry: ThreadEntry;
+    command: string;
+  }>;
+}
+
 /** T161: the sessions strip's Attach (a worker) and Review (a reviewer). */
 export function attachSession(
   id: string,

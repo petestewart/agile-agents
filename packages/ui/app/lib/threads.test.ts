@@ -4,6 +4,8 @@ import {
   anchorFor,
   anchorLabel,
   findPassage,
+  moveTargets,
+  movesByLine,
   openThreadsChip,
   placeChatThreads,
   quoteOf,
@@ -166,5 +168,41 @@ describe('anchors (T503, §3a)', () => {
     expect(findPassage(text, 'pounds')).toBeUndefined();
     expect(findPassage(text, '')).toBeUndefined();
     expect(findPassage(text, 'and cents th…')).toEqual({ start: 12, end: 24 });
+  });
+});
+
+describe('archived threads and moves (T504, §6, §6a)', () => {
+  const loaded = [
+    { ts: 't0', kind: 'line' as const },
+    { ts: 't1', kind: 'line' as const },
+    { ts: 't2', kind: 'line' as const },
+    { ts: 't3', kind: 'line' as const },
+  ];
+
+  test('an archived thread leaves no mark; its lines fold away under its turn', () => {
+    const open = thread('t1');
+    const gone = thread('t2', { entries: ['t2', 't3'], archived: { at: 't9' } });
+    const placed = placeChatThreads([open, gone], [], loaded);
+    expect(placed.marksOn.get('t0')?.map((t) => t.id)).toEqual(['t1']);
+    expect(placed.archivedOn.get('t0')?.map((t) => t.id)).toEqual(['t2']);
+    expect([...placed.nested].sort()).toEqual(['t1', 't2', 't3']);
+    // Out of "Open threads", nothing unread.
+    expect(openThreadsChip([open, gone], () => 1)).toMatchObject({ count: 1, unread: 1 });
+  });
+
+  test('Move to thread offers the open threads on an earlier turn, one level only', () => {
+    const a = thread('t1');
+    const b = thread('t2', { archived: { at: 't9' } });
+    const on3 = thread('t5', { anchor: { entry: 't3' } });
+    expect(moveTargets([a, b], { ts: 't3', kind: 'line' }).map((t) => t.id)).toEqual(['t1']);
+    // A line threads are on stays in the main flow; a thread's first reply stays in its thread.
+    expect(moveTargets([a, on3], { ts: 't3', kind: 'line' })).toEqual([]);
+    expect(moveTargets([a], { ts: 't4', kind: 'line', anchor: { entry: 't0' } })).toEqual([]);
+    expect(moveTargets([a], { ts: 't4', kind: 'event' })).toEqual([]);
+    // Already in it: nowhere new to go.
+    expect(moveTargets([a], { ts: 't1', kind: 'line' })).toEqual([]);
+    expect(movesByLine([{ entry: 't3', from: 'main', to: 't1', at: 't4' }]).get('t3')?.to).toBe(
+      't1',
+    );
   });
 });

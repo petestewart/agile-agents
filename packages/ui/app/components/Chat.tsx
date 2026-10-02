@@ -805,6 +805,63 @@ export function ThreadMarks({
   );
 }
 
+/**
+ * T504 (D65, design/chat-threads.md §6a): the archived threads on a turn,
+ * folded into "Archived threads (n)" at the end of its thread line: quiet
+ * (no count, no tint), each one opens (read only) or is restored.
+ */
+export function ArchivedThreads({
+  threads,
+  onOpen,
+  onRestore,
+}: {
+  threads: readonly ChatThread[];
+  onOpen: (thread: string) => void;
+  onRestore?: (thread: string) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="cr-tarchived" data-testid="archived-threads" data-thread-on="">
+      <button
+        type="button"
+        className="cr-link cr-faint"
+        data-testid="archived-threads-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Icon name="archive" size={12} />
+        Archived threads ({threads.length})
+      </button>
+      {open && (
+        <ul className="cr-tarchived-list">
+          {threads.map((thread) => (
+            <li key={thread.id} data-testid="archived-thread" data-thread={thread.id}>
+              <button type="button" className="cr-link" onClick={() => onOpen(thread.id)}>
+                {anchorLabel(thread.anchor, 40, 'the whole message')}
+              </button>
+              <span className="cr-faint">
+                · {threadRepliesText(thread.replies)}
+                {thread.archived?.forget ? ' · forgotten' : ''}
+              </span>
+              {onRestore && (
+                <button
+                  type="button"
+                  className="cr-link"
+                  data-testid="restore-thread"
+                  title="Bring the thread back (the agent is told it is open again)"
+                  onClick={() => onRestore(thread.id)}
+                >
+                  Restore
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /** T503 (§4.1, §6): a link row under a main-flow line: the threads it replies to, or is asked in. */
 export function ThreadLinks({
   lead,
@@ -859,6 +916,9 @@ export function ThreadPanel({
   sendBlocked,
   onSend,
   onClose,
+  actions,
+  lineExtra,
+  notice,
 }: {
   thread?: ChatThread;
   anchor: ThreadAnchor;
@@ -872,6 +932,12 @@ export function ThreadPanel({
   sendBlocked?: string;
   onSend: (text: string) => Promise<void>;
   onClose: () => void;
+  /** T504 (§6a, §7): the thread's ⋯ (Archive, Archive and forget, Compact now, Promote). */
+  actions?: ReactNode;
+  /** T504 (§6): under a line: moved here, by you; Move to main. */
+  lineExtra?: (entry: ChatEntry) => ReactNode;
+  /** T504: above the box: archived (Restore), or promoted to a tangent (its link). */
+  notice?: ReactNode;
 }): JSX.Element {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -903,15 +969,19 @@ export function ThreadPanel({
       data-testid="thread-panel"
       data-thread={thread?.id ?? ''}
       data-state={thread?.state ?? 'new'}
+      data-archived={thread?.archived !== undefined ? 'true' : undefined}
       aria-label="Thread"
     >
       <div className="cr-tpanel-hd">
-        <span className="cr-tpanel-title">{thread ? 'Thread' : 'New thread'}</span>
+        <span className="cr-tpanel-title">
+          {thread?.archived !== undefined ? 'Archived thread' : thread ? 'Thread' : 'New thread'}
+        </span>
         {words && (
           <span className="cr-msg-tag" data-tone={words.tone} data-testid="thread-panel-state">
             {words.text}
           </span>
         )}
+        {actions}
         <IconButton
           icon="x"
           label="Close the thread"
@@ -968,9 +1038,11 @@ export function ThreadPanel({
                   Not sent yet — queued until the agent’s current step ends
                 </div>
               )}
+              {lineExtra?.(entry)}
             </li>
           ))}
         </ol>
+        {notice}
       </div>
       <form
         className="cr-tpanel-foot"
