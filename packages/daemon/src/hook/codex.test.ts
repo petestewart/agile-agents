@@ -13,6 +13,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   statSync,
@@ -38,6 +39,7 @@ import {
   CodexGateWatch,
   HookSightings,
   codexHomeDir,
+  codexHookPlacement,
   codexToClaudePayload,
   codexTrustFor,
   codexTrustTarget,
@@ -47,6 +49,7 @@ import {
   writeCodexHooks,
 } from './codex';
 import { HookService } from './service';
+import { excludeFromGit } from './settings';
 
 let dir: string;
 
@@ -152,7 +155,7 @@ describe('the hooks.json writer', () => {
     expect(missing.exitCode).toBe(2);
   });
 
-  test('keeps other keys and events, replaces PreToolUse, is idempotent, and git-ignores .codex/', () => {
+  test("keeps other keys, events and someone else's PreToolUse matchers, is idempotent, and git-ignores .codex/", () => {
     const wt = join(dir, 'wt');
     initRepo(wt);
     mkdirSync(join(wt, '.codex'), { recursive: true });
@@ -168,7 +171,9 @@ describe('the hooks.json writer', () => {
     const parsed = JSON.parse(first);
     expect(parsed.mine).toBe(true);
     expect(parsed.hooks.Stop).toEqual([{ hooks: [] }]);
+    // T511: their own matcher stays, ours follow it.
     expect(parsed.hooks.PreToolUse.map((m: { matcher: string }) => m.matcher)).toEqual([
+      'x',
       ...CODEX_HOOK_MATCHERS,
     ]);
     writeCodexHooks(wt, { agileBin: 'agile' });
@@ -192,6 +197,180 @@ describe('the hooks.json writer', () => {
       /tracks \.codex\/hooks\.json; Codex's gate would change a tracked file/,
     );
     expect(readFileSync(join(wt, '.codex', 'hooks.json'), 'utf8')).toBe('{"theirs":true}\n');
+  });
+});
+
+describe("T511: the hook at the repo root (Codex reads a worktree's hooks from its main repo)", () => {
+  /** A repo with a real `git worktree add` under `.worktrees/`, as the daemon makes one. */
+  function repoWithWorktree(): { repo: string; wt: string } {
+    const repo = join(dir, 'repo');
+    initRepo(repo);
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), '.worktrees/\n');
+    const wt = join(repo, '.worktrees', '01ABC-csv');
+    git(['worktree', 'add', '-q', '-b', 'stream/01ABC-csv', wt], repo);
+    return { repo, wt };
+  }
+
+  function status(cwd: string): string {
+    const out = Bun.spawnSync(['git', 'status', '--porcelain', '--untracked-files=all'], {
+      cwd,
+      stdout: 'pipe',
+    });
+    return new TextDecoder().decode(out.stdout);
+  }
+
+  test('writes hooks.json and the script at <repo>/.codex/, the script passing --repo; both checkouts stay clean', () => {
+    const { repo, wt } = repoWithWorktree();
+    const placement = codexHookPlacement(wt, repo);
+    expect(placement).toEqual({ root: repo, repoRoot: repo });
+    writeCodexHooks(placement.root, {
+      agileBin: 'agile',
+      socketPath: '/s.sock',
+      repoRoot: repo,
+    });
+    const script = join(repo, '.codex', 'agile-pre-tool-use.sh');
+    const file = JSON.parse(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8'));
+    expect(file.hooks.PreToolUse).toEqual(
+      CODEX_HOOK_MATCHERS.map((matcher) => ({
+        matcher,
+        hooks: [{ type: 'command', command: script, statusMessage: 'agile gate' }],
+      })),
+    );
+    expect(readFileSync(script, 'utf8')).toContain(
+      `AGILE_SOCKET_PATH=/s.sock agile hook pre-tool-use --vendor codex --repo ${repo} || exit 2`,
+    );
+    expect(statSync(script).mode & 0o111).not.toBe(0);
+    // No copy in the worktree: Codex never reads it there.
+    expect(existsSync(join(wt, '.codex'))).toBe(false);
+    // `.codex/` is excluded in the common git dir, which the worktree shares.
+    const exclude = readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8');
+    expect(exclude.split('\n').filter((line) => line === '.codex/')).toHaveLength(1);
+    expect(status(repo)).toBe('');
+    expect(status(wt)).toBe('');
+  });
+
+  test("excludeFromGit from a worktree writes the common git dir's info/exclude", () => {
+    const { repo, wt } = repoWithWorktree();
+    excludeFromGit(wt, '.codex/');
+    expect(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8')).toContain('.codex/\n');
+    expect(existsSync(join(repo, '.git', 'worktrees', '01ABC-csv', 'info', 'exclude'))).toBe(false);
+    mkdirSync(join(repo, '.codex'));
+    writeFileSync(join(repo, '.codex', 'hooks.json'), '{}');
+    expect(status(repo)).toBe('');
+  });
+
+  test('several Codex nodes in one repo share one file: same bytes, never rewritten when unchanged', () => {
+    const { repo, wt } = repoWithWorktree();
+    const second = join(repo, '.worktrees', '01DEF-other');
+    git(['worktree', 'add', '-q', '-b', 'stream/01DEF-other', second], repo);
+    const options = { agileBin: 'agile', socketPath: '/s.sock', repoRoot: repo };
+    writeCodexHooks(codexHookPlacement(wt, repo).root, options);
+    const hooks = join(repo, '.codex', 'hooks.json');
+    const script = join(repo, '.codex', 'agile-pre-tool-use.sh');
+    const before = { hooks: readFileSync(hooks, 'utf8'), script: readFileSync(script, 'utf8') };
+    const inodes = { hooks: statSync(hooks).ino, script: statSync(script).ino };
+    writeCodexHooks(codexHookPlacement(second, repo).root, options);
+    writeCodexHooks(codexHookPlacement(wt, repo).root, options);
+    expect(readFileSync(hooks, 'utf8')).toBe(before.hooks);
+    expect(readFileSync(script, 'utf8')).toBe(before.script);
+    // Not rewritten: a Codex reading it (or running the script) is never raced.
+    expect(statSync(hooks).ino).toBe(inodes.hooks);
+    expect(statSync(script).ino).toBe(inodes.script);
+    // One set of our matchers, however many nodes wrote it.
+    expect(JSON.parse(readFileSync(hooks, 'utf8')).hooks.PreToolUse).toHaveLength(
+      CODEX_HOOK_MATCHERS.length,
+    );
+    // No temp file left behind.
+    expect(readdirSync(join(repo, '.codex')).sort()).toEqual([
+      'agile-pre-tool-use.sh',
+      'hooks.json',
+    ]);
+  });
+
+  test("merges with the operator's own hooks at the repo root, and replaces only ours on a change", () => {
+    const { repo, wt } = repoWithWorktree();
+    mkdirSync(join(repo, '.codex'));
+    const theirs = { type: 'command', command: '/home/p/bin/audit.sh' };
+    writeFileSync(
+      join(repo, '.codex', 'hooks.json'),
+      JSON.stringify({
+        hooks: {
+          PostToolUse: [{ matcher: 'Bash', hooks: [theirs] }],
+          PreToolUse: [{ matcher: 'Bash', hooks: [theirs] }],
+        },
+      }),
+    );
+    const root = codexHookPlacement(wt, repo).root;
+    writeCodexHooks(root, { agileBin: 'agile', repoRoot: repo });
+    // A new socket (a daemon restarted elsewhere) rewrites ours, theirs untouched.
+    const merged = writeCodexHooks(root, {
+      agileBin: 'agile',
+      socketPath: '/n.sock',
+      repoRoot: repo,
+    });
+    const script = join(repo, '.codex', 'agile-pre-tool-use.sh');
+    expect(merged.hooks.PostToolUse).toEqual([{ matcher: 'Bash', hooks: [theirs] }]);
+    expect(merged.hooks.PreToolUse).toEqual([
+      { matcher: 'Bash', hooks: [theirs] },
+      ...CODEX_HOOK_MATCHERS.map((matcher) => ({
+        matcher,
+        hooks: [{ type: 'command', command: script, statusMessage: 'agile gate' }],
+      })),
+    ]);
+    expect(readFileSync(script, 'utf8')).toContain('AGILE_SOCKET_PATH=/n.sock');
+  });
+
+  test('a repo that tracks the script or hooks.json at its root is refused, never changed', () => {
+    const { repo, wt } = repoWithWorktree();
+    mkdirSync(join(repo, '.codex'));
+    writeFileSync(join(repo, '.codex', 'agile-pre-tool-use.sh'), '#!/bin/sh\nexit 0\n');
+    git(['add', '-A'], repo);
+    git(['commit', '-q', '-m', 'their script'], repo);
+    const root = codexHookPlacement(wt, repo).root;
+    expect(() => writeCodexHooks(root, { agileBin: 'agile', repoRoot: repo })).toThrow(
+      `${repo} tracks .codex/agile-pre-tool-use.sh; Codex's gate would change a tracked file`,
+    );
+    expect(readFileSync(join(repo, '.codex', 'agile-pre-tool-use.sh'), 'utf8')).toBe(
+      '#!/bin/sh\nexit 0\n',
+    );
+    expect(existsSync(join(repo, '.codex', 'hooks.json'))).toBe(false);
+  });
+
+  test('placement: a session with no repo keeps its own cwd; a cwd outside <repo>/.worktrees/ is refused', () => {
+    const { repo, wt } = repoWithWorktree();
+    const sessionDir = join(dir, 'home', 'sessions', '01XYZ');
+    expect(codexHookPlacement(sessionDir)).toEqual({ root: sessionDir });
+    expect(() => codexHookPlacement(repo, repo)).toThrow(
+      `Codex's gate can't cover ${repo}: it isn't a worktree under ${join(repo, '.worktrees')}`,
+    );
+    expect(() => codexHookPlacement(join(dir, 'elsewhere'), repo)).toThrow(
+      /isn't a worktree under/,
+    );
+    expect(() => codexHookPlacement(join(repo, '.worktrees'), repo)).toThrow(
+      /isn't a worktree under/,
+    );
+    // Through a symlink to the worktree: its real path is under .worktrees/.
+    const link = join(dir, 'wt-link');
+    symlinkSync(wt, link);
+    expect(codexHookPlacement(link, repo)).toEqual({ root: repo, repoRoot: repo });
+  });
+
+  test('the script hands --repo to the CLI, quoted', () => {
+    const fake = join(dir, 'fake-agile');
+    writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" > ${join(dir, 'argv.txt')}\nexit 0\n`);
+    chmodSync(fake, 0o755);
+    const script = join(dir, 'gate.sh');
+    writeFileSync(script, renderCodexGateScript({ agileBin: fake, repoRoot: "/r/it's here" }));
+    chmodSync(script, 0o755);
+    expect(Bun.spawnSync([script], { stdin: Buffer.from('{}') }).exitCode).toBe(0);
+    expect(readFileSync(join(dir, 'argv.txt'), 'utf8').trim().split('\n')).toEqual([
+      'hook',
+      'pre-tool-use',
+      '--vendor',
+      'codex',
+      '--repo',
+      "/r/it's here",
+    ]);
   });
 });
 
