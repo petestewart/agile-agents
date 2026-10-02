@@ -48,8 +48,10 @@ import { runInit } from '../init';
 import { KnowledgeService } from '../knowledge/service';
 import { EMPTY_TREE_SHA } from '../permissions/git-env';
 import { ProjectService } from '../projects/service';
+import { ChatThreads } from '../questions/chat-threads';
 import { QuestionService } from '../questions/service';
 import { wireQuestionSupersession } from '../questions/supersede';
+import { ChatThreadOps } from '../questions/thread-ops';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { ModelCatalog } from '../runner/model-catalog';
 import { SESSION_STATE_FILE, USAGE_LOG_FILE, missingVendorCommand } from '../runner/session';
@@ -58,7 +60,7 @@ import { AutoClose } from '../streams/auto-close';
 import { RepoInPlaceService } from '../streams/repo-in-place';
 import { StreamService } from '../streams/service';
 import { buildAttachRpcMethods } from './rpc';
-import { lastAgentSession, resumableSession, sayPrompt } from './service';
+import { AgentWorkingError, lastAgentSession, resumableSession, sayPrompt } from './service';
 import {
   AttachService,
   CRASHED_PREFIX,
@@ -4984,4 +4986,124 @@ describe('T484: escalation at a start (design/model-routing.md §6, D56)', () =>
     }
     expect(streams.get(node.id).escalation).toBeUndefined();
   });
+});
+
+describe('T504 (D65): Archive and forget restarts the agent fresh, without the archived threads', () => {
+  const log = () => join(scratch, 't504.jsonl');
+  const logLines = () =>
+    (existsSync(log()) ? readFileSync(log(), 'utf8') : '')
+      .split('\n')
+      .slice(0, -1)
+      .filter((l) => l.trim() !== '');
+  const prompts = () => logLines().filter((l) => l.includes('"session/prompt"'));
+  const loads = () => logLines().filter((l) => l.includes('"session/load"'));
+  const statusOf = (id: string, session: string) =>
+    streams.get(id).sessions.find((s) => s.id === session)?.status;
+
+  /** A node whose agent said its line, with a thread on it holding a detail. */
+  async function threadedNode(service: AttachService) {
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const stream = await service.createNode('human', {
+      title: 'CSV parser',
+      goal: 'decide the dialect and implement it',
+      project: project.id,
+      start: false,
+    });
+    const { session } = await service.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes('looking at the parser now'));
+    const turn = streams
+      .readThread(stream.id, { limit: 500 })
+      .entries.find((e) => e.body === 'looking at the parser now');
+    const first = await streams.appendThread('human', stream.id, {
+      kind: 'line',
+      body: 'the secret pepper is 42',
+      anchor: { entry: turn?.ts as string },
+    });
+    return { stream, session, first };
+  }
+
+  test('a resting agent ends; a new one starts from a brief without the thread, never session/load', async () => {
+    const events = new RoutedEventService(store);
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log() }),
+      { deliveryDelayMs: 5, events },
+    );
+    const { stream, session, first } = await threadedNode(attachService);
+    await waitFor(() => statusOf(stream.id, session.id) === 'idle');
+    const ops = new ChatThreadOps({
+      streams,
+      chatThreads: new ChatThreads({ streams, events }),
+      events,
+      attach: attachService,
+    });
+    const out = await ops.archive(stream.id, first.ts, { forget: true });
+    expect(out.restarted).toBeDefined();
+    await waitFor(() => prompts().length === 2);
+    expect(loads()).toHaveLength(0);
+    const brief = prompts()[1] ?? '';
+    expect(brief).toContain('decide the dialect and implement it');
+    expect(brief).not.toContain('secret pepper');
+    const sessions = streams.get(stream.id).sessions;
+    expect(sessions.map((s) => s.status)).toEqual(['stopped', expect.any(String)]);
+    expect(sessions[1]?.id).toBe(out.restarted as string);
+    // No notice: the new agent never saw the thread.
+    expect(events.pendingFor(stream.id).some((p) => p.event.type === 'thread_archived')).toBe(
+      false,
+    );
+    expect(
+      readFileSync(join(home, 'sessions', out.restarted as string, 'brief.md'), 'utf8'),
+    ).not.toContain('secret pepper');
+  }, 30_000);
+
+  test('an ended session is never resumed after it: the next start is fresh', async () => {
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, { ...SPEAKS, logFile: log() }),
+      { deliveryDelayMs: 5, sessionIdleMs: 0 },
+    );
+    const { stream, session, first } = await threadedNode(attachService);
+    await waitFor(() => statusOf(stream.id, session.id) === 'stopped');
+    // Recorded, with no agent running to restart: the next start must not load the old session.
+    await streams.appendThread('human', stream.id, {
+      kind: 'event',
+      body: 'archived the thread, and restarted the agent without it',
+      op: { type: 'archive', thread: first.ts, forget: true },
+    });
+    await attachService.say(stream.id, 'carry on', { start: true });
+    await waitFor(() => prompts().length === 2);
+    expect(loads()).toHaveLength(0);
+    expect(prompts()[1]).toContain('decide the dialect and implement it');
+    expect(prompts()[1]).not.toContain('secret pepper');
+  }, 30_000);
+
+  test('it waits while the agent works on a turn: refused, and nothing is recorded', async () => {
+    attachService = buildAttachService(fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS_THEN_HANGS));
+    const project = await new ProjectService(store, streams).create({ name: 'Shop' });
+    const stream = await attachService.createNode('human', {
+      title: 'CSV parser',
+      goal: 'g',
+      project: project.id,
+      start: false,
+    });
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes('looking at the parser now'));
+    const turn = streams
+      .readThread(stream.id, { limit: 500 })
+      .entries.find((e) => e.body === 'looking at the parser now');
+    const first = await streams.appendThread('human', stream.id, {
+      kind: 'line',
+      body: 'x',
+      anchor: { entry: turn?.ts as string },
+    });
+    expect(attachService.agentWorking(stream.id)).toBe(true);
+    const ops = new ChatThreadOps({
+      streams,
+      chatThreads: new ChatThreads({ streams }),
+      attach: attachService,
+    });
+    await expect(ops.archive(stream.id, first.ts, { forget: true })).rejects.toBeInstanceOf(
+      AgentWorkingError,
+    );
+    expect(store.readThread(stream.id).some((e) => e.op !== undefined)).toBe(false);
+    await attachService.stop(stream.id);
+  }, 30_000);
 });
