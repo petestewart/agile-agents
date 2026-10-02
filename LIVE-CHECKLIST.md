@@ -1963,3 +1963,13 @@ under a path your Codex config trusts (`[projects."<dir>"]` with
 - [ ] A Codex reviewer on the same node gets the same gate (its start
       rewrites `.codex/hooks.json`); ask it to edit a file: refused
       ("reviewer role denies all writes").
+
+**Live result (2026-10-02):** on a real Codex node the fail-closed check fired
+("Codex ran a command its gate never saw"): the hook did not run in the daemon's
+worktree, though it ran in the spike's plain repo (C5 round 3). Next run, the
+same hook in a git worktree, hook in the worktree vs at the repo root:
+
+```zsh
+bun spike/permission-matrix.ts --vendor codex --scenario perm --hooks --worktree --fixture ~/agile-codex-spike
+bun spike/permission-matrix.ts --vendor codex --scenario perm --hooks --worktree --hooks-at main --fixture ~/agile-codex-spike
+```

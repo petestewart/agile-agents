@@ -80,9 +80,10 @@ function renderInline(escaped: string, names: Names): string {
     .map((t) => (t.kind === 'text' ? t.text : link(linkHtml(t))))
     .join('');
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  out = out.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  // Underscores inside a word (`mcp__agile__progress`, snake_case) are not emphasis (CommonMark's rule).
+  out = out.replace(/(^|[^\w])__([^_]+)__(?!\w)/g, '$1<strong>$2</strong>');
   out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-  out = out.replace(/(^|[^\w_])_([^_\n]+)_/g, '$1<em>$2</em>');
+  out = out.replace(/(^|[^\w_])_([^_\n]+)_(?!\w)/g, '$1<em>$2</em>');
   out = out.replace(
     new RegExp(`${SENTINEL}CODE(\\d+)${SENTINEL}`, 'g'),
     (_m, i: string) => `<code>${code[Number(i)]}</code>`,
