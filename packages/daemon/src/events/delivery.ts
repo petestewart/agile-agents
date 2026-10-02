@@ -84,6 +84,68 @@ function replyQuestionOf(event: RoutedEvent): { id: string; text: string } | und
   return typeof id === 'string' && typeof text === 'string' ? { id, text } : undefined;
 }
 
+/** T503: the chat thread a human line is a reply in, when it is one. */
+export interface LineThread {
+  id: string;
+  /** The turn the thread is on (its `ts`), and who wrote it. */
+  on: string;
+  of: 'agent' | 'human' | 'other';
+  quote?: string;
+}
+
+/** T503: the chat thread a human line is in (its payload's `thread`), when it is in one. */
+export function lineThreadOf(event: RoutedEvent): LineThread | undefined {
+  if (event.type !== 'human_line') return undefined;
+  const t = (event.payload as Record<string, unknown>).thread;
+  if (typeof t !== 'object' || t === null) return undefined;
+  const { id, on, of, quote } = t as Record<string, unknown>;
+  if (typeof id !== 'string' || typeof on !== 'string') return undefined;
+  return {
+    id,
+    on,
+    of: of === 'agent' || of === 'human' ? of : 'other',
+    ...(typeof quote === 'string' ? { quote } : {}),
+  };
+}
+
+/** T503: `10:02 UTC`, the time of the turn a thread is on (as the agent's own clock reads it). */
+function clockOf(ts: string): string {
+  const at = new Date(ts);
+  return Number.isNaN(at.getTime()) ? ts : `${at.toISOString().slice(11, 16)} UTC`;
+}
+
+/**
+ * T503 (D60, design/chat-threads.md §3a, §4.2): what a reply in a chat
+ * thread tells the agent: the turn it is on, the thread's id (to answer in
+ * it with `progress`'s `thread`) and the passage, quoted as data.
+ */
+export function threadLineText(thread: LineThread, body: string): string {
+  const whose =
+    thread.of === 'agent'
+      ? 'your message'
+      : thread.of === 'human'
+        ? 'the operator’s message'
+        : 'the message';
+  const passage =
+    thread.quote !== undefined ? `, about the passage ${JSON.stringify(thread.quote)}` : '';
+  return `In a thread on ${whose} of ${clockOf(thread.on)} (thread ${thread.id})${passage}: ${body}`;
+}
+
+/**
+ * T503 (§4.1, §4.2): a digest with lines from more than one thread (or the
+ * main chat and a thread) posts in the main chat unless the agent says
+ * where: the hint tells it how.
+ */
+export const BATCHED_THREADS_HINT =
+  'These lines come from different threads of the chat. Answer each where it was asked: pass its thread id to `progress` (or `ask`) as `thread`; a line from the main chat needs none.';
+
+/** T503: the threads (and the main chat, as `''`) a digest's human lines come from. */
+function threadsOfDigest(events: readonly RoutedEvent[]): Set<string> {
+  return new Set(
+    events.filter((e) => e.type === 'human_line').map((e) => lineThreadOf(e)?.id ?? ''),
+  );
+}
+
 /** What a digest (or a wake) ends with: the reply-first rule, and T502's settle hint. */
 function digestTail(events: readonly RoutedEvent[]): string {
   if (!events.some((e) => e.type === 'human_line')) return 'Continue the work.';
@@ -95,7 +157,11 @@ function digestTail(events: readonly RoutedEvent[]): string {
       }),
     ),
   ];
-  return asked.length > 0 ? `${settleHint(asked)}\n\n${REPLY_FIRST}` : REPLY_FIRST;
+  // T503: lines from several threads: say where each answer goes.
+  const threads = threadsOfDigest(events);
+  const batched = threads.size > 1 && [...threads].some((t) => t !== '');
+  const reply = batched ? `${BATCHED_THREADS_HINT}\n\n${REPLY_FIRST}` : REPLY_FIRST;
+  return asked.length > 0 ? `${settleHint(asked)}\n\n${reply}` : reply;
 }
 
 /** The one-line summary a recipient is told (§15). */
@@ -109,8 +175,11 @@ export function summaryOf(
     case 'human_line': {
       // T502: a reply in a question's thread says what it is about (the question as data).
       const about = replyQuestionOf(event);
-      return about !== undefined
-        ? `About your question "${about.text}": ${String(p.body)}`
+      if (about !== undefined) return `About your question "${about.text}": ${String(p.body)}`;
+      // T503: a reply in a chat thread says which, and what it is on.
+      const thread = lineThreadOf(event);
+      return thread !== undefined
+        ? threadLineText(thread, String(p.body))
         : `The operator wrote on the stream: ${String(p.body)}`;
     }
     case 'answer':

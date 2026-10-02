@@ -29,6 +29,7 @@ import {
   type Stream,
   type ThreadEntry,
   questionIdOfThreadRef,
+  questionOfChatThread,
 } from '@agile-agents/shared';
 import type { RoutedEventService } from '../events/service';
 import type { StreamService } from '../streams/service';
@@ -47,7 +48,7 @@ export interface ThreadActivity {
 const TURN_FINISHED = 'turn finished';
 
 /** A session working on a turn (or about to). */
-const WORKING: ReadonlySet<SessionRef['status']> = new Set(['starting', 'running']);
+export const WORKING: ReadonlySet<SessionRef['status']> = new Set(['starting', 'running']);
 
 /** How much of a node's thread a derivation reads: the newest lines, as the page does. */
 export const QUESTION_THREAD_WINDOW = 500;
@@ -56,7 +57,7 @@ export const QUESTION_THREAD_WINDOW = 500;
 export const CHILD_QUESTIONS_RESOLVED_MAX = 5;
 
 /** One digest a session took: when it started, and what it carried. */
-interface Digest {
+export interface Digest {
   id: string;
   session: string;
   at: string;
@@ -64,7 +65,7 @@ interface Digest {
 }
 
 /** Every delivered digest on a node's queue, oldest first. */
-function digestsOf(activity: readonly ThreadActivity[]): Digest[] {
+export function digestsOf(activity: readonly ThreadActivity[]): Digest[] {
   const byId = new Map<string, Digest>();
   for (const a of activity) {
     if (a.status !== 'delivered' || a.digest === undefined) continue;
@@ -90,7 +91,7 @@ function digestsOf(activity: readonly ThreadActivity[]): Digest[] {
  * next digest it took, or the daemon's "turn finished" / "session ended"
  * line for it, whichever is first. Undefined: no sign of an end yet.
  */
-function turnEnd(
+export function turnEnd(
   entries: readonly ThreadEntry[],
   digests: readonly Digest[],
   session: string,
@@ -118,6 +119,43 @@ function turnEnd(
   return end;
 }
 
+/** One delivered digest's turn: the keys its events map to, and the lines its agent wrote. */
+export interface CausedTurn {
+  /** `keyOf` of each of its events (`undefined`: an event that is no thread's). */
+  keys: Set<string | undefined>;
+  /** The lines its session's agent wrote between the digest and the turn's end, oldest first. */
+  lines: ThreadEntry[];
+}
+
+/** The kinds of line a turn's cause places (a question has its own `ref`; proposals stay put). */
+const CAUSED_KINDS: ReadonlySet<ThreadEntry['kind']> = new Set(['line', 'finding']);
+
+/**
+ * T503: every delivered digest's turn, with the keys its events map to and
+ * the `kinds` of line its agent wrote in it. `linesByCause` keeps the
+ * unbatched ones; a chat thread also links the batched ones (§4.1).
+ */
+export function turnsByCause(
+  entries: readonly ThreadEntry[],
+  activity: readonly ThreadActivity[],
+  keyOf: (event: RoutedEvent) => string | undefined,
+  kinds: ReadonlySet<ThreadEntry['kind']> = CAUSED_KINDS,
+): CausedTurn[] {
+  const out: CausedTurn[] = [];
+  const digests = digestsOf(activity);
+  for (const d of digests) {
+    const keys = new Set(d.events.map(keyOf));
+    const end = turnEnd(entries, digests, d.session, d.at, d.id);
+    const by = `agent:${d.session}`;
+    const lines = entries.filter(
+      (e) =>
+        e.by === by && e.ts >= d.at && (end === undefined || e.ts < end) && kinds.has(e.kind),
+    );
+    out.push({ keys, lines });
+  }
+  return out;
+}
+
 /**
  * §4.1's rule: for each digest every event of which `keyOf` maps to the
  * same key, the lines its session's agent wrote in that turn. Lines of a
@@ -129,22 +167,11 @@ export function linesByCause(
   keyOf: (event: RoutedEvent) => string | undefined,
 ): Map<string, string[]> {
   const out = new Map<string, string[]>();
-  const digests = digestsOf(activity);
-  for (const d of digests) {
-    const keys = new Set(d.events.map(keyOf));
-    if (keys.size !== 1) continue;
-    const [key] = keys;
-    if (key === undefined) continue;
-    const end = turnEnd(entries, digests, d.session, d.at, d.id);
-    const by = `agent:${d.session}`;
-    const lines = out.get(key) ?? [];
-    for (const e of entries) {
-      if (e.by !== by || e.ts < d.at || (end !== undefined && e.ts >= end)) continue;
-      // A question or answer the turn wrote has its own `ref`; proposals stay on the main flow.
-      if (e.kind !== 'line' && e.kind !== 'finding') continue;
-      lines.push(e.ts);
-    }
-    if (lines.length > 0) out.set(key, lines);
+  for (const turn of turnsByCause(entries, activity, keyOf)) {
+    if (turn.keys.size !== 1) continue;
+    const [key] = turn.keys;
+    if (key === undefined || turn.lines.length === 0) continue;
+    out.set(key, [...(out.get(key) ?? []), ...turn.lines.map((e) => e.ts)]);
   }
   return out;
 }
@@ -195,7 +222,8 @@ export function questionThreadsOf(input: QuestionThreadsInput): QuestionThread[]
   const replies = new Map<string, ThreadEntry[]>();
   const replyHead = new Map<string, string>();
   for (const e of entries) {
-    const id = questionIdOfThreadRef(e.ref);
+    // T503: a line can also name a question's thread in its `thread` (an agent's `progress`).
+    const id = questionIdOfThreadRef(e.ref) ?? questionOfChatThread(e.thread);
     const head = id === undefined ? undefined : headOf(id);
     if (head === undefined) continue;
     const set = members.get(head.id) ?? new Set<string>();

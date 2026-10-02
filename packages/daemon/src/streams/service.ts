@@ -14,6 +14,7 @@ import {
   type StreamCreateInput,
   type StreamPrincipal,
   THREAD_BODY_MAX_CHARS,
+  type ThreadAnchor,
   type ThreadAuthor,
   type ThreadEntry,
   type ThreadEntryKind,
@@ -44,6 +45,10 @@ export interface ThreadAppendInput {
   ref?: string;
   /** T347: written for the agent; hidden from the cockpit's thread view. */
   agent_only?: true;
+  /** T503 (D60): the chat thread the line is in (the store checks it names one on the node). */
+  thread?: string;
+  /** T503 (D64): this line starts a thread on that turn (or passage): its own `ts` names it. */
+  anchor?: ThreadAnchor;
 }
 
 export interface ThreadPageOptions {
@@ -779,13 +784,20 @@ export class StreamService {
         `thread body is ${input.body.length} characters; the cap is ${max} — write the detail to a file and pass it as "ref"`,
       );
     }
+    const ts = new Date().toISOString();
     return this.store.appendThreadEntry(id, {
-      ts: new Date().toISOString(),
+      ts,
       by,
       kind: input.kind,
       body: input.body,
       ...(input.ref !== undefined ? { ref: input.ref } : {}),
       ...(input.agent_only ? { agent_only: true } : {}),
+      // T503: a thread's first reply names itself; the store checks both against the node.
+      ...(input.anchor !== undefined
+        ? { thread: ts, anchor: input.anchor }
+        : input.thread !== undefined
+          ? { thread: input.thread }
+          : {}),
     });
   }
 

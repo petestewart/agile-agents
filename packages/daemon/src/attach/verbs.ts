@@ -193,8 +193,10 @@ export class VerbService {
    * question about a shared thing goes to its live coordinator first.
    */
   async ask(input: unknown): Promise<{ id: string }> {
-    const { session, text, options } = validateVerbInput('ask', input);
+    const { session, text, options, thread } = validateVerbInput('ask', input);
     const caller = this.caller(session);
+    // T503: asked in a chat thread: it must name one on the node (checked before the question exists).
+    if (thread !== undefined) this.options.store.assertChatThread(caller.stream, thread);
     const coordinator = this.coordinatorFirst(caller.stream, text);
     const question = await this.options.questions.raise({
       stream: caller.stream,
@@ -204,6 +206,7 @@ export class VerbService {
       // T361: choices the operator can click.
       ...(options !== undefined ? { options } : {}),
       ...(coordinator !== undefined ? { coordinator } : {}),
+      ...(thread !== undefined ? { thread } : {}),
     });
     if (coordinator !== undefined) {
       const child = this.options.streams.get(caller.stream);
@@ -299,8 +302,10 @@ export class VerbService {
   }
 
   async progress(input: unknown): Promise<ThreadEntry> {
-    const { session, text } = validateVerbInput('progress', input);
+    const { session, text, thread } = validateVerbInput('progress', input);
     const caller = this.caller(session);
+    // T503 (§4.2): the agent says which thread its line answers; the store refuses one not on its node.
+    if (thread !== undefined) this.options.store.assertChatThread(caller.stream, thread);
     await this.options.streams.update('agent', caller.stream, { agent: { progress: text } });
     // T484: a turn with a progress call isn't quiet.
     if (isAgentRole(caller.role)) {
@@ -311,7 +316,7 @@ export class VerbService {
     return this.options.streams.appendThread(
       'agent',
       caller.stream,
-      { kind: 'line', body: text },
+      { kind: 'line', body: text, ...(thread !== undefined ? { thread } : {}) },
       session,
     );
   }

@@ -69,6 +69,7 @@ import {
   formatKnowledgeScope,
   formatZodError,
   projectNameKey,
+  questionOfChatThread,
   validateAgentRecord,
   validateDelivery,
   validateDirectorRecord,
@@ -78,6 +79,7 @@ import {
   validateLegacyRule,
   validatePolicy,
   validateProject,
+  validateQuestion,
   validateRepoEntry,
   validateReposConfig,
   validateRoutedEvent,
@@ -1247,6 +1249,7 @@ export class StateStore {
       const streamRel = this.streamRelPath(streamId);
       if (!fileExists(this.abs(streamRel))) throw new NotFoundError('Stream', streamId);
       const validated = validateThreadEntry(entry);
+      this.assertThreadPlace(streamId, validated);
       const relPath = this.threadRelPath(streamId);
       appendJsonlLine(this.abs(relPath), validated);
       this.threadAt.set(streamId, validated.ts);
@@ -1257,6 +1260,61 @@ export class StateStore {
       });
       return { result: validated, event };
     });
+  }
+
+  /**
+   * T503 (D60, D64, design/chat-threads.md §3a, §7): a line in a chat
+   * thread names one on its node. A thread's first reply is on an existing
+   * line of the node that is not itself in a thread (one level of nesting:
+   * a reply to a reply goes in the same thread), and its passage lies in
+   * that line's body. A reply names a thread started on the node, or a
+   * question asked on it.
+   */
+  private assertThreadPlace(streamId: string, entry: Pick<ThreadEntry, 'anchor' | 'thread'>): void {
+    const { anchor, thread } = entry;
+    if (anchor === undefined && thread === undefined) return;
+    const question = questionOfChatThread(thread);
+    if (anchor === undefined && question !== undefined) {
+      let asked: { stream: string };
+      try {
+        asked = this.getEntity(`questions/${question}.yaml`, validateQuestion);
+      } catch {
+        throw new Error(`thread ${thread} names no question on this node`);
+      }
+      if (asked.stream !== streamId) {
+        throw new Error(`thread ${thread} names a question asked on another node`);
+      }
+      return;
+    }
+    const lines = this.readThread(streamId);
+    if (anchor !== undefined) {
+      const on = lines.find((line) => line.ts === anchor.entry);
+      if (on === undefined) throw new Error(`thread anchor: no line ${anchor.entry} on this node`);
+      if (on.thread !== undefined) {
+        throw new Error(
+          'thread anchor: that line is in a thread already; reply in its thread (one level only)',
+        );
+      }
+      if (anchor.end !== undefined && anchor.end > on.body.length) {
+        throw new Error(
+          `thread anchor: the passage ends at ${anchor.end}, past the line's ${on.body.length} characters`,
+        );
+      }
+      return;
+    }
+    if (!lines.some((line) => line.ts === thread && line.anchor !== undefined)) {
+      throw new Error(`no thread ${thread} on this node`);
+    }
+  }
+
+  /** T503: refuses a `thread` that names no chat thread on the node (an agent's `ask` checks before it asks). */
+  assertChatThread(streamId: string, thread: string): void {
+    this.assertThreadPlace(streamId, { thread });
+  }
+
+  /** T503: whether a node has a chat thread (a line that started one): its rail row asks for its replies. */
+  hasChatThreads(streamId: string): boolean {
+    return this.answerState(streamId, () => this.readThread(streamId), true).threaded === true;
   }
 
   // ------------------------------------------------------------------ Director
@@ -1745,14 +1803,19 @@ interface AnswerState {
   pending: boolean;
   /** When the agent last answered one. */
   at?: string;
+  /** T503: a line of the thread started a chat thread. */
+  threaded?: true;
 }
 
 function nextAnswer(state: AnswerState, entry: ThreadEntry): AnswerState {
+  if (entry.anchor !== undefined && state.threaded !== true) {
+    state = { ...state, threaded: true };
+  }
   if (entry.kind !== 'line') return state;
   if (entry.by === 'human') return { ...state, pending: true };
   const agent =
     entry.by.startsWith('agent:') || entry.by === 'coordinator' || entry.by === 'director';
-  return agent && state.pending ? { pending: false, at: entry.ts } : state;
+  return agent && state.pending ? { ...state, pending: false, at: entry.ts } : state;
 }
 
 function mappingCopy(value: unknown): Record<string, unknown> {

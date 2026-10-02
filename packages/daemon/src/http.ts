@@ -63,6 +63,7 @@ import {
   formatZodError,
   liveChildrenOf,
   nodeRole,
+  questionOfChatThread,
   sendUpText,
   validatePolicy,
 } from '@agile-agents/shared';
@@ -115,6 +116,7 @@ import {
   QuestionAlreadyAnsweredError,
   QuestionNotFoundError,
   type QuestionService,
+  ChatThreads,
   QuestionThreads,
   parseAnswerParams,
   sayAndAnswer,
@@ -214,6 +216,8 @@ export interface HttpServerOptions {
   questions?: QuestionService;
   /** T502: question threads on the node page; built over `streams`, `questions` and `events` when absent. */
   questionThreads?: QuestionThreads;
+  /** T503: chat threads on the node page and the rail rows; built over `streams` and `events` when absent. */
+  chatThreads?: ChatThreads;
   /** `GET /api/inbox` (§3); without it the route 503s. */
   inbox?: InboxService;
   streams?: StreamService;
@@ -559,6 +563,8 @@ interface FeedContext {
   questions?: QuestionService;
   /** T502: question threads (the node page's, and a coordinator's children's). */
   questionThreads?: QuestionThreads;
+  /** T503: chat threads on a node's turns. */
+  chatThreads?: ChatThreads;
   inbox?: InboxService;
   rules?: KnowledgeService;
   ruleEvals?: RuleRpcEvalDeps;
@@ -611,6 +617,13 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     feed.attach ? (session) => feed.attach?.contextFor(session) : undefined,
     feed.director ? () => feed.store.directorReplyAt() : undefined,
     (id) => feed.store.answeredAt(id),
+    // T503: a node's threads with a reply (its rail row's unread), only where it has a thread.
+    feed.chatThreads
+      ? (id) =>
+          feed.store.hasChatThreads(id)
+            ? feed.chatThreads?.repliesFor(id, feed.store.threadUpdatedAt(id))
+            : undefined
+      : undefined,
   );
 }
 
@@ -678,6 +691,18 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
             })
           : undefined);
       return threads ? { questionThreads: threads } : {};
+    })(),
+    ...(() => {
+      const chat =
+        options.chatThreads ??
+        (options.streams
+          ? new ChatThreads({
+              streams: options.streams,
+              ...(options.questions ? { questions: options.questions } : {}),
+              ...(options.events ? { events: options.events } : {}),
+            })
+          : undefined);
+      return chat ? { chatThreads: chat } : {};
     })(),
     inbox: options.inbox,
     rules: options.rules,
@@ -2022,6 +2047,7 @@ async function handleStreamRoute(
             ...(feed.landing ? { landing: feed.landing } : {}),
             ...(feed.routing ? { nextPick: (s: Stream) => feed.routing?.nextPick(s) } : {}),
             ...(feed.questionThreads ? { threads: feed.questionThreads } : {}),
+            ...(feed.chatThreads ? { chatThreads: feed.chatThreads } : {}),
           },
           id,
         ),
@@ -2239,6 +2265,38 @@ async function handleStreamRoute(
     if (action === 'say') {
       const input = StreamSayInputSchema.safeParse(body);
       if (!input.success) return errorResponse(400, formatZodError('say', input.error));
+      const { thread, anchor } = input.data;
+      if (thread !== undefined || anchor !== undefined) {
+        // T503 (D60, D61, D64): a reply in a chat thread, or the first of a new one. It
+        // answers no open question (a question is answered in its card), so not `sayAndAnswer`.
+        if (thread !== undefined && questionOfChatThread(thread) !== undefined) {
+          return errorResponse(400, 'reply to a question in its own card');
+        }
+        const where = anchor !== undefined ? { anchor } : { thread: thread as string };
+        try {
+          if (feed.attach) {
+            const said = await feed.attach.say(id, input.data.body, {
+              ...where,
+              ...(input.data.start === true
+                ? {
+                    start: true,
+                    ...(input.data.session !== undefined ? { session: input.data.session } : {}),
+                  }
+                : {}),
+            });
+            return jsonResponse(said, 201);
+          }
+          const entry = await feed.streams.appendThread('human', id, {
+            kind: 'line',
+            body: input.data.body,
+            ...where,
+          });
+          return jsonResponse({ entry }, 201);
+        } catch (err) {
+          if (err instanceof NotFoundError) throw err;
+          return errorResponse(400, messageOf(err));
+        }
+      }
       if (feed.attach) {
         // The same path as `agile stream say` (`sayAndAnswer`).
         const attach = feed.attach;
