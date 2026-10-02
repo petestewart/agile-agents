@@ -1701,27 +1701,29 @@ Needs the `agy` CLI signed in to a Google account, and `unzip` on the PATH.
       a denial stops it, so its `requiresSandbox` mark and `loadSession` can be
       set from what you measured.
 
-## 19. **[vendor]** Codex, Grok and Antigravity run commands unchecked (T505)
+## 19. **[vendor]** Grok and Antigravity run commands unchecked (T505)
 
 Their ACP bridges run a shell command without asking (design/spike-findings.md
 §C3), and no sandbox is wired to them yet, so nothing checks their commands:
 no permission card, no pattern rule, no hook. They still run as they are; the
-app only says so. The real fix for Codex is its native `codex app-server`
-(T506). Needs a Codex login (Grok or Antigravity if you have one).
+app only says so. Codex left this list with T506: its own PreToolUse hook
+gates it (§24). Needs a Grok or Antigravity login.
 
-- [ ] Settings → Agents → Vendors: the Codex, Grok CLI and Antigravity rows
-      each carry an amber line, "Codex runs shell commands without asking,
-      and nothing checks them yet. Use it on repos you trust." (with that
-      vendor's name). Claude Code's, Cursor's, Gemini CLI's and Pi's don't.
+- [ ] Settings → Agents → Vendors: the Grok CLI and Antigravity rows each
+      carry an amber line, "Grok CLI runs shell commands without asking, and
+      nothing checks them yet. Use it on repos you trust." (with that
+      vendor's name). Claude Code's, Codex's, Cursor's, Gemini CLI's and
+      Pi's don't.
 - [ ] `agile vendors`: the same sentence is the first note under each of the
-      three rows.
-- [ ] The model chip's list: each Codex, Grok and Antigravity entry has a
-      small amber warning mark; hovering it shows the sentence.
-- [ ] Start a node on Codex. Beside the composer's model chip, the same mark
+      two rows.
+- [ ] The model chip's list: each Grok and Antigravity entry has a small
+      amber warning mark; hovering it shows the sentence. Codex's entries
+      have none.
+- [ ] Start a node on Grok. Beside the composer's model chip, the same mark
       (the sentence on hover); Details → Agent shows the sentence; the thread
-      has one amber line, "Codex runs commands unchecked". A Claude node shows
-      none of these.
-- [ ] Ask the Codex node to run a harmless command (`ls`): it runs with no
+      has one amber line, "Grok CLI runs commands unchecked". A Claude or
+      Codex node shows none of these.
+- [ ] Ask the Grok node to run a harmless command (`ls`): it runs with no
       permission card. Nothing in the app stops it; that is the point of the
       warning.
 
@@ -1908,3 +1910,56 @@ Claude login (then Codex, Gemini, if you have them):
       thread on …", the passage and each line quoted; its agent picks it up.
       Back on the conversation, the thread's panel reads "Promoted to a
       tangent: <title>", and the link opens it.
+
+## 24. **[vendor]** Codex is gated by its own PreToolUse hook (T506)
+
+The daemon writes `<worktree>/.codex/hooks.json` (matchers `Bash`,
+`apply_patch|Edit|Write`, `mcp__.*`) and `.codex/agile-pre-tool-use.sh`, which
+runs `agile hook pre-tool-use --vendor codex`: Codex's commands and edits go
+through the same rules, classifier and Needs me as Claude's
+(design/spike-findings.md §C5, "as built"). The hook loads only in a project
+Codex trusts; the daemon reads `$CODEX_HOME/config.toml` (default
+`~/.codex/config.toml`) and never writes it. Needs a Codex login, and a repo
+under a path your Codex config trusts (`[projects."<dir>"]` with
+`trust_level = "trusted"`, the repo or an ancestor such as your home).
+
+- [ ] Start a node on Codex in a trusted repo. `<worktree>/.codex/hooks.json`
+      and `agile-pre-tool-use.sh` exist; `git status` in the worktree does
+      not list `.codex/`. The thread has no "runs commands unchecked" line.
+- [ ] Ask it to run `curl -sI https://example.com`. The gate answers as it
+      does for Claude (today an engineer's `curl` is refused: "curl is not an
+      allowed command for the engineer role"; if your rules or posture hold
+      it instead, it is a card in Needs me). Codex reports "Command blocked
+      by PreToolUse hook: …" with that reason, and nothing ran.
+      `log/events.jsonl` has a `hook_decision` for it.
+- [ ] Ask it to add a dependency to `package.json` (an `apply_patch` edit of
+      a manifest): the call is held, a card in Needs me ("editing a
+      dependency manifest/lockfile is never automatic"), and Codex reports
+      the block. Approve the card and ask it to retry: the edit goes through
+      once.
+- [ ] Add a pattern rule that denies a path (Knowledge → a `path_deny` rule
+      with a glob such as `**/*.pem`), then ask Codex to create
+      `certs/key.pem`. The edit (`apply_patch`) is denied, the reason names
+      the rule and `certs/key.pem`, and no file appears. If the reason
+      instead says "cannot verify the edit target", the daemon could not read
+      the patch's paths: `apply_patch`'s hook input differs from Codex's docs
+      (patch text in `tool_input.command`). Record its shape in
+      spike-findings §C5 (`spike/permission-matrix.ts --vendor codex --hooks
+      --matcher apply_patch` logs it to `hook-calls.jsonl`).
+- [ ] Ask it to run `ls` and edit a file inside the worktree: both run with
+      no card (allowed), and the node keeps working (no fail-closed stop).
+- [ ] An untrusted worktree is refused: register a repo outside every
+      trusted path in your Codex config (e.g. under `/tmp`), start a node on
+      Codex there. It does not start: Needs me reads "The agent couldn’t
+      start: Codex's gate isn't trusted here: trust <repo> in Codex (…)",
+      and nothing ran. Trust the repo in Codex (`[projects."<repo>"]
+      trust_level = "trusted"`, or Codex's own trust prompt), start it
+      again: it runs gated.
+- [ ] Fail closed (optional): with Codex running gated, make the hook stop
+      firing (rename `.codex/hooks.json` in the worktree while the agent
+      rests), then ask it for two commands. After the second, the agent is
+      stopped and Needs me reads "Codex ran a command its gate never saw:
+      its hook isn't trusted or didn't fire". It is not restarted.
+- [ ] A Codex reviewer on the same node gets the same gate (its start
+      rewrites `.codex/hooks.json`); ask it to edit a file: refused
+      ("reviewer role denies all writes").

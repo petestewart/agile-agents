@@ -204,6 +204,24 @@ What those runs still show (none of it depends on the hook):
   project hook needs a trusted project layer: the daemon must check that the
   hook ran (T506's fail-closed check).
 
+**As built (T506, 2026-10-02).** For every Codex session (worker,
+reviewer, Director) the daemon writes `<worktree>/.codex/hooks.json`
+(`PreToolUse` matchers `Bash`, `apply_patch|Edit|Write`, `mcp__.*`, each
+running `.codex/agile-pre-tool-use.sh` → `agile hook pre-tool-use --vendor
+codex || exit 2`), git-excluded like `.claude/`. The CLI marks the input
+`agile_vendor: codex`; the daemon reads `Bash` as Claude's, `apply_patch` as
+an `Edit` of every path in the patch (its input is unmeasured: the patch text
+is read from `tool_input.command`, `input` or `patch`; no path found ⇒ denied
+as an edit of unknown target) and passes MCP tools as named; a deny is exit 2
+with the reason on stderr. Trust (option b): the start reads
+`$CODEX_HOME/config.toml` (else `~/.codex`), never writes it, and refuses a
+worktree no `trust_level = "trusted"` project covers ("Codex's gate isn't
+trusted here: trust <repo> in Codex"). Fail closed: when a session's
+`execute`/`edit` calls over ACP outnumber its hook records by 2, it is stopped
+("Codex ran a command its gate never saw: …"), blocked in Needs me, not
+restarted. Codex left `UNCHECKED_COMMAND_VENDORS` and joined
+`HOOKED_VENDORS`. Live check: LIVE-CHECKLIST §24.
+
 ### C6. Compaction routes (T504, D65): assumed, not measured
 
 T504 needed to know, per vendor, how the daemon can make the agent compact
