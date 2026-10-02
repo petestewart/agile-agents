@@ -164,10 +164,11 @@ export type RefreshModelsInput = z.infer<typeof RefreshModelsInputSchema>;
 /**
  * T456: vendors whose tool calls pass the daemon's pre-tool check (Claude's
  * `PreToolUse` hook, Pi's `agile` extension; design/spike-findings.md §B,
- * §C4). The others are gated by ACP permission (or a sandbox) only, a lower
- * enforcement floor (T229's visibility advisory reads the same list).
+ * §C4; T506: Codex's own `PreToolUse` hook, §C5). The others are gated by
+ * ACP permission (or a sandbox) only, a lower enforcement floor (T229's
+ * visibility advisory reads the same list).
  */
-export const HOOKED_VENDORS: readonly SessionVendor[] = ['claude', 'pi'];
+export const HOOKED_VENDORS: readonly SessionVendor[] = ['claude', 'codex', 'pi'];
 
 /** T456: whether `vendor` has pre-tool hooks. */
 export function vendorHasHooks(vendor: string): boolean {
@@ -177,13 +178,14 @@ export function vendorHasHooks(vendor: string): boolean {
 /**
  * T505: vendors whose ACP bridge runs a shell command without asking (no
  * ACP permission request, and no pre-tool hook the daemon installs yet;
- * design/spike-findings.md §C3, §C5; Codex's own hook is T506).
+ * design/spike-findings.md §C3). T506: Codex left the list: the daemon
+ * installs its own `PreToolUse` hook (§C5).
  * The providers mark them `requiresSandbox`, but no sandbox is wired to
  * the spawn yet, so nothing checks their commands. They still run as they
  * are; the cockpit, the CLI and the thread say so. A daemon test keeps the
  * list and the registry's `requiresSandbox` in step.
  */
-export const UNCHECKED_COMMAND_VENDORS: readonly SessionVendor[] = ['grok', 'codex', 'antigravity'];
+export const UNCHECKED_COMMAND_VENDORS: readonly SessionVendor[] = ['grok', 'antigravity'];
 
 /** T505: whether `vendor` runs shell commands that nothing checks. */
 export function vendorRunsUnchecked(vendor: string): boolean {

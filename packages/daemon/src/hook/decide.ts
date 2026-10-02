@@ -90,7 +90,9 @@ export function pathsForToolCall(payload: ClaudePreToolUsePayload): string[] {
     return [];
   }
   const input = payload.tool_input ?? {};
-  const candidates = [input.file_path, input.path, input.notebook_path].filter(
+  // T506: a Codex `apply_patch` names several files (`file_paths`, from `hook/codex.ts`).
+  const more = Array.isArray(input.file_paths) ? input.file_paths : [];
+  const candidates = [input.file_path, input.path, input.notebook_path, ...more].filter(
     (v): v is string => typeof v === 'string' && v.length > 0,
   );
   return [...new Set(candidates)];
@@ -215,11 +217,18 @@ function roleToolVerdict(
   const kind = claudeToolKind(payload);
   if (kind === undefined) return undefined;
 
-  const toolCall: AcpToolCall = {
-    kind,
-    title: payload.tool_name,
-    rawInput: claudeToolRawInput(kind, payload),
-  };
+  // T506: an edit naming several files (Codex's `apply_patch`) checks every one, as
+  // an ACP edit's `locations` are.
+  const editPaths = kind === 'edit' ? pathsForToolCall(payload) : [];
+  const toolCall: AcpToolCall =
+    editPaths.length > 1
+      ? {
+          kind,
+          title: payload.tool_name,
+          rawInput: {},
+          locations: editPaths.map((path) => ({ path })),
+        }
+      : { kind, title: payload.tool_name, rawInput: claudeToolRawInput(kind, payload) };
   const request: AcpPermissionRequestParams = { toolCall, options: SYNTHETIC_OPTIONS };
   const decision = decidePermission({
     role: permissionRoleFor(ctx.role),

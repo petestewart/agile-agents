@@ -87,6 +87,11 @@ export interface ClaudePreToolUsePayload {
    * Urgent messages still deny with the body as the reason.
    */
   no_additional_context_channel?: boolean;
+  /**
+   * T506: set by `agile hook pre-tool-use --vendor codex`: the rest is
+   * Codex's hook input, translated by `hook/codex.ts` before any decision.
+   */
+  agile_vendor?: string;
   [key: string]: unknown;
 }
 

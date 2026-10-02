@@ -118,10 +118,11 @@ describe('names', () => {
     );
     expect(noEffortLine('gemini')).toBe('Gemini has no effort setting');
     // T505: a vendor whose commands nothing checks says so; one whose are, doesn't.
-    expect(uncheckedWarning('codex')).toBe(
-      'Codex runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.',
+    expect(uncheckedWarning('grok')).toBe(
+      'Grok runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.',
     );
-    expect(uncheckedWarning('grok')).toContain('Grok runs shell commands without asking');
+    // T506: Codex's commands go through its own hook now.
+    expect(uncheckedWarning('codex')).toBeUndefined();
     expect(uncheckedWarning('antigravity')).toContain('Antigravity runs shell commands');
     expect(uncheckedWarning('claude')).toBeUndefined();
     expect(uncheckedWarning('pi')).toBeUndefined();
@@ -248,9 +249,9 @@ describe('chat rows', () => {
     );
     expect(systemLine('session ended: its turn finished').text).toBe('Agent finished its turn');
     // T505: an agent whose commands nothing checks reads amber.
-    expect(systemLine('Codex runs commands unchecked')).toEqual({
+    expect(systemLine('Grok CLI runs commands unchecked')).toEqual({
       icon: 'alert-triangle',
-      text: 'Codex runs commands unchecked',
+      text: 'Grok CLI runs commands unchecked',
       tone: 'warn',
     });
     // T465 (D48): a finished turn's session stays; it ends after its idle time, or resumes.

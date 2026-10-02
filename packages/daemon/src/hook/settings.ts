@@ -125,7 +125,7 @@ export function writeClaudeSettings(
 }
 
 /** True when git tracks `rel` in `worktreePath`. Not a git repo: false. */
-function isTracked(worktreePath: string, rel: string): boolean {
+export function isTracked(worktreePath: string, rel: string): boolean {
   const result = Bun.spawnSync(['git', 'ls-files', '--error-unmatch', '--', rel], {
     cwd: worktreePath,
     env: sandboxedSubprocessEnv(worktreePath, 'git'),
@@ -151,9 +151,10 @@ export function settingsFileName(worktreePath: string): 'settings.json' | 'setti
 /**
  * Adds `pattern` to the repo's `info/exclude` so git ignores the hook
  * config: untracked, a `git stash push -u` once took it and the hook
- * stopped running. Best effort: not a git repo, no change.
+ * stopped running. Best effort: not a git repo, no change. T506: Codex's
+ * `.codex/` too.
  */
-function excludeFromGit(worktreePath: string, pattern: string): void {
+export function excludeFromGit(worktreePath: string, pattern: string): void {
   const result = Bun.spawnSync(['git', 'rev-parse', '--git-path', 'info/exclude'], {
     cwd: worktreePath,
     env: sandboxedSubprocessEnv(worktreePath, 'git'),

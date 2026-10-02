@@ -44,6 +44,7 @@ import type { DeliveryTarget, SessionDelivery } from '../events/delivery';
 import { routeAndEmit } from '../events/router';
 import type { RoutedEventService } from '../events/service';
 import { WakeBudget } from '../events/wake';
+import type { HookSightings } from '../hook/codex';
 import { directorReadScope } from '../permissions/visibility';
 import type { CliInvocation } from '../runner/cli-bin';
 import { type InstalledCli, installedCliFor } from '../runner/installed-cli';
@@ -76,6 +77,9 @@ export function directorRetryDelayMs(failures: number): number {
 }
 
 export interface DirectorServiceOptions {
+  /** T506: Codex's home (trusted projects) and the hook's per-session counts, as for attach. */
+  codexHome?: string;
+  hookSightings?: Pick<HookSightings, 'count' | 'forget'>;
   store: StateStore;
   streams: StreamService;
   events: RoutedEventService;
@@ -457,6 +461,10 @@ export class DirectorService {
       ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
       ...(this.options.socketPath !== undefined ? { socketPath: this.options.socketPath } : {}),
       ...(this.options.now !== undefined ? { now: this.options.now } : {}),
+      ...(this.options.codexHome !== undefined ? { codexHome: this.options.codexHome } : {}),
+      ...(this.options.hookSightings !== undefined
+        ? { hookSightings: this.options.hookSightings }
+        : {}),
       ...(() => {
         const cli =
           this.options.installedCli !== undefined

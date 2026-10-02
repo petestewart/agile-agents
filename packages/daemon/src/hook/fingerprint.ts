@@ -34,6 +34,16 @@ function editPath(payload: ClaudePreToolUsePayload, worktreePath: string): strin
   return undefined;
 }
 
+/** T506: every path of a multi-file edit (`file_paths`, from `hook/codex.ts`), normalised and sorted. */
+function editPaths(payload: ClaudePreToolUsePayload, worktreePath: string): string[] {
+  const list = payload.tool_input?.file_paths;
+  if (!Array.isArray(list)) return [];
+  const paths = list
+    .filter((v): v is string => typeof v === 'string' && v.length > 0)
+    .map((v) => (isAbsolute(v) ? resolve(v) : resolve(worktreePath, v)));
+  return [...new Set(paths)].sort();
+}
+
 function commandOf(payload: ClaudePreToolUsePayload): string | undefined {
   const command = payload.tool_input?.command;
   if (typeof command !== 'string') return undefined;
@@ -54,6 +64,12 @@ export function fingerprintCall(
     return { tool, command, fingerprint: digest([tool, 'command', command]) };
   }
   const path = editPath(payload, worktreePath);
+  // T506: a Codex `apply_patch` naming several files: yes to that patch's files is not
+  // yes to a later patch adding another, so every path is in the digest.
+  const more = editPaths(payload, worktreePath);
+  if (path !== undefined && more.length > 1) {
+    return { tool, path, fingerprint: digest([tool, 'paths', ...more]) };
+  }
   if (path !== undefined) {
     return { tool, path, fingerprint: digest([tool, 'path', path]) };
   }

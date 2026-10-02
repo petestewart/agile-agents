@@ -146,8 +146,8 @@ describe('T456: what happens when an agent crashes (vendor_failure)', () => {
     ).toEqual({ fallback: ['cursor'] });
   });
 
-  test('Claude and Pi have pre-tool hooks; the others do not', () => {
-    expect(SESSION_VENDORS.filter(vendorHasHooks)).toEqual(['claude', 'pi']);
+  test('Claude, Pi and (T506) Codex have pre-tool hooks; the others do not', () => {
+    expect(SESSION_VENDORS.filter(vendorHasHooks)).toEqual(['claude', 'pi', 'codex']);
   });
 
   test('T500: Antigravity is a session vendor beside Gemini, signed in with `agy`, no known models or effort', () => {
@@ -160,15 +160,16 @@ describe('T456: what happens when an agent crashes (vendor_failure)', () => {
     expect(vendorHasHooks('antigravity')).toBe(false);
   });
 
-  test('T505: Grok, Codex and Antigravity run commands unchecked, in plain words', () => {
-    expect(SESSION_VENDORS.filter(vendorRunsUnchecked)).toEqual(['grok', 'codex', 'antigravity']);
+  test('T505: Grok and Antigravity run commands unchecked, in plain words (T506: Codex is gated)', () => {
+    expect(SESSION_VENDORS.filter(vendorRunsUnchecked)).toEqual(['grok', 'antigravity']);
+    expect(vendorRunsUnchecked('codex')).toBe(false);
     expect(vendorRunsUnchecked('claude')).toBe(false);
     expect(vendorRunsUnchecked('nope')).toBe(false);
     // None of them has pre-tool hooks.
     expect(SESSION_VENDORS.filter((v) => vendorRunsUnchecked(v) && vendorHasHooks(v))).toEqual([]);
-    expect(uncheckedCommandsWarning('Codex')).toBe(
-      'Codex runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.',
+    expect(uncheckedCommandsWarning('Grok CLI')).toBe(
+      'Grok CLI runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.',
     );
-    expect(uncheckedCommandsLine('Codex')).toBe('Codex runs commands unchecked');
+    expect(uncheckedCommandsLine('Grok CLI')).toBe('Grok CLI runs commands unchecked');
   });
 });

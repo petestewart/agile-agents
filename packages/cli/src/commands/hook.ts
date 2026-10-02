@@ -38,6 +38,15 @@
  * decision), so every warning goes to stderr, which Claude's hook contract
  * ignores on exit 0 — free visibility in the vendor's own hook log, zero
  * behavioural change to what the model sees.
+ *
+ * T506: `--vendor codex` is Codex's own `PreToolUse` hook (the daemon's
+ * `.codex/hooks.json`, design/spike-findings.md §C5). The payload goes to
+ * the same `hook.pre_tool_use` marked `agile_vendor: 'codex'` (the daemon
+ * reads Codex's input), and the reply is rendered in Codex's contract: an
+ * allow is exit 0 with nothing on stdout; a deny is exit 2 with the reason
+ * on stderr (the model sees "Command blocked by PreToolUse hook: <reason>").
+ * Every failure is exit 2 too: Codex runs a call whose hook failed with any
+ * other code.
  */
 
 import { type ParsedArgs, hasFlag, optionalString, readStdin } from '../args';
@@ -75,10 +84,35 @@ function failClosedDenyJson(event: string, reason: string): unknown {
   };
 }
 
+/** T506: the vendors whose hook contract this CLI speaks besides Claude's (the default). */
+export const HOOK_VENDORS = ['claude', 'codex'] as const;
+export type HookVendor = (typeof HOOK_VENDORS)[number];
+
+/** Codex's block exit code: any other non-zero exit lets the call run. */
+export const CODEX_BLOCK_EXIT = 2;
+
+/** The reason of a Claude-shaped `hook.pre_tool_use` reply that does not allow the call, else undefined. */
+export function denyReasonOf(reply: unknown): string | undefined {
+  const out =
+    typeof reply === 'object' && reply !== null
+      ? (reply as { hookSpecificOutput?: unknown }).hookSpecificOutput
+      : undefined;
+  const decision =
+    typeof out === 'object' && out !== null
+      ? (out as { permissionDecision?: unknown; permissionDecisionReason?: unknown })
+      : undefined;
+  if (decision?.permissionDecision === 'allow') return undefined;
+  // Anything but an explicit allow blocks: a reply this file can't read is not a yes.
+  const reason = decision?.permissionDecisionReason;
+  return typeof reason === 'string' && reason.length > 0 ? reason : 'AGILE-GATE: blocked';
+}
+
 export interface RunHookOptions {
   socketPath: string;
   event: string;
   failClosed: boolean;
+  /** T506: whose hook contract to speak; default Claude's. */
+  vendor?: HookVendor;
   /** Milliseconds to wait for the daemon before failing (open or closed per `failClosed`). Default 2000. */
   timeoutMs?: number;
   stdin?: NodeJS.ReadableStream;
@@ -87,6 +121,7 @@ export interface RunHookOptions {
 export async function runHook(options: RunHookOptions): Promise<number> {
   const { socketPath, event, failClosed } = options;
   const timeoutMs = options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
+  const codex = options.vendor === 'codex' && event === 'pre-tool-use';
   const raw = await readStdin(options.stdin);
 
   let payload: unknown;
@@ -96,7 +131,14 @@ export async function runHook(options: RunHookOptions): Promise<number> {
     console.error(
       `agile hook ${event}: invalid JSON on stdin: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return 1;
+    return codex ? CODEX_BLOCK_EXIT : 1;
+  }
+  if (codex) {
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+      console.error('AGILE-GATE: the hook input is not a JSON object');
+      return CODEX_BLOCK_EXIT;
+    }
+    (payload as Record<string, unknown>).agile_vendor = 'codex';
   }
 
   // `AGILE_AGENT` reaches this CLI process from the vendor session's own
@@ -121,6 +163,12 @@ export async function runHook(options: RunHookOptions): Promise<number> {
 
   try {
     const result = await callRpc<unknown>(socketPath, method, payload, { timeoutMs });
+    if (codex) {
+      const reason = denyReasonOf(result);
+      if (reason === undefined) return 0;
+      process.stderr.write(reason);
+      return CODEX_BLOCK_EXIT;
+    }
     printJson(result);
     return 0;
   } catch (err) {
@@ -128,6 +176,12 @@ export async function runHook(options: RunHookOptions): Promise<number> {
     const detail = `${isStub ? 'hook.* not implemented yet' : 'RPC failed'}: ${
       err instanceof Error ? err.message : String(err)
     }`;
+    if (codex) {
+      console.error(`agile hook ${event}: ${detail}`);
+      if (!failClosed) return 0;
+      process.stderr.write('AGILE-GATE: agile daemon unreachable');
+      return CODEX_BLOCK_EXIT;
+    }
     if (!failClosed) {
       // Fail-open (--fail-open): a stub reply or an unreachable daemon both
       // mean "the daemon has no opinion yet" from the hook's point of view.
@@ -150,6 +204,7 @@ export function parseHookArgs(args: ParsedArgs): {
   event: string;
   failClosed: boolean;
   timeoutMs?: number;
+  vendor?: HookVendor;
 } {
   const event = args.positionals[0];
   if (!event) throw new Error('usage: agile hook <event> (e.g. pre-tool-use)');
@@ -164,5 +219,16 @@ export function parseHookArgs(args: ParsedArgs): {
   // permissive default; --fail-closed is accepted (and true) for
   // explicitness/back-compat but no longer needed to opt in.
   const failClosed = !hasFlag(args.options, 'fail-open');
-  return { event, failClosed, timeoutMs };
+  const vendorRaw = optionalString(args.options, 'vendor');
+  if (vendorRaw !== undefined && !(HOOK_VENDORS as readonly string[]).includes(vendorRaw)) {
+    throw new Error(
+      `--vendor must be one of ${HOOK_VENDORS.join(', ')}, got ${JSON.stringify(vendorRaw)}`,
+    );
+  }
+  return {
+    event,
+    failClosed,
+    timeoutMs,
+    ...(vendorRaw !== undefined ? { vendor: vendorRaw as HookVendor } : {}),
+  };
 }

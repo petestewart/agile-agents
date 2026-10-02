@@ -85,7 +85,7 @@ describe('ACP provider registry', () => {
     expect(grok.requiresSandbox).toBe(true);
   });
 
-  it('describes codex on codex-acp, no auth round trip needed, no client fs use, defaultModeId "agent" (§C2), requiresSandbox (§C3: never asks)', () => {
+  it('describes codex on codex-acp, no auth round trip needed, no client fs use, defaultModeId "agent" (§C2), gated by its own hook, not requiresSandbox (T506, §C5)', () => {
     const codex = ACP_PROVIDERS.codex;
     expect(codex.command).toBe('npx');
     expect(codex.args).toEqual(['-y', '@agentclientprotocol/codex-acp@1.10.0']);
@@ -95,7 +95,7 @@ describe('ACP provider registry', () => {
     // never calls it — matches every other provider's entry.
     expect(codex.clientCapabilities.fs).toEqual({ readTextFile: true, writeTextFile: true });
     expect(codex.defaultModeId).toBe('agent');
-    expect(codex.requiresSandbox).toBe(true);
+    expect(codex.requiresSandbox).toBeFalsy();
   });
 
   it('describes pi over pi-acp through npx, pinned, needing `pi` on PATH, no auth round trip, loadSession verified (T501)', () => {

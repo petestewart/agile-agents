@@ -14139,14 +14139,17 @@ describe('permissions: the Ask card and Settings (Playwright e2e, T457)', () => 
   );
 });
 
-// ---- T505: Codex, Grok and Antigravity run commands unchecked ----------------
+// ---- T505: Grok and Antigravity run commands unchecked (T506: Codex is gated) --
 
 describe('Unchecked commands warning (Playwright e2e, T505)', () => {
+  // The cockpit names the vendor by its short label; Settings by the provider's.
   const WARNING =
-    'Codex runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.';
+    'Grok runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.';
+  const ROW_WARNING =
+    'Grok CLI runs shell commands without asking, and nothing checks them yet. Use it on repos you trust.';
 
   browserTest(
-    'a Codex node shows the mark beside its model chip with the sentence as its tooltip, in Details and on its thread; a Claude node does not; the picker marks Codex',
+    'a Grok node shows the mark beside its model chip with the sentence as its tooltip, in Details and on its thread; a Claude node does not; the picker marks Grok, not Codex (T506)',
     async () => {
       const hang: FakeAgentScript = {
         steps: [{ type: 'agent_text', text: 'On it.' }, { type: 'hang' }],
@@ -14155,15 +14158,15 @@ describe('Unchecked commands warning (Playwright e2e, T505)', () => {
       await cockpit.store.setHomeModelPolicy({ mode: 'default', presets: [] });
       let page: Page | undefined;
       try {
-        const codexNode = await cockpit.streams.create('human', { title: 'Codex node', goal: 'g' });
+        const grokNode = await cockpit.streams.create('human', { title: 'Grok node', goal: 'g' });
         const claudeNode = await cockpit.streams.create('human', {
           title: 'Claude node',
           goal: 'g',
         });
-        // The fake agent stands in for Codex; the session records the vendor.
-        await cockpit.attach.attach(codexNode.id, { vendor: 'codex', model: 'gpt-5.5' });
+        // The fake agent stands in for Grok; the session records the vendor.
+        await cockpit.attach.attach(grokNode.id, { vendor: 'grok' });
         await cockpit.attach.attach(claudeNode.id);
-        expect(cockpit.streams.get(codexNode.id).sessions[0]?.vendor).toBe('codex');
+        expect(cockpit.streams.get(grokNode.id).sessions[0]?.vendor).toBe('grok');
         expect(cockpit.streams.get(claudeNode.id).sessions[0]?.vendor).toBe('claude');
 
         const p = await openPage();
@@ -14175,10 +14178,10 @@ describe('Unchecked commands warning (Playwright e2e, T505)', () => {
           await p.locator('[data-testid="sessions"]').waitFor();
         };
 
-        // The Codex node: an amber mark beside the chip, the sentence its tooltip and its name.
-        await p.goto(`${cockpit.base}/?node=${codexNode.id}`);
-        await p.locator(`[data-testid="stream-page"][data-stream="${codexNode.id}"]`).waitFor();
-        await waitForContains(p, '[data-testid="composer-model"]', 'Codex');
+        // The Grok node: an amber mark beside the chip, the sentence its tooltip and its name.
+        await p.goto(`${cockpit.base}/?node=${grokNode.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${grokNode.id}"]`).waitFor();
+        await waitForContains(p, '[data-testid="composer-model"]', 'Grok');
         const mark = p.locator('[data-testid="composer-unchecked"]');
         await mark.waitFor();
         expect(await mark.getAttribute('title')).toBe(WARNING);
@@ -14188,7 +14191,7 @@ describe('Unchecked commands warning (Playwright e2e, T505)', () => {
         await waitForText(p, '[data-testid="agent-unchecked"]', WARNING);
         // Once on its thread, amber.
         const line = p.locator('[data-testid="thread-entry"]', {
-          hasText: 'Codex runs commands unchecked',
+          hasText: 'Grok CLI runs commands unchecked',
         });
         await line.waitFor();
         expect(await line.count()).toBe(1);
@@ -14207,7 +14210,7 @@ describe('Unchecked commands warning (Playwright e2e, T505)', () => {
             .count(),
         ).toBe(0);
 
-        // The model picker, on a node that never started: Codex's entries carry the mark.
+        // The model picker, on a node that never started: Grok's entries carry the mark.
         const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
           name: 'shop',
         });
@@ -14222,19 +14225,23 @@ describe('Unchecked commands warning (Playwright e2e, T505)', () => {
         expect(await p.locator('[data-testid="composer-unchecked"]').count()).toBe(0);
         await p.locator('[data-testid="composer-model"]').click();
         const popover = p.locator('[data-testid="model-popover"]');
-        const codex = popover.locator('[data-testid="model-option"][data-vendor="codex"]').first();
-        await codex.waitFor();
-        const codexMark = codex.locator('[data-testid="model-option-unchecked"]');
-        expect(await codexMark.getAttribute('title')).toBe(WARNING);
-        expect(await codexMark.getAttribute('aria-label')).toBe(WARNING);
+        const grok = popover.locator('[data-testid="model-option"][data-vendor="grok"]').first();
+        await grok.waitFor();
+        const grokMark = grok.locator('[data-testid="model-option-unchecked"]');
+        expect(await grokMark.getAttribute('title')).toBe(WARNING);
+        expect(await grokMark.getAttribute('aria-label')).toBe(WARNING);
         const claude = popover.locator('[data-testid="model-option"][data-vendor="claude"]');
         expect(await claude.count()).toBeGreaterThan(0);
         expect(await claude.locator('[data-testid="model-option-unchecked"]').count()).toBe(0);
-        // Picking Codex puts the mark beside the chip.
-        await codex.click();
+        // T506: Codex is gated by its own hook: no mark.
+        const codex = popover.locator('[data-testid="model-option"][data-vendor="codex"]');
+        expect(await codex.count()).toBeGreaterThan(0);
+        expect(await codex.locator('[data-testid="model-option-unchecked"]').count()).toBe(0);
+        // Picking Grok puts the mark beside the chip.
+        await grok.click();
         await p.locator('[data-testid="composer-model"]').click();
         await popover.waitFor({ state: 'detached' });
-        await waitForContains(p, '[data-testid="composer-model"]', 'Codex');
+        await waitForContains(p, '[data-testid="composer-model"]', 'Grok');
         expect(await p.locator('[data-testid="composer-unchecked"]').getAttribute('title')).toBe(
           WARNING,
         );
@@ -14247,14 +14254,14 @@ describe('Unchecked commands warning (Playwright e2e, T505)', () => {
   );
 
   browserTest(
-    "Settings → Agents → Vendors warns on Codex's row, not on Claude's",
+    "Settings → Agents → Vendors warns on Grok's row, not on Claude's or (T506) Codex's",
     async () => {
       const cockpit = await startCockpit({
         vendorChecks: (store, home) =>
           new VendorCheckService({
             home,
             store,
-            vendors: ['claude', 'codex'],
+            vendors: ['claude', 'codex', 'grok'],
             missing: () => undefined,
           }),
       });
@@ -14262,13 +14269,17 @@ describe('Unchecked commands warning (Playwright e2e, T505)', () => {
       try {
         page = await openPage();
         await page.goto(`${cockpit.base}/?view=settings&section=agents`);
-        await page.locator('[data-testid="settings-vendors-row-codex"]').waitFor();
-        await waitForText(page, '[data-testid="settings-vendors-unchecked-codex"]', WARNING);
+        await page.locator('[data-testid="settings-vendors-row-grok"]').waitFor();
+        await waitForText(page, '[data-testid="settings-vendors-unchecked-grok"]', ROW_WARNING);
         expect(
           await page
-            .locator('[data-testid="settings-vendors-unchecked-codex"]')
+            .locator('[data-testid="settings-vendors-unchecked-grok"]')
             .getAttribute('data-tone'),
         ).toBe('amber');
+        await page.locator('[data-testid="settings-vendors-row-codex"]').waitFor();
+        expect(await page.locator('[data-testid="settings-vendors-unchecked-codex"]').count()).toBe(
+          0,
+        );
         expect(
           await page.locator('[data-testid="settings-vendors-unchecked-claude"]').count(),
         ).toBe(0);

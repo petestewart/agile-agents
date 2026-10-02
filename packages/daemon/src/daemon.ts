@@ -65,6 +65,7 @@ import {
 } from './harness';
 import {
   HookService,
+  HookSightings,
   buildHookRpcMethods,
   wireClassifierRouteStats,
   wireGateDecisionDelivery,
@@ -428,6 +429,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(planService ? { plans: planService } : {}),
         })
       : undefined;
+  // T506: the hook tells the runner which sessions it saw (Codex's fail-closed check).
+  const hookSightings = new HookSightings();
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
   const attachService: AttachService | undefined =
@@ -461,6 +464,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           },
           ...(modelCatalog ? { models: modelCatalog } : {}),
           ...(modelPolicy ? { routing: modelPolicy } : {}),
+          hookSightings,
           ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
         })
       : undefined;
@@ -480,6 +484,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(rulesService ? { knowledge: rulesService } : {}),
           ...(autonomyService ? { autonomy: autonomyService } : {}),
           ...(modelCatalog ? { models: modelCatalog } : {}),
+          hookSightings,
           ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
         })
       : undefined;
@@ -991,6 +996,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             new HookService(store, bus, {
               gates: gateService,
               agileHome: config.home,
+              sightings: hookSightings,
               ...(rulesService ? { rules: rulesService } : {}),
               classifier: { ask: classifier, config: config.classifier },
               ...(overlapTracker

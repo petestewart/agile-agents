@@ -92,6 +92,7 @@ import {
   notItsKnowledge,
   wakeVerdict,
 } from '../events/wake';
+import { CODEX_UNGATED_REASON, type HookSightings } from '../hook/codex';
 import { type RouteBandGates, acpReadRouter } from '../hook/route-band';
 import { settingsFileName } from '../hook/settings';
 import type { RuleStatsOutcome } from '../knowledge/service';
@@ -347,6 +348,12 @@ export interface AttachServiceOptions {
   routing?: ModelPolicyService;
   /** T483: the classifier the default policy's chooser asks (absent: "no classifier key"). */
   classifier?: Classifier;
+  /** T506: Codex's home, whose trusted projects a Codex start needs (default `$CODEX_HOME` or `~/.codex`). */
+  codexHome?: string;
+  /** T506: the hook's per-session call counts, for the Codex fail-closed check. */
+  hookSightings?: Pick<HookSightings, 'count' | 'forget'>;
+  /** T506 test seam: the fail-closed check's grace, in ms. */
+  codexGateGraceMs?: number;
 }
 
 /** What delivery needs of the Director (`director/service.ts`). */
@@ -1348,6 +1355,13 @@ export class AttachService {
         ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
         ...(this.options.socketPath !== undefined ? { socketPath: this.options.socketPath } : {}),
         ...(this.options.now !== undefined ? { now: this.options.now } : {}),
+        ...(this.options.codexHome !== undefined ? { codexHome: this.options.codexHome } : {}),
+        ...(this.options.hookSightings !== undefined
+          ? { hookSightings: this.options.hookSightings }
+          : {}),
+        ...(this.options.codexGateGraceMs !== undefined
+          ? { codexGateGraceMs: this.options.codexGateGraceMs }
+          : {}),
         onTurnEnd: (info) => {
           void this.onTurnEnd(stream.id, sessionId, role, info.queued);
         },
@@ -2257,6 +2271,21 @@ export class AttachService {
         await this.options.streams.appendThread('daemon', streamId, {
           kind: 'event',
           body: `${role} stopped: ${stopReason}`.slice(0, 800),
+          ref: sessionId,
+        });
+        return;
+      }
+      // T506: stopped because Codex's hook never saw its calls: never recovered by a
+      // restart (it would run ungated again); the node waits on the human.
+      if (reason === CODEX_UNGATED_REASON) {
+        if (isAgentRole(role)) {
+          await this.options.streams.update('daemon', streamId, {
+            agent: { status: 'blocked', progress: `${CRASHED_PREFIX}${reason}`.slice(0, 800) },
+          });
+        }
+        await this.options.streams.appendThread('daemon', streamId, {
+          kind: 'event',
+          body: `${role} stopped: ${reason}`.slice(0, 800),
           ref: sessionId,
         });
         return;
