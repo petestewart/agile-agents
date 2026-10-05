@@ -55,11 +55,22 @@
  * (realpath'd where it can be) is not inside `<root>/.worktrees/` is
  * allowed at once: exit 0, nothing printed, no daemon call. Inside, it is
  * gated as above, fail-closed. A `cwd` that is missing, not a string or
- * not absolute counts as inside: it is gated.
+ * not absolute counts as inside: it is gated. (T512 keeps this form for
+ * old scripts.)
+ *
+ * T512: the gate is user-level (`$CODEX_HOME/hooks.json`, §C5 round 5), so
+ * it runs for every Codex the operator starts. Its script passes `--home
+ * <home>` and one `--repo <root>` per registered repo (repeatable; read as
+ * given, never split on commas: a path may hold one). With `--home`, a
+ * call is gated when its `cwd` is strictly inside any `<root>/.worktrees/`
+ * or at or under the home (the Director and nodes with no repo run in
+ * `<home>/sessions/<id>`), or when it is missing or relative; any other
+ * call is allowed with no daemon contact, so the operator's own Codex
+ * anywhere works with the daemon down. The decision is the arguments' and
+ * the `cwd`'s only (`codexCallGated`).
  */
 
-import { realpathSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { codexCallGated } from '@agile-agents/daemon';
 import { type ParsedArgs, hasFlag, optionalString, readStdin } from '../args';
 import { RpcCallError, callRpc } from '../client';
 import { printJson } from '../format';
@@ -118,40 +129,15 @@ export function denyReasonOf(reply: unknown): string | undefined {
   return typeof reason === 'string' && reason.length > 0 ? reason : 'AGILE-GATE: blocked';
 }
 
-/** A path as given (resolved) and its real path: its nearest existing ancestor's, with the rest appended. */
-function pathForms(path: string): string[] {
-  const resolved = resolve(path);
-  const rest: string[] = [];
-  let current = resolved;
-  for (;;) {
-    try {
-      return [...new Set([resolved, join(realpathSync(current), ...rest)])];
-    } catch {
-      const parent = dirname(current);
-      if (parent === current) return [resolved];
-      rest.unshift(basename(current));
-      current = parent;
-    }
-  }
-}
-
-/** `path` is `base` or under it, comparing strings only. */
-function atOrUnder(path: string, base: string): boolean {
-  if (path === base) return true;
-  const rel = relative(base, path);
-  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
-}
-
 /**
  * T511: whether a Codex hook call with this input `cwd` comes from a node's
- * worktree under `<repo>/.worktrees/`, and so must be gated. Any form of
- * the `cwd` (as given, realpath) inside any form of the folder counts; a
- * `cwd` that can't be read as an absolute path counts too (fail closed).
+ * worktree under `<repo>/.worktrees/`, and so must be gated (the single
+ * `--repo` form). Any form of the `cwd` (as given, realpath) inside any
+ * form of the folder counts; a `cwd` that can't be read as an absolute path
+ * counts too (fail closed).
  */
 export function codexCallInWorktrees(cwd: unknown, repo: string): boolean {
-  if (typeof cwd !== 'string' || cwd.length === 0 || !isAbsolute(cwd)) return true;
-  const bases = pathForms(join(resolve(repo), '.worktrees'));
-  return pathForms(cwd).some((form) => bases.some((base) => atOrUnder(form, base)));
+  return codexCallGated(cwd, { repos: [repo] });
 }
 
 export interface RunHookOptions {
@@ -160,8 +146,13 @@ export interface RunHookOptions {
   failClosed: boolean;
   /** T506: whose hook contract to speak; default Claude's. */
   vendor?: HookVendor;
-  /** T511 (Codex only): the repo root the hook sits at; only calls from its `.worktrees/` are gated. */
-  repo?: string;
+  /**
+   * T511/T512 (Codex only): the registered repo roots; calls from their
+   * `.worktrees/` are gated. With neither this nor `home`, every call is.
+   */
+  repos?: readonly string[];
+  /** T512 (Codex only): the agile home; calls from under it are gated too, and `.worktrees/` strictly. */
+  home?: string;
   /** Milliseconds to wait for the daemon before failing (open or closed per `failClosed`). Default 2000. */
   timeoutMs?: number;
   stdin?: NodeJS.ReadableStream;
@@ -187,10 +178,15 @@ export async function runHook(options: RunHookOptions): Promise<number> {
       console.error('AGILE-GATE: the hook input is not a JSON object');
       return CODEX_BLOCK_EXIT;
     }
-    // T511: the operator's own Codex in the repo is not the daemon's to gate.
+    // T511/T512: the operator's own Codex is not the daemon's to gate. Decided
+    // locally, before any daemon contact.
+    const scoped = (options.repos?.length ?? 0) > 0 || options.home !== undefined;
     if (
-      options.repo !== undefined &&
-      !codexCallInWorktrees((payload as Record<string, unknown>).cwd, options.repo)
+      scoped &&
+      !codexCallGated((payload as Record<string, unknown>).cwd, {
+        repos: options.repos ?? [],
+        ...(options.home !== undefined ? { home: options.home } : {}),
+      })
     ) {
       return 0;
     }
@@ -261,7 +257,8 @@ export function parseHookArgs(args: ParsedArgs): {
   failClosed: boolean;
   timeoutMs?: number;
   vendor?: HookVendor;
-  repo?: string;
+  repos?: string[];
+  home?: string;
 } {
   const event = args.positionals[0];
   if (!event) throw new Error('usage: agile hook <event> (e.g. pre-tool-use)');
@@ -282,16 +279,26 @@ export function parseHookArgs(args: ParsedArgs): {
       `--vendor must be one of ${HOOK_VENDORS.join(', ')}, got ${JSON.stringify(vendorRaw)}`,
     );
   }
-  // T511: `--repo` scopes Codex's repo-root hook to the daemon's worktrees.
-  const repo = optionalString(args.options, 'repo');
-  if (repo !== undefined && (vendorRaw !== 'codex' || event !== 'pre-tool-use' || repo === '')) {
+  const codexPreToolUse = vendorRaw === 'codex' && event === 'pre-tool-use';
+  // T511/T512: `--repo` (repeatable, each value whole: a path may hold a
+  // comma) scopes Codex's gate to the daemon's worktrees.
+  const repoGiven = hasFlag(args.options, 'repo');
+  const repos = args.repeated?.repo ?? [];
+  if (repoGiven && (!codexPreToolUse || args.options.repo === true || repos.some((r) => r === ''))) {
     throw new Error('--repo <root> goes with pre-tool-use --vendor codex');
+  }
+  // T512: `--home` gates calls from under the agile home too.
+  const homeGiven = hasFlag(args.options, 'home');
+  const home = optionalString(args.options, 'home');
+  if (homeGiven && (!codexPreToolUse || home === undefined || home === '')) {
+    throw new Error('--home <dir> goes with pre-tool-use --vendor codex');
   }
   return {
     event,
     failClosed,
     timeoutMs,
     ...(vendorRaw !== undefined ? { vendor: vendorRaw as HookVendor } : {}),
-    ...(repo !== undefined ? { repo } : {}),
+    ...(repos.length > 0 ? { repos } : {}),
+    ...(home !== undefined ? { home } : {}),
   };
 }

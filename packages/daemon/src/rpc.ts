@@ -7,7 +7,12 @@
 
 import { existsSync, unlinkSync } from 'node:fs';
 import { type Server, type Socket, createServer } from 'node:net';
-import type { ClassifierKeyStatus, HarnessStatus, TrackerStatus } from '@agile-agents/shared';
+import type {
+  ClassifierKeyStatus,
+  CodexGateStatus,
+  HarnessStatus,
+  TrackerStatus,
+} from '@agile-agents/shared';
 
 export interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -60,6 +65,8 @@ export interface DaemonStatus {
   trackers?: TrackerStatus;
   /** T481 (D50): each vendor CLI's last check (version, newest, method). */
   harnesses?: HarnessStatus[];
+  /** T512: Codex's user-level gate, installed and trusted (never a hash). */
+  codex_gate?: CodexGateStatus;
 }
 
 export interface RpcServerOptions {
@@ -77,6 +84,8 @@ export interface RpcServerOptions {
   trackerStatus?: () => TrackerStatus;
   /** Reported under `harnesses` by `daemon.status` (T481). */
   harnessStatus?: () => HarnessStatus[];
+  /** Reported under `codex_gate` by `daemon.status` (T512). */
+  codexGateStatus?: () => CodexGateStatus;
 }
 
 function namespaceOf(method: string): string | undefined {
@@ -98,6 +107,7 @@ export function buildMethods(options: RpcServerOptions): Record<string, RpcMetho
         : {}),
       ...(options.trackerStatus ? { trackers: options.trackerStatus() } : {}),
       ...(options.harnessStatus ? { harnesses: options.harnessStatus() } : {}),
+      ...(options.codexGateStatus ? { codex_gate: options.codexGateStatus() } : {}),
     }),
     ...options.extraMethods,
   };

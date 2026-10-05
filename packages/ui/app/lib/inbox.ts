@@ -8,6 +8,8 @@
  */
 
 import {
+  CODEX_GATE_MISSING_LEAD,
+  CODEX_GATE_UNTRUSTED_LEAD,
   CODEX_UNGATED_REASON,
   CODEX_UNTRUSTED_LEAD,
   type InboxItem,
@@ -949,10 +951,18 @@ export function isAgentFailure(text: string): boolean {
  * notes (`isAgentFailure`): the two it writes for any agent (a start that
  * failed, a session that stopped with an error), with T506's Codex gate
  * stops in their own words. `restart` names the card's button: "Try again"
- * for a start that failed, "Restart agent" for one that ran.
+ * for a start that failed, "Restart agent" for one that ran. T512: a Codex
+ * start refused because its user-level gate isn't installed, or isn't
+ * trusted in Codex's `/hooks`, has its own card.
  */
 export interface StopCard {
-  kind: 'codex_ungated' | 'codex_untrusted' | 'failed_start' | 'crashed';
+  kind:
+    | 'codex_ungated'
+    | 'codex_untrusted'
+    | 'codex_gate_missing'
+    | 'codex_gate_untrusted'
+    | 'failed_start'
+    | 'crashed';
   title: string;
   /** What happened and why, in plain words. */
   text: string;
@@ -987,6 +997,24 @@ export function stopCardOf(text: string): StopCard | undefined {
         restart: 'Try again',
       };
     }
+    if (reason.startsWith(CODEX_GATE_MISSING_LEAD)) {
+      return {
+        kind: 'codex_gate_missing',
+        title: 'Codex can’t start: its gate isn’t installed',
+        text: 'Codex checks its commands with the agile gate, three hooks in your Codex settings (`~/.codex/hooks.json`). They aren’t there, so the daemon didn’t start Codex: it would run unchecked.',
+        fix: 'Run `agile codex install-gate`, then open `codex`, run `/hooks` and trust the three `agile gate` hooks. Then try again.',
+        restart: 'Try again',
+      };
+    }
+    if (reason.startsWith(CODEX_GATE_UNTRUSTED_LEAD)) {
+      return {
+        kind: 'codex_gate_untrusted',
+        title: 'Codex can’t start: its gate isn’t trusted yet',
+        text: 'Codex runs a hook only once you have trusted it, and the agile gate’s hooks aren’t all trusted yet, so the daemon didn’t start Codex: it would run unchecked.',
+        fix: 'Open `codex`, run `/hooks`, and trust the three `agile gate` hooks (Hooks need review → trust each); `agile codex status` shows which are trusted. Then try again.',
+        restart: 'Try again',
+      };
+    }
     return {
       kind: 'failed_start',
       title: 'The agent couldn’t start',
@@ -1002,7 +1030,7 @@ export function stopCardOf(text: string): StopCard | undefined {
         kind: 'codex_ungated',
         title: 'Codex’s gate didn’t run',
         text: 'Codex ran a command its hook never checked, so the daemon stopped it. Nothing it ran after that was allowed through.',
-        fix: 'The worktree isn’t a trusted Codex project, or Codex didn’t load `.codex/hooks.json`. Trust the repository in Codex (or turn its hooks on), then restart the agent.',
+        fix: 'Codex skipped the agile gate: a hook it hasn’t trusted (a changed one needs trusting again), or a project it doesn’t trust. Run `agile codex status`; in Codex run `/hooks` and trust the three `agile gate` hooks, then restart the agent.',
         restart: 'Restart agent',
       };
     }

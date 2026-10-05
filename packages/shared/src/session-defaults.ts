@@ -191,6 +191,69 @@ export const CODEX_UNGATED_REASON =
 export const CODEX_UNTRUSTED_LEAD = "Codex's gate isn't trusted here: trust ";
 
 /**
+ * T512: how the refusal of a Codex start begins when the user-level gate
+ * (`$CODEX_HOME/hooks.json`, the three `agile gate` entries) isn't there.
+ * The cockpit's card reads it.
+ */
+export const CODEX_GATE_MISSING_LEAD =
+  "Codex's gate isn't installed: run `agile codex install-gate`, then trust it in Codex (/hooks)";
+
+/**
+ * T512: how the refusal of a Codex start begins when the gate's entries are
+ * there but Codex hasn't trusted each of them (`/hooks`): Codex skips an
+ * untrusted hook silently.
+ */
+export const CODEX_GATE_UNTRUSTED_LEAD =
+  "Codex's gate isn't trusted yet: in Codex run /hooks and trust the three agile gate hooks";
+
+/** T512: one of the gate's `hooks.json` entries, as `agile codex status` reports it (never the hash). */
+export interface CodexGateEntryStatus {
+  /** Codex's matcher (`Bash`, `apply_patch|Edit|Write`, `mcp__.*`). */
+  matcher: string;
+  /** Its index in the file's `PreToolUse` list; absent when the entry is missing. */
+  index?: number;
+  /** Codex's `config.toml` holds a `trusted_hash` for it. */
+  trusted: boolean;
+}
+
+/** T512: whether Codex's user-level gate is installed and trusted (read only). */
+export interface CodexGateStatus {
+  /** `$CODEX_HOME/hooks.json`. */
+  hooks_path: string;
+  /** The script the entries run (`<home>/agile-pre-tool-use.sh`). */
+  script_path: string;
+  /** All three entries are in the file. */
+  installed: boolean;
+  /** All three are trusted in `config.toml`. */
+  trusted: boolean;
+  entries: CodexGateEntryStatus[];
+  /** Why the file couldn't be read (invalid JSON), when that is the case. */
+  problem?: string;
+}
+
+/** T512: one repo's legacy (T506/T511) `.codex/` files, after the sweep. */
+export interface CodexLegacySweep {
+  dir: string;
+  /** Files (and the `.codex` dir) removed or rewritten. */
+  removed: string[];
+  /** Why something was left as it is (not valid JSON, tracked). */
+  left?: string;
+}
+
+/** T512: what `agile codex install-gate` did. */
+export interface CodexGateInstallResult {
+  hooks_path: string;
+  /** `added`: written fresh or merged in; `unchanged`: all three were already there. */
+  hooks: 'added' | 'unchanged';
+  script_path: string;
+  script: 'written' | 'unchanged';
+  /** Every registered repo the legacy sweep looked at. */
+  swept: CodexLegacySweep[];
+  /** The gate's state after the install. */
+  status: CodexGateStatus;
+}
+
+/**
  * T505: vendors whose ACP bridge runs a shell command without asking (no
  * ACP permission request, and no pre-tool hook the daemon installs yet;
  * design/spike-findings.md §C3). T506: Codex left the list: the daemon

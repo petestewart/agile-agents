@@ -15,6 +15,7 @@ import { resolveHomePaths } from '@agile-agents/daemon';
 import { type ParsedArgs, parseArgs } from './args';
 import { runAnswer } from './commands/answer';
 import { runAttach, runDetach } from './commands/attach';
+import { runCodexInstallGate, runCodexStatus } from './commands/codex';
 import {
   agileHomeProblem,
   daemonStatusReport,
@@ -166,7 +167,10 @@ function usage(): string {
     '  question raise --stream <id> --text <text> [--by <agent>]',
     '  question answer <id> --answer <text> [--by <agent>]',
     '  breaker clear <signal>',
-    '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-open] [--timeout <ms>, default 2000] [--vendor codex [--repo <root>]]',
+    '  codex install-gate         add the agile gate to Codex ($CODEX_HOME/hooks.json) and write its script; then trust it in Codex (/hooks)',
+    '  codex status               whether Codex\u2019s gate is installed and trusted, per hook (never a hash)',
+    '  hook <event>               stdin JSON in, JSON out (e.g. hook pre-tool-use) [--fail-open] [--timeout <ms>, default 2000]',
+    '                             [--vendor codex [--home <dir>] [--repo <root>]…]',
     "  mcp --session <id> [--timeout <ms>, default 60000]   stdio MCP bridge to the daemon's agent.* verbs",
     '',
     'flags:',
@@ -327,6 +331,14 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
         return 1;
       }
 
+      // T512: Codex's user-level gate.
+      case 'codex': {
+        if (sub === 'install-gate') return await runCodexInstallGate(socketPath, json);
+        if (sub === 'status') return await runCodexStatus(socketPath, json);
+        console.error(usage());
+        return 1;
+      }
+
       // T489 (D58): the vendor self-check.
       case 'vendors': {
         if (sub === undefined) return await runVendors(socketPath, json);
@@ -429,14 +441,15 @@ export async function runCli(argv: string[], cwd: string = process.cwd()): Promi
 
       case 'hook': {
         const args: ParsedArgs = parseArgs(rest.slice(1));
-        const { event, failClosed, timeoutMs, vendor, repo } = parseHookArgs(args);
+        const { event, failClosed, timeoutMs, vendor, repos, home } = parseHookArgs(args);
         return await runHook({
           socketPath,
           event,
           failClosed,
           timeoutMs,
           ...(vendor !== undefined ? { vendor } : {}),
-          ...(repo !== undefined ? { repo } : {}),
+          ...(repos !== undefined ? { repos } : {}),
+          ...(home !== undefined ? { home } : {}),
         });
       }
 

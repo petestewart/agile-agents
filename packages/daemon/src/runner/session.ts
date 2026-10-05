@@ -16,7 +16,7 @@
  */
 
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   ACP_PROVIDERS,
   ACP_TURN_ENDED_METHOD,
@@ -46,12 +46,14 @@ import {
   CODEX_UNGATED_REASON,
   CodexGateWatch,
   type HookSightings,
+  codexCallGated,
+  codexGateRefusal,
   codexHomeDir,
-  codexHookPlacement,
   codexTrustFor,
   codexUntrustedMessage,
+  sweepLegacyCodexHooks,
   writeClaudeSettings,
-  writeCodexHooks,
+  writeCodexGateScript,
 } from '../hook';
 import { permissionRoleFor } from '../hook/decide';
 import {
@@ -137,9 +139,15 @@ export interface AgentSessionOptions {
   worktreePath: string;
   /**
    * T511: the repo `worktreePath` is a worktree of (its `repos.yaml` path),
-   * when the session runs in one. Codex's hook goes at its root.
+   * when the session runs in one. T512: Codex's project trust is checked
+   * there, and its legacy `.codex/` files are swept from it.
    */
   repoRoot?: string;
+  /**
+   * T512: the agile home, where Codex's gate script lives. Default: the
+   * home `sessionDir` (`<home>/sessions/<id>`) is in.
+   */
+  agileHome?: string;
   /** The rendered brief, sent as the first `prompt()`. */
   brief: string;
   /** T336: the brief's turn started (the session accepted it). */
@@ -732,21 +740,46 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     timeoutSeconds: opts.hookTimeoutSeconds,
   });
 
-  // T506: Codex's own PreToolUse hook, the same gate (spike-findings §C5). It
-  // loads only in a project Codex trusts, which the daemon reads and never
-  // writes (option b): an untrusted project is refused, never run ungated.
-  // T511: for a worktree Codex reads the main repo's hooks (§C5 round 4), so
-  // the hook and the trust check are the repo root's.
+  // T506: Codex's own PreToolUse hook, the same gate (spike-findings §C5).
+  // T512 (§C5 round 5): the gate is three user-level entries in
+  // `$CODEX_HOME/hooks.json`, installed by the operator (`agile codex
+  // install-gate`) and trusted per hook in Codex's `/hooks`; the daemon reads
+  // `hooks.json` and `config.toml`, never writes them, and refuses a start
+  // the gate wouldn't cover. The project trust check (T506) stays: whether
+  // a user hook runs in an untrusted project is not measured.
   if (provider.id === 'codex') {
     const codexHome = opts.codexHome ?? codexHomeDir({ ...process.env, ...provider.envOverrides });
-    const placement = codexHookPlacement(worktreePath, opts.repoRoot);
-    const trust = codexTrustFor(placement.root, codexHome);
-    if (!trust.trusted) throw new Error(codexUntrustedMessage(placement.root, trust.why));
-    writeCodexHooks(placement.root, {
+    const home = opts.agileHome ?? resolve(opts.sessionDir, '..', '..');
+    const trustRoot = opts.repoRoot ?? worktreePath;
+    const trust = codexTrustFor(trustRoot, codexHome);
+    if (!trust.trusted) throw new Error(codexUntrustedMessage(trustRoot, trust.why));
+    const refusal = codexGateRefusal(codexHome, home);
+    if (refusal !== undefined) throw new Error(refusal);
+    const repoRoots = [
+      ...Object.values(store.getRepos()).map((entry) => entry.path),
+      ...(opts.repoRoot !== undefined ? [opts.repoRoot] : []),
+    ];
+    // The CLI gates only calls from under a repo's `.worktrees/` or the home:
+    // a session anywhere else would run ungated, so it doesn't start.
+    if (!codexCallGated(worktreePath, { repos: repoRoots, home })) {
+      throw new Error(
+        `Codex's gate can't cover ${worktreePath}: it isn't a worktree under a registered repo's .worktrees/ or in the agile home (${home})`,
+      );
+    }
+    // Rewritten only when it changed (a new CLI path, socket or repo), so the
+    // entries Codex trusts keep naming the same file.
+    writeCodexGateScript({
       agileBin: cliInvocationToShell(cliBin),
       ...(opts.socketPath !== undefined ? { socketPath: opts.socketPath } : {}),
-      ...(placement.repoRoot !== undefined ? { repoRoot: placement.repoRoot } : {}),
+      home,
+      repoRoots,
     });
+    // T506/T511's `.codex/` files at the repo root: a stale script there
+    // would block the operator's own Codex at the root.
+    if (opts.repoRoot !== undefined) {
+      const swept = sweepLegacyCodexHooks(opts.repoRoot);
+      if (swept.left !== undefined) console.error(`codex legacy hooks: ${swept.left}`);
+    }
   }
 
   // Tier 0 (§4.3): wrap the vendor command in the host's sandbox backend.
