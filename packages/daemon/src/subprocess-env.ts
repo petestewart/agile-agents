@@ -7,7 +7,9 @@
  * `HOME`, `npm_config_cache` and the `XDG_*` dirs point under
  * `<repoRoot>/.agile-daemon-cache/<name>/`, one namespace per kind of
  * caller, all created eagerly. `PATH` and the rest of `process.env`
- * (including a preset `GIT_CONFIG_GLOBAL`) pass through unchanged.
+ * (including a preset `GIT_CONFIG_GLOBAL`) pass through unchanged, less
+ * the daemon's own secrets (T486b): a test run or a git hook runs code an
+ * agent wrote.
  *
  * `GIT_TERMINAL_PROMPT=0`: the daemon has no terminal, so a git that
  * wants a credential fails at once rather than hanging (T231).
@@ -16,11 +18,12 @@
  * login.
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { withoutDaemonSecrets } from './secret-env';
 
-/** The daemon's host-local scratch space under `repoRoot` (gitignored). */
+/** The daemon's host-local scratch space under `repoRoot`, ignored by its own `.gitignore` (`*`). */
 export const DAEMON_CACHE_DIR = '.agile-daemon-cache';
 
 /** The sandboxed env for a subprocess of kind `name`, creating its dirs. */
@@ -35,8 +38,17 @@ export function sandboxedSubprocessEnv(repoRoot: string, name: string): Record<s
   for (const dir of [home, npmCache, xdgCache, xdgConfig, xdgData, xdgState]) {
     mkdirSync(dir, { recursive: true });
   }
+  // T448 (audit r7 #24): git never lists it, and nothing of the operator's is edited.
+  const ignore = join(repoRoot, DAEMON_CACHE_DIR, '.gitignore');
+  if (!existsSync(ignore)) {
+    try {
+      writeFileSync(ignore, '# agiled scratch space: ignored by git\n*\n');
+    } catch {
+      // Read-only or gone: the cache still works; it just shows as untracked.
+    }
+  }
   return {
-    ...process.env,
+    ...withoutDaemonSecrets(),
     HOME: home,
     npm_config_cache: npmCache,
     XDG_CACHE_HOME: xdgCache,

@@ -1,0 +1,1173 @@
+/**
+ * T364: the pure half of Needs me and its decision cards
+ * (design/cockpit-ui.md §7 "Decision cards"). What a card is called, what
+ * its text says once the daemon's machine phrasing is taken apart, which
+ * choices a question offers, how the list groups (project, then node,
+ * oldest first), the kind filter, and the first-run steps. No DOM, so plain
+ * `bun test` covers it; `components/Inbox.tsx` only renders.
+ */
+
+import {
+  CODEX_GATE_MISSING_LEAD,
+  CODEX_GATE_UNTRUSTED_LEAD,
+  CODEX_UNGATED_REASON,
+  CODEX_UNTRUSTED_LEAD,
+  type InboxItem,
+  inboxContext,
+  repoOfProposalRef,
+} from '@agile-agents/shared';
+import type { CockpitFrame, CockpitProjectRow, CockpitStreamRow } from './feed-types';
+
+// ---------------------------------------------------------------- kinds
+
+/** The icon and title tone a card wears; each is a status token (design/cockpit-ui.md §4). */
+export type CardTone = 'amber' | 'blue' | 'green' | 'purple' | 'red' | 'gray' | 'accent';
+
+/** A gate item's context leads with its gate name (`inbox/service.ts`), which is how a `land` gate is told from a `classifier_review` one. */
+export function isLandGate(item: Pick<InboxItem, 'kind' | 'context'>): boolean {
+  return item.kind === 'gate' && item.context.startsWith('land:');
+}
+
+function capitalise(word: string): string {
+  return word.length === 0 ? word : `${word[0]?.toUpperCase()}${word.slice(1)}`;
+}
+
+/** The card's plain title: what it is, in words (design/cockpit-ui.md §2). */
+export function cardTitle(item: InboxItem): string {
+  switch (item.kind) {
+    case 'question':
+      // T502 (D62): you replied, and its agent's turn ended without settling it or asking again.
+      return item.unsettled_by !== undefined
+        ? `${item.unsettled_by === 'agent' ? 'The agent' : capitalise(item.unsettled_by)} didn’t settle this`
+        : 'Question';
+    case 'gate':
+      return isLandGate(item)
+        ? 'Approve this merge?'
+        : item.read_root !== undefined
+          ? 'Allow this read?'
+          : 'Allow this action?';
+    case 'rule_accept':
+      return `${capitalise(item.knowledge_kind ?? 'knowledge')} proposed`;
+    case 'rule_batch':
+      return 'Knowledge to review';
+    case 'plan_approve':
+      return 'Plan to approve';
+    case 'plan_waiting':
+      return 'Waiting for the plan';
+    case 'proposal':
+      return proposalOf(item).principal === 'director'
+        ? 'Director proposal'
+        : 'Coordinator proposal';
+    case 'done':
+      return 'Ready to merge';
+    case 'blocked':
+      // T508: a stop the daemon made says which.
+      return stopCardOfItem(item)?.title ?? 'Blocked';
+    case 'harness_update':
+      return item.harness?.failed === true ? 'Update failed' : 'Update available';
+    case 'model_stuck':
+      return 'Stuck on the strongest model';
+  }
+}
+
+export function cardTone(item: InboxItem): CardTone {
+  switch (item.kind) {
+    case 'question':
+      return 'amber';
+    case 'gate':
+      return isLandGate(item) ? 'green' : 'amber';
+    case 'rule_accept':
+    case 'rule_batch':
+      return 'purple';
+    case 'plan_approve':
+    case 'proposal':
+      return 'accent';
+    case 'plan_waiting':
+      return 'gray';
+    case 'done':
+      return 'green';
+    case 'blocked':
+      return 'red';
+    case 'harness_update':
+      return item.harness?.failed === true ? 'red' : 'blue';
+    case 'model_stuck':
+      return 'red';
+  }
+}
+
+/** T410: a change's size for a Merge card: "1 file", "3 files", with its lines added and removed. */
+export function diffStatParts(stat: { files: number; added: number; removed: number }): {
+  files: string;
+  added: string;
+  removed: string;
+  label: string;
+} {
+  const files = `${stat.files} ${stat.files === 1 ? 'file' : 'files'}`;
+  const added = `+${stat.added}`;
+  const removed = `\u2212${stat.removed}`;
+  const lines = (n: number, what: string) => `${n} ${n === 1 ? 'line' : 'lines'} ${what}`;
+  return {
+    files,
+    added,
+    removed,
+    label: `${files} changed, ${lines(stat.added, 'added')}, ${lines(stat.removed, 'removed')}`,
+  };
+}
+
+/** T412: what a finished work node's card is, by what the merge check and its waits say. */
+export type DoneCard = 'ready' | 'no_changes' | 'merged_outside' | 'waiting';
+
+export function doneCardOf(
+  row: Pick<CockpitStreamRow, 'nothing_to_merge' | 'merged_outside' | 'waits_on'> | undefined,
+): DoneCard {
+  if (row?.merged_outside === true) return 'merged_outside';
+  if (row?.nothing_to_merge === true) return 'no_changes';
+  if ((row?.waits_on ?? []).length > 0) return 'waiting';
+  return 'ready';
+}
+
+/** T412: the card's title for each kind of finished node. */
+export const DONE_CARD_TITLE: Record<DoneCard, string> = {
+  ready: 'Ready to merge',
+  no_changes: 'Finished, no changes',
+  merged_outside: 'Already merged',
+  waiting: 'Finished, waiting to merge',
+};
+
+/** T412: the words for a branch already in its target. */
+export const MERGED_OUTSIDE_TEXT =
+  'Its branch is already merged (outside the cockpit). Mark the node merged to finish it.';
+
+/** T412: "It merges after Fix broken links merges." — the nodes it waits on, by title. */
+export function waitingText(titles: readonly string[]): string {
+  const names =
+    titles.length <= 1
+      ? (titles[0] ?? 'another node')
+      : `${titles.slice(0, -1).join(', ')} and ${titles.at(-1)}`;
+  return `It merges after ${names} ${titles.length > 1 ? 'merge' : 'merges'}. Nothing to do here until then.`;
+}
+
+/** The whole text behind a card: `detail` when the daemon clipped `context`. */
+export function fullText(item: Pick<InboxItem, 'context' | 'detail'>): string {
+  return item.detail ?? item.context;
+}
+
+/**
+ * A card's main text, short (one line, ≤200 chars, as the daemon clips) and
+ * whole. `long` is set only when the short form lost something, which is
+ * when the card offers Show more.
+ */
+export function fold(text: string): { short: string; long?: string } {
+  const short = inboxContext(text);
+  return short === text.replace(/\s+/g, ' ').trim() ? { short: text } : { short, long: text };
+}
+
+// ---------------------------------------------------------------- question choices
+
+export const CHOICES_MIN = 2;
+export const CHOICES_MAX = 6;
+/** A parsed choice longer than this is a paragraph, not a button. */
+export const CHOICE_MAX_CHARS = 100;
+
+export interface ParsedChoices {
+  /** The question without its choices, which the buttons now show. */
+  stem: string;
+  choices: string[];
+}
+
+type LabelKind = 'upper' | 'lower' | 'digit';
+
+function labelOf(label: string): { kind: LabelKind; index: number } | undefined {
+  if (/^[A-F]$/.test(label)) return { kind: 'upper', index: label.charCodeAt(0) - 65 };
+  if (/^[a-f]$/.test(label)) return { kind: 'lower', index: label.charCodeAt(0) - 97 };
+  if (/^[1-6]$/.test(label)) return { kind: 'digit', index: Number(label) - 1 };
+  return undefined;
+}
+
+/** `A, B, C…` (or `a…`, `1…`) in order from the first, all one kind. */
+function isSequence(labels: readonly string[]): boolean {
+  const parsed = labels.map(labelOf);
+  const kind = parsed[0]?.kind;
+  return parsed.every((p, i) => p !== undefined && p.kind === kind && p.index === i);
+}
+
+/** Plain text for a button: no emphasis markers or code ticks, one line. */
+export function cleanChoice(text: string): string {
+  return text
+    .replace(/\*\*|__/g, '')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Drops the joining words and punctuation between inline choices: "floats, or" → "floats". */
+function stripJoiners(text: string): string {
+  let out = text.trim().replace(/^[-–—:]\s*/, '');
+  for (;;) {
+    const next = out.replace(/(?:[\s,;]+|\s+(?:or|and)\b)$/i, '').replace(/^(?:or|and)\s+/i, '');
+    if (next === out) return out;
+    out = next;
+  }
+}
+
+/** Words that introduce a list to pick from ("Pick one:", "Options:"). */
+const PICK_WORDS = /\b(which|pick|choose|prefer|select|options?|choices?|either)\b/i;
+/** Words that make a question one with alternatives ("Which…?", "…or…?", "What should…?"). */
+const ASK_WORDS = /\b(which|what|prefer|choose|pick|select|options?|choices?|either|or|rather)\b/i;
+
+/**
+ * A stem that asks for a pick: it ends in a question, or introduces the
+ * list after one. A numbered list is as often steps as choices, so its stem
+ * must also ask for alternatives ("Is this plan OK?" over steps is not a pick).
+ */
+function stemInvites(stem: string, kind: LabelKind | undefined): boolean {
+  const asks =
+    stem.endsWith('?') || (stem.endsWith(':') && (stem.includes('?') || PICK_WORDS.test(stem)));
+  return asks && (kind !== 'digit' || ASK_WORDS.test(stem));
+}
+
+/** Masks code spans (same length) so a label inside code — `f(a)` — is never read as a choice. */
+function maskCode(text: string): string {
+  return text.replace(/`[^`\n]*`/g, (m) => ' '.repeat(m.length));
+}
+
+function valid(choices: readonly string[]): boolean {
+  if (choices.length < CHOICES_MIN || choices.length > CHOICES_MAX) return false;
+  const seen = new Set<string>();
+  for (const choice of choices) {
+    if (choice.length === 0 || choice.length > CHOICE_MAX_CHARS) return false;
+    const key = choice.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+  }
+  return true;
+}
+
+/** `(A) text`, `A) text`, `A. text`, `1. text`, `1) text` on a line of its own. */
+const LINE_OPTION = /^ {0,3}(?:\(([A-Fa-f1-6])\)|([A-Fa-f1-6])[.)])\s+(\S.*)$/;
+
+/** A list of choices that ends the text, one per line, after a stem that asks. */
+function parseLines(text: string): ParsedChoices | undefined {
+  const lines = text.split('\n');
+  const found: Array<{ label: string; body: string }> = [];
+  let i = lines.length - 1;
+  while (i >= 0) {
+    const line = lines[i] ?? '';
+    if (line.trim() === '' && found.length > 0) {
+      i--;
+      continue;
+    }
+    const m = LINE_OPTION.exec(line);
+    if (!m) break;
+    found.unshift({ label: m[1] ?? m[2] ?? '', body: m[3] ?? '' });
+    i--;
+  }
+  if (found.length === 0) return undefined;
+  const stem = lines
+    .slice(0, i + 1)
+    .join('\n')
+    .trim();
+  if (!isSequence(found.map((f) => f.label))) return undefined;
+  if (stem === '' || !stemInvites(stem, labelOf(found[0]?.label ?? '')?.kind)) return undefined;
+  const choices = found.map((f) => cleanChoice(f.body));
+  return valid(choices) ? { stem, choices } : undefined;
+}
+
+/** Inline labels: `(A) ` (any kind), or a bare `A) ` (letters only). */
+const INLINE_STYLES: readonly RegExp[] = [
+  /(?<=^|[\s,;:—–-])\(([A-Fa-f1-6])\)(?=\s)/g,
+  /(?<=^|[\s,;:—–-])([A-Fa-f])\)(?=\s)/g,
+];
+
+/** The last inline choice ends at the question mark, or at a sentence end, or at a line break. */
+function cutLast(text: string): { body: string; asked: boolean } {
+  const q = text.indexOf('?');
+  const nl = text.indexOf('\n');
+  const stop = /[.!](?=\s+[A-Z]|\s*$)/.exec(text);
+  const cuts = [q, nl, stop ? stop.index : -1].filter((n) => n >= 0);
+  if (cuts.length === 0) return { body: text, asked: false };
+  const at = Math.min(...cuts);
+  return { body: text.slice(0, at), asked: at === q };
+}
+
+/** Choices written into one sentence: "…or floats? (A) integer cents (B) floats (C) decimal strings". */
+function parseInline(text: string): ParsedChoices | undefined {
+  const masked = maskCode(text);
+  for (const style of INLINE_STYLES) {
+    const marks = [...masked.matchAll(style)].map((m) => ({
+      label: m[1] ?? '',
+      start: m.index ?? 0,
+      end: (m.index ?? 0) + m[0].length,
+    }));
+    if (marks.length < CHOICES_MIN || !isSequence(marks.map((m) => m.label))) continue;
+    const stem = text.slice(0, marks[0]?.start ?? 0).trim();
+    const bodies = marks.map((m, i) => text.slice(m.end, marks[i + 1]?.start ?? text.length));
+    const last = cutLast(bodies[bodies.length - 1] ?? '');
+    bodies[bodies.length - 1] = last.body;
+    if (bodies.slice(0, -1).some((b) => b.trim().includes('\n'))) continue;
+    const kind = labelOf(marks[0]?.label ?? '')?.kind;
+    const asks =
+      stemInvites(stem, kind) || (last.asked && (kind !== 'digit' || ASK_WORDS.test(stem)));
+    if (stem === '' || !asks) continue;
+    const choices = bodies.map((b) => cleanChoice(stripJoiners(b)));
+    if (valid(choices)) return { stem, choices };
+  }
+  return undefined;
+}
+
+/**
+ * T364: the choices written into an older question's text — a lettered or
+ * numbered list ending the question, or `(A) … (B) …` in one sentence —
+ * and the question without them. Conservative on purpose: 2–6 short,
+ * distinct options, labelled in order from the first, after a stem that
+ * asks for a pick; never inside code, never in a text with a code block.
+ * Anything less clear is no choices, and the operator types.
+ */
+export function parseChoices(text: string): ParsedChoices | undefined {
+  if (text.includes('```')) return undefined;
+  const trimmed = text.replace(/\s+$/, '');
+  return parseLines(trimmed) ?? parseInline(trimmed);
+}
+
+/** A question card's text and its choices: the agent's `options` (T361), else the ones its text spells out. */
+export function questionView(item: InboxItem): { text: string; choices: string[] } {
+  const text = fullText(item);
+  if (item.kind !== 'question') return { text, choices: [] };
+  if (item.options !== undefined && item.options.length > 0) {
+    return { text, choices: [...item.options] };
+  }
+  const parsed = parseChoices(text);
+  return parsed ? { text: parsed.stem, choices: parsed.choices } : { text, choices: [] };
+}
+
+/** The question's choices (the buttons): `options`, else parsed from its text, else none. */
+export function choicesOf(item: InboxItem): string[] {
+  return questionView(item).choices;
+}
+
+// ---------------------------------------------------------------- the other kinds' text
+
+export interface GateView {
+  land: boolean;
+  /** The call the classifier was unsure of ("edit src/app.ts", "bash: rm -rf dist"). */
+  action?: string;
+  /** Why it was routed: the rule's text when the reason names a rule, else the whole reason. */
+  reason: string;
+  /** The rule the call may break, by name ("tests-with-src"); absent when it has none or none is named. */
+  rule?: string;
+  /** The rule's id (for a tooltip, never the primary text). */
+  ruleId?: string;
+  /** The classifier's probability that the call breaks the rule, as written ("0.55"). */
+  probability?: string;
+  /** A land gate's branch and target, when its summary names them. */
+  branch?: string;
+  target?: string;
+}
+
+const KNOWLEDGE_ID = String.raw`K-[0-9A-HJKMNP-TV-Z]{26}`;
+const RULE_NAME = String.raw`[A-Za-z0-9][\w.-]*`;
+/** The hook's reason: `<name> (<id>): <text>` or `<id>: <text>` (`hook/decide.ts` `ruleLabel`). */
+const HOOK_REASON = new RegExp(
+  `^(?:(${RULE_NAME}) \\((${KNOWLEDGE_ID})\\)|(${KNOWLEDGE_ID})): ([\\s\\S]+?)(?: \\(probability ([0-9.]+)\\))?$`,
+);
+/** A diff rule's summary: `<name or id>: <text> (probability <p>)` (`delivery/diff-rules.ts`). */
+const DIFF_REASON = new RegExp(
+  `^(${RULE_NAME}|${KNOWLEDGE_ID}): ([\\s\\S]+?) \\(probability ([0-9.]+)\\)$`,
+);
+
+/** Names the rule in a routed call's reason, when the reason leads with one. */
+function ruleOfReason(
+  reason: string,
+): Pick<GateView, 'reason' | 'rule' | 'ruleId' | 'probability'> {
+  const hook = HOOK_REASON.exec(reason);
+  if (hook) {
+    return {
+      reason: hook[4] ?? reason,
+      ...(hook[1] !== undefined ? { rule: hook[1] } : {}),
+      ruleId: hook[2] ?? hook[3],
+      ...(hook[5] !== undefined ? { probability: hook[5] } : {}),
+    };
+  }
+  const diff = DIFF_REASON.exec(reason);
+  if (diff) {
+    const label = diff[1] ?? '';
+    const isId = new RegExp(`^${KNOWLEDGE_ID}$`).test(label);
+    return {
+      reason: diff[2] ?? reason,
+      ...(isId ? { ruleId: label } : { rule: label }),
+      ...(diff[3] !== undefined ? { probability: diff[3] } : {}),
+    };
+  }
+  return { reason };
+}
+
+/**
+ * Takes a gate's `<gate>: <call> — <why>` apart (`gateText` in
+ * `inbox/service.ts`), and the why's rule when it names one.
+ */
+export function gateView(item: InboxItem): GateView {
+  const land = isLandGate(item);
+  const text = fullText(item);
+  const colon = text.indexOf(': ');
+  const rest = colon >= 0 && /^[a-z_]+$/.test(text.slice(0, colon)) ? text.slice(colon + 2) : text;
+  if (land) {
+    const m = /^land (\S+) into (\S+)$/.exec(rest.trim());
+    return m ? { land, reason: rest, branch: m[1], target: m[2] } : { land, reason: rest };
+  }
+  const dash = rest.indexOf(' — ');
+  if (dash < 0) return { land, ...ruleOfReason(rest) };
+  return { land, action: rest.slice(0, dash), ...ruleOfReason(rest.slice(dash + 3)) };
+}
+
+export interface KnowledgeView {
+  /** The item's short name, when it has one ("money-in-cents"). */
+  name?: string;
+  /** `global`, `repo:<name>`, `project:<id>` or `subtree:<node>`. */
+  scope?: string;
+  text: string;
+}
+
+/** Takes a proposal's `<name> · <scope>: <text>` apart (`ruleItem` in `inbox/service.ts`). */
+export function knowledgeView(item: InboxItem): KnowledgeView {
+  const text = fullText(item);
+  const m = /^(?:([^\n]+?) · )?(global|(?:repo|project|subtree):[^\s:]+): ([\s\S]+)$/.exec(text);
+  if (!m) return { text };
+  return {
+    ...(m[1] !== undefined ? { name: m[1] } : {}),
+    scope: m[2],
+    text: m[3] ?? '',
+  };
+}
+
+/** A node branch without its `stream/<id>-` prefix: `stream/01h…-add-csv-import` → `add-csv-import`. */
+export function branchName(branch: string): string {
+  return branch.replace(/^stream\/[0-9a-z]{26}-/i, '');
+}
+
+/** A knowledge scope in words: "everywhere", "the web-app repo", "Shop", "Checkout and the nodes under it". */
+export function scopeWords(
+  scope: string | undefined,
+  names: {
+    node?: (id: string) => string | undefined;
+    project?: (id: string) => string | undefined;
+  } = {},
+): string | undefined {
+  if (scope === undefined) return undefined;
+  if (scope === 'global') return 'everywhere';
+  const [kind, value = ''] = [
+    scope.slice(0, scope.indexOf(':')),
+    scope.slice(scope.indexOf(':') + 1),
+  ];
+  if (kind === 'repo') return `the ${value} repo`;
+  if (kind === 'project') {
+    const name = names.project?.(value);
+    return name !== undefined ? `the ${name} project` : 'one project';
+  }
+  if (kind === 'subtree') {
+    const title = names.node?.(value);
+    return title !== undefined
+      ? `${title} and the nodes under it`
+      : 'one node and the nodes under it';
+  }
+  return undefined;
+}
+
+/** A held change's `<principal> proposes: <summary>` (`inbox/service.ts`). */
+export function proposalOf(item: Pick<InboxItem, 'context' | 'detail'>): {
+  principal?: 'coordinator' | 'director';
+  summary: string;
+} {
+  const text = fullText(item);
+  const m = /^(coordinator|director) proposes: ([\s\S]+)$/.exec(text);
+  if (!m) return { summary: text };
+  return { principal: m[1] as 'coordinator' | 'director', summary: m[2] ?? '' };
+}
+
+export interface PlanView {
+  /** "Sale prices", when the text names the node. */
+  node?: string;
+  revised: boolean;
+  /** One line per part: "api owns `prices.ts`". */
+  owners: string[];
+  contracts: string[];
+}
+
+/** Takes a plan card's `Approve the plan for <node>: <owner>; <owner>. Contracts: <c> | <c>` apart; `undefined` when it isn't that shape. */
+export function planView(item: InboxItem): PlanView | undefined {
+  if (item.kind !== 'plan_approve') return undefined;
+  const m =
+    /^Approve (the plan|the revised plan \(approved v\d+\)) for ([^\n]+?): ([\s\S]*?)(?:\. Contracts: ([\s\S]*))?$/.exec(
+      fullText(item),
+    );
+  if (!m) return undefined;
+  const owners = (m[3] ?? '')
+    .split('; ')
+    .map((o) => o.trim())
+    .filter((o) => o !== '' && o !== 'no owners');
+  const contracts = (m[4] ?? '')
+    .split(' | ')
+    .map((c) => c.replace(/\s+/g, ' ').trim())
+    .filter((c) => c !== '');
+  return { node: m[2], revised: m[1] !== 'the plan', owners, contracts };
+}
+
+/**
+ * A `done` or `blocked` card's text: the agent's last progress line, or the
+ * daemon's own line for it (in words since T371).
+ */
+export function statusText(item: InboxItem): string {
+  return fullText(item);
+}
+
+/** The daemon's line for a finished agent that left none (`DONE_TEXT`): it talks about merging. */
+export const DONE_STOCK =
+  'The agent finished. Look over the changes, then merge — or close the node if you won’t.';
+
+/**
+ * T416: a Ready to merge card's own line — the agent's last progress line,
+ * or `undefined` when it left none and the daemon's stock sentence stands
+ * in (every such card would read the same, so the card says less instead).
+ * The daemon sends only `agent.progress` here, not the agent's last chat
+ * message.
+ */
+export function doneLine(item: Pick<InboxItem, 'context' | 'detail'>): string | undefined {
+  const text = fullText(item).trim();
+  return text === '' || text === DONE_STOCK ? undefined : text;
+}
+
+/** T416: the nodes a node's changes overlap (T227's pairs), by title, for "Overlaps …". */
+export function overlapTitles(
+  node: string,
+  overlaps: ReadonlyArray<{ nodes: readonly [string, string] | readonly string[] }>,
+  titleOf: (id: string) => string | undefined,
+): string[] {
+  const out: string[] = [];
+  for (const pair of overlaps) {
+    if (!pair.nodes.includes(node)) continue;
+    for (const other of pair.nodes) {
+      if (other === node) continue;
+      const title = titleOf(other);
+      if (title !== undefined && !out.includes(title)) out.push(title);
+    }
+  }
+  return out;
+}
+
+/** "Overlaps Fix rounding in totals", "Overlaps A and B", "Overlaps A, B and 2 more". */
+export function overlapText(titles: readonly string[]): string | undefined {
+  if (titles.length === 0) return undefined;
+  if (titles.length === 1) return `Overlaps ${titles[0]}`;
+  if (titles.length <= 3) return `Overlaps ${titles.slice(0, -1).join(', ')} and ${titles.at(-1)}`;
+  return `Overlaps ${titles.slice(0, 2).join(', ')} and ${titles.length - 2} more`;
+}
+
+/** T380: a finished card's text when its branch has nothing to merge. */
+export const NO_CHANGES_TEXT =
+  'The agent finished without committing anything, so there is nothing to merge. Close the node, or reply to ask for more.';
+
+export function noChangesText(item: InboxItem): string {
+  const text = statusText(item);
+  return text === DONE_STOCK
+    ? NO_CHANGES_TEXT
+    : `${text}\n\n*Nothing was committed, so there is nothing to merge.*`;
+}
+
+// ---------------------------------------------------------------- filter
+
+export type NeedsMeFilter = 'all' | 'questions' | 'decisions' | 'merges' | 'finished' | 'blocked';
+
+/** T470: a node's merge-check fields, looked up by id (the cockpit row). */
+export type RowLookup = (id: string | undefined) => Parameters<typeof doneCardOf>[0] | undefined;
+
+/**
+ * Questions want your words; merges want a Merge; T470: a node that
+ * finished with nothing to merge is **finished** (Close it or reply), a
+ * blocked agent is **blocked**; the rest are decisions.
+ */
+export function filterOf(item: InboxItem, rowOf?: RowLookup): Exclude<NeedsMeFilter, 'all'> {
+  if (item.kind === 'question') return 'questions';
+  // T484: stuck on the strongest model is blocked work, too.
+  if (item.kind === 'blocked' || item.kind === 'model_stuck') return 'blocked';
+  if (item.kind === 'done')
+    return doneCardOf(rowOf?.(item.stream)) === 'no_changes' ? 'finished' : 'merges';
+  if (isLandGate(item)) return 'merges';
+  return 'decisions';
+}
+
+export function filterCounts(
+  items: readonly InboxItem[],
+  rowOf?: RowLookup,
+): Record<NeedsMeFilter, number> {
+  const counts: Record<NeedsMeFilter, number> = {
+    all: items.length,
+    questions: 0,
+    decisions: 0,
+    merges: 0,
+    finished: 0,
+    blocked: 0,
+  };
+  for (const item of items) counts[filterOf(item, rowOf)]++;
+  return counts;
+}
+
+export function applyFilter(
+  items: readonly InboxItem[],
+  filter: NeedsMeFilter,
+  rowOf?: RowLookup,
+): InboxItem[] {
+  return filter === 'all' ? [...items] : items.filter((item) => filterOf(item, rowOf) === filter);
+}
+
+/**
+ * T470: a Needs me row's one line: a finished node's last progress line
+ * (nothing when it left only the stock sentence), a question's text, else
+ * what the item says; plain words, never markdown.
+ */
+export function inboxLine(
+  item: InboxItem,
+  row?: Parameters<typeof doneCardOf>[0],
+): string | undefined {
+  if (item.kind === 'done') {
+    const line = doneLine(item);
+    if (line !== undefined) return plainLine(line);
+    return doneCardOf(row) === 'no_changes' ? 'Nothing to merge' : undefined;
+  }
+  if (item.kind === 'question') return plainLine(questionView(item).text) || undefined;
+  // T508: a stop the daemon made reads as what happened, its title saying which.
+  const stop = stopCardOfItem(item);
+  if (stop !== undefined) return plainLine(stop.text) || undefined;
+  return plainLine(item.context) || undefined;
+}
+
+/** T470: the nodes a set of items is about, once each (a knowledge item has none). */
+export function nodesOf(items: readonly InboxItem[]): string[] {
+  return [...new Set(items.flatMap((item) => (item.stream !== undefined ? [item.stream] : [])))];
+}
+
+// ---------------------------------------------------------------- grouping
+
+export interface NeedsMeGroup {
+  /** The node's id; `''` for knowledge that belongs to no node. */
+  key: string;
+  /** The node's path inside its section, root→leaf (the project root is the section heading). */
+  path: string[];
+  items: InboxItem[];
+}
+
+export interface NeedsMeSection {
+  /** `project:<id>`, `none` (nodes in no project), `knowledge` (no node) or `updates` (T481: vendor CLIs). */
+  key: string;
+  kind: 'project' | 'none' | 'knowledge' | 'updates';
+  project?: string;
+  label: string;
+  groups: NeedsMeGroup[];
+  count: number;
+}
+
+function oldest(items: readonly InboxItem[]): string {
+  return items.reduce((min, item) => (item.ts < min ? item.ts : min), items[0]?.ts ?? '');
+}
+
+/**
+ * T364: Needs me grouped by project, then by node — each level, and each
+ * node's items, oldest first (§3.3). Knowledge that belongs to no node is
+ * its own section; nodes in no project are another.
+ */
+export function groupNeedsMe(
+  items: readonly InboxItem[],
+  rows: readonly Pick<CockpitStreamRow, 'id' | 'project'>[],
+  projects: readonly Pick<CockpitProjectRow, 'id' | 'name' | 'root'>[],
+): NeedsMeSection[] {
+  const rowById = new Map(rows.map((r) => [r.id, r]));
+  const projectById = new Map(projects.map((p) => [p.id, p]));
+  const sections = new Map<string, NeedsMeSection & { byNode: Map<string, NeedsMeGroup> }>();
+
+  for (const item of items) {
+    const projectId = item.stream !== undefined ? rowById.get(item.stream)?.project : undefined;
+    const project = projectId !== undefined ? projectById.get(projectId) : undefined;
+    // T481: a vendor CLI's update belongs to no node and is not knowledge.
+    const update = item.kind === 'harness_update';
+    const kind: NeedsMeSection['kind'] = update
+      ? 'updates'
+      : item.stream === undefined
+        ? 'knowledge'
+        : project
+          ? 'project'
+          : 'none';
+    const key = kind === 'project' && project ? `project:${project.id}` : kind;
+    let section = sections.get(key);
+    if (!section) {
+      section = {
+        key,
+        kind,
+        ...(project ? { project: project.id } : {}),
+        label:
+          kind === 'updates'
+            ? 'Updates'
+            : kind === 'knowledge'
+              ? 'Knowledge'
+              : project
+                ? project.name
+                : 'Not in a project',
+        groups: [],
+        count: 0,
+        byNode: new Map(),
+      };
+      sections.set(key, section);
+    }
+    const node = update ? `harness:${item.harness?.id ?? ''}` : (item.stream ?? '');
+    let group = section.byNode.get(node);
+    if (!group) {
+      // Inside a project, the root is the section heading; its nodes read from below it.
+      const path =
+        project && item.stream !== project.root && item.stream_path.length > 1
+          ? item.stream_path.slice(1)
+          : item.stream_path;
+      const fallback = update ? (item.harness?.label ?? 'Update') : 'Knowledge';
+      group = { key: node, path: path.length > 0 ? path : [fallback], items: [] };
+      section.byNode.set(node, group);
+      section.groups.push(group);
+    }
+    group.items.push(item);
+    section.count++;
+  }
+
+  const byTs = (a: InboxItem, b: InboxItem) =>
+    a.ts === b.ts ? a.id.localeCompare(b.id) : a.ts < b.ts ? -1 : 1;
+  return [...sections.values()]
+    .map(({ byNode: _, ...section }) => {
+      for (const group of section.groups) group.items.sort(byTs);
+      section.groups.sort((a, b) => (oldest(a.items) < oldest(b.items) ? -1 : 1));
+      return section;
+    })
+    .sort((a, b) => {
+      const ta = oldest(a.groups.flatMap((g) => g.items));
+      const tb = oldest(b.groups.flatMap((g) => g.items));
+      return ta === tb ? a.key.localeCompare(b.key) : ta < tb ? -1 : 1;
+    });
+}
+
+// ---------------------------------------------------------------- first run
+
+export type SetupStepId = 'repo' | 'project' | 'node';
+
+export interface SetupStep {
+  id: SetupStepId;
+  done: boolean;
+  count: number;
+}
+
+/**
+ * T364: the three steps to a working cockpit — a repository, a project, a
+ * node — and whether each is done. A project's root is not a node you
+ * started, so it doesn't count as one.
+ */
+export function setupSteps(
+  cockpit: Pick<CockpitFrame, 'repos' | 'projects' | 'streams'> | undefined,
+): SetupStep[] {
+  const repos = cockpit?.repos.length ?? 0;
+  const projects = cockpit?.projects.length ?? 0;
+  const nodes = (cockpit?.streams ?? []).filter((row) => row.role !== 'project').length;
+  return [
+    { id: 'repo', done: repos > 0, count: repos },
+    { id: 'project', done: projects > 0, count: projects },
+    { id: 'node', done: nodes > 0, count: nodes },
+  ];
+}
+
+/** First run: no repository, or no project, yet (the setup steps show instead of "all caught up"). */
+export function isFirstRun(steps: readonly SetupStep[]): boolean {
+  return steps.some((step) => (step.id === 'repo' || step.id === 'project') && !step.done);
+}
+
+// ---------------------------------------------------------------- paths
+
+/** T416: the one separator between a node's ancestors, everywhere a path is written. */
+export const PATH_SEP = ' › ';
+
+/** "Shop › Show sale prices › api: add salePrice" (root first). */
+export function nodePath(titles: readonly string[]): string {
+  return titles.filter((t) => t !== '').join(PATH_SEP);
+}
+
+// ---------------------------------------------------------------- choice keys
+
+/** The keycap a choice wears, and the keys that pick it on a focused card: A (or 1) for the first. */
+export function choiceKey(index: number): string {
+  return String.fromCharCode(65 + index);
+}
+
+/** Which choice a key picks on a focused card: `a`/`A`/`1` the first … `f`/`F`/`6` the sixth. */
+export function choiceIndexOfKey(key: string, count: number): number | undefined {
+  let index: number | undefined;
+  if (/^[a-f]$/i.test(key)) index = key.toUpperCase().charCodeAt(0) - 65;
+  else if (/^[1-6]$/.test(key)) index = Number(key) - 1;
+  return index !== undefined && index < count ? index : undefined;
+}
+
+// ---------------------------------------------------------------- merging
+
+/** What the first Merge asks (T416): "Merge “Add CSV import” into main (2 files)?" and what it does. */
+export function mergeQuestion(input: {
+  node: string;
+  target?: string;
+  files?: number;
+  /** The repo delivers by pull request: Merge pushes and opens one. */
+  pr?: boolean;
+}): { title: string; body: string; confirm: string } {
+  const target = input.target ?? 'its target branch';
+  const size =
+    input.files !== undefined ? ` (${input.files} ${input.files === 1 ? 'file' : 'files'})` : '';
+  if (input.pr) {
+    return {
+      title: `Open a pull request for “${input.node}” into ${target}${size}?`,
+      body: 'Merge pushes the branch and opens its pull request; it merges on GitHub once its checks pass.',
+      confirm: 'Open pull request',
+    };
+  }
+  return {
+    title: `Merge “${input.node}” into ${target}${size}?`,
+    body: `Its commits go onto ${target} now, and the node is done. The cockpit can’t undo a merge.`,
+    confirm: 'Merge',
+  };
+}
+
+// ---------------------------------------------------------------- the palette's Needs me rows
+
+/** T416: what running a Needs me item from ⌘K does, in words: "Answer: Should amounts…". */
+export function itemCommand(item: InboxItem, row?: Parameters<typeof doneCardOf>[0]): string {
+  const node = item.stream_path.at(-1) ?? 'a node';
+  const text = (s: string, max = 70): string => {
+    const line = (s.split('\n').find((l) => l.trim() !== '') ?? '').trim().replace(/\s+/g, ' ');
+    return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
+  };
+  switch (item.kind) {
+    case 'question':
+      return `Answer: ${text(questionView(item).text)}`;
+    case 'gate':
+      return isLandGate(item) ? `Approve the merge: ${node}` : `Allow or deny: ${node}`;
+    case 'rule_accept': {
+      const k = knowledgeView(item);
+      return `Accept or retire: ${k.name ?? text(k.text, 60)}`;
+    }
+    case 'rule_batch':
+      return `Review knowledge: ${item.rules?.length ?? 0} items`;
+    case 'plan_approve':
+      return `Approve the plan: ${node}`;
+    case 'plan_waiting':
+      return `Waiting for the plan: ${node}`;
+    case 'proposal':
+      return `Apply or dismiss: ${text(proposalOf(item).summary, 60)}`;
+    case 'done': {
+      const done = doneCardOf(row);
+      return done === 'no_changes'
+        ? `Close: ${node}`
+        : done === 'merged_outside'
+          ? `Mark as merged: ${node}`
+          : done === 'waiting'
+            ? `Waiting to merge: ${node}`
+            : `Merge: ${node}`;
+    }
+    case 'blocked':
+      return `Unblock: ${node}`;
+    case 'harness_update':
+      return `Update ${item.harness?.label ?? 'a CLI'}`;
+    case 'model_stuck':
+      return `Stuck on the strongest model: ${node}`;
+  }
+}
+
+/** T436 (audit r6 #29): an unread reply in ⌘K's Needs me group: "Read reply: Which repos…". */
+export function replyCommand(title: string): string {
+  return `Read reply: ${title}`;
+}
+
+// ---------------------------------------------------------------- a reply's preview
+
+/** How long a reply's preview may be (the row clips it to one line anyway). */
+export const REPLY_PREVIEW_MAX = 160;
+
+/** One line of Markdown as plain words: no heading, quote or list marks, emphasis, code ticks or link targets. */
+export function plainLine(line: string): string {
+  return line
+    .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/, '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__)(.+?)\1/g, '$2')
+    .replace(/(^|[^\w*])[*_]([^*_\s][^*_]*?)[*_](?=[^\w*]|$)/g, '$1$2')
+    .replace(/`+([^`]*)`+/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** A line an agent wrote: a session's (`agent:<id>`), a coordinator's, or the Director's own. */
+function byAgent(by: string): boolean {
+  return by.startsWith('agent:') || by === 'coordinator' || by === 'director';
+}
+
+/**
+ * T436 (audit r6 #17): what a reply row previews — the first line with
+ * words of the agent's last line in the thread (the reply itself; the
+ * Director's own, in its thread), else its last progress line; clipped.
+ * `undefined` when there is neither.
+ */
+export function replyPreview(
+  thread: ReadonlyArray<{ kind: string; by: string; body: string }>,
+  progress?: string,
+): string | undefined {
+  let text: string | undefined;
+  for (let i = thread.length - 1; i >= 0; i--) {
+    const e = thread[i];
+    if (e !== undefined && e.kind === 'line' && byAgent(e.by)) {
+      text = e.body;
+      break;
+    }
+  }
+  for (const source of [text, progress]) {
+    const line = (source ?? '')
+      .split('\n')
+      .map(plainLine)
+      .find((l) => l !== '' && !/^[-=*_|:\s`~]+$/.test(l));
+    if (line !== undefined) {
+      return line.length > REPLY_PREVIEW_MAX
+        ? `${line.slice(0, REPLY_PREVIEW_MAX - 1).trimEnd()}…`
+        : line;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * T437: a blocked card whose line is the daemon's failure note (a vendor that
+ * isn't installed, or that stopped with an error): a reply alone restarts the
+ * same vendor, so the card says to fix it first.
+ */
+export function isAgentFailure(text: string): boolean {
+  return /^The agent (couldn’t start|stopped with an error): /.test(text.trim());
+}
+
+/**
+ * T508: a node the daemon stopped (or wouldn't start), as a card: what
+ * happened, why, and what to do. It reads only the daemon's own failure
+ * notes (`isAgentFailure`): the two it writes for any agent (a start that
+ * failed, a session that stopped with an error), with T506's Codex gate
+ * stops in their own words. `restart` names the card's button: "Try again"
+ * for a start that failed, "Restart agent" for one that ran. T512: a Codex
+ * start refused because its user-level gate isn't installed, or isn't
+ * trusted in Codex's `/hooks`, has its own card.
+ */
+export interface StopCard {
+  kind:
+    | 'codex_ungated'
+    | 'codex_untrusted'
+    | 'codex_gate_missing'
+    | 'codex_gate_untrusted'
+    | 'failed_start'
+    | 'crashed';
+  title: string;
+  /** What happened and why, in plain words. */
+  text: string;
+  /** What to do, for the card's "How to fix" line. */
+  fix: string;
+  restart: 'Try again' | 'Restart agent';
+}
+
+const FAILED_START = 'The agent couldn’t start: ';
+const CRASHED = 'The agent stopped with an error: ';
+
+/** "/Users/pete/shop" from "Codex's gate isn't trusted here: trust /Users/pete/shop in Codex (…)". */
+function codexTrustRepo(reason: string): string | undefined {
+  if (!reason.startsWith(CODEX_UNTRUSTED_LEAD)) return undefined;
+  const rest = reason.slice(CODEX_UNTRUSTED_LEAD.length);
+  const at = rest.lastIndexOf(' in Codex');
+  const repo = (at >= 0 ? rest.slice(0, at) : rest).trim();
+  return repo === '' ? undefined : repo;
+}
+
+export function stopCardOf(text: string): StopCard | undefined {
+  const line = text.trim();
+  if (line.startsWith(FAILED_START)) {
+    const reason = line.slice(FAILED_START.length).trim();
+    if (reason.startsWith(CODEX_UNTRUSTED_LEAD)) {
+      const repo = codexTrustRepo(reason);
+      return {
+        kind: 'codex_untrusted',
+        title: 'Codex can’t start here: its gate isn’t trusted',
+        text: 'Codex checks its commands with a hook that runs only in a project Codex trusts. This one isn’t trusted, so the daemon didn’t start Codex: it would run unchecked.',
+        fix: `Trust ${repo !== undefined ? `\`${repo}\`` : 'the repository'} in Codex (open Codex there once and trust the folder), then try again.`,
+        restart: 'Try again',
+      };
+    }
+    if (reason.startsWith(CODEX_GATE_MISSING_LEAD)) {
+      return {
+        kind: 'codex_gate_missing',
+        title: 'Codex can’t start: its gate isn’t installed',
+        text: 'Codex checks its commands with the agile gate, three hooks in your Codex settings (`~/.codex/hooks.json`). They aren’t there, so the daemon didn’t start Codex: it would run unchecked.',
+        fix: 'Run `agile codex install-gate`, then open `codex`, run `/hooks` and trust the three `agile gate` hooks. Then try again.',
+        restart: 'Try again',
+      };
+    }
+    if (reason.startsWith(CODEX_GATE_UNTRUSTED_LEAD)) {
+      return {
+        kind: 'codex_gate_untrusted',
+        title: 'Codex can’t start: its gate isn’t trusted yet',
+        text: 'Codex runs a hook only once you have trusted it, and the agile gate’s hooks aren’t all trusted yet, so the daemon didn’t start Codex: it would run unchecked.',
+        fix: 'Open `codex`, run `/hooks`, and trust the three `agile gate` hooks (Hooks need review → trust each); `agile codex status` shows which are trusted. Then try again.',
+        restart: 'Try again',
+      };
+    }
+    return {
+      kind: 'failed_start',
+      title: 'The agent couldn’t start',
+      text: reason === '' ? 'The daemon couldn’t start it.' : reason,
+      fix: 'Fix its install or login, then try again.',
+      restart: 'Try again',
+    };
+  }
+  if (line.startsWith(CRASHED)) {
+    const reason = line.slice(CRASHED.length).trim();
+    if (reason.startsWith(CODEX_UNGATED_REASON)) {
+      return {
+        kind: 'codex_ungated',
+        title: 'Codex’s gate didn’t run',
+        text: 'Codex ran a command its hook never checked, so the daemon stopped it. Nothing it ran after that was allowed through.',
+        fix: 'Codex skipped the agile gate: a hook it hasn’t trusted (a changed one needs trusting again), or a project it doesn’t trust. Run `agile codex status`; in Codex run `/hooks` and trust the three `agile gate` hooks, then restart the agent.',
+        restart: 'Restart agent',
+      };
+    }
+    return {
+      kind: 'crashed',
+      title: 'The agent stopped with an error',
+      text: reason === '' ? 'Its process ended with an error.' : reason,
+      fix: 'Check its vendor is installed and logged in, then restart the agent.',
+      restart: 'Restart agent',
+    };
+  }
+  return undefined;
+}
+
+/** T508: a stop card's body: what happened, then the fix on its own line. */
+export function stopCardText(card: Pick<StopCard, 'text' | 'fix'>): string {
+  return `${card.text}\n\n**How to fix:** ${card.fix}`;
+}
+
+/** T508: a `blocked` item the daemon's stop raised (its card says why and offers a restart). */
+export function stopCardOfItem(
+  item: Pick<InboxItem, 'kind' | 'context' | 'detail'>,
+): StopCard | undefined {
+  return item.kind === 'blocked' ? stopCardOf(fullText(item)) : undefined;
+}
+
+// ---------------------------------------------------------------- T445: proposal lines
+
+/**
+ * T445 (audit r7 #3): what a `proposal` line in a node's chat offers. Only a
+ * line whose `ref` proposes a repository (`repo:<name>`, T205's + Repo; an
+ * agent writes it with `propose_repo`, T455) offers "Add <repo>" — a
+ * registered repo the node doesn't have yet (nor a part of it), and never on
+ * a project's root (its repositories are its settings). An autonomy
+ * proposal (`proposals/AP-….yaml`) points to its decision card while that
+ * is open; a contract proposal (`contracts/C-….yaml`) to the plan. The words
+ * of a line are never read for a repo's name.
+ */
+export type ProposalLineAction =
+  | { kind: 'add_repo'; repo: string }
+  | { kind: 'decide'; card: string }
+  | { kind: 'plan' };
+
+export function proposalLineAction(
+  entry: { kind: string; ref?: string | undefined },
+  input: {
+    /** The registered repositories' names. */
+    repos: readonly string[];
+    /** The node's own repository. */
+    current?: string | undefined;
+    /** T455: its open parts' repositories (once added, a split node has the repo in a part). */
+    partRepos?: readonly string[];
+    projectRoot: boolean;
+    /** The ids of this node's open decision cards. */
+    cards: readonly string[];
+    /** The node has a Plan tab. */
+    hasPlan?: boolean;
+  },
+): ProposalLineAction | undefined {
+  if (entry.kind !== 'proposal' || entry.ref === undefined) return undefined;
+  const repo = repoOfProposalRef(entry.ref);
+  if (repo !== undefined) {
+    if (
+      input.projectRoot ||
+      repo === input.current ||
+      input.partRepos?.includes(repo) === true ||
+      !input.repos.includes(repo)
+    ) {
+      return undefined;
+    }
+    return { kind: 'add_repo', repo };
+  }
+  const autonomy = /^proposals\/(AP-[0-9A-Z]+)\.yaml$/.exec(entry.ref);
+  if (autonomy) {
+    const card = autonomy[1] as string;
+    return input.cards.includes(card) ? { kind: 'decide', card } : undefined;
+  }
+  if (/^contracts\/C-[0-9A-Z]+\.yaml$/.test(entry.ref) && input.hasPlan === true) {
+    return { kind: 'plan' };
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------- T445: a decided card
+
+/**
+ * T445 (audit r7 #5): what a card decided in place reads while it stays a
+ * moment, collapsed, before the list closes over it ("Merged into main").
+ * `key` is the card's action (`DecisionCard`'s `act` keys).
+ */
+export function cardOutcome(
+  item: Pick<InboxItem, 'kind' | 'context'>,
+  key: string,
+  target = 'main',
+): string {
+  if (key === 'merge') return `Merged into ${target}`;
+  if (key.startsWith('choice') || key === 'answer') return 'Answered';
+  const land = item.kind === 'gate' && isLandGate(item);
+  const words: Record<string, string> = {
+    approve: item.kind === 'plan_approve' ? 'Plan approved' : land ? 'Merging' : 'Allowed',
+    deny: land ? 'Held' : 'Denied',
+    note: 'Note sent',
+    always: 'Allowed for the project',
+    accept: 'Accepted',
+    retire: 'Retired',
+    apply: 'Applied',
+    dismiss: 'Dismissed',
+    wake: 'Coordinator started',
+    start: 'Parts started',
+    mark: 'Marked as merged',
+    close: 'Closed',
+    reply: 'Sent',
+    restart: 'Agent started',
+  };
+  return words[key] ?? 'Done';
+}
+
+/** How long a decided card stays, collapsed to its outcome, once it has left the list. */
+export const DECIDED_LINGER_MS = 1500;
+/** How long after a card leaves the list a click on it is ignored (what was under it moved). */
+export const LIST_SETTLE_MS = 400;
+
+/**
+ * The list Needs me shows: `items`, plus each card decided here that has
+ * left them within `DECIDED_LINGER_MS` (`gone` holds when each left), in
+ * the place it had — the grouping sorts them back where they were.
+ */
+export function withDecided(
+  items: readonly InboxItem[],
+  decided: ReadonlyMap<string, { item: InboxItem; gone?: number }>,
+  now: number,
+): InboxItem[] {
+  const ids = new Set(items.map((i) => i.id));
+  const staying = [...decided.values()]
+    .filter(
+      (d) => !ids.has(d.item.id) && (d.gone === undefined || now - d.gone < DECIDED_LINGER_MS),
+    )
+    .map((d) => d.item);
+  return staying.length === 0 ? [...items] : [...items, ...staying];
+}

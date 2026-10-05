@@ -187,7 +187,7 @@ create ──► human.status: open, agent.status: idle
    │       │
    │       ├─ hook route ► agent.status: blocked, human.status: waiting_on_you  (§6.3)
    │       │
-   │       └─ session exit ► agent.status: done
+   │       └─ turn finished ► agent.status: done, session idle (kept; D48)
    │
    ├─ review ──────────► reviewer session, findings → thread + agent.findings
    │
@@ -197,6 +197,10 @@ create ──► human.status: open, agent.status: idle
 ```
 
 One live worker at a time per stream. A reviewer may run concurrently with a finished worker; it cannot write (§4.2).
+
+D43 narrows "session exit ► done": a vendor that exits non-zero on its own (not a stop of the daemon's or the human's, not after a finished turn) leaves the node `blocked` with the vendor's last stderr line. T456 puts a recovery in front of that end state, set by `vendor_failure` (project, repo, home): the same vendor once more (not after a login or model refusal), then the next installed vendor on its `fallback` list (one with pre-tool hooks when the failed one had them, unless `allow_hookless`), on the same node, worktree and thread, at most three restarts per node an hour. The node stays `working`, the thread says who failed and what took over, and an `agent_restarted` record goes to Events; the parent hears nothing until the list is spent and D43's `blocked` follows.
+
+D48 (T465) narrows "a finished turn ends the session": a worker's or coordinator's turn that ends with nothing open leaves the node `done` (Replies, Ready to merge and auto-close read it as before) and its vendor session alive and `idle`, so the next message, or an event that wakes the node, is prompted into the same session with its context and prompt cache. An event that would not wake the node (P11) waits for that next turn, as before. The idle session ends after an idle timeout (Settings → Agents → Idle sessions, `session_idle_minutes`, default 30), a Stop, a model or effort change, a role change, the node closing, merging or going to the trash, or the daemon stopping; none of these moves the node off `done`, and none of them holds a merge (the merge ends it first). The next start of an ended session resumes it with ACP `session/load`, sending the new message rather than the brief, when the vendor supports it (`loadSession`: Claude, Codex, Grok, Pi, spike-findings §C) and the start runs the same role, vendor, model and effort; a load that fails starts fresh from the brief, and the thread says so. A reviewer's and the lessons pass's turn still ends their session.
 
 ---
 
@@ -278,7 +282,7 @@ An attached session is gated at three points, and only the first is new:
    - **Pi** — an in-process extension blocks with a reason and can rewrite tool results; the strongest surface of any vendor.
    - **Grok** — all file I/O goes through client `fs/*`, so reads and writes can be refused with a message; exec is ungated.
    - **Cursor** — ACP permission on every exec, nothing on reads or edits; project hooks do not fire headless.
-   - **Codex** — nothing is gated in any mode or approval policy.
+   - **Codex** — nothing is gated over ACP in any mode or approval policy. Since T506 (T512, spike-findings §C5) Codex's own `PreToolUse` hook is the per-call tier: three user-level entries in `$CODEX_HOME/hooks.json` (installed by `agile codex install-gate`, trusted per hook in Codex's `/hooks`) run `<home>/agile-pre-tool-use.sh`, which gates calls from a node's worktree or the agile home; a start is refused while they are missing or untrusted, and a session whose calls the hook never saw is stopped (fail closed).
 
    Consequence for this design, stated once: **vendors without a pre-tool-use hook get no per-action classifier tier.** They get diff-level rules at landing (§8.2) and guidance in the brief, and nothing else. A stream on such a vendor is not silently less safe — the daemon writes a `hook_unchecked` thread entry when it attaches, and the UI marks the session.
 
@@ -461,7 +465,7 @@ Rationale: fail-closed on everything means one API outage stops every agent in e
 
 The same policy covers the opt-out and a missing key: no classifier configured means no classifier tier, critical classifier rules deny, everything else proceeds with the thread entry.
 
-**Vendors with no pre-tool-use hook** (Cursor, Codex; Grok has only the client-fs surface) never reach this tier at all: they get the diff-level rules at landing (§8.2) and guidance in the brief. See §4.3 and `spike-findings.md` — do not re-derive. Nothing marks such a session's thread at attach time today; making the gap visible there is worth doing and is not yet built.
+**Vendors with no pre-tool-use hook** (Cursor; Grok has only the client-fs surface; Codex has one since T506/T512, §4.3) never reach this tier at all: they get the diff-level rules at landing (§8.2) and guidance in the brief. See §4.3 and `spike-findings.md` — do not re-derive. Nothing marks such a session's thread at attach time today; making the gap visible there is worth doing and is not yet built.
 
 **Opt-out** is per stream (`classifier: off`) with a per-repo default in `repos.yaml`. A stream working on something the operator does not want leaving the machine turns the tier off; pattern rules and guidance still apply.
 
@@ -496,6 +500,7 @@ The daemon is started once (`agile daemon start`, detached, pidfile and port in 
   rules/<id>.yaml              # rule records (§5.1)
   log/events.jsonl             # append-only, every state change
   sessions/<id>/               # per-session stderr, transcripts, tool output files
+  bridges/<name>/<version>/    # T500: an ACP server the daemon downloads (Antigravity's): archive, server, manifest.yaml
 ```
 
 Per repo, and tracked in the repo:
@@ -564,7 +569,7 @@ Properties:
 - **One classifier call per action,** regardless of how many classifier rules are in scope.
 - **Per-call cost** is roughly 100 ms of Bun cold start plus, when classifier rules are in scope, one network round trip. This is why most rules should be `pattern` or `guidance`, and why §5.7's "fired often, never violated" prune matters.
 
-Vendors without a pre-tool-use hook (Cursor, Codex; Grok has only the client-fs surface) get steps 1–2 for nothing they can gate and skip step 3 entirely. See §4.3 and `spike-findings.md` — do not re-derive.
+Vendors without a pre-tool-use hook (Cursor; Grok has only the client-fs surface; Codex has its own since T506/T512, §4.3) get steps 1–2 for nothing they can gate and skip step 3 entirely. See §4.3 and `spike-findings.md` — do not re-derive.
 
 ### 8.2 Landing path, per stream
 

@@ -111,7 +111,8 @@ async function seedFinding(stream: Stream): Promise<void> {
     file: 'src/parse.ts',
     text: 'the dialect sniffer ignores quoted separators',
   });
-  handle.stop();
+  // T432: an end of the daemon's own (a vendor killed from outside reads as a crash).
+  await attach.stop(stream.id, 'worker');
   await handle.exited;
 }
 

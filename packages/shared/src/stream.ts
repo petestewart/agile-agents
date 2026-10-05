@@ -13,7 +13,11 @@
 
 import { z } from 'zod';
 import { EffortSchema } from './effort';
-import { UlidSchema, formatZodError } from './ids';
+import { ULID_PATTERN, UlidSchema, formatZodError } from './ids';
+import { KnowledgeIdSchema } from './knowledge';
+import { EscalationStateSchema } from './model-escalation';
+import { ModelPickRecordSchema, ModelPolicyPartialSchema } from './model-policy';
+import { PermissionPostureSchema } from './posture';
 import { AutonomySchema, DeliveryOverrideSchema, ProjectIdSchema } from './project';
 
 /**
@@ -31,10 +35,16 @@ export const THREAD_BODY_MAX_CHARS = 800;
 export const AGENT_LINE_MAX_CHARS = 16_000;
 
 /** The body cap for one thread entry, by its writer and kind. */
+/**
+ * T437: a line you write (the composer, a review, a conclusion sent up) may
+ * run to this; the daemon's own lines and events keep `THREAD_BODY_MAX_CHARS`.
+ */
+export const HUMAN_LINE_MAX_CHARS = 4000;
+
 export function threadBodyMaxFor(by: string, kind: string): number {
-  return kind === 'line' && (by.startsWith('agent:') || by === 'director')
-    ? AGENT_LINE_MAX_CHARS
-    : THREAD_BODY_MAX_CHARS;
+  if (kind !== 'line') return THREAD_BODY_MAX_CHARS;
+  if (by.startsWith('agent:') || by === 'director') return AGENT_LINE_MAX_CHARS;
+  return by === 'human' ? HUMAN_LINE_MAX_CHARS : THREAD_BODY_MAX_CHARS;
 }
 
 /** A thread body as quoted into a brief or a tool result: at most `max` chars, cut with "…". */
@@ -118,9 +128,27 @@ export const SessionRefSchema = z
      * yet delivered to this session. Cleared on delivery and on session end.
      */
     queued: z.array(z.string().min(1)).max(50).optional(),
+    /**
+     * T465 (D48): the vendor's own ACP session id (`session/new`'s), so a
+     * later start can resume this session with `session/load`.
+     */
+    acp_session_id: z.string().min(1).max(200).optional(),
   })
   .strict();
 export type SessionRef = z.infer<typeof SessionRefSchema>;
+
+/**
+ * T465 (D48): an agent session left alive and idle after its turn finished:
+ * the node reads finished (`done`), nothing runs, and the next message is
+ * prompted into it. An `idle` session on a node waiting on a question is not
+ * resting.
+ */
+export function isRestingSession(
+  stream: { agent: { status: StreamAgentStatus } },
+  session: Pick<SessionRef, 'role' | 'status'>,
+): boolean {
+  return session.status === 'idle' && isAgentRole(session.role) && stream.agent.status === 'done';
+}
 
 /** `human` | `daemon` | `coordinator` | `director` | `agent:<session ulid>` — the writer of a thread entry. */
 export const ThreadAuthorSchema = z
@@ -147,6 +175,168 @@ export const THREAD_ENTRY_KINDS = [
 export const ThreadEntryKindSchema = z.enum(THREAD_ENTRY_KINDS);
 export type ThreadEntryKind = z.infer<typeof ThreadEntryKindSchema>;
 
+/**
+ * T503 (D60, D64, design/chat-threads.md §3a, §7): a chat thread's id. A
+ * thread on a turn is named by its first reply's `ts`; a question's thread
+ * by `questions/<Q-id>` (an agent's `progress` in it; T502 groups the
+ * question's own lines by their `ref`).
+ */
+export const QUESTION_THREAD_PREFIX = 'questions/';
+const QUESTION_THREAD_PATTERN = new RegExp(`^questions/Q-${ULID_PATTERN.source.slice(1, -1)}$`);
+const IsoTs = z.string().datetime();
+
+export const ChatThreadIdSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine(
+    (value) => QUESTION_THREAD_PATTERN.test(value) || IsoTs.safeParse(value).success,
+    'must be the ts of its first reply or "questions/<Q-id>"',
+  );
+export type ChatThreadId = z.infer<typeof ChatThreadIdSchema>;
+
+/** T503: the question a thread id names (`questions/<Q-id>`), or undefined for a thread on a turn. */
+export function questionOfChatThread(thread: string | undefined): string | undefined {
+  return thread !== undefined && QUESTION_THREAD_PATTERN.test(thread)
+    ? thread.slice(QUESTION_THREAD_PREFIX.length)
+    : undefined;
+}
+
+/** T503 (§3a): how much of a turn an anchored thread quotes. */
+export const THREAD_ANCHOR_QUOTE_MAX_CHARS = THREAD_BODY_MAX_CHARS;
+
+/**
+ * T503 (D64, design/chat-threads.md §3a, §7): what a thread is on. `entry`
+ * is the turn's `ts`; a thread on a passage also carries the passage's
+ * `start` and `end` in that turn's body and the quoted text itself (shown
+ * even if the body were ever rendered differently). A whole-turn thread has
+ * neither. `quote` alone (no offsets): a passage the cockpit could not place
+ * in the body's source; it is still shown, and highlighted where it reads.
+ */
+export const ThreadAnchorSchema = z
+  .object({
+    entry: z.string().min(1).max(64),
+    start: z.number().int().nonnegative().max(AGENT_LINE_MAX_CHARS).optional(),
+    end: z.number().int().positive().max(AGENT_LINE_MAX_CHARS).optional(),
+    quote: z.string().min(1).max(THREAD_ANCHOR_QUOTE_MAX_CHARS).optional(),
+  })
+  .strict()
+  .superRefine((anchor, ctx) => {
+    if ((anchor.start === undefined) !== (anchor.end === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [anchor.start === undefined ? 'start' : 'end'],
+        message: 'start and end go together (both absent: a thread on the whole turn)',
+      });
+    }
+    if (anchor.start !== undefined && anchor.end !== undefined && anchor.end <= anchor.start) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['end'],
+        message: 'end must be after start',
+      });
+    }
+    if (anchor.start !== undefined && anchor.quote === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['quote'],
+        message: 'a passage carries its quote',
+      });
+    }
+  });
+export type ThreadAnchor = z.infer<typeof ThreadAnchorSchema>;
+
+/**
+ * T504 (D65, design/chat-threads.md §6, §6a, §7): the main flow, as a moved
+ * line's destination (a thread's id otherwise).
+ */
+export const CHAT_MAIN = 'main';
+export const ChatPlaceSchema = z.union([z.literal(CHAT_MAIN), ChatThreadIdSchema]);
+export type ChatPlace = z.infer<typeof ChatPlaceSchema>;
+
+/** T504: the kinds of line that move between the main flow and a thread. */
+export const MOVABLE_THREAD_KINDS: ReadonlySet<ThreadEntryKind> = new Set<ThreadEntryKind>([
+  'line',
+  'finding',
+  'proposal',
+]);
+
+/**
+ * T504 (D65, design/chat-threads.md §6, §6a, §7): a change to the chat's
+ * threads, recorded as its own append-only line (`ThreadEntry.op`): a
+ * thread line is never rewritten, so where a line shows and whether a
+ * thread is archived are read back from these, the latest winning.
+ *
+ * - `move`: line `entry` shows in thread `to` (or the main flow). Display
+ *   only: what the agent already received never changes. Undone by moving
+ *   it back.
+ * - `archive` / `unarchive`: the thread folds away and is never re-sent;
+ *   `forget` also restarted the agent fresh without it.
+ * - `promote`: the thread became the tangent `node` (T332).
+ * - `compact`: the agent was told to compact its context without the
+ *   archived `threads`; the line's body is the command it was sent.
+ */
+export const ThreadOpSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('move'),
+      entry: z.string().min(1).max(64),
+      to: ChatPlaceSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('archive'),
+      thread: ChatThreadIdSchema,
+      forget: z.literal(true).optional(),
+    })
+    .strict(),
+  z.object({ type: z.literal('unarchive'), thread: ChatThreadIdSchema }).strict(),
+  z.object({ type: z.literal('promote'), thread: ChatThreadIdSchema, node: UlidSchema }).strict(),
+  z
+    .object({
+      type: z.literal('compact'),
+      threads: z.array(ChatThreadIdSchema).min(1).max(50),
+    })
+    .strict(),
+]);
+export type ThreadOp = z.infer<typeof ThreadOpSchema>;
+
+/** T504: where the chat's recorded changes leave its threads, read from its lines in order. */
+export interface ChatThreadOps {
+  /** Archived threads: when, and whether the agent was restarted without them. */
+  archived: Map<string, { at: string; forget?: true }>;
+  /** Moved lines: where each shows now (the latest move). */
+  moves: Map<string, { to: ChatPlace; at: string }>;
+  /** Threads promoted to a tangent: the tangent. */
+  promoted: Map<string, { node: string; at: string }>;
+}
+
+export function chatThreadOpsOf(entries: readonly Pick<ThreadEntry, 'ts' | 'op'>[]): ChatThreadOps {
+  const out: ChatThreadOps = { archived: new Map(), moves: new Map(), promoted: new Map() };
+  for (const e of entries) {
+    const op = e.op;
+    if (op === undefined) continue;
+    switch (op.type) {
+      case 'move':
+        out.moves.set(op.entry, { to: op.to, at: e.ts });
+        break;
+      case 'archive':
+        out.archived.set(op.thread, { at: e.ts, ...(op.forget ? { forget: true as const } : {}) });
+        break;
+      case 'unarchive':
+        out.archived.delete(op.thread);
+        break;
+      case 'promote':
+        out.promoted.set(op.thread, { node: op.node, at: e.ts });
+        break;
+      case 'compact':
+        break;
+    }
+  }
+  return out;
+}
+
 /** One append-only line of `~/.agile/threads/<stream id>.jsonl`. */
 export const ThreadEntrySchema = z
   .object({
@@ -156,6 +346,25 @@ export const ThreadEntrySchema = z
     body: z.string().min(1),
     /** Pointer to the detail: a file path, url, session id, rule id. */
     ref: z.string().min(1).optional(),
+    /**
+     * T347 (D36 D12): a daemon line written for the agent (its brief and
+     * `read_stream` still carry it); the cockpit's thread view hides it.
+     * Absent on every line written before it, which all show.
+     */
+    agent_only: z.literal(true).optional(),
+    /**
+     * T503 (D60, design/chat-threads.md §7): the chat thread this line is
+     * in: its first reply's `ts` (that reply carries its own), or
+     * `questions/<Q-id>`. Absent: the main flow, or placed by cause (§4).
+     */
+    thread: ChatThreadIdSchema.optional(),
+    /** T503 (D64, §3a): on a thread's first reply only, what the thread is on. */
+    anchor: ThreadAnchorSchema.optional(),
+    /**
+     * T504 (D65, §6, §6a, §7): this line records a change to the chat's
+     * threads (a move, an archive, a promotion, a compaction): yours alone.
+     */
+    op: ThreadOpSchema.optional(),
   })
   .strict()
   .superRefine((entry, ctx) => {
@@ -167,8 +376,76 @@ export const ThreadEntrySchema = z
         message: `body must be at most ${max} characters; write the detail to a file and reference it`,
       });
     }
+    if (entry.op !== undefined) {
+      if (entry.by !== 'human' || entry.kind !== 'event') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['op'],
+          message: 'only you change the chat’s threads (an event line by human)',
+        });
+      }
+      if (entry.thread !== undefined || entry.anchor !== undefined || entry.agent_only) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['op'],
+          message: 'a change to the threads is a line of its own, in no thread',
+        });
+      }
+    }
+    if (entry.anchor !== undefined) {
+      if (entry.by !== 'human' || entry.kind !== 'line') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['anchor'],
+          message: 'only your line starts a thread',
+        });
+      }
+      if (entry.thread !== entry.ts) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['thread'],
+          message: "a thread's first reply names its own ts as its thread",
+        });
+      }
+      if (!(entry.anchor.entry < entry.ts)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['anchor', 'entry'],
+          message: 'a thread is on an earlier line',
+        });
+      }
+    } else if (
+      entry.thread !== undefined &&
+      questionOfChatThread(entry.thread) === undefined &&
+      !(entry.thread < entry.ts)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['thread'],
+        message: 'a reply is in a thread started before it',
+      });
+    }
   });
 export type ThreadEntry = z.infer<typeof ThreadEntrySchema>;
+
+/**
+ * T445 (audit r7 #3): the `ref` of a `proposal` line that proposes adding a
+ * repository to its node (projects-design §7's + Repo): `repo:<name>`. The
+ * cockpit offers "Add <name>" on such a line and on no other; the repo is
+ * never guessed from the line's words.
+ */
+export const REPO_PROPOSAL_REF_PREFIX = 'repo:';
+
+export function repoProposalRef(repo: string): string {
+  return `${REPO_PROPOSAL_REF_PREFIX}${repo}`;
+}
+
+/** The repository a `proposal` line's `ref` proposes, or `undefined` when it proposes none. */
+export function repoOfProposalRef(ref: string | undefined): string | undefined {
+  if (ref === undefined || !ref.startsWith(REPO_PROPOSAL_REF_PREFIX)) return undefined;
+  const name = ref.slice(REPO_PROPOSAL_REF_PREFIX.length).trim();
+  return name === '' ? undefined : name;
+}
 
 /**
  * Finding severities. Deliberately the same four words (and the same
@@ -207,6 +484,23 @@ export const StreamAgentStateSchema = z
     findings: z.array(StreamFindingSchema).optional(),
     /** Each next step is one line; the detail belongs in the thread. */
     proposed_next: z.array(z.string().min(1).max(THREAD_BODY_MAX_CHARS)).optional(),
+    /**
+     * T478: the agent said its goal is met (the `goal_met` verb), in which
+     * session. Auto-close counts it only for the session whose turn just ended.
+     */
+    goal_met: z
+      .object({
+        session: UlidSchema,
+        at: z.string().min(1),
+        summary: z.string().min(1).max(THREAD_BODY_MAX_CHARS),
+      })
+      .strict()
+      .optional(),
+    /**
+     * T482 (design/model-routing.md §8): what the node's agent last started
+     * on and why (explicit, kept, inherit, default, rule, clamp). The daemon's.
+     */
+    pick: ModelPickRecordSchema.optional(),
     updated_at: z.string().min(1),
   })
   .strict();
@@ -219,6 +513,23 @@ export const StreamHumanStateSchema = z
     decision: z.string().max(THREAD_BODY_MAX_CHARS).optional(),
     answered_at: z.string().min(1).optional(),
     note: z.string().max(THREAD_BODY_MAX_CHARS).optional(),
+    /**
+     * T477: when you dismissed its Finished card (the ✕). The card stays away
+     * until the agent finishes again (a newer `agent.updated_at`).
+     */
+    dismissed_at: z.string().min(1).optional(),
+    /**
+     * T482: this node's model choice, field by field over its ancestors',
+     * its project's and the home's. Human-only, as the whole `human` half is:
+     * the store refuses an agent, coordinator or Director write.
+     */
+    model_policy: ModelPolicyPartialSchema.optional(),
+    /**
+     * T482 (D55): "Let the policy choose again": the next start of the
+     * node's agent makes a routed pick instead of keeping its last one.
+     * The daemon clears it at that start.
+     */
+    choose_again: z.literal(true).optional(),
   })
   .strict();
 export type StreamHumanState = z.infer<typeof StreamHumanStateSchema>;
@@ -346,7 +657,17 @@ export const StreamSchema = z
   .object({
     id: UlidSchema,
     title: z.string().min(1),
-    goal: z.string().min(1),
+    /**
+     * What the node is for. T477: optional: a node can start with no goal
+     * (you talk it through first), and a finished turn is then a reply, not
+     * finished work. Setting one later makes finishing it count.
+     */
+    goal: z.string().min(1).optional(),
+    /**
+     * T441 (D42): the question a conversation was asked, kept when its goal
+     * first changes (Turn into work), so its chat still opens with it.
+     */
+    question: z.string().min(1).optional(),
     /** Parent stream — streams nest to any depth (D1), but never in a cycle. */
     parent: UlidSchema.optional(),
     repo: z.string().min(1).optional(),
@@ -369,6 +690,13 @@ export const StreamSchema = z
      */
     archived: z.literal(true).optional(),
     /**
+     * T361: the cockpit's Delete archives a node and its subtree; every node
+     * one delete archived carries that delete's id (a ulid, so it also orders
+     * the Archived list), and Restore brings back exactly those. Written
+     * with `archived` and cleared with it.
+     */
+    archive_id: UlidSchema.optional(),
+    /**
      * T150 (§6.4): the per-stream opt-out from the classifier tier — "a
      * stream working on something the operator does not want leaving the
      * machine turns the tier off; pattern rules and guidance still apply."
@@ -381,6 +709,46 @@ export const StreamSchema = z
      * or the home turned off.
      */
     classifier: z.literal('off').optional(),
+    /**
+     * T463: knowledge items the operator switched off for this node alone
+     * (the node page's Knowledge tab). `knowledgeInScope` leaves them out,
+     * so the hook, the brief, delivery and wakes skip them here; its
+     * children are not affected. Only a human (or the daemon) changes it.
+     */
+    rules_off: z.array(KnowledgeIdSchema).max(200).optional(),
+    /**
+     * T463: this node's permission posture (T457), over its project's and
+     * the home's: Trusted reads any path without asking, Ask asks for a
+     * read outside the registered repos. Absent inherits. Only a human (or
+     * the daemon) changes it.
+     */
+    permissions: PermissionPostureSchema.optional(),
+    /**
+     * T478: the node closes itself when its goal is met: its agent reports
+     * `goal_met` and there is nothing to merge, or (a coordinating node) every
+     * part is merged or closed. A part inherits it from its parent when it is
+     * made. Only a human (or the daemon) changes it.
+     */
+    auto_close: z.boolean().optional(),
+    /**
+     * T474: where it sits among its siblings (smallest first), set by
+     * dragging it between two of them. Absent: after those with one, in the
+     * order the nodes were made.
+     */
+    order: z.number().int().nonnegative().optional(),
+    /**
+     * T473: a work node that went back to just talking keeps its repo, branch
+     * and worktree here (on disk too). Picking that repo again (Turn into
+     * work, + Repo) picks the work back up on them.
+     */
+    parked: z
+      .object({
+        repo: z.string().min(1),
+        branch: z.string().min(1),
+        worktree: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
     land_conflict: LandConflictSchema.optional(),
     /*
      * Node fields (projects-design §14.2, T201). `project` is optional in
@@ -403,6 +771,14 @@ export const StreamSchema = z
     delivery_state: DeliveryStateSchema.optional(),
     /** Daemon-only (§14.6). */
     touched: TouchedSummarySchema.optional(),
+    /**
+     * T484 (design/model-routing.md §6): a step up the model ladder waiting
+     * for the agent's next start, the Needs me card at the top of the ladder,
+     * and what the triggers count. Daemon-only: an agent, a coordinator, the
+     * Director and the operator's own writes are refused (Step up goes
+     * through the daemon).
+     */
+    escalation: EscalationStateSchema.optional(),
     agent: StreamAgentStateSchema,
     human: StreamHumanStateSchema,
     sessions: z.array(SessionRefSchema).default([]),
@@ -421,7 +797,8 @@ export type StreamInput = z.input<typeof StreamSchema>;
 export const StreamCreateInputSchema = z
   .object({
     title: z.string().min(1),
-    goal: z.string().min(1),
+    /** T477: optional; a node with no goal talks until you give it one. */
+    goal: z.string().min(1).optional(),
     parent: UlidSchema.optional(),
     repo: z.string().min(1).optional(),
     /** T201: the project; the parent defaults to its root. */
@@ -430,6 +807,26 @@ export const StreamCreateInputSchema = z
     helper_of: UlidSchema.optional(),
     /** T204: `false` (`--no-start`, "Start later") skips starting the node's agent. Not stored. */
     start: z.boolean().optional(),
+    /**
+     * T332 (D33): "Branch off" — the 0-based index of a line on the parent's
+     * thread. The new node is a tangent: a conversation whose thread opens
+     * with that line quoted. The parent must be a conversation. Not stored.
+     */
+    seed_line: z.number().int().nonnegative().optional(),
+    /**
+     * T504 (§7): Promote to tangent: the id of a chat thread on the
+     * parent's thread. The new node is a tangent seeded with the thread's
+     * passage and its lines, quoted; the thread links to it. Not with
+     * `seed_line`. Not stored.
+     */
+    seed_thread: ChatThreadIdSchema.optional(),
+    /**
+     * T414 (D41): `title` is a placeholder the cockpit derived from the goal;
+     * the daemon asks a cheap model for a better one after creating. Not stored.
+     */
+    auto_title: z.boolean().optional(),
+    /** T478: close it when its goal is met. Absent: as its parent (a part inherits it). */
+    auto_close: z.boolean().optional(),
   })
   .strict();
 export type StreamCreateInput = z.infer<typeof StreamCreateInputSchema>;
@@ -485,6 +882,7 @@ function changed(before: unknown, after: unknown): boolean {
  * - a `human` principal may not change `agent.*`
  * - the `daemon` principal may write both
  * - only the `daemon` may change `delivery_state` or `touched` (§14.2)
+ * - only a `human` (or the `daemon`) may change `rules_off`, `permissions` (T463) or `auto_close` (T478)
  *
  * Throws on violation; returns the `after` record when the write is allowed.
  * A no-op write of the other half (identical value) is allowed — the store
@@ -506,13 +904,23 @@ export function assertStreamWrite(
       throw new Error(`invalid Stream write: only the daemon may change ${field}`);
     }
   }
+  if (principal !== 'human') {
+    for (const field of HUMAN_ONLY_FIELDS) {
+      if (changed(before[field], after[field])) {
+        throw new Error(`invalid Stream write: only a human may change ${field}`);
+      }
+    }
+  }
   if (principal === 'human' && changed(before.agent, after.agent)) {
     throw new Error('invalid Stream write: a human principal may not change agent.* fields');
   }
   return after;
 }
 
-const DAEMON_ONLY_FIELDS = ['delivery_state', 'touched'] as const;
+const DAEMON_ONLY_FIELDS = ['delivery_state', 'touched', 'escalation'] as const;
+
+/** T463: settings only the operator (or the daemon) may change: an agent never loosens its own checks. */
+const HUMAN_ONLY_FIELDS = ['rules_off', 'permissions', 'auto_close'] as const;
 
 /**
  * Thrown when a proposed `parent` would make a stream its own ancestor.
@@ -583,17 +991,69 @@ export function assertNoWaitsOnCycle(
   for (const target of targets) walk(target, [target]);
 }
 
-/** Derived, never stored (P1). `liveChildren` are the node's children that are not closed or archived. */
+/**
+ * Derived, never stored (P1, amended by D33 and D42). `liveChildren` are the
+ * node's children that are not closed or archived; same-repo helpers never
+ * count.
+ *
+ * D42 (widening D33): a conversation child never reshapes its parent. A node's
+ * *parts* are its children that are not conversations (a child with no repo
+ * whose own children are all conversations); only parts make a node
+ * coordinating. So a side conversation under a work node leaves it work (its
+ * agent is not restarted as a coordinator), and one under a coordinator is not
+ * a part of its plan. Pass `all` (every stream) so a repo-less child's own
+ * children are looked at; without it a repo-less child counts as a conversation.
+ */
 export type NodeRole = 'project' | 'coordinating' | 'work' | 'conversation';
+
+type RoleChild = Pick<Stream, 'id' | 'helper_of' | 'repo'>;
 
 export function nodeRole(
   node: Pick<Stream, 'id' | 'parent' | 'repo'>,
-  liveChildren: ReadonlyArray<Pick<Stream, 'helper_of'>>,
+  liveChildren: ReadonlyArray<RoleChild>,
+  all?: readonly Stream[],
 ): NodeRole {
   if (node.parent === undefined) return 'project';
-  if (liveChildren.some((c) => c.helper_of !== node.id)) return 'coordinating';
-  if (node.repo !== undefined) return 'work';
-  return 'conversation';
+  if (partsAmong(node.id, liveChildren, all).length > 0) return 'coordinating';
+  return node.repo !== undefined ? 'work' : 'conversation';
+}
+
+/** D42: of `liveChildren`, the node's parts: not its helpers, not conversations. */
+function partsAmong<C extends RoleChild>(
+  nodeId: string,
+  liveChildren: ReadonlyArray<C>,
+  all: readonly Stream[] | undefined,
+): C[] {
+  return liveChildren.filter(
+    (c) => c.helper_of !== nodeId && !isTangent(c, all, new Set([nodeId])),
+  );
+}
+
+/**
+ * D42: the node's parts, the children that make it coordinating: live, not
+ * its helpers, not conversations. A project root with parts runs a coordinator.
+ */
+export function partsOf(nodeId: string, all: readonly Stream[]): Stream[] {
+  return partsAmong(nodeId, liveChildrenOf(nodeId, all), all);
+}
+
+/** D42: a node that is a conversation (no repo, only conversation children); roles over `all`. */
+export function isConversationNode(node: Stream, all: readonly Stream[]): boolean {
+  return node.parent !== undefined && isTangent(node, all, new Set());
+}
+
+/** D33: a child that is itself a conversation (no repo, only conversation children). */
+function isTangent(
+  child: RoleChild,
+  all: readonly Stream[] | undefined,
+  seen: Set<string>,
+): boolean {
+  if (child.repo !== undefined) return false;
+  if (all === undefined || seen.has(child.id)) return true;
+  seen.add(child.id);
+  return liveChildrenOf(child.id, all)
+    .filter((c) => c.helper_of !== child.id)
+    .every((c) => isTangent(c, all, seen));
 }
 
 /** The children `nodeRole` counts: parent is `node`, not archived, not closed. */
@@ -604,6 +1064,21 @@ export function liveChildrenOf(nodeId: string, all: readonly Stream[]): Stream[]
 }
 
 /**
+ * T423: the vendor, model and effort a caller names for a session it
+ * starts (`agile attach`'s flags, the cockpit's model picker). What it
+ * leaves out comes from the session defaults (D17); the vendor and effort
+ * are checked against the provider registry when the session starts.
+ */
+export const SessionFlagsSchema = z
+  .object({
+    vendor: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+    effort: z.string().min(1).optional(),
+  })
+  .strict();
+export type SessionFlags = z.infer<typeof SessionFlagsSchema>;
+
+/**
  * T161: the cockpit composer's write (`POST /api/streams/:id/say`) — one
  * human line on the thread, which also prompts the attached worker if
  * there is one (cockpit design §9.3). The principal is stamped by the
@@ -611,10 +1086,82 @@ export function liveChildrenOf(nodeId: string, all: readonly Stream[]): Stream[]
  */
 export const StreamSayInputSchema = z
   .object({
-    body: z.string().trim().min(1).max(THREAD_BODY_MAX_CHARS),
+    body: z.string().trim().min(1).max(HUMAN_LINE_MAX_CHARS),
+    /**
+     * T361: a node with no live agent (never started, or stopped) starts
+     * one, with the session defaults, and the line is its first prompt.
+     */
+    start: z.boolean().optional(),
+    /**
+     * T423: what that start runs, when the composer's model chip named it
+     * (the session defaults fill the rest). Only with `start`: a live
+     * agent keeps its model.
+     */
+    session: SessionFlagsSchema.optional(),
+    /**
+     * T503 (D60, D61): a reply in this thread (its id), queued like any
+     * line while the agent works. Not with `anchor`.
+     */
+    thread: ChatThreadIdSchema.optional(),
+    /** T503 (D64): starts a thread on a turn, or on a passage of it; this line is its first reply. */
+    anchor: ThreadAnchorSchema.optional(),
+  })
+  .strict()
+  .refine((input) => input.session === undefined || input.start === true, {
+    message: 'session is only for a line that starts the agent (start: true)',
+    path: ['session'],
+  })
+  .refine((input) => input.thread === undefined || input.anchor === undefined, {
+    message: 'a line either starts a thread (anchor) or replies in one (thread), not both',
+    path: ['anchor'],
+  });
+export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;
+
+/** T504 (§6): Move to thread / Move to main (`POST /api/streams/:id/move-line`). */
+export const StreamMoveLineInputSchema = z
+  .object({ entry: z.string().min(1).max(64), to: ChatPlaceSchema })
+  .strict();
+export type StreamMoveLineInput = z.infer<typeof StreamMoveLineInputSchema>;
+
+/**
+ * T504 (D65, §6a): Archive a thread (`POST /api/streams/:id/archive-thread`);
+ * with `forget`, Archive and forget: the agent also restarts fresh from a
+ * brief without the archived threads.
+ */
+export const StreamArchiveThreadInputSchema = z
+  .object({ thread: ChatThreadIdSchema, forget: z.literal(true).optional() })
+  .strict();
+export type StreamArchiveThreadInput = z.infer<typeof StreamArchiveThreadInputSchema>;
+
+/** T504 (§6a): Restore an archived thread (`POST /api/streams/:id/restore-thread`). */
+export const StreamRestoreThreadInputSchema = z.object({ thread: ChatThreadIdSchema }).strict();
+export type StreamRestoreThreadInput = z.infer<typeof StreamRestoreThreadInputSchema>;
+
+/**
+ * T437: what Send to <parent> carries (the parent's line adds the
+ * conversation's title). T435: the dialog counts down to it.
+ */
+export const SEND_UP_MAX_CHARS = 3000;
+
+/**
+ * T421 (D42): a conversation's conclusion, sent up to the node it was asked
+ * under (`POST /api/streams/:id/send-up`): your line on the parent's thread,
+ * which its agent reads as it reads its composer.
+ */
+export const StreamSendUpInputSchema = z
+  .object({
+    body: z.string().trim().min(1).max(SEND_UP_MAX_CHARS),
   })
   .strict();
-export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;
+export type StreamSendUpInput = z.infer<typeof StreamSendUpInputSchema>;
+
+/** T421: the line the parent gets: which conversation it comes from, then the words sent. */
+export function sendUpText(conversationTitle: string, body: string): string {
+  return `From the conversation “${conversationTitle.slice(0, 200)}”:\n\n${body.trim()}`;
+}
+
+/** T422 (D42): the line that sets a conversation's agent on the goal it was just turned into. */
+export const START_ON_GOAL = 'Now work on the goal above. Report back here when it is done.';
 
 /**
  * T161: the stream page's sessions strip (`POST /api/streams/:id/attach`).
@@ -623,9 +1170,7 @@ export type StreamSayInput = z.infer<typeof StreamSayInputSchema>;
 export const StreamAttachRequestSchema = z
   .object({
     role: z.enum(['worker', 'reviewer']).optional(),
-    vendor: z.string().min(1).optional(),
-    model: z.string().min(1).optional(),
-    effort: z.string().min(1).optional(),
+    ...SessionFlagsSchema.shape,
   })
   .strict();
 export type StreamAttachRequest = z.infer<typeof StreamAttachRequestSchema>;
@@ -654,3 +1199,69 @@ export const StreamWaitRequestSchema = z
   })
   .strict();
 export type StreamWaitRequest = z.infer<typeof StreamWaitRequestSchema>;
+
+/** T463: `POST /api/streams/:id/rule`: a knowledge item in scope, switched on or off for this node. */
+export const StreamRuleRequestSchema = z
+  .object({
+    rule: KnowledgeIdSchema,
+    on: z.boolean(),
+  })
+  .strict();
+export type StreamRuleRequest = z.infer<typeof StreamRuleRequestSchema>;
+
+/** T463: `POST /api/streams/:id/permissions`: this node's posture; `null` inherits again. */
+export const StreamPermissionsRequestSchema = z
+  .object({
+    posture: PermissionPostureSchema.nullable(),
+  })
+  .strict();
+export type StreamPermissionsRequest = z.infer<typeof StreamPermissionsRequestSchema>;
+
+/**
+ * T471: `POST /api/streams/:id/purge` (Delete forever) and `POST /api/trash/empty`.
+ * `delete_branches` also deletes branches with unmerged commits (kept otherwise).
+ */
+export const TrashPurgeRequestSchema = z
+  .object({ delete_branches: z.boolean().optional() })
+  .strict();
+export type TrashPurgeRequest = z.infer<typeof TrashPurgeRequestSchema>;
+
+/** T474: `POST /api/streams/:id/reorder`: place it just before or just after a node (one of them). */
+export const StreamReorderRequestSchema = z
+  .object({ before: UlidSchema.optional(), after: UlidSchema.optional() })
+  .strict()
+  .refine((input) => (input.before === undefined) !== (input.after === undefined), {
+    message: 'send one of before or after',
+  });
+export type StreamReorderRequest = z.infer<typeof StreamReorderRequestSchema>;
+
+/** T478: `POST /api/streams/:id/auto-close`: this node closes itself when its goal is met. */
+export const StreamAutoCloseRequestSchema = z.object({ on: z.boolean() }).strict();
+export type StreamAutoCloseRequest = z.infer<typeof StreamAutoCloseRequestSchema>;
+
+/** T333 (D34): `POST /api/streams/:id/move` and `node.move`: a node, or a project id for its root. */
+export const StreamMoveRequestSchema = z
+  .object({ parent: z.union([UlidSchema, ProjectIdSchema]) })
+  .strict();
+export type StreamMoveRequest = z.infer<typeof StreamMoveRequestSchema>;
+
+/**
+ * T365: `POST /api/streams/:id/update` — the rail's Rename (and the goal):
+ * the title and goal half of `stream.update`'s human patch. At least one.
+ */
+export const StreamUpdateRequestSchema = z
+  .object({
+    title: z.string().trim().min(1).optional(),
+    goal: z.string().trim().min(1).optional(),
+    /**
+     * T435 (D41's path): `title` is a placeholder the cockpit derived from the
+     * new goal (a conversation turned into work); the daemon asks the cheap
+     * model for a better one, unless the title changes again meanwhile.
+     */
+    auto_title: z.boolean().optional(),
+  })
+  .strict()
+  .refine((input) => input.title !== undefined || input.goal !== undefined, {
+    message: 'send a title or a goal',
+  });
+export type StreamUpdateRequest = z.infer<typeof StreamUpdateRequestSchema>;

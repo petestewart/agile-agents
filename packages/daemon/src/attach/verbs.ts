@@ -24,8 +24,13 @@ import {
   type ThreadEntry,
   formatKnowledgeScope,
   formatZodError,
+  isAgentRole,
+  isConversationNode,
+  liveChildrenOf,
+  nodeRole,
   parseKnowledgeScope,
   quoteThreadBody,
+  repoProposalRef,
   validateVerbInput,
   withExamplesNote,
 } from '@agile-agents/shared';
@@ -37,7 +42,11 @@ import type { DocsSearch, SearchHit } from '../docs/service';
 import { summaryOf } from '../events/delivery';
 import type { EmitRouted } from '../events/producers';
 import { type KnowledgeService, worktreeRelativePaths } from '../knowledge/service';
+import { canReadRepo } from '../permissions/visibility';
+import { linesForAgent } from '../questions/chat-threads';
 import type { QuestionService } from '../questions/service';
+import type { ThreadActivity } from '../questions/threads';
+import type { EscalationService } from '../routing/escalation';
 import { NotFoundError, type StateStore } from '../store';
 import type { StreamService } from '../streams/service';
 import { type TestRunOutput, runTestRun } from '../tools/test-run';
@@ -75,10 +84,19 @@ export interface LookupKnowledgeItem {
 /**
  * `lookup_knowledge`'s path, made repo-relative so it can match item globs:
  * an absolute path is taken relative to the worktree, `./` and `..` are
- * resolved, and anything outside the worktree is refused.
+ * resolved, and anything outside the worktree is refused. T466: the repo
+ * root is `.`, which `lookupKnowledge` answers with every item in scope.
  */
 export function lookupPath(path: string, worktree: string | undefined): string {
   const normal = isAbsolute(path) ? normalize(path) : normalize(path).replace(/\/+$/, '');
+  // T466: the repo root (`.`, or the worktree itself) asks about the whole repo.
+  if (
+    normal === '.' ||
+    normal === '' ||
+    (worktree !== undefined && normalize(worktree) === normal.replace(/\/+$/, ''))
+  ) {
+    return '.';
+  }
   const [rel] =
     worktree === undefined
       ? isAbsolute(normal) || normal === '..' || normal.startsWith('../')
@@ -111,7 +129,11 @@ export interface VerbServiceOptions {
   rules?: KnowledgeService;
   /** §5.5's "at most three" proposals from a lessons session, enforced as a gate. */
   /** T244: `read_event`'s read side (`RoutedEventService`). */
-  events?: { get(id: string): RoutedEvent | undefined };
+  events?: {
+    get(id: string): RoutedEvent | undefined;
+    /** T504: deliveries, so `read_stream` leaves out an archived thread's lines by cause. */
+    activityFor?(node: string, limit?: number): readonly ThreadActivity[];
+  };
   /** T246: `deliver`'s write side (`DeliveryService.push`). */
   delivery?: { push(stream: string): Promise<unknown> };
   /** T283: `read_card`'s read side. */
@@ -128,7 +150,22 @@ export interface VerbServiceOptions {
   proposalLimit?: { assertCanPropose(caller: Pick<VerbCaller, 'session' | 'role'>): void };
   /** T303: a finding was recorded (the Director's norm watch looks for repeats). */
   onFinding?: () => void;
+  /**
+   * T484 (D56): the escalation watcher: `escalate` records a step for the
+   * next start, and a `progress` call keeps a turn from counting as quiet.
+   */
+  escalation?: Pick<EscalationService, 'asked' | 'progressed'>;
+  /**
+   * T510: the session's call the route band holds for the human, raised in
+   * its current turn (`AttachService.heldCallThisTurn`): `ask` refuses
+   * while one waits, so one decision is one card.
+   */
+  heldCalls?: { heldCallThisTurn(session: string): unknown };
 }
+
+/** T510: `ask`'s refusal while the caller's own call waits on the human, in words it can act on. */
+export const HELD_CALL_ASK_REFUSAL =
+  "Your call is already waiting for the operator's approval (a card in their Needs me). Don't ask about it; wait for the answer, then retry the call.";
 
 /** `source.finding`: the named sources (T303), and a tell/review item's examples (T260). */
 function proposalFinding(
@@ -172,15 +209,24 @@ export class VerbService {
    * question about a shared thing goes to its live coordinator first.
    */
   async ask(input: unknown): Promise<{ id: string }> {
-    const { session, text } = validateVerbInput('ask', input);
+    const { session, text, options, thread } = validateVerbInput('ask', input);
     const caller = this.caller(session);
+    // T510: a call held for the human this turn is already its card; a second ask is a second card.
+    if (this.options.heldCalls?.heldCallThisTurn(session) !== undefined) {
+      throw new Error(HELD_CALL_ASK_REFUSAL);
+    }
+    // T503: asked in a chat thread: it must name one on the node (checked before the question exists).
+    if (thread !== undefined) this.options.store.assertChatThread(caller.stream, thread);
     const coordinator = this.coordinatorFirst(caller.stream, text);
     const question = await this.options.questions.raise({
       stream: caller.stream,
       raised_by: session as AgentId,
       session,
       text,
+      // T361: choices the operator can click.
+      ...(options !== undefined ? { options } : {}),
       ...(coordinator !== undefined ? { coordinator } : {}),
+      ...(thread !== undefined ? { thread } : {}),
     });
     if (coordinator !== undefined) {
       const child = this.options.streams.get(caller.stream);
@@ -213,6 +259,8 @@ export class VerbService {
       return undefined;
     const plan = plans.get(parentId);
     if (plan === undefined) return undefined;
+    // D42: a conversation under a coordinator is the human's talk, not a part: its questions go to the human.
+    if (isConversationNode(streams.get(node), streams.list())) return undefined;
     const parent = streams.get(parentId);
     if (!parent.sessions.some((s) => s.role === 'coordinator' && LIVE.has(s.status)))
       return undefined;
@@ -241,16 +289,108 @@ export class VerbService {
     return this.options.questions.answer(q.id, { answer, by: `agent:${session}` });
   }
 
-  async progress(input: unknown): Promise<ThreadEntry> {
-    const { session, text } = validateVerbInput('progress', input);
+  /**
+   * T502 (D62, design/chat-threads.md §5): the operator wrote back about a
+   * choice question instead of picking, and that decided it: the agent
+   * closes its own node's open question with what was decided (`settled`).
+   * Nothing is delivered back: the agent said it.
+   */
+  async settleQuestion(input: unknown): Promise<{ id: string; resolved_as: string }> {
+    const { session, question, answer } = validateVerbInput('settle_question', input);
+    if (this.isDirector(session)) {
+      throw new Error('settle_question: the Director asks no node questions to settle');
+    }
     const caller = this.caller(session);
+    if (!isAgentRole(caller.role)) {
+      throw new Error(
+        `settle_question: a ${caller.role} session asks no questions; only a node's own agent settles one`,
+      );
+    }
+    const q = this.options.questions.get(question as QuestionId);
+    if (q.stream !== caller.stream) {
+      throw new Error(`settle_question: ${question} was not asked on your node`);
+    }
+    if (q.status !== 'open') {
+      throw new Error(`settle_question: ${question} is already ${q.resolved_as ?? 'answered'}`);
+    }
+    const saved = await this.options.questions.settle(q.id, {
+      answer,
+      session,
+      stream: caller.stream,
+    });
+    return { id: saved.id, resolved_as: saved.resolved_as ?? 'settled' };
+  }
+
+  async progress(input: unknown): Promise<ThreadEntry> {
+    const { session, text, thread } = validateVerbInput('progress', input);
+    const caller = this.caller(session);
+    // T503 (§4.2): the agent says which thread its line answers; the store refuses one not on its node.
+    if (thread !== undefined) this.options.store.assertChatThread(caller.stream, thread);
     await this.options.streams.update('agent', caller.stream, { agent: { progress: text } });
+    // T484: a turn with a progress call isn't quiet.
+    if (isAgentRole(caller.role)) {
+      await this.options.escalation
+        ?.progressed(caller.stream)
+        .catch((err) => console.error('escalation: progress not counted:', err));
+    }
     return this.options.streams.appendThread(
       'agent',
       caller.stream,
-      { kind: 'line', body: text },
+      { kind: 'line', body: text, ...(thread !== undefined ? { thread } : {}) },
       session,
     );
+  }
+
+  /**
+   * T478: the agent says its node's whole goal is done. Recorded with its
+   * session (auto-close counts it only for the turn that said it) and on the
+   * thread; the node closes itself, if set to, when that turn ends.
+   */
+  async goalMet(input: unknown): Promise<ThreadEntry> {
+    const { session, summary } = validateVerbInput('goal_met', input);
+    const caller = this.caller(session);
+    const node = this.options.streams.get(caller.stream);
+    if (node.goal === undefined) {
+      throw new Error('goal_met: this node has no goal yet; the operator sets one first');
+    }
+    await this.options.streams.update('agent', caller.stream, {
+      agent: { goal_met: { session, at: new Date().toISOString(), summary } },
+    });
+    return this.options.streams.appendThread(
+      'agent',
+      caller.stream,
+      { kind: 'line', body: `goal met: ${summary}`.slice(0, 800) },
+      session,
+    );
+  }
+
+  /**
+   * T484 (D56, design/model-routing.md §6): the node's own agent asks to
+   * step up the model ladder at its next start. It says why; it never names
+   * a model (the verb takes nothing else), and the step stays within the
+   * operator's preset models and effort ceiling. A line on the thread, then
+   * the watcher's answer in words.
+   */
+  async escalate(input: unknown): Promise<{ result: string }> {
+    const { session, why } = validateVerbInput('escalate', input);
+    if (this.isDirector(session)) {
+      throw new Error('escalate: the Director has no node to step up; its model is the operator’s');
+    }
+    const caller = this.caller(session);
+    if (!isAgentRole(caller.role)) {
+      throw new Error(
+        `escalate: a ${caller.role} session cannot ask for a stronger model; only a node's own agent can`,
+      );
+    }
+    const escalation = this.options.escalation;
+    if (escalation === undefined) throw new Error('escalate: model choice is not available here');
+    await this.options.streams.appendThread(
+      'agent',
+      caller.stream,
+      { kind: 'line', body: `asks for a stronger model: ${why}`.slice(0, 800) },
+      session,
+    );
+    return { result: await escalation.asked(caller.stream, session, why) };
   }
 
   /** A finding goes to the thread (the narrative) and to `agent.findings` (the list the cockpit groups), §4.2. */
@@ -403,18 +543,96 @@ export class VerbService {
     );
   }
 
+  /**
+   * T455 (D45, projects-design §7): a conversation's or a work node's own
+   * agent proposes adding a registered repo it can read to its node. It
+   * writes one `proposal` line whose `ref` names the repo; the cockpit shows
+   * **Add <repo>** on it, and only that click reshapes the node (T205).
+   */
+  async proposeRepo(input: unknown): Promise<ThreadEntry> {
+    const { session, repo, why } = validateVerbInput('propose_repo', input);
+    if (this.isDirector(session)) {
+      throw new Error(
+        'propose_repo: the Director has no node to add a repo to; draft or create a node on that repo instead',
+      );
+    }
+    const caller = this.caller(session);
+    if (caller.role !== 'worker') {
+      throw new Error(
+        caller.role === 'coordinator'
+          ? 'propose_repo: a coordinator adds a part on another repo with add_child, not propose_repo'
+          : `propose_repo: a ${caller.role} session cannot propose a repo; only a node's own agent can`,
+      );
+    }
+    const node = this.options.streams.get(caller.stream);
+    if (node.archived === true || node.human.status === 'closed') {
+      throw new Error('propose_repo: this node is closed; nothing can be added to it');
+    }
+    if (node.human.status === 'landed') {
+      throw new Error('propose_repo: this node is merged; propose a follow-up with propose_next');
+    }
+    if (node.helper_of !== undefined) {
+      throw new Error("propose_repo: a helper works only in its host node's repo");
+    }
+    const all = this.options.streams.list();
+    const role = nodeRole(node, liveChildrenOf(node.id, all), all);
+    if (role === 'project') {
+      throw new Error(
+        "propose_repo: this is a project's root; its repos are set in the project's settings, not proposed",
+      );
+    }
+    if (role === 'coordinating') {
+      throw new Error('propose_repo: this node coordinates parts; its coordinator adds a part');
+    }
+    if (node.repo === repo) throw new Error(`propose_repo: this node already works in ${repo}`);
+    // A repo the node's project can't read reads exactly as one that isn't registered.
+    const repos = this.options.store.getRepos();
+    const readable = (name: string) =>
+      Object.hasOwn(repos, name) && canReadRepo(repos, name, node.project);
+    if (!readable(repo)) {
+      const names = Object.keys(repos)
+        .filter((name) => name !== node.repo && readable(name))
+        .sort();
+      throw new Error(
+        `propose_repo: no registered repo named ${repo} that this node can read; ${
+          names.length === 0
+            ? 'there is none to propose'
+            : `it can read ${names.slice(0, 20).join(', ')}`
+        }`,
+      );
+    }
+    const ref = repoProposalRef(repo);
+    const thread = this.options.store.readThread(node.id);
+    if (thread.some((entry) => entry.kind === 'proposal' && entry.ref === ref)) {
+      throw new Error(
+        `propose_repo: you already proposed ${repo} on this node; the human adds it from that line`,
+      );
+    }
+    return this.options.streams.appendThread(
+      'agent',
+      caller.stream,
+      { kind: 'proposal', body: `Proposes adding **${repo}**: ${why}`.slice(0, 800), ref },
+      session,
+    );
+  }
+
   /** The tail of this session's own stream thread. */
   readStream(input: unknown): { stream: string; entries: ThreadEntry[]; total: number } {
     const { session, limit } = validateVerbInput('read_stream', input);
     const caller = this.caller(session);
     const page = this.options.streams.readThread(caller.stream, { limit: 500 });
     const take = limit ?? 20;
+    // T504 (D65, §6a): an archived thread is never re-sent, nor the cockpit's own records.
+    const lines = page.entries.some((e) => e.op !== undefined)
+      ? linesForAgent(
+          page.entries,
+          [...(this.options.events?.activityFor?.(caller.stream, 1000) ?? [])].reverse(),
+        )
+      : page.entries;
     return {
       stream: caller.stream,
       // T330: an agent line may run to 16k chars; the tool result quotes the head.
-      entries: page.entries
-        .slice(-take)
-        .map((entry) => ({ ...entry, body: quoteThreadBody(entry.body) })),
+      entries: lines.slice(-take).map((entry) => ({ ...entry, body: quoteThreadBody(entry.body) })),
       total: page.total,
     };
   }
@@ -459,7 +677,8 @@ export class VerbService {
     const { session, path } = validateVerbInput('lookup_knowledge', input);
     const caller = this.caller(session);
     const rel = lookupPath(path, caller.worktree);
-    const items = this.options.rules?.inScope(caller.stream, undefined, [rel]) ?? [];
+    const items =
+      this.options.rules?.inScope(caller.stream, undefined, rel === '.' ? undefined : [rel]) ?? [];
     return {
       path: rel,
       items: items.map((item) => ({
@@ -653,11 +872,18 @@ export class VerbService {
 
   async startNode(input: unknown): Promise<unknown> {
     const { session, node } = validateVerbInput('start_node', input);
+    // T443: a coordinator starts its own children too, gated like `add_child`.
+    if (!this.isDirector(session)) {
+      return this.gated(session, 'start_node', { action: 'start_node', node });
+    }
     return this.directorGated(session, 'start_node', { action: 'start_node', node });
   }
 
   async restartNode(input: unknown): Promise<unknown> {
     const { session, node } = validateVerbInput('restart_node', input);
+    if (!this.isDirector(session)) {
+      return this.gated(session, 'restart_node', { action: 'restart_node', node });
+    }
     return this.directorGated(session, 'restart_node', { action: 'restart_node', node });
   }
 
@@ -768,5 +994,9 @@ export function verbHandlers(
     create_node: (input) => service.createNode(input),
     start_node: (input) => service.startNode(input),
     restart_node: (input) => service.restartNode(input),
+    propose_repo: (input) => service.proposeRepo(input),
+    goal_met: (input) => service.goalMet(input),
+    escalate: (input) => service.escalate(input),
+    settle_question: (input) => service.settleQuestion(input),
   };
 }

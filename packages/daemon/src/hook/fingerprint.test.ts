@@ -57,3 +57,39 @@ describe('fingerprintCall — what an approval is allowed to unlock (T138)', () 
     expect(fingerprintCall({ tool_input: { command: 'git push' } }, WORKTREE)).toBeUndefined();
   });
 });
+
+describe('T506: a multi-file edit (Codex apply_patch)', () => {
+  test('every path is in the fingerprint; a single path keeps the old one', () => {
+    const one = fingerprintCall(
+      {
+        tool_name: 'Edit',
+        tool_input: { file_path: '/w/package.json', file_paths: ['/w/package.json'] },
+      },
+      '/w',
+    );
+    expect(one).toEqual(
+      fingerprintCall({ tool_name: 'Edit', tool_input: { file_path: '/w/package.json' } }, '/w'),
+    );
+    const two = fingerprintCall(
+      {
+        tool_name: 'Edit',
+        tool_input: {
+          file_path: '/w/package.json',
+          file_paths: ['/w/package.json', '/w/bun.lock'],
+        },
+      },
+      '/w',
+    );
+    expect(two?.path).toBe('/w/package.json');
+    expect(two?.fingerprint).not.toBe(one?.fingerprint);
+    // The same files in another order are the same call.
+    const swapped = fingerprintCall(
+      {
+        tool_name: 'Edit',
+        tool_input: { file_path: '/w/bun.lock', file_paths: ['/w/bun.lock', '/w/package.json'] },
+      },
+      '/w',
+    );
+    expect(swapped?.fingerprint).toBe(two?.fingerprint);
+  });
+});

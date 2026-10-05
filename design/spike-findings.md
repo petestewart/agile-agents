@@ -99,6 +99,238 @@ Recommendation: **support Pi via its RPC mode plus an `agile` extension, not via
 
 Pi is in. Decision: adapter = `pi-acp` (or fork) as the ACP shim, all enforcement in an `agile` extension installed to `~/.pi/agent/extensions/` (the Terma install mechanism), self-guarding on an env var the daemon sets.
 
+### C5. Codex's own hooks under codex-acp (T506, Pete's machine, 2026-10-01)
+
+Codex CLI now has hooks (`PreToolUse`, …; learn.chatgpt.com/docs/hooks), which
+C2/C3 never tested. `spike/permission-matrix.ts --vendor codex` with codex-acp
+1.10.0 (the daemon's pin) running the installed Codex through `CODEX_PATH`.
+Reports: `spike-out/codex-*-perm*.json`.
+
+**The first round of hook runs is void.** Five runs (project hook, project hook
++ bypass, user hook, user hook + bypass, `--mode read-only`) all saw 0 hook
+calls, but the spike's hook script itself was broken: the `"\n"` in its log
+line was written as a raw newline inside a JS string, so the generated hook
+never parsed, and its path check compared raw paths (macOS `/var/folders` is
+`/private/var/folders`). Fixed and checked offline (the generated hook parses,
+allows `echo` with exit 0, denies `curl` with exit 2 and the reason, logs every
+call); the matcher is now the docs' `Bash` (it was "").
+
+**Second round (fixed hook, user-level `~/.codex/hooks.json`, matcher `Bash`,
+`--dangerously-bypass-hook-trust`):**
+
+| run | how Codex ran | hook calls | curl |
+|---|---|---|---|
+| `--scenario exec` (no bridge) | `codex exec` | 2 (both shell commands) | **blocked**: "Command blocked by PreToolUse hook: AGILE-GATE: …", and the model quoted it |
+| `--scenario perm` through codex-acp 1.10.0 | `codex app-server` | **0** (9 tool calls over ACP) | ran |
+
+Reports: `codex-defaultmode-exec-userhooks-bypass.json`,
+`codex-exec-hook-calls.jsonl`, `codex-defaultmode-perm-userhooks-bypass.json`.
+
+- **Codex's hooks work.** Under `exec` the hook got `session_id, turn_id,
+  transcript_path, cwd, hook_event_name, model, permission_mode, tool_name,
+  tool_input, tool_use_id`; `tool_name` is `Bash`, `tool_input.command` is
+  the shell line; exit 2 with a stderr reason blocks the call and the model
+  sees the reason. `cwd` came as `/private/var/…` (the realpath bug was real).
+- **Under codex-acp 1.10.0 they don't run.** Same config, same hook, same
+  bypass flag, but Codex started as `app-server` called the hook zero times.
+  Not yet told apart: `app-server` ignores hooks, or it skips them as
+  untrusted because it ignores the bypass flag (an untrusted hook is skipped
+  silently). The spike now keeps Codex's own stderr under the bridge
+  (`codexStderrTail`) to tell these apart.
+- The `echo hi > out.txt` refusal under `exec` was Codex's own exec sandbox
+  ("operation not permitted"), not the hook. Under codex-acp's `agent` mode
+  the same write ran.
+- Codex warns that `[features].codex_hooks` is deprecated; the flag is now
+  `[features].hooks`. The daemon must write the new name.
+
+`--bypass-at end` (the flag after `app-server`) is settled: Codex exits at
+once with code 2, so the flag goes before the subcommand only.
+
+**codex-acp 2.1.0 changes nothing** (same user hook + bypass, Pete's run
+2026-10-01): Codex again started as `app-server`, 9 tool calls over ACP,
+**0 hook calls**, `curl` ran, and Codex wrote nothing to stderr (no trust or
+hook warning). 2.1.0 adds a fourth mode, `workspace-write`, and still raises
+no ACP permission requests.
+
+**Round 3 (2026-10-02, Pete's machine): a project hook in a kept project
+under `~` fires under the bridge.** `--scenario perm --hooks --fixture
+~/agile-codex-spike` (project `.codex/hooks.json`, matcher `Bash`, **no
+bypass flag**), codex-acp 1.10.0, Codex as `app-server`:
+
+| run | hook calls | curl | model saw the reason |
+|---|---|---|---|
+| perm, before trusting anything in Codex | 7 | **blocked** | yes, quoted "AGILE-GATE: …" |
+| perm, after trusting the project and `/hooks` | 7 | **blocked** | yes |
+| exec (control) | 2 | **blocked** | yes |
+
+Reports: `codex-defaultmode-perm-hooks-fixture.json`,
+`codex-defaultmode-exec-hooks-fixture.json` (Pete's `spike-out/`).
+
+- **Codex's PreToolUse hook gates Codex under codex-acp.** Exit 2 with a
+  reason blocks the call; Codex logs `ERROR codex_core::tools::router:
+  error=Command blocked by PreToolUse hook: …` and the model gets the
+  reason. So `app-server` runs hooks, and T506 can install one.
+- **A blocked call never shows up over ACP.** The curl step is missing
+  from the ACP tool list (8 tool calls for 9 steps, "not attempted"). The
+  daemon learns of a denial from its own hook, not from ACP.
+- **7 hook calls with matcher `Bash`**: the shell steps, including Codex's
+  own reads and search (it runs them as shell commands). The two edits
+  (`Editing files`, `apply_patch`) did not reach a `Bash` hook: the
+  daemon's hooks.json needs an `apply_patch` (edit) matcher too.
+- **It fired before anything was trusted in Codex.** The first run came
+  before `/hooks` and the project trust prompt, and the earlier runs in a
+  fresh temp dir (`/var/folders/…`, project hook, with or without the
+  bypass) saw 0 calls. So what decides it is where the project is, not
+  the per-hook trust: most likely a trusted parent path in Pete's
+  `~/.codex/config.toml` `[projects]` (to confirm). The user-level hook in
+  `~/.codex/hooks.json` saw 0 calls under the bridge even with the bypass
+  flag (it fired under `exec` with the flag), so the bypass flag appears
+  to do nothing under `app-server`.
+- Consequence for T506: the hook goes in `<worktree>/.codex/hooks.json`,
+  and the worktree must be a trusted Codex project. The daemon checks the
+  hook ran (fail-closed) for the case where it isn't.
+
+**Round 4 (2026-10-02, live check + `--worktree`):** on a real Codex node
+the daemon's T506 hook in the node's worktree never ran (the fail-closed check
+stopped the agent). Spike `--worktree` (agent in `<fixture>/.worktrees/w1`, a
+git worktree, as the daemon runs it): hook in the worktree's `.codex/` → **0**
+calls, curl ran; hook in the main repo's `.codex/` (`--hooks-at main`) → **9**
+calls, curl blocked with our reason. For a git worktree Codex loads project
+hooks from the main repo root. T511 moves the daemon's hook there.
+**Corrected by round 5:** this was confounded by Codex's per-hook trust. The
+repo-root hook had been trusted in `/hooks` before; the worktree's hook was a
+new file at a new path, so it was untrusted and skipped silently. Once
+trusted, the repo-root hook does **not** fire for a session in
+`<repo>/.worktrees/<id>`, so the conclusion above (and T511) is wrong.
+
+What those runs still show (none of it depends on the hook):
+
+- **codex-acp starts Codex as `<CODEX_PATH> app-server`**, and Codex accepts
+  `--dangerously-bypass-hook-trust` before `app-server` (the sessions ran
+  normally), so the daemon can pass the flag through a `CODEX_PATH` wrapper.
+- **Modes changed since C2**: `read-only` is now "Ask for approval: always ask
+  to edit external files and use the internet", `agent` "Approve for me"
+  (`_meta.kind: auto_review`). **Still zero ACP permission requests in both**:
+  in `read-only` the edits, `npm test` and `curl` all ran unasked. codex-acp
+  still never asks.
+- The docs say an untrusted hook is skipped, not blocking (fail-open), and a
+  project hook needs a trusted project layer: the daemon must check that the
+  hook ran (T506's fail-closed check).
+
+**As built (T506, 2026-10-02).** For every Codex session (worker,
+reviewer, Director) the daemon writes `<worktree>/.codex/hooks.json`
+(`PreToolUse` matchers `Bash`, `apply_patch|Edit|Write`, `mcp__.*`, each
+running `.codex/agile-pre-tool-use.sh` → `agile hook pre-tool-use --vendor
+codex || exit 2`), git-excluded like `.claude/`. The CLI marks the input
+`agile_vendor: codex`; the daemon reads `Bash` as Claude's, `apply_patch` as
+an `Edit` of every path in the patch (its input is unmeasured: the patch text
+is read from `tool_input.command`, `input` or `patch`; no path found ⇒ denied
+as an edit of unknown target) and passes MCP tools as named; a deny is exit 2
+with the reason on stderr. Trust (option b): the start reads
+`$CODEX_HOME/config.toml` (else `~/.codex`), never writes it, and refuses a
+worktree no `trust_level = "trusted"` project covers ("Codex's gate isn't
+trusted here: trust <repo> in Codex"). Fail closed: when a session's
+`execute`/`edit` calls over ACP outnumber its hook records by 2, it is stopped
+("Codex ran a command its gate never saw: …"), blocked in Needs me, not
+restarted. Codex left `UNCHECKED_COMMAND_VENDORS` and joined
+`HOOKED_VENDORS`. Live check: LIVE-CHECKLIST §24.
+
+**As built (T511, 2026-10-02), after round 4.** A Codex session in a node's
+worktree gets the hook at the root of the repo the worktree belongs to
+(`<repo>/.codex/hooks.json` and `agile-pre-tool-use.sh`; the repo path is the
+node's `repos.yaml` entry, which the attach service already has; no copy in the
+worktree). Someone else's `PreToolUse` matchers and other events in that file
+are kept, ours replaced; an unchanged file is not rewritten and a changed one is
+renamed into place, so every Codex node of the repo shares one file. `.codex/`
+goes in the repo's `info/exclude` (the common git dir, which its worktrees
+share); a repo tracking either file is refused. The script runs `agile hook
+pre-tool-use --vendor codex --repo <repo>`: a call whose input `cwd` (realpath'd)
+is not under `<repo>/.worktrees/` is allowed with no daemon call (the operator's
+own Codex in the repo), anything else, including a missing `cwd`, is gated
+fail-closed as before. A worktree not under `<repo>/.worktrees/` is refused at
+start. Trust is checked at the repo root. A session with no worktree (the
+Director, a node with no repo) keeps T506's hook in its own `cwd`. Not yet
+confirmed live: LIVE-CHECKLIST §24 re-check. **Failed live (round 5); superseded by T512.**
+
+**Round 5 (2026-10-05, live, Pete's machine, Codex CLI 0.159.3).** T511 on a
+real node, then the user-level hook:
+
+- **Codex trusts each hook separately.** `/hooks` lists a new or changed hook
+  as "review required" and Codex skips it, silently, until it is trusted.
+  Trusting one writes `[hooks.state."<abs hooks.json path>:pre_tool_use:<i>:<j>"]`
+  with `trusted_hash = "sha256:…"` to `$CODEX_HOME/config.toml`: `<i>` is the
+  entry's index in the file's `PreToolUse` list, `<j>` the hook's index in that
+  entry's `hooks`. So a hook is re-reviewed when its file, its index or its
+  content changes. This is what confounded round 4.
+- **A trusted project hook at the repo root does not fire for a worktree.**
+  With `<repo>/.codex/hooks.json` trusted, it fired for a Codex session started
+  at the repo root, but not for one in `<repo>/.worktrees/<id>`, where nodes
+  run: every T511 node was stopped by the fail-closed check.
+- **A user-level hook does.** Three entries in `~/.codex/hooks.json` (matchers
+  `Bash`, `apply_patch|Edit|Write`, `mcp__.*`, each running the gate script),
+  trusted once in `/hooks`, gated a fresh worktree node: `ls` was allowed;
+  `curl` was denied with "curl is not an allowed command for the engineer
+  role"; there was no fail-closed stop. `codex exec` in a folder outside every
+  repo added no `hook_decision` (the script let it through without the daemon).
+- Not measured: whether a user hook runs in a project Codex doesn't trust
+  (so the T506 project-trust check stays), and why round 3's project hook
+  fired before anything was trusted (its `/hooks` state then is not known).
+
+**As built (T512, 2026-10-05).** The gate is the three user-level entries,
+which name only `<home>/agile-pre-tool-use.sh` (the agile home), so they never
+change and Codex's trust in them holds. The operator installs them with
+`agile codex install-gate` (the daemon merges them into `$CODEX_HOME/hooks.json`,
+created if missing, keeping other events and other people's matchers, writing
+nothing when all three are already there, refusing a file that isn't valid
+JSON), then trusts each in Codex's `/hooks`; the daemon never writes Codex's
+`hooks.json` on its own, nor ever `config.toml`. The script is rewritten (only
+when its bytes change, by a rename, mode 0755) at every Codex start and by
+`install-gate`: it runs `agile hook pre-tool-use --vendor codex --home <home>
+--repo <root>…` with every registered repo root. The CLI decides locally, from
+its arguments and the input's `cwd` (every path form, realpath'd): a call
+strictly inside any `<root>/.worktrees/`, at or under the home (the Director
+and nodes with no repo run in `<home>/sessions/<id>`), or with a missing or
+relative `cwd` is gated through the daemon, fail-closed (exit 2 with the daemon
+down); any other is exit 0 with no daemon contact, so the operator's own Codex
+anywhere works with the daemon stopped. A Codex start checks, in order: the
+T506 project trust of the repo root (the session `cwd` with no repo); the three
+entries in `hooks.json` (recognised by the script's file name); a `hooks.state`
+entry with a string `trusted_hash` for each one's `<path>:pre_tool_use:<i>:<j>`
+(`config.toml` parsed with `Bun.TOML.parse`; the path accepted as given,
+realpath'd or `~`-expanded); and that the CLI would gate the session's `cwd`.
+Each failure refuses the start ("Codex's gate isn't installed: run `agile codex
+install-gate`, then trust it in Codex (/hooks)", "Codex's gate isn't trusted
+yet: in Codex run /hooks and trust the three agile gate hooks"), a stop card in
+Needs me. Then it writes the script and sweeps T506/T511's files from the
+repo root (`install-gate` sweeps every registered repo): our entries out of
+`<repo>/.codex/hooks.json` (the file deleted when nothing else is left), the
+old script deleted, the `.codex` dir too when empty; a file that isn't valid
+JSON, or that git tracks, is left as it is. No hook is written in a repo, a
+worktree or a session dir any more. The fail-closed watch stays as the
+backstop (a stale trust hash, a hook Codex skipped). `agile codex status` and
+a line in `agile daemon status` say whether the gate is installed and trusted,
+per entry, never the hash. Live check: LIVE-CHECKLIST §24.
+
+### C6. Compaction routes (T504, D65): assumed, not measured
+
+T504 needed to know, per vendor, how the daemon can make the agent compact
+its context with instructions ("leave out the archived threads"). None of
+this was measured: the work was done with no vendor login (a cloud
+session). What the code assumes, and LIVE-CHECKLIST §23 measures:
+
+| vendor | Compact now (the operator's button) | its own auto-compaction | what T504 does |
+|---|---|---|---|
+| Claude Code | `/compact [instructions]`, from Claude Code's own docs; claude-agent-acp advertises `compact` in `available_commands_update` (LIVE-CHECKLIST §11, T461). Not checked that the instructions reach the summary through the ACP bridge. | `PreCompact` hook in Claude Code's hook list; whether its output can steer the summary is not known | offers Compact now: `/compact Leave out the archived threads …: the thread on "<passage>"; …` as a slash line (T461 pass-through), only while the agent runs and advertises `compact` (`COMPACT_COMMANDS`, `compactCommandFor`) |
+| Codex | the TUI has `/compact`; whether it takes instructions, and whether codex-acp advertises or runs it, is unknown | `PreCompact` is in Codex's hook list (learn.chatgpt.com/docs/hooks); hooks under codex-acp are in doubt (C5) | not offered |
+| Gemini CLI | has a compression command; its name over ACP and whether it takes instructions are unknown | unknown | not offered |
+| Cursor, Grok, Antigravity, Pi | unknown (Pi's RPC mode has `compact`, C4, but the daemon talks to it over ACP) | unknown | not offered |
+
+Nothing hooks a vendor's own auto-compaction yet: the `PreCompact` route is
+open until §23 shows a hook can change the summary. Where no route is used,
+Archive's one-time notice (a quiet `thread_archived` event) and the briefs
+that leave archived threads out are what keeps them out; Archive and forget
+(a fresh start, no `session/load`) is the only sure way.
+
 ### D. Vendor status
 
 | vendor | ACP surface | verified | notes |

@@ -48,7 +48,8 @@ function makeRepo(prefix: string): string {
 }
 
 function roleOf(id: string): string {
-  return nodeRole(streams.get(id), liveChildrenOf(id, streams.list()));
+  const all = streams.list();
+  return nodeRole(streams.get(id), liveChildrenOf(id, all), all);
 }
 
 function bodies(id: string): string[] {
@@ -105,6 +106,53 @@ afterEach(async () => {
   await store.flush();
   store.close();
   for (const dir of [home, scratch, api, web]) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('T473: back to talk, and back to work', () => {
+  test('a work node goes back to talk with its work parked; adding the repo again resumes the same branch and commits', async () => {
+    const node = await conversation();
+    const { node: working } = await reshape.addRepo(node.id, 'api');
+    const branch = working.branch as string;
+    const worktree = working.worktree as string;
+    writeFileSync(join(worktree, 'sale.txt'), 'sale\n');
+    git(['add', '-A'], worktree);
+    git(['commit', '-q', '-m', 'sale prices'], worktree);
+
+    const talking = await reshape.toTalk(node.id);
+    expect(roleOf(node.id)).toBe('conversation');
+    expect(talking.repo).toBeUndefined();
+    expect(talking.branch).toBeUndefined();
+    expect(talking.worktree).toBeUndefined();
+    expect(talking.parked).toEqual({ repo: 'api', branch, worktree });
+    // Nothing on disk is touched.
+    expect(existsSync(join(worktree, 'sale.txt'))).toBe(true);
+    expect(bodies(node.id).at(-1)).toContain('back to talk: the work on api is kept');
+    await expect(reshape.toTalk(node.id)).rejects.toThrow('only a work node');
+
+    const { node: back } = await reshape.addRepo(node.id, 'api');
+    expect(roleOf(node.id)).toBe('work');
+    expect(back.branch).toBe(branch);
+    expect(back.worktree).toBe(worktree);
+    expect(back.parked).toBeUndefined();
+    expect(git(['log', '-1', '--format=%s'], worktree)).toBe('sale prices');
+    expect(bodies(node.id).at(-1)).toContain('back to its work on');
+  }, 30_000);
+
+  test('a parked worktree removed by hand is checked out again from its branch; another repo starts fresh', async () => {
+    const node = await conversation();
+    const { node: working } = await reshape.addRepo(node.id, 'api');
+    await reshape.toTalk(node.id);
+    git(['worktree', 'remove', '--force', working.worktree as string], api);
+    const { node: back } = await reshape.addRepo(node.id, 'api');
+    expect(back.branch).toBe(working.branch);
+    expect(existsSync(back.worktree as string)).toBe(true);
+
+    await reshape.toTalk(node.id);
+    const { node: elsewhere } = await reshape.addRepo(node.id, 'web');
+    expect(elsewhere.repo).toBe('web');
+    // The api work stays parked until api comes back.
+    expect(elsewhere.parked?.repo).toBe('api');
+  }, 30_000);
 });
 
 describe('T205 + Repo in place', () => {
@@ -169,10 +217,26 @@ describe('T205 + Repo in place', () => {
       expect(bodies(part.id)).toContain(
         `waiting for the plan: this part starts when "Sale prices"'s plan is approved`,
       );
+      // T347 (D36 D12): the "read it by id" pointer is for the part's agent only.
+      const pointer = streams
+        .readThread(part.id, { limit: 50 })
+        .entries.find((e) => e.body.endsWith('read it by id'));
+      expect(pointer?.agent_only).toBe(true);
+      expect(
+        streams
+          .readThread(part.id, { limit: 50 })
+          .entries.filter((e) => e.body.startsWith('waiting for the plan'))
+          .every((e) => e.agent_only === undefined),
+      ).toBe(true);
     }
+    // T446 (audit r7 #6): the tool is named on the agent's line; your thread reads in words.
+    const lines = streams.readThread(node.id, { limit: 50 }).entries;
     expect(
-      bodies(node.id).some((b) => b.includes('wait for the plan: write it with plan_write')),
+      lines.find((e) => e.body.includes('wait for the plan: write it with plan_write'))?.agent_only,
     ).toBe(true);
+    expect(
+      lines.find((e) => e.body.startsWith('The api and web parts wait for the plan'))?.agent_only,
+    ).toBeUndefined();
     // The deliberate stops say why, not an exit code.
     const stops = bodies(node.id).filter((b) => b.startsWith('worker stopped: '));
     expect(stops).toEqual([
@@ -254,7 +318,8 @@ describe('T205 + Repo in place', () => {
     expect(after.branch).toBeUndefined();
     expect(after.worktree).toBeUndefined();
     const [apiPart, webPart] = parts;
-    expect(apiPart?.title).toBe('api part');
+    // T446 (audit r7 #18): a part is named for its node, then its repo.
+    expect(apiPart?.title).toBe(`${node.title} · api`);
     expect(apiPart?.parent).toBe(node.id);
     expect(apiPart?.branch).toBe(work.branch);
     expect(apiPart?.worktree).toBe(wt);
@@ -263,7 +328,7 @@ describe('T205 + Repo in place', () => {
     expect(apiPart?.sessions.map((s) => s.id).slice(0, sessionIds.length)).toEqual(sessionIds);
     expect(apiPart?.sessions.at(-1)?.worktree).toBe(wt);
     expect(roleOf(apiPart?.id ?? '')).toBe('work');
-    expect(webPart?.title).toBe('web part');
+    expect(webPart?.title).toBe(`${node.title} · web`);
     expect(webPart?.repo).toBe('web');
     expect(roleOf(webPart?.id ?? '')).toBe('work');
     // The thread pointer, and the chat carries on at the node as the coordinator.
@@ -303,6 +368,34 @@ describe('T205 + Repo in place', () => {
     expect(roleOf(node.id)).toBe('work');
   }, 30_000);
 
+  test('D42: a conversation with a tangent + api becomes a work node in place; the tangent stays a conversation', async () => {
+    const node = await conversation();
+    const tangent = await streams.create('human', {
+      title: 'Why slow?',
+      goal: 'why are prices slow?',
+      parent: node.id,
+    });
+    await attach.attach(node.id);
+    expect(roleOf(node.id)).toBe('conversation');
+
+    const { node: after, parts } = await reshape.addRepo(node.id, 'api');
+
+    // Grown into work right there: its thread, a branch and worktree; no parts, no coordinator.
+    expect(parts).toEqual([]);
+    expect(roleOf(node.id)).toBe('work');
+    expect(roleOf(tangent.id)).toBe('conversation');
+    expect(after.repo).toBe('api');
+    expect(existsSync(after.worktree ?? '')).toBe(true);
+    expect(attach.handleFor(node.id, 'coordinator')).toBeUndefined();
+    const live = streams.get(node.id).sessions.find((s) => s.status === 'running');
+    expect(live?.role).toBe('worker');
+    expect(live?.worktree).toBe(after.worktree);
+    expect(bodies(node.id).some((b) => b.startsWith('repo added: api; now a work node on'))).toBe(
+      true,
+    );
+    expect(attach.handleFor(tangent.id)).toBeUndefined();
+  }, 60_000);
+
   test('coordinating + another repo adds one more part', async () => {
     const node = await conversation();
     await reshape.addRepo(node.id, 'api');
@@ -311,7 +404,7 @@ describe('T205 + Repo in place', () => {
 
     const { parts } = await reshape.addRepo(node.id, 'docs');
 
-    expect(parts.map((p) => p.title)).toEqual(['docs part']);
+    expect(parts.map((p) => p.title)).toEqual([`${node.title} · docs`]);
     expect(liveChildrenOf(node.id, streams.list())).toHaveLength(3);
   }, 30_000);
 

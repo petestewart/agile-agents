@@ -15,12 +15,24 @@ export function printJson(value: unknown): void {
   console.log(JSON.stringify(value, null, 2));
 }
 
-/** Renders `rows` as a simple left-aligned column table (no dependency, no ANSI). */
-export function printTable(headers: string[], rows: string[][]): void {
+/**
+ * Renders `rows` as a simple left-aligned column table (no dependency, no
+ * ANSI), never padding the last column. `notes[i]`, when given, are lines
+ * printed as they are under row `i` (T494: long words go there, not in a
+ * column every row pads to).
+ */
+export function printTable(headers: string[], rows: string[][], notes?: string[][]): void {
   const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length)));
-  const line = (cells: string[]) => cells.map((c, i) => c.padEnd(widths[i] ?? 0)).join('  ');
+  const line = (cells: string[]) =>
+    cells
+      .map((c, i) => c.padEnd(widths[i] ?? 0))
+      .join('  ')
+      .trimEnd();
   console.log(line(headers));
-  for (const row of rows) console.log(line(row));
+  rows.forEach((row, i) => {
+    console.log(line(row));
+    for (const note of notes?.[i] ?? []) console.log(note);
+  });
 }
 
 /** A minimal `key: value` block for a single-object human view. */

@@ -38,9 +38,10 @@ import {
   PlanWriteFieldsSchema,
 } from './plan';
 import { ProjectIdSchema, ProjectNameSchema } from './project';
-import { QuestionIdSchema } from './question';
+import { QuestionChoicesSchema, QuestionIdSchema } from './question';
+import { RepoNameSchema } from './repos';
 import { RoutedEventIdSchema } from './routed-event';
-import { StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
+import { ChatThreadIdSchema, StreamFindingSeveritySchema, THREAD_BODY_MAX_CHARS } from './stream';
 
 /** Free text an agent writes into the thread — capped like every thread body. */
 const Body = z.string().min(1).max(THREAD_BODY_MAX_CHARS);
@@ -48,11 +49,45 @@ const Body = z.string().min(1).max(THREAD_BODY_MAX_CHARS);
 /** Every verb names the session it is called from. */
 const Session = UlidSchema;
 
-export const AskInputSchema = z.object({ session: Session, text: Body }).strict();
+/**
+ * T503 (D60, design/chat-threads.md §4.2): the chat thread a line goes in,
+ * as a delivered line names it ("In a thread … (thread <id>)"). Absent: the
+ * line is placed by cause (a turn a thread reply woke posts there), else in
+ * the main flow.
+ */
+const Thread = ChatThreadIdSchema;
+
+/** T361: `options` are choices the operator can click; typing an answer is always allowed. */
+export const AskInputSchema = z
+  .object({
+    session: Session,
+    text: Body,
+    options: QuestionChoicesSchema.optional(),
+    thread: Thread.optional(),
+  })
+  .strict();
 export type AskInput = z.infer<typeof AskInputSchema>;
 
-export const ProgressInputSchema = z.object({ session: Session, text: Body }).strict();
+export const ProgressInputSchema = z
+  .object({ session: Session, text: Body, thread: Thread.optional() })
+  .strict();
 export type ProgressInput = z.infer<typeof ProgressInputSchema>;
+
+/** T478: the node's whole goal is done; `summary` is what was done, in a line. */
+export const GoalMetInputSchema = z.object({ session: Session, summary: Body }).strict();
+export type GoalMetInput = z.infer<typeof GoalMetInputSchema>;
+
+/**
+ * T484 (D56, design/model-routing.md §6): the agent asks to step up the
+ * model ladder at its next start. It says why and nothing else: an agent can
+ * ask for a stronger model but never names one (strict: a `model`, `vendor`
+ * or `effort` is refused).
+ */
+export const ESCALATE_WHY_MAX_CHARS = 400;
+export const EscalateInputSchema = z
+  .object({ session: Session, why: z.string().trim().min(1).max(ESCALATE_WHY_MAX_CHARS) })
+  .strict();
+export type EscalateInput = z.infer<typeof EscalateInputSchema>;
 
 export const FindingInputSchema = z
   .object({
@@ -92,6 +127,16 @@ export const ProposeNextInputSchema = z
   .object({ session: Session, title: z.string().min(1), goal: Body })
   .strict();
 export type ProposeNextInput = z.infer<typeof ProposeNextInputSchema>;
+
+/**
+ * T455 (D45, projects-design §7): a conversation's or a work node's agent
+ * proposes adding a registered repo to its node. It only writes a proposal
+ * line (`ref: repo:<name>`); the human's **Add <repo>** click reshapes.
+ */
+export const ProposeRepoInputSchema = z
+  .object({ session: Session, repo: RepoNameSchema, why: Body })
+  .strict();
+export type ProposeRepoInput = z.infer<typeof ProposeRepoInputSchema>;
 
 export const ReadStreamInputSchema = z
   .object({ session: Session, limit: z.number().int().positive().max(500).optional() })
@@ -174,6 +219,17 @@ export const NoteChildInputSchema = z
 export const AnswerChildInputSchema = z
   .object({ session: Session, question: QuestionIdSchema, answer: Body.optional() })
   .strict();
+
+/**
+ * T502 (D62, design/chat-threads.md §5): the operator talked back to a
+ * choice question instead of picking, and that reply decided it: the agent
+ * settles its own question with what was decided. Recorded as the answer
+ * (`resolved_as: settled`); it never wakes the agent.
+ */
+export const SettleQuestionInputSchema = z
+  .object({ session: Session, question: QuestionIdSchema, answer: Body })
+  .strict();
+export type SettleQuestionInput = z.infer<typeof SettleQuestionInputSchema>;
 
 /**
  * T285 (§9.1, §9.5): a child (optionally co-signed by siblings in `with`)
@@ -296,6 +352,10 @@ export const AGENT_VERBS = [
   'create_node',
   'start_node',
   'restart_node',
+  'propose_repo',
+  'goal_met',
+  'escalate',
+  'settle_question',
 ] as const;
 export type AgentVerb = (typeof AGENT_VERBS)[number];
 
@@ -328,16 +388,22 @@ export const AGENT_VERB_SCHEMAS = {
   create_node: CreateNodeInputSchema,
   start_node: StartNodeInputSchema,
   restart_node: RestartNodeInputSchema,
+  propose_repo: ProposeRepoInputSchema,
+  goal_met: GoalMetInputSchema,
+  escalate: EscalateInputSchema,
+  settle_question: SettleQuestionInputSchema,
 } as const satisfies Record<AgentVerb, z.ZodType>;
 
 /** One line of help per verb, published to the model by the MCP bridge. */
 export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
-  ask: 'Ask the operator a question and block until it is answered.',
-  progress: 'Report one line of progress onto the stream thread.',
+  ask: 'Ask the operator a question and block until it is answered ({text, options?: 2–6 short choices, each ≤200 chars, thread?}). With `options` the operator can click one; they may still type their own answer. `thread`: as for `progress`; the question still shows in the main chat too.',
+  progress:
+    'Report one line of progress onto the stream thread ({text, thread?}). `thread` is the id a line from the operator named ("In a thread … (thread <id>)"): pass it to answer in that thread when what you were sent carried lines from several threads; a turn woken by one thread’s line already posts there.',
   finding: 'Record a finding ({severity, file, line?, text}) on the stream.',
   propose_knowledge:
     'Propose a knowledge item for the operator to accept or reject ({text, kind?: standard|architecture|decision, scope?, paths?, examples?: [{action, violates}], enforcement?: tell|action|ship|review, critical?, sources?: [id]}). Scope defaults to this node’s subtree; the Director names it (global, repo:<name>, project:<id>).',
-  propose_next: 'Propose a follow-up stream ({title, goal}); a human creates it.',
+  propose_next:
+    'Propose a follow-up node ({title: a few words, goal: what it should do and what done looks like}); the human creates it in one click, under this node or elsewhere. Use it when work you have found belongs in its own node rather than in yours.',
   read_stream: 'Read the most recent entries of this session’s stream thread.',
   search_docs: 'Search the repo and stream docs visible to this stream.',
   test_run: 'Run a test command in this session’s worktree; failures only, never a green log.',
@@ -353,7 +419,7 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
   contract_write:
     'Coordinator only: create a contract ({title, body ≤800, parties: [child ids]}) or bump one ({id, …, reason, routine?}); a bump of an agreed contract is gated by your autonomy level (routine = additive only).',
   add_child:
-    'Coordinator only: add a child node ({title, goal, repo?}). At Advise it is proposed to the operator; at Organise/Run it is created.',
+    'Coordinator only: add a child node ({title, goal, repo?}). At Advise it is proposed to the operator; at Organise/Run it is created and its agent starts (a part with a repo waits while your plan waits for the operator, and starts when it is approved).',
   add_waits_on:
     'Coordinator or Director: make one node wait on another ({child, on}); a coordinator only for its own children. Gated by your autonomy level.',
   set_owner:
@@ -376,9 +442,18 @@ export const AGENT_VERB_DESCRIPTIONS: Record<AgentVerb, string> = {
     'Director only: create a project ({name, repos?}). A new project has no level yet, so it is always a draft for the operator.',
   create_node:
     'Director only: create a node ({title, goal, parent | project, repo?}). Gated by the project’s Director level.',
-  start_node: 'Director only: start a node’s agent ({node}). Applied at Organise/Run.',
+  start_node:
+    'Director, or a coordinator for its own children: start a node’s agent ({node}); one already running is left as it is. Applied at Organise/Run; at Advise a proposal.',
   restart_node:
-    'Director only: restart a stuck node’s agent ({node}). Applied at Run only; otherwise a proposal.',
+    'Director, or a coordinator for its own children: restart a stuck node’s agent ({node}). Applied at Run only; otherwise a proposal.',
+  propose_repo:
+    'Propose adding a registered repo to this node ({repo: its name, why: what needs changing there}). Use it when the work needs changes in a repo this node doesn’t work in (one of the repos your brief lists), rather than asking the human to add it by hand. It changes nothing by itself: the human adds it with one click, which turns this node into work on it (or adds a part).',
+  goal_met:
+    'Report that this node’s whole goal is done ({summary: what was done, one line}). Call it once, as your last step, only when nothing is left to do, fix or ask; never after a partial step or when you stop to ask. A node set to auto-close then closes itself if there is nothing to merge.',
+  escalate:
+    'Ask for a stronger model at your next start ({why: what you tried and why it isn’t enough, one line}), e.g. when the tests still fail and you can’t see why. You can’t name the model: the next rung of the operator’s preset models is taken when this node’s agent next starts, never mid-turn. Finish or stop your turn after asking.',
+  settle_question:
+    'Close one of your own open questions ({question: Q-id, answer: the decision, one line}) only when the operator wrote back instead of picking a choice and their own words decide it ("Integer cents, then."). It is recorded as the answer. A reply that asks about the options ("What does Stripe use?") or doesn’t decide them is no answer: reply with `progress`, or `ask` again with better choices (that replaces the old question), and the question stays open. Never settle it with your own pick.',
 };
 
 export function isAgentVerb(name: string): name is AgentVerb {

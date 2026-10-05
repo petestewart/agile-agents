@@ -1,0 +1,1008 @@
+import { describe, expect, test } from 'bun:test';
+import type { InboxItem } from '@agile-agents/shared';
+import {
+  DECIDED_LINGER_MS,
+  DONE_STOCK,
+  NO_CHANGES_TEXT,
+  PATH_SEP,
+  applyFilter,
+  branchName,
+  cardOutcome,
+  cardTitle,
+  cardTone,
+  choiceIndexOfKey,
+  choiceKey,
+  choicesOf,
+  cleanChoice,
+  diffStatParts,
+  doneLine,
+  filterCounts,
+  filterOf,
+  fold,
+  gateView,
+  groupNeedsMe,
+  inboxLine,
+  isAgentFailure,
+  isFirstRun,
+  isLandGate,
+  itemCommand,
+  knowledgeView,
+  mergeQuestion,
+  noChangesText,
+  nodePath,
+  nodesOf,
+  overlapText,
+  overlapTitles,
+  parseChoices,
+  plainLine,
+  planView,
+  proposalLineAction,
+  proposalOf,
+  questionView,
+  replyCommand,
+  replyPreview,
+  scopeWords,
+  setupSteps,
+  statusText,
+  stopCardOf,
+  stopCardOfItem,
+  stopCardText,
+  withDecided,
+} from './inbox';
+
+const NODE = '01ARZ3NDEKTSV4RRFFQ69G5FA1';
+const NODE_B = '01ARZ3NDEKTSV4RRFFQ69G5FA2';
+const ROOT = '01ARZ3NDEKTSV4RRFFQ69G5FA0';
+
+function item(fields: Partial<InboxItem> & Pick<InboxItem, 'kind'>): InboxItem {
+  return {
+    id: `Q-${Math.random().toString(36).slice(2)}`,
+    stream: NODE,
+    stream_path: ['ledger-lite', 'parser'],
+    ts: '2026-09-26T10:00:00.000Z',
+    context: 'something',
+    ...fields,
+  } as InboxItem;
+}
+
+describe('parseChoices (T364): choices written into a question', () => {
+  test('inline (A) … (B) … (C) … after a question', () => {
+    expect(
+      parseChoices(
+        'Should amounts be integer cents or floats? (A) integer cents everywhere (B) floats, round on export (C) decimal strings',
+      ),
+    ).toEqual({
+      stem: 'Should amounts be integer cents or floats?',
+      choices: ['integer cents everywhere', 'floats, round on export', 'decimal strings'],
+    });
+  });
+
+  test('inline choices joined with commas and "or", ending the question', () => {
+    expect(parseChoices('Should I use (A) CSV, (B) JSON, or (C) YAML?')?.choices).toEqual([
+      'CSV',
+      'JSON',
+      'YAML',
+    ]);
+    expect(parseChoices('Which dialect: (a) comma or (b) semicolon?')?.choices).toEqual([
+      'comma',
+      'semicolon',
+    ]);
+  });
+
+  test('bare inline letters: A) … B) …', () => {
+    expect(parseChoices('Which one should ship first? A) the parser B) the exporter')).toEqual({
+      stem: 'Which one should ship first?',
+      choices: ['the parser', 'the exporter'],
+    });
+  });
+
+  test('the last inline choice stops at a sentence end', () => {
+    expect(
+      parseChoices('Which format? (A) CSV (B) JSON. Either is quick to write.')?.choices,
+    ).toEqual(['CSV', 'JSON']);
+  });
+
+  test('a lettered list on its own lines, after the question', () => {
+    expect(
+      parseChoices(
+        'I can go two ways. Which do you prefer?\n\nA) keep the old API\nB) break it and bump the major',
+      ),
+    ).toEqual({
+      stem: 'I can go two ways. Which do you prefer?',
+      choices: ['keep the old API', 'break it and bump the major'],
+    });
+    expect(parseChoices('Pick one:\n(A) Postgres\n(B) SQLite\n(C) files')?.choices).toEqual([
+      'Postgres',
+      'SQLite',
+      'files',
+    ]);
+    expect(parseChoices('Which parser?\na. papaparse\nb. csv-parse')?.choices).toEqual([
+      'papaparse',
+      'csv-parse',
+    ]);
+  });
+
+  test('a numbered list whose question asks for an alternative', () => {
+    expect(
+      parseChoices('Which parser should I use?\n1. papaparse\n2. csv-parse\n3. by hand'),
+    ).toEqual({
+      stem: 'Which parser should I use?',
+      choices: ['papaparse', 'csv-parse', 'by hand'],
+    });
+    expect(parseChoices('What should the timeout be?\n1) 30s\n2) 60s')?.choices).toEqual([
+      '30s',
+      '60s',
+    ]);
+  });
+
+  test('markdown emphasis and code ticks come off the button text', () => {
+    expect(
+      parseChoices('Which one?\n1. **Integer cents** everywhere\n2. keep `float` and round')
+        ?.choices,
+    ).toEqual(['Integer cents everywhere', 'keep float and round']);
+    expect(cleanChoice('  **bold**  and `code` ')).toBe('bold and code');
+  });
+
+  test('blank lines between listed choices are fine', () => {
+    expect(parseChoices('Which?\n\nA) one\n\nB) two\n')?.choices).toEqual(['one', 'two']);
+  });
+
+  describe('not choices', () => {
+    test('a sentence that merely contains (a)', () => {
+      expect(parseChoices('Should I follow step (a) of the migration guide?')).toBeUndefined();
+      expect(parseChoices('Use option (a) and then (b) of the RFC.')).toBeUndefined();
+    });
+
+    test('labels in a statement, not after a question', () => {
+      expect(
+        parseChoices('I looked at (a) the parser and (b) the lexer. Which should I fix first?'),
+      ).toBeUndefined();
+    });
+
+    test('a label inside code', () => {
+      expect(parseChoices('Does `f(a)` handle (b)?')).toBeUndefined();
+      expect(parseChoices('Is `(A) x (B) y` the right syntax?')).toBeUndefined();
+    });
+
+    test('a text with a code block', () => {
+      expect(
+        parseChoices('Which one?\n```\n(A) first\n(B) second\n```\n(A) first\n(B) second'),
+      ).toBeUndefined();
+    });
+
+    test('long paragraphs are not buttons', () => {
+      const long = 'x '.repeat(60).trim();
+      expect(parseChoices(`Which approach? (A) ${long} (B) ${long}`)).toBeUndefined();
+      expect(parseChoices(`Which approach?\nA) ${long}\nB) short`)).toBeUndefined();
+    });
+
+    test('one choice, or too many', () => {
+      expect(parseChoices('Which one? (A) only this')).toBeUndefined();
+      expect(parseChoices('Which one?\n1. a\n2. b\n3. c\n4. d\n5. e\n6. f\n7. g')).toBeUndefined();
+    });
+
+    test('labels out of order, mixed, or not from the first', () => {
+      expect(parseChoices('Which one? (A) x (C) y')).toBeUndefined();
+      expect(parseChoices('Which one? (B) x (C) y')).toBeUndefined();
+      expect(parseChoices('Which one? (A) x (b) y')).toBeUndefined();
+      expect(parseChoices('Which one?\nA) x\n2) y')).toBeUndefined();
+    });
+
+    test('duplicate or empty choices', () => {
+      expect(parseChoices('Which one? (A) same (B) same')).toBeUndefined();
+      expect(parseChoices('Is it (a) or (b)?')).toBeUndefined();
+    });
+
+    test('a numbered list of steps under a yes/no question', () => {
+      expect(parseChoices('Is this plan OK?\n1. write the tests\n2. implement')).toBeUndefined();
+      expect(parseChoices("Here's what I did:\n1. ran the tests\n2. fixed lint")).toBeUndefined();
+    });
+
+    test('a list that does not end the question', () => {
+      expect(
+        parseChoices('I found two approaches:\n1. X\n2. Y\nShould I go ahead with both?'),
+      ).toBeUndefined();
+    });
+
+    test('a list with no question before it', () => {
+      expect(parseChoices('A) one\nB) two')).toBeUndefined();
+      expect(parseChoices('Notes:\nA) one\nB) two')).toBeUndefined();
+    });
+
+    test('plain questions', () => {
+      expect(parseChoices('comma or semicolon for the CSV dialect?')).toBeUndefined();
+      expect(parseChoices('Should `export --json` print pretty JSON or one line?')).toBeUndefined();
+    });
+  });
+});
+
+describe('choicesOf / questionView (T364)', () => {
+  test("the agent's options win, and the text stays whole", () => {
+    const q = item({
+      kind: 'question',
+      context: 'Which? (A) x (B) y',
+      options: ['Integer cents', 'Floats'],
+    });
+    expect(choicesOf(q)).toEqual(['Integer cents', 'Floats']);
+    expect(questionView(q).text).toBe('Which? (A) x (B) y');
+  });
+
+  test('parsed from the full text (detail), and the text loses the choices', () => {
+    const q = item({
+      kind: 'question',
+      context: 'clipped…',
+      detail: 'Should amounts be integer cents or floats? (A) integer cents (B) floats',
+    });
+    expect(questionView(q)).toEqual({
+      text: 'Should amounts be integer cents or floats?',
+      choices: ['integer cents', 'floats'],
+    });
+  });
+
+  test('none: a plain question, and every other kind', () => {
+    expect(choicesOf(item({ kind: 'question', context: 'which branch?' }))).toEqual([]);
+    expect(choicesOf(item({ kind: 'blocked', context: 'Which? (A) x (B) y' }))).toEqual([]);
+  });
+});
+
+describe('fold (T364)', () => {
+  test('a short text is whole', () => {
+    expect(fold('short\ntext')).toEqual({ short: 'short\ntext' });
+  });
+
+  test('a long text is clipped to one line with Show more', () => {
+    const long = `${'word '.repeat(60)}TAIL`;
+    const folded = fold(long);
+    expect(folded.long).toBe(long);
+    expect(folded.short.endsWith('…')).toBe(true);
+    expect(folded.short).not.toContain('TAIL');
+  });
+});
+
+describe('card titles and text (T364)', () => {
+  test('a title in words for every kind', () => {
+    expect(cardTitle(item({ kind: 'question' }))).toBe('Question');
+    // T502 (D62): a reply its agent didn't settle comes back saying so.
+    expect(cardTitle(item({ kind: 'question', unsettled_by: 'codex' }))).toBe(
+      'Codex didn’t settle this',
+    );
+    expect(cardTitle(item({ kind: 'question', unsettled_by: 'agent' }))).toBe(
+      'The agent didn’t settle this',
+    );
+    expect(cardTitle(item({ kind: 'gate', context: 'classifier_review: edit x — why' }))).toBe(
+      'Allow this action?',
+    );
+    expect(cardTitle(item({ kind: 'gate', context: 'land: land stream/a into main' }))).toBe(
+      'Approve this merge?',
+    );
+    expect(cardTitle(item({ kind: 'rule_accept', knowledge_kind: 'decision' }))).toBe(
+      'Decision proposed',
+    );
+    expect(cardTitle(item({ kind: 'rule_batch' }))).toBe('Knowledge to review');
+    expect(cardTitle(item({ kind: 'plan_approve' }))).toBe('Plan to approve');
+    expect(cardTitle(item({ kind: 'plan_waiting' }))).toBe('Waiting for the plan');
+    expect(cardTitle(item({ kind: 'proposal', context: 'coordinator proposes: x' }))).toBe(
+      'Coordinator proposal',
+    );
+    expect(cardTitle(item({ kind: 'proposal', context: 'director proposes: x' }))).toBe(
+      'Director proposal',
+    );
+    expect(cardTitle(item({ kind: 'done' }))).toBe('Ready to merge');
+    expect(cardTitle(item({ kind: 'blocked' }))).toBe('Blocked');
+  });
+
+  test('a classifier gate: the call and why', () => {
+    const gate = item({
+      kind: 'gate',
+      context:
+        'classifier_review: edit /tmp/wt/package.json — editing a dependency manifest is never automatic',
+    });
+    expect(isLandGate(gate)).toBe(false);
+    expect(gateView(gate)).toEqual({
+      land: false,
+      action: 'edit /tmp/wt/package.json',
+      reason: 'editing a dependency manifest is never automatic',
+    });
+    expect(
+      gateView(item({ kind: 'gate', context: 'classifier_review: needs your decision' })),
+    ).toEqual({ land: false, reason: 'needs your decision' });
+  });
+
+  test("a routed call's rule, from the hook's reason or a diff rule's summary", () => {
+    const K = 'K-01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    expect(
+      gateView(
+        item({
+          kind: 'gate',
+          context: `classifier_review: edit src/a.ts — tests-with-src (${K}): Every change under src/ has a test`,
+        }),
+      ),
+    ).toEqual({
+      land: false,
+      action: 'edit src/a.ts',
+      reason: 'Every change under src/ has a test',
+      rule: 'tests-with-src',
+      ruleId: K,
+    });
+    expect(
+      gateView(item({ kind: 'gate', context: `classifier_review: bash: rm x — ${K}: No deletes` })),
+    ).toMatchObject({ action: 'bash: rm x', reason: 'No deletes', ruleId: K });
+    expect(
+      gateView(
+        item({
+          kind: 'gate',
+          context:
+            'classifier_review: edit x — tests-with-src: every change under src/ comes with a test (probability 0.55)',
+        }),
+      ),
+    ).toMatchObject({
+      rule: 'tests-with-src',
+      reason: 'every change under src/ comes with a test',
+      probability: '0.55',
+    });
+    // A reason that names no rule stays whole.
+    expect(
+      gateView(
+        item({ kind: 'gate', context: 'classifier_review: edit x — review checklist unsure: y' }),
+      ),
+    ).toEqual({ land: false, action: 'edit x', reason: 'review checklist unsure: y' });
+    expect(
+      gateView(item({ kind: 'gate', context: 'classifier_review: edit x — note: not a rule' })),
+    ).toEqual({ land: false, action: 'edit x', reason: 'note: not a rule' });
+  });
+
+  test('a land gate: the branch and its target', () => {
+    const gate = item({ kind: 'gate', context: 'land: land stream/01-parser into main' });
+    expect(isLandGate(gate)).toBe(true);
+    expect(gateView(gate)).toEqual({
+      land: true,
+      reason: 'land stream/01-parser into main',
+      branch: 'stream/01-parser',
+      target: 'main',
+    });
+  });
+
+  test('a node branch reads without its id prefix', () => {
+    expect(branchName('stream/01m3ex211kqv9k5tpbgt1des7e-add-csv-import')).toBe('add-csv-import');
+    expect(branchName('feature/x')).toBe('feature/x');
+  });
+
+  test('knowledge: name, scope and text; the scope in words', () => {
+    expect(
+      knowledgeView(
+        item({
+          kind: 'rule_accept',
+          context: 'money-in-cents · project:P-01: Store money as cents',
+        }),
+      ),
+    ).toEqual({ name: 'money-in-cents', scope: 'project:P-01', text: 'Store money as cents' });
+    expect(
+      knowledgeView(
+        item({ kind: 'rule_accept', context: `subtree:${NODE}: run the repo scripts` }),
+      ),
+    ).toEqual({ scope: `subtree:${NODE}`, text: 'run the repo scripts' });
+    expect(knowledgeView(item({ kind: 'rule_accept', context: 'global: a standard' }))).toEqual({
+      scope: 'global',
+      text: 'a standard',
+    });
+    expect(knowledgeView(item({ kind: 'rule_accept', context: 'odd text' }))).toEqual({
+      text: 'odd text',
+    });
+    const names = {
+      node: (id: string) => (id === NODE ? 'parser' : undefined),
+      project: (id: string) => (id === 'P-01' ? 'Shop' : undefined),
+    };
+    expect(scopeWords('global', names)).toBe('everywhere');
+    expect(scopeWords('repo:web-app', names)).toBe('the web-app repo');
+    expect(scopeWords('project:P-01', names)).toBe('the Shop project');
+    expect(scopeWords(`subtree:${NODE}`, names)).toBe('parser and the nodes under it');
+    expect(scopeWords(`subtree:${NODE_B}`, names)).toBe('one node and the nodes under it');
+    expect(scopeWords(undefined, names)).toBeUndefined();
+  });
+
+  test('a proposal: who proposes, and what', () => {
+    expect(proposalOf({ context: 'coordinator proposes: web waits on api' })).toEqual({
+      principal: 'coordinator',
+      summary: 'web waits on api',
+    });
+    expect(proposalOf({ context: 'something else' })).toEqual({ summary: 'something else' });
+  });
+
+  test('a plan: its parts and contracts', () => {
+    expect(
+      planView(
+        item({
+          kind: 'plan_approve',
+          context: 'clipped',
+          detail:
+            'Approve the plan for Sale prices: api owns `prices.ts`; web owns `shop.html`. Contracts: GET /price/:id: returns { cents } | Events: one per sale',
+        }),
+      ),
+    ).toEqual({
+      node: 'Sale prices',
+      revised: false,
+      owners: ['api owns `prices.ts`', 'web owns `shop.html`'],
+      contracts: ['GET /price/:id: returns { cents }', 'Events: one per sale'],
+    });
+    expect(
+      planView(
+        item({
+          kind: 'plan_approve',
+          context: 'Approve the revised plan (approved v1) for X: a owns nothing (was `a.ts`)',
+        }),
+      ),
+    ).toEqual({ node: 'X', revised: true, owners: ['a owns nothing (was `a.ts`)'], contracts: [] });
+    expect(planView(item({ kind: 'plan_approve', context: 'unexpected' }))).toBeUndefined();
+  });
+
+  test("a finished or stuck card reads the agent's line, whole", () => {
+    expect(statusText(item({ kind: 'done', context: 'Added the CSV import.' }))).toBe(
+      'Added the CSV import.',
+    );
+    expect(statusText(item({ kind: 'blocked', context: 'x', detail: 'x and more' }))).toBe(
+      'x and more',
+    );
+  });
+
+  test('T380: a finished card with nothing to merge says so, not "merge"', () => {
+    const stock =
+      'The agent finished. Look over the changes, then merge — or close the node if you won’t.';
+    expect(noChangesText(item({ kind: 'done', context: stock }))).toBe(NO_CHANGES_TEXT);
+    const own = noChangesText(item({ kind: 'done', context: 'The feature was already there.' }));
+    expect(own).toStartWith('The feature was already there.');
+    expect(own).toContain('nothing to merge');
+  });
+});
+
+describe('the filter (T364)', () => {
+  const items = [
+    item({ kind: 'question', id: 'q' }),
+    item({ kind: 'blocked', id: 'b' }),
+    item({ kind: 'gate', id: 'g', context: 'classifier_review: x' }),
+    item({ kind: 'gate', id: 'l', context: 'land: land a into b' }),
+    item({ kind: 'done', id: 'd' }),
+    item({ kind: 'rule_accept', id: 'r' }),
+    item({ kind: 'plan_approve', id: 'p' }),
+  ];
+
+  test('questions want words, merges want Merge, the rest are decisions', () => {
+    expect(items.map((i) => filterOf(i))).toEqual([
+      'questions',
+      'blocked',
+      'decisions',
+      'merges',
+      'merges',
+      'decisions',
+      'decisions',
+    ]);
+    expect(filterCounts(items)).toEqual({
+      all: 7,
+      questions: 1,
+      decisions: 3,
+      merges: 2,
+      finished: 0,
+      blocked: 1,
+    });
+    expect(applyFilter(items, 'merges').map((i) => i.id)).toEqual(['l', 'd']);
+    expect(applyFilter(items, 'all')).toHaveLength(7);
+  });
+
+  test('T470: a node that finished with nothing to merge is Finished, not a merge', () => {
+    const rowOf = (id: string | undefined) =>
+      id === NODE ? { nothing_to_merge: true as const } : undefined;
+    const done = item({ kind: 'done', id: NODE });
+    expect(filterOf(done, rowOf)).toBe('finished');
+    expect(filterOf(done)).toBe('merges');
+    expect(filterCounts([done], rowOf).finished).toBe(1);
+    expect(
+      nodesOf([done, done, item({ kind: 'rule_accept', id: 'r', stream: undefined })]),
+    ).toEqual([NODE]);
+  });
+});
+
+describe('groupNeedsMe (T364): project, then node, oldest first', () => {
+  const rows = [{ id: ROOT, project: 'P-shop' }, { id: NODE, project: 'P-shop' }, { id: NODE_B }];
+  const projects = [{ id: 'P-shop', name: 'Shop', root: ROOT }];
+
+  test('sections by project; nodes under their project read without the root', () => {
+    const sections = groupNeedsMe(
+      [
+        item({
+          kind: 'question',
+          id: 'q2',
+          ts: '2026-09-26T10:05:00.000Z',
+          stream_path: ['Shop', 'parser'],
+        }),
+        item({
+          kind: 'done',
+          id: 'd',
+          stream: NODE_B,
+          stream_path: ['ledger-lite', 'import CSV'],
+          ts: '2026-09-26T09:00:00.000Z',
+        }),
+        item({
+          kind: 'question',
+          id: 'q1',
+          ts: '2026-09-26T10:01:00.000Z',
+          stream_path: ['Shop', 'parser'],
+        }),
+        item({
+          kind: 'plan_approve',
+          id: ROOT,
+          stream: ROOT,
+          stream_path: ['Shop'],
+          ts: '2026-09-26T11:00:00.000Z',
+        }),
+        item({
+          kind: 'rule_batch',
+          id: 'seed',
+          stream: undefined,
+          stream_path: [],
+          ts: '2026-09-26T12:00:00.000Z',
+        }),
+      ],
+      rows,
+      projects,
+    );
+    expect(sections.map((s) => [s.key, s.label, s.count])).toEqual([
+      ['none', 'Not in a project', 1],
+      ['project:P-shop', 'Shop', 3],
+      ['knowledge', 'Knowledge', 1],
+    ]);
+    const shop = sections[1];
+    expect(shop?.groups.map((g) => [g.key, g.path.join(' / ')])).toEqual([
+      [NODE, 'parser'],
+      [ROOT, 'Shop'],
+    ]);
+    // Oldest first inside a node, whatever order the items came in.
+    expect(shop?.groups[0]?.items.map((i) => i.id)).toEqual(['q1', 'q2']);
+    expect(sections[0]?.groups[0]?.path).toEqual(['ledger-lite', 'import CSV']);
+    expect(sections[2]?.groups[0]).toMatchObject({ key: '', path: ['Knowledge'] });
+  });
+
+  test('a node the frame does not know yet sits in no project', () => {
+    const sections = groupNeedsMe([item({ kind: 'question', stream: NODE_B })], [], projects);
+    expect(sections.map((s) => s.kind)).toEqual(['none']);
+    expect(sections[0]?.groups[0]?.path).toEqual(['ledger-lite', 'parser']);
+  });
+
+  test('empty in, empty out', () => {
+    expect(groupNeedsMe([], rows, projects)).toEqual([]);
+  });
+
+  test('T481: CLI updates are their own section, one group per CLI, named by the CLI', () => {
+    const update = (id: 'claude' | 'gemini', failed = false): InboxItem =>
+      item({
+        kind: 'harness_update',
+        id: `harness:${id}`,
+        stream: undefined,
+        stream_path: [],
+        context: `${id} is available`,
+        harness: {
+          id,
+          label: id === 'claude' ? 'Claude Code' : 'Gemini CLI',
+          ...(failed ? { failed: true as const } : {}),
+        },
+      });
+    const sections = groupNeedsMe(
+      [
+        update('claude'),
+        update('gemini', true),
+        item({ kind: 'rule_batch', id: 'seed', stream: undefined, stream_path: [] }),
+      ],
+      rows,
+      projects,
+    );
+    expect(sections.map((s) => [s.key, s.kind, s.label, s.count])).toEqual([
+      ['knowledge', 'knowledge', 'Knowledge', 1],
+      ['updates', 'updates', 'Updates', 2],
+    ]);
+    expect(sections[1]?.groups.map((g) => [g.key, g.path])).toEqual([
+      ['harness:claude', ['Claude Code']],
+      ['harness:gemini', ['Gemini CLI']],
+    ]);
+    expect(cardTitle(update('claude'))).toBe('Update available');
+    expect(cardTitle(update('gemini', true))).toBe('Update failed');
+    expect(cardTone(update('gemini', true))).toBe('red');
+    expect(itemCommand(update('claude'))).toBe('Update Claude Code');
+    expect(filterOf(update('claude'))).toBe('decisions');
+    expect(nodesOf([update('claude')])).toEqual([]);
+  });
+});
+
+describe('setupSteps / isFirstRun (T364)', () => {
+  const row = (role: 'project' | 'work') => ({ role }) as never;
+
+  test('nothing yet: every step open, first run', () => {
+    const steps = setupSteps({ repos: [], projects: [], streams: [] });
+    expect(steps.map((s) => [s.id, s.done])).toEqual([
+      ['repo', false],
+      ['project', false],
+      ['node', false],
+    ]);
+    expect(isFirstRun(steps)).toBe(true);
+    expect(isFirstRun(setupSteps(undefined))).toBe(true);
+  });
+
+  test("a project's root is not a node you started", () => {
+    const steps = setupSteps({
+      repos: [{ name: 'a', delivery: 'direct' }],
+      projects: [{ id: 'P', name: 'Shop', root: ROOT }],
+      streams: [row('project')],
+    });
+    expect(steps.map((s) => s.done)).toEqual([true, true, false]);
+    expect(isFirstRun(steps)).toBe(false);
+  });
+
+  test('a repo and nodes but no project is still first run', () => {
+    const steps = setupSteps({
+      repos: [{ name: 'a', delivery: 'direct' }],
+      projects: [],
+      streams: [row('work')],
+    });
+    expect(steps.map((s) => [s.id, s.done, s.count])).toEqual([
+      ['repo', true, 1],
+      ['project', false, 0],
+      ['node', true, 1],
+    ]);
+    expect(isFirstRun(steps)).toBe(true);
+  });
+});
+
+describe('T410: a Merge card says how much it merges', () => {
+  test('files, lines added and removed; the label in words', () => {
+    expect(diffStatParts({ files: 3, added: 120, removed: 14 })).toEqual({
+      files: '3 files',
+      added: '+120',
+      removed: '\u221214',
+      label: '3 files changed, 120 lines added, 14 lines removed',
+    });
+    expect(diffStatParts({ files: 1, added: 1, removed: 0 }).label).toBe(
+      '1 file changed, 1 line added, 0 lines removed',
+    );
+  });
+});
+
+// ---------------------------------------------------------------- T416
+
+describe('T416: a Ready to merge card says the work, not the stock sentence', () => {
+  test("doneLine is the agent's own line, and nothing for the daemon's stock one", () => {
+    expect(doneLine(item({ kind: 'done', context: DONE_STOCK }))).toBeUndefined();
+    expect(doneLine(item({ kind: 'done', context: 'Added importCsv() with a test.' }))).toBe(
+      'Added importCsv() with a test.',
+    );
+    // The whole line when the daemon clipped it.
+    expect(
+      doneLine(item({ kind: 'done', context: 'Added import…', detail: 'Added importCsv() fully' })),
+    ).toBe('Added importCsv() fully');
+  });
+
+  test('overlapTitles names the other nodes of each pair, once', () => {
+    const titles: Record<string, string> = { a: 'Add CSV import', b: 'Fix rounding', c: 'Docs' };
+    const overlaps = [
+      { nodes: ['a', 'b'] as [string, string] },
+      { nodes: ['c', 'a'] as [string, string] },
+      { nodes: ['b', 'c'] as [string, string] },
+      { nodes: ['a', 'b'] as [string, string] },
+    ];
+    expect(overlapTitles('a', overlaps, (id) => titles[id])).toEqual(['Fix rounding', 'Docs']);
+    expect(overlapTitles('z', overlaps, (id) => titles[id])).toEqual([]);
+  });
+
+  test('overlapText reads as a sentence fragment', () => {
+    expect(overlapText([])).toBeUndefined();
+    expect(overlapText(['Fix rounding'])).toBe('Overlaps Fix rounding');
+    expect(overlapText(['A', 'B'])).toBe('Overlaps A and B');
+    expect(overlapText(['A', 'B', 'C'])).toBe('Overlaps A, B and C');
+    expect(overlapText(['A', 'B', 'C', 'D'])).toBe('Overlaps A, B and 2 more');
+  });
+});
+
+describe('T416: one path separator', () => {
+  test('nodePath joins with ›', () => {
+    expect(nodePath(['Shop', 'Show sale prices', 'api: add salePrice'])).toBe(
+      'Shop › Show sale prices › api: add salePrice',
+    );
+    expect(nodePath(['Shop', '', 'x'])).toBe('Shop › x');
+    expect(PATH_SEP).toBe(' › ');
+  });
+});
+
+describe('T416: the choice keys', () => {
+  test('choiceKey is the keycap: A for the first', () => {
+    expect([0, 1, 5].map(choiceKey)).toEqual(['A', 'B', 'F']);
+  });
+
+  test('A/a/1 pick the first, and a key past the last picks nothing', () => {
+    expect(choiceIndexOfKey('a', 2)).toBe(0);
+    expect(choiceIndexOfKey('B', 2)).toBe(1);
+    expect(choiceIndexOfKey('1', 2)).toBe(0);
+    expect(choiceIndexOfKey('2', 2)).toBe(1);
+    expect(choiceIndexOfKey('c', 2)).toBeUndefined();
+    expect(choiceIndexOfKey('3', 2)).toBeUndefined();
+    expect(choiceIndexOfKey('j', 6)).toBeUndefined();
+    expect(choiceIndexOfKey('Enter', 6)).toBeUndefined();
+  });
+});
+
+describe('T416: what the first Merge asks', () => {
+  test('names the node, the target and the size', () => {
+    const q = mergeQuestion({ node: 'Add CSV import', target: 'main', files: 2 });
+    expect(q.title).toBe('Merge “Add CSV import” into main (2 files)?');
+    expect(q.confirm).toBe('Merge');
+    expect(mergeQuestion({ node: 'x', target: 'main', files: 1 }).title).toContain('(1 file)');
+  });
+
+  test('without a target or size it still reads', () => {
+    expect(mergeQuestion({ node: 'x' }).title).toBe('Merge “x” into its target branch?');
+  });
+
+  test('a pull-request repo opens a pull request', () => {
+    const q = mergeQuestion({ node: 'x', target: 'main', pr: true });
+    expect(q.title).toBe('Open a pull request for “x” into main?');
+    expect(q.confirm).toBe('Open pull request');
+  });
+});
+
+describe("T416: ⌘K's Needs me rows", () => {
+  test('say what you would do', () => {
+    expect(
+      itemCommand(item({ kind: 'question', context: 'Should amounts be integer cents?' })),
+    ).toBe('Answer: Should amounts be integer cents?');
+    expect(itemCommand(item({ kind: 'done', id: NODE, stream_path: ['Shop', 'Add CSV'] }))).toBe(
+      'Merge: Add CSV',
+    );
+    expect(
+      itemCommand(item({ kind: 'done', id: NODE, stream_path: ['x'] }), {
+        nothing_to_merge: true,
+      }),
+    ).toBe('Close: x');
+    expect(itemCommand(item({ kind: 'blocked', id: NODE, stream_path: ['x'] }))).toBe('Unblock: x');
+    expect(
+      itemCommand(item({ kind: 'gate', context: 'land: land a into main', stream_path: ['x'] })),
+    ).toBe('Approve the merge: x');
+  });
+
+  test('a long question clips to one line', () => {
+    const text = `${'word '.repeat(40)}end?`;
+    const title = itemCommand(item({ kind: 'question', context: text.slice(0, 200) }));
+    expect(title.length).toBeLessThanOrEqual('Answer: '.length + 70);
+    expect(title.endsWith('…')).toBe(true);
+  });
+
+  test('a blocked agent is filed with the questions: a reply unblocks it', () => {
+    expect(filterOf(item({ kind: 'blocked', id: NODE }))).toBe('blocked');
+  });
+});
+
+describe('T436: a reply’s preview and its ⌘K row', () => {
+  test('the first line with words of the agent’s last line, as plain words', () => {
+    const thread = [
+      { kind: 'line', by: 'agent:s1', body: 'An older reply' },
+      { kind: 'line', by: 'human', body: 'Which repos does checkout touch?' },
+      { kind: 'event', by: 'daemon', body: 'Agent finished' },
+      {
+        kind: 'line',
+        by: 'agent:s2',
+        body: '\n---\n## **Checkout** touches `web-app` and [api-server](http://x).\n\nMore.',
+      },
+    ];
+    expect(replyPreview(thread)).toBe('Checkout touches web-app and api-server.');
+  });
+
+  test('the Director’s own line is its reply', () => {
+    expect(
+      replyPreview([
+        { kind: 'line', by: 'human', body: 'Anything stuck?' },
+        { kind: 'line', by: 'director', body: 'Shop has two nodes waiting on you.' },
+      ]),
+    ).toBe('Shop has two nodes waiting on you.');
+  });
+
+  test('no reply in the thread: the last progress line; neither: nothing', () => {
+    const thread = [{ kind: 'line', by: 'human', body: 'q' }];
+    expect(replyPreview(thread, 'Read the schema; drafting the answer')).toBe(
+      'Read the schema; drafting the answer',
+    );
+    expect(replyPreview(thread)).toBeUndefined();
+    expect(replyPreview([], '   ')).toBeUndefined();
+  });
+
+  test('a long line is clipped', () => {
+    const long = replyPreview([{ kind: 'line', by: 'agent:s', body: 'word '.repeat(80) }]);
+    expect(long?.length).toBe(160);
+    expect(long?.endsWith('…')).toBe(true);
+  });
+
+  test('Markdown marks go, words stay', () => {
+    expect(plainLine('> - **bold** and _em_, snake_case_name')).toBe(
+      '- bold and em, snake_case_name',
+    );
+    expect(plainLine('1. step one')).toBe('step one');
+    expect(plainLine('a * b * c')).toBe('a * b * c');
+  });
+
+  test('⌘K reads an unread reply as what you would do', () => {
+    expect(replyCommand('Which repos does checkout touch?')).toBe(
+      'Read reply: Which repos does checkout touch?',
+    );
+  });
+});
+
+describe('isAgentFailure (T437)', () => {
+  test("the daemon's failure notes, and nothing else", () => {
+    expect(isAgentFailure('The agent couldn’t start: Gemini CLI can’t start')).toBe(true);
+    expect(isAgentFailure('The agent stopped with an error: Invalid API key')).toBe(true);
+    expect(isAgentFailure('The agent is stuck and needs a hand.')).toBe(false);
+  });
+});
+
+describe('stop cards (T508)', () => {
+  const ungated =
+    "The agent stopped with an error: Codex ran a command its gate never saw: its hook isn't trusted or didn't fire";
+  const untrusted =
+    "The agent couldn’t start: Codex's gate isn't trusted here: trust /Users/pete/shop in Codex (Codex project /Users/pete is not trusted)";
+  test("Codex's fail-closed stop: what happened, why, how to fix, Restart agent", () => {
+    const card = stopCardOf(ungated);
+    expect(card?.kind).toBe('codex_ungated');
+    expect(card?.title).toBe('Codex’s gate didn’t run');
+    expect(card?.text).toBe(
+      'Codex ran a command its hook never checked, so the daemon stopped it. Nothing it ran after that was allowed through.',
+    );
+    // T512: the fix is Codex's per-hook trust (/hooks), and `agile codex status` to see which.
+    expect(card?.fix).toBe(
+      'Codex skipped the agile gate: a hook it hasn’t trusted (a changed one needs trusting again), or a project it doesn’t trust. Run `agile codex status`; in Codex run `/hooks` and trust the three `agile gate` hooks, then restart the agent.',
+    );
+    expect(card?.restart).toBe('Restart agent');
+  });
+  test('T512: the gate not installed: install it, trust it, Try again', () => {
+    const card = stopCardOf(
+      "The agent couldn’t start: Codex's gate isn't installed: run `agile codex install-gate`, then trust it in Codex (/hooks) (no agile gate entries in /Users/pete/.codex/hooks.json)",
+    );
+    expect(card).toEqual({
+      kind: 'codex_gate_missing',
+      title: 'Codex can’t start: its gate isn’t installed',
+      text: 'Codex checks its commands with the agile gate, three hooks in your Codex settings (`~/.codex/hooks.json`). They aren’t there, so the daemon didn’t start Codex: it would run unchecked.',
+      fix: 'Run `agile codex install-gate`, then open `codex`, run `/hooks` and trust the three `agile gate` hooks. Then try again.',
+      restart: 'Try again',
+    });
+  });
+  test('T512: the gate not trusted yet: trust each hook in /hooks, Try again', () => {
+    const card = stopCardOf(
+      "The agent couldn’t start: Codex's gate isn't trusted yet: in Codex run /hooks and trust the three agile gate hooks (2 of 3 trusted)",
+    );
+    expect(card).toEqual({
+      kind: 'codex_gate_untrusted',
+      title: 'Codex can’t start: its gate isn’t trusted yet',
+      text: 'Codex runs a hook only once you have trusted it, and the agile gate’s hooks aren’t all trusted yet, so the daemon didn’t start Codex: it would run unchecked.',
+      fix: 'Open `codex`, run `/hooks`, and trust the three `agile gate` hooks (Hooks need review → trust each); `agile codex status` shows which are trusted. Then try again.',
+      restart: 'Try again',
+    });
+    expect(stopCardText(card as NonNullable<typeof card>)).toContain(
+      '**How to fix:** Open `codex`, run `/hooks`',
+    );
+  });
+  test('an untrusted worktree: the repo to trust, and Try again', () => {
+    const card = stopCardOf(untrusted);
+    expect(card?.kind).toBe('codex_untrusted');
+    expect(card?.title).toBe('Codex can’t start here: its gate isn’t trusted');
+    expect(card?.fix).toContain('Trust `/Users/pete/shop` in Codex');
+    expect(card?.restart).toBe('Try again');
+  });
+  test('any other daemon stop reuses the card in its own words', () => {
+    expect(stopCardOf('The agent couldn’t start: Gemini CLI can’t start')).toMatchObject({
+      kind: 'failed_start',
+      title: 'The agent couldn’t start',
+      text: 'Gemini CLI can’t start',
+      restart: 'Try again',
+    });
+    expect(stopCardOf('The agent stopped with an error: Invalid API key')).toMatchObject({
+      kind: 'crashed',
+      title: 'The agent stopped with an error',
+      text: 'Invalid API key',
+      restart: 'Restart agent',
+    });
+  });
+  test("an agent's own blocked line is no stop card", () => {
+    expect(stopCardOf('The agent is stuck and needs a hand.')).toBeUndefined();
+    expect(stopCardOfItem(item({ kind: 'blocked', context: 'Waiting on the Redis box' }))).toBe(
+      undefined,
+    );
+  });
+  test("the item's title, body and row line say it; the full text is read past the clip", () => {
+    const blocked = item({ kind: 'blocked', context: ungated.slice(0, 60), detail: ungated });
+    expect(cardTitle(blocked)).toBe('Codex’s gate didn’t run');
+    expect(stopCardOfItem(blocked)?.kind).toBe('codex_ungated');
+    expect(stopCardText(stopCardOf(ungated) as NonNullable<ReturnType<typeof stopCardOf>>)).toMatch(
+      /^Codex ran a command .+\n\n\*\*How to fix:\*\* Codex skipped the agile gate/s,
+    );
+    expect(inboxLine(blocked)).toBe(
+      'Codex ran a command its hook never checked, so the daemon stopped it. Nothing it ran after that was allowed through.',
+    );
+    expect(stopCardOfItem({ ...blocked, kind: 'done' })).toBeUndefined();
+    expect(cardTitle(item({ kind: 'blocked' }))).toBe('Blocked');
+    expect(cardOutcome(blocked, 'restart')).toBe('Agent started');
+  });
+});
+
+describe('proposalLineAction (T445, audit r7 #3)', () => {
+  const AP = 'AP-01ARZ3NDEKTSV4RRFFQ69G5FAV';
+  const base = { repos: ['api', 'web', 'docs'], current: 'api', projectRoot: false, cards: [AP] };
+  const line = (ref?: string, kind = 'proposal') => ({ kind, ...(ref ? { ref } : {}) });
+
+  test('only a repo proposal (its ref) offers + Repo, never the words of a line', () => {
+    expect(proposalLineAction(line('repo:web'), base)).toEqual({ kind: 'add_repo', repo: 'web' });
+    // Its own repo, an unregistered one, or on a project root: nothing.
+    expect(proposalLineAction(line('repo:api'), base)).toBeUndefined();
+    expect(proposalLineAction(line('repo:mobile'), base)).toBeUndefined();
+    expect(proposalLineAction(line('repo:web'), { ...base, projectRoot: true })).toBeUndefined();
+    // A line with no ref (propose_next, which names docs and web in its words): nothing.
+    expect(proposalLineAction(line(), base)).toBeUndefined();
+    // Not a proposal line.
+    expect(proposalLineAction(line('repo:web', 'line'), base)).toBeUndefined();
+  });
+
+  test('T455: once the repo is added, the line offers nothing (in place, or as a part)', () => {
+    const convo = { ...base, current: undefined };
+    expect(proposalLineAction(line('repo:web'), convo)).toEqual({ kind: 'add_repo', repo: 'web' });
+    // A conversation given web is a work node on web.
+    expect(proposalLineAction(line('repo:web'), { ...convo, current: 'web' })).toBeUndefined();
+    // A work node on api given web is coordinating, with api and web parts.
+    const split = { ...convo, partRepos: ['api', 'web'] };
+    expect(proposalLineAction(line('repo:web'), split)).toBeUndefined();
+    expect(proposalLineAction(line('repo:docs'), split)).toEqual({
+      kind: 'add_repo',
+      repo: 'docs',
+    });
+  });
+
+  test('an autonomy proposal points to its open card; a contract proposal to the plan', () => {
+    expect(proposalLineAction(line(`proposals/${AP}.yaml`), base)).toEqual({
+      kind: 'decide',
+      card: AP,
+    });
+    // Decided already (no card): nothing to point to.
+    expect(
+      proposalLineAction(line(`proposals/${AP}.yaml`), { ...base, cards: [] }),
+    ).toBeUndefined();
+    const contract = line('contracts/C-01ARZ3NDEKTSV4RRFFQ69G5FAV.yaml');
+    expect(proposalLineAction(contract, { ...base, hasPlan: true })).toEqual({ kind: 'plan' });
+    expect(proposalLineAction(contract, base)).toBeUndefined();
+    expect(proposalLineAction(line('knowledge/K-01ARZ3NDEKTSV4RRFFQ69G5FAV.yaml'), base)).toBe(
+      undefined,
+    );
+  });
+});
+
+describe('a decided card (T445, audit r7 #5)', () => {
+  test('its outcome in words', () => {
+    expect(cardOutcome(item({ kind: 'done' }), 'merge', 'main')).toBe('Merged into main');
+    expect(cardOutcome(item({ kind: 'plan_approve' }), 'approve')).toBe('Plan approved');
+    expect(cardOutcome(item({ kind: 'proposal' }), 'apply')).toBe('Applied');
+    expect(cardOutcome(item({ kind: 'proposal' }), 'dismiss')).toBe('Dismissed');
+    expect(cardOutcome(item({ kind: 'question' }), 'choice:1')).toBe('Answered');
+    expect(cardOutcome(item({ kind: 'gate', context: 'Bash: rm -rf dist' }), 'approve')).toBe(
+      'Allowed',
+    );
+  });
+
+  test('stays in the list a moment after the frame drops it, then goes', () => {
+    const a = item({ kind: 'done', id: 'A', ts: '2026-09-26T10:00:00.000Z' });
+    const b = item({ kind: 'done', id: 'B', ts: '2026-09-26T10:01:00.000Z' });
+    const decided = new Map([['A', { item: a, gone: 1000 }]]);
+    // Still in the frame: shown once.
+    expect(withDecided([a, b], new Map([['A', { item: a }]]), 1000).map((i) => i.id)).toEqual([
+      'A',
+      'B',
+    ]);
+    // Dropped by the frame: still shown, until its moment is up.
+    expect(withDecided([b], decided, 1000 + DECIDED_LINGER_MS - 1).map((i) => i.id)).toEqual([
+      'B',
+      'A',
+    ]);
+    expect(withDecided([b], decided, 1000 + DECIDED_LINGER_MS).map((i) => i.id)).toEqual(['B']);
+    // Grouped, it sorts back into its place (oldest first).
+    const [section] = groupNeedsMe(withDecided([b], decided, 1500), [], []);
+    expect(section?.groups[0]?.items.map((i) => i.id)).toEqual(['A', 'B']);
+  });
+});

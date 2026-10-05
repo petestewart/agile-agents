@@ -3,29 +3,35 @@
  * the tree is reshaped behind it:
  *
  *   - conversation + repo → work node: its branch and worktree are cut now;
+ *   - conversation with tangents (D33) + repo → coordinating: a coordinating
+ *     node has no worktree (§14.2), so the repo goes to a new part child;
  *   - work (repo A) + repo B → coordinating: the branch, worktree and
- *     session history move to a new child "A part", and a "B part" child
- *     is created;
+ *     session history move to a new child "<node> · A", and a "<node> · B"
+ *     child is created (T446: a part is named for its node and its repo);
  *   - switch on a work node with nothing committed → as above, and the
- *     empty "A part" is closed.
+ *     empty "<node> · A" part is closed.
  *
  * New parts start with a pointer to the thread so far; docs, rules and the
  * goal chain reach them as ancestors'. A session live on the node is
  * stopped before the reshape and restarted after it, so it runs in the
  * right place: in the new worktree (work) or the session dir as the
- * coordinator (coordinating, D20). A split node that was started gets its
- * coordinator even when nothing was live, unless the human stopped it
- * (T336). With a coordinator, the parts wait for its plan (§9.1: the plan
+ * coordinator (coordinating, D20). A split node (or a conversation with
+ * tangents given a repo, T346) that was started gets its coordinator even
+ * when nothing was live, unless the human stopped it (T336). With a
+ * coordinator, the parts wait for its plan, even a single part (§9.1: the plan
  * comes before work): `PlanService.approve` starts each part the approved
  * plan gives paths to. With none, they start their worker like any new
  * work node (T204, T213) unless the node was never started (made with
  * `--no-start` and not attached since).
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   type SessionRef,
   type Stream,
   isAgentRole,
+  isRestingSession,
   liveChildrenOf,
   nodeRole,
 } from '@agile-agents/shared';
@@ -33,10 +39,24 @@ import { WAITING_FOR_PLAN } from '../coordination/plans';
 import { git, removeWorktreeSafely } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
 import { stoppedByHuman } from '../events/wake';
-import { createWorktree, slugify } from '../runner/worktrees';
+import { branchLabel, createWorktree, slugify } from '../runner/worktrees';
 import { assertRepoHasCommits } from '../store/rpc-methods';
 import type { StateStore } from '../store/store';
 import { type StreamService, UnknownRepoError } from './service';
+
+/**
+ * T446 (audit r7 #18): a part's name, "<node> · <repo>" ("Rotate the API
+ * keys · api"): the node it serves first, then its repo.
+ */
+export function partTitle(node: string, repo: string): string {
+  return `${node} · ${repo}`;
+}
+
+/** "api", "api and web", "api, web and docs". */
+function andList(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
 
 /** The slice of `AttachService` a reshape needs (kept structural: no import cycle). */
 export interface ReshapeSessions {
@@ -55,7 +75,7 @@ export class RepoInPlaceError extends Error {
 
 export interface RepoInPlaceResult {
   node: Stream;
-  /** The children the reshape created, in order ("A part", "B part"). */
+  /** The children the reshape created, in order ("<node> · A", "<node> · B"). */
   parts: Stream[];
 }
 
@@ -69,6 +89,50 @@ export class RepoInPlaceService {
   /** `node.add_repo`: the three rows of §7's table, minus the switch. */
   addRepo(nodeId: string, repo: string): Promise<RepoInPlaceResult> {
     return this.reshape(nodeId, repo, false);
+  }
+
+  /**
+   * T473: a work node goes back to just talking. Its agent stops; its repo,
+   * branch and worktree stay on disk and are parked on the record
+   * (`parked`), so picking that repo again picks the work back up on them.
+   * Not a coordinating node, a helper, a project root, one with an open PR,
+   * or a closed, merged or deleted one.
+   */
+  async toTalk(nodeId: string): Promise<Stream> {
+    const node = this.streams.get(nodeId);
+    if (node.human.status !== 'open' || node.archived === true) {
+      throw new RepoInPlaceError(`${node.title} is closed, merged or in the trash`);
+    }
+    const all = this.streams.list();
+    const role = nodeRole(node, liveChildrenOf(node.id, all), all);
+    if (role !== 'work' || node.repo === undefined) {
+      throw new RepoInPlaceError(`only a work node goes back to talk; ${node.title} is ${role}`);
+    }
+    if (node.helper_of !== undefined) {
+      throw new RepoInPlaceError(
+        `${node.title} helps its parent on its branch; it can't just talk`,
+      );
+    }
+    if (node.delivery_state?.status === 'pr_open') {
+      throw new RepoInPlaceError(`${node.title} has an open pull request; merge or close it first`);
+    }
+    await this.sessions.stop(node.id, 'node went back to just talking');
+    const repo = node.repo;
+    const branch = node.branch;
+    const worktree = node.worktree;
+    const talking = await this.store.updateStream('daemon', node.id, (before) => {
+      const { repo: _r, branch: _b, worktree: _w, land_conflict: _l, ...rest } = before;
+      return branch !== undefined
+        ? { ...rest, parked: { repo, branch, ...(worktree !== undefined ? { worktree } : {}) } }
+        : rest;
+    });
+    await this.event(
+      node.id,
+      branch !== undefined
+        ? `back to talk: the work on ${repo} is kept (branch ${branchLabel(branch)}); add ${repo} again to pick it up`
+        : `back to talk: no longer works in ${repo}`,
+    );
+    return talking;
   }
 
   /** `node.switch_repo`: a work node with nothing committed moves to another repo. */
@@ -89,7 +153,13 @@ export class RepoInPlaceService {
     if (node.human.status === 'closed' || node.archived === true) {
       throw new RepoInPlaceError(`node ${nodeId} is closed or archived`);
     }
-    const role = nodeRole(node, liveChildrenOf(node.id, this.streams.list()));
+    const all = this.streams.list();
+    const live = liveChildrenOf(node.id, all);
+    const role = nodeRole(node, live, all);
+    // D33: a conversation with tangents turns coordinating once it has a repo,
+    // and a coordinating node has no worktree (§14.2): the repo becomes a part.
+    // D42: its conversations are not parts either, so any conversation takes the repo in place.
+    const inPlace = role === 'conversation';
     if (role === 'project') {
       throw new RepoInPlaceError('a project root lists repos in its settings; add the repo there');
     }
@@ -101,34 +171,52 @@ export class RepoInPlaceService {
     }
     if (switching) this.assertNothingCommitted(node);
 
+    // T465: a session resting after its finished turn is not live work: it ends with the reshape.
     const wasLive = node.sessions.some(
-      (s) => isAgentRole(s.role) && s.status !== 'stopped' && s.status !== 'error',
+      (s) =>
+        isAgentRole(s.role) &&
+        s.status !== 'stopped' &&
+        s.status !== 'error' &&
+        !isRestingSession(node, s),
     );
     // T204's start rule for new parts: `start` isn't stored, so a node that
     // never had a worker is the `--no-start` one.
     const started = wasLive || node.sessions.some((s) => isAgentRole(s.role));
+    // The node ends up coordinating parts: a split work node, or a coordinating
+    // node's new part. (D42: a conversation, tangents or not, takes it in place.)
+    const split = !inPlace && !switching;
     // T336: a split hands the node's sessions to the moved part, which left
     // a node that was started but not live with no agent at all: no
     // coordinator to plan the parts. It gets one, unless the human stopped it.
-    const coordinates = role !== 'conversation' && !switching && started && !stoppedByHuman(node);
+    const coordinates = split && started && !stoppedByHuman(node);
     // Stop first, so the exit path writes onto the records before they move.
     await this.sessions.stop(
       node.id,
-      role === 'conversation' ? 'node reshaped into a work node' : 'node reshaped into parts',
+      inPlace ? 'node reshaped into a work node' : 'node reshaped into parts',
     );
     // Re-read: the exit path just marked the stopped sessions, and those records move.
     node = this.streams.get(node.id);
 
     let parts: Stream[] = [];
-    if (role === 'conversation') {
-      const created = await createWorktree(entry.path, { id: node.id, slug: slugify(node.title) });
+    if (inPlace) {
+      // T473: the repo it went back to talk from: the same branch and worktree again.
+      const resumed = this.resumeParked(node, repo, entry.path);
+      const created =
+        resumed ?? (await createWorktree(entry.path, { id: node.id, slug: slugify(node.title) }));
       await this.streams.update('daemon', node.id, {
         repo,
         branch: created.branch,
         worktree: created.path,
+        // Resumed, it's no longer parked; parked for another repo, it stays for that one.
+        ...(resumed !== undefined ? { parked: null } : {}),
       });
-      await this.event(node.id, `repo added: ${repo}; now a work node on ${created.branch}`);
-    } else if (role === 'coordinating') {
+      await this.event(
+        node.id,
+        resumed !== undefined
+          ? `repo added: ${repo}; back to its work on ${branchLabel(created.branch)}`
+          : `repo added: ${repo}; now a work node on ${created.branch}`,
+      );
+    } else if (role !== 'work') {
       parts = [await this.newPart(node, repo)];
       await this.event(node.id, `repo added: ${repo} (new part ${parts[0]?.id})`);
     } else {
@@ -141,18 +229,26 @@ export class RepoInPlaceService {
         node.id,
         switching
           ? `switched to ${repo}: the empty ${node.repo} part was closed`
-          : `repo added: ${repo}; now coordinating ${parts.map((p) => p.title).join(', ')}`,
+          : `repo added: ${repo}; now coordinating its ${andList(parts.map((p) => p.repo ?? p.title))} parts`,
       );
     }
 
     const open = parts.filter((p) => this.streams.get(p.id).human.status !== 'closed');
-    // T336: a coordinator plans the parts before they work; the approval starts them.
-    const waitForPlan = role !== 'conversation' && !switching && (wasLive || coordinates);
+    // T336: a coordinator plans the parts before they work; the approval starts
+    // them. One part waits too (T346): the plan gives it its paths (§9.1).
+    const waitForPlan = split && (wasLive || coordinates);
     if (waitForPlan && open.length > 0) {
+      // T446 (audit r7 #6): the thread reads in words; the tool is named on the agent's line only.
+      const repos = open.map((p) => p.repo ?? p.title);
       await this.event(
         node.id,
-        `${open.map((p) => p.title).join(', ')} ${open.length === 1 ? 'waits' : 'wait'} for the plan: write it with plan_write (who owns which paths); each part starts once the plan is approved`,
+        `The ${andList(repos)} ${open.length === 1 ? 'part waits' : 'parts wait'} for the plan; ${open.length === 1 ? 'it starts' : 'each starts'} once the plan is approved`,
       );
+      await this.streams.appendThread('daemon', node.id, {
+        kind: 'event',
+        body: `${open.map((p) => p.title).join(', ')} ${open.length === 1 ? 'waits' : 'wait'} for the plan: write it with plan_write (who owns which paths); each part starts once the plan is approved`,
+        agent_only: true,
+      });
       for (const part of open) {
         await this.event(
           part.id,
@@ -167,7 +263,7 @@ export class RepoInPlaceService {
     return { node: this.streams.get(node.id), parts: parts.map((p) => this.streams.get(p.id)) };
   }
 
-  /** Work → coordinating: the branch, worktree and sessions go to "<repo> part". */
+  /** Work → coordinating: the branch, worktree and sessions go to "<node> · <repo>". */
   private async splitWorkNode(node: Stream, repo: string): Promise<Stream[]> {
     const from = node.repo as string;
     const created: string[] = [];
@@ -226,9 +322,10 @@ export class RepoInPlaceService {
 
   private async newPart(node: Stream, repo: string): Promise<Stream> {
     const part = await this.streams.create('daemon', {
-      title: `${repo} part`,
+      // T446 (audit r7 #18): "<node> · <repo>", so two projects' parts never share a name.
+      title: partTitle(node.title, repo),
       // T336: the part's share, not the parent's (often conversational) goal verbatim.
-      goal: `${repo} share of: ${node.goal}`,
+      goal: `${repo} share of: ${node.goal ?? node.title}`,
       parent: node.id,
       repo,
     });
@@ -237,6 +334,8 @@ export class RepoInPlaceService {
       kind: 'event',
       body: `part of "${node.title}": its thread so far (${total} entries) is the context; read it by id`,
       ref: node.id,
+      // T347 (D36 D12): for the part's agent, not the operator's thread view.
+      agent_only: true,
     });
     return part;
   }
@@ -284,6 +383,31 @@ export class RepoInPlaceService {
         `could not ${verb} the agent: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  /**
+   * T473: the parked branch and worktree for `repo`, when there are some to
+   * resume: the worktree as it was, or the branch checked out again.
+   */
+  private resumeParked(
+    node: Stream,
+    repo: string,
+    repoRoot: string,
+  ): { branch: string; path: string } | undefined {
+    const parked = node.parked;
+    if (parked === undefined || parked.repo !== repo) return undefined;
+    const exists = git(
+      ['rev-parse', '--verify', '--quiet', `refs/heads/${parked.branch}`],
+      repoRoot,
+      repoRoot,
+    );
+    if (exists.exitCode !== 0) return undefined;
+    if (parked.worktree !== undefined && existsSync(parked.worktree)) {
+      return { branch: parked.branch, path: parked.worktree };
+    }
+    const path = parked.worktree ?? join(repoRoot, '.worktrees', node.id);
+    const add = git(['worktree', 'add', '--', path, parked.branch], repoRoot, repoRoot);
+    return add.exitCode === 0 ? { branch: parked.branch, path } : undefined;
   }
 
   private async event(id: string, body: string): Promise<void> {

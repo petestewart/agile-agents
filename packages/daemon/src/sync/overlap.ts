@@ -25,7 +25,7 @@ export function isLiveWorkNode(s: Stream, all: readonly Stream[]): boolean {
   if (s.archived === true || s.repo === undefined) return false;
   if (s.human.status === 'landed' || s.human.status === 'closed') return false;
   if (s.delivery_state !== undefined && ENDED_DELIVERY.has(s.delivery_state.status)) return false;
-  return nodeRole(s, liveChildrenOf(s.id, all)) === 'work';
+  return nodeRole(s, liveChildrenOf(s.id, all), all) === 'work';
 }
 
 export interface Overlap {

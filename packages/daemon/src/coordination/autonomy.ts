@@ -31,11 +31,12 @@ import {
   ulid,
   validateAutonomyProposal,
 } from '@agile-agents/shared';
+import type { EmitRouted } from '../events/producers';
 import type { ProjectService } from '../projects/service';
 import type { StateStore } from '../store/store';
 import type { StreamService } from '../streams/service';
 import { type ContractService, assertChildren } from './contracts';
-import type { PlanService } from './plans';
+import { type PlanService, WAITING_FOR_PLAN } from './plans';
 
 export type AutonomyPrincipal = 'human' | 'coordinator' | 'director' | 'agent';
 export type GateVerdict = 'apply' | 'propose' | 'refuse';
@@ -84,6 +85,8 @@ export interface AutonomyServiceOptions {
   contracts?: ContractService;
   /** T301: the Director's `create_project` / `create_tree` on a new project. */
   projects?: ProjectService;
+  /** T446: records each applied change as an `autonomy_applied` event. */
+  emit?: EmitRouted;
   now?: () => Date;
 }
 
@@ -103,42 +106,243 @@ function proposalPath(id: string): string {
   return `proposals/${parsed.data}.yaml`;
 }
 
-/** One line for the card and the thread. */
+/** "1 part", "2 parts". */
+function parts(n: number): string {
+  return `${n} part${n === 1 ? '' : 's'}`;
+}
+
+/** A contract body as the head of a sentence: no trailing full stop, so ". Why:" never doubles it. */
+function sentence(text: string): string {
+  return text.trim().replace(/[.\s]+$/, '');
+}
+
+/**
+ * One line for the card and the thread: the change as a proposal, in words
+ * (T446, audit r7 #6: "Add a part "Document sale prices" on docs: …", not
+ * "add child … on docs").
+ */
 export function describeChange(change: CoordinatorChange, titleOf: (id: string) => string): string {
   switch (change.action) {
     case 'add_child':
-      return `add child "${change.title}"${change.repo !== undefined ? ` on ${change.repo}` : ''}: ${change.goal}`;
+      return `Add a ${change.repo !== undefined ? 'part' : 'node'} "${change.title}"${change.repo !== undefined ? ` on ${change.repo}` : ''}: ${change.goal}`;
     case 'add_waits_on':
-      return `${titleOf(change.child)} waits on ${titleOf(change.on)}`;
+      return `Make ${titleOf(change.child)} wait on ${titleOf(change.on)}`;
     case 'set_owner':
-      return `${titleOf(change.child)} owns ${change.owns.join(', ') || 'nothing'}`;
+      return `Let ${titleOf(change.child)} own ${change.owns.join(', ') || 'nothing'}`;
     case 'approve_contract':
-      return `contract ${change.title}${change.routine === true ? ' (routine)' : ''}: ${change.body}${
-        change.reason ? `. Reason: ${change.reason}` : ''
+      return `Approve a ${change.routine === true ? 'routine ' : ''}change to ${change.title}: ${sentence(change.body)}${
+        change.reason ? `. Why: ${change.reason}` : ''
       }`;
     case 'create_tree': {
       const t = change.tree;
-      const where = t.new_project !== undefined ? `new project ${t.new_project}` : t.project;
-      return `create "${t.title}" in ${where} (${t.parts.length} part${t.parts.length === 1 ? '' : 's'}: ${t.parts.map((p) => p.title).join(', ')})`;
+      const where =
+        t.new_project !== undefined ? `a new project, ${t.new_project}` : titleOf(t.project ?? '');
+      return `Create "${t.title}" in ${where} with ${parts(t.parts.length)}: ${t.parts.map((p) => p.title).join(', ')}`;
     }
     case 'create_project':
-      return `create project ${change.name}`;
+      return `Create the project ${change.name}`;
     case 'create_node':
-      return `create node "${change.node.title}" under ${change.node.parent !== undefined ? titleOf(change.node.parent) : change.node.project}: ${change.node.goal}`;
+      return `Create "${change.node.title}" under ${titleOf(change.node.parent ?? change.node.project ?? '')}${change.node.goal !== undefined ? `: ${change.node.goal}` : ''}`;
     case 'start_node':
-      return `start ${titleOf(change.node)}`;
+      return `Start ${titleOf(change.node)}`;
     case 'restart_node':
-      return `restart ${titleOf(change.node)}`;
+      return `Restart ${titleOf(change.node)}`;
   }
+}
+
+/** T446: an applied change in words, and what it made. */
+export interface AppliedWords {
+  /** The thread line, without who did it: 'Added a part: "RSS field" (web)'. */
+  line: string;
+  /** What changed, for Events and Activity: "RSS field (web)". */
+  what: string;
+  /** The nodes it created (links, Undo), in order. */
+  nodes: string[];
+  /** The node the line links to: the first created, or the one it changed. */
+  ref?: string;
+}
+
+/** An id from a `perform` result that holds one (`{id}`), else `undefined`. */
+function idOf(result: unknown, key = 'id'): string | undefined {
+  if (typeof result !== 'object' || result === null) return undefined;
+  const value = (result as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * T446 (audit r7 #6, #7): what an applied change did, in words, from its
+ * `perform` result: "Added a part: "Add an RSS field" (web)", "Linked web
+ * to wait on api", "Approved a routine change to Key file (v2)", "Created
+ * "Newsletter signup" in Blog with 2 parts". The caller says who ("You …").
+ */
+export function appliedWords(
+  change: CoordinatorChange,
+  result: unknown,
+  titleOf: (id: string) => string,
+): AppliedWords {
+  const created = (ids: (string | undefined)[]): string[] =>
+    ids.filter((id): id is string => id !== undefined);
+  switch (change.action) {
+    case 'add_child': {
+      const repo = change.repo !== undefined ? ` (${change.repo})` : '';
+      const id = idOf(result);
+      return {
+        line: `Added a ${change.repo !== undefined ? 'part' : 'node'}: "${change.title}"${repo}`,
+        what: `${change.title}${repo}`,
+        nodes: created([id]),
+        ...(id !== undefined ? { ref: id } : {}),
+      };
+    }
+    case 'add_waits_on': {
+      const [child, on] = [titleOf(change.child), titleOf(change.on)];
+      return {
+        line: `Linked ${child} to wait on ${on}`,
+        what: `${child} waits on ${on}`,
+        nodes: [],
+        ref: change.child,
+      };
+    }
+    case 'set_owner': {
+      const child = titleOf(change.child);
+      const owns = change.owns.join(', ') || 'nothing';
+      return {
+        line: `Set ${child} to own ${owns}`,
+        what: `${child} owns ${owns}`,
+        nodes: [],
+        ref: change.child,
+      };
+    }
+    case 'approve_contract': {
+      const version =
+        typeof result === 'object' && result !== null && 'version' in result
+          ? ` (v${String((result as { version: unknown }).version)})`
+          : '';
+      return {
+        line: `Approved a ${change.routine === true ? 'routine ' : ''}change to ${change.title}${version}`,
+        what: `${change.title}${version}`,
+        nodes: [],
+      };
+    }
+    case 'create_tree': {
+      const t = change.tree;
+      const where =
+        t.new_project !== undefined ? `a new project, ${t.new_project}` : titleOf(t.project ?? '');
+      const node = idOf(result, 'node');
+      const partIds =
+        typeof result === 'object' &&
+        result !== null &&
+        Array.isArray((result as { parts?: unknown }).parts)
+          ? ((result as { parts: unknown[] }).parts.filter(
+              (p) => typeof p === 'string',
+            ) as string[])
+          : [];
+      const what = `"${t.title}" in ${where} with ${parts(t.parts.length)}`;
+      return {
+        line: `Created ${what}`,
+        what: what.replace(/"/g, ''),
+        nodes: created([node, ...partIds]),
+        ...(node !== undefined ? { ref: node } : {}),
+      };
+    }
+    case 'create_project': {
+      const root = idOf(result, 'root');
+      return {
+        line: `Created the project ${change.name}`,
+        what: change.name,
+        nodes: [],
+        ...(root !== undefined ? { ref: root } : {}),
+      };
+    }
+    case 'create_node': {
+      const id = idOf(result);
+      const under = titleOf(change.node.parent ?? change.node.project ?? '');
+      return {
+        line: `Created "${change.node.title}" under ${under}`,
+        what: `${change.node.title} under ${under}`,
+        nodes: created([id]),
+        ...(id !== undefined ? { ref: id } : {}),
+      };
+    }
+    case 'start_node':
+    case 'restart_node': {
+      const verb = change.action === 'start_node' ? 'Started' : 'Restarted';
+      return {
+        line: `${verb} "${titleOf(change.node)}"`,
+        what: titleOf(change.node),
+        nodes: [],
+        ref: change.node,
+      };
+    }
+  }
+}
+
+/** "You added a part: …": the line as the human's own. */
+function asYou(line: string): string {
+  return `You ${line.charAt(0).toLowerCase()}${line.slice(1)}`;
 }
 
 export class AutonomyService {
   private agents: NodeAgents | undefined;
+  /** T443: starts under way (off the verb's path); `settled()` waits for them. */
+  private readonly starting = new Set<Promise<void>>();
 
   constructor(private readonly options: AutonomyServiceOptions) {}
 
   setAgents(agents: NodeAgents): void {
     this.agents = agents;
+  }
+
+  /** T443: resolves once every start begun so far has finished (tests). */
+  async settled(): Promise<void> {
+    while (this.starting.size > 0) await Promise.allSettled([...this.starting]);
+  }
+
+  /**
+   * T443 (§12, audit r7 #1): a node an applied change created runs, as a
+   * node you create does. While its parent's plan waits for the operator
+   * (a draft, or parts still waiting for it), it waits too and starts when
+   * the plan is approved (the `WAITING_FOR_PLAN` line, T336); otherwise it
+   * starts now. Off the caller's path: a coordinator's turn never waits on a
+   * vendor starting, and a failed start is the attach service's thread line.
+   */
+  private async run(ids: readonly string[], parent: string | undefined): Promise<void> {
+    const agents = this.agents;
+    if (agents === undefined || ids.length === 0) return;
+    const { streams } = this.options;
+    const waits = parent !== undefined && this.planPending(parent);
+    for (const id of ids) {
+      // A part (it has a repo) waits for the plan; a conversation is never one (D42).
+      if (waits && streams.get(id).repo !== undefined) {
+        await streams.appendThread('daemon', id, {
+          kind: 'event',
+          body: `${WAITING_FOR_PLAN}this part starts when "${this.titleOf(parent)}"'s plan is approved`,
+        });
+        continue;
+      }
+      const started = agents
+        .start(id)
+        .then(() => undefined)
+        .catch((err) => {
+          console.error(
+            `autonomy: could not start ${id}:`,
+            err instanceof Error ? err.message : err,
+          );
+        })
+        .finally(() => this.starting.delete(started));
+      this.starting.add(started);
+    }
+  }
+
+  /** The node's plan waits for the operator: a draft, or parts still waiting for one. */
+  private planPending(node: string): boolean {
+    const plans = this.options.plans;
+    if (plans === undefined) return false;
+    try {
+      if (plans.get(node)?.status === 'draft') return true;
+      return plans.waitingParts(node).length > 0;
+    } catch {
+      return false;
+    }
   }
 
   private now(): string {
@@ -209,10 +413,14 @@ export class AutonomyService {
     const summary = describeChange(change, (id) => this.titleOf(id));
     if (verdict === 'apply') {
       const result = await this.perform(node, principal, by, change);
+      // T446 (audit r7 #6, #7): a line in words, linked to what it made, and a record of it.
+      const words = appliedWords(change, result, (id) => this.titleOf(id));
       await this.note(principal, node, {
         kind: 'event',
-        body: `${principal} (${level}) applied: ${summary}`.slice(0, 800),
+        body: words.line.slice(0, 800),
+        ...(words.ref !== undefined ? { ref: words.ref } : {}),
       });
+      await this.record(node, principal, by, level, change, words);
       return { applied: true, level, result };
     }
     const proposal = validateAutonomyProposal({
@@ -232,7 +440,8 @@ export class AutonomyService {
     );
     await this.note(principal, node, {
       kind: 'proposal',
-      body: `${principal} (${level}) proposes: ${summary}`.slice(0, 800),
+      // T381: the thread reads in words; the level is the card's business.
+      body: `Proposed, waiting for your approval: ${summary}`.slice(0, 800),
       ref: proposalPath(proposal.id),
     });
     return { applied: false, level, proposal };
@@ -257,8 +466,15 @@ export class AutonomyService {
     } catch (err) {
       throw new StaleProposalError(id, err instanceof Error ? err.message : String(err));
     }
-    await this.perform(before.node, 'human', 'human', before.change);
-    return this.close(before, 'applied');
+    const level =
+      before.node === DIRECTOR_NODE
+        ? this.directorLevelFor(before.change)
+        : this.levelFor(before.node, 'coordinator');
+    const result = await this.perform(before.node, 'human', 'human', before.change);
+    const words = appliedWords(before.change, result, (id) => this.titleOf(id));
+    const closed = await this.close(before, 'applied', words);
+    await this.record(before.node, 'human', 'human', level, before.change, words, before);
+    return closed;
   }
 
   async dismiss(id: string): Promise<AutonomyProposal> {
@@ -284,18 +500,80 @@ export class AutonomyService {
   private async close(
     proposal: AutonomyProposal,
     status: 'applied' | 'dismissed',
+    words?: AppliedWords,
   ): Promise<AutonomyProposal> {
     const saved = await this.options.store.putEntity(
       proposalPath(proposal.id),
       validateAutonomyProposal,
       validateAutonomyProposal({ ...proposal, status, decided_at: this.now() }),
     );
-    await this.note('human', proposal.node, {
-      kind: 'event',
-      body: `${status}: ${proposal.summary}`.slice(0, 800),
-      ref: proposalPath(proposal.id),
-    });
+    // T446 (audit r7 #6): "You added a part: …" (linked to it); "You dismissed: …".
+    await this.note(
+      'human',
+      proposal.node,
+      words !== undefined
+        ? {
+            kind: 'event',
+            body: asYou(words.line).slice(0, 800),
+            ref: words.ref ?? proposalPath(proposal.id),
+          }
+        : {
+            kind: 'event',
+            body: `You dismissed: ${proposal.summary}`.slice(0, 800),
+            ref: proposalPath(proposal.id),
+          },
+    );
     return saved;
+  }
+
+  /**
+   * T446 (audit r7 #7): an applied change as an `autonomy_applied` event, on
+   * the node it changed and its ancestors (the Director's feed too, for the
+   * Director's own). A record: it wakes and prompts nobody. Never fails the change.
+   */
+  private async record(
+    node: string,
+    principal: 'human' | 'coordinator' | 'director',
+    by: string,
+    level: Autonomy,
+    change: CoordinatorChange,
+    words: AppliedWords,
+    proposal?: AutonomyProposal,
+  ): Promise<void> {
+    const emit = this.options.emit;
+    if (emit === undefined) return;
+    const director = node === DIRECTOR_NODE;
+    const subject = director ? (words.ref ?? words.nodes[0]) : node;
+    let project: string | undefined;
+    try {
+      project = subject === undefined ? undefined : this.options.streams.get(subject).project;
+    } catch {
+      project = undefined;
+    }
+    const author =
+      principal === 'human'
+        ? 'human'
+        : principal === 'director'
+          ? 'director'
+          : /^agent:[0-9A-HJKMNP-TV-Z]{26}$/.test(by)
+            ? by
+            : 'daemon';
+    await emit({
+      type: 'autonomy_applied',
+      ...(subject !== undefined ? { subject } : {}),
+      ...(project !== undefined ? { project } : {}),
+      payload: {
+        principal,
+        level,
+        action: change.action,
+        summary: words.what.slice(0, 200) || change.action,
+        nodes: words.nodes.slice(0, 20),
+        ...(proposal !== undefined ? { proposal: proposal.id } : {}),
+      },
+      ...(proposal !== undefined ? { ref: proposalPath(proposal.id) } : {}),
+      by: author,
+      ...(director || proposal?.principal === 'director' ? { director: true } : {}),
+    });
   }
 
   /** A thread line on the node, or on the Director's own thread. */
@@ -315,9 +593,12 @@ export class AutonomyService {
     });
   }
 
+  /** A node's title, or a project's name (T371); the id when neither reads. */
   private titleOf(id: string): string {
     try {
-      return this.options.streams.get(id).title;
+      return id.startsWith('P-')
+        ? this.options.store.getProject(id).name
+        : this.options.streams.get(id).title;
     } catch {
       return id;
     }
@@ -336,6 +617,10 @@ export class AutonomyService {
       streams.get(change.on);
     }
     if (change.action === 'set_owner') assertChildren(streams, node, [change.child], 'set_owner');
+    // T443: a coordinator starts (or restarts) its own children only.
+    if (change.action === 'start_node' || change.action === 'restart_node') {
+      assertChildren(streams, node, [change.node], change.action);
+    }
     if (change.action === 'approve_contract') {
       const contract = this.options.contracts?.get(change.contract);
       if (contract !== undefined && contract.node !== node) {
@@ -407,6 +692,17 @@ export class AutonomyService {
         if (child !== undefined && on !== undefined) await streams.wait(principal, child.id, on.id);
       }
     }
+    // T443 (§12's worked example): the node's coordinator starts and plans; its parts wait
+    // for that plan (T336) and start when it is approved. A node without parts just runs.
+    if (parts.length > 0 && this.agents !== undefined) {
+      for (const part of parts) {
+        await streams.appendThread('daemon', part.id, {
+          kind: 'event',
+          body: `${WAITING_FOR_PLAN}this part starts when "${node.title}"'s plan is approved`,
+        });
+      }
+    }
+    await this.run([node.id], undefined);
     return { project: project.id, node: node.id, parts: parts.map((p) => p.id) };
   }
 
@@ -428,14 +724,17 @@ export class AutonomyService {
   ): Promise<unknown> {
     const { streams, plans, contracts } = this.options;
     switch (change.action) {
-      case 'add_child':
-        // Created idle: starting its agent stays the human's (or a later ticket's) call.
-        return streams.create(principal, {
+      case 'add_child': {
+        const child = await streams.create(principal, {
           title: change.title,
           goal: change.goal,
           parent: node,
           ...(change.repo !== undefined ? { repo: change.repo } : {}),
         });
+        // T443: it runs, now or once the plan it waits for is approved.
+        await this.run([child.id], node);
+        return child;
+      }
       case 'add_waits_on':
         return streams.wait(principal, change.child, change.on);
       case 'set_owner':
@@ -452,14 +751,20 @@ export class AutonomyService {
         return this.projects().create({ name: change.name, repos: change.repos ?? [] }, principal);
       case 'create_node': {
         const { parent, project, ...fields } = change.node;
-        // Created idle; `start_node` starts it.
-        return streams.create(principal, {
-          ...fields,
-          parent: parent ?? this.projects().get(project ?? '').root,
-        });
+        const under = parent ?? this.projects().get(project ?? '').root;
+        const created = await streams.create(principal, { ...fields, parent: under });
+        // T443: it runs, as a node you create does.
+        await this.run([created.id], under);
+        return created;
       }
-      case 'start_node':
+      case 'start_node': {
+        // T443: already running (started when it was created) is done, not an error.
+        const target = streams.get(change.node);
+        if (target.sessions.some((s) => s.status === 'starting' || s.status === 'running')) {
+          return { node: target.id, already: true };
+        }
         return this.nodeAgents().start(change.node);
+      }
       case 'restart_node':
         return this.nodeAgents().restart(change.node);
     }

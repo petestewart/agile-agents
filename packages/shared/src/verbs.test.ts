@@ -65,6 +65,10 @@ describe('agent verbs', () => {
       'create_node',
       'start_node',
       'restart_node',
+      'propose_repo',
+      'goal_met',
+      'escalate',
+      'settle_question',
     ]);
     for (const verb of AGENT_VERBS) {
       expect(AGENT_VERB_SCHEMAS[verb]).toBeDefined();
@@ -78,6 +82,28 @@ describe('agent verbs', () => {
       expect(AGENT_VERB_SCHEMAS[verb].safeParse({}).success).toBe(false);
       expect(() => validateVerbInput(verb, { session: 'nope' })).toThrow(verb);
     }
+  });
+
+  test('T361: ask may offer 2–6 one-line choices', () => {
+    const ask = (options: unknown) =>
+      AGENT_VERB_SCHEMAS.ask.safeParse({ session, text: 'which?', options });
+    expect(
+      validateVerbInput('ask', { session, text: 'which?', options: [' a ', 'b'] }).options,
+    ).toEqual(['a', 'b']);
+    expect(ask(['a', 'b', 'c', 'd', 'e', 'f']).success).toBe(true);
+    expect(ask(['a']).success).toBe(false);
+    expect(ask(['a', 'b', 'c', 'd', 'e', 'f', 'g']).success).toBe(false);
+    expect(ask(['a', '  ']).success).toBe(false);
+    expect(ask(['a', 'x'.repeat(201)]).success).toBe(false);
+    expect(ask(['a', 'x'.repeat(200)]).success).toBe(true);
+    // The MCP bridge publishes the shape to the model, so `ask` stays a plain object.
+    expect(Object.keys(AGENT_VERB_SCHEMAS.ask.shape)).toEqual([
+      'session',
+      'text',
+      'options',
+      'thread',
+    ]);
+    expect(AGENT_VERB_DESCRIPTIONS.ask).toContain('options');
   });
 
   test('validate real inputs and refuse unknown keys', () => {
@@ -96,6 +122,78 @@ describe('agent verbs', () => {
     expect(() =>
       validateVerbInput('finding', { session, severity: 'huge', file: 'a', text: 'x' }),
     ).toThrow();
+  });
+
+  test('T478: goal_met takes a summary, and nothing else', () => {
+    expect(validateVerbInput('goal_met', { session, summary: 'shipped' })).toEqual({
+      session,
+      summary: 'shipped',
+    });
+    expect(AGENT_VERB_SCHEMAS.goal_met.safeParse({ session }).success).toBe(false);
+    expect(
+      AGENT_VERB_SCHEMAS.goal_met.safeParse({ session, summary: 'x', close: true }).success,
+    ).toBe(false);
+  });
+
+  test('T503: progress and ask take an optional thread, a turn’s or a question’s', () => {
+    const ts = '2026-10-02T10:05:00.000Z';
+    expect(validateVerbInput('progress', { session, text: 'x', thread: ts }).thread).toBe(ts);
+    expect(validateVerbInput('progress', { session, text: 'x' }).thread).toBeUndefined();
+    const q = `questions/Q-${ulid()}`;
+    expect(validateVerbInput('ask', { session, text: 'x?', thread: q }).thread).toBe(q);
+    expect(
+      AGENT_VERB_SCHEMAS.progress.safeParse({ session, text: 'x', thread: 'main' }).success,
+    ).toBe(false);
+    expect(AGENT_VERB_DESCRIPTIONS.progress).toContain('thread');
+  });
+
+  test('T502: settle_question takes a question id and the answer, and nothing else', () => {
+    const question = `Q-${ulid()}`;
+    expect(validateVerbInput('settle_question', { session, question, answer: 'cents' })).toEqual({
+      session,
+      question,
+      answer: 'cents',
+    });
+    const settle = (fields: Record<string, unknown>) =>
+      AGENT_VERB_SCHEMAS.settle_question.safeParse({ session, question, answer: 'x', ...fields })
+        .success;
+    expect(settle({ question: 'Q-1' })).toBe(false);
+    expect(settle({ answer: '' })).toBe(false);
+    expect(settle({ answer: 'x'.repeat(801) })).toBe(false);
+    expect(settle({ resolved_as: 'reply' })).toBe(false);
+    expect(AGENT_VERB_DESCRIPTIONS.settle_question).toContain('recorded as the answer');
+  });
+
+  test('T513: settle_question is only for a reply that decides it; a question back is answered with progress', () => {
+    const text = AGENT_VERB_DESCRIPTIONS.settle_question;
+    expect(text).toContain('only when the operator wrote back');
+    expect(text).toContain('their own words decide it');
+    expect(text).toContain('A reply that asks about the options');
+    expect(text).toContain('reply with `progress`');
+    expect(text).toContain('the question stays open');
+  });
+
+  test('T455: propose_repo takes a repo name and a why, and nothing else', () => {
+    const input = validateVerbInput('propose_repo', {
+      session,
+      repo: ' web ',
+      why: 'the export button lives there',
+    });
+    expect(input).toEqual({ session, repo: 'web', why: 'the export button lives there' });
+    const propose = (fields: Record<string, unknown>) =>
+      AGENT_VERB_SCHEMAS.propose_repo.safeParse({ session, repo: 'web', why: 'x', ...fields })
+        .success;
+    expect(propose({})).toBe(true);
+    // A name the registry could hold: no path, no spaces, no markup in the line it writes.
+    expect(propose({ repo: '../web' })).toBe(false);
+    expect(propose({ repo: 'we b' })).toBe(false);
+    expect(propose({ repo: '**web**' })).toBe(false);
+    expect(propose({ repo: '' })).toBe(false);
+    expect(propose({ why: '' })).toBe(false);
+    expect(propose({ why: 'x'.repeat(801) })).toBe(false);
+    // The agent names no node: the session's own is the one proposed for.
+    expect(propose({ node: ulid() })).toBe(false);
+    expect(Object.keys(AGENT_VERB_SCHEMAS.propose_repo.shape)).toEqual(['session', 'repo', 'why']);
   });
 
   test('bodies are capped at the thread body cap', () => {

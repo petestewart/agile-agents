@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import { renderMarkdown } from './markdown';
-import { namesOf, tokenize } from './names';
+import { distinctTitle, namesOf, tokenize } from './names';
 
 const NODE = '01J8Z3K4M5N6P7Q8R9S0T1V2W3';
 const ROOT = '01J8Z3K4M5N6P7Q8R9S0T1V2W4';
@@ -91,5 +91,34 @@ describe('renderMarkdown with names (T338)', () => {
 
   test('without names, ids stay as written', () => {
     expect(renderMarkdown(`waits on ${NODE}`)).toBe(`<p>waits on ${NODE}</p>`);
+  });
+});
+
+describe('T446: distinctTitle', () => {
+  const rows = [
+    { id: 'S', title: 'Shop', project: 'P1' },
+    { id: 'O', title: 'Ops', project: 'P2' },
+    { id: 'R1', title: 'Rotate keys', parent: 'S', project: 'P1' },
+    { id: 'R2', title: 'Rotate keys', parent: 'O', project: 'P2' },
+    { id: 'A1', title: 'api part', parent: 'R1', project: 'P1' },
+    { id: 'A2', title: 'api part', parent: 'R2', project: 'P2' },
+    { id: 'X', title: 'Unique', parent: 'R1', project: 'P1' },
+  ];
+
+  test('a unique title stays bare; a clash across projects gets the project', () => {
+    expect(distinctTitle('X', rows)).toBe('Unique');
+    expect(distinctTitle('A1', rows)).toBe('Shop › api part');
+    expect(distinctTitle('R2', rows)).toBe('Ops › Rotate keys');
+    expect(distinctTitle('nope', rows)).toBeUndefined();
+  });
+
+  test('a clash in one project gets the parent', () => {
+    const same = [
+      ...rows,
+      { id: 'C1', title: 'Docs', parent: 'R1', project: 'P1' },
+      { id: 'C2', title: 'Docs', parent: 'X', project: 'P1' },
+    ];
+    expect(distinctTitle('C1', same)).toBe('Rotate keys › Docs');
+    expect(distinctTitle('C2', same)).toBe('Unique › Docs');
   });
 });

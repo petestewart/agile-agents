@@ -5,8 +5,15 @@
  * covers them.
  */
 
-import type { InboxItem, NodeRole, SessionRef, Stream } from '@agile-agents/shared';
-import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from './feed-types';
+import type { NodeRole, RoutedEvent, SessionRef, Stream } from '@agile-agents/shared';
+import type {
+  CockpitCardError,
+  CockpitProjectRow,
+  CockpitRepoRow,
+  CockpitStatusCard,
+  CockpitStreamRow,
+} from './feed-types';
+import { type NodeStatusKey, statusKey } from './status';
 
 /** §9.2's five dots. */
 export type StreamDot = 'amber' | 'blue' | 'grey' | 'green' | 'red';
@@ -18,14 +25,21 @@ export type StreamDot = 'amber' | 'blue' | 'grey' | 'green' | 'red';
  * `done` with the human half still `open` is "waiting for me to review and
  * land" (§2.2), which is the operator's move, so it is amber too.
  */
-export function streamDot(row: Pick<CockpitStreamRow, 'agent_status' | 'human_status'>): StreamDot {
+export function streamDot(
+  row: Pick<CockpitStreamRow, 'agent_status' | 'human_status'> &
+    Partial<Pick<CockpitStreamRow, 'role' | 'project' | 'pr_open' | 'pending_decision'>>,
+): StreamDot {
   if (row.human_status === 'waiting_on_you') return 'amber';
+  // T447 (audit r7 #9): a plan, a gate or a proposal waiting on you is your move too.
+  if (row.pending_decision === true && row.human_status === 'open') return 'amber';
   if (row.human_status === 'landed') return 'green';
   if (row.human_status === 'closed') return 'grey';
   switch (row.agent_status) {
     case 'question':
-    case 'done':
       return 'amber';
+    case 'done':
+      // T341: as Needs me (T336): nothing to land here, so not the operator's move.
+      return nothingToLand(row) ? 'grey' : 'amber';
     case 'blocked':
       return 'red';
     case 'working':
@@ -35,13 +49,73 @@ export function streamDot(row: Pick<CockpitStreamRow, 'agent_status' | 'human_st
   }
 }
 
-export const DOT_LABEL: Record<StreamDot, string> = {
-  amber: 'waiting on you',
-  blue: 'agent working',
-  grey: 'idle',
-  green: 'landed',
-  red: 'blocked',
-};
+/**
+ * T447 (audit r7 #9): the dot's colour from the status the node reads as
+ * (`lib/status.ts`), so the dot and the word never disagree: amber for your
+ * move, red when stuck, blue while it works or its PR is open, green once
+ * merged, grey otherwise. `StatusDot` draws this; `streamDot` stays for a
+ * bare two-writer pair.
+ */
+export function statusDot(key: NodeStatusKey): StreamDot {
+  switch (key) {
+    case 'needs_you':
+    case 'ready':
+    case 'no_changes':
+    case 'merged_outside':
+      return 'amber';
+    case 'blocked':
+      return 'red';
+    case 'working':
+    case 'pr_open':
+      return 'blue';
+    case 'merged':
+      return 'green';
+    default:
+      return 'grey';
+  }
+}
+
+/**
+ * A coordinating node, a project root, a project's conversation (no branch),
+ * or a node whose PR is open (it merges on GitHub): `done` is not your move.
+ */
+function nothingToLand(
+  row: Partial<Pick<CockpitStreamRow, 'role' | 'project' | 'pr_open'>>,
+): boolean {
+  return (
+    row.pr_open === true ||
+    row.role === 'coordinating' ||
+    row.role === 'project' ||
+    (row.role === 'conversation' && row.project !== undefined)
+  );
+}
+
+/**
+ * T413: a node's children for its details panel: every child row, in tree
+ * order, with the agent's last status card when it posted one (its progress
+ * line and files) or the card's read error. The status itself is the row's
+ * (`nodeStatus`), never the card's.
+ */
+export interface ChildEntry {
+  row: CockpitStreamRow;
+  card?: CockpitStatusCard;
+  error?: string;
+}
+
+export function childEntries(
+  rows: readonly CockpitStreamRow[],
+  parent: string,
+  cards: ReadonlyArray<CockpitStatusCard | CockpitCardError>,
+): ChildEntry[] {
+  const byNode = new Map(cards.map((c) => [c.node, c]));
+  return rows
+    .filter((row) => row.parent === parent)
+    .map((row) => {
+      const card = byNode.get(row.id);
+      if (card === undefined) return { row };
+      return 'error' in card ? { row, error: card.error } : { row, card };
+    });
+}
 
 export interface StreamTreeNode {
   row: CockpitStreamRow;
@@ -57,7 +131,21 @@ export function buildStreamTree(rows: readonly CockpitStreamRow[]): StreamTreeNo
     if (parent && parent !== node) parent.children.push(node);
     else roots.push(node);
   }
+  // T474: siblings by their place (dragged there); the rest keep the order they were made.
+  for (const node of nodes.values()) node.children = bySiblingOrder(node.children);
   return roots;
+}
+
+/** T474: `order` first (smallest first), then the incoming order; stable. */
+export function bySiblingOrder<T extends { row: { order?: number } }>(nodes: readonly T[]): T[] {
+  return nodes
+    .map((n, i) => ({ n, i }))
+    .sort(
+      (a, b) =>
+        (a.n.row.order ?? Number.MAX_SAFE_INTEGER) - (b.n.row.order ?? Number.MAX_SAFE_INTEGER) ||
+        a.i - b.i,
+    )
+    .map(({ n }) => n);
 }
 
 /**
@@ -66,7 +154,9 @@ export function buildStreamTree(rows: readonly CockpitStreamRow[]): StreamTreeNo
  * hidden inside a folded subtree.
  */
 export function subtreeNeedsYou(node: StreamTreeNode): boolean {
-  return node.children.some((child) => streamDot(child.row) === 'amber' || subtreeNeedsYou(child));
+  return node.children.some(
+    (child) => statusDot(statusKey(child.row)) === 'amber' || subtreeNeedsYou(child),
+  );
 }
 
 /** T331: the rail's collapsed nodes, read back from storage; anything malformed is an empty set. */
@@ -104,35 +194,33 @@ export function filterStreamRows(
   return rows.filter((row) => keep.has(row.id));
 }
 
-export interface InboxGroup {
-  /** The stream id, or `''` for items that belong to no stream (a global `rule_accept`). */
-  key: string;
-  /** "ledger-lite / import CSV / parser" (§3.2), or "No stream". */
-  label: string;
-  items: InboxItem[];
-}
-
 /**
- * §9.1: grouped by stream. The inbox arrives oldest first (§3.3), and the
- * groups keep that order — a group sits where its oldest item would — so
- * the oldest ask is still the first thing on the page.
+ * T447 (audit r7 #20): a rail title in two parts for middle truncation: the
+ * head gives way (it ends in "…") and the tail — the last word or two, at
+ * most `TAIL_MAX` characters — always shows, so alike titles ("Schema change
+ * for onboarding emails", "Schema change for data retention") stay apart
+ * however narrow the rail. The row's tooltip has the whole title.
+ * `undefined` for a title short enough never to need it.
  */
-export function groupInbox(items: readonly InboxItem[]): InboxGroup[] {
-  const groups = new Map<string, InboxGroup>();
-  for (const item of items) {
-    const key = item.stream ?? '';
-    let group = groups.get(key);
-    if (!group) {
-      group = {
-        key,
-        label: item.stream_path.length > 0 ? item.stream_path.join(' / ') : 'No stream',
-        items: [],
-      };
-      groups.set(key, group);
-    }
-    group.items.push(item);
+export const TAIL_MAX = 16;
+
+export function splitTitle(title: string): { head: string; tail: string } | undefined {
+  const t = title.trim();
+  if (t.length <= 20) return undefined;
+  const words = t.split(/(\s+)/);
+  let tail = '';
+  // Whole words from the end while they fit; the last one always.
+  for (let i = words.length - 1; i >= 0; i--) {
+    const next = `${words[i]}${tail}`;
+    if (tail !== '' && next.trim().length > TAIL_MAX) break;
+    tail = next;
   }
-  return [...groups.values()];
+  tail = tail.trimStart();
+  // One long last word: its end only.
+  if (tail.length > TAIL_MAX) tail = tail.slice(-Math.round(TAIL_MAX * 0.75));
+  const head = t.slice(0, t.length - tail.length);
+  if (head.trim() === '') return undefined;
+  return { head, tail };
 }
 
 // ---- T161: the stream page (§9.3) ----------------------------------------
@@ -140,6 +228,20 @@ export function groupInbox(items: readonly InboxItem[]): InboxGroup[] {
 /** A session that is still attached: it can be prompted, and Stop stops it. */
 export function isLiveSession(session: Pick<SessionRef, 'status'>): boolean {
   return session.status === 'starting' || session.status === 'running' || session.status === 'idle';
+}
+
+/**
+ * T350 (D36 D4): the sessions strip. Coordinators wake on every child event,
+ * so ended sessions pile up; two or more of them fold into one "N earlier
+ * sessions" row. Live sessions are always shown, and a lone ended session
+ * stays on show (its ended reason is often the thing to read). Order is kept.
+ */
+export function sessionRows<T extends Pick<SessionRef, 'status'>>(
+  sessions: readonly T[],
+): { shown: T[]; earlier: T[] } {
+  const ended = sessions.filter((s) => !isLiveSession(s));
+  if (ended.length < 2) return { shown: [...sessions], earlier: [] };
+  return { shown: sessions.filter(isLiveSession), earlier: ended };
 }
 
 /**
@@ -162,6 +264,74 @@ export function threadAuthorLabel(by: string, sessions: readonly SessionRef[]): 
   const id = by.startsWith('agent:') ? by.slice('agent:'.length) : by;
   const session = sessions.find((each) => each.id === id);
   return session ? `${session.role} · ${session.vendor}` : 'agent';
+}
+
+/** T413: who an Activity row's event went to, by the session's role ("the agent"). */
+const DELIVERED_TO: Record<string, string> = {
+  worker: 'agent',
+  coordinator: 'coordinator',
+  reviewer: 'reviewer',
+  lessons: 'lessons pass',
+};
+
+/**
+ * T341, reworded in T413: whether the agent has seen an Activity row's
+ * event, in words — "Seen by the agent", "Not seen by the agent yet" — by
+ * the session's role, never its id (the id is the row's hover title), and a
+ * digest as "batched". `owner` names the reader outright ("Director").
+ */
+export function activityDelivery(
+  entry: { status: string; session?: string; digest?: string },
+  sessions: readonly Pick<SessionRef, 'id' | 'role'>[],
+  owner?: string,
+): string {
+  const role =
+    entry.session === undefined ? undefined : sessions.find((s) => s.id === entry.session)?.role;
+  const who = `the ${owner ?? (role !== undefined ? (DELIVERED_TO[role] ?? role) : 'agent')}`;
+  switch (entry.status) {
+    case 'pending':
+      return `Not seen by ${who} yet`;
+    case 'delivered':
+      return `Seen by ${who}${entry.digest !== undefined ? ' (batched)' : ''}`;
+    case 'superseded':
+      return 'Replaced by a newer event';
+    case 'expired':
+      return `Expired before ${who} saw it`;
+    // T446: a record (a change applied on its own): on the Activity, never sent to an agent.
+    case 'recorded':
+      return 'For the record';
+    default:
+      return entry.status.replace(/_/g, ' ');
+  }
+}
+
+/** T413: a worktree folder by its name, without the node id: `…/.worktrees/01h…-add-csv` → `add-csv`. */
+export function worktreeName(path: string): string {
+  const base =
+    path
+      .replace(/[\\/]+$/, '')
+      .split(/[\\/]/)
+      .pop() ?? path;
+  return base.replace(/^[0-9a-z]{26}-/i, '');
+}
+
+/**
+ * T347 (D36 D5): an event's type in words. A direct merge is also a
+ * `pr_merged` event (the routing type), but it had no PR: it reads "merged".
+ */
+export function eventLabel(event: Pick<RoutedEvent, 'type' | 'payload'>): string {
+  if (event.type === 'pr_merged' && event.payload.pr === undefined) return 'merged';
+  // T390: a line you typed, in your words rather than the event's type.
+  if (event.type === 'human_line') return 'you wrote';
+  return event.type.replace(/_/g, ' ');
+}
+
+/** T341: an event time as "YYYY-MM-DD HH:MM" in the viewer's local time; unparseable input as given. */
+export function eventTime(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())} ${two(at.getHours())}:${two(at.getMinutes())}`;
 }
 
 export type DiffLineKind = 'add' | 'del' | 'hunk' | 'meta' | 'ctx';

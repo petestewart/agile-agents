@@ -13,21 +13,37 @@
  * reasoning about interleaving.
  */
 
-import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } from 'node:path';
 import {
   type AgentId,
   type AgentRecord,
+  CHAT_MAIN,
+  DEFAULT_HARNESS_UPDATE_MODE,
+  DEFAULT_PERMISSION_POSTURE,
+  DEFAULT_SESSION_IDLE_MINUTES,
+  DEFAULT_VENDOR_CHECK_MODE,
   DIRECTOR_NODE,
   type Delivery,
   type DirectorRecord,
   type Event,
+  type FavouriteModel,
+  type HarnessId,
+  type HarnessUpdateMode,
   type HomeConfig,
+  type InstalledCliVendor,
   KnowledgeIdSchema,
   type KnowledgeItem,
   type KnowledgePrincipal,
+  type KnowledgeWakeMode,
   type LegacyRule,
   LegacyRuleIdSchema,
+  MOVABLE_THREAD_KINDS,
+  type ModelPolicyPatch,
+  ModelPolicyPatchSchema,
+  type ModelProfilesPatch,
+  ModelProfilesPatchSchema,
+  type PermissionPosture,
   type Policy,
   type Project,
   ProjectIdSchema,
@@ -36,21 +52,28 @@ import {
   type RoutedEvent,
   type SessionDefaultsPatch,
   SessionDefaultsPatchSchema,
+  type SessionVendor,
   type StatusCard,
   StatusCardSchema,
   type Stream,
   type StreamPrincipal,
+  type ThreadAnchor,
   type ThreadEntry,
   type TrackerSystem,
   UlidSchema,
+  type VendorCheckMode,
+  applyModelPolicyPatch,
   assertKnowledgeAcceptable,
   assertKnowledgeWrite,
   assertNoStreamCycle,
   assertNoWaitsOnCycle,
   assertStreamWrite,
+  chatThreadOpsOf,
+  favouriteKey,
   formatKnowledgeScope,
   formatZodError,
   projectNameKey,
+  questionOfChatThread,
   validateAgentRecord,
   validateDelivery,
   validateDirectorRecord,
@@ -60,6 +83,7 @@ import {
   validateLegacyRule,
   validatePolicy,
   validateProject,
+  validateQuestion,
   validateRepoEntry,
   validateReposConfig,
   validateRoutedEvent,
@@ -169,6 +193,14 @@ export const HEARTBEAT_COALESCE_MS = 30 * 1000;
 
 export class StateStore {
   private readonly mutex = new Mutex();
+  /** T395: each thread's last line time, from appends here, else the file's mtime (read once). */
+  private readonly threadAt = new Map<string, string | undefined>();
+  /**
+   * T437: per thread (a node id, or the Director's), whether a line of yours
+   * waits for an answer and when the agent last answered one: a reply counts
+   * only when it follows something you said (or, on a node, its question).
+   */
+  private readonly answers = new Map<string, AnswerState>();
 
   // An absolute symlink target may resolve through a symlinked ancestor of
   // the state root (macOS `tmpdir()` under `/var -> /private/var`), so
@@ -606,6 +638,326 @@ export class StateStore {
     });
   }
 
+  /** T434: the quick drafts switch in `<home>/config.yaml` (`true` removes the key: on is the default). */
+  async setQuickDrafts(on: boolean, options: { by?: string } = {}): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (on) Reflect.deleteProperty(raw, 'quick_drafts');
+      else raw.quick_drafts = false;
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { quick_drafts: on },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T454: who accepted knowledge wakes (`source`, the default, removes the key). */
+  async setKnowledgeWake(
+    mode: KnowledgeWakeMode,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (mode === 'source') Reflect.deleteProperty(raw, 'knowledge_wake');
+      else raw.knowledge_wake = mode;
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { knowledge_wake: mode },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T480 (D49): use the installed CLI for `vendor` (on, the default, removes the vendor's key). */
+  async setInstalledCli(
+    vendor: InstalledCliVendor,
+    on: boolean,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      const current = mappingCopy(raw.installed_cli ?? {});
+      if (on) Reflect.deleteProperty(current, vendor);
+      else current[vendor] = false;
+      if (Object.keys(current).length > 0) raw.installed_cli = current;
+      else Reflect.deleteProperty(raw, 'installed_cli');
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { installed_cli: { [vendor]: on } },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /**
+   * T469: star (`on`) or unstar one model. A star goes at the end of the
+   * list and is never doubled; `default` is kept as no `model`. The last
+   * unstar removes the key.
+   */
+  async setFavouriteModel(
+    ref: FavouriteModel,
+    on: boolean,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      const favourite: FavouriteModel =
+        ref.model === undefined || ref.model === 'default'
+          ? { vendor: ref.vendor }
+          : { vendor: ref.vendor, model: ref.model };
+      const key = favouriteKey(favourite);
+      // A hand-edited list that isn't one is refused (naming the key), never replaced.
+      if (raw.favourite_models !== undefined && !Array.isArray(raw.favourite_models)) {
+        validateHomeConfig(raw);
+      }
+      const current = (raw.favourite_models ?? []) as unknown[];
+      const others = current.filter(
+        (row) =>
+          !(
+            row !== null &&
+            typeof row === 'object' &&
+            favouriteKey(row as { vendor: string; model?: string }) === key
+          ),
+      );
+      // Starred again: it keeps its place.
+      const next = !on
+        ? others
+        : others.length < current.length
+          ? current
+          : [...current, favourite];
+      if (next.length > 0) raw.favourite_models = next;
+      else Reflect.deleteProperty(raw, 'favourite_models');
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { favourite_model: { ...favourite, on } },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T478: New node's auto-close default (off, the default, removes the key). */
+  async setAutoCloseDefault(on: boolean, options: { by?: string } = {}): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (on) raw.auto_close = true;
+      else Reflect.deleteProperty(raw, 'auto_close');
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { auto_close: on },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T465 (D48): how long a finished turn's session is kept (the default, 30, removes the key). */
+  async setSessionIdleMinutes(minutes: number, options: { by?: string } = {}): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (minutes === DEFAULT_SESSION_IDLE_MINUTES)
+        Reflect.deleteProperty(raw, 'session_idle_minutes');
+      else raw.session_idle_minutes = minutes;
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { session_idle_minutes: minutes },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T489 (D58): the vendor self-check's automatic trigger (`auto`, the default, removes the key). */
+  async setVendorCheckMode(
+    mode: VendorCheckMode,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (mode === DEFAULT_VENDOR_CHECK_MODE) Reflect.deleteProperty(raw, 'vendor_checks');
+      else raw.vendor_checks = mode;
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { vendor_checks: mode },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /**
+   * T481 (D50): the harness update mode in `<home>/config.yaml`: the home's
+   * (`vendor` absent; `alert`, the default, removes the key) or one vendor's
+   * (`null` removes it, so it follows the home's).
+   */
+  async setHarnessUpdateMode(
+    mode: HarnessUpdateMode | null,
+    vendor: SessionVendor | undefined,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      const block = mappingCopy(raw.harness_updates);
+      if (vendor === undefined) {
+        if (mode === null) throw new Error('only a vendor’s mode can be cleared');
+        if (mode === DEFAULT_HARNESS_UPDATE_MODE) Reflect.deleteProperty(block, 'mode');
+        else block.mode = mode;
+      } else {
+        const vendors = mappingCopy(block.vendors);
+        if (mode === null) Reflect.deleteProperty(vendors, vendor);
+        else vendors[vendor] = mode;
+        if (Object.keys(vendors).length === 0) Reflect.deleteProperty(block, 'vendors');
+        else block.vendors = vendors;
+      }
+      if (Object.keys(block).length === 0) Reflect.deleteProperty(raw, 'harness_updates');
+      else raw.harness_updates = block;
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { harness_updates: { ...(vendor !== undefined ? { vendor } : {}), mode } },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T481: the version whose update was dismissed, per CLI (`undefined` forgets it). */
+  async setHarnessUpdateDismissed(
+    harness: HarnessId,
+    version: string | undefined,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      const block = mappingCopy(raw.harness_updates);
+      const dismissed = mappingCopy(block.dismissed);
+      if (version === undefined) Reflect.deleteProperty(dismissed, harness);
+      else dismissed[harness] = version;
+      if (Object.keys(dismissed).length === 0) Reflect.deleteProperty(block, 'dismissed');
+      else block.dismissed = dismissed;
+      if (Object.keys(block).length === 0) Reflect.deleteProperty(raw, 'harness_updates');
+      else raw.harness_updates = block;
+      const validated = validateHomeConfig(raw);
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { harness_updates: { dismissed: { harness, version: version ?? null } } },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /** T457: the home's permission posture in `<home>/config.yaml` (`ask`, the default, removes the key). */
+  async setPermissionPosture(
+    posture: PermissionPosture,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (posture === DEFAULT_PERMISSION_POSTURE) Reflect.deleteProperty(raw, 'permissions');
+      else raw.permissions = posture;
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { permissions: posture },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /**
+   * T482 (D54): the home's model choice in `<home>/config.yaml`
+   * (`model_policy`), field by field: absent = unchanged, `null` = back to
+   * what ships. The key goes when nothing is set.
+   */
+  async setHomeModelPolicy(
+    patch: ModelPolicyPatch,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    const valid = ModelPolicyPatchSchema.parse(patch);
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      // A hand-edited block that isn't one is refused (naming the key), never replaced.
+      if (raw.model_policy !== undefined) validateHomeConfig(raw);
+      const next = applyModelPolicyPatch(
+        raw.model_policy as Parameters<typeof applyModelPolicyPatch>[0],
+        valid,
+      );
+      if (Object.keys(next).length > 0) raw.model_policy = next;
+      else Reflect.deleteProperty(raw, 'model_policy');
+      const validated = validateHomeConfig(raw);
+      // 0600: the same file may hold the classifier key.
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { model_policy: Object.keys(valid) },
+      });
+      return { result: validated, event };
+    });
+  }
+
+  /**
+   * T482: model profiles (`model_profiles`, keyed `vendor/model`): a profile
+   * sets one, `null` removes it (so the shipped one, or none, applies).
+   */
+  async setModelProfiles(
+    patch: ModelProfilesPatch,
+    options: { by?: string } = {},
+  ): Promise<HomeConfig> {
+    const valid = ModelProfilesPatchSchema.parse(patch);
+    return this.mutate(() => {
+      const path = this.abs('config.yaml');
+      const raw = mappingCopy(fileExists(path) ? readYamlFile(path) : {});
+      if (raw.model_profiles !== undefined) validateHomeConfig(raw);
+      const profiles = mappingCopy(raw.model_profiles);
+      for (const [key, profile] of Object.entries(valid)) {
+        if (profile === null) Reflect.deleteProperty(profiles, key);
+        else profiles[key] = profile;
+      }
+      if (Object.keys(profiles).length > 0) raw.model_profiles = profiles;
+      else Reflect.deleteProperty(raw, 'model_profiles');
+      const validated = validateHomeConfig(raw);
+      writeYamlFileAtomic(path, raw, 0o600);
+      const event = buildEvent('home_config_put', {
+        agent: options.by,
+        data: { model_profiles: Object.keys(valid) },
+      });
+      return { result: validated, event };
+    });
+  }
+
   /** `<home>/config.yaml` through the strict schema; a missing file is `{}`. */
   getHomeConfig(): HomeConfig {
     const path = this.abs('config.yaml');
@@ -708,12 +1060,12 @@ export class StateStore {
     return validateReposConfig(readYamlFile(path) ?? {});
   }
 
-  async putRepos(repos: unknown): Promise<ReposConfig> {
+  async putRepos(repos: unknown, options: { by?: string } = {}): Promise<ReposConfig> {
     return this.mutate(() => {
       const validated = validateReposConfig(repos);
       const relPath = 'repos.yaml';
       writeYamlFileAtomic(this.abs(relPath), validated);
-      const event = buildEvent('repos_put');
+      const event = buildEvent('repos_put', { agent: options.by });
       return { result: validated, event };
     });
   }
@@ -723,7 +1075,7 @@ export class StateStore {
    * existing registry so `agile repo add` is additive; re-adding the same
    * name replaces that entry.
    */
-  async addRepo(name: string, entry: unknown): Promise<ReposConfig> {
+  async addRepo(name: string, entry: unknown, options: { by?: string } = {}): Promise<ReposConfig> {
     // §14.8 defaults written out, so a repo added after the migration looks migrated.
     const next = {
       ...this.getRepos(),
@@ -733,7 +1085,7 @@ export class StateStore {
         ...(entry as object),
       }),
     };
-    return this.putRepos(next);
+    return this.putRepos(next, options);
   }
 
   // ------------------------------------------------------ Streams + threads
@@ -870,20 +1222,192 @@ export class StateStore {
     });
   }
 
+  /**
+   * T471: Delete forever. Removes the record, its thread, its status card
+   * and its routed-event queue. Only a node in the trash (archived) goes;
+   * what else points at it (questions, gates, waits, the worktree) is
+   * `TrashService`'s to clear first.
+   */
+  async removeStream(id: string): Promise<void> {
+    return this.mutate(() => {
+      const relPath = this.streamRelPath(id);
+      if (!fileExists(this.abs(relPath))) throw new NotFoundError('Stream', id);
+      const before = this.readStreamFile(this.abs(relPath));
+      if (before.archived !== true) {
+        throw new Error(`invalid Stream delete: ${id} is not in the trash`);
+      }
+      removeFile(this.abs(this.threadRelPath(id)));
+      removeFile(this.abs(this.cardRelPath(id)));
+      removeFile(this.abs(this.deliveryQueueRelPath(id)));
+      removeFile(this.abs(relPath));
+      this.threadAt.delete(id);
+      this.answers.delete(id);
+      const event = buildEvent('stream_deleted', { stream: id, data: { stream: id } });
+      return { result: undefined, event };
+    });
+  }
+
   /** Appends one validated entry to `threads/<stream>.jsonl`. */
   async appendThreadEntry(streamId: string, entry: unknown): Promise<ThreadEntry> {
     return this.mutate(() => {
       const streamRel = this.streamRelPath(streamId);
       if (!fileExists(this.abs(streamRel))) throw new NotFoundError('Stream', streamId);
       const validated = validateThreadEntry(entry);
+      this.assertThreadPlace(streamId, validated);
       const relPath = this.threadRelPath(streamId);
       appendJsonlLine(this.abs(relPath), validated);
+      this.threadAt.set(streamId, validated.ts);
+      this.noteAnswer(streamId, validated, () => this.readThread(streamId), true);
       const event = buildEvent('thread_appended', {
         stream: streamId,
         data: { by: validated.by, entry_kind: validated.kind },
       });
       return { result: validated, event };
     });
+  }
+
+  /**
+   * T503 (D60, D64, design/chat-threads.md §3a, §7): a line in a chat
+   * thread names one on its node. A thread's first reply is on an existing
+   * line of the node that is not itself in a thread (one level of nesting:
+   * a reply to a reply goes in the same thread), and its passage lies in
+   * that line's body. A reply names a thread started on the node, or a
+   * question asked on it.
+   */
+  private assertThreadPlace(
+    streamId: string,
+    entry: Pick<ThreadEntry, 'anchor' | 'thread' | 'op'>,
+  ): void {
+    const { anchor, thread } = entry;
+    if (entry.op !== undefined) {
+      this.assertThreadOp(streamId, entry.op);
+      return;
+    }
+    if (anchor === undefined && thread === undefined) return;
+    const question = questionOfChatThread(thread);
+    if (anchor === undefined && question !== undefined) {
+      let asked: { stream: string };
+      try {
+        asked = this.getEntity(`questions/${question}.yaml`, validateQuestion);
+      } catch {
+        throw new Error(`thread ${thread} names no question on this node`);
+      }
+      if (asked.stream !== streamId) {
+        throw new Error(`thread ${thread} names a question asked on another node`);
+      }
+      return;
+    }
+    const lines = this.readThread(streamId);
+    // T504 (§6, §6a): moves and archives, read back from their lines.
+    const ops = chatThreadOpsOf(lines);
+    if (anchor !== undefined) {
+      const on = lines.find((line) => line.ts === anchor.entry);
+      if (on === undefined) throw new Error(`thread anchor: no line ${anchor.entry} on this node`);
+      // Where it shows: moved, or where it was written (one level: not inside a thread).
+      const place = ops.moves.get(on.ts)?.to ?? on.thread;
+      if (place !== undefined && place !== CHAT_MAIN) {
+        throw new Error(
+          'thread anchor: that line is in a thread already; reply in its thread (one level only)',
+        );
+      }
+      if (on.op !== undefined) throw new Error('thread anchor: a change to the threads is no turn');
+      if (anchor.end !== undefined && anchor.end > on.body.length) {
+        throw new Error(
+          `thread anchor: the passage ends at ${anchor.end}, past the line's ${on.body.length} characters`,
+        );
+      }
+      return;
+    }
+    if (!lines.some((line) => line.ts === thread && line.anchor !== undefined)) {
+      throw new Error(`no thread ${thread} on this node`);
+    }
+    if (ops.archived.has(thread as string)) {
+      throw new Error(`thread ${thread} is archived; restore it to write in it`);
+    }
+  }
+
+  /**
+   * T504 (D65, design/chat-threads.md §6, §6a, §7): a change to the chat's
+   * threads names what is on the node. A moved line is a message (not a
+   * thread's first reply, nor a line threads are on when it goes into one:
+   * one level only), and goes to the main flow or an open thread on a turn
+   * before it. Only an open thread is archived, only an archived one
+   * restored or left out of a compaction, and a thread is promoted to a
+   * tangent of this node.
+   */
+  private assertThreadOp(streamId: string, op: NonNullable<ThreadEntry['op']>): void {
+    const lines = this.readThread(streamId);
+    const ops = chatThreadOpsOf(lines);
+    const threadStart = (id: string): ThreadEntry => {
+      const start = lines.find((line) => line.ts === id && line.anchor !== undefined);
+      if (start === undefined) throw new Error(`no thread ${id} on this node`);
+      return start;
+    };
+    switch (op.type) {
+      case 'move': {
+        const line = lines.find((l) => l.ts === op.entry);
+        if (line === undefined) throw new Error(`move: no line ${op.entry} on this node`);
+        if (
+          line.op !== undefined ||
+          line.agent_only === true ||
+          !MOVABLE_THREAD_KINDS.has(line.kind)
+        ) {
+          throw new Error('move: only a message moves (a line, a finding or a proposal)');
+        }
+        if (line.anchor !== undefined) {
+          throw new Error("move: a thread's first reply stays in its thread");
+        }
+        if (line.thread !== undefined && ops.archived.has(line.thread)) {
+          throw new Error('move: that line is in an archived thread; restore it first');
+        }
+        if (op.to === CHAT_MAIN) return;
+        const start = threadStart(op.to);
+        if (ops.archived.has(op.to)) {
+          throw new Error('move: that thread is archived; restore it first');
+        }
+        if (lines.some((l) => l.anchor?.entry === line.ts)) {
+          throw new Error(
+            'move: threads are on that line, so it stays in the main flow (one level only)',
+          );
+        }
+        if (!(line.ts > (start.anchor as ThreadAnchor).entry)) {
+          throw new Error('move: a thread takes lines written after the message it is on');
+        }
+        return;
+      }
+      case 'archive':
+        threadStart(op.thread);
+        if (ops.archived.has(op.thread)) throw new Error(`thread ${op.thread} is archived already`);
+        return;
+      case 'unarchive':
+        threadStart(op.thread);
+        if (!ops.archived.has(op.thread)) throw new Error(`thread ${op.thread} is not archived`);
+        return;
+      case 'promote': {
+        threadStart(op.thread);
+        const tangent = this.getStream(op.node);
+        if (tangent.parent !== streamId) {
+          throw new Error('promote: the tangent is a node under this one');
+        }
+        return;
+      }
+      case 'compact':
+        for (const id of op.threads) {
+          threadStart(id);
+          if (!ops.archived.has(id)) throw new Error(`compact: thread ${id} is not archived`);
+        }
+        return;
+    }
+  }
+
+  /** T503: refuses a `thread` that names no chat thread on the node (an agent's `ask` checks before it asks). */
+  assertChatThread(streamId: string, thread: string): void {
+    this.assertThreadPlace(streamId, { thread });
+  }
+
+  /** T503: whether a node has a chat thread (a line that started one): its rail row asks for its replies. */
+  hasChatThreads(streamId: string): boolean {
+    return this.answerState(streamId, () => this.readThread(streamId), true).threaded === true;
   }
 
   // ------------------------------------------------------------------ Director
@@ -915,11 +1439,58 @@ export class StateStore {
     return this.mutate(() => {
       const validated = validateThreadEntry(entry);
       appendJsonlLine(this.abs(join('threads', `${DIRECTOR_NODE}.jsonl`)), validated);
+      this.noteAnswer(DIRECTOR_NODE, validated, () => this.readDirectorThread(), false);
       const event = buildEvent('thread_appended', {
         data: { thread: DIRECTOR_NODE, by: validated.by, entry_kind: validated.kind },
       });
       return { result: validated, event };
     });
+  }
+
+  /**
+   * T433/T437: when the Director last answered a line of yours (its own wakes,
+   * for a stuck node say, are not answers). Read from its thread once, then
+   * kept as lines are appended.
+   */
+  directorReplyAt(): string | undefined {
+    return this.answerState(DIRECTOR_NODE, () => this.readDirectorThread(), false).at;
+  }
+
+  /**
+   * T437: when a node's agent last answered a line of yours, or its question
+   * (a node's goal is asked at its creation). An agent turn nobody asked for
+   * (woken by knowledge or an event) is not an answer.
+   */
+  answeredAt(streamId: string): string | undefined {
+    return this.answerState(streamId, () => this.readThread(streamId), true).at;
+  }
+
+  private answerState(key: string, read: () => ThreadEntry[], askedAtStart: boolean): AnswerState {
+    const known = this.answers.get(key);
+    if (known !== undefined) return known;
+    let state: AnswerState = { pending: askedAtStart };
+    try {
+      for (const entry of read()) state = nextAnswer(state, entry);
+    } catch {
+      // A corrupt thread is refused where it is read; here it just has no answer.
+    }
+    this.answers.set(key, state);
+    return state;
+  }
+
+  private noteAnswer(
+    key: string,
+    entry: ThreadEntry,
+    read: () => ThreadEntry[],
+    askedAtStart: boolean,
+  ): void {
+    // Not read yet: the cold read (the file already has this line) counts it.
+    const before = this.answers.get(key);
+    if (before === undefined) {
+      this.answerState(key, read, askedAtStart);
+      return;
+    }
+    this.answers.set(key, nextAnswer(before, entry));
   }
 
   readDirectorThread(): ThreadEntry[] {
@@ -1104,6 +1675,23 @@ export class StateStore {
   }
 
   /**
+   * T395: when the node's thread last changed (ISO), for the cockpit rows'
+   * "updated 3m ago": the last append this process wrote, else the thread
+   * file's mtime, read once. `undefined` for a node with no thread yet.
+   */
+  threadUpdatedAt(streamId: string): string | undefined {
+    if (this.threadAt.has(streamId)) return this.threadAt.get(streamId);
+    let at: string | undefined;
+    try {
+      at = new Date(statSync(this.abs(this.threadRelPath(streamId))).mtimeMs).toISOString();
+    } catch {
+      at = undefined;
+    }
+    this.threadAt.set(streamId, at);
+    return at;
+  }
+
+  /**
    * Reads the thread, validating every line and naming the file *and the
    * line number* of the first bad one (§7.3). Missing file = empty thread,
    * which is the normal state of a freshly created stream.
@@ -1284,12 +1872,17 @@ function applyDefaultsPatch(
     if (value === null) Reflect.deleteProperty(raw, keys[field]);
     else raw[keys[field]] = value;
   }
+  // T456: the crash settings are one block, replaced whole; empty is removed.
+  const failure = patch.vendor_failure;
+  if (failure === null || (failure !== undefined && Object.keys(failure).length === 0)) {
+    Reflect.deleteProperty(raw, 'vendor_failure');
+  } else if (failure !== undefined) raw.vendor_failure = failure;
 }
 
 /** The event's record of what changed — `null` for a cleared field. */
-function sessionDefaultsEventData(patch: SessionDefaultsPatch): Record<string, string | null> {
-  const data: Record<string, string | null> = {};
-  for (const field of ['vendor', 'model', 'effort'] as const) {
+function sessionDefaultsEventData(patch: SessionDefaultsPatch): Record<string, unknown> {
+  const data: Record<string, unknown> = {};
+  for (const field of ['vendor', 'model', 'effort', 'vendor_failure'] as const) {
     const value = patch[field];
     if (value !== undefined) data[field] = value;
   }
@@ -1297,6 +1890,26 @@ function sessionDefaultsEventData(patch: SessionDefaultsPatch): Record<string, s
 }
 
 /** A shallow copy of a YAML mapping, or `{}` for anything else. */
+/** T437: a thread's answer state (see `StateStore.answeredAt`). */
+interface AnswerState {
+  /** A line of yours (or the node's question) waits for an answer. */
+  pending: boolean;
+  /** When the agent last answered one. */
+  at?: string;
+  /** T503: a line of the thread started a chat thread. */
+  threaded?: true;
+}
+
+function nextAnswer(before: AnswerState, entry: ThreadEntry): AnswerState {
+  const state: AnswerState =
+    entry.anchor !== undefined && before.threaded !== true ? { ...before, threaded: true } : before;
+  if (entry.kind !== 'line') return state;
+  if (entry.by === 'human') return { ...state, pending: true };
+  const agent =
+    entry.by.startsWith('agent:') || entry.by === 'coordinator' || entry.by === 'director';
+  return agent && state.pending ? { ...state, pending: false, at: entry.ts } : state;
+}
+
 function mappingCopy(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? { ...(value as Record<string, unknown>) }

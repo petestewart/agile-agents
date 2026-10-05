@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentId, AgentRecord } from '@agile-agents/shared';
 import { ulid } from '@agile-agents/shared';
 import { Bus } from '../bus';
 import { GateService } from '../gates';
 import { runInit } from '../init';
+import { answerReadAlways } from '../permissions/posture';
 import { ProjectService } from '../projects/service';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
@@ -421,5 +422,138 @@ describe('HookService read scope for a conversation node (T330)', () => {
     } finally {
       for (const dir of [other, secret, shared]) rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// T457: the posture at the hook tier, and the three answers of its card.
+describe('HookService — permission posture and the read card (T457)', () => {
+  let outside: string;
+  let streams: StreamService;
+  let projects: ProjectService;
+  let projectId: string;
+  let nodeId: string;
+
+  beforeEach(async () => {
+    outside = mkdtempSync(join(tmpdir(), 'agile-hook-outside-'));
+    mkdirSync(join(outside, 'src'), { recursive: true });
+    writeFileSync(join(outside, 'src', 'a.ts'), 'x');
+    writeFileSync(join(outside, 'src', 'b.ts'), 'y');
+    streams = new StreamService(store);
+    projects = new ProjectService(store, streams);
+    const project = await projects.create({ name: 'Cents' });
+    projectId = project.id;
+    const node = await streams.create('human', {
+      title: 'Cents check',
+      goal: 'g',
+      project: project.id,
+    });
+    nodeId = node.id;
+    await store.putAgent(WORKER, agentRecord({ role: 'worker', stream: nodeId, worktree }));
+  });
+  afterEach(() => rmSync(outside, { recursive: true, force: true }));
+
+  const hook = () => service({ agileHome: stateRoot, gates });
+  async function readFile(path: string) {
+    return (
+      await hook().preToolUse({
+        cwd: worktree,
+        tool_name: 'Read',
+        tool_input: { file_path: path },
+        agile_agent: WORKER,
+      })
+    ).hookSpecificOutput;
+  }
+  const readGates = () => gates.list().filter((g) => g.read_root !== undefined);
+
+  test('Ask (the default): an out-of-scope read raises one card naming the dir Always adds', async () => {
+    const first = await readFile(join(outside, 'src', 'a.ts'));
+    expect(first.permissionDecision).toBe('deny');
+    expect(first.permissionDecisionReason).toContain('held for the human');
+    expect(first.permissionDecisionReason).toContain('permissions: Ask');
+    // A retry before the answer reuses the card.
+    await readFile(join(outside, 'src', 'a.ts'));
+    const raised = readGates();
+    expect(raised).toHaveLength(1);
+    expect(raised[0]?.read_root).toBe(join(outside, 'src'));
+    expect(raised[0]?.call).toMatchObject({ tool: 'Read', path: join(outside, 'src', 'a.ts') });
+    expect(raised[0]?.session).toBe(WORKER);
+  });
+
+  test('Allow once lets the exact call through once', async () => {
+    const path = join(outside, 'src', 'a.ts');
+    await readFile(path);
+    const gate = readGates()[0];
+    if (gate === undefined) throw new Error('no gate raised');
+    await gates.respond(gate.id, 'approve', 'human');
+    expect((await readFile(path)).permissionDecision).toBe('allow');
+    // Once: the next attempt is routed again (a new card).
+    expect((await readFile(path)).permissionDecision).toBe('deny');
+    expect(readGates().filter((g) => g.status === 'pending')).toHaveLength(1);
+    expect(store.getProject(projectId).read_roots).toBeUndefined();
+  });
+
+  test('Always for this project writes the read root through the store, and later reads there pass', async () => {
+    await readFile(join(outside, 'src', 'a.ts'));
+    const gate = readGates()[0];
+    if (gate === undefined) throw new Error('no gate raised');
+    const resolved = await answerReadAlways({ gates, streams, projects }, gate.id, 'human');
+    expect(resolved.decision).toBe('approve');
+    expect(gates.get(gate.id).consumed_at).toBeDefined();
+    expect(store.getProject(projectId).read_roots).toEqual([join(outside, 'src')]);
+    expect((await readFile(join(outside, 'src', 'a.ts'))).permissionDecision).toBe('allow');
+    expect((await readFile(join(outside, 'src', 'b.ts'))).permissionDecision).toBe('allow');
+    expect(readGates().filter((g) => g.status === 'pending')).toHaveLength(0);
+    // The node's thread says what was opened.
+    expect(streams.readThread(nodeId).entries.some((e) => e.body.includes('may now read'))).toBe(
+      true,
+    );
+    // Only a held read has an Always; a second answer is refused.
+    await expect(answerReadAlways({ gates, streams, projects }, gate.id, 'human')).rejects.toThrow(
+      'already resolved',
+    );
+  });
+
+  test('Deny denies, and the retry stays denied with the human’s answer', async () => {
+    const path = join(outside, 'src', 'a.ts');
+    await readFile(path);
+    const gate = readGates()[0];
+    if (gate === undefined) throw new Error('no gate raised');
+    await gates.respond(gate.id, 'deny', 'human', 'not that repo');
+    const retry = await readFile(path);
+    expect(retry.permissionDecision).toBe('deny');
+    expect(retry.permissionDecisionReason).toContain('The human denied this call: not that repo');
+  });
+
+  test('Trusted allows the read with no card; the project override beats the home', async () => {
+    const path = join(outside, 'src', 'a.ts');
+    await store.setPermissionPosture('trusted');
+    expect((await readFile(path)).permissionDecision).toBe('allow');
+    await projects.update(projectId, { permissions: 'ask' });
+    expect((await readFile(path)).permissionDecision).toBe('deny');
+    expect(readGates()).toHaveLength(1);
+    await store.setPermissionPosture('ask');
+    await projects.update(projectId, { permissions: 'trusted' });
+    expect((await readFile(path)).permissionDecision).toBe('allow');
+  });
+
+  test('under Trusted the agile home, a credential and a write outside the worktree are still denied', async () => {
+    await store.setPermissionPosture('trusted');
+    expect((await readFile(join(stateRoot, 'config.yaml'))).permissionDecision).toBe('deny');
+    expect((await readFile(join(homedir(), '.ssh', 'id_rsa'))).permissionDecision).toBe('deny');
+    const write = await hook().preToolUse({
+      cwd: worktree,
+      tool_name: 'Write',
+      tool_input: { file_path: join(outside, 'x.ts'), content: 'x' },
+      agile_agent: WORKER,
+    });
+    expect(write.hookSpecificOutput.permissionDecision).toBe('deny');
+    const bash = await hook().preToolUse({
+      cwd: worktree,
+      tool_name: 'Bash',
+      tool_input: { command: `cat ${outside}/src/a.ts && cat ~/.aws/credentials` },
+      agile_agent: WORKER,
+    });
+    expect(bash.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(readGates()).toHaveLength(0);
   });
 });

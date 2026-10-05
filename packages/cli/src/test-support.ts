@@ -33,10 +33,12 @@ import {
   VerbService,
   buildAttachRpcMethods,
   buildBusRpcMethods,
+  buildCodexGateRpcMethods,
   buildGateRpcMethods,
   buildHookRpcMethods,
   buildInboxRpcMethods,
   buildKnowledgeRpcMethods,
+  buildModelPolicyRpcMethods,
   buildProjectRpcMethods,
   buildQuestionRpcMethods,
   buildStateRpcMethods,
@@ -117,6 +119,11 @@ export interface TestDaemon {
   /** T244: the routed event log behind `read_event` — tests emit through it. */
   routedEvents: RoutedEventService;
   /**
+   * T512: the Codex home `codex.*` reads and `install-gate` writes: a temp
+   * dir (not created until something writes it), never the machine's own.
+   */
+  codexHome: string;
+  /**
    * T153: the classifier behind `rule.test` (§5.6). Always the fake — the
    * suite never calls the real API — and re-scriptable per test through
    * `setScript`, so one daemon can answer differently in two evals.
@@ -177,6 +184,8 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     // T138: same wiring as `daemon.ts` — an open routed call keeps a
     // session alive at turn end.
     gates: gateService,
+    // T483: the chooser asks the same fake (unscripted: "no classifier key").
+    classifier,
   });
   // T137: an answer is delivered by prompting the live session, exactly as
   // `daemon.ts` wires it.
@@ -200,6 +209,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   });
 
   const bus = new Bus(store, init.stateRoot);
+  const codexHome = join(repo, 'codex-home');
   const rpc = startRpcServer({
     socketPath,
     version: 'test',
@@ -220,6 +230,8 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
         reply: { say: (id, body) => attachService.say(id, body), questions: questionService },
       }),
       ...buildProjectRpcMethods(new ProjectService(store, streamService)),
+      // T482: `agile policy`, over the attach service's own policy service.
+      ...buildModelPolicyRpcMethods(attachService.routing()),
       ...buildInboxRpcMethods(
         new InboxService({
           streams: streamService,
@@ -245,6 +257,14 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
       ...buildGateRpcMethods(gateService),
       ...buildQuestionRpcMethods(questionService),
       ...buildAttachRpcMethods(attachService, verbService),
+      // T512: `agile codex install-gate|status`, against the temp Codex home.
+      ...buildCodexGateRpcMethods({
+        home,
+        codexHome: () => codexHome,
+        repoRoots: () => Object.values(store.getRepos()).map((entry) => entry.path),
+        agileBin: 'agile',
+        socketPath,
+      }),
     },
   });
   await rpc.listening;
@@ -277,6 +297,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     rulesService,
     routedEvents,
     classifier,
+    codexHome,
     home,
     async cleanup() {
       await attachService.stopAll();

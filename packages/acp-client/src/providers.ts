@@ -14,7 +14,115 @@
  */
 import type { AcpClientCapabilities } from './types';
 
-export type AcpProviderId = 'claude' | 'gemini' | 'cursor' | 'grok' | 'pi' | 'codex';
+export type AcpProviderId =
+  | 'claude'
+  | 'gemini'
+  | 'cursor'
+  | 'grok'
+  | 'pi'
+  | 'codex'
+  | 'antigravity';
+
+/**
+ * T500: a host as an ACP registry binary distribution names it
+ * (`<os>-<arch>`, `aarch64`/`x86_64`).
+ */
+export type AcpBridgePlatform =
+  | 'darwin-aarch64'
+  | 'darwin-x86_64'
+  | 'linux-aarch64'
+  | 'linux-x86_64'
+  | 'windows-aarch64'
+  | 'windows-x86_64';
+
+/** T500: one platform's archive of a downloaded bridge, and how to start what it holds. */
+export interface AcpBridgeArtifact {
+  /** The archive, over HTTPS. Pinned: it moves by a code change. */
+  url: string;
+  /** The server inside the archive, relative to where it unpacks (`agy_acp_server.par`). */
+  command: string;
+  /** Its argv on this platform. */
+  args: readonly string[];
+}
+
+/**
+ * T500: an ACP server the daemon downloads into the home rather than one on
+ * PATH or behind `npx` (Antigravity's `agy_acp_server`). The daemon unpacks
+ * it into `<home>/bridges/<name>/<version>/` and the provider's `command` is
+ * only a name until the daemon resolves it there.
+ */
+export interface AcpBridgePin {
+  /** The folder under `<home>/bridges/`. */
+  name: string;
+  /** The ACP registry entry it comes from (`antigravity-acp`). */
+  registryId: string;
+  version: string;
+  artifacts: Readonly<Partial<Record<AcpBridgePlatform, AcpBridgeArtifact>>>;
+}
+
+/** T500: the ACP registry's name for a Node `process.platform`/`process.arch`, or `undefined`. */
+export function acpBridgePlatform(
+  platform: string = process.platform,
+  arch: string = process.arch,
+): AcpBridgePlatform | undefined {
+  const os =
+    platform === 'darwin'
+      ? 'darwin'
+      : platform === 'linux'
+        ? 'linux'
+        : platform === 'win32'
+          ? 'windows'
+          : undefined;
+  const cpu = arch === 'arm64' ? 'aarch64' : arch === 'x64' ? 'x86_64' : undefined;
+  return os !== undefined && cpu !== undefined ? (`${os}-${cpu}` as AcpBridgePlatform) : undefined;
+}
+
+const AGY_RELEASES = 'https://dl.google.com/agy-extensions/releases';
+const AGY_VERSION = '1.2.1';
+
+/**
+ * T500: Antigravity's ACP server, `agy_acp_server`, as the ACP registry
+ * lists it (entry `antigravity-acp` 1.2.1, authors "Google LLC", license
+ * proprietary): one zip per platform, the server at the archive's root.
+ * Linux builds take `--uid=` (empty), as the registry entry gives them.
+ */
+export const ANTIGRAVITY_BRIDGE: AcpBridgePin = Object.freeze({
+  name: 'antigravity',
+  registryId: 'antigravity-acp',
+  version: AGY_VERSION,
+  artifacts: Object.freeze({
+    'darwin-aarch64': Object.freeze({
+      url: `${AGY_RELEASES}/macos/agy-acp-server-${AGY_VERSION}-darwin-arm64.zip`,
+      command: 'agy_acp_server.par',
+      args: Object.freeze([]),
+    }),
+    'darwin-x86_64': Object.freeze({
+      url: `${AGY_RELEASES}/macos/agy-acp-server-${AGY_VERSION}-darwin-x86_64.zip`,
+      command: 'agy_acp_server.par',
+      args: Object.freeze([]),
+    }),
+    'linux-x86_64': Object.freeze({
+      url: `${AGY_RELEASES}/linux/agy-acp-server-${AGY_VERSION}-linux-x86_64.zip`,
+      command: 'agy_acp_server.par',
+      args: Object.freeze(['--uid=']),
+    }),
+    'linux-aarch64': Object.freeze({
+      url: `${AGY_RELEASES}/linux/agy-acp-server-${AGY_VERSION}-linux-arm64.zip`,
+      command: 'agy_acp_server.par',
+      args: Object.freeze(['--uid=']),
+    }),
+    'windows-x86_64': Object.freeze({
+      url: `${AGY_RELEASES}/windows/agy-acp-server-${AGY_VERSION}-windows-x86_64.zip`,
+      command: 'agy_acp_server.exe',
+      args: Object.freeze([]),
+    }),
+    'windows-aarch64': Object.freeze({
+      url: `${AGY_RELEASES}/windows/agy-acp-server-${AGY_VERSION}-windows-arm64.zip`,
+      command: 'agy_acp_server.exe',
+      args: Object.freeze([]),
+    }),
+  }),
+});
 
 /**
  * The closed effort enum of PLAN.md **D12**, spelled out here rather than
@@ -36,6 +144,13 @@ export interface AcpProviderConfig {
   label: string;
   command: string;
   args: readonly string[];
+  /**
+   * T501: commands the agent needs on `$PATH` besides `command` itself — a
+   * bridge run through `npx` that spawns the vendor's own CLI (Pi's
+   * `pi-acp` runs `pi --mode rpc`). The daemon's "can't start" check names
+   * the first one missing. Absent = none.
+   */
+  requiresCommands?: readonly string[];
   /**
    * Env vars overridden on top of the full inherited environment. A minimal
    * env fails at spawn (the agent needs `PATH`, and most bridges need `HOME`
@@ -99,6 +214,15 @@ export interface AcpProviderConfig {
    */
   effort?: (level: AcpEffortLevel) => AcpSpawnContribution;
   /**
+   * T488: the vendor takes an effort level through its own ACP config
+   * option, the `configOptions` entry with `category: "thought_level"`,
+   * set with `session/set_config_option` before the first turn and read
+   * back, like a T467 model pick. Codex reports `reasoning_effort` (low,
+   * medium, high, xhigh, max, ultra; LIVE-CHECKLIST §12), which holds D12's
+   * four levels. A level the vendor doesn't list is never sent.
+   */
+  effortOption?: boolean;
+  /**
    * D12: how this vendor is asked to run a specific model. Same rule as
    * `effort` — config, not a code path, and `undefined` where no mechanism
    * is measured.
@@ -106,12 +230,19 @@ export interface AcpProviderConfig {
   model?: (modelId: string) => AcpSpawnContribution;
   /** The model id that means "whatever this vendor would pick itself" — the last step of the attach-time resolution order. */
   defaultModel: string;
+  /**
+   * T500: the server is downloaded into the home, not found on PATH. Its
+   * `command` here is only the file's name; the daemon resolves it to
+   * `<home>/bridges/<name>/<version>/<file>` with the platform's args
+   * (`packages/daemon/src/bridges/`), and a missing install is named there.
+   */
+  bridge?: AcpBridgePin;
 }
 
 /**
  * Claude's effort levels, as thinking-token budgets.
  *
- * Measured, not invented: `@agentclientprotocol/claude-agent-acp@0.81.1`
+ * Measured, not invented: `@agentclientprotocol/claude-agent-acp@0.81.1` (and 0.84.0, T479)
  * reads `MAX_THINKING_TOKENS` from its own environment at `session/new`
  * (`dist/acp-agent.js`: `resolveThinkingConfig(process.env.MAX_THINKING_TOKENS,
  * …)` — "unset → SDK default (adaptive); `0` → disabled; a positive integer
@@ -131,6 +262,7 @@ const CLAUDE_THINKING_TOKENS: Record<AcpEffortLevel, string> = {
 /** Deep-freeze one registry entry so no caller can rewrite shared config. */
 function freezeProvider(config: AcpProviderConfig): AcpProviderConfig {
   Object.freeze(config.args);
+  if (config.requiresCommands) Object.freeze(config.requiresCommands);
   Object.freeze(config.envOverrides);
   Object.freeze(config.authMethods);
   Object.freeze(config.clientCapabilities.fs);
@@ -149,9 +281,12 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // Zed-maintained ACP bridge over Claude Code, measured in
     // design/spike-findings.md §A-§C against 0.75.1 / Claude Code 2.1.263;
     // bumped to 0.81.1 (SDK 0.3.280) in T171 — mode catalog, ANTHROPIC_MODEL
-    // and MAX_THINKING_TOKENS re-checked in the 0.81.1 dist.
+    // and MAX_THINKING_TOKENS re-checked in the 0.81.1 dist. T479: 0.84.0
+    // (SDK 0.3.284, the first to know claude-sonnet-5-5); the same levers
+    // (ANTHROPIC_MODEL, MAX_THINKING_TOKENS, loadSession, the config-option
+    // setter, the six mode ids, settingSources user/project/local) in its dist.
     command: 'npx',
-    args: ['-y', '@agentclientprotocol/claude-agent-acp@0.81.1'],
+    args: ['-y', '@agentclientprotocol/claude-agent-acp@0.84.0'],
     envOverrides: {},
     // `_meta.terminal_output` is a vendor extension — advertising it makes
     // command output arrive as structured terminal frames. Only ever read
@@ -248,8 +383,10 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
   }),
   codex: freezeProvider({
     id: 'codex',
-    // No measured effort or model mapping — see `AcpProviderConfig.effort`.
+    // No spawn-time effort or model mapping. T467 sets its model and T488
+    // its effort through its ACP config options (`effortOption`).
     defaultModel: 'default',
+    effortOption: true,
     label: 'Codex',
     // `@agentclientprotocol/codex-acp` 1.10.0 (design/spike-findings.md §D,
     // §C2, §C3): raises **zero** permission requests in `agent`,
@@ -257,11 +394,12 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // `approval_policy` tested — "codex-acp never asks, regardless of mode
     // or approval policy. If Codex needs approvals its adapter is the
     // native `codex app-server` (which has approval request kinds)".
-    // Neither ACP permission (tier 2) nor a hook (tier 1) can gate this
-    // vendor, so a Codex engineer is routed through tier-0 sandbox only
-    // (`VendorConfig.requires_sandbox: true`, §6) plus tier-3 observation —
-    // never spawned unsandboxed (`Runner.spawn`/`wrapAgentCommand` fail
-    // closed on `requires_sandbox` with no backend, T026).
+    // ACP permission (tier 2) can't gate this vendor. T506 (§C5 round 3):
+    // Codex's own `PreToolUse` hook can, under codex-acp too: the daemon
+    // writes `<repo>/.codex/hooks.json` (T511: Codex reads a worktree's hooks
+    // from its main repo; `hook/codex.ts`), refuses a repo Codex doesn't
+    // trust, and stops a session whose calls the hook never saw. So it is
+    // tier-1 gated like Claude, not `requiresSandbox`.
     command: 'npx',
     args: ['-y', '@agentclientprotocol/codex-acp@1.10.0'],
     envOverrides: {},
@@ -285,9 +423,35 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // since codex-acp "raises zero permission requests in agent and
     // read-only" alike (§C2/§C3), so mode never affects enforcement here.
     defaultModeId: 'agent',
-    // codex-acp "raises zero permission requests ... regardless of mode or
-    // approval policy" (§C3) — no tier 1/2 gate exists for this vendor at
-    // all, so it is an engineer only inside a tier-0 sandbox (design §6).
+  }),
+  antigravity: freezeProvider({
+    id: 'antigravity',
+    label: 'Antigravity',
+    // T500: Google's `agy_acp_server` (the `agy` CLI has no ACP mode),
+    // downloaded into `<home>/bridges/antigravity/<version>/` on the
+    // operator's say (Settings → Agents → Vendors → Install, or `agile
+    // vendors install antigravity`). The daemon swaps in the full path and
+    // the platform's args (`bridges/provider.ts`); this name alone is never
+    // looked up on PATH.
+    command: 'agy_acp_server.par',
+    args: [],
+    bridge: ANTIGRAVITY_BRIDGE,
+    envOverrides: {},
+    clientCapabilities: {
+      fs: { readTextFile: true, writeTextFile: true },
+    },
+    // Nothing below is measured yet (no live run): `loadSession` stays false
+    // so recovery flags a session for a manual restart rather than a blind
+    // load; no effort mapping; its models (if it reports any) come through
+    // T467's config-option path; no ACP `authenticate` round trip (the
+    // operator signs in with `agy` out of band).
+    loadSession: false,
+    authMethods: [],
+    defaultModel: 'default',
+    // No `defaultModeId`: its modes are unmeasured, and a mode id it doesn't
+    // know fails `session/new` (T027 review round 1 B1).
+    // Its permission behaviour is unmeasured: marked like Codex until a
+    // live run shows what it gates.
     requiresSandbox: true,
   }),
   pi: freezeProvider({
@@ -297,11 +461,14 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     label: 'Pi',
     // Community ACP shim over `pi --mode rpc` (T022; design/spike-findings.md
     // §C4: "adapter = `pi-acp` (or fork) as the ACP shim, all enforcement in
-    // an `agile` extension"). No args needed — `pi-acp` spawns `pi --mode rpc
-    // --no-themes` itself; the underlying `pi` binary it looks for on `$PATH`
-    // can be overridden with `PI_ACP_PI_COMMAND` if it's ever not `pi`.
-    command: 'pi-acp',
-    args: [],
+    // an `agile` extension"). T501: run through `npx`, pinned, like Claude's
+    // and Codex's bridges, so nothing extra is installed; 0.0.34 is the ACP
+    // registry's pin. The bridge spawns `pi --mode rpc --no-themes` itself,
+    // so Pi's own CLI must still be on `$PATH` (`requiresCommands`); the
+    // binary it looks for can be overridden with `PI_ACP_PI_COMMAND`.
+    command: 'npx',
+    args: ['-y', 'pi-acp@0.0.34'],
+    requiresCommands: ['pi'],
     envOverrides: {},
     clientCapabilities: {
       fs: { readTextFile: true, writeTextFile: true },
@@ -310,7 +477,7 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderConfig> = Object.fr
     // @earendil-works/pi-coding-agent@0.85.1, no vendor login): `initialize`
     // replies `agentCapabilities.loadSession: true`, matching
     // spike-findings.md §C4's "session/load restored context via pi-acp's
-    // session map".
+    // session map". Unchanged at 0.0.34 (T501).
     loadSession: true,
     // `initialize`'s `authMethods` is a single terminal-login stub, not a
     // real ACP auth round trip (spike-findings.md §C4: "authMethods is a

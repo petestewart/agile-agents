@@ -1,16 +1,25 @@
 import { describe, expect, test } from 'bun:test';
 import {
   AGENT_LINE_MAX_CHARS,
+  HUMAN_LINE_MAX_CHARS,
+  SEND_UP_MAX_CHARS,
   type Stream,
   StreamAttachRequestSchema,
   StreamSayInputSchema,
+  StreamSendUpInputSchema,
+  StreamUpdateRequestSchema,
   THREAD_BODY_MAX_CHARS,
+  ThreadEntrySchema,
   assertNoStreamCycle,
   assertNoWaitsOnCycle,
   assertStreamWrite,
+  isConversationNode,
   liveChildrenOf,
   nodeRole,
+  partsOf,
   quoteThreadBody,
+  repoOfProposalRef,
+  repoProposalRef,
   ulid,
   validateSessionRef,
   validateStream,
@@ -71,6 +80,11 @@ describe('StreamSchema', () => {
   test('rejects a non-ULID id and an unknown status', () => {
     expect(() => validateStream({ ...stream(), id: 'TKT-0231' })).toThrow(/ULID/);
     expect(() => validateStream({ ...stream(), human: { status: 'in_review' } })).toThrow(/human/);
+  });
+
+  test('T361: an archived node may carry the id of the delete that archived it', () => {
+    expect(stream({ archived: true, archive_id: SESSION }).archive_id).toBe(SESSION);
+    expect(() => stream({ archived: true, archive_id: 'D-1' })).toThrow(/archive_id/);
   });
 });
 
@@ -167,21 +181,42 @@ describe('ThreadEntrySchema', () => {
     }
   });
 
+  test('T347: agent_only is optional and only `true`; a line written before it still loads', () => {
+    const line = { ts: 'now', by: 'daemon', kind: 'event', body: 'read it by id' };
+    expect(validateThreadEntry(line).agent_only).toBeUndefined();
+    expect(validateThreadEntry({ ...line, agent_only: true }).agent_only).toBe(true);
+    expect(() => validateThreadEntry({ ...line, agent_only: false })).toThrow();
+  });
+
   test('rejects a malformed author', () => {
     expect(() =>
       validateThreadEntry({ ts: 'now', by: 'agent:eng-1', kind: 'line', body: 'hi' }),
     ).toThrow(/agent:/);
   });
 
-  test('caps the body at the shared 800-char message cap', () => {
+  test("caps the body: 800 for the daemon's lines and events, HUMAN_LINE_MAX_CHARS for yours (T437)", () => {
     expect(THREAD_BODY_MAX_CHARS).toBe(800);
+    expect(() =>
+      validateThreadEntry({
+        ts: 'now',
+        by: 'daemon',
+        kind: 'line',
+        body: 'x'.repeat(THREAD_BODY_MAX_CHARS + 1),
+      }),
+    ).toThrow(/800/);
+    expect(
+      validateThreadEntry({ ts: 'now', by: 'human', kind: 'line', body: 'x'.repeat(3000) }).body,
+    ).toHaveLength(3000);
     expect(() =>
       validateThreadEntry({
         ts: 'now',
         by: 'human',
         kind: 'line',
-        body: 'x'.repeat(THREAD_BODY_MAX_CHARS + 1),
+        body: 'x'.repeat(HUMAN_LINE_MAX_CHARS + 1),
       }),
+    ).toThrow(/4000/);
+    expect(() =>
+      validateThreadEntry({ ts: 'now', by: 'human', kind: 'event', body: 'x'.repeat(801) }),
     ).toThrow(/800/);
   });
 
@@ -221,6 +256,17 @@ describe('ThreadEntrySchema', () => {
   });
 });
 
+describe('repo proposal refs (T445)', () => {
+  test('round-trips a repo name; anything else proposes no repo', () => {
+    expect(repoProposalRef('web')).toBe('repo:web');
+    expect(repoOfProposalRef(repoProposalRef('web'))).toBe('web');
+    expect(repoOfProposalRef(undefined)).toBeUndefined();
+    expect(repoOfProposalRef('repo:')).toBeUndefined();
+    expect(repoOfProposalRef('proposals/AP-01ARZ3NDEKTSV4RRFFQ69G5FAV.yaml')).toBeUndefined();
+    expect(repoOfProposalRef('knowledge/K-1.yaml')).toBeUndefined();
+  });
+});
+
 describe('assertStreamWrite', () => {
   const before = stream();
 
@@ -232,6 +278,21 @@ describe('assertStreamWrite', () => {
   test('an agent principal may change agent.*', () => {
     const after = { ...before, agent: { ...before.agent, status: 'done' as const } };
     expect(assertStreamWrite('agent', before, after).agent.status).toBe('done');
+  });
+
+  test('T463: only a human (or the daemon) switches rules off or sets the posture', () => {
+    const off = { ...before, rules_off: ['K-01ARZ3NDEKTSV4RRFFQ69G5FAV'] };
+    const trusted = { ...before, permissions: 'trusted' as const };
+    for (const principal of ['agent', 'coordinator', 'director'] as const) {
+      expect(() => assertStreamWrite(principal, before, off)).toThrow(
+        /only a human may change rules_off/,
+      );
+      expect(() => assertStreamWrite(principal, before, trusted)).toThrow(
+        /only a human may change permissions/,
+      );
+    }
+    expect(assertStreamWrite('human', before, off).rules_off).toEqual(off.rules_off);
+    expect(assertStreamWrite('daemon', before, trusted).permissions).toBe('trusted');
   });
 
   test('a human principal may not change agent.*', () => {
@@ -308,9 +369,56 @@ describe('T161 cockpit write bodies', () => {
     expect(StreamSayInputSchema.parse({ body: '  hi  ' }).body).toBe('hi');
     expect(StreamSayInputSchema.safeParse({ body: '   ' }).success).toBe(false);
     expect(
-      StreamSayInputSchema.safeParse({ body: 'x'.repeat(THREAD_BODY_MAX_CHARS + 1) }).success,
+      StreamSayInputSchema.safeParse({ body: 'x'.repeat(HUMAN_LINE_MAX_CHARS + 1) }).success,
     ).toBe(false);
+    expect(StreamSayInputSchema.safeParse({ body: 'x'.repeat(2000) }).success).toBe(true);
     expect(StreamSayInputSchema.safeParse({ body: 'hi', by: 'daemon' }).success).toBe(false);
+  });
+
+  test('T435: send-up takes a conclusion up to SEND_UP_MAX_CHARS, trimmed', () => {
+    expect(SEND_UP_MAX_CHARS).toBe(3000);
+    const full = 'x'.repeat(SEND_UP_MAX_CHARS);
+    expect(StreamSendUpInputSchema.parse({ body: ` ${full} ` }).body).toBe(full);
+    expect(StreamSendUpInputSchema.safeParse({ body: `${full}x` }).success).toBe(false);
+    expect(StreamSendUpInputSchema.safeParse({ body: ' ' }).success).toBe(false);
+  });
+
+  test('T435: update may ask for a better title; not alone, not as anything but a boolean', () => {
+    expect(
+      StreamUpdateRequestSchema.parse({ title: 'Add Excel import', auto_title: true }).auto_title,
+    ).toBe(true);
+    expect(StreamUpdateRequestSchema.safeParse({ auto_title: true }).success).toBe(false);
+    expect(StreamUpdateRequestSchema.safeParse({ title: 'x', auto_title: 'yes' }).success).toBe(
+      false,
+    );
+  });
+
+  test('T361: say may ask to start the agent', () => {
+    expect(StreamSayInputSchema.parse({ body: 'go', start: true }).start).toBe(true);
+    expect(StreamSayInputSchema.safeParse({ body: 'go', start: 'yes' }).success).toBe(false);
+  });
+
+  test('T423: a starting line may name the session it starts; nothing else takes one', () => {
+    const session = { vendor: 'claude', model: 'claude-sonnet-4-6', effort: 'high' };
+    expect(StreamSayInputSchema.parse({ body: 'go', start: true, session }).session).toEqual(
+      session,
+    );
+    expect(StreamSayInputSchema.parse({ body: 'go', start: true, session: {} }).session).toEqual(
+      {},
+    );
+    // Only with start: a live agent keeps its model.
+    expect(StreamSayInputSchema.safeParse({ body: 'go', session }).success).toBe(false);
+    expect(StreamSayInputSchema.safeParse({ body: 'go', start: false, session }).success).toBe(
+      false,
+    );
+    // Strict, and no empty strings.
+    expect(
+      StreamSayInputSchema.safeParse({ body: 'go', start: true, session: { role: 'worker' } })
+        .success,
+    ).toBe(false);
+    expect(
+      StreamSayInputSchema.safeParse({ body: 'go', start: true, session: { model: '' } }).success,
+    ).toBe(false);
   });
 
   test('attach takes the two attachable roles only', () => {
@@ -364,21 +472,78 @@ describe('nodeRole (P1)', () => {
     [string, Parameters<typeof nodeRole>[0], Parameters<typeof nodeRole>[1], string]
   > = [
     ['no parent is a project', { id: ROOT }, [], 'project'],
-    ['a project root with children is still a project', { id: ROOT }, [{}], 'project'],
-    ['a live child makes it coordinating', { ...node, repo: 'shop' }, [{}], 'coordinating'],
-    ['a helper of another node still counts', node, [{ helper_of: GRANDCHILD }], 'coordinating'],
+    ['a project root with children is still a project', { id: ROOT }, [{ id: CHILD }], 'project'],
+    [
+      'a live child with a repo makes it coordinating',
+      { ...node, repo: 'shop' },
+      [{ id: GRANDCHILD, repo: 'shop' }],
+      'coordinating',
+    ],
+    // D42: a conversation child never reshapes its parent.
+    [
+      'D42: a conversation under a work node leaves it work',
+      { ...node, repo: 'shop' },
+      [{ id: GRANDCHILD }],
+      'work',
+    ],
+    [
+      'a helper of another node still counts',
+      node,
+      [{ id: GRANDCHILD, helper_of: GRANDCHILD, repo: 'shop' }],
+      'coordinating',
+    ],
     ['a repo and no children is work', { ...node, repo: 'shop' }, [], 'work'],
     [
       'a same-repo helper does not make it coordinating',
       { ...node, repo: 'shop' },
-      [{ helper_of: CHILD }],
+      [{ id: GRANDCHILD, helper_of: CHILD, repo: 'shop' }],
       'work',
     ],
     ['no repo and no children is a conversation', node, [], 'conversation'],
+    // D33: tangents.
+    [
+      'a conversation whose children are conversations stays a conversation',
+      node,
+      [{ id: GRANDCHILD }, { id: ulid(8) }],
+      'conversation',
+    ],
+    [
+      'a conversation becomes coordinating once a child has a repo',
+      node,
+      [{ id: GRANDCHILD }, { id: ulid(8), repo: 'shop' }],
+      'coordinating',
+    ],
   ];
   for (const [name, n, children, role] of cases) {
     test(name, () => expect(nodeRole(n, children)).toBe(role as ReturnType<typeof nodeRole>));
   }
+
+  test('D33: a repo-less child that is itself coordinating makes its parent coordinating', () => {
+    const parent = stream({ id: CHILD, parent: ROOT });
+    const tangent = stream({ id: GRANDCHILD, parent: CHILD });
+    const work = stream({ id: ulid(9), parent: GRANDCHILD, repo: 'shop' });
+    const all = [parent, tangent, work];
+    expect(nodeRole(parent, liveChildrenOf(CHILD, all), all)).toBe('coordinating');
+    expect(nodeRole(tangent, liveChildrenOf(GRANDCHILD, all), all)).toBe('coordinating');
+    // A tangent of a tangent keeps both conversations.
+    const deep = [parent, tangent, stream({ id: ulid(9), parent: GRANDCHILD })];
+    expect(nodeRole(parent, liveChildrenOf(CHILD, deep), deep)).toBe('conversation');
+    // A closed work grandchild no longer counts.
+    const closed = [parent, tangent, { ...work, human: { status: 'closed' as const } }];
+    expect(nodeRole(parent, liveChildrenOf(CHILD, closed), closed)).toBe('conversation');
+  });
+
+  test('D42: parts leave conversations out; a conversation node is told apart', () => {
+    const work = stream({ id: CHILD, parent: ROOT, repo: 'shop' });
+    const side = stream({ id: GRANDCHILD, parent: CHILD });
+    const part = stream({ id: ulid(9), parent: CHILD, repo: 'shop' });
+    expect(partsOf(CHILD, [work, side]).map((s) => s.id)).toEqual([]);
+    expect(nodeRole(work, liveChildrenOf(CHILD, [work, side]), [work, side])).toBe('work');
+    expect(partsOf(CHILD, [work, side, part]).map((s) => s.id)).toEqual([part.id]);
+    expect(isConversationNode(side, [work, side])).toBe(true);
+    expect(isConversationNode(part, [work, side, part])).toBe(false);
+    expect(isConversationNode(stream({ id: ROOT }), [])).toBe(false);
+  });
 
   test('liveChildrenOf drops closed and archived children', () => {
     const open = stream({ id: GRANDCHILD, parent: CHILD });
@@ -434,5 +599,99 @@ describe('principals (§14.12)', () => {
       );
     }
     expect(assertStreamWrite('daemon', before, after)).toBe(after);
+  });
+});
+
+describe('chat threads on a thread entry (T503, D60, D64)', () => {
+  const turn = '2026-10-02T10:02:00.000Z';
+  const first = '2026-10-02T10:05:00.000Z';
+  const later = '2026-10-02T10:06:00.000Z';
+  const reply = (extra: Record<string, unknown>) => ({
+    ts: first,
+    by: 'human',
+    kind: 'line',
+    body: 'why banker’s rounding?',
+    ...extra,
+  });
+
+  test('a first reply names itself as its thread and carries what it is on', () => {
+    const whole = validateThreadEntry(reply({ thread: first, anchor: { entry: turn } }));
+    expect(whole.anchor).toEqual({ entry: turn });
+    const passage = validateThreadEntry(
+      reply({
+        thread: first,
+        anchor: { entry: turn, start: 10, end: 26, quote: 'banker’s rounding' },
+      }),
+    );
+    expect(passage.anchor?.quote).toBe('banker’s rounding');
+    // A quote it could not place in the source still anchors (no offsets).
+    expect(
+      validateThreadEntry(reply({ thread: first, anchor: { entry: turn, quote: 'x' } })).anchor,
+    ).toEqual({ entry: turn, quote: 'x' });
+  });
+
+  test('the anchor is strict and its bounds hold', () => {
+    const anchored = (anchor: Record<string, unknown>) =>
+      ThreadEntrySchema.safeParse(reply({ thread: first, anchor: { entry: turn, ...anchor } }))
+        .success;
+    expect(anchored({ start: 0, end: 1, quote: 'a' })).toBe(true);
+    expect(anchored({ start: 5 })).toBe(false); // end missing
+    expect(anchored({ end: 5, quote: 'a' })).toBe(false); // start missing
+    expect(anchored({ start: 5, end: 5, quote: 'a' })).toBe(false); // empty
+    expect(anchored({ start: 6, end: 5, quote: 'a' })).toBe(false); // backwards
+    expect(anchored({ start: -1, end: 5, quote: 'a' })).toBe(false);
+    expect(anchored({ start: 0, end: AGENT_LINE_MAX_CHARS + 1, quote: 'a' })).toBe(false);
+    expect(anchored({ start: 0, end: 4 })).toBe(false); // a passage carries its quote
+    expect(anchored({ quote: 'x'.repeat(801) })).toBe(false);
+    expect(anchored({ quote: '' })).toBe(false);
+    expect(anchored({ colour: 'amber' })).toBe(false);
+  });
+
+  test('only your line starts a thread, on an earlier line, naming itself', () => {
+    expect(() => validateThreadEntry(reply({ anchor: { entry: turn } }))).toThrow(/own ts/);
+    expect(() => validateThreadEntry(reply({ thread: later, anchor: { entry: turn } }))).toThrow(
+      /own ts/,
+    );
+    expect(() =>
+      validateThreadEntry(
+        reply({ by: `agent:${SESSION}`, thread: first, anchor: { entry: turn } }),
+      ),
+    ).toThrow(/only your line/);
+    expect(() =>
+      validateThreadEntry(reply({ kind: 'event', thread: first, anchor: { entry: turn } })),
+    ).toThrow(/only your line/);
+    expect(() => validateThreadEntry(reply({ thread: first, anchor: { entry: later } }))).toThrow(
+      /earlier line/,
+    );
+  });
+
+  test('a reply names a thread started before it, or a question’s', () => {
+    expect(validateThreadEntry(reply({ ts: later, thread: first })).thread).toBe(first);
+    expect(
+      validateThreadEntry({ ...reply({ ts: later, thread: first }), by: `agent:${SESSION}` })
+        .thread,
+    ).toBe(first);
+    expect(() => validateThreadEntry(reply({ ts: first, thread: later }))).toThrow(
+      /started before/,
+    );
+    const question = `questions/Q-${ulid()}`;
+    expect(validateThreadEntry(reply({ thread: question })).thread).toBe(question);
+    expect(() => validateThreadEntry(reply({ thread: 'questions/Q-1' }))).toThrow();
+    expect(() => validateThreadEntry(reply({ thread: 'general' }))).toThrow();
+  });
+
+  test('the composer’s say: a reply in a thread, or the start of one, never both', () => {
+    expect(StreamSayInputSchema.parse({ body: 'hi', thread: first }).thread).toBe(first);
+    expect(
+      StreamSayInputSchema.parse({
+        body: 'hi',
+        anchor: { entry: turn, start: 0, end: 2, quote: 'ok' },
+      }).anchor?.end,
+    ).toBe(2);
+    expect(
+      StreamSayInputSchema.safeParse({ body: 'hi', thread: first, anchor: { entry: turn } })
+        .success,
+    ).toBe(false);
+    expect(StreamSayInputSchema.safeParse({ body: 'hi', thread: 'nope' }).success).toBe(false);
   });
 });

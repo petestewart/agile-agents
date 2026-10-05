@@ -67,6 +67,8 @@ export * from './events';
 export * from './gates';
 
 export * from './projects';
+// T482: model routing's policy and lock (design/model-routing.md).
+export * from './routing';
 export * from './streams';
 
 export * from './knowledge';
@@ -85,6 +87,9 @@ export * from './tools';
 export * from './attach';
 
 export * from './runner';
+
+// T500: ACP servers the daemon downloads into the home (Antigravity's).
+export * from './bridges';
 
 export * from './delivery';
 

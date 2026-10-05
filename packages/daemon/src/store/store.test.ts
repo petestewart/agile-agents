@@ -189,6 +189,61 @@ describe('Policy singleton', () => {
   });
 });
 
+describe('favourite models (T469): favourite_models in config.yaml', () => {
+  test('a star is added once, at the end; an unstar removes it; the last one removes the key', async () => {
+    const store = StateStore.open(stateRoot);
+    await store.setFavouriteModel({ vendor: 'codex', model: 'gpt-5.5' }, true, { by: 'human' });
+    await store.setFavouriteModel({ vendor: 'claude', model: 'claude-opus-5-5' }, true);
+    // Starred again: never doubled.
+    await store.setFavouriteModel({ vendor: 'codex', model: 'gpt-5.5' }, true);
+    // `default` is the vendor's own default, kept as no model.
+    await store.setFavouriteModel({ vendor: 'gemini', model: 'default' }, true);
+    expect(store.getHomeConfig().favourite_models).toEqual([
+      { vendor: 'codex', model: 'gpt-5.5' },
+      { vendor: 'claude', model: 'claude-opus-5-5' },
+      { vendor: 'gemini' },
+    ]);
+    // A fresh store reads the same file back.
+    expect(StateStore.open(stateRoot).getHomeConfig().favourite_models).toHaveLength(3);
+    const put = store.listEvents().find((e) => e.kind === 'home_config_put');
+    expect(put?.agent).toBe('human');
+    expect(put?.data).toEqual({ favourite_model: { vendor: 'codex', model: 'gpt-5.5', on: true } });
+
+    await store.setFavouriteModel({ vendor: 'codex', model: 'gpt-5.5' }, false);
+    await store.setFavouriteModel({ vendor: 'gemini' }, false);
+    // Unstarring one that isn't there changes nothing.
+    await store.setFavouriteModel({ vendor: 'cursor', model: 'auto' }, false);
+    expect(store.getHomeConfig().favourite_models).toEqual([
+      { vendor: 'claude', model: 'claude-opus-5-5' },
+    ]);
+    await store.setFavouriteModel({ vendor: 'claude', model: 'claude-opus-5-5' }, false);
+    expect(store.getHomeConfig().favourite_models).toBeUndefined();
+    expect(readFileSync(join(stateRoot, 'config.yaml'), 'utf8')).not.toContain('favourite_models');
+  });
+
+  test('a list over the limit is refused and nothing is written', async () => {
+    const store = StateStore.open(stateRoot);
+    for (let i = 0; i < 100; i++) {
+      await store.setFavouriteModel({ vendor: 'cursor', model: `m-${i}` }, true);
+    }
+    await expect(
+      store.setFavouriteModel({ vendor: 'cursor', model: 'one-more' }, true),
+    ).rejects.toThrow();
+    expect(store.getHomeConfig().favourite_models).toHaveLength(100);
+  });
+
+  test('a hand-edited list that is not a list is refused, never replaced', async () => {
+    const store = StateStore.open(stateRoot);
+    const path = join(stateRoot, 'config.yaml');
+    writeFileSync(path, 'port: 4600\nfavourite_models: claude\n');
+    const before = readFileSync(path, 'utf8');
+    await expect(store.setFavouriteModel({ vendor: 'claude' }, true)).rejects.toThrow(
+      /favourite_models/,
+    );
+    expect(readFileSync(path, 'utf8')).toBe(before);
+  });
+});
+
 /**
  * T140/T260: `knowledge/K-<ulid>.yaml`, and the two structural checks the
  * store is the one place to apply — the principal split (**D4**) and the
@@ -337,5 +392,65 @@ describe('Knowledge (T260): knowledge/K-<ulid>.yaml in the state home', () => {
     mkdirSync(join(stateRoot, 'rules'), { recursive: true });
     writeFileSync(join(stateRoot, 'rules', `R-${ulid()}.yaml`), 'status: nonsense\n');
     expect(() => store.listLegacyRules()).toThrow(/corrupt rule file/);
+  });
+});
+
+describe('directorReplyAt (T433)', () => {
+  test("the Director's last line of its own: from its appends, else read from the thread once", async () => {
+    const store = StateStore.open(stateRoot);
+    expect(store.directorReplyAt()).toBeUndefined();
+    const line = (by: 'human' | 'director', ts: string) =>
+      store.appendDirectorThread({ ts, by, kind: 'line', body: `${by} line` });
+    await line('human', '2026-09-26T10:00:00.000Z');
+    expect(store.directorReplyAt()).toBeUndefined();
+    await line('director', '2026-09-26T10:01:00.000Z');
+    await line('human', '2026-09-26T10:02:00.000Z');
+    expect(store.directorReplyAt()).toBe('2026-09-26T10:01:00.000Z');
+    // A fresh process finds it in the thread.
+    expect(StateStore.open(stateRoot).directorReplyAt()).toBe('2026-09-26T10:01:00.000Z');
+  });
+});
+
+describe('answeredAt (T437)', () => {
+  test("an agent line answers your line (or the node's question); a woken turn does not", async () => {
+    const { StreamService } = await import('../streams');
+    const store = StateStore.open(stateRoot);
+    const streams = new StreamService(store);
+    const node = await streams.create('human', { title: 'n', goal: 'why?' });
+    const session = '01J0000000000000000000000A';
+    const agent = (body: string) =>
+      streams.appendThread('agent', node.id, { kind: 'line', body }, session);
+    // The question is asked at creation: the first reply answers it.
+    const first = await agent('because');
+    await agent('and more');
+    expect(store.answeredAt(node.id)).toBe(first.ts);
+    // Woken by knowledge: a turn nobody asked for is no answer.
+    await Bun.sleep(5);
+    await agent('noted the new decision');
+    expect(store.answeredAt(node.id)).toBe(first.ts);
+    // Your line, then its reply.
+    await streams.appendThread('human', node.id, { kind: 'line', body: 'and then?' });
+    const second = await agent('then this');
+    expect(store.answeredAt(node.id)).toBe(second.ts);
+    // A fresh process reads the same from the thread.
+    expect(StateStore.open(stateRoot).answeredAt(node.id)).toBe(second.ts);
+  });
+});
+
+describe('threadUpdatedAt (T395)', () => {
+  test("a thread's last line time, from this process's append, else the file's mtime", async () => {
+    const { StreamService } = await import('../streams');
+    const store = StateStore.open(stateRoot);
+    const streams = new StreamService(store);
+    const node = await streams.create('human', { title: 'n', goal: 'g' });
+    const entry = await streams.appendThread('human', node.id, { kind: 'line', body: 'hi' });
+    expect(store.threadUpdatedAt(node.id)).toBe(entry.ts);
+
+    // A fresh process reads the file's mtime once; a node with no thread file has none.
+    const reopened = StateStore.open(stateRoot);
+    const at = reopened.threadUpdatedAt(node.id);
+    expect(at).toBeDefined();
+    expect(Number.isNaN(Date.parse(at ?? ''))).toBe(false);
+    expect(reopened.threadUpdatedAt('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBeUndefined();
   });
 });

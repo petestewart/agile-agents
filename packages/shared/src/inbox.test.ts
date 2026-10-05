@@ -31,9 +31,12 @@ describe('InboxItemSchema', () => {
       'rule_accept',
       'rule_batch',
       'plan_approve',
+      'plan_waiting',
       'proposal',
       'blocked',
       'done',
+      'harness_update',
+      'model_stuck',
     ]);
     expect(InboxItemSchema.safeParse(item({ kind: 'approve_plan' as never })).success).toBe(false);
   });
@@ -60,6 +63,48 @@ describe('InboxItemSchema', () => {
     expect(streamless.success).toBe(true);
   });
 
+  test('T481: a harness_update item names its CLI and no node; no other kind names a CLI', () => {
+    const update = item({
+      kind: 'harness_update',
+      id: 'harness:claude',
+      stream: undefined,
+      stream_path: [],
+      context: 'Claude Code 2.3.1 is available (you have 2.2.9)',
+      harness: { id: 'claude', label: 'Claude Code' },
+    });
+    expect(validateInboxItem(update).harness).toEqual({ id: 'claude', label: 'Claude Code' });
+    const failed = { ...(update as object), harness: { id: 'pi', label: 'Pi', failed: true } };
+    expect(InboxItemSchema.safeParse(failed).success).toBe(true);
+    expect(() => validateInboxItem({ ...(update as object), harness: undefined })).toThrow(
+      /names its CLI/,
+    );
+    expect(
+      InboxItemSchema.safeParse({ ...(update as object), harness: { id: 'vim', label: 'x' } })
+        .success,
+    ).toBe(false);
+    expect(() =>
+      validateInboxItem(item({ harness: { id: 'claude', label: 'Claude Code' } })),
+    ).toThrow(/names its CLI/);
+  });
+
+  test('T361: only a question item carries options, one line each, six at most', () => {
+    expect(validateInboxItem(item({ options: ['yes', 'no'] })).options).toEqual(['yes', 'no']);
+    expect(InboxItemSchema.safeParse(item({ options: ['only one'] })).success).toBe(true);
+    expect(InboxItemSchema.safeParse(item({ options: [] })).success).toBe(false);
+    expect(
+      InboxItemSchema.safeParse(item({ options: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] })).success,
+    ).toBe(false);
+    expect(InboxItemSchema.safeParse(item({ options: ['x'.repeat(201)] })).success).toBe(false);
+    const gate = item({ kind: 'gate', id: `HIL-${ulid()}`, options: ['approve'] });
+    expect(() => validateInboxItem(gate)).toThrow(/only a question item carries options/);
+  });
+
+  test('T502: only a question item is unsettled', () => {
+    expect(validateInboxItem(item({ unsettled_by: 'codex' })).unsettled_by).toBe('codex');
+    const gate = item({ kind: 'gate', id: `HIL-${ulid()}`, unsettled_by: 'codex' });
+    expect(() => validateInboxItem(gate)).toThrow(/only a question item is unsettled/);
+  });
+
   test('context is one line, capped at the §3.2 budget', () => {
     expect(InboxItemSchema.safeParse(item({ context: 'x'.repeat(201) })).success).toBe(false);
     expect(inboxContext('a\n  long   question\n')).toBe('a long question');
@@ -77,6 +122,19 @@ describe('InboxItemSchema', () => {
     // A single word longer than the budget still gets a hard cut: there is
     // no boundary to find.
     expect(inboxContext('y'.repeat(400))).toBe(`${'y'.repeat(INBOX_CONTEXT_MAX_CHARS - 1)}…`);
+  });
+
+  // T341: a cut inside a code span closes the span.
+  test('context cut inside a code span closes it', () => {
+    const cut = inboxContext(
+      `${'word '.repeat(35)}\`{ "date": "YYYY-MM-DD", "amount": 1, "memo": "x" }\` end`,
+    );
+    expect(cut.length).toBeLessThanOrEqual(INBOX_CONTEXT_MAX_CHARS);
+    expect(cut.endsWith('`…')).toBe(true);
+    expect((cut.match(/`/g) ?? []).length % 2).toBe(0);
+    expect(inboxContext(`\`${'y'.repeat(400)}`)).toBe(
+      `\`${'y'.repeat(INBOX_CONTEXT_MAX_CHARS - 3)}\`…`,
+    );
   });
 
   // T161: a clipped card must be readable in full.

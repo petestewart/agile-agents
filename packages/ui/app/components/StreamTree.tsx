@@ -1,33 +1,124 @@
 /**
- * The left rail (cockpit design §9.2): every stream, nested, each with the
- * dot that says who must act. Clicking a stream opens its page (T161,
- * §9.3); "All streams" goes back to the whole inbox.
+ * The left rail (cockpit design §9.2): every node, nested under its
+ * project, each with the dot that says who must act. Clicking a node opens
+ * its page (T161, §9.3).
  * T162: a filter box (`/` focuses it) narrows the tree to matching titles,
  * keeping each match's ancestors so the nesting still reads.
- * T208: a project switcher ("All" and each project) narrows the tree to one
- * project; each row carries its derived role's icon; "New project".
+ * T208: each row carries its derived role's icon; "New project".
  * T331: a caret folds a node's subtree without opening it (double-click or
  * Left/Right on the row too). The folded set is a per-viewer convenience in
  * localStorage; a folded row whose subtree waits on you shows that dot.
+ * T333 (D34): drag a row onto another row in its project to move it there
+ * (onto the project row: to the top level). The daemon refuses what D34
+ * refuses; the rail shows why. T424: a row shows a grip on hover, and the
+ * legend says rows drag.
+ *
+ * T365 (design/cockpit-ui.md): the rail shows every project by default and
+ * never switches on its own. A project's ⋯ has "Show only this project",
+ * which a chip at the top undoes. Each row has, on hover or focus, a `+`
+ * (a node under it) and a ⋯ menu (Open, New child node, Rename, Move to,
+ * Copy node id, Delete); right-click opens the same menu. Delete asks, then
+ * offers Undo; Deleted (in the sidebar, below) restores. A drop the rail
+ * refuses says why. The arrow keys walk the rows (one tab stop), Enter
+ * opens, F2 renames. The ? next to Projects explains the dots.
+ *
+ * T424 (finding 17): a node whose changes overlap another live node's (T227)
+ * carries a neutral two-squares mark, a button that names the other node and
+ * the files and opens it (a menu when there are several). A parent or a
+ * project carries it only while folded, for the nodes hidden inside it.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
-import { isShortcut, useShell } from '../lib/shell';
 import {
-  DOT_LABEL,
-  ROLE_ICON,
+  type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { createPortal } from 'react-dom';
+import {
+  type TrashPreview,
+  archiveStream,
+  emptyTrash,
+  getTrash,
+  getTrashPreview,
+  moveStream,
+  purgeStream,
+  reorderStream,
+  unarchiveStream,
+  updateStream,
+} from '../lib/api';
+import { useOptionalFeed } from '../lib/feed-context';
+import type { CockpitOverlap, CockpitProjectRow, CockpitStreamRow } from '../lib/feed-types';
+import { isShortcut, useShell } from '../lib/shell';
+import { type NodeStatusKey, ROLE_LABEL, nodeStatus } from '../lib/status';
+import {
   type StreamTreeNode,
   buildStreamTree,
   filterStreamRows,
   parseCollapsed,
   rowsInProject,
-  streamDot,
+  splitTitle,
   subtreeNeedsYou,
 } from '../lib/streams';
-import { NewProject } from './NewProject';
+import {
+  DRAG_NOTE,
+  type DropZone,
+  LEGEND_NOTE,
+  LEGEND_ORDER,
+  OVERLAP_NOTE,
+  type OverlapMark,
+  ROLE_NOTE,
+  checkMove,
+  checkPlace,
+  deleteQuestion,
+  dropZone,
+  legendRow,
+  moveTargets,
+  overlapMark,
+  railTitle,
+  subtreeIds,
+} from '../lib/tree';
+import { useUnreadReplies, useUnreadThreads } from '../lib/use-unread';
+import { Icon, type IconName } from './Icon';
+import { PickList, type PickOption } from './Pickers';
+import {
+  Button,
+  ConfirmDialog,
+  Dialog,
+  Field,
+  IconButton,
+  Menu,
+  type MenuItem,
+  Popover,
+  StatusDot,
+  useCopy,
+  useToast,
+} from './ui';
+
+/** Project-row statuses that are not worth a dot: the layers icon says enough. */
+const QUIET_PROJECT: ReadonlySet<NodeStatusKey> = new Set([
+  'idle',
+  'not_started',
+  'stopped',
+  'done',
+]);
+
+/** T360: the role glyphs (design/cockpit-ui.md §2); `data-role` names the role for tests. */
+export const ROLE_GLYPH: Record<CockpitStreamRow['role'], IconName> = {
+  project: 'layers',
+  coordinating: 'network',
+  work: 'git-branch',
+  conversation: 'message-square',
+};
+
+const NO_OVERLAPS: readonly CockpitOverlap[] = [];
 
 const COLLAPSED_KEY = 'agile.rail.collapsed';
+const DELETED_OPEN_KEY = 'agile.rail.deleted';
 
 function loadCollapsed(): Set<string> {
   try {
@@ -45,6 +136,8 @@ function saveCollapsed(ids: ReadonlySet<string>): void {
   }
 }
 
+const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
 interface Fold {
   /** While the filter is on, every match shows, folded or not, and the carets rest. */
   locked: boolean;
@@ -52,88 +145,596 @@ interface Fold {
   setOpen(id: string, open: boolean): void;
 }
 
-function Node({ node, fold }: { node: StreamTreeNode; fold: Fold }): JSX.Element {
-  const { selected, select } = useShell();
-  const dot = streamDot(node.row);
-  const id = node.row.id;
+/** T333/T365: the rail's drag; `check` is the rail's view, the daemon decides. */
+interface Drag {
+  dragging: string | undefined;
+  /** The row under the pointer, where on it (T474), and why it refuses the drop (if it does). */
+  over: { id: string; zone: DropZone; reason?: string } | undefined;
+  start(id: string): void;
+  enter(target: string, zone: DropZone): boolean;
+  leave(target: string): void;
+  drop(target: string, zone: DropZone): void;
+  end(): void;
+}
+
+/** T474: where on a row the pointer is; a project's row only takes nodes under it. */
+function zoneOf(e: ReactDragEvent<HTMLElement>, isProject: boolean): DropZone {
+  if (isProject) return 'into';
+  const box = e.currentTarget.getBoundingClientRect();
+  return dropZone(e.clientY - box.top, box.height);
+}
+
+/** What a row's `+` and ⋯ do. */
+interface RowActions {
+  open(row: CockpitStreamRow): void;
+  add(row: CockpitStreamRow): void;
+  rename(row: CockpitStreamRow): void;
+  move(row: CockpitStreamRow): void;
+  copyId(row: CockpitStreamRow): void;
+  remove(row: CockpitStreamRow): void;
+  only(project: string): void;
+  showAll(): void;
+}
+
+interface TreeContext {
+  fold: Fold;
+  drag: Drag;
+  actions: RowActions;
+  /** The one row that is a tab stop (roving tabindex). */
+  tabStop: string | undefined;
+  setFocused(id: string): void;
+  onRowKey(event: ReactKeyboardEvent<HTMLButtonElement>, node: StreamTreeNode, open: boolean): void;
+  filterProject: string | undefined;
+  projectName(id: string | undefined): string | undefined;
+  /** T424: T227's overlap pairs, and every row (the other node may sit in another project). */
+  overlaps: readonly CockpitOverlap[];
+  allRows: readonly CockpitStreamRow[];
+  openNode(id: string): void;
+  /** T433: nodes with a reply you haven't read (T429). */
+  unread: ReadonlySet<string>;
+  /** T503 (§6): per node, its chat threads with a reply you haven't read. */
+  threadsUnread: ReadonlyMap<string, number>;
+}
+
+/** Where a row's menu opens: above it when there is no room below in the sidebar. */
+function menuPlacement(el: Element): 'top' | 'bottom' {
+  const box = el.getBoundingClientRect();
+  const scroller = el.closest('.cr-sb-scroll') ?? document.documentElement;
+  const view = scroller.getBoundingClientRect();
+  const bottom = Math.min(view.bottom, window.innerHeight);
+  return box.bottom + 250 > bottom && box.top - 250 > view.top ? 'top' : 'bottom';
+}
+
+/**
+ * T447 (audit r7 #20): the title truncates in the middle, keeping its end
+ * (`splitTitle`), so alike titles stay apart; the row's tooltip has it all.
+ */
+function RowTitle({ title }: { title: string }): JSX.Element {
+  const split = splitTitle(title);
+  if (split === undefined) return <span className="title">{title}</span>;
+  return (
+    <span className="title" data-split="true">
+      <span className="title-head">{split.head}</span>
+      <span className="title-tail">{split.tail}</span>
+    </span>
+  );
+}
+
+function Node({ node, ctx }: { node: StreamTreeNode; ctx: TreeContext }): JSX.Element {
+  const { selected } = useShell();
+  const { fold, drag, actions } = ctx;
+  const row = node.row;
+  const status = nodeStatus(row);
+  const id = row.id;
+  const isProject = row.role === 'project';
   const hasChildren = node.children.length > 0;
   const open = !hasChildren || fold.isOpen(id);
   const hiddenNeedsYou = !open && subtreeNeedsYou(node);
+  const tabbable = ctx.tabStop === id;
+  const [placement, setPlacement] = useState<'top' | 'bottom'>('bottom');
+  const refusal = drag.over?.id === id ? drag.over.reason : undefined;
+  const overlap = overlapMark(id, ctx.overlaps, ctx.allRows, !open);
+  const itemRef = useRef<HTMLDivElement>(null);
+  // The open node stays in sight: a node just made, restored or opened from Needs me.
+  useEffect(() => {
+    if (selected === id) itemRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [selected, id]);
+
+  const items: MenuItem[] = isProject
+    ? [
+        {
+          label: 'New node in this project',
+          icon: 'plus',
+          testid: 'tree-menu-new-child',
+          onSelect: () => actions.add(row),
+        },
+        ctx.filterProject !== undefined && ctx.filterProject === row.project
+          ? {
+              label: 'Show all projects',
+              icon: 'layers',
+              testid: 'tree-menu-all',
+              onSelect: actions.showAll,
+            }
+          : {
+              label: 'Show only this project',
+              icon: 'filter',
+              testid: 'tree-menu-only',
+              hidden: row.project === undefined,
+              onSelect: () => row.project !== undefined && actions.only(row.project),
+            },
+        {
+          label: 'Project settings',
+          icon: 'settings',
+          testid: 'tree-menu-settings',
+          onSelect: () => actions.open(row),
+        },
+        'separator',
+        {
+          label: 'Copy node id',
+          icon: 'copy',
+          testid: 'tree-menu-copy-id',
+          onSelect: () => actions.copyId(row),
+        },
+      ]
+    : [
+        {
+          label: 'Open',
+          icon: 'arrow-right',
+          testid: 'tree-menu-open',
+          onSelect: () => actions.open(row),
+        },
+        {
+          label: 'New child node…',
+          icon: 'plus',
+          testid: 'tree-menu-new-child',
+          onSelect: () => actions.add(row),
+        },
+        'separator',
+        {
+          label: 'Rename…',
+          icon: 'pencil',
+          hint: 'F2',
+          testid: 'tree-menu-rename',
+          onSelect: () => actions.rename(row),
+        },
+        {
+          label: 'Move to…',
+          icon: 'corner-down-right',
+          testid: 'tree-menu-move',
+          onSelect: () => actions.move(row),
+        },
+        {
+          label: 'Copy node id',
+          icon: 'copy',
+          testid: 'tree-menu-copy-id',
+          onSelect: () => actions.copyId(row),
+        },
+        'separator',
+        {
+          label: 'Move to trash…',
+          icon: 'trash',
+          danger: true,
+          testid: 'tree-menu-delete',
+          onSelect: () => actions.remove(row),
+        },
+      ];
+
+  const openMenu = (item: Element): void => {
+    setPlacement(menuPlacement(item));
+    const trigger = item.querySelector<HTMLButtonElement>('[data-testid="tree-menu-trigger"]');
+    if (trigger?.getAttribute('aria-expanded') !== 'true') trigger?.click();
+  };
+
+  const project = isProject ? (ctx.projectName(row.project) ?? row.title) : undefined;
   return (
-    <li>
-      {hasChildren && (
-        <button
-          type="button"
-          className="cr-tree-caret"
-          data-testid="tree-caret"
-          aria-expanded={open}
-          aria-controls={`cr-tree-kids-${id}`}
-          aria-label={`${open ? 'Collapse' : 'Expand'} ${node.row.title}`}
-          disabled={fold.locked}
-          onClick={() => fold.setOpen(id, !open)}
-        >
-          {open ? '\u25BE' : '\u25B8'}
-        </button>
-      )}
-      <button
-        type="button"
-        className="cr-tree-row"
-        data-stream={id}
-        aria-current={selected === id ? 'true' : undefined}
-        aria-expanded={hasChildren ? open : undefined}
-        data-role={node.row.role}
-        title={`${node.row.title} — ${node.row.role} — ${DOT_LABEL[dot]}`}
-        onClick={() => select(id)}
-        onDoubleClick={() => {
-          if (hasChildren) fold.setOpen(id, !open);
-        }}
-        onKeyDown={(e) => {
-          if (!hasChildren) return;
-          if (e.key === 'ArrowLeft' && open) fold.setOpen(id, false);
-          else if (e.key === 'ArrowRight' && !open) fold.setOpen(id, true);
-          else return;
+    <li data-tree-node={id}>
+      <div
+        ref={itemRef}
+        className="cr-tree-item"
+        data-drop-refused={refusal !== undefined ? 'true' : undefined}
+        data-overlap={overlap !== undefined ? 'true' : undefined}
+        onPointerEnter={(e) => setPlacement(menuPlacement(e.currentTarget))}
+        onContextMenu={(e: ReactMouseEvent<HTMLDivElement>) => {
           e.preventDefault();
+          openMenu(e.currentTarget);
         }}
       >
-        <span className="cr-dot" data-dot={dot} aria-label={DOT_LABEL[dot]} />
-        <span className="cr-role" data-testid="role-icon" aria-label={node.row.role}>
-          {ROLE_ICON[node.row.role]}
-        </span>
-        <span className="title">{node.row.title}</span>
-        {node.row.overlap && (
-          <span className="cr-overlap" data-testid="overlap-mark" title="overlapping changes">
-            ⚠
-          </span>
+        {hasChildren && (
+          <button
+            type="button"
+            className="cr-tree-caret"
+            data-testid="tree-caret"
+            tabIndex={-1}
+            aria-expanded={open}
+            aria-controls={`cr-tree-kids-${id}`}
+            aria-label={`${open ? 'Collapse' : 'Expand'} ${row.title}`}
+            disabled={fold.locked}
+            onClick={() => fold.setOpen(id, !open)}
+          >
+            <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} strokeWidth={2.25} />
+          </button>
         )}
-        {node.row.waiting_for_plan && (
-          <span className="cr-waiting" data-testid="waiting-for-plan">
-            waiting for the plan
-          </span>
-        )}
-        {node.row.visibility_advisory && (
-          <span className="cr-visibility" data-testid="visibility-advisory">
-            visibility advisory
-          </span>
-        )}
-        {hiddenNeedsYou && (
+        <button
+          type="button"
+          className="cr-tree-row"
+          data-stream={id}
+          tabIndex={tabbable ? 0 : -1}
+          draggable={!isProject}
+          data-dragging={drag.dragging === id ? 'true' : undefined}
+          data-drop-target={
+            drag.over?.id === id && drag.over.zone === 'into' && refusal === undefined
+              ? 'true'
+              : undefined
+          }
+          data-drop-zone={
+            drag.over?.id === id && drag.over.zone !== 'into' && refusal === undefined
+              ? drag.over.zone
+              : undefined
+          }
+          onDragStart={(e) => {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', id);
+            drag.start(id);
+          }}
+          onDragEnd={() => drag.end()}
+          onDragOver={(e) => {
+            if (!drag.enter(id, zoneOf(e, isProject))) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+          }}
+          onDragLeave={() => drag.leave(id)}
+          onDrop={(e) => {
+            e.preventDefault();
+            drag.drop(id, zoneOf(e, isProject));
+          }}
+          aria-current={selected === id ? 'true' : undefined}
+          aria-expanded={hasChildren ? open : undefined}
+          data-role={row.role}
+          data-status={status.key}
+          data-unread={ctx.unread.has(id) ? 'true' : undefined}
+          title={`${row.title}\n${ROLE_LABEL[row.role]} · ${status.label} — ${status.hint}`}
+          onFocus={() => ctx.setFocused(id)}
+          onClick={() => actions.open(row)}
+          onDoubleClick={() => {
+            if (hasChildren) fold.setOpen(id, !open);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+              e.preventDefault();
+              const item = e.currentTarget.closest('.cr-tree-item');
+              if (item) openMenu(item);
+              return;
+            }
+            ctx.onRowKey(e, node, open);
+          }}
+        >
+          {/* T424: rows drag (T333); the grip says so on hover, left of the row. */}
+          {!isProject && (
+            <span className="cr-tree-grip" aria-hidden="true">
+              <Icon name="grip-vertical" size={14} />
+            </span>
+          )}
+          {/* A project row shows a dot only when its status is news (a coordinator's question, work, a merge). */}
+          {!isProject || !QUIET_PROJECT.has(status.key) ? (
+            <StatusDot row={row} status={status} />
+          ) : null}
           <span
-            className="cr-dot cr-tree-hidden-dot"
-            data-dot="amber"
-            data-testid="collapsed-needs-you"
-            aria-label="something inside is waiting on you"
+            className="cr-role"
+            data-testid="role-icon"
+            data-role={row.role}
+            role="img"
+            aria-label={ROLE_LABEL[row.role]}
+          >
+            <Icon name={ROLE_GLYPH[row.role]} size={14} />
+          </span>
+          {/* T347 (D36 D11): the plan badge sits on its own line, so the title keeps the width. */}
+          <span className="cr-tree-label">
+            <RailTitle row={row} rows={ctx.allRows} />
+            {row.waiting_for_plan && (
+              <span className="cr-waiting" data-testid="waiting-for-plan">
+                waiting for the plan
+              </span>
+            )}
+          </span>
+          {row.visibility_advisory && (
+            <span className="cr-visibility" data-testid="visibility-advisory">
+              visibility advisory
+            </span>
+          )}
+          {/* T433: a reply you haven't read (T429): the title is bold and a blue dot sits at the end. */}
+          {ctx.unread.has(id) && (
+            <span
+              className="cr-tree-unread"
+              data-testid="tree-unread"
+              role="img"
+              aria-label="a reply you haven't read"
+              title="Replied: not read yet"
+            />
+          )}
+          {/* T503 (§6): replies in its chat threads you haven't read: a count by the title. */}
+          {(ctx.threadsUnread.get(id) ?? 0) > 0 && (
+            <span
+              className="cr-tree-threads"
+              data-testid="tree-thread-unread"
+              role="img"
+              aria-label={`${ctx.threadsUnread.get(id)} threads with a reply you haven't read`}
+              title="A thread has a reply you haven't read"
+            >
+              {ctx.threadsUnread.get(id)}
+            </span>
+          )}
+          {hiddenNeedsYou && (
+            <span
+              className="cr-dot cr-tree-hidden-dot"
+              data-dot="amber"
+              data-testid="collapsed-needs-you"
+              aria-label="something inside is waiting on you"
+            />
+          )}
+        </button>
+        {overlap !== undefined && (
+          <OverlapButton
+            mark={overlap}
+            tabbable={tabbable}
+            placement={placement}
+            onOpen={ctx.openNode}
           />
         )}
-      </button>
+        <span className="cr-tree-actions">
+          <IconButton
+            icon="plus"
+            size="sm"
+            tabIndex={tabbable ? 0 : -1}
+            label={isProject ? `New node in ${project}` : `New node under ${row.title}`}
+            data-testid="tree-add"
+            onClick={() => actions.add(row)}
+          />
+          <Menu
+            label={isProject ? `${project} actions` : `${row.title} actions`}
+            testid="tree-menu"
+            align="end"
+            placement={placement}
+            items={items}
+            trigger={(props) => (
+              <IconButton
+                {...props}
+                icon="more"
+                size="sm"
+                tabIndex={tabbable ? 0 : -1}
+                label={isProject ? `${project} actions` : `${row.title} actions`}
+                data-testid="tree-menu-trigger"
+              />
+            )}
+          />
+        </span>
+        {refusal !== undefined && (
+          <output className="cr-drop-hint" data-testid="move-refused">
+            {refusal}
+          </output>
+        )}
+      </div>
       {hasChildren && open && (
         <ul id={`cr-tree-kids-${id}`}>
           {node.children.map((child) => (
-            <Node key={child.row.id} node={child} fold={fold} />
+            <Node key={child.row.id} node={child} ctx={ctx} />
           ))}
         </ul>
       )}
     </li>
   );
 }
+
+/**
+ * T424: the overlap mark: a button that opens the node the tooltip names, or
+ * with several, a small menu of them.
+ */
+/** T446 (audit r7 #18): "<node> · <repo>" under its node reads as the repo; the rest stays for readers. */
+function RailTitle({
+  row,
+  rows,
+}: {
+  row: CockpitStreamRow;
+  rows: readonly CockpitStreamRow[];
+}): JSX.Element {
+  const parent = row.parent === undefined ? undefined : rows.find((r) => r.id === row.parent);
+  const { lead, shown } = railTitle(row.title, parent?.title);
+  // T447: any other title keeps its distinct end (middle truncation).
+  if (lead === undefined) return <RowTitle title={row.title} />;
+  return (
+    <span className="title">
+      <span className="cr-lens-sr">{lead}</span>
+      {shown}
+    </span>
+  );
+}
+
+function OverlapButton({
+  mark,
+  tabbable,
+  placement,
+  onOpen,
+}: {
+  mark: OverlapMark;
+  tabbable: boolean;
+  placement: 'top' | 'bottom';
+  onOpen(id: string): void;
+}): JSX.Element {
+  const only = mark.targets.length === 1 ? mark.targets[0] : undefined;
+  const glyph = <Icon name="overlap" size={13} strokeWidth={2} />;
+  if (only !== undefined) {
+    return (
+      <span className="cr-tree-overlap">
+        <button
+          type="button"
+          className="cr-tree-overlap-btn"
+          data-testid="overlap-mark"
+          data-kind={mark.kind}
+          data-target={only.id}
+          tabIndex={tabbable ? 0 : -1}
+          title={`${mark.text}\nClick to open ${only.title}`}
+          aria-label={`${mark.text}. Open ${only.title}`}
+          onClick={() => onOpen(only.id)}
+        >
+          {glyph}
+        </button>
+      </span>
+    );
+  }
+  return (
+    <span className="cr-tree-overlap">
+      <Menu
+        label={mark.text}
+        testid="overlap-menu"
+        align="end"
+        placement={placement}
+        items={mark.targets.map(
+          (t): MenuItem => ({
+            label: t.title,
+            icon: 'arrow-right',
+            hint: t.files,
+            title: t.line,
+            testid: 'overlap-open',
+            onSelect: () => onOpen(t.id),
+          }),
+        )}
+        trigger={(props) => (
+          <button
+            {...props}
+            type="button"
+            className="cr-tree-overlap-btn"
+            data-testid="overlap-mark"
+            data-kind={mark.kind}
+            tabIndex={tabbable ? 0 : -1}
+            title={mark.text}
+            aria-label={`${mark.text}. Choose one to open`}
+          >
+            {glyph}
+          </button>
+        )}
+      />
+    </span>
+  );
+}
+
+/** The rows a keyboard walk visits, in order (folded subtrees skipped). */
+function visibleIds(nodes: readonly StreamTreeNode[], fold: Fold, out: string[] = []): string[] {
+  for (const node of nodes) {
+    out.push(node.row.id);
+    if (node.children.length > 0 && fold.isOpen(node.row.id)) visibleIds(node.children, fold, out);
+  }
+  return out;
+}
+
+/** T365: what the rail's dots, icons and marks mean. */
+function Legend(): JSX.Element {
+  const [at, setAt] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const anchor = useRef<HTMLElement | null>(null);
+  const roles: CockpitStreamRow['role'][] = ['project', 'coordinating', 'work', 'conversation'];
+  // The sidebar clips what overflows it, so the legend floats beside it,
+  // level with the tree it explains (over the drawer on a phone).
+  const place = useCallback((el: HTMLElement): void => {
+    const box = el.getBoundingClientRect();
+    const side = el.closest('.cr-sidebar')?.getBoundingClientRect();
+    const beside = side !== undefined && side.right + 8 + 340 <= window.innerWidth;
+    setAt({
+      top: Math.round(Math.max(8, Math.min(box.top - 8, window.innerHeight - 632))),
+      left: Math.round(beside && side ? side.right + 8 : 8),
+    });
+  }, []);
+  // T384: it follows a window resize while open.
+  useEffect(() => {
+    const onResize = (): void => {
+      if (anchor.current?.getAttribute('aria-expanded') === 'true') place(anchor.current);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [place]);
+  return (
+    <Popover
+      align="end"
+      className="cr-legend"
+      label="What the rail shows"
+      testid="tree-legend"
+      trigger={(props) => (
+        <IconButton
+          {...props}
+          icon="help-circle"
+          size="sm"
+          label="What the dots mean"
+          data-testid="tree-legend-open"
+          onClick={(e) => {
+            anchor.current = e.currentTarget;
+            place(e.currentTarget);
+            props.onClick();
+          }}
+        />
+      )}
+    >
+      {() => (
+        <div
+          className="cr-legend-body"
+          style={{ top: at.top, left: at.left, maxHeight: `calc(100vh - ${at.top + 12}px)` }}
+        >
+          <div className="cr-legend-hd">Status</div>
+          <ul className="cr-legend-list">
+            {LEGEND_ORDER.map((key) => {
+              // T436: drawn from the row it stands for, as the rail draws it ("Replied" too).
+              const row = legendRow(key);
+              const s = nodeStatus(row);
+              return (
+                <li key={key} data-status={key}>
+                  <span className="cr-legend-mark">
+                    <StatusDot row={row} status={s} />
+                  </span>
+                  <span className="cr-legend-label">{s.label}</span>
+                  <span className="cr-legend-hint">{LEGEND_NOTE[key]}</span>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="cr-legend-hd">Kinds of node</div>
+          <ul className="cr-legend-list">
+            {roles.map((role) => (
+              <li key={role}>
+                <span className="cr-legend-mark cr-role">
+                  <Icon name={ROLE_GLYPH[role]} size={14} />
+                </span>
+                <span className="cr-legend-label">{ROLE_LABEL[role]}</span>
+                <span className="cr-legend-hint">{ROLE_NOTE[role]}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="cr-legend-hd">Marks</div>
+          <ul className="cr-legend-list">
+            <li data-mark="overlap">
+              <span className="cr-legend-mark cr-legend-glyph">
+                <Icon name="overlap" size={13} strokeWidth={2} />
+              </span>
+              <span className="cr-legend-hint">{OVERLAP_NOTE}</span>
+            </li>
+            <li data-mark="needs-you">
+              <span className="cr-legend-mark">
+                <span className="cr-dot cr-tree-hidden-dot" data-dot="amber" />
+              </span>
+              <span className="cr-legend-hint">On a folded row: something inside needs you</span>
+            </li>
+            <li data-mark="drag">
+              <span className="cr-legend-mark cr-legend-glyph">
+                <Icon name="grip-vertical" size={14} />
+              </span>
+              <span className="cr-legend-hint">{DRAG_NOTE}</span>
+            </li>
+          </ul>
+        </div>
+      )}
+    </Popover>
+  );
+}
+
+type TreeDialog =
+  | { kind: 'rename'; row: CockpitStreamRow }
+  | { kind: 'move'; row: CockpitStreamRow }
+  | { kind: 'delete'; row: CockpitStreamRow };
 
 export function StreamTree({
   rows: allRows,
@@ -142,9 +743,22 @@ export function StreamTree({
   rows: readonly CockpitStreamRow[];
   projects: readonly CockpitProjectRow[];
 }): JSX.Element {
-  const { selected, select, railOpen, toggleRail, project, setProject } = useShell();
+  const {
+    railOpen,
+    toggleRail,
+    project,
+    setProject,
+    setNewProjectOpen,
+    select,
+    selected,
+    openNewStream,
+    view,
+  } = useShell();
+  const toast = useToast();
+  const copy = useCopy();
+  const overlaps = useOptionalFeed()?.cockpit?.overlaps ?? NO_OVERLAPS;
+  const sectionRef = useRef<HTMLElement>(null);
   const [filter, setFilter] = useState('');
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const filterRef = useRef<HTMLInputElement>(null);
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const setOpen = useCallback((id: string, open: boolean) => {
@@ -164,6 +778,199 @@ export function StreamTree({
   };
   const rows = rowsInProject(allRows, project);
   const tree = buildStreamTree(filterStreamRows(rows, filter));
+  const [dialog, setDialog] = useState<TreeDialog | undefined>(undefined);
+  const [focused, setFocused] = useState<string | undefined>(undefined);
+  // The open node is never hidden in a folded subtree: opening it (or its
+  // first frame) unfolds its ancestors. Folding one afterwards is left alone.
+  const rowsNow = useRef(allRows);
+  rowsNow.current = allRows;
+  const collapsedNow = useRef(collapsed);
+  collapsedNow.current = collapsed;
+  const selectedShown = selected !== undefined && allRows.some((r) => r.id === selected);
+  useEffect(() => {
+    if (!selectedShown || selected === undefined) return;
+    const byId = new Map(rowsNow.current.map((r) => [r.id, r]));
+    const seen = new Set<string>();
+    for (let at = byId.get(selected)?.parent; at !== undefined && !seen.has(at); ) {
+      seen.add(at);
+      if (collapsedNow.current.has(at)) setOpen(at, true);
+      at = byId.get(at)?.parent;
+    }
+  }, [selected, selectedShown, setOpen]);
+  const projectName = useCallback(
+    (id: string | undefined) => projects.find((p) => p.id === id)?.name,
+    [projects],
+  );
+  const filterName = project !== undefined ? (projectName(project) ?? 'this project') : undefined;
+
+  // ---- drag (T333, T365)
+  const [dragging, setDragging] = useState<string | undefined>(undefined);
+  const [over, setOver] = useState<{ id: string; zone: DropZone; reason?: string } | undefined>(
+    undefined,
+  );
+  const [moveError, setMoveError] = useState<string | undefined>(undefined);
+  // Read at dragend: why the row under the pointer refused, and whether a drop happened.
+  const refused = useRef<string | undefined>(undefined);
+  const dropped = useRef(false);
+  useEffect(() => {
+    if (dragging === undefined) return;
+    // Anywhere but a row: the last refusal no longer applies.
+    const onOver = (e: DragEvent): void => {
+      const target = e.target as Element | null;
+      if (!target?.closest?.('.cr-tree-row')) refused.current = undefined;
+    };
+    window.addEventListener('dragover', onOver);
+    return () => window.removeEventListener('dragover', onOver);
+  }, [dragging]);
+  const drag: Drag = {
+    dragging,
+    over,
+    start: (id) => {
+      dropped.current = false;
+      refused.current = undefined;
+      setMoveError(undefined);
+      setDragging(id);
+    },
+    enter: (target, zone) => {
+      if (dragging === undefined) return false;
+      // T474: an edge places it beside the row; the middle nests it under.
+      const check =
+        zone === 'into'
+          ? checkMove(allRows, dragging, target)
+          : checkPlace(allRows, dragging, target);
+      if (check.ok) {
+        refused.current = undefined;
+        if (over?.id !== target || over.zone !== zone || over.reason !== undefined)
+          setOver({ id: target, zone });
+        return true;
+      }
+      refused.current = check.quiet ? undefined : check.reason;
+      const next = check.quiet ? undefined : { id: target, zone, reason: check.reason };
+      if (over?.id !== next?.id || over?.zone !== next?.zone || over?.reason !== next?.reason)
+        setOver(next);
+      return false;
+    },
+    leave: (target) => {
+      if (over?.id === target) setOver(undefined);
+    },
+    drop: (target, zone) => {
+      const moving = dragging;
+      dropped.current = true;
+      setDragging(undefined);
+      setOver(undefined);
+      if (moving === undefined) return;
+      if (zone === 'into') {
+        if (!checkMove(allRows, moving, target).ok) return;
+        moveStream(moving, target).catch((err: unknown) => setMoveError(errorText(err)));
+        return;
+      }
+      if (!checkPlace(allRows, moving, target).ok) return;
+      reorderStream(moving, target, zone).catch((err: unknown) => setMoveError(errorText(err)));
+    },
+    end: () => {
+      const reason = refused.current;
+      if (!dropped.current && reason !== undefined) {
+        toast({ title: 'Can’t move it there', body: reason, tone: 'error' });
+      }
+      refused.current = undefined;
+      setDragging(undefined);
+      setOver(undefined);
+    },
+  };
+
+  // ---- row actions
+  const actions: RowActions = {
+    open: (row) => select(row.id),
+    add: (row) =>
+      row.role === 'project' && row.project !== undefined
+        ? openNewStream({ project: row.project })
+        : openNewStream({ parent: row.id }),
+    rename: (row) => setDialog({ kind: 'rename', row }),
+    move: (row) => setDialog({ kind: 'move', row }),
+    copyId: (row) => copy(row.id, 'Node id copied'),
+    remove: (row) => {
+      if (row.role !== 'project') setDialog({ kind: 'delete', row });
+    },
+    only: (id) => setProject(id),
+    showAll: () => setProject(undefined),
+  };
+
+  // ---- keyboard: one tab stop, the arrows (or j/k) walk the rows
+  const order = visibleIds(tree, fold);
+  const shown = new Set(order);
+  const tabStop = [focused, selected].find((id) => id !== undefined && shown.has(id)) ?? order[0];
+  const focusRow = (id: string | undefined): void => {
+    if (id === undefined) return;
+    sectionRef.current
+      ?.querySelector<HTMLButtonElement>(`.cr-tree-row[data-stream="${CSS.escape(id)}"]`)
+      ?.focus();
+  };
+  const onRowKey: TreeContext['onRowKey'] = (e, node, open) => {
+    const id = node.row.id;
+    const at = order.indexOf(id);
+    const hasChildren = node.children.length > 0;
+    // T395: j and k walk the rows as ↓ and ↑ do (not with a modifier: those are the browser's).
+    const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
+    switch (plain && e.key === 'j' ? 'ArrowDown' : plain && e.key === 'k' ? 'ArrowUp' : e.key) {
+      case 'ArrowDown':
+        focusRow(order[at + 1]);
+        break;
+      case 'ArrowUp':
+        focusRow(order[at - 1]);
+        break;
+      case 'Home':
+        focusRow(order[0]);
+        break;
+      case 'End':
+        focusRow(order[order.length - 1]);
+        break;
+      case 'ArrowLeft':
+        if (hasChildren && open && !fold.locked) fold.setOpen(id, false);
+        else if (node.row.parent !== undefined && shown.has(node.row.parent))
+          focusRow(node.row.parent);
+        else return;
+        break;
+      case 'ArrowRight':
+        if (hasChildren && !open) fold.setOpen(id, true);
+        else if (hasChildren) focusRow(node.children[0]?.row.id);
+        else return;
+        break;
+      case 'F2':
+        if (node.row.role === 'project') return;
+        actions.rename(node.row);
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+  };
+
+  // T445 (audit r7 #14): on a node's page, j/k (not while typing) open the next or previous row
+  // the tree shows. Needs me's j/k walk its cards; a row's own keys walk focus in the rail.
+  const orderNow = useRef(order);
+  orderNow.current = order;
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || view !== 'stream') return;
+      const down = isShortcut(event, 'j');
+      if (!down && !isShortcut(event, 'k')) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.('.cr-rail, [role="menu"], [role="listbox"]')) return;
+      const ids = orderNow.current;
+      const at = selected !== undefined ? ids.indexOf(selected) : -1;
+      const next = at < 0 ? (down ? ids[0] : ids[ids.length - 1]) : ids[down ? at + 1 : at - 1];
+      if (next === undefined) return;
+      event.preventDefault();
+      select(next);
+      requestAnimationFrame(() =>
+        sectionRef.current
+          ?.querySelector<HTMLElement>(`.cr-tree-row[data-stream="${CSS.escape(next)}"]`)
+          ?.scrollIntoView?.({ block: 'nearest' }),
+      );
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [view, selected, select]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -176,68 +983,632 @@ export function StreamTree({
     return () => window.removeEventListener('keydown', onKey);
   }, [railOpen, toggleRail]);
 
+  const replies = useUnreadReplies();
+  const unread = useMemo(() => new Set(replies.map((r) => r.id)), [replies]);
+  const threadsUnread = useUnreadThreads();
+  const ctx: TreeContext = {
+    fold,
+    drag,
+    actions,
+    tabStop,
+    setFocused,
+    onRowKey,
+    filterProject: project,
+    projectName,
+    overlaps,
+    allRows,
+    openNode: select,
+    unread,
+    threadsUnread,
+  };
+  const empty = allRows.length === 0 && projects.length === 0;
+
   return (
-    <aside className="cr-rail" id="cr-rail" data-testid="stream-tree">
-      <h2>Streams</h2>
-      <div className="cr-project-bar">
-        <select
-          data-testid="project-switcher"
-          aria-label="Project"
-          value={project ?? ''}
-          onChange={(e) => setProject(e.target.value || undefined)}
-        >
-          <option value="">All projects</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          className="cr-btn"
+    <section ref={sectionRef} className="cr-rail" data-testid="stream-tree" aria-label="Projects">
+      <div className="cr-sb-section cr-rail-hd">
+        <span>Projects</span>
+        <Legend />
+        <IconButton
+          icon="plus"
+          size="sm"
+          label="New project"
           data-testid="new-project-open"
           onClick={() => setNewProjectOpen(true)}
-        >
-          New project
-        </button>
+        />
       </div>
-      {newProjectOpen && <NewProject onClose={() => setNewProjectOpen(false)} />}
-      <input
-        ref={filterRef}
-        type="search"
-        className="cr-tree-filter"
-        data-testid="stream-filter"
-        placeholder="Filter streams (/)"
-        aria-label="Filter streams"
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') {
-            setFilter('');
-            e.currentTarget.blur();
-          }
-        }}
-      />
-      {rows.length === 0 ? (
-        <p className="cr-tree-empty">No streams yet.</p>
+      {filterName !== undefined && (
+        <div className="cr-rail-only" data-testid="project-filter">
+          <Menu
+            label="Switch project"
+            align="start"
+            items={[
+              {
+                label: 'All projects',
+                icon: 'layers',
+                testid: 'project-filter-option',
+                onSelect: () => setProject(undefined),
+              },
+              'separator',
+              ...projects.map(
+                (p): MenuItem => ({
+                  label: p.name,
+                  icon: p.id === project ? 'check' : undefined,
+                  testid: 'project-filter-option',
+                  onSelect: () => setProject(p.id),
+                }),
+              ),
+            ]}
+            trigger={(props) => (
+              <button
+                {...props}
+                type="button"
+                className="cr-rail-only-name"
+                data-testid="project-filter-switch"
+                title="Showing one project. Switch project"
+              >
+                <Icon name="filter" size={12} />
+                <span>
+                  Only <b>{filterName}</b>
+                </span>
+                <Icon name="chevron-down" size={12} />
+              </button>
+            )}
+          />
+          <IconButton
+            icon="x"
+            size="sm"
+            label="Show all projects"
+            data-testid="project-filter-clear"
+            onClick={() => setProject(undefined)}
+          />
+        </div>
+      )}
+      {!empty && (
+        <input
+          ref={filterRef}
+          type="search"
+          className="cr-tree-filter"
+          data-testid="stream-filter"
+          placeholder="Filter nodes…"
+          title="Filter nodes (/)"
+          aria-label="Filter nodes"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setFilter('');
+              e.currentTarget.blur();
+            } else if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              focusRow(order[0]);
+            }
+          }}
+        />
+      )}
+      {empty ? (
+        <div className="cr-rail-empty" data-testid="tree-empty">
+          <div className="cr-rail-empty-title">No projects yet</div>
+          <p>A project holds the nodes for one product, and the repositories they work in.</p>
+          <Button
+            size="sm"
+            icon="plus"
+            data-testid="tree-empty-new-project"
+            onClick={() => setNewProjectOpen(true)}
+          >
+            New project
+          </Button>
+        </div>
+      ) : tree.length === 0 ? (
+        <p className="cr-tree-empty">
+          {filtering ? `No nodes match “${filter.trim()}”.` : 'Nothing here yet.'}
+        </p>
       ) : (
-        <ul className="cr-tree">
-          <li>
-            <button
-              type="button"
-              className="cr-tree-row"
-              aria-current={selected === undefined ? 'true' : undefined}
-              onClick={() => select(undefined)}
-            >
-              <span className="title">All streams</span>
-            </button>
-          </li>
+        <ul className="cr-tree" aria-label="Nodes">
           {tree.map((node) => (
-            <Node key={node.row.id} node={node} fold={fold} />
+            <Node key={node.row.id} node={node} ctx={ctx} />
           ))}
         </ul>
       )}
-    </aside>
+      {moveError && (
+        <p className="cr-error cr-tree-move-error" role="alert" data-testid="move-error">
+          <span>{moveError}</span>
+          <IconButton icon="x" size="sm" label="Dismiss" onClick={() => setMoveError(undefined)} />
+        </p>
+      )}
+      {dialog !== undefined &&
+        createPortal(
+          dialog.kind === 'rename' ? (
+            <RenameDialog row={dialog.row} onClose={() => setDialog(undefined)} />
+          ) : dialog.kind === 'move' ? (
+            <MoveDialog
+              row={dialog.row}
+              rows={allRows}
+              projectName={projectName(dialog.row.project)}
+              onClose={() => setDialog(undefined)}
+            />
+          ) : (
+            <DeleteDialog
+              row={dialog.row}
+              rows={allRows}
+              onClose={() => setDialog(undefined)}
+              onDeleted={(ids) => {
+                if (selected !== undefined && ids.includes(selected)) select(undefined);
+              }}
+            />
+          ),
+          document.body,
+        )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------- dialogs
+
+export function RenameDialog({
+  row,
+  onClose,
+}: { row: CockpitStreamRow; onClose: () => void }): JSX.Element {
+  const toast = useToast();
+  const [title, setTitle] = useState(row.title);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const next = title.trim();
+  const save = async (): Promise<void> => {
+    if (busy || next === '' || next === row.title) {
+      if (next === row.title) onClose();
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    try {
+      await updateStream(row.id, { title: next });
+      toast({ title: `Renamed to “${next}”`, tone: 'success', duration: 3000 });
+      onClose();
+    } catch (err) {
+      setError(errorText(err));
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="Rename node"
+      size="sm"
+      testid="rename-dialog"
+      onSubmit={() => void save()}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button
+            type="submit"
+            variant="primary"
+            busy={busy}
+            disabled={next === ''}
+            data-testid="rename-save"
+          >
+            Rename
+          </Button>
+        </>
+      }
+    >
+      <Field label="Title" error={error} htmlFor="cr-rename-input">
+        <input
+          id="cr-rename-input"
+          data-testid="rename-input"
+          data-autofocus
+          value={title}
+          maxLength={200}
+          onFocus={(e) => e.currentTarget.select()}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+      </Field>
+    </Dialog>
+  );
+}
+
+export function MoveDialog({
+  row,
+  rows,
+  projectName,
+  onClose,
+}: {
+  row: CockpitStreamRow;
+  rows: readonly CockpitStreamRow[];
+  projectName: string | undefined;
+  onClose: () => void;
+}): JSX.Element {
+  const toast = useToast();
+  const targets = useMemo(() => moveTargets(rows, row.id), [rows, row.id]);
+  const [target, setTarget] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const options: PickOption[] = targets.map(({ row: r, depth }) => ({
+    value: r.id,
+    text: r.role === 'project' ? `Top level of ${projectName ?? r.title}` : r.title,
+    icon: <Icon name={ROLE_GLYPH[r.role]} size={14} />,
+    depth,
+    tag: r.id === row.parent ? 'current' : undefined,
+    disabled: r.id === row.parent,
+    attrs: { 'data-node': r.id },
+  }));
+  const chosen = targets.find((o) => o.row.id === target)?.row;
+  const save = async (): Promise<void> => {
+    if (!chosen || busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      await moveStream(row.id, chosen.id);
+      toast({
+        title: `Moved “${row.title}”`,
+        body: chosen.role === 'project' ? 'To the top level.' : `Under ${chosen.title}.`,
+        tone: 'success',
+        duration: 3000,
+      });
+      onClose();
+    } catch (err) {
+      setError(errorText(err));
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={`Move “${row.title}”`}
+      description={`Pick its new parent${projectName ? ` in ${projectName}` : ''}. Everything under it moves too.`}
+      testid="move-dialog"
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button
+            variant="primary"
+            busy={busy}
+            disabled={!chosen}
+            data-testid="move-save"
+            onClick={() => void save()}
+          >
+            Move here
+          </Button>
+        </>
+      }
+    >
+      {options.every((o) => o.disabled) ? (
+        <p className="cr-dialog-text" data-testid="move-nowhere">
+          There is nowhere else in its project to move it: it already sits at the top level, and
+          every other node is inside it.
+        </p>
+      ) : (
+        <div className="cr-move-list">
+          <PickList
+            options={options}
+            value={target}
+            onPick={setTarget}
+            label="New parent"
+            testid="move-target"
+            placeholder="Search nodes…"
+            autoFocus
+          />
+        </div>
+      )}
+      {error && (
+        <p className="cr-error" role="alert" data-testid="move-dialog-error">
+          {error}
+        </p>
+      )}
+    </Dialog>
+  );
+}
+
+function DeleteDialog({
+  row,
+  rows,
+  onClose,
+  onDeleted,
+}: {
+  row: CockpitStreamRow;
+  rows: readonly CockpitStreamRow[];
+  onClose: () => void;
+  onDeleted: (ids: string[]) => void;
+}): JSX.Element {
+  const toast = useToast();
+  const ids = useMemo(() => subtreeIds(rows, row.id), [rows, row.id]);
+  const below = ids.length - 1;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const confirm = async (): Promise<void> => {
+    if (busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result = await archiveStream(row.id);
+      onDeleted(result.archived.length > 0 ? result.archived : ids);
+      onClose();
+      toast({
+        title: `Moved “${row.title}” to the trash`,
+        body:
+          below > 0 ? `And the ${below === 1 ? 'node' : `${below} nodes`} under it.` : undefined,
+        tone: 'success',
+        duration: 8000,
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            unarchiveStream(row.id)
+              .then(() =>
+                toast({ title: `Restored “${row.title}”`, tone: 'success', duration: 3000 }),
+              )
+              .catch((err: unknown) =>
+                toast({ title: 'Could not restore it', body: errorText(err), tone: 'error' }),
+              );
+          },
+        },
+      });
+    } catch (err) {
+      setError(errorText(err));
+      setBusy(false);
+    }
+  };
+  return (
+    <ConfirmDialog
+      open
+      title={deleteQuestion(row.title, below)}
+      confirmLabel="Move to trash"
+      danger
+      busy={busy}
+      testid="delete-dialog"
+      onCancel={onClose}
+      onConfirm={() => void confirm()}
+    >
+      <p className="cr-dialog-text">
+        {below > 0 ? 'Their agents stop.' : 'Its agent stops.'}{' '}
+        {below > 0 ? 'Branches and worktrees are kept' : 'Its branch and worktree are kept'}; you
+        can restore {below > 0 ? 'them' : 'it'} from <b>Trash</b> at the bottom of the sidebar, or
+        delete {below > 0 ? 'them' : 'it'} forever there.
+      </p>
+      {error && (
+        <p className="cr-error" role="alert" data-testid="delete-error">
+          {error}
+        </p>
+      )}
+    </ConfirmDialog>
+  );
+}
+
+// ---------------------------------------------------------------- Deleted
+
+function loadDeletedOpen(): boolean {
+  try {
+    return window.localStorage.getItem(DELETED_OPEN_KEY) === 'open';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * T365: the nodes Delete archived (T361's `archived` in the cockpit frame),
+ * folded under "Deleted (n)" at the foot of the sidebar, each with Restore.
+ * The rail's project filter applies here too. T471: it is the Trash: Restore
+ * brings a node back open, Delete forever removes it for good, and Empty
+ * trash takes them all.
+ */
+export function DeletedNodes({
+  projects,
+}: {
+  projects: readonly CockpitProjectRow[];
+}): JSX.Element | null {
+  const { project, select } = useShell();
+  const toast = useToast();
+  const archived = useOptionalFeed()?.cockpit?.archived ?? [];
+  const [open, setOpenState] = useState(loadDeletedOpen);
+  const [busy, setBusy] = useState<string | undefined>(undefined);
+  const [purging, setPurging] = useState<PurgeTarget | undefined>(undefined);
+  const shown = project === undefined ? archived : archived.filter((a) => a.project === project);
+  if (shown.length === 0 && purging === undefined) return null;
+  const toggle = (): void => {
+    setOpenState((was) => {
+      try {
+        window.localStorage.setItem(DELETED_OPEN_KEY, was ? 'closed' : 'open');
+      } catch {
+        // Storage blocked: the fold just won't survive a reload.
+      }
+      return !was;
+    });
+  };
+  const restore = (id: string, title: string): void => {
+    setBusy(id);
+    unarchiveStream(id)
+      .then(() =>
+        toast({
+          title: `Restored “${title}”`,
+          body: 'It’s open again; a message picks the work back up.',
+          tone: 'success',
+          action: { label: 'Open', onClick: () => select(id) },
+        }),
+      )
+      .catch((err: unknown) =>
+        toast({ title: 'Could not restore it', body: errorText(err), tone: 'error' }),
+      )
+      .finally(() => setBusy(undefined));
+  };
+  return (
+    <section className="cr-rail-deleted" data-testid="deleted-nodes" aria-label="Trash">
+      <div className="cr-sb-section">
+        <button
+          type="button"
+          className="cr-sb-section-toggle"
+          aria-expanded={open}
+          data-testid="deleted-toggle"
+          onClick={toggle}
+        >
+          Trash
+          <span className="cr-rail-deleted-count">{shown.length}</span>
+          <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
+        </button>
+        {open && shown.length > 0 && project === undefined && (
+          <button
+            type="button"
+            className="cr-link cr-rail-deleted-empty"
+            data-testid="trash-empty"
+            onClick={() => setPurging({ kind: 'all' })}
+          >
+            Empty trash
+          </button>
+        )}
+      </div>
+      {open && (
+        <ul className="cr-rail-deleted-list">
+          {shown.map((a) => {
+            const where = projects.find((p) => p.id === a.project)?.name;
+            return (
+              <li
+                key={a.id}
+                className="cr-rail-deleted-row"
+                data-testid="archived-row"
+                data-stream={a.id}
+              >
+                <Icon name="trash" size={13} className="cr-rail-deleted-icon" />
+                <span
+                  className="cr-rail-deleted-title"
+                  title={where ? `${a.title} (in ${where})` : a.title}
+                >
+                  {a.title}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  busy={busy === a.id}
+                  data-testid="archived-restore"
+                  title={`Restore “${a.title}” and what was deleted with it, open and ready to resume`}
+                  onClick={() => restore(a.id, a.title)}
+                >
+                  Restore
+                </Button>
+                <IconButton
+                  icon="x"
+                  size="sm"
+                  variant="ghost"
+                  label={`Delete “${a.title}” forever`}
+                  data-testid="archived-purge"
+                  onClick={() => setPurging({ kind: 'node', id: a.id, title: a.title })}
+                />
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {purging !== undefined && (
+        <PurgeDialog target={purging} onClose={() => setPurging(undefined)} />
+      )}
+    </section>
+  );
+}
+
+type PurgeTarget = { kind: 'node'; id: string; title: string } | { kind: 'all' };
+
+/**
+ * T471: Delete forever (one node and what's under it) or Empty trash. It
+ * says what goes and what is lost; a branch with unmerged commits is kept
+ * unless its box is ticked.
+ */
+function PurgeDialog({
+  target,
+  onClose,
+}: {
+  target: PurgeTarget;
+  onClose: () => void;
+}): JSX.Element {
+  const toast = useToast();
+  const [preview, setPreview] = useState<TrashPreview | undefined>(undefined);
+  const [deleteBranches, setDeleteBranches] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const targetId = target.kind === 'node' ? target.id : undefined;
+  useEffect(() => {
+    let live = true;
+    (targetId !== undefined ? getTrashPreview(targetId) : getTrash())
+      .then((p) => {
+        if (live) setPreview(p);
+      })
+      .catch((err: unknown) => {
+        if (live) setError(errorText(err));
+      });
+    return () => {
+      live = false;
+    };
+  }, [targetId]);
+  const count = preview?.nodes.length ?? 0;
+  const unmerged = preview?.branches ?? [];
+  const confirm = async (): Promise<void> => {
+    if (busy || preview === undefined) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result =
+        target.kind === 'node'
+          ? await purgeStream(target.id, deleteBranches)
+          : await emptyTrash(deleteBranches);
+      onClose();
+      const kept = result.kept_branches.length;
+      toast({
+        title:
+          target.kind === 'node'
+            ? `Deleted “${target.title}” forever`
+            : `Emptied the trash (${result.deleted.length} ${result.deleted.length === 1 ? 'node' : 'nodes'})`,
+        ...(kept > 0
+          ? {
+              body: `Kept ${kept === 1 ? 'its branch' : `${kept} branches`} with unmerged commits.`,
+            }
+          : {}),
+        tone: 'success',
+      });
+    } catch (err) {
+      setError(errorText(err));
+      setBusy(false);
+    }
+  };
+  const commits = (n: number): string =>
+    n < 0 ? 'commits not in its target' : `${n} unmerged commit${n === 1 ? '' : 's'}`;
+  return (
+    <ConfirmDialog
+      open
+      title={target.kind === 'node' ? `Delete “${target.title}” forever?` : 'Empty the trash?'}
+      confirmLabel={target.kind === 'node' ? 'Delete forever' : 'Empty trash'}
+      danger
+      busy={busy || preview === undefined}
+      testid="purge-dialog"
+      onCancel={onClose}
+      onConfirm={() => void confirm()}
+    >
+      <p className="cr-dialog-text">
+        {preview === undefined
+          ? 'Checking what goes…'
+          : `${count === 1 ? 'The node' : `${count} nodes`}, ${count === 1 ? 'its' : 'their'} chat, session logs and worktree${count === 1 ? '' : 's'} are removed, and merged branches go too. This can’t be undone.`}
+      </p>
+      {preview !== undefined && preview.uncommitted.length > 0 && (
+        <p className="cr-dialog-text" data-testid="purge-uncommitted">
+          Uncommitted changes in <b>{preview.uncommitted.join(', ')}</b> are lost.
+        </p>
+      )}
+      {unmerged.length > 0 && (
+        <label className="cr-purge-branches" data-testid="purge-branches">
+          <input
+            type="checkbox"
+            data-testid="purge-delete-branches"
+            checked={deleteBranches}
+            onChange={(e) => setDeleteBranches(e.target.checked)}
+          />
+          <span>
+            {unmerged.length === 1
+              ? `Also delete its branch ${unmerged[0]?.branch} (${commits(unmerged[0]?.unmerged ?? -1)})`
+              : `Also delete ${unmerged.length} branches with unmerged commits`}
+          </span>
+        </label>
+      )}
+      {error && (
+        <p className="cr-error" role="alert" data-testid="purge-error">
+          {error}
+        </p>
+      )}
+    </ConfirmDialog>
   );
 }

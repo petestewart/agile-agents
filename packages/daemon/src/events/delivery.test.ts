@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { type RoutedEvent, type Stream, ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
-import { type DeliveryTarget, SessionDelivery, digestPrompt } from './delivery';
+import { type DeliveryTarget, SessionDelivery, digestPrompt, wakePrompt } from './delivery';
 import { RoutedEventService } from './service';
 import { WakeBudget, wakeVerdict } from './wake';
 
@@ -164,6 +164,66 @@ describe('SessionDelivery (T242, P10)', () => {
   });
 });
 
+describe("T502 (D62): a reply in a question's thread", () => {
+  test('reads as about the question, as data, and says how to settle it', async () => {
+    const id = `Q-${ulid()}`;
+    const reply = await events.emit({
+      ...line('what does Stripe use?'),
+      payload: { body: 'what does Stripe use?', question: { id, text: 'Store amounts how?' } },
+    });
+    const text = digestPrompt([reply]);
+    expect(text).toContain('About your question "Store amounts how?": what does Stripe use?');
+    expect(text).toContain(`\`settle_question\` with question ${id}`);
+    // T513: a question back about the options is no answer; it stays open.
+    expect(text).toContain("Only if the operator's own words decide it");
+    expect(text).toContain("If it asks about the options or doesn't decide them, it is no answer");
+    expect(text).toContain('leave the question open');
+    expect(text).toContain('Reply to the operator on the stream first');
+    expect(wakePrompt([reply], node)).toContain('settle_question');
+    // A plain line says nothing about settling.
+    const plain = await events.emit(line('carry on'));
+    expect(digestPrompt([plain])).not.toContain('settle_question');
+    expect(digestPrompt([plain])).toContain('The operator wrote on the stream: carry on');
+  });
+});
+
+describe('T503 (D60, §3a, §4): a reply in a chat thread', () => {
+  const thread = (id: string, quote?: string) => ({
+    id,
+    on: '2026-10-02T10:02:11.000Z',
+    of: 'agent' as 'agent' | 'human',
+    ...(quote !== undefined ? { quote } : {}),
+  });
+  const reply = (body: string, t: ReturnType<typeof thread>) =>
+    events.emit({ ...line(body), payload: { body, thread: t } });
+  const A = '2026-10-02T10:05:00.000Z';
+  const B = '2026-10-02T10:06:00.000Z';
+
+  test('says the turn it is on, the thread, and the passage as data', async () => {
+    const one = await reply('why that?', thread(A, 'banker’s "rounding"'));
+    const text = digestPrompt([one]);
+    expect(text).toContain(
+      `In a thread on your message of 10:02 UTC (thread ${A}), about the passage "banker’s \\"rounding\\"": why that?`,
+    );
+    // One thread's line alone: its turn posts there; nothing to say about where.
+    expect(text).not.toContain('different threads');
+    const whole = await reply('and this?', { ...thread(B), of: 'human' as const });
+    expect(digestPrompt([whole])).toContain(
+      `In a thread on the operator’s message of 10:02 UTC (thread ${B}): and this?`,
+    );
+  });
+
+  test('lines from several threads, or the main chat and a thread, say where answers go', async () => {
+    const a = await reply('a', thread(A));
+    const b = await reply('b', thread(B));
+    const main = await events.emit(line('carry on'));
+    expect(digestPrompt([a, b])).toContain('pass its thread id to `progress`');
+    expect(digestPrompt([a, main])).toContain('pass its thread id to `progress`');
+    expect(wakePrompt([a, main], node)).toContain('different threads');
+    expect(digestPrompt([main])).not.toContain('different threads');
+  });
+});
+
 describe("T290: a parent's note wakes an ended work node", () => {
   const note = (subject: string) => ({
     type: 'coordinator_note' as const,
@@ -239,5 +299,54 @@ describe('T336: a woken session gets its events in the brief', () => {
     await until(() => prompts.length === 1);
     expect(prompts[0]).toContain('use CSV');
     delivery.stop();
+  });
+});
+
+describe('quiet events (T504, D65)', () => {
+  const archived = {
+    type: 'thread_archived' as const,
+    subject: node,
+    payload: {
+      thread: '2026-10-02T10:01:00.000Z',
+      on: '2026-10-02T10:00:00.000Z',
+      of: 'agent' as const,
+      quote: 'banker’s rounding',
+    },
+    by: 'human' as const,
+    routing: [{ node, because: 'self' as const }],
+  };
+
+  test('an archive notice alone starts no turn; it rides the next digest', async () => {
+    const { prompts, target } = fakeTarget();
+    const delivery = new SessionDelivery({ events, target: () => target, delayMs: 5 });
+    await events.emit(archived);
+    await Bun.sleep(40);
+    expect(prompts).toEqual([]);
+    expect(await delivery.flushWhenReady(node)).toBe(false);
+    expect(events.pendingFor(node)).toHaveLength(1);
+    await events.emit(line('carry on'));
+    await until(() => prompts.length === 1);
+    expect(prompts[0]).toContain('2 things arrived for you:');
+    expect(prompts[0]).toContain(
+      'The operator archived the thread on your message of 10:00 UTC (thread 2026-10-02T10:01:00.000Z), about the passage "banker’s rounding". Treat it as closed',
+    );
+    expect(prompts[0]).toContain('The operator wrote on the stream: carry on');
+    delivery.stop();
+  });
+
+  test('it wakes no agent, of any role', () => {
+    const stream = {
+      id: node,
+      sessions: [
+        { id: ulid(), role: 'coordinator', status: 'stopped', ended_reason: 'stopped: x' },
+      ],
+      agent: { status: 'idle' },
+      human: { status: 'open' },
+    } as unknown as Stream;
+    for (const role of ['work', 'conversation', 'coordinating', 'project'] as const) {
+      expect(wakeVerdict(stream, role, [{ type: 'thread_archived', subject: node } as never])).toBe(
+        'no_trigger',
+      );
+    }
   });
 });

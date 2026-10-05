@@ -50,4 +50,19 @@ describe('FakeClassifier', () => {
     expect(answers[0]?.probability).toBe(0.1);
     expect(fake.calls).toHaveLength(1);
   });
+
+  test('T483: choose answers from its choice script, records the call, and reads as no key without one', async () => {
+    const q = { id: 'stakes', instructions: 'q?', options: { '1': 'low', '5': 'high' } };
+    const fake = new FakeClassifier([], {
+      choice: { stakes: { choice: '5', confidence: 0.8, probabilities: { '5': 0.8, '1': 0.2 } } },
+    });
+    expect(await fake.choose('s', [q])).toEqual([
+      { id: 'stakes', choice: '5', confidence: 0.8, probabilities: { '5': 0.8, '1': 0.2 } },
+    ]);
+    expect(fake.choiceCalls).toHaveLength(1);
+    await expect(fake.choose('s', [{ ...q, id: 'other' }])).rejects.toThrow(/no answer/);
+    await expect(new FakeClassifier().choose('s', [q])).rejects.toMatchObject({
+      reason: 'not_configured',
+    });
+  });
 });

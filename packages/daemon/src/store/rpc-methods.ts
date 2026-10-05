@@ -1,10 +1,17 @@
 /** The `state.*` RPC: the repo registry (`repos.yaml`, D9), used by `agile repo add|list` and Settings → Repos (T206). */
 
 import { realpathSync } from 'node:fs';
-import { type RepoEntry, RepoSettingsPatchSchema, formatZodError } from '@agile-agents/shared';
+import {
+  REPO_NAME_RULE,
+  type RepoEntry,
+  RepoNameSchema,
+  RepoSettingsPatchSchema,
+  formatZodError,
+} from '@agile-agents/shared';
 import { RpcParamError } from '../gates/rpc';
 import { repoFromRemoteUrl } from '../github/rest';
 import type { RpcMethodHandler } from '../rpc';
+import { parseRemoteUrl } from './remote-url';
 import type { StateStore } from './store';
 
 function gitOut(args: string[], cwd: string): string | undefined {
@@ -39,7 +46,9 @@ function assertGitToplevel(path: string): void {
  * set by the T202 migration or later): `main_branch`, else `target_branch`, else the remote's
  * default branch, else `main`/`master` if present, else `main`.
  */
-export function resolveMainBranch(entry: RepoEntry): string {
+export function resolveMainBranch(
+  entry: Pick<RepoEntry, 'path' | 'main_branch' | 'target_branch'>,
+): string {
   if (entry.main_branch) return entry.main_branch;
   if (entry.target_branch) return entry.target_branch;
   const remote = gitOut(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], entry.path);
@@ -47,6 +56,42 @@ export function resolveMainBranch(entry: RepoEntry): string {
   for (const b of ['main', 'master']) {
     if (gitOut(['rev-parse', '--verify', '--quiet', `refs/heads/${b}`], entry.path) !== undefined)
       return b;
+  }
+  return 'main';
+}
+
+/** T406: git's answer without blocking the event loop (a repo list asks for every repo at once). */
+async function gitOutAsync(args: string[], cwd: string): Promise<string | undefined> {
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn(['git', ...args], { cwd, stdin: 'ignore', stdout: 'pipe', stderr: 'ignore' });
+  } catch {
+    return undefined; // cwd gone: no answer, not a crash
+  }
+  const [out, code] = await Promise.all([
+    new Response(proc.stdout as ReadableStream).text(),
+    proc.exited,
+  ]);
+  return code === 0 ? out.trim() : undefined;
+}
+
+/** T406: `resolveMainBranch`, the same answer, for `GET /api/repos` (every repo in parallel). */
+export async function resolveMainBranchAsync(
+  entry: Pick<RepoEntry, 'path' | 'main_branch' | 'target_branch'>,
+): Promise<string> {
+  if (entry.main_branch) return entry.main_branch;
+  if (entry.target_branch) return entry.target_branch;
+  const remote = await gitOutAsync(
+    ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'],
+    entry.path,
+  );
+  if (remote) return remote.replace(/^origin\//, '');
+  for (const b of ['main', 'master']) {
+    const found = await gitOutAsync(
+      ['rev-parse', '--verify', '--quiet', `refs/heads/${b}`],
+      entry.path,
+    );
+    if (found !== undefined) return b;
   }
   return 'main';
 }
@@ -75,17 +120,6 @@ export class EmptyRepoError extends Error {
 /** Throws {@link EmptyRepoError} when the repo has no commits. */
 export function assertRepoHasCommits(name: string, entry: RepoEntry): void {
   if (emptyRepoMessage(name, entry) !== undefined) throw new EmptyRepoError(name, entry);
-}
-
-/** The host of a git remote URL (`git@host:o/r`, `https://host/o/r`), lowercased. */
-function remoteHost(url: string): string | undefined {
-  const scp = /^[^@/\s]+@([^:/\s]+):/.exec(url.trim());
-  if (scp?.[1]) return scp[1].toLowerCase();
-  try {
-    return new URL(url.trim()).hostname.toLowerCase();
-  } catch {
-    return undefined;
-  }
 }
 
 export interface StateRpcOptions {
@@ -133,7 +167,7 @@ export async function setRepoSettings(
         `state.repo_set: pr delivery needs a remote; ${name} has no remote ${remote}`,
       );
     }
-    if (remoteHost(url) !== 'github.com') {
+    if (parseRemoteUrl(url)?.host !== 'github.com') {
       throw new RpcParamError(
         `state.repo_set: pr delivery needs a GitHub remote; ${remote} is not on github.com`,
       );
@@ -174,12 +208,23 @@ export function buildStateRpcMethods(
       if (typeof name !== 'string' || name.length === 0) {
         throw new RpcParamError('state.repo_add: name is required');
       }
+      // T389: a name the registry can keep and a route can carry.
+      if (!RepoNameSchema.safeParse(name).success || name.trim() !== name) {
+        throw new RpcParamError(`state.repo_add: invalid name "${name}": ${REPO_NAME_RULE}`);
+      }
       const { path } = entry as { path?: unknown };
       if (typeof path !== 'string' || path.length === 0) {
         throw new RpcParamError('state.repo_add: path is required');
       }
       assertGitToplevel(path);
-      return store.addRepo(name, { ...entry, path: realpathSync(path) });
+      // T378: re-registering a name keeps what was set on it (delivery, visibility,
+      // GitHub, defaults) instead of resetting it to a fresh repo's.
+      const existing = store.getRepos()[name];
+      return store.addRepo(
+        name,
+        { ...(existing ?? {}), ...entry, path: realpathSync(path) },
+        { by: 'human' },
+      );
     },
   };
 }

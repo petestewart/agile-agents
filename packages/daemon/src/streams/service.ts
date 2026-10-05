@@ -7,12 +7,23 @@
  */
 
 import {
+  type KnowledgeItem,
+  type ModelPolicyPatch,
+  type PermissionPosture,
   type Stream,
   type StreamCreateInput,
   type StreamPrincipal,
+  THREAD_BODY_MAX_CHARS,
+  type ThreadAnchor,
   type ThreadAuthor,
   type ThreadEntry,
   type ThreadEntryKind,
+  type ThreadOp,
+  applyModelPolicyPatch,
+  chatThreadOpsOf,
+  liveChildrenOf,
+  nodeRole,
+  quoteThreadBody,
   threadBodyMaxFor,
   ulid,
   validateStreamCreateInput,
@@ -35,6 +46,14 @@ export interface ThreadAppendInput {
   kind: ThreadEntryKind;
   body: string;
   ref?: string;
+  /** T347: written for the agent; hidden from the cockpit's thread view. */
+  agent_only?: true;
+  /** T503 (D60): the chat thread the line is in (the store checks it names one on the node). */
+  thread?: string;
+  /** T503 (D64): this line starts a thread on that turn (or passage): its own `ts` names it. */
+  anchor?: ThreadAnchor;
+  /** T504 (D65): this line records a change to the chat's threads (yours: a human event). */
+  op?: ThreadOp;
 }
 
 export interface ThreadPageOptions {
@@ -96,9 +115,48 @@ export function threadAuthorFor(principal: StreamPrincipal, sessionId?: string):
   return `agent:${sessionId}`;
 }
 
+/** T333: a move D34 refuses (-32602 at the RPC edge, 400 over HTTP). */
+export class NodeMoveError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NodeMoveError';
+  }
+}
+
+/** T333: what a move asks of plans and contracts (read lazily; no import cycle). */
+export interface MoveCoordination {
+  /** True while `node`'s plan is a draft awaiting approval. */
+  planAwaitingApproval(node: string): boolean;
+  /** Where `parent`'s plan or contracts still name `child` ("plan v2", "contract C-…"). */
+  namedIn(parent: string, child: string): string[];
+}
+
+/** T361: a Delete or Restore the tree doesn't allow (400 over HTTP). */
+export class NodeArchiveError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NodeArchiveError';
+  }
+}
+
 export interface StreamServiceOptions {
   /** T244: after each written update (the event producers). Awaited; a throw is logged, never a failed update. */
   onUpdated?: (before: Stream, after: Stream) => void | Promise<void>;
+  /** T333: consulted by `move`. */
+  coordination?: MoveCoordination;
+  /**
+   * T361: after a child is created, moved, closed, archived or restored:
+   * the parents whose derived role may have changed (the attach service
+   * restarts a live agent whose role no longer fits). Awaited; a throw is
+   * logged, never a failed write.
+   */
+  onTreeChanged?: (nodes: readonly string[]) => void | Promise<void>;
+  /**
+   * T504 (§7): a chat thread's lines as the cockpit shows them (by field,
+   * by cause, after moves), for Promote to tangent's seed. Without it, the
+   * lines that name the thread (and the ones moved into it).
+   */
+  threadLines?: (node: string, thread: string) => readonly ThreadEntry[] | undefined;
 }
 
 export class StreamService {
@@ -147,6 +205,17 @@ export class StreamService {
         'a project is required: pass "project" (or a parent that belongs to one)',
       );
     }
+    if (input.seed_line !== undefined && input.seed_thread !== undefined) {
+      throw new StreamProjectError(
+        'a tangent branches off a line (seed_line) or a thread (seed_thread), not both',
+      );
+    }
+    const seed = input.seed_line === undefined ? undefined : this.seedFor(input, parent);
+    // T504 (§7): Promote to tangent: the thread's passage and lines, quoted.
+    const seedThread =
+      input.seed_thread === undefined
+        ? undefined
+        : this.seedThreadFor(principal, input.seed_thread, input, parent);
     if (input.helper_of !== undefined && input.helper_of !== parent) {
       throw new StreamProjectError('helper_of must name the parent node');
     }
@@ -169,22 +238,150 @@ export class StreamService {
       if (entry === undefined) throw new UnknownRepoError(repo, Object.keys(repos).sort());
       assertRepoHasCommits(repo, entry);
     }
+    // T478: a part closes itself when its goal is met if its parent does, unless it says.
+    const autoClose =
+      input.auto_close ??
+      (parent !== undefined && this.store.getStream(parent).auto_close === true ? true : undefined);
     const now = new Date().toISOString();
     const stream: Stream = {
       id: ulid(),
       title: input.title,
-      goal: input.goal,
+      ...(input.goal !== undefined ? { goal: input.goal } : {}),
       ...(parent !== undefined ? { parent } : {}),
       ...(repo !== undefined ? { repo } : {}),
       ...(project !== undefined ? { project } : {}),
       ...(input.labels !== undefined ? { labels: input.labels } : {}),
       ...(input.helper_of !== undefined ? { helper_of: input.helper_of } : {}),
+      ...(autoClose === true ? { auto_close: true } : {}),
       created_at: now,
       agent: { status: 'idle', updated_at: now },
       human: { status: 'open' },
       sessions: [],
     };
-    return this.insert(principal, stream);
+    const created = await this.insert(principal, stream);
+    if (seed !== undefined && parent !== undefined) {
+      await this.appendThread(principal, created.id, { kind: 'event', body: seed, ref: parent });
+      await this.appendThread(principal, parent, {
+        kind: 'event',
+        body: `tangent branched off line ${String(input.seed_line)}: ${created.title}`.slice(
+          0,
+          800,
+        ),
+        ref: created.id,
+      });
+    }
+    if (seedThread !== undefined && parent !== undefined) {
+      for (const body of seedThread.bodies) {
+        await this.appendThread(principal, created.id, { kind: 'event', body, ref: parent });
+      }
+      // The thread in the parent links to its tangent (recorded: a human event).
+      await this.appendThread(principal, parent, {
+        kind: 'event',
+        body: `promoted the thread on ${seedThread.on} to a tangent: ${created.title}`.slice(
+          0,
+          THREAD_BODY_MAX_CHARS,
+        ),
+        ref: created.id,
+        op: { type: 'promote', thread: seedThread.thread, node: created.id },
+      });
+    }
+    await this.treeChanged([parent]);
+    return created;
+  }
+
+  /**
+   * T504 (D65, design/chat-threads.md §7): Promote to tangent's opening
+   * lines: what the thread is on (its passage, quoted), then each of its
+   * lines, quoted, with who wrote it. As `seedFor`, only a conversation
+   * branches off; and only you promote a thread.
+   */
+  private seedThreadFor(
+    principal: StreamPrincipal,
+    thread: string,
+    input: StreamCreateInput,
+    parent: string | undefined,
+  ): { thread: string; on: string; bodies: string[] } {
+    if (principal !== 'human') throw new StreamProjectError('only the operator promotes a thread');
+    if (parent === undefined || input.repo !== undefined || input.helper_of !== undefined) {
+      throw new StreamProjectError('seed_thread needs a parent, and a tangent has no repo');
+    }
+    const all = this.store.listStreams();
+    const host = this.store.getStream(parent);
+    const role = nodeRole(host, liveChildrenOf(parent, all), all);
+    if (role !== 'conversation') {
+      throw new StreamProjectError(`only a conversation branches off; ${host.title} is ${role}`);
+    }
+    const lines = this.store.readThread(parent);
+    const start = lines.find((l) => l.ts === thread && l.anchor !== undefined);
+    if (start?.anchor === undefined) {
+      throw new StreamProjectError(`seed_thread ${thread}: no such thread on ${parent}`);
+    }
+    const ops = chatThreadOpsOf(lines);
+    if (ops.archived.has(thread)) {
+      throw new StreamProjectError('that thread is archived; restore it to promote it');
+    }
+    const anchor = start.anchor;
+    const turn = lines.find((l) => l.ts === anchor.entry);
+    const quote = (text: string, room: number) =>
+      (text.length > room ? `${text.slice(0, room - 1)}…` : text).replace(/^/gm, '> ');
+    const on =
+      anchor.quote !== undefined
+        ? JSON.stringify(quoteThreadBody(anchor.quote, 120))
+        : `a message (${who(turn?.by ?? 'daemon')})`;
+    const head = `Promoted from a thread on ${host.title.slice(0, 120)}, on ${
+      anchor.quote !== undefined ? 'this passage' : 'this message'
+    } (${who(turn?.by ?? 'daemon')}):\n\n`;
+    const bodies = [
+      `${head}${quote(anchor.quote ?? turn?.body ?? '', THREAD_BODY_MAX_CHARS - head.length - 40)}`.slice(
+        0,
+        THREAD_BODY_MAX_CHARS,
+      ),
+    ];
+    const members =
+      this.options.threadLines?.(parent, thread) ??
+      lines.filter(
+        (l) =>
+          l.op === undefined &&
+          l.agent_only !== true &&
+          (ops.moves.get(l.ts)?.to ?? l.thread) === thread,
+      );
+    for (const line of members.slice(-PROMOTE_SEED_LINES_MAX)) {
+      const lead = `${who(line.by)} wrote in the thread:\n\n`;
+      bodies.push(
+        `${lead}${quote(line.body, THREAD_BODY_MAX_CHARS - lead.length - 40)}`.slice(
+          0,
+          THREAD_BODY_MAX_CHARS,
+        ),
+      );
+    }
+    return { thread, on, bodies };
+  }
+
+  /**
+   * T332 (D33): a tangent's opening line — the parent's line `seed_line`,
+   * quoted. Only a conversation branches off, and the tangent is one too.
+   */
+  private seedFor(input: StreamCreateInput, parent: string | undefined): string {
+    if (parent === undefined || input.repo !== undefined || input.helper_of !== undefined) {
+      throw new StreamProjectError('seed_line needs a parent, and a tangent has no repo');
+    }
+    const all = this.store.listStreams();
+    const host = this.store.getStream(parent);
+    const role = nodeRole(host, liveChildrenOf(parent, all), all);
+    if (role !== 'conversation') {
+      throw new StreamProjectError(`only a conversation branches off; ${host.title} is ${role}`);
+    }
+    const line = this.store.readThread(parent)[input.seed_line ?? -1];
+    if (line === undefined) {
+      throw new StreamProjectError(
+        `seed_line ${String(input.seed_line)}: no such line on ${parent}`,
+      );
+    }
+    const who = line.by === 'human' ? 'you' : line.by.startsWith('agent:') ? 'its agent' : line.by;
+    const head = `Branched off ${host.title.slice(0, 120)}, from this line (${who}):\n\n`;
+    const room = THREAD_BODY_MAX_CHARS - head.length - 3;
+    const text = line.body.length > room ? `${line.body.slice(0, room - 1)}…` : line.body;
+    return `${head}${text.replace(/^/gm, '> ')}`.slice(0, THREAD_BODY_MAX_CHARS);
   }
 
   /** A project's root node (T200/T201): no parent, carries the project id. */
@@ -283,7 +480,129 @@ export class StreamService {
     if (note !== undefined) {
       await this.appendThread(principal, id, { kind: 'line', body: `closed: ${note}` });
     }
+    await this.treeChanged([closed.parent]);
     return closed;
+  }
+
+  /**
+   * T471: closed means inactive, not read-only. Reopens a closed node on the
+   * same branch and worktree; its next message (or Reopen) wakes its agent.
+   * A merged or deleted node is not reopened.
+   */
+  async reopen(principal: StreamPrincipal, id: string): Promise<Stream> {
+    const before = this.get(id);
+    if (before.human.status !== 'closed') return before;
+    if (before.archived === true) {
+      throw new NodeArchiveError(`${before.title} is in the trash; restore it first`);
+    }
+    const reopened = await this.update(principal, id, { human: { status: 'open' } });
+    await this.appendThread(principal, id, { kind: 'event', body: 'reopened' });
+    await this.treeChanged([reopened.parent]);
+    return reopened;
+  }
+
+  /**
+   * T463: switches knowledge item `item` off (or back on) for this node
+   * alone, as the operator. Its agent is told on the thread; the hook, the
+   * brief and delivery read the node's `rules_off` from the next call.
+   */
+  async setRuleOn(id: string, item: KnowledgeItem, on: boolean): Promise<Stream> {
+    const before = this.get(id);
+    const off = new Set(before.rules_off ?? []);
+    if (off.has(item.id) === !on) return before;
+    if (on) off.delete(item.id);
+    else off.add(item.id);
+    const after = await this.update('human', id, { rules_off: [...off] });
+    const name = item.name ?? item.text;
+    const label = `“${name.length > 80 ? `${name.slice(0, 79)}…` : name}”`;
+    await this.appendThread('daemon', id, {
+      kind: 'event',
+      body: on
+        ? `rule on here: ${label} applies to this node again`
+        : `rule off here: ${label} no longer applies to this node (the operator turned it off)`,
+    });
+    return after;
+  }
+
+  /**
+   * T463: this node's permission posture (Trusted or Ask), or `null` to
+   * inherit its project's (or the home's) again. A thread line says so.
+   */
+  async setPermissions(id: string, posture: PermissionPosture | null): Promise<Stream> {
+    const before = this.get(id);
+    if ((before.permissions ?? null) === posture) return before;
+    const after = await this.update('human', id, { permissions: posture });
+    await this.appendThread('daemon', id, {
+      kind: 'event',
+      body:
+        posture === 'trusted'
+          ? 'permissions here: Trusted (reads any path without asking; never the agile home or credentials)'
+          : posture === 'ask'
+            ? 'permissions here: Ask (a read outside the registered repos asks the operator first)'
+            : "permissions here: the project's setting again",
+    });
+    return after;
+  }
+
+  /**
+   * T482: this node's model choice, field by field (`null` inherits again).
+   * The operator's alone: written as `human`, so the store refuses the same
+   * write from an agent, a coordinator or the Director. It applies at the
+   * node's next routed pick, never to a model already running (D55).
+   */
+  async setModelPolicy(id: string, patch: ModelPolicyPatch): Promise<Stream> {
+    const before = this.get(id);
+    const own = applyModelPolicyPatch(before.human.model_policy, patch);
+    if (JSON.stringify(own) === JSON.stringify(before.human.model_policy ?? {})) return before;
+    const after = await this.store.updateStream('human', id, (s) => {
+      const { model_policy: _drop, ...human } = s.human;
+      return {
+        ...s,
+        human: Object.keys(own).length > 0 ? { ...human, model_policy: own } : human,
+      };
+    });
+    const changed = Object.keys(patch).map((field) => field.replace(/_/g, ' '));
+    await this.appendThread('daemon', id, {
+      kind: 'event',
+      body: `model choice here: ${changed.join(', ')} changed by the operator; it applies at the next start that picks a model`,
+    });
+    return after;
+  }
+
+  /**
+   * T482 (D55): "Let the policy choose again": the node's kept pick is set
+   * aside, and its agent's next start makes a routed pick. The daemon clears
+   * the mark at that start.
+   */
+  async chooseModelAgain(id: string): Promise<Stream> {
+    const before = this.get(id);
+    if (before.human.choose_again === true) return before;
+    const after = await this.store.updateStream('human', id, (s) => ({
+      ...s,
+      human: { ...s.human, choose_again: true },
+    }));
+    await this.appendThread('daemon', id, {
+      kind: 'event',
+      body: 'the operator asked the model policy to choose again: the next start of this node’s agent picks its model afresh',
+    });
+    return after;
+  }
+
+  /**
+   * T478: this node closes itself when its goal is met (on), or waits for
+   * you (off). The operator's; its agent is told on the thread.
+   */
+  async setAutoClose(id: string, on: boolean): Promise<Stream> {
+    const before = this.get(id);
+    if ((before.auto_close === true) === on) return before;
+    const after = await this.update('human', id, { auto_close: on ? true : null });
+    await this.appendThread('daemon', id, {
+      kind: 'event',
+      body: on
+        ? 'auto-close on: this node closes itself when its goal is met and there is nothing to merge'
+        : 'auto-close off: this node stays open until you close it',
+    });
+    return after;
   }
 
   /**
@@ -311,6 +630,112 @@ export class StreamService {
     return updated;
   }
 
+  /** A project by name for a message (T371); its id when it can't be read. */
+  private projectName(project: string | undefined): string {
+    if (project === undefined) return 'no project';
+    try {
+      return this.store.getProject(project).name;
+    } catch {
+      return project;
+    }
+  }
+
+  /**
+   * T333 (D34): moves `id` under `target` — a node, or a project id for its
+   * root — in the same project. Refused: a project root, into its own
+   * subtree, across projects, and while the old or the new parent's plan
+   * awaits approval. Only `parent` changes: roles are derived, so they
+   * follow; a work node keeps its branch and worktree, and sessions are not
+   * touched. The node and both parents get a thread line; the old parent's
+   * line names any plan or contract of its that still names the node.
+   * Moving to the current parent is a no-op.
+   */
+  /**
+   * T474: places `id` just before or just after `anchor`, among `anchor`'s
+   * siblings; a node under another parent moves there first (`move`, with
+   * its checks). The siblings are renumbered 0, 1, 2… in their new order;
+   * only those whose place changed are written.
+   */
+  async reorder(id: string, anchor: string, side: 'before' | 'after'): Promise<Stream> {
+    if (id === anchor) return this.get(id);
+    const target = this.get(anchor);
+    if (target.parent === undefined) {
+      throw new NodeMoveError(
+        `${target.title} is a project root; nodes sit under it, not beside it`,
+      );
+    }
+    if (this.get(id).parent !== target.parent) await this.move(id, target.parent);
+    const siblings = this.list()
+      .filter((s) => s.parent === target.parent && s.id !== id)
+      .map((s, i) => ({ s, i }))
+      .sort(
+        (a, b) =>
+          (a.s.order ?? Number.MAX_SAFE_INTEGER) - (b.s.order ?? Number.MAX_SAFE_INTEGER) ||
+          a.i - b.i,
+      )
+      .map(({ s }) => s);
+    const at = siblings.findIndex((s) => s.id === anchor) + (side === 'after' ? 1 : 0);
+    const ordered = [...siblings.slice(0, at), this.get(id), ...siblings.slice(at)];
+    for (const [order, s] of ordered.entries()) {
+      if (s.order !== order) await this.update('human', s.id, { order });
+    }
+    return this.get(id);
+  }
+
+  async move(id: string, target: string): Promise<Stream> {
+    const node = this.get(id);
+    const from = node.parent;
+    if (from === undefined) {
+      throw new NodeMoveError(`${node.title} is a project root; it cannot move`);
+    }
+    let to = target;
+    if (target.startsWith('P-')) {
+      try {
+        to = this.store.getProject(target).root;
+      } catch {
+        throw new NodeMoveError(`unknown project: ${target}`);
+      }
+    } else if (!this.store.hasStream(target)) {
+      throw new UnknownParentStreamError(target);
+    }
+    if (to === from) return node;
+    const parent = this.get(to);
+    if (parent.project !== node.project) {
+      throw new NodeMoveError(
+        `${parent.title} is in ${this.projectName(parent.project)}, ${node.title} in ${this.projectName(node.project)}: a node moves only within its project`,
+      );
+    }
+    for (let cur: string | undefined = to; cur !== undefined; cur = this.get(cur).parent) {
+      if (cur === id) throw new NodeMoveError(`${parent.title} is inside ${node.title}'s subtree`);
+    }
+    for (const p of [from, to]) {
+      if (this.options.coordination?.planAwaitingApproval(p) === true) {
+        throw new NodeMoveError(
+          `${this.get(p).title}'s plan is awaiting approval; approve it before moving nodes`,
+        );
+      }
+    }
+    const old = this.get(from);
+    const moved = await this.update('human', id, { parent: to });
+    const stale = this.options.coordination?.namedIn(from, id) ?? [];
+    await this.appendThread('human', from, {
+      kind: 'event',
+      body: `moved away: ${node.title} (${id}) is now under ${parent.title}${
+        stale.length > 0 ? `; still named in this node's ${stale.join(', ')}` : ''
+      }`,
+    });
+    await this.appendThread('human', to, {
+      kind: 'event',
+      body: `moved here: ${node.title} (${id}) from ${old.title}`,
+    });
+    await this.appendThread('human', id, {
+      kind: 'event',
+      body: `moved from ${old.title} to ${parent.title}`,
+    });
+    await this.treeChanged([from, to]);
+    return moved;
+  }
+
   /** T282: the node's coordinator autonomy override; `null` inherits the project's. */
   async setAutonomy(id: string, autonomy: Stream['autonomy'] | null): Promise<Stream> {
     const updated = await this.update('human', id, { autonomy });
@@ -323,7 +748,130 @@ export class StreamService {
 
   /** Sets the `archived` flag (nothing moves on disk); `list` hides it. Human status is kept. */
   async archive(principal: StreamPrincipal, id: string): Promise<Stream> {
-    return this.update(principal, id, { archived: true }, { kind: 'stream_archived' });
+    const archived = await this.update(
+      principal,
+      id,
+      { archived: true },
+      { kind: 'stream_archived' },
+    );
+    await this.treeChanged([archived.parent]);
+    return archived;
+  }
+
+  /** T361: `id` and every descendant, archived or not, each parent before its children. */
+  subtree(id: string): Stream[] {
+    const children = new Map<string, Stream[]>();
+    for (const s of this.store.listStreams()) {
+      if (s.parent !== undefined) children.set(s.parent, [...(children.get(s.parent) ?? []), s]);
+    }
+    const out = [this.get(id)];
+    const seen = new Set([id]);
+    for (let i = 0; i < out.length; i++) {
+      for (const child of children.get(out[i]?.id ?? '') ?? []) {
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        out.push(child);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * T361: the cockpit's Delete. `stop` runs first on the whole subtree (no
+   * agent works on a hidden node); then the node and every descendant not
+   * archived yet are archived under one `archive_id`, leaves first. D13:
+   * nothing moves on disk, and worktrees and branches stay, so Restore
+   * loses nothing. A project root is refused: its project is archived.
+   * Returns what this delete archived, the node first.
+   */
+  async archiveTree(
+    principal: StreamPrincipal,
+    id: string,
+    stop?: (ids: readonly string[]) => Promise<unknown>,
+  ): Promise<Stream[]> {
+    const node = this.get(id);
+    if (node.parent === undefined) {
+      throw new NodeArchiveError("a project root can't be deleted; archive the project instead");
+    }
+    if (node.archived === true) throw new NodeArchiveError(`${node.title} is already deleted`);
+    const tree = this.subtree(id);
+    await stop?.(tree.map((s) => s.id));
+    const archiveId = ulid();
+    const archived: Stream[] = [];
+    for (const s of [...tree].reverse()) {
+      if (s.archived === true) continue;
+      const patch = { archived: true as const, archive_id: archiveId };
+      archived.unshift(await this.update(principal, s.id, patch, { kind: 'stream_archived' }));
+    }
+    const below = belowText(archived.length - 1);
+    await this.appendThread(principal, id, { kind: 'event', body: `deleted${below}` });
+    await this.appendThread(principal, node.parent, {
+      kind: 'event',
+      body: `deleted: ${node.title} (${id})${below}`.slice(0, 800),
+    });
+    await this.treeChanged([node.parent]);
+    return archived;
+  }
+
+  /**
+   * T361: Restore. Brings back the node and the descendants its delete
+   * archived (the same `archive_id`); nodes deleted on their own before it
+   * stay deleted. Agents are not started. T471: the node itself comes back
+   * open, ready to resume, even if it was closed (a merged one stays merged). Refused under a deleted parent
+   * (restore that first) and for a project root (it comes back with its project).
+   * Returns what was restored, the node first.
+   */
+  async unarchiveTree(principal: StreamPrincipal, id: string): Promise<Stream[]> {
+    const node = this.get(id);
+    if (node.archived !== true) throw new NodeArchiveError(`${node.title} is not deleted`);
+    if (node.parent === undefined) {
+      throw new NodeArchiveError('a project root comes back with its project, not on its own');
+    }
+    const parent = this.get(node.parent);
+    if (parent.archived === true) {
+      throw new NodeArchiveError(`${parent.title} is deleted too; restore it first`);
+    }
+    const batch = node.archive_id;
+    const all = this.store.listStreams();
+    const restore = [node];
+    for (let i = 0; i < restore.length; i++) {
+      const at = restore[i]?.id;
+      for (const s of all) {
+        if (s.parent !== at || s.archived !== true || batch === undefined) continue;
+        if (s.archive_id === batch) restore.push(s);
+      }
+    }
+    const restored: Stream[] = [];
+    for (const s of restore) {
+      const reopen = s.id === id && s.human.status === 'closed';
+      restored.push(
+        await this.update(principal, s.id, {
+          archived: null,
+          archive_id: null,
+          ...(reopen ? { human: { status: 'open' as const } } : {}),
+        }),
+      );
+    }
+    const below = belowText(restored.length - 1);
+    await this.appendThread(principal, id, { kind: 'event', body: `restored${below}` });
+    await this.appendThread(principal, parent.id, {
+      kind: 'event',
+      body: `restored: ${node.title} (${id})${below}`.slice(0, 800),
+    });
+    await this.treeChanged([parent.id]);
+    return restored;
+  }
+
+  /** T361: tells `onTreeChanged` which parents changed; its failure never fails the write. */
+  private async treeChanged(nodes: readonly (string | undefined)[]): Promise<void> {
+    const hook = this.options.onTreeChanged;
+    const ids = [...new Set(nodes.filter((n): n is string => n !== undefined))];
+    if (hook === undefined || ids.length === 0) return;
+    try {
+      await hook(ids);
+    } catch (err) {
+      console.error(`role follow-up for ${ids.join(', ')} failed:`, err);
+    }
   }
 
   /** One thread line. Over the cap is rejected: a human should be told, not truncated. */
@@ -340,12 +888,23 @@ export class StreamService {
         `thread body is ${input.body.length} characters; the cap is ${max} — write the detail to a file and pass it as "ref"`,
       );
     }
+    // T503: a line's `ts` names it (a thread's anchor and id are one), so each comes after the
+    // node's last line and after what it is in or on: the same millisecond is not after.
+    const ts = after([this.store.threadUpdatedAt(id), input.anchor?.entry ?? input.thread]);
     return this.store.appendThreadEntry(id, {
-      ts: new Date().toISOString(),
+      ts,
       by,
       kind: input.kind,
       body: input.body,
       ...(input.ref !== undefined ? { ref: input.ref } : {}),
+      ...(input.agent_only ? { agent_only: true } : {}),
+      ...(input.op !== undefined ? { op: input.op } : {}),
+      // T503: a thread's first reply names itself; the store checks both against the node.
+      ...(input.anchor !== undefined
+        ? { thread: ts, anchor: input.anchor }
+        : input.thread !== undefined
+          ? { thread: input.thread }
+          : {}),
     });
   }
 
@@ -371,17 +930,50 @@ export class StreamService {
   }
 }
 
+/** T504: how many of a promoted thread's lines its tangent opens with (the newest). */
+export const PROMOTE_SEED_LINES_MAX = 30;
+
+/** Who wrote a line, as a tangent's seed says it. */
+function who(by: string): string {
+  return by === 'human' ? 'you' : by.startsWith('agent:') ? 'its agent' : by;
+}
+
+/** Now, or a millisecond past the latest of `earlier` (ISO times) when now is not later. */
+function after(earlier: readonly (string | undefined)[]): string {
+  const now = Date.now();
+  let floor = Number.NEGATIVE_INFINITY;
+  for (const at of earlier) {
+    const t = at !== undefined ? Date.parse(at) : Number.NaN;
+    if (!Number.isNaN(t) && t > floor) floor = t;
+  }
+  return new Date(now > floor ? now : floor + 1).toISOString();
+}
+
 /** A partial stream write. `agent`/`human` merge; everything else replaces. */
 export interface StreamPatch {
   title?: string;
   goal?: string;
+  /** T441: a conversation's question, kept when its goal first changes. */
+  question?: string;
   parent?: string;
   repo?: string;
   branch?: string;
   worktree?: string;
-  archived?: true;
+  /** T361: `null` clears it (Restore), with `archive_id`. */
+  archived?: true | null;
+  archive_id?: string | null;
   /** `'off'` opts the stream out of the classifier tier (§6.4); `null` clears the opt-out. */
   classifier?: 'off' | null;
+  /** T463: the knowledge items switched off for this node; `null` (or empty) clears it. */
+  rules_off?: string[] | null;
+  /** T463: this node's posture; `null` clears it, so the project's (or the home's) applies. */
+  permissions?: Stream['permissions'] | null;
+  /** T478: `null` (or `false`) clears it: the node waits for you to close it. */
+  auto_close?: boolean | null;
+  /** T474: its place among its siblings. */
+  order?: number;
+  /** T473: the repo, branch and worktree a node went back to talk from; `null` clears it. */
+  parked?: Stream['parked'] | null;
   /** T176: `null` clears it. */
   land_conflict?: Stream['land_conflict'] | null;
   /** Node fields (§14.2, T201). `delivery_state`/`touched` pass the store only for the daemon. */
@@ -401,7 +993,20 @@ export interface StreamPatch {
 }
 
 function applyPatch(before: Stream, patch: StreamPatch): Stream {
-  const { agent, human, classifier, land_conflict, autonomy, ...rest } = patch;
+  const {
+    agent,
+    human,
+    classifier,
+    land_conflict,
+    autonomy,
+    archived,
+    archive_id,
+    rules_off,
+    permissions,
+    auto_close,
+    parked,
+    ...rest
+  } = patch;
   // `classifier` is tri-state (absent, `'off'`, `null` = remove), rebuilt
   // so a cleared opt-out leaves no key in the YAML.
   const { classifier: existing, ...withoutOptOut } = before;
@@ -411,10 +1016,22 @@ function applyPatch(before: Stream, patch: StreamPatch): Stream {
     ...(optOut !== undefined ? { classifier: optOut } : {}),
     ...rest,
   };
+  if (parked === null) Reflect.deleteProperty(next, 'parked');
+  else if (parked !== undefined) next.parked = parked;
+  if (auto_close === null || auto_close === false) Reflect.deleteProperty(next, 'auto_close');
+  else if (auto_close !== undefined) next.auto_close = auto_close;
+  if (permissions === null) Reflect.deleteProperty(next, 'permissions');
+  else if (permissions !== undefined) next.permissions = permissions;
+  if (rules_off === null || rules_off?.length === 0) Reflect.deleteProperty(next, 'rules_off');
+  else if (rules_off !== undefined) next.rules_off = [...new Set(rules_off)];
   if (land_conflict === null) Reflect.deleteProperty(next, 'land_conflict');
   else if (land_conflict !== undefined) next.land_conflict = land_conflict;
   if (autonomy === null) Reflect.deleteProperty(next, 'autonomy');
   else if (autonomy !== undefined) next.autonomy = autonomy;
+  if (archived === null) Reflect.deleteProperty(next, 'archived');
+  else if (archived !== undefined) next.archived = archived;
+  if (archive_id === null) Reflect.deleteProperty(next, 'archive_id');
+  else if (archive_id !== undefined) next.archive_id = archive_id;
   if (agent !== undefined) {
     // Any agent-half change is a fresh observation: stamp `updated_at` unless given.
     next.agent = { ...before.agent, updated_at: new Date().toISOString(), ...agent };
@@ -423,4 +1040,9 @@ function applyPatch(before: Stream, patch: StreamPatch): Stream {
     next.human = { ...before.human, ...human };
   }
   return next;
+}
+
+/** " with 2 nodes below it", or nothing. */
+function belowText(n: number): string {
+  return n > 0 ? ` with ${n} node${n === 1 ? '' : 's'} below it` : '';
 }

@@ -12,7 +12,11 @@
 import { z } from 'zod';
 import { DIRECTOR_NODE } from './director';
 import { ULID_PATTERN, UlidSchema } from './ids';
-import { ProjectIdSchema } from './project';
+import { EscalationTriggerSchema } from './model-escalation';
+import { AutonomyProposalIdSchema, CoordinatorActionSchema } from './plan';
+import { AutonomySchema, ProjectIdSchema } from './project';
+import { QuestionIdSchema } from './question';
+import { ChatThreadIdSchema } from './stream';
 
 export const ROUTED_EVENT_STRING_MAX = 800;
 export const ROUTED_EVENT_PAYLOAD_MAX = 4096;
@@ -53,13 +57,39 @@ const PrNumber = z.number().int().positive();
 
 /** One strict payload schema per event type (§15 catalog). */
 export const ROUTED_EVENT_PAYLOADS = {
-  human_line: z.object({ body: NonEmpty }),
+  /**
+   * T502 (D62): `question` when the line is your reply in a question's
+   * thread (typed in its card): its id and text, so the agent is told what
+   * the reply is about and what it may settle.
+   */
+  human_line: z.object({
+    body: NonEmpty,
+    question: z.object({ id: QuestionIdSchema, text: NonEmpty }).strict().optional(),
+    /**
+     * T503 (D60, design/chat-threads.md §3a, §4): your reply in a chat
+     * thread: its id, the turn it is on (`on`, its `ts`, and who wrote it:
+     * `agent` for the agent's own) and the passage it quotes, so the agent
+     * is told what the reply is about, and a turn it wakes posts there.
+     */
+    thread: z
+      .object({
+        id: ChatThreadIdSchema,
+        on: NonEmpty,
+        of: z.enum(['agent', 'human', 'other']),
+        quote: Str.optional(),
+      })
+      .strict()
+      .optional(),
+  }),
   answer: z.object({ question: NonEmpty, prompt: Str.optional(), answer: NonEmpty }),
   child_status: z.object({
     child: UlidSchema,
     title: Str,
     status: z.enum(['done', 'blocked', 'question']),
     progress: Str.optional(),
+    /** T497: on `question`, the child's open question (capped) and who it asks. */
+    question: Str.optional(),
+    asks: z.enum(['you', 'operator']).optional(),
   }),
   child_delivered: z.object({ child: UlidSchema, title: Str, repo: NonEmpty, sha: NonEmpty }),
   pr_review: z.object({
@@ -100,6 +130,8 @@ export const ROUTED_EVENT_PAYLOADS = {
   }),
   contract_proposal: z.object({
     contract: NonEmpty,
+    /** T446: the proposal to decide (`decide_contract`); absent in events written before it. */
+    proposal: NonEmpty.optional(),
     children: z.array(UlidSchema).min(1).max(LIST_MAX),
     body: NonEmpty,
     reason: Str,
@@ -109,6 +141,8 @@ export const ROUTED_EVENT_PAYLOADS = {
     kind: NonEmpty,
     text: NonEmpty,
     enforcement: NonEmpty,
+    /** T453 (Q25): the node the item came from; the only conversation its accept wakes. */
+    source: UlidSchema.optional(),
   }),
   dependency_satisfied: z.object({
     node: UlidSchema,
@@ -136,6 +170,83 @@ export const ROUTED_EVENT_PAYLOADS = {
   plan_changed: z.object({ summary: NonEmpty, paths: Files }),
   external_changed: z.object({ key: NonEmpty, summary: NonEmpty }),
   director_request: z.object({ body: NonEmpty }),
+  /**
+   * T332 (D33): a finished tangent's summary to its parent conversation.
+   * `summary` is the tangent agent's own words, capped: data, not instructions.
+   */
+  tangent_summary: z.object({ child: UlidSchema, title: Str, summary: NonEmpty }),
+  /**
+   * T446 (audit r7 #7): a structural change a coordinator or the Director
+   * applied on its own at its autonomy level, or a human applied from a
+   * held proposal. `summary` is what changed, in words, without who did it
+   * ("Add an RSS field for scheduled posts (web)"); `nodes` are the nodes it
+   * created, for links and Undo. A record, not news: see `RECORD_ONLY_EVENT_TYPES`.
+   */
+  autonomy_applied: z.object({
+    principal: z.enum(['coordinator', 'director', 'human']),
+    level: AutonomySchema,
+    action: CoordinatorActionSchema,
+    summary: NonEmpty,
+    nodes: z.array(UlidSchema).max(LIST_MAX),
+    proposal: AutonomyProposalIdSchema.optional(),
+  }),
+  /**
+   * T456 (D43 follow-up): a node's agent crashed and the daemon started
+   * another on the same node: the same vendor again (`retry`) or the next
+   * on the fallback list (`switch`). `from`/`to` are vendor ids, `model` the
+   * new session's; `reason` is the failure in the vendor's words. A record,
+   * not news: see `RECORD_ONLY_EVENT_TYPES`.
+   */
+  agent_restarted: z.object({
+    action: z.enum(['retry', 'switch']),
+    from: NonEmpty,
+    to: NonEmpty,
+    model: Str.optional(),
+    reason: Str,
+  }),
+  /**
+   * T481 (D50): a vendor's CLI was updated (Auto in the background, or an
+   * Update you pressed). `harness` is the CLI's id (`HARNESS_IDS`), `label`
+   * its name; `summary` says it in words ("Updated Claude Code to 2.3.1").
+   * It belongs to no node, so nobody is routed it. A record, not news: see
+   * `RECORD_ONLY_EVENT_TYPES`.
+   */
+  harness_updated: z.object({
+    harness: NonEmpty,
+    label: NonEmpty,
+    from: Str.optional(),
+    to: Str.optional(),
+    summary: NonEmpty,
+  }),
+  /**
+   * T484 (design/model-routing.md §6): a node's model stepped up the ladder
+   * at its agent's start (`up`), or a trigger found it at the top of the
+   * ladder (or under Strongest first) and it went to Needs me (`stuck`).
+   * `from`/`to` are models in words ("Claude Sonnet 5.5 · high"); `reason` is
+   * the trigger's, in words. A record, not news: see `RECORD_ONLY_EVENT_TYPES`.
+   */
+  model_escalated: z.object({
+    step: z.enum(['up', 'stuck']),
+    trigger: EscalationTriggerSchema,
+    from: NonEmpty,
+    to: Str.optional(),
+    reason: NonEmpty,
+  }),
+  /**
+   * T504 (D65, design/chat-threads.md §6a): the operator archived a chat
+   * thread on the node (or restored one: `restored`). `on`/`of`/`quote` say
+   * what it is on, as `human_line`'s `thread` does; `withdrawn` are the
+   * questions asked in it that it closed. Told once, and quiet: see
+   * `QUIET_EVENT_TYPES`.
+   */
+  thread_archived: z.object({
+    thread: ChatThreadIdSchema,
+    on: NonEmpty,
+    of: z.enum(['agent', 'human', 'other']),
+    quote: Str.optional(),
+    restored: z.literal(true).optional(),
+    withdrawn: z.array(QuestionIdSchema).max(LIST_MAX).optional(),
+  }),
   /** T262: the ship check held delivery; the findings go back to the worker. */
   ship_findings: z.object({
     source: z.enum(['classifier', 'reviewer']),
@@ -152,6 +263,27 @@ export const RoutedEventTypeSchema = z.enum(
 export type RoutedEventPayload<T extends RoutedEventType> = z.infer<
   (typeof ROUTED_EVENT_PAYLOADS)[T]
 >;
+
+/**
+ * T446: types that are recorded, never delivered: their deliveries are
+ * written `recorded` rather than `pending`, so no digest carries them and no
+ * wake starts for them; they show in Events and each recipient's Activity.
+ */
+export const RECORD_ONLY_EVENT_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEventType>([
+  'autonomy_applied',
+  'agent_restarted',
+  'harness_updated',
+  'model_escalated',
+]);
+
+/**
+ * T504 (D65): types delivered only beside something else: they ride the
+ * next digest (or the brief of the next start), but never start a turn of
+ * their own or wake an agent. An archive notice is not worth a turn.
+ */
+export const QUIET_EVENT_TYPES: ReadonlySet<RoutedEventType> = new Set<RoutedEventType>([
+  'thread_archived',
+]);
 
 const RoutedEventBaseSchema = z
   .object({
@@ -205,7 +337,14 @@ export function validateRoutedEvent(raw: unknown): RoutedEvent {
   return RoutedEventSchema.parse(raw);
 }
 
-export const EVENT_DELIVERY_STATUSES = ['pending', 'delivered', 'superseded', 'expired'] as const;
+/** T446: `recorded` is a record-only event's (`RECORD_ONLY_EVENT_TYPES`): never pending, never sent. */
+export const EVENT_DELIVERY_STATUSES = [
+  'pending',
+  'delivered',
+  'superseded',
+  'expired',
+  'recorded',
+] as const;
 export const EventDeliveryStatusSchema = z.enum(EVENT_DELIVERY_STATUSES);
 export type EventDeliveryStatus = z.infer<typeof EventDeliveryStatusSchema>;
 

@@ -72,6 +72,40 @@ export function assertChildren(
 }
 
 /** Who decided a proposal, in the proposer's words. */
+const cap = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** A node's title for a thread line; its id when it no longer reads. */
+function titleOr(streams: StreamService, id: string): string {
+  try {
+    return streams.get(id).title;
+  } catch {
+    return id;
+  }
+}
+
+/** "A and B" / "A, B and C". */
+function andList(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/**
+ * T446 (audit r7 #6): a contract proposal on its owner's thread, in words:
+ * "Shop · api proposes a change to Key file: <body>. Why: <reason>" — no
+ * proposal id, no "child(ren)", and no double full stop.
+ */
+export function proposalLine(
+  signers: readonly string[],
+  title: string,
+  body: string,
+  reason: string,
+): string {
+  const verb = signers.length === 1 ? 'proposes' : 'propose';
+  const text = body.trim().replace(/[.\s]+$/, '');
+  const why = reason.trim() !== '' ? `. Why: ${reason.trim()}` : '';
+  return `${andList(signers)} ${verb} a change to ${title}: ${text}${why}`.slice(0, 800);
+}
+
 function decider(by: string): string {
   if (by === 'human') return 'the operator';
   if (by.startsWith('agent:')) return 'your coordinator';
@@ -217,11 +251,14 @@ export class ContractService {
       validateContract,
       validateContract({ ...before, proposals: [...(before.proposals ?? []), proposal] }),
     );
+    // T446 (audit r7 #6): in words, by the parts' names; the id travels in the event.
     await streams.appendThread('daemon', before.node, {
       kind: 'proposal',
-      body: `contract ${before.title}: ${signers.length} child(ren) propose (${proposal.id}): ${proposal.body}. Reason: ${proposal.reason}`.slice(
-        0,
-        800,
+      body: proposalLine(
+        signers.map((id) => titleOr(streams, id)),
+        before.title,
+        proposal.body,
+        proposal.reason,
       ),
       ref: contractPath(before.id),
     });
@@ -230,6 +267,7 @@ export class ContractService {
       subject: before.node,
       payload: {
         contract: before.id,
+        proposal: proposal.id,
         children: signers,
         body: proposal.body.slice(0, 200),
         reason: proposal.reason.slice(0, 200),
@@ -256,7 +294,8 @@ export class ContractService {
         proposals: (contract.proposals ?? []).filter((p) => p.id !== id),
       }),
     );
-    const body = `contract ${contract.title}: proposal ${id} rejected by ${by}${
+    const who = by === 'human' ? 'You' : cap(decider(by));
+    const body = `${who} turned down the proposed change to ${contract.title}${
       reason !== '' ? `: ${reason}` : ''
     }`.slice(0, 800);
     for (const node of [contract.node, ...proposal.from]) {

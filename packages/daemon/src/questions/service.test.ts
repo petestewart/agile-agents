@@ -332,3 +332,124 @@ describe('a human reply on the thread answers the asking session (T169)', () => 
     expect(await questions.answerFromThread(ulid(), { body: 'hi', ts: 'now' })).toEqual([]);
   });
 });
+
+describe('T502 (D62): a choice question is its thread', () => {
+  async function choice(text = 'Store amounts how?'): Promise<Question> {
+    return questions.raise({
+      stream: stream.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      session: SESSION,
+      text,
+      options: ['Integer cents', 'Floats'],
+    });
+  }
+
+  test('typing to a choice question is a reply: it stays open, on its thread, waiting on the agent', async () => {
+    const replies: Array<{ id: string; text: string }> = [];
+    questions = new QuestionService(store, streams, {
+      reply: async (question, text) => {
+        replies.push({ id: question.id, text });
+        return streams.appendThread('human', question.stream, {
+          kind: 'line',
+          body: text,
+          ref: `questions/${question.id}.yaml`,
+        });
+      },
+    });
+    const q = await choice();
+    const result = await questions.reply(q.id, { text: '  What does Stripe use?  ', by: 'human' });
+    expect(result.answered).toBeUndefined();
+    expect(result.question.status).toBe('open');
+    expect(result.entry?.ref).toBe(`questions/${q.id}.yaml`);
+    expect(replies).toEqual([{ id: q.id, text: 'What does Stripe use?' }]);
+    // Not waiting on you any more.
+    expect(streams.get(stream.id).human.status).toBe('open');
+  });
+
+  test('with no delivery wired, the reply is still a line in its thread', async () => {
+    const q = await choice();
+    const { entry } = await questions.reply(q.id, { text: 'which is safer?', by: 'human' });
+    const line = store.readThread(stream.id).find((e) => e.ts === entry?.ts);
+    expect(line).toMatchObject({ by: 'human', kind: 'line', ref: `questions/${q.id}.yaml` });
+  });
+
+  test('a question with no choices is answered by what you type, as before', async () => {
+    const delivered: Question[] = [];
+    questions = new QuestionService(store, streams, {
+      deliver: (_s, question) => {
+        delivered.push(question);
+      },
+    });
+    const q = await questions.raise({
+      stream: stream.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      session: SESSION,
+      text: 'comma or semicolon?',
+    });
+    const result = await questions.reply(q.id, { text: 'semicolon', by: 'human' });
+    expect(result.answered).toBe(true);
+    expect(result.question).toMatchObject({ status: 'answered', resolved_as: 'reply' });
+    expect(delivered).toHaveLength(1);
+  });
+
+  test('settle records the agent’s answer as settled, on the thread, and delivers nothing', async () => {
+    const delivered: Question[] = [];
+    questions = new QuestionService(store, streams, {
+      deliver: (_s, question) => {
+        delivered.push(question);
+      },
+    });
+    const q = await choice();
+    await questions.reply(q.id, { text: 'what does Stripe use?', by: 'human' });
+    const settled = await questions.settle(q.id, {
+      answer: 'Integer cents',
+      session: SESSION,
+      stream: stream.id,
+    });
+    expect(settled).toMatchObject({
+      status: 'answered',
+      answer: 'Integer cents',
+      resolved_as: 'settled',
+      answered_by: `agent:${SESSION}`,
+    });
+    const line = store.readThread(stream.id).at(-1);
+    expect(line).toMatchObject({
+      by: `agent:${SESSION}`,
+      kind: 'answer',
+      body: 'Integer cents',
+      ref: `questions/${q.id}.yaml`,
+    });
+    expect(delivered).toEqual([]);
+    expect(eventKinds()).toContain('question_answered');
+    // Twice, or from another node, is refused.
+    await expect(
+      questions.settle(q.id, { answer: 'x', session: SESSION, stream: stream.id }),
+    ).rejects.toBeInstanceOf(QuestionAlreadyAnsweredError);
+    const other = await choice('again?');
+    await expect(
+      questions.settle(other.id, { answer: 'x', session: SESSION, stream: ulid() }),
+    ).rejects.toThrow('not asked on your node');
+  });
+
+  test('asking again after your reply supersedes the earlier question, which carries on under it', async () => {
+    const q = await choice();
+    await questions.reply(q.id, { text: 'neither: tabs?', by: 'human' });
+    const again = await choice('Store amounts how: cents, or decimal strings?');
+    const earlier = questions.get(q.id);
+    expect(earlier).toMatchObject({
+      status: 'answered',
+      resolved_as: 'superseded',
+      superseded_by: again.id,
+    });
+    expect(questions.get(again.id).status).toBe('open');
+    expect(
+      store
+        .readThread(stream.id)
+        .some((e) => e.ref === `questions/${q.id}.yaml` && e.body === 'the agent asked this again'),
+    ).toBe(true);
+    // A question with no reply is left open beside a new one.
+    const third = await choice('and the currency?');
+    expect(questions.get(again.id).status).toBe('open');
+    expect(questions.get(third.id).status).toBe('open');
+  });
+});

@@ -483,6 +483,63 @@ describe("T336 review: only a coordinator's read-only git -C leaves the worktree
   });
 });
 
+describe("T442: a conversation's worker reads other repos with git -C, as a coordinator does", () => {
+  const home = '/home/u/.agile';
+  const ledger = '/home/u/Projects/ledger-lite';
+  const shop = '/home/u/Projects/shop-private';
+  const noEscape = {
+    id: 'K-01J9ESCAPE',
+    name: 'path_deny',
+    enforcement: 'action',
+    status: 'accepted',
+    check: { by: 'pattern', pattern: { kind: 'path_deny', args: { globs: [] } } },
+  } as unknown as KnowledgeItem;
+  // A conversation has no worktree: its session runs in its own scratch dir.
+  const scratch = `${home}/sessions/01J9BBBBBBBBBBBBBBBBBBBBBB`;
+  const bash = (over: Partial<HookDecisionContext>, command: string) =>
+    decidePreToolUse(
+      baseCtx({
+        role: 'worker',
+        worktreePath: scratch,
+        readRoots: [ledger, '/home/u/Projects/agile-test-repo'],
+        hiddenRoots: [shop, home],
+        patternRules: [noEscape],
+        ...over,
+      }),
+      { tool_name: 'Bash', tool_input: { command, description: 'x' } },
+    ).decision;
+  const conversation = (command: string) => bash({ noOwnRepo: true }, command);
+
+  test('read-only git -C into a readable repo is allowed (Pete, LIVE-CHECKLIST 3.2)', () => {
+    expect(conversation(`git -C ${ledger} log --oneline -5`)).toBe('allow');
+    expect(conversation(`git -C ${ledger} status && git -C ${ledger} show HEAD`)).toBe('allow');
+    expect(conversation(`git -C ${ledger} diff main`)).toBe('allow');
+  });
+
+  test('not into a hidden, unregistered or home dir, and never a write or config', () => {
+    for (const command of [
+      `git -C ${shop} log`,
+      `git -C ${home} log`,
+      'git -C /srv/other-repo log',
+      `git -C ${ledger} commit -m x`,
+      `git -C ${ledger} checkout -b x`,
+      `git -C ${ledger} -c alias.log=!touch_x log`,
+      `GIT_PAGER=touch_x git -C ${ledger} log`,
+      `git -C ${ledger} diff --ext-diff`,
+      `git -C ${ledger} log --output=/tmp/x`,
+    ]) {
+      expect([command, conversation(command)]).toEqual([command, 'deny']);
+    }
+  });
+
+  test('a worker on a node with a repo keeps T336: git -C out of its worktree is denied', () => {
+    const worktree = '/home/u/Projects/agile-test-repo/.worktrees/01part';
+    expect(bash({ worktreePath: worktree }, `git -C ${ledger} log --oneline -5`)).toBe('deny');
+    // A reviewer is not a conversation's agent either.
+    expect(bash({ role: 'reviewer', noOwnRepo: true }, `git -C ${ledger} log`)).toBe('deny');
+  });
+});
+
 describe('T291: a coordinator has no network (P20)', () => {
   const web = (role: HookDecisionContext['role'], tool_name: string) =>
     decidePreToolUse(baseCtx({ role }), {

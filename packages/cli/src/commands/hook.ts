@@ -38,8 +38,39 @@
  * decision), so every warning goes to stderr, which Claude's hook contract
  * ignores on exit 0 — free visibility in the vendor's own hook log, zero
  * behavioural change to what the model sees.
+ *
+ * T506: `--vendor codex` is Codex's own `PreToolUse` hook (the daemon's
+ * `.codex/hooks.json`, design/spike-findings.md §C5). The payload goes to
+ * the same `hook.pre_tool_use` marked `agile_vendor: 'codex'` (the daemon
+ * reads Codex's input), and the reply is rendered in Codex's contract: an
+ * allow is exit 0 with nothing on stdout; a deny is exit 2 with the reason
+ * on stderr (the model sees "Command blocked by PreToolUse hook: <reason>").
+ * Every failure is exit 2 too: Codex runs a call whose hook failed with any
+ * other code.
+ *
+ * T511: `--repo <root>` (with `--vendor codex`). Codex reads a worktree's
+ * project hooks from its main repo (spike-findings §C5 round 4), so the
+ * daemon's hook sits at `<root>/.codex/` and also runs for the operator's
+ * own Codex in that repo. With `--repo`, a call whose input `cwd`
+ * (realpath'd where it can be) is not inside `<root>/.worktrees/` is
+ * allowed at once: exit 0, nothing printed, no daemon call. Inside, it is
+ * gated as above, fail-closed. A `cwd` that is missing, not a string or
+ * not absolute counts as inside: it is gated. (T512 keeps this form for
+ * old scripts.)
+ *
+ * T512: the gate is user-level (`$CODEX_HOME/hooks.json`, §C5 round 5), so
+ * it runs for every Codex the operator starts. Its script passes `--home
+ * <home>` and one `--repo <root>` per registered repo (repeatable; read as
+ * given, never split on commas: a path may hold one). With `--home`, a
+ * call is gated when its `cwd` is strictly inside any `<root>/.worktrees/`
+ * or at or under the home (the Director and nodes with no repo run in
+ * `<home>/sessions/<id>`), or when it is missing or relative; any other
+ * call is allowed with no daemon contact, so the operator's own Codex
+ * anywhere works with the daemon down. The decision is the arguments' and
+ * the `cwd`'s only (`codexCallGated`).
  */
 
+import { codexCallGated } from '@agile-agents/daemon';
 import { type ParsedArgs, hasFlag, optionalString, readStdin } from '../args';
 import { RpcCallError, callRpc } from '../client';
 import { printJson } from '../format';
@@ -75,10 +106,53 @@ function failClosedDenyJson(event: string, reason: string): unknown {
   };
 }
 
+/** T506: the vendors whose hook contract this CLI speaks besides Claude's (the default). */
+export const HOOK_VENDORS = ['claude', 'codex'] as const;
+export type HookVendor = (typeof HOOK_VENDORS)[number];
+
+/** Codex's block exit code: any other non-zero exit lets the call run. */
+export const CODEX_BLOCK_EXIT = 2;
+
+/** The reason of a Claude-shaped `hook.pre_tool_use` reply that does not allow the call, else undefined. */
+export function denyReasonOf(reply: unknown): string | undefined {
+  const out =
+    typeof reply === 'object' && reply !== null
+      ? (reply as { hookSpecificOutput?: unknown }).hookSpecificOutput
+      : undefined;
+  const decision =
+    typeof out === 'object' && out !== null
+      ? (out as { permissionDecision?: unknown; permissionDecisionReason?: unknown })
+      : undefined;
+  if (decision?.permissionDecision === 'allow') return undefined;
+  // Anything but an explicit allow blocks: a reply this file can't read is not a yes.
+  const reason = decision?.permissionDecisionReason;
+  return typeof reason === 'string' && reason.length > 0 ? reason : 'AGILE-GATE: blocked';
+}
+
+/**
+ * T511: whether a Codex hook call with this input `cwd` comes from a node's
+ * worktree under `<repo>/.worktrees/`, and so must be gated (the single
+ * `--repo` form). Any form of the `cwd` (as given, realpath) inside any
+ * form of the folder counts; a `cwd` that can't be read as an absolute path
+ * counts too (fail closed).
+ */
+export function codexCallInWorktrees(cwd: unknown, repo: string): boolean {
+  return codexCallGated(cwd, { repos: [repo] });
+}
+
 export interface RunHookOptions {
   socketPath: string;
   event: string;
   failClosed: boolean;
+  /** T506: whose hook contract to speak; default Claude's. */
+  vendor?: HookVendor;
+  /**
+   * T511/T512 (Codex only): the registered repo roots; calls from their
+   * `.worktrees/` are gated. With neither this nor `home`, every call is.
+   */
+  repos?: readonly string[];
+  /** T512 (Codex only): the agile home; calls from under it are gated too, and `.worktrees/` strictly. */
+  home?: string;
   /** Milliseconds to wait for the daemon before failing (open or closed per `failClosed`). Default 2000. */
   timeoutMs?: number;
   stdin?: NodeJS.ReadableStream;
@@ -87,6 +161,7 @@ export interface RunHookOptions {
 export async function runHook(options: RunHookOptions): Promise<number> {
   const { socketPath, event, failClosed } = options;
   const timeoutMs = options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
+  const codex = options.vendor === 'codex' && event === 'pre-tool-use';
   const raw = await readStdin(options.stdin);
 
   let payload: unknown;
@@ -96,7 +171,26 @@ export async function runHook(options: RunHookOptions): Promise<number> {
     console.error(
       `agile hook ${event}: invalid JSON on stdin: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return 1;
+    return codex ? CODEX_BLOCK_EXIT : 1;
+  }
+  if (codex) {
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+      console.error('AGILE-GATE: the hook input is not a JSON object');
+      return CODEX_BLOCK_EXIT;
+    }
+    // T511/T512: the operator's own Codex is not the daemon's to gate. Decided
+    // locally, before any daemon contact.
+    const scoped = (options.repos?.length ?? 0) > 0 || options.home !== undefined;
+    if (
+      scoped &&
+      !codexCallGated((payload as Record<string, unknown>).cwd, {
+        repos: options.repos ?? [],
+        ...(options.home !== undefined ? { home: options.home } : {}),
+      })
+    ) {
+      return 0;
+    }
+    (payload as Record<string, unknown>).agile_vendor = 'codex';
   }
 
   // `AGILE_AGENT` reaches this CLI process from the vendor session's own
@@ -121,6 +215,12 @@ export async function runHook(options: RunHookOptions): Promise<number> {
 
   try {
     const result = await callRpc<unknown>(socketPath, method, payload, { timeoutMs });
+    if (codex) {
+      const reason = denyReasonOf(result);
+      if (reason === undefined) return 0;
+      process.stderr.write(reason);
+      return CODEX_BLOCK_EXIT;
+    }
     printJson(result);
     return 0;
   } catch (err) {
@@ -128,6 +228,12 @@ export async function runHook(options: RunHookOptions): Promise<number> {
     const detail = `${isStub ? 'hook.* not implemented yet' : 'RPC failed'}: ${
       err instanceof Error ? err.message : String(err)
     }`;
+    if (codex) {
+      console.error(`agile hook ${event}: ${detail}`);
+      if (!failClosed) return 0;
+      process.stderr.write('AGILE-GATE: agile daemon unreachable');
+      return CODEX_BLOCK_EXIT;
+    }
     if (!failClosed) {
       // Fail-open (--fail-open): a stub reply or an unreachable daemon both
       // mean "the daemon has no opinion yet" from the hook's point of view.
@@ -150,6 +256,9 @@ export function parseHookArgs(args: ParsedArgs): {
   event: string;
   failClosed: boolean;
   timeoutMs?: number;
+  vendor?: HookVendor;
+  repos?: string[];
+  home?: string;
 } {
   const event = args.positionals[0];
   if (!event) throw new Error('usage: agile hook <event> (e.g. pre-tool-use)');
@@ -164,5 +273,35 @@ export function parseHookArgs(args: ParsedArgs): {
   // permissive default; --fail-closed is accepted (and true) for
   // explicitness/back-compat but no longer needed to opt in.
   const failClosed = !hasFlag(args.options, 'fail-open');
-  return { event, failClosed, timeoutMs };
+  const vendorRaw = optionalString(args.options, 'vendor');
+  if (vendorRaw !== undefined && !(HOOK_VENDORS as readonly string[]).includes(vendorRaw)) {
+    throw new Error(
+      `--vendor must be one of ${HOOK_VENDORS.join(', ')}, got ${JSON.stringify(vendorRaw)}`,
+    );
+  }
+  const codexPreToolUse = vendorRaw === 'codex' && event === 'pre-tool-use';
+  // T511/T512: `--repo` (repeatable, each value whole: a path may hold a
+  // comma) scopes Codex's gate to the daemon's worktrees.
+  const repoGiven = hasFlag(args.options, 'repo');
+  const repos = args.repeated?.repo ?? [];
+  if (
+    repoGiven &&
+    (!codexPreToolUse || args.options.repo === true || repos.some((r) => r === ''))
+  ) {
+    throw new Error('--repo <root> goes with pre-tool-use --vendor codex');
+  }
+  // T512: `--home` gates calls from under the agile home too.
+  const homeGiven = hasFlag(args.options, 'home');
+  const home = optionalString(args.options, 'home');
+  if (homeGiven && (!codexPreToolUse || home === undefined || home === '')) {
+    throw new Error('--home <dir> goes with pre-tool-use --vendor codex');
+  }
+  return {
+    event,
+    failClosed,
+    timeoutMs,
+    ...(vendorRaw !== undefined ? { vendor: vendorRaw as HookVendor } : {}),
+    ...(repos.length > 0 ? { repos } : {}),
+    ...(home !== undefined ? { home } : {}),
+  };
 }

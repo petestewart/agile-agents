@@ -7,10 +7,18 @@
  */
 
 import type { ClassifierConfig } from '@agile-agents/shared';
-import { buildJevRequest, jevEndpoint, parseJevResponse } from './jev-wire';
+import {
+  buildJevChoiceRequest,
+  buildJevRequest,
+  jevEndpoint,
+  parseJevChoiceResponse,
+  parseJevResponse,
+} from './jev-wire';
 import { scrub as defaultScrub } from './scrub';
 import {
   type Answer,
+  type ChoiceAnswer,
+  type ChoiceQuestion,
   type Classifier,
   type ClassifierCallInfo,
   ClassifierUnavailableError,
@@ -63,15 +71,38 @@ export class JevClassifier implements Classifier {
   }
 
   async ask(state: string, questions: Noul[]): Promise<Answer[]> {
+    return this.timed(questions.length, () =>
+      this.call(
+        state,
+        questions.length,
+        (scrubbed) => buildJevRequest(scrubbed, questions),
+        (body) => parseJevResponse(body, questions),
+      ),
+    );
+  }
+
+  /** T483: the choice primitive, with the same key, base URL, scrub and timeout as `ask`. */
+  async choose(state: string, questions: ChoiceQuestion[]): Promise<ChoiceAnswer[]> {
+    return this.timed(questions.length, () =>
+      this.call(
+        state,
+        questions.length,
+        (scrubbed) => buildJevChoiceRequest(scrubbed, questions),
+        (body) => parseJevChoiceResponse(body, questions),
+      ),
+    );
+  }
+
+  private async timed<T>(count: number, run: () => Promise<T>): Promise<T> {
     const started = this.now();
     try {
-      const answers = await this.call(state, questions);
-      this.onCall?.({ latency_ms: this.now() - started, questions: questions.length, ok: true });
+      const answers = await run();
+      this.onCall?.({ latency_ms: this.now() - started, questions: count, ok: true });
       return answers;
     } catch (error) {
       this.onCall?.({
         latency_ms: this.now() - started,
-        questions: questions.length,
+        questions: count,
         ok: false,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -79,7 +110,12 @@ export class JevClassifier implements Classifier {
     }
   }
 
-  private async call(state: string, questions: Noul[]): Promise<Answer[]> {
+  private async call<T>(
+    state: string,
+    count: number,
+    build: (scrubbed: string) => unknown,
+    parse: (body: unknown) => T[],
+  ): Promise<T[]> {
     if (this.config.provider === 'off') {
       throw new ClassifierUnavailableError('not_configured', 'classifier provider is "off"');
     }
@@ -90,7 +126,7 @@ export class JevClassifier implements Classifier {
       );
     }
     // Zero questions is no call (ten rules are one round trip, §6.2).
-    if (questions.length === 0) return [];
+    if (count === 0) return [];
 
     // §6.5, fail-closed: if the scrub throws, nothing is sent.
     let scrubbed: string;
@@ -103,7 +139,7 @@ export class JevClassifier implements Classifier {
       );
     }
 
-    const body = buildJevRequest(scrubbed, questions);
+    const body = build(scrubbed);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeout_ms);
     let response: Response;
@@ -148,6 +184,6 @@ export class JevClassifier implements Classifier {
         `classifier response was not JSON: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    return parseJevResponse(parsed, questions);
+    return parse(parsed);
   }
 }

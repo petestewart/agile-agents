@@ -7,13 +7,16 @@ import { describe, expect, test } from 'bun:test';
 import type { InboxItem, SessionRef } from '@agile-agents/shared';
 import type { CockpitStreamRow } from './feed-types';
 import {
+  activityDelivery,
   ancestorTitles,
   buildStreamTree,
+  childEntries,
   dependencyEdges,
   diffLineKind,
+  eventLabel,
+  eventTime,
   filterStreamRows,
   groupByRepo,
-  groupInbox,
   isLiveSession,
   isThinking,
   parseCollapsed,
@@ -21,9 +24,13 @@ import {
   rowsInProject,
   ruleHitOf,
   runningRows,
+  sessionRows,
+  splitTitle,
+  statusDot,
   streamDot,
   subtreeNeedsYou,
   threadAuthorLabel,
+  worktreeName,
 } from './streams';
 
 function row(id: string, extra: Partial<CockpitStreamRow> = {}): CockpitStreamRow {
@@ -50,6 +57,19 @@ describe('streamDot', () => {
 
   test('a finished worker with the human half open is the operator’s move', () => {
     expect(streamDot(row('a', { agent_status: 'done' }))).toBe('amber');
+  });
+
+  test('T341: a finished coordinator, root or project conversation has nothing to land', () => {
+    expect(streamDot(row('a', { agent_status: 'done', role: 'coordinating' }))).toBe('grey');
+    expect(streamDot(row('a', { agent_status: 'done', role: 'project', project: 'P-1' }))).toBe(
+      'grey',
+    );
+    expect(
+      streamDot(row('a', { agent_status: 'done', role: 'conversation', project: 'P-1' })),
+    ).toBe('grey');
+    expect(streamDot(row('a', { agent_status: 'done', pr_open: true }))).toBe('grey');
+    // A question still is the operator's move.
+    expect(streamDot(row('a', { agent_status: 'question', role: 'coordinating' }))).toBe('amber');
   });
 });
 
@@ -111,28 +131,6 @@ describe('filterStreamRows (T162)', () => {
   });
 });
 
-describe('groupInbox', () => {
-  const item = (id: string, stream: string | undefined, path: string[]): InboxItem => ({
-    kind: stream ? 'question' : 'rule_accept',
-    id,
-    ...(stream ? { stream } : {}),
-    stream_path: path,
-    ts: '2026-09-22T00:00:00.000Z',
-    context: id,
-  });
-
-  test('groups by stream in oldest-first order and labels by path', () => {
-    const groups = groupInbox([
-      item('Q-1', 'b', ['ledger', 'parser']),
-      item('R-1', undefined, []),
-      item('Q-2', 'a', ['ledger']),
-      item('Q-3', 'b', ['ledger', 'parser']),
-    ]);
-    expect(groups.map((g) => g.label)).toEqual(['ledger / parser', 'No stream', 'ledger']);
-    expect(groups[0]?.items.map((i) => i.id)).toEqual(['Q-1', 'Q-3']);
-  });
-});
-
 describe('stream page helpers (T161)', () => {
   const session = (
     id: string,
@@ -148,6 +146,20 @@ describe('stream page helpers (T161)', () => {
     expect(isThinking({ sessions: [session('a', 'lessons', 'running')] })).toBe(false);
     expect(isLiveSession({ status: 'idle' })).toBe(true);
     expect(isLiveSession({ status: 'stopped' })).toBe(false);
+  });
+
+  test('T350: two or more ended sessions fold into the earlier row; live ones always show', () => {
+    const ended = Array.from({ length: 8 }, (_, i) => session(`e${i}`, 'coordinator', 'stopped'));
+    const live = session('live', 'coordinator', 'running');
+    const rows = sessionRows([...ended.slice(0, 4), live, ...ended.slice(4)]);
+    expect(rows.shown.map((s) => s.id)).toEqual(['live']);
+    expect(rows.earlier.map((s) => s.id)).toEqual(ended.map((s) => s.id));
+    // Nothing live: every ended session is behind the one row.
+    expect(sessionRows(ended)).toEqual({ shown: [], earlier: ended });
+    // A lone ended session stays on show, beside any live one.
+    const one = session('err', 'worker', 'error');
+    expect(sessionRows([one, live])).toEqual({ shown: [one, live], earlier: [] });
+    expect(sessionRows([])).toEqual({ shown: [], earlier: [] });
   });
 
   test('thread authors read as you, daemon, or the session role and vendor', () => {
@@ -246,5 +258,145 @@ describe('repo view and lenses (T209)', () => {
       ['B', 'A'],
       ['B', 'GONE'],
     ]);
+  });
+});
+
+describe('T341: an Activity row reads without raw ids', () => {
+  const sessions = [
+    { id: '01ARZ3NDEKTSV4RRFFQ69GE001', role: 'worker' as const },
+    { id: '01ARZ3NDEKTSV4RRFFQ69GE002', role: 'coordinator' as const },
+  ];
+  test('whether the agent saw it, by its role, a digest as "batched" (T413)', () => {
+    expect(
+      activityDelivery(
+        { status: 'delivered', session: '01ARZ3NDEKTSV4RRFFQ69GE002', digest: 'D-1' },
+        sessions,
+      ),
+    ).toBe('Seen by the coordinator (batched)');
+    expect(
+      activityDelivery({ status: 'delivered', session: '01ARZ3NDEKTSV4RRFFQ69GE001' }, sessions),
+    ).toBe('Seen by the agent');
+    expect(activityDelivery({ status: 'pending' }, sessions)).toBe('Not seen by the agent yet');
+    expect(activityDelivery({ status: 'delivered', session: 'gone' }, sessions)).toBe(
+      'Seen by the agent',
+    );
+    expect(activityDelivery({ status: 'superseded' }, sessions)).toBe('Replaced by a newer event');
+    expect(activityDelivery({ status: 'expired' }, sessions)).toBe(
+      'Expired before the agent saw it',
+    );
+    expect(activityDelivery({ status: 'delivered', session: 'x' }, [], 'Director')).toBe(
+      'Seen by the Director',
+    );
+    expect(activityDelivery({ status: 'pending' }, [], 'Director')).toBe(
+      'Not seen by the Director yet',
+    );
+  });
+  test('the time to the minute, in local time', () => {
+    // Built from local fields, so it holds in any time zone.
+    expect(eventTime(new Date(2026, 8, 25, 15, 6, 6, 920).toISOString())).toBe('2026-09-25 15:06');
+    expect(eventTime(new Date(2026, 0, 3, 4, 5).toISOString())).toBe('2026-01-03 04:05');
+    expect(eventTime('not a time')).toBe('not a time');
+  });
+});
+
+describe('eventLabel (T347, D36 D5)', () => {
+  test('a direct merge reads "merged"; a PR merge "pr merged"; other types in words', () => {
+    expect(eventLabel({ type: 'pr_merged', payload: { repo: 'api', sha: 'abc' } })).toBe('merged');
+    expect(eventLabel({ type: 'pr_merged', payload: { pr: 2, repo: 'api', sha: 'abc' } })).toBe(
+      'pr merged',
+    );
+    expect(eventLabel({ type: 'child_status', payload: {} })).toBe('child status');
+  });
+});
+
+describe('worktreeName (T413)', () => {
+  test('the folder, without its node id', () => {
+    expect(
+      worktreeName('/home/p/ledger-lite/.worktrees/01m3fh6g4jx8dtfa7pcvg901rk-add-csv-import'),
+    ).toBe('add-csv-import');
+    expect(worktreeName('/tmp/wt/s-review/')).toBe('s-review');
+    expect(worktreeName('C:\\work\\01m3fh6g4jx8dtfa7pcvg901rk-x')).toBe('x');
+  });
+});
+
+describe('childEntries (T413)', () => {
+  const kid = (id: string, parent: string): CockpitStreamRow => ({
+    id,
+    title: id,
+    parent,
+    role: 'work',
+    agent_status: 'idle',
+    human_status: 'open',
+  });
+  test('every child row, in order, with its card or its card error', () => {
+    const rows = [kid('a', 'P'), kid('x', 'OTHER'), kid('b', 'P'), kid('c', 'P')];
+    const card = {
+      node: 'a',
+      doing: 'adding salePrice',
+      state: 'done' as const,
+      files: ['prices.ts'],
+      exports_changed: [],
+      relies_on: [],
+      updated_at: '2026-09-26T10:00:00.000Z',
+    };
+    const entries = childEntries(rows, 'P', [card, { node: 'c', error: 'cards/c.yaml:3: bad' }]);
+    expect(entries.map((e) => e.row.id)).toEqual(['a', 'b', 'c']);
+    expect(entries[0]?.card?.doing).toBe('adding salePrice');
+    // A child that never posted a card is still listed.
+    expect(entries[1]).toEqual({ row: rows[2] as CockpitStreamRow });
+    expect(entries[2]?.error).toBe('cards/c.yaml:3: bad');
+    expect(childEntries(rows, 'nobody', [card])).toEqual([]);
+  });
+});
+
+describe('T447: the dot follows the status (audit r7 #9), and alike titles stay apart (#20)', () => {
+  test('a plan or a proposal that needs you is amber, like a question', () => {
+    const row = { agent_status: 'done', human_status: 'open', role: 'coordinating' } as const;
+    expect(streamDot(row)).toBe('grey');
+    expect(streamDot({ ...row, pending_decision: true })).toBe('amber');
+    expect(statusDot('needs_you')).toBe('amber');
+    expect(statusDot('ready')).toBe('amber');
+    expect(statusDot('blocked')).toBe('red');
+    expect(statusDot('working')).toBe('blue');
+    expect(statusDot('pr_open')).toBe('blue');
+    expect(statusDot('merged')).toBe('green');
+    for (const key of ['done', 'closed', 'waiting', 'not_started', 'stopped', 'idle'] as const) {
+      expect(statusDot(key)).toBe('grey');
+    }
+  });
+
+  test('a folded coordinator calls out a part that waits on you, by its status', () => {
+    const tree = buildStreamTree([
+      { id: 'c', title: 'c', role: 'coordinating', agent_status: 'done', human_status: 'open' },
+      {
+        id: 'p',
+        title: 'p',
+        parent: 'c',
+        role: 'work',
+        agent_status: 'idle',
+        human_status: 'open',
+        pending_decision: true,
+      },
+    ]);
+    expect(subtreeNeedsYou(tree[0] as never)).toBe(true);
+  });
+
+  test('splitTitle keeps the last word or two whole, and leaves a short title alone', () => {
+    expect(splitTitle('Schema change for onboarding emails')).toEqual({
+      head: 'Schema change for onboarding ',
+      tail: 'emails',
+    });
+    expect(splitTitle('Schema change for data retention')).toEqual({
+      head: 'Schema change for ',
+      tail: 'data retention',
+    });
+    expect(splitTitle('Refactor the invoice for api part')).toEqual({
+      head: 'Refactor the invoice ',
+      tail: 'for api part',
+    });
+    expect(splitTitle('Rotate the API keys')).toBeUndefined();
+    const long = splitTitle('Supercalifragilisticexpialidocious-everything');
+    expect(long?.tail.length).toBe(12);
+    expect(`${long?.head}${long?.tail}`).toBe('Supercalifragilisticexpialidocious-everything');
   });
 });
