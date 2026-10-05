@@ -842,6 +842,16 @@ describe('an agent that failed (T438)', () => {
       "The agent couldn’t start: Codex's gate isn't trusted here: trust /Users/pete/shop in Codex.",
     );
   });
+  test('T512: a Codex start refused for its gate (not installed, not trusted) says so, not "fix its login"', () => {
+    for (const why of [
+      "Codex's gate isn't installed: run `agile codex install-gate`, then trust it in Codex (/hooks) (no agile gate entries in /h/.codex/hooks.json)",
+      "Codex's gate isn't trusted yet: in Codex run /hooks and trust the three agile gate hooks (1 of 3 trusted)",
+    ]) {
+      const line = systemLine(`could not start the agent: ${why}`);
+      expect(line.tone).toBe('warn');
+      expect(line.text).toBe(`The agent couldn’t start: ${why}.`);
+    }
+  });
   test('T508: a Codex fail-closed stop stays a grey record row (its card says the rest)', () => {
     const line = systemLine(
       "worker stopped: Codex ran a command its gate never saw: its hook isn't trusted or didn't fire",

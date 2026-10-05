@@ -849,9 +849,38 @@ describe('stop cards (T508)', () => {
     expect(card?.text).toBe(
       'Codex ran a command its hook never checked, so the daemon stopped it. Nothing it ran after that was allowed through.',
     );
-    expect(card?.fix).toContain('isn’t a trusted Codex project');
-    expect(card?.fix).toContain('`.codex/hooks.json`');
+    // T512: the fix is Codex's per-hook trust (/hooks), and `agile codex status` to see which.
+    expect(card?.fix).toBe(
+      'Codex skipped the agile gate: a hook it hasn’t trusted (a changed one needs trusting again), or a project it doesn’t trust. Run `agile codex status`; in Codex run `/hooks` and trust the three `agile gate` hooks, then restart the agent.',
+    );
     expect(card?.restart).toBe('Restart agent');
+  });
+  test('T512: the gate not installed: install it, trust it, Try again', () => {
+    const card = stopCardOf(
+      "The agent couldn’t start: Codex's gate isn't installed: run `agile codex install-gate`, then trust it in Codex (/hooks) (no agile gate entries in /Users/pete/.codex/hooks.json)",
+    );
+    expect(card).toEqual({
+      kind: 'codex_gate_missing',
+      title: 'Codex can’t start: its gate isn’t installed',
+      text: 'Codex checks its commands with the agile gate, three hooks in your Codex settings (`~/.codex/hooks.json`). They aren’t there, so the daemon didn’t start Codex: it would run unchecked.',
+      fix: 'Run `agile codex install-gate`, then open `codex`, run `/hooks` and trust the three `agile gate` hooks. Then try again.',
+      restart: 'Try again',
+    });
+  });
+  test('T512: the gate not trusted yet: trust each hook in /hooks, Try again', () => {
+    const card = stopCardOf(
+      "The agent couldn’t start: Codex's gate isn't trusted yet: in Codex run /hooks and trust the three agile gate hooks (2 of 3 trusted)",
+    );
+    expect(card).toEqual({
+      kind: 'codex_gate_untrusted',
+      title: 'Codex can’t start: its gate isn’t trusted yet',
+      text: 'Codex runs a hook only once you have trusted it, and the agile gate’s hooks aren’t all trusted yet, so the daemon didn’t start Codex: it would run unchecked.',
+      fix: 'Open `codex`, run `/hooks`, and trust the three `agile gate` hooks (Hooks need review → trust each); `agile codex status` shows which are trusted. Then try again.',
+      restart: 'Try again',
+    });
+    expect(stopCardText(card as NonNullable<typeof card>)).toContain(
+      '**How to fix:** Open `codex`, run `/hooks`',
+    );
   });
   test('an untrusted worktree: the repo to trust, and Try again', () => {
     const card = stopCardOf(untrusted);
@@ -885,7 +914,7 @@ describe('stop cards (T508)', () => {
     expect(cardTitle(blocked)).toBe('Codex’s gate didn’t run');
     expect(stopCardOfItem(blocked)?.kind).toBe('codex_ungated');
     expect(stopCardText(stopCardOf(ungated) as NonNullable<ReturnType<typeof stopCardOf>>)).toMatch(
-      /^Codex ran a command .+\n\n\*\*How to fix:\*\* The worktree/s,
+      /^Codex ran a command .+\n\n\*\*How to fix:\*\* Codex skipped the agile gate/s,
     );
     expect(inboxLine(blocked)).toBe(
       'Codex ran a command its hook never checked, so the daemon stopped it. Nothing it ran after that was allowed through.',

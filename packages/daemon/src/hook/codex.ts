@@ -63,12 +63,12 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import {
   CODEX_GATE_MISSING_LEAD,
   CODEX_GATE_UNTRUSTED_LEAD,
+  CODEX_UNGATED_REASON,
+  CODEX_UNTRUSTED_LEAD,
   type CodexGateEntryStatus,
   type CodexGateInstallResult,
   type CodexGateStatus,
   type CodexLegacySweep,
-  CODEX_UNGATED_REASON,
-  CODEX_UNTRUSTED_LEAD,
 } from '@agile-agents/shared';
 import { shellQuote } from '../runner/cli-bin';
 import { atomicWriteFile } from '../store/fs';
@@ -229,7 +229,10 @@ function withoutOurs(existing: unknown): { kept: unknown[]; changed: boolean } {
 /** Reads a `hooks.json`: absent, its object, or why it can't be used (never overwritten then). */
 function readHooksFile(
   path: string,
-): { kind: 'absent' } | { kind: 'ok'; file: Record<string, unknown> } | { kind: 'bad'; why: string } {
+):
+  | { kind: 'absent' }
+  | { kind: 'ok'; file: Record<string, unknown> }
+  | { kind: 'bad'; why: string } {
   if (!existsSync(path)) return { kind: 'absent' };
   let parsed: unknown;
   try {
@@ -291,7 +294,9 @@ export function installCodexGate(options: InstallCodexGateOptions): CodexGateIns
   const scriptPath = codexGateScriptPath(options.script.home);
   const read = readHooksFile(hooksPath);
   if (read.kind === 'bad') {
-    throw new Error(`${read.why}; Codex's gate can't be merged into it (fix or move it, then run again)`);
+    throw new Error(
+      `${read.why}; Codex's gate can't be merged into it (fix or move it, then run again)`,
+    );
   }
   const existing = read.kind === 'ok' ? read.file : {};
   let hooks: CodexGateInstallResult['hooks'] = 'unchanged';

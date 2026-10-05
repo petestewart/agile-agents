@@ -284,7 +284,10 @@ export function parseHookArgs(args: ParsedArgs): {
   // comma) scopes Codex's gate to the daemon's worktrees.
   const repoGiven = hasFlag(args.options, 'repo');
   const repos = args.repeated?.repo ?? [];
-  if (repoGiven && (!codexPreToolUse || args.options.repo === true || repos.some((r) => r === ''))) {
+  if (
+    repoGiven &&
+    (!codexPreToolUse || args.options.repo === true || repos.some((r) => r === ''))
+  ) {
     throw new Error('--repo <root> goes with pre-tool-use --vendor codex');
   }
   // T512: `--home` gates calls from under the agile home too.

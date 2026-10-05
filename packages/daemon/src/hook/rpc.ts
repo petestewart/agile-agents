@@ -56,7 +56,6 @@ export function buildCodexGateRpcMethods(
         sweep: repoRoots,
       });
     },
-    'codex.gate_status': (): CodexGateStatus =>
-      codexGateStatus(options.codexHome(), options.home),
+    'codex.gate_status': (): CodexGateStatus => codexGateStatus(options.codexHome(), options.home),
   };
 }

@@ -33,6 +33,7 @@ import {
   VerbService,
   buildAttachRpcMethods,
   buildBusRpcMethods,
+  buildCodexGateRpcMethods,
   buildGateRpcMethods,
   buildHookRpcMethods,
   buildInboxRpcMethods,
@@ -117,6 +118,11 @@ export interface TestDaemon {
   rulesService: KnowledgeService;
   /** T244: the routed event log behind `read_event` — tests emit through it. */
   routedEvents: RoutedEventService;
+  /**
+   * T512: the Codex home `codex.*` reads and `install-gate` writes: a temp
+   * dir (not created until something writes it), never the machine's own.
+   */
+  codexHome: string;
   /**
    * T153: the classifier behind `rule.test` (§5.6). Always the fake — the
    * suite never calls the real API — and re-scriptable per test through
@@ -203,6 +209,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
   });
 
   const bus = new Bus(store, init.stateRoot);
+  const codexHome = join(repo, 'codex-home');
   const rpc = startRpcServer({
     socketPath,
     version: 'test',
@@ -250,6 +257,14 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
       ...buildGateRpcMethods(gateService),
       ...buildQuestionRpcMethods(questionService),
       ...buildAttachRpcMethods(attachService, verbService),
+      // T512: `agile codex install-gate|status`, against the temp Codex home.
+      ...buildCodexGateRpcMethods({
+        home,
+        codexHome: () => codexHome,
+        repoRoots: () => Object.values(store.getRepos()).map((entry) => entry.path),
+        agileBin: 'agile',
+        socketPath,
+      }),
     },
   });
   await rpc.listening;
@@ -282,6 +297,7 @@ export async function startTestDaemon(prefix = 'agile-cli-test-'): Promise<TestD
     rulesService,
     routedEvents,
     classifier,
+    codexHome,
     home,
     async cleanup() {
       await attachService.stopAll();

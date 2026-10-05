@@ -762,9 +762,9 @@ describe("T506: --vendor codex speaks Codex's hook contract", () => {
       expect(() => parseHookArgs(parseArgs(['pre-tool-use', '--home', '/h']))).toThrow(
         /--home <dir> goes with pre-tool-use --vendor codex/,
       );
-      expect(() =>
-        parseHookArgs(parseArgs(['stop', '--vendor', 'codex', '--home', '/h'])),
-      ).toThrow(/--home <dir> goes with/);
+      expect(() => parseHookArgs(parseArgs(['stop', '--vendor', 'codex', '--home', '/h']))).toThrow(
+        /--home <dir> goes with/,
+      );
       expect(() =>
         parseHookArgs(parseArgs(['pre-tool-use', '--vendor', 'codex', '--home'])),
       ).toThrow(/--home <dir> goes with/);

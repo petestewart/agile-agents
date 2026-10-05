@@ -31,6 +31,7 @@ import { join } from 'node:path';
 import { ACP_PROVIDERS, type AcpProviderConfig } from '@agile-agents/acp-client';
 import {
   type AgentId,
+  CODEX_GATE_UNTRUSTED_LEAD,
   CODEX_UNGATED_REASON,
   DEFAULT_CLASSIFIER_ALLOW_BELOW,
   DEFAULT_CLASSIFIER_DENY_AT,
@@ -3332,6 +3333,20 @@ describe('a stopped agent says why (Playwright e2e, T508)', () => {
         await cockpit.streams.update('daemon', refused.id, {
           agent: { status: 'blocked', progress: `${FAILED_START_PREFIX}${untrusted}` },
         });
+        // T512: a start refused because Codex hasn't trusted the gate's hooks yet.
+        const gate = await cockpit.streams.create('human', {
+          title: 'Trust the gate',
+          goal: 'g',
+          project: shop.id,
+        });
+        const gateWhy = `${CODEX_GATE_UNTRUSTED_LEAD} (1 of 3 trusted)`;
+        await cockpit.streams.appendThread('daemon', gate.id, {
+          kind: 'event',
+          body: `could not start the agent: ${gateWhy}`,
+        });
+        await cockpit.streams.update('daemon', gate.id, {
+          agent: { status: 'blocked', progress: `${FAILED_START_PREFIX}${gateWhy}` },
+        });
 
         page = await openPage();
         const attached: Array<{ id: string; role?: string }> = [];
@@ -3362,6 +3377,13 @@ describe('a stopped agent says why (Playwright e2e, T508)', () => {
         expect(
           await page.locator(`${refusedCard} [data-testid="stop-restart"]`).textContent(),
         ).toBe('Try again');
+        const gateCard = `[data-testid="inbox"] [data-kind="blocked"][data-id="${gate.id}"]`;
+        expect(await page.locator(`${gateCard} .kind`).textContent()).toBe(
+          'Codex can’t start: its gate isn’t trusted yet',
+        );
+        expect(await page.locator(`${gateCard} [data-testid="stop-restart"]`).textContent()).toBe(
+          'Try again',
+        );
 
         // The node's chat: the card under "Waiting on you", whole, and the grey line as the record.
         await page.goto(`${cockpit.base}/?node=${stopped.id}`);
@@ -3374,7 +3396,9 @@ describe('a stopped agent says why (Playwright e2e, T508)', () => {
           (await page.locator(`${card} [data-testid="inbox-context"]`).textContent()) ?? '';
         expect(body).toContain('Nothing it ran after that was allowed through.');
         expect(body).toContain('How to fix:');
-        expect(body).toContain('.codex/hooks.json');
+        // T512: the fix is Codex's per-hook trust, and the status command.
+        expect(body).toContain('/hooks');
+        expect(body).toContain('agile codex status');
         await page
           .locator('[data-testid="thread-entry"][data-by="daemon"]', {
             hasText: 'worker stopped: Codex ran a command its gate never saw',

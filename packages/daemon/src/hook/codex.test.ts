@@ -115,7 +115,11 @@ const GATE = (home: string) =>
   CODEX_HOOK_MATCHERS.map((matcher) => ({
     matcher,
     hooks: [
-      { type: 'command', command: join(home, 'agile-pre-tool-use.sh'), statusMessage: 'agile gate' },
+      {
+        type: 'command',
+        command: join(home, 'agile-pre-tool-use.sh'),
+        statusMessage: 'agile gate',
+      },
     ],
   }));
 
@@ -508,7 +512,9 @@ describe('T512: the legacy sweep of <repo>/.codex/', () => {
     mkdirSync(join(repo, '.codex'));
     writeFileSync(join(repo, '.codex', 'hooks.json'), '{"hooks": ');
     const result = sweepLegacyCodexHooks(repo);
-    expect(result.left).toBe(`${join(repo, '.codex', 'hooks.json')} isn't valid JSON; left as it is`);
+    expect(result.left).toBe(
+      `${join(repo, '.codex', 'hooks.json')} isn't valid JSON; left as it is`,
+    );
     expect(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8')).toBe('{"hooks": ');
   });
 
