@@ -572,7 +572,13 @@ keeps a hollow dot's ring (stopped, waiting).
   trusted", "The agent couldn’t start"), its body why, then a **How to
   fix:** line, and its one action restarts the agent (Restart agent, or Try
   again for a start that failed). The grey system line stays as the record
-  (`lib/inbox.ts` `stopCardOf`).
+  (`lib/inbox.ts` `stopCardOf`). T512: Codex's gate is three user-level
+  hooks Codex trusts one by one, so a start refused for it has two more
+  cards: "Codex can’t start: its gate isn’t installed" (fix: `agile codex
+  install-gate`, then trust them in Codex's `/hooks`) and "Codex can’t
+  start: its gate isn’t trusted yet" (fix: trust each in `/hooks`; `agile
+  codex status` shows which); "Codex’s gate didn’t run" says to check
+  `agile codex status` and the `/hooks` trust.
 - **What a worker proposes next** (T427): an agent's `propose_next` line
   ("Proposal") reads as the node it proposes — "Next: **<title>**", the goal
   under it (T435) — and carries **Create node…**, which opens New node with

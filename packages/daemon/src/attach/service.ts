@@ -1263,10 +1263,12 @@ export class AttachService {
         session,
         role,
         worktreePath: cwd,
-        // T511: Codex's hook goes at the root of the repo the worktree belongs to.
+        // T511/T512: the repo the worktree belongs to (Codex's project trust, the legacy sweep).
         ...(worktreePath !== undefined && repoEntry !== undefined
           ? { repoRoot: repoEntry.path }
           : {}),
+        // T512: Codex's gate script lives in the home.
+        agileHome: this.options.home,
         brief: prompt,
         ...(wake !== undefined ? { onBriefDelivered: () => wake.delivered(sessionId) } : {}),
         ...(resumeFrom?.acp_session_id !== undefined && wake !== undefined

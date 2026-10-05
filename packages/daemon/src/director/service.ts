@@ -453,6 +453,8 @@ export class DirectorService {
       session,
       role: 'coordinator',
       worktreePath: sessionDir,
+      // T512: Codex's gate script lives in the home, and gates calls from under it.
+      agileHome: home,
       readScope: directorReadScope(() => store.getRepos(), home),
       brief,
       sessionDir,

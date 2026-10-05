@@ -1800,6 +1800,8 @@ bun spike/permission-matrix.ts --vendor codex --scenario exec --hooks --fixture 
 7 times and blocked the `curl` with our reason, even before anything was
 trusted in `/hooks`; the same hook in a temp dir never fired. Settled in
 design/spike-findings.md C5: T506 installs the hook in the worktree.
+(Superseded: since T512 the gate is three user-level entries in
+`~/.codex/hooks.json`, trusted once in `/hooks`; C5 round 5, §24.)
 
 ## 21. **[vendor]** A question is its thread: talking back to a choice (D62, D63, T502)
 
@@ -1914,46 +1916,50 @@ Claude login (then Codex, Gemini, if you have them):
       Back on the conversation, the thread's panel reads "Promoted to a
       tangent: <title>", and the link opens it.
 
-## 24. **[vendor]** Codex is gated by its own PreToolUse hook (T506, T511)
+## 24. **[vendor]** Codex is gated by its own PreToolUse hook, one user-level gate trusted once (T506, T512)
 
-For a git worktree Codex reads project hooks from the main repo, not the
-worktree (design/spike-findings.md §C5 round 4), so the daemon writes the hook
-at the root of the repo the node's worktree belongs to: `<repo>/.codex/hooks.json`
-(matchers `Bash`, `apply_patch|Edit|Write`, `mcp__.*`; anything else already in
-the file is kept) and `<repo>/.codex/agile-pre-tool-use.sh`, which runs
-`agile hook pre-tool-use --vendor codex --repo <repo>`. A call from under
-`<repo>/.worktrees/` goes through the same rules, classifier and Needs me as
-Claude's; any other call (your own Codex in the repo) is allowed with no daemon
-call. `.codex/` is in the repo's `.git/info/exclude`. A node with no repo (and
-the Director) keeps the hook in its own session dir, every call gated. The hook
-loads only in a project Codex trusts; the daemon checks the repo root against
-`$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) and never writes it.
-Needs a Codex login, and a repo under a path your Codex config trusts
-(`[projects."<dir>"]` with `trust_level = "trusted"`, the repo or an ancestor
-such as your home).
+Codex trusts each hook separately, and a trusted project hook at the repo root
+does not fire for a session in `<repo>/.worktrees/` (design/spike-findings.md
+§C5 round 5), so the gate is three **user-level** entries in
+`$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`; matchers `Bash`,
+`apply_patch|Edit|Write`, `mcp__.*`, each listed as `agile gate`), all running
+`<home>/agile-pre-tool-use.sh`. You install them once and trust them once in
+Codex's `/hooks`; the entries never change after that. The daemon rewrites the
+script (only when it changed) at every Codex start: it runs `agile hook
+pre-tool-use --vendor codex --home <home> --repo <root>…` with every registered
+repo. A call from inside a `<repo>/.worktrees/` or from under the agile home
+goes through the same rules, classifier and Needs me as Claude's; any other
+call (your own Codex anywhere) is allowed with no daemon call. The daemon
+reads `~/.codex/config.toml` and never writes it, and writes `hooks.json` only
+when you run `agile codex install-gate`. Needs a Codex login, and a repo under
+a path your Codex config trusts (`[projects."<dir>"]` with
+`trust_level = "trusted"`, the repo or an ancestor such as your home).
 
-- [ ] Start a node on Codex in a trusted repo. `<repo>/.codex/hooks.json` and
-      `<repo>/.codex/agile-pre-tool-use.sh` exist (the script's last line ends
-      `--vendor codex --repo <repo> || exit 2`); the worktree has no `.codex/`.
-      `git status` in the repo and in the worktree lists nothing new. The
-      thread has no "runs commands unchecked" line.
-- [ ] **Re-check (T511):** ask it to run `ls` and then
-      `curl -sI https://example.com`. The node keeps working after `ls` (no
-      "Codex ran a command its gate never saw" stop: the hook fired), and the
-      `curl` is blocked as below. `log/events.jsonl` has a `hook_decision` for
-      each.
-- [ ] Your own Codex is not gated: in a terminal at the repo root (not under
-      `.worktrees/`), run `codex` and ask it to run `curl -sI https://example.com`.
-      It runs with no block, no Needs me card, and no `hook_decision` in
-      `log/events.jsonl`, also with the daemon stopped.
-- [ ] Two Codex nodes in the same repo both run gated; the repo's
-      `.codex/hooks.json` has one set of the three matchers.
-- [ ] Ask it to run `curl -sI https://example.com`. The gate answers as it
-      does for Claude (today an engineer's `curl` is refused: "curl is not an
-      allowed command for the engineer role"; if your rules or posture hold
-      it instead, it is a card in Needs me). Codex reports "Command blocked
-      by PreToolUse hook: …" with that reason, and nothing ran.
-      `log/events.jsonl` has a `hook_decision` for it.
+- [ ] **Install.** `agile codex install-gate`. It prints "Added the three agile
+      gate hooks to …/.codex/hooks.json", the script's path, and "Now open
+      `codex`, run `/hooks`, and trust the three `agile gate` hooks (Hooks
+      need review → trust each)." `~/.codex/hooks.json` has the three entries
+      after any hooks of your own (kept as they were);
+      `<home>/agile-pre-tool-use.sh` exists, mode 755, its last line ending
+      `--vendor codex --home <home> --repo <repo> … || exit 2`. Run it again:
+      "already in … (unchanged)", and the file's bytes are the same.
+- [ ] **Trust.** `agile codex status` reads "installed: yes", "trusted: no",
+      and each matcher "not trusted". Open `codex`, run `/hooks`, trust each of
+      the three `agile gate` hooks. `agile codex status` now reads "trusted:
+      yes" and each matcher "trusted"; `agile daemon status` has the line
+      "Codex gate: installed, trusted". Neither prints anything of
+      `config.toml` (no `sha256:`).
+- [ ] Start a node on Codex in a trusted repo. Nothing is written in the repo
+      or the worktree (no `.codex/` in either; `git status` lists nothing
+      new). The thread has no "runs commands unchecked" line.
+- [ ] Ask it to run `ls` and then `curl -sI https://example.com`. `ls` runs
+      and the node keeps working (no "Codex ran a command its gate never
+      saw" stop: the hook fired). The `curl` is blocked as Claude's is (today
+      an engineer's `curl` is refused: "curl is not an allowed command for
+      the engineer role"; if your rules or posture hold it instead, it is a
+      card in Needs me); Codex reports "Command blocked by PreToolUse hook: …"
+      with that reason, and nothing ran. `log/events.jsonl` has a
+      `hook_decision` for each.
 - [ ] Ask it to add a dependency to `package.json` (an `apply_patch` edit of
       a manifest): the call is held, a card in Needs me ("editing a
       dependency manifest/lockfile is never automatic"), and Codex reports
@@ -1968,28 +1974,49 @@ such as your home).
       (patch text in `tool_input.command`). Record its shape in
       spike-findings §C5 (`spike/permission-matrix.ts --vendor codex --hooks
       --matcher apply_patch` logs it to `hook-calls.jsonl`).
-- [ ] Ask it to run `ls` and edit a file inside the worktree: both run with
-      no card (allowed), and the node keeps working (no fail-closed stop).
-- [ ] A repo that tracks `.codex/hooks.json` is refused: commit a
-      `.codex/hooks.json` in a scratch repo, start a Codex node there. Needs me
-      reads "…tracks .codex/hooks.json; Codex's gate would change a tracked
-      file…", and the file is unchanged.
-- [ ] An untrusted repo is refused: register a repo outside every
+- [ ] Two Codex nodes in different registered repos both run gated; the
+      script's last line names both repos.
+- [ ] Your own Codex is not gated: count the `hook_decision` lines in
+      `log/events.jsonl`, then in a terminal at a repo root (not under
+      `.worktrees/`), and again in a folder outside every repo, run `codex`
+      and ask it to run `curl -sI https://example.com`. It runs with no block
+      and no Needs me card, and the `hook_decision` count is unchanged. Stop
+      the daemon (`agile daemon stop`) and do it once more: still not blocked.
+- [ ] **Refused when not installed or untrusted.** Use a scratch Codex home so
+      your own stays as it is: `export CODEX_HOME=$(mktemp -d)`, copy your
+      `config.toml` and `auth.json` into it, restart the daemon from that
+      shell (`agile daemon stop; agile daemon start`), and start a Codex node.
+      It does not start: Needs me reads "Codex can’t start: its gate isn’t
+      installed", How to fix "Run `agile codex install-gate`, then open
+      `codex`, run `/hooks` …", and its button is Try again. Run `agile codex
+      install-gate` (from the same shell) and Try again: refused again, now
+      "Codex can’t start: its gate isn’t trusted yet" (trust each in
+      `/hooks`; `agile codex status` shows which). Trust the three in `codex`
+      started from that shell and Try again: it runs gated. No "worker
+      attached: codex/…" line for the refused starts (T513). Restore: unset
+      `CODEX_HOME` and restart the daemon.
+- [ ] An untrusted project is still refused: register a repo outside every
       trusted path in your Codex config (e.g. under `/tmp`), start a node on
-      Codex there. It does not start: Needs me reads "The agent couldn’t
-      start: Codex's gate isn't trusted here: trust <repo> in Codex (…)",
-      and nothing ran. Trust the repo in Codex (`[projects."<repo>"]
-      trust_level = "trusted"`, or Codex's own trust prompt), start it
-      again: it runs gated. (T513) The refused start wrote no "worker
-      attached: codex/…" line; the one that ran did.
+      Codex there. Needs me reads "The agent couldn’t start: Codex's gate
+      isn't trusted here: trust <repo> in Codex (…)", and nothing ran.
+- [ ] **Legacy sweep.** In a registered repo, put back what T511 left:
+      `<repo>/.codex/hooks.json` with our three entries (command
+      `<repo>/.codex/agile-pre-tool-use.sh`) plus one hook of your own, and
+      that script. Run `agile codex install-gate`: it lists "removed old gate
+      file: …" for both; your own hook stays in `<repo>/.codex/hooks.json`.
+      With only our entries in it, the file, the script and `.codex/` all go.
+      Starting a Codex node in the repo does the same sweep. A
+      `.codex/hooks.json` the repo tracks is left as it is (install-gate says
+      so).
 - [ ] Fail closed (optional): with Codex running gated, make the hook stop
-      firing (rename `<repo>/.codex/hooks.json` while the agent rests), then ask it for two commands. After the second, the agent is
-      stopped and Needs me reads "Codex ran a command its gate never saw:
-      its hook isn't trusted or didn't fire". It is not restarted.
-- [ ] A Codex reviewer on the same node gets the same gate (its start
-      writes the same `<repo>/.codex/hooks.json`, unchanged); ask it to edit a
-      file: refused
-      ("reviewer role denies all writes").
+      firing (in `codex`, `/hooks`, un-trust the `Bash` entry, or rename
+      `~/.codex/hooks.json` while the agent rests), then ask it for two
+      commands. After the second, the agent is stopped and Needs me reads
+      "Codex’s gate didn’t run", How to fix naming `agile codex status` and
+      `/hooks`. It is not restarted. Put it back and check `agile codex
+      status` reads trusted again (a changed entry needs trusting again).
+- [ ] A Codex reviewer on the same node gets the same gate; ask it to edit a
+      file: refused ("reviewer role denies all writes").
 - [ ] (T513) A review is one turn (cockpit-design §2): when it ends the
       thread reads "review finished: N findings (its turn finished; a review
       is one turn: a message now goes to the node’s agent, not the
@@ -1997,16 +2024,10 @@ such as your home).
       after it prints a note that the line is for the node's agent, and
       `agile review <id>` for another review.
 
-**Live result (2026-10-02):** on a real Codex node the fail-closed check fired
-("Codex ran a command its gate never saw"): the hook did not run in the daemon's
-worktree, though it ran in the spike's plain repo (C5 round 3). Next run, the
-same hook in a git worktree, hook in the worktree vs at the repo root:
-
-```zsh
-bun spike/permission-matrix.ts --vendor codex --scenario perm --hooks --worktree --fixture ~/agile-codex-spike
-bun spike/permission-matrix.ts --vendor codex --scenario perm --hooks --worktree --hooks-at main --fixture ~/agile-codex-spike
-```
-
-Result (C5 round 4): the worktree's hook saw 0 calls, the repo root's 9 (curl
-blocked). T511 moved the daemon's hook to the repo root; the re-check above is
-the live confirmation still owed.
+**History.** 2026-10-02: T506's hook in the worktree never ran on a real node
+(fail-closed stop). Spike round 4 seemed to show Codex reading a worktree's
+hooks from the main repo, and T511 moved the hook to the repo root; that was
+confounded by per-hook trust. 2026-10-05 (round 5): the trusted repo-root hook
+did not fire for a worktree session; three trusted user-level entries gated a
+worktree node (`ls` allowed, `curl` denied with the reason, no fail-closed
+stop). T512 builds that; this section is its live check.

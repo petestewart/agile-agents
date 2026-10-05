@@ -27,6 +27,7 @@ import {
 } from '@agile-agents/daemon';
 import {
   type ClassifierKeyStatus,
+  type CodexGateStatus,
   type HarnessStatus,
   type ResolvedSessionDefaults,
   type TrackerStatus,
@@ -34,6 +35,7 @@ import {
   resolveSessionDefaults,
 } from '@agile-agents/shared';
 import { callRpc } from '../client';
+import { formatCodexGateLine } from './codex';
 
 /** How long `start` waits for the child to write its pidfile before giving up. */
 const START_TIMEOUT_MS = 20_000;
@@ -301,6 +303,8 @@ export interface DaemonStatusReport {
   trackers?: TrackerStatus;
   /** T481 (D50): from `daemon.status` — each vendor CLI's version, and a known update. */
   harnesses?: HarnessStatus[];
+  /** T512: from `daemon.status` — Codex's gate installed and trusted, never a hash. */
+  codexGate?: CodexGateStatus;
   /** T170 (D17): what a session attached with nothing named gets (home config + built-in). */
   sessionDefaults?: ResolvedSessionDefaults;
 }
@@ -320,6 +324,7 @@ export async function withClassifierStatus(
       github?: { auth: 'available' | 'unavailable' };
       trackers?: TrackerStatus;
       harnesses?: HarnessStatus[];
+      codex_gate?: CodexGateStatus;
     }>(report.socketPath, 'daemon.status', {}, { timeoutMs: 2000 });
     return {
       ...report,
@@ -327,6 +332,7 @@ export async function withClassifierStatus(
       ...(status.github ? { githubAuth: status.github.auth } : {}),
       ...(status.trackers ? { trackers: status.trackers } : {}),
       ...(status.harnesses ? { harnesses: status.harnesses } : {}),
+      ...(status.codex_gate ? { codexGate: status.codex_gate } : {}),
     };
   } catch {
     return report;
@@ -400,5 +406,6 @@ export function formatDaemonStatus(report: DaemonStatusReport): string {
     report.harnesses && report.harnesses.length > 0
       ? `\n${report.harnesses.map(formatHarnessLine).join('\n')}`
       : '';
-  return `${running}${classifier}${github}${trackers}${harnesses}${defaults}`;
+  const codexGate = report.codexGate ? `\n${formatCodexGateLine(report.codexGate)}` : '';
+  return `${running}${classifier}${github}${trackers}${harnesses}${codexGate}${defaults}`;
 }

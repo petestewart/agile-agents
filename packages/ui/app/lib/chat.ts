@@ -7,6 +7,8 @@
  */
 
 import {
+  CODEX_GATE_MISSING_LEAD,
+  CODEX_GATE_UNTRUSTED_LEAD,
   CODEX_UNTRUSTED_LEAD,
   EFFORT_IN_MODEL_VENDORS,
   type InboxItem,
@@ -829,7 +831,9 @@ export function systemLine(body: string, meta: SystemLineMeta = {}): SystemLine 
   if (failed) {
     const why = tidyIds(failed[1] ?? '').replace(/[.\s]+$/, '');
     // T508: Codex's untrusted worktree isn't an install or a login; its card below says the fix.
-    const fix = why.startsWith(CODEX_UNTRUSTED_LEAD)
+    // T512: nor is its gate, missing or untrusted.
+    const codexGate = [CODEX_UNTRUSTED_LEAD, CODEX_GATE_MISSING_LEAD, CODEX_GATE_UNTRUSTED_LEAD];
+    const fix = codexGate.some((lead) => why.startsWith(lead))
       ? ''
       : ' Fix its install or login, then send a message to start it again.';
     return {

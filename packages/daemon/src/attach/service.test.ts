@@ -15,6 +15,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,6 +29,8 @@ import {
 import {
   AGENT_LINE_MAX_CHARS,
   type AgentId,
+  CODEX_GATE_MISSING_LEAD,
+  CODEX_GATE_UNTRUSTED_LEAD,
   type HilId,
   type Policy,
   type Question,
@@ -45,7 +48,7 @@ import { makeEmitter } from '../events/producers';
 import { RoutedEventService } from '../events/service';
 import { stoppedByHuman } from '../events/wake';
 import { GateService } from '../gates/service';
-import { CODEX_UNGATED_REASON, HookSightings } from '../hook/codex';
+import { CODEX_UNGATED_REASON, HookSightings, installCodexGate } from '../hook/codex';
 import { routeCall } from '../hook/route-band';
 import { InboxService } from '../inbox/service';
 import { runInit } from '../init';
@@ -155,6 +158,24 @@ function buildAttachService(
   });
 }
 
+/**
+ * T512: `agile codex install-gate` into `codexHome` for `agileHome`, then
+ * Codex's own trust of each entry (what `/hooks` writes), beside the
+ * project trust already in its `config.toml`.
+ */
+function trustCodexGate(codexHome: string, agileHome: string): void {
+  installCodexGate({ codexHome, script: { agileBin: 'agile', home: agileHome, repoRoots: [] } });
+  const hooks = join(codexHome, 'hooks.json');
+  const state = [0, 1, 2]
+    .map(
+      (i) =>
+        `[hooks.state.${JSON.stringify(`${hooks}:pre_tool_use:${i}:0`)}]\ntrusted_hash = "sha256:00"\n`,
+    )
+    .join('');
+  const config = join(codexHome, 'config.toml');
+  writeFileSync(config, `${existsSync(config) ? readFileSync(config, 'utf8') : ''}${state}`);
+}
+
 async function waitFor(
   predicate: () => boolean,
   { timeoutMs = 20_000, intervalMs = 20 }: { timeoutMs?: number; intervalMs?: number } = {},
@@ -198,6 +219,8 @@ beforeEach(() => {
   const init = runInit(home);
   store = StateStore.open(init.stateRoot);
   streams = new StreamService(store);
+  // T512: Codex's user-level gate, installed and trusted in that Codex home.
+  trustCodexGate(codexHome, home);
   questions = new QuestionService(store, streams, {
     deliver: (sessionId, question) => attachService.deliverAnswer(sessionId, question),
   });
@@ -5215,78 +5238,146 @@ describe("T506: Codex's own PreToolUse gate", () => {
     fakeProviderFor(ACP_PROVIDERS.codex, script);
   const inbox = () => new InboxService({ streams, questions, gates });
 
-  test('a Codex worker gets its hook at the repo root (T511), out of git status; its reviewer the same gate', async () => {
-    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+  test('T512: a Codex worker runs under the user-level gate: the home script names every repo, nothing lands in the repo; its reviewer the same', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'agile-attach-repo2-'));
+    await store.putRepos({
+      demo: { path: repo, protected_branches: ['main'] },
+      second: { path: other, protected_branches: ['main'] },
+    });
     attachService = buildAttachService(codexProvider(SPEAKS_THEN_HANGS));
     const stream = await makeStream('demo');
     const { stream: updated } = await attachService.attach(stream.id, { vendor: 'codex' });
     const worktree = updated.worktree ?? '';
     expect(worktree.startsWith(join(repo, '.worktrees'))).toBe(true);
-    // T511: Codex reads a worktree's project hooks from its main repo (§C5 round 4).
-    const hooks = join(repo, '.codex', 'hooks.json');
-    expect(existsSync(hooks)).toBe(true);
+    // The script the trusted entries run: rewritten for this daemon's CLI, home and repos.
+    const script = join(home, 'agile-pre-tool-use.sh');
+    const body = readFileSync(script, 'utf8');
+    const last = body.trimEnd().split('\n').at(-1) ?? '';
+    expect(last).toContain(` hook pre-tool-use --vendor codex --home ${home} `);
+    expect(last).toContain(` --repo ${repo}`);
+    expect(last).toContain(` --repo ${other}`);
+    expect(last.endsWith(' || exit 2')).toBe(true);
+    expect(statSync(script).mode & 0o111).not.toBe(0);
+    // Codex's hooks.json is the operator's: a start never writes it.
+    const hooks = readFileSync(join(codexHome, 'hooks.json'), 'utf8');
+    // No project hook anywhere: not at the repo root, not in the worktree.
+    expect(existsSync(join(repo, '.codex'))).toBe(false);
     expect(existsSync(join(worktree, '.codex'))).toBe(false);
-    const file = JSON.parse(readFileSync(hooks, 'utf8')) as {
-      hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
-    };
-    expect(file.hooks.PreToolUse.map((m) => m.matcher)).toEqual([
-      'Bash',
-      'apply_patch|Edit|Write',
-      'mcp__.*',
-    ]);
-    const script = file.hooks.PreToolUse[0]?.hooks[0]?.command ?? '';
-    expect(script).toBe(join(repo, '.codex', 'agile-pre-tool-use.sh'));
-    expect(readFileSync(script, 'utf8')).toContain(
-      `hook pre-tool-use --vendor codex --repo ${repo} || exit 2`,
-    );
-    // Neither the repo nor the worktree shows it.
     expect(git(['status', '--porcelain'], repo)).toBe('');
-    expect(git(['status', '--porcelain'], worktree)).not.toContain('.codex');
-    const before = readFileSync(hooks, 'utf8');
+    const inode = statSync(script).ino;
     await attachService.stop(stream.id);
 
-    // The read-only reviewer in the same worktree: the same file, the same bytes.
+    // The read-only reviewer in the same worktree: the same script, not rewritten.
     const review = await attachService.attach(stream.id, { role: 'reviewer', vendor: 'codex' });
     expect(review.session.role).toBe('reviewer');
     expect(review.session.worktree).toBe(worktree);
-    expect(readFileSync(hooks, 'utf8')).toBe(before);
+    expect(readFileSync(script, 'utf8')).toBe(body);
+    expect(statSync(script).ino).toBe(inode);
     await attachService.stop(stream.id);
-
-    // A second Codex node in the repo shares the file: still one set of our matchers.
-    const other = await makeStream('demo');
-    await attachService.attach(other.id, { vendor: 'codex' });
-    expect(readFileSync(hooks, 'utf8')).toBe(before);
-    await attachService.stop(other.id);
+    expect(readFileSync(join(codexHome, 'hooks.json'), 'utf8')).toBe(hooks);
+    rmSync(other, { recursive: true, force: true });
   }, 30_000);
 
-  test('a Codex node with no repo keeps the hook in its own session dir, every call gated', async () => {
+  test('T512: a Codex node with no repo runs in its session dir under the home, which the script gates; no .codex is written there', async () => {
     attachService = buildAttachService(codexProvider(SPEAKS_THEN_HANGS));
     const stream = await makeStream();
     const { session } = await attachService.attach(stream.id, { vendor: 'codex' });
     const cwd = join(home, 'sessions', session.id);
-    const script = join(cwd, '.codex', 'agile-pre-tool-use.sh');
-    expect(existsSync(join(cwd, '.codex', 'hooks.json'))).toBe(true);
-    expect(readFileSync(script, 'utf8')).toContain('hook pre-tool-use --vendor codex || exit 2');
-    expect(readFileSync(script, 'utf8')).not.toContain('--repo');
+    expect(existsSync(join(cwd, '.codex'))).toBe(false);
+    expect(readFileSync(join(home, 'agile-pre-tool-use.sh'), 'utf8')).toContain(
+      `--vendor codex --home ${home} || exit 2`,
+    );
     await attachService.stop(stream.id);
   }, 30_000);
 
-  test('a repo that tracks .codex/hooks.json is refused with a clear message, never changed', async () => {
+  test("T512: a start sweeps T506/T511's files from the repo root, keeping the operator's hooks; a tracked file is left alone", async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const legacyScript = join(repo, '.codex', 'agile-pre-tool-use.sh');
+    const theirs = { type: 'command', command: '/home/p/bin/audit.sh' };
+    mkdirSync(join(repo, '.codex'));
+    writeFileSync(
+      join(repo, '.codex', 'hooks.json'),
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: 'Bash', hooks: [theirs] },
+            {
+              matcher: 'Bash',
+              hooks: [{ type: 'command', command: legacyScript, statusMessage: 'agile gate' }],
+            },
+          ],
+        },
+      }),
+    );
+    writeFileSync(legacyScript, '#!/bin/sh\nexit 2\n');
+    attachService = buildAttachService(codexProvider(SPEAKS_THEN_HANGS));
+    const stream = await makeStream('demo');
+    await attachService.attach(stream.id, { vendor: 'codex' });
+    expect(JSON.parse(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8'))).toEqual({
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [theirs] }] },
+    });
+    expect(existsSync(legacyScript)).toBe(false);
+    await attachService.stop(stream.id);
+
+    // A repo that tracks its .codex/hooks.json: left as it is, and the start runs.
+    rmSync(join(repo, '.codex'), { recursive: true, force: true });
     mkdirSync(join(repo, '.codex'));
     writeFileSync(join(repo, '.codex', 'hooks.json'), '{"theirs":true}\n');
     git(['add', '-A']);
     git(['commit', '-q', '-m', 'their codex hooks']);
-    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
-    attachService = buildAttachService(codexProvider());
-    const stream = await makeStream('demo');
-    const expected = `${repo} tracks .codex/hooks.json; Codex's gate would change a tracked file`;
-    await expect(attachService.attach(stream.id, { vendor: 'codex' })).rejects.toThrow(expected);
-    const after = streams.get(stream.id);
-    expect(after.agent.status).toBe('blocked');
-    expect(after.agent.progress).toContain(expected);
+    const tracked = await makeStream('demo');
+    const { session } = await attachService.attach(tracked.id, { vendor: 'codex' });
+    expect(session.status).not.toBe('error');
     expect(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8')).toBe('{"theirs":true}\n');
-    // T513: a start that never ran says no "attached".
-    expect(threadBodies(stream.id).filter((b) => / attached: /.test(b))).toEqual([]);
+    await attachService.stop(tracked.id);
+  }, 30_000);
+
+  test('T512: a start is refused while the gate is not installed, or not trusted; Needs me says how to fix each', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    // A Codex home that trusts the project but has no gate.
+    const bare = join(scratch, 'codex-bare');
+    mkdirSync(bare, { recursive: true });
+    writeFileSync(
+      join(bare, 'config.toml'),
+      `[projects.${JSON.stringify(realpathSync(tmpdir()))}]\ntrust_level = "trusted"\n`,
+    );
+    attachService = buildAttachService(codexProvider(), { codexHome: bare });
+    const missing = await makeStream('demo');
+    await expect(attachService.attach(missing.id, { vendor: 'codex' })).rejects.toThrow(
+      CODEX_GATE_MISSING_LEAD,
+    );
+    const after = streams.get(missing.id);
+    expect(after.sessions.map((s) => s.status)).toEqual(['error']);
+    expect(after.agent.status).toBe('blocked');
+    expect(
+      after.agent.progress?.startsWith(`${FAILED_START_PREFIX}${CODEX_GATE_MISSING_LEAD}`),
+    ).toBe(true);
+    expect(threadBodies(missing.id).filter((b) => / attached: /.test(b))).toEqual([]);
+    expect(
+      inbox()
+        .list()
+        .find((i) => i.stream === missing.id)?.kind,
+    ).toBe('blocked');
+    // Nothing was written for a start that never ran: not Codex's hooks.json, not the script.
+    expect(existsSync(join(bare, 'hooks.json'))).toBe(false);
+
+    // Installed, not yet trusted in /hooks.
+    installCodexGate({ codexHome: bare, script: { agileBin: 'agile', home, repoRoots: [] } });
+    const untrusted = await makeStream('demo');
+    await expect(attachService.attach(untrusted.id, { vendor: 'codex' })).rejects.toThrow(
+      `${CODEX_GATE_UNTRUSTED_LEAD} (0 of 3 trusted)`,
+    );
+    expect(streams.get(untrusted.id).agent.progress).toStartWith(
+      `${FAILED_START_PREFIX}${CODEX_GATE_UNTRUSTED_LEAD}`,
+    );
+
+    // Trusted: it starts.
+    await attachService.stopAll();
+    trustCodexGate(bare, home);
+    attachService = buildAttachService(codexProvider(SPEAKS_THEN_HANGS), { codexHome: bare });
+    const { session } = await attachService.attach(untrusted.id, { vendor: 'codex' });
+    expect(session.status).not.toBe('error');
+    await attachService.stop(untrusted.id);
   }, 30_000);
 
   test('a worktree Codex does not trust is refused, never started ungated; Needs me says how to fix it', async () => {
@@ -5306,9 +5397,9 @@ describe("T506: Codex's own PreToolUse gate", () => {
     expect(after.sessions[0]?.ended_reason).toContain(expected);
     expect(after.agent.status).toBe('blocked');
     expect(after.agent.progress?.startsWith(`${FAILED_START_PREFIX}${expected}`)).toBe(true);
-    // Nothing ran: no hook file was written for a session that never started.
-    expect(existsSync(join(repo, '.codex', 'hooks.json'))).toBe(false);
-    expect(existsSync(join(after.worktree ?? '', '.codex', 'hooks.json'))).toBe(false);
+    // Nothing ran: no gate file was written for a session that never started.
+    expect(existsSync(join(repo, '.codex'))).toBe(false);
+    expect(existsSync(join(after.worktree ?? '', '.codex'))).toBe(false);
     const item = inbox()
       .list()
       .find((i) => i.stream === stream.id);
@@ -5346,6 +5437,8 @@ describe("T506: Codex's own PreToolUse gate", () => {
       join(untrusted, 'config.toml'),
       `[projects."${repo}"]\ntrust_level = "trusted"\n`,
     );
+    // T512: and its gate, installed and trusted.
+    trustCodexGate(untrusted, home);
     await attachService.stopAll();
     attachService = buildAttachService(codexProvider(SPEAKS_THEN_HANGS), { codexHome: untrusted });
     const { session } = await attachService.attach(stream.id, { vendor: 'codex' });

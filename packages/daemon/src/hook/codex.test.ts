@@ -1,6 +1,9 @@
 /**
- * T506: Codex's own PreToolUse gate (`codex.ts`): the hooks.json writer,
- * the trust read of `$CODEX_HOME/config.toml`, the input translation, and
+ * T506: Codex's own PreToolUse gate (`codex.ts`). T512: the gate script in
+ * the agile home, `install-gate`'s merge into `$CODEX_HOME/hooks.json`, the
+ * start check of its entries and their per-hook trust, the legacy sweep, and
+ * which calls the CLI gates; T506's project trust read of
+ * `$CODEX_HOME/config.toml`, the input translation, and
  * Codex's calls through the same `HookService` decision as Claude's. No
  * vendor, no network: Codex's measured input shape (spike-findings §C5) is
  * written out by hand.
@@ -24,6 +27,8 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type AgentRecord,
+  CODEX_GATE_MISSING_LEAD,
+  CODEX_GATE_UNTRUSTED_LEAD,
   type KnowledgeItem,
   type RulePattern,
   ulid,
@@ -38,18 +43,21 @@ import {
   CODEX_UNGATED_REASON,
   CodexGateWatch,
   HookSightings,
+  codexCallGated,
+  codexGateRefusal,
+  codexGateStatus,
   codexHomeDir,
-  codexHookPlacement,
   codexToClaudePayload,
   codexTrustFor,
   codexTrustTarget,
   codexUntrustedMessage,
+  installCodexGate,
   patchPaths,
   renderCodexGateScript,
-  writeCodexHooks,
+  sweepLegacyCodexHooks,
+  writeCodexGateScript,
 } from './codex';
 import { HookService } from './service';
-import { excludeFromGit } from './settings';
 
 let dir: string;
 
@@ -92,297 +100,493 @@ function codexInput(cwd: string, tool_name: string, tool_input: Record<string, u
   };
 }
 
-describe('the hooks.json writer', () => {
-  test('writes the gate script and PreToolUse matchers for shell, edits and MCP', () => {
-    const wt = join(dir, 'wt');
-    initRepo(wt);
-    const written = writeCodexHooks(wt, { agileBin: 'agile', socketPath: '/tmp/agile s.sock' });
+/** A Codex home with Codex's own trust records for `slots` (`i:j` of `PreToolUse`) of its `hooks.json`. */
+function trustSlots(codexHome: string, slots: string[], hooksPath = join(codexHome, 'hooks.json')) {
+  const toml = slots
+    .map(
+      (slot) =>
+        `[hooks.state.${JSON.stringify(`${hooksPath}:pre_tool_use:${slot}`)}]\ntrusted_hash = "sha256:${'ab'.repeat(16)}"\n`,
+    )
+    .join('\n');
+  writeFileSync(join(codexHome, 'config.toml'), `model = "gpt-5.5"\n${toml}`);
+}
 
-    const script = join(wt, '.codex', 'agile-pre-tool-use.sh');
-    const file = JSON.parse(readFileSync(join(wt, '.codex', 'hooks.json'), 'utf8'));
-    expect(file).toEqual(written);
-    expect(file).toEqual({
-      hooks: {
-        PreToolUse: [
-          {
-            matcher: 'Bash',
-            hooks: [{ type: 'command', command: script, statusMessage: 'agile gate' }],
-          },
-          {
-            matcher: 'apply_patch|Edit|Write',
-            hooks: [{ type: 'command', command: script, statusMessage: 'agile gate' }],
-          },
-          {
-            matcher: 'mcp__.*',
-            hooks: [{ type: 'command', command: script, statusMessage: 'agile gate' }],
-          },
-        ],
+const GATE = (home: string) =>
+  CODEX_HOOK_MATCHERS.map((matcher) => ({
+    matcher,
+    hooks: [
+      {
+        type: 'command',
+        command: join(home, 'agile-pre-tool-use.sh'),
+        statusMessage: 'agile gate',
       },
-    });
-    expect(CODEX_HOOK_MATCHERS).toEqual(['Bash', 'apply_patch|Edit|Write', 'mcp__.*']);
+    ],
+  }));
 
-    // The script: the socket in its env (quoted), the CLI in Codex's mode, exit 2 if it can't run.
-    const body = readFileSync(script, 'utf8');
+describe('T512: the gate script in the agile home', () => {
+  test('renders the CLI with --home and every repo root, quoted, sorted once; exit 2 if it cannot run', () => {
+    const body = renderCodexGateScript({
+      agileBin: 'agile',
+      socketPath: '/tmp/agile s.sock',
+      home: '/h/agile home',
+      repoRoots: ['/r/b', "/r/it's a", '/r/b'],
+    });
     expect(body.startsWith('#!/bin/sh\n')).toBe(true);
-    expect(body).toContain(
-      "AGILE_SOCKET_PATH='/tmp/agile s.sock' agile hook pre-tool-use --vendor codex || exit 2",
+    expect(body.trimEnd().split('\n').at(-1)).toBe(
+      "AGILE_SOCKET_PATH='/tmp/agile s.sock' agile hook pre-tool-use --vendor codex --home '/h/agile home' --repo /r/b --repo '/r/it'\\''s a' || exit 2",
     );
-    // No session id in the file: a worker and its reviewer share the worktree.
+    // No session id in the file: every Codex session shares it.
     expect(body).not.toContain('AGILE_AGENT');
-    expect(statSync(script).mode & 0o111).not.toBe(0);
+    // The same set in another order is the same bytes.
+    expect(
+      renderCodexGateScript({
+        agileBin: 'agile',
+        socketPath: '/tmp/agile s.sock',
+        home: '/h/agile home',
+        repoRoots: ["/r/it's a", '/r/b'],
+      }),
+    ).toBe(body);
+    // No repo registered: the home only.
+    expect(renderCodexGateScript({ agileBin: 'agile', home: '/h', repoRoots: [] })).toContain(
+      '\nagile hook pre-tool-use --vendor codex --home /h || exit 2\n',
+    );
   });
 
-  test('the script runs: stdin reaches the CLI, and a CLI that cannot run exits 2', () => {
+  test('the script runs: stdin and every argument reach the CLI, and a CLI that cannot run exits 2', () => {
     const fake = join(dir, 'fake-agile');
     writeFileSync(
       fake,
-      `#!/bin/sh\ncat > ${join(dir, 'stdin.json')}\necho "$AGILE_SOCKET_PATH $*" > ${join(dir, 'argv.txt')}\nexit 0\n`,
+      `#!/bin/sh\ncat > ${join(dir, 'stdin.json')}\nprintf '%s\\n' "$AGILE_SOCKET_PATH" "$@" > ${join(dir, 'argv.txt')}\nexit 0\n`,
     );
     chmodSync(fake, 0o755);
     const script = join(dir, 'gate.sh');
-    writeFileSync(script, renderCodexGateScript({ agileBin: fake, socketPath: '/s.sock' }));
+    writeFileSync(
+      script,
+      renderCodexGateScript({
+        agileBin: fake,
+        socketPath: '/s.sock',
+        home: '/h',
+        repoRoots: ['/r/a,b', "/r/it's here"],
+      }),
+    );
     chmodSync(script, 0o755);
     const ok = Bun.spawnSync([script], { stdin: Buffer.from('{"tool_name":"Bash"}') });
     expect(ok.exitCode).toBe(0);
     expect(readFileSync(join(dir, 'stdin.json'), 'utf8')).toBe('{"tool_name":"Bash"}');
-    expect(readFileSync(join(dir, 'argv.txt'), 'utf8').trim()).toBe(
-      '/s.sock hook pre-tool-use --vendor codex',
-    );
-
-    // Codex runs a call whose hook exited with anything but 2: a missing CLI must block.
-    writeFileSync(script, renderCodexGateScript({ agileBin: join(dir, 'missing-agile') }));
-    const missing = Bun.spawnSync([script], { stdin: Buffer.from('{}'), stderr: 'pipe' });
-    expect(missing.exitCode).toBe(2);
-  });
-
-  test("keeps other keys, events and someone else's PreToolUse matchers, is idempotent, and git-ignores .codex/", () => {
-    const wt = join(dir, 'wt');
-    initRepo(wt);
-    mkdirSync(join(wt, '.codex'), { recursive: true });
-    writeFileSync(
-      join(wt, '.codex', 'hooks.json'),
-      JSON.stringify({
-        mine: true,
-        hooks: { Stop: [{ hooks: [] }], PreToolUse: [{ matcher: 'x', hooks: [] }] },
-      }),
-    );
-    writeCodexHooks(wt, { agileBin: 'agile' });
-    const first = readFileSync(join(wt, '.codex', 'hooks.json'), 'utf8');
-    const parsed = JSON.parse(first);
-    expect(parsed.mine).toBe(true);
-    expect(parsed.hooks.Stop).toEqual([{ hooks: [] }]);
-    // T511: their own matcher stays, ours follow it.
-    expect(parsed.hooks.PreToolUse.map((m: { matcher: string }) => m.matcher)).toEqual([
-      'x',
-      ...CODEX_HOOK_MATCHERS,
-    ]);
-    writeCodexHooks(wt, { agileBin: 'agile' });
-    expect(readFileSync(join(wt, '.codex', 'hooks.json'), 'utf8')).toBe(first);
-
-    // Out of git status, as Claude's `.claude/` is.
-    const status = Bun.spawnSync(['git', 'status', '--porcelain'], { cwd: wt, stdout: 'pipe' });
-    expect(new TextDecoder().decode(status.stdout)).not.toContain('.codex');
-    const exclude = readFileSync(join(wt, '.git', 'info', 'exclude'), 'utf8');
-    expect(exclude.split('\n').filter((line) => line === '.codex/')).toHaveLength(1);
-  });
-
-  test('a repo that tracks .codex/hooks.json is refused, never changed', () => {
-    const wt = join(dir, 'wt');
-    initRepo(wt);
-    mkdirSync(join(wt, '.codex'));
-    writeFileSync(join(wt, '.codex', 'hooks.json'), '{"theirs":true}\n');
-    git(['add', '-A'], wt);
-    git(['commit', '-q', '-m', 'their hooks'], wt);
-    expect(() => writeCodexHooks(wt, { agileBin: 'agile' })).toThrow(
-      /tracks \.codex\/hooks\.json; Codex's gate would change a tracked file/,
-    );
-    expect(readFileSync(join(wt, '.codex', 'hooks.json'), 'utf8')).toBe('{"theirs":true}\n');
-  });
-});
-
-describe("T511: the hook at the repo root (Codex reads a worktree's hooks from its main repo)", () => {
-  /** A repo with a real `git worktree add` under `.worktrees/`, as the daemon makes one. */
-  function repoWithWorktree(): { repo: string; wt: string } {
-    const repo = join(dir, 'repo');
-    initRepo(repo);
-    writeFileSync(join(repo, '.git', 'info', 'exclude'), '.worktrees/\n');
-    const wt = join(repo, '.worktrees', '01ABC-csv');
-    git(['worktree', 'add', '-q', '-b', 'stream/01ABC-csv', wt], repo);
-    return { repo, wt };
-  }
-
-  function status(cwd: string): string {
-    const out = Bun.spawnSync(['git', 'status', '--porcelain', '--untracked-files=all'], {
-      cwd,
-      stdout: 'pipe',
-    });
-    return new TextDecoder().decode(out.stdout);
-  }
-
-  test('writes hooks.json and the script at <repo>/.codex/, the script passing --repo; both checkouts stay clean', () => {
-    const { repo, wt } = repoWithWorktree();
-    const placement = codexHookPlacement(wt, repo);
-    expect(placement).toEqual({ root: repo, repoRoot: repo });
-    writeCodexHooks(placement.root, {
-      agileBin: 'agile',
-      socketPath: '/s.sock',
-      repoRoot: repo,
-    });
-    const script = join(repo, '.codex', 'agile-pre-tool-use.sh');
-    const file = JSON.parse(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8'));
-    expect(file.hooks.PreToolUse).toEqual(
-      CODEX_HOOK_MATCHERS.map((matcher) => ({
-        matcher,
-        hooks: [{ type: 'command', command: script, statusMessage: 'agile gate' }],
-      })),
-    );
-    expect(readFileSync(script, 'utf8')).toContain(
-      `AGILE_SOCKET_PATH=/s.sock agile hook pre-tool-use --vendor codex --repo ${repo} || exit 2`,
-    );
-    expect(statSync(script).mode & 0o111).not.toBe(0);
-    // No copy in the worktree: Codex never reads it there.
-    expect(existsSync(join(wt, '.codex'))).toBe(false);
-    // `.codex/` is excluded in the common git dir, which the worktree shares.
-    const exclude = readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8');
-    expect(exclude.split('\n').filter((line) => line === '.codex/')).toHaveLength(1);
-    expect(status(repo)).toBe('');
-    expect(status(wt)).toBe('');
-  });
-
-  test("excludeFromGit from a worktree writes the common git dir's info/exclude", () => {
-    const { repo, wt } = repoWithWorktree();
-    excludeFromGit(wt, '.codex/');
-    expect(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8')).toContain('.codex/\n');
-    expect(existsSync(join(repo, '.git', 'worktrees', '01ABC-csv', 'info', 'exclude'))).toBe(false);
-    mkdirSync(join(repo, '.codex'));
-    writeFileSync(join(repo, '.codex', 'hooks.json'), '{}');
-    expect(status(repo)).toBe('');
-  });
-
-  test('several Codex nodes in one repo share one file: same bytes, never rewritten when unchanged', () => {
-    const { repo, wt } = repoWithWorktree();
-    const second = join(repo, '.worktrees', '01DEF-other');
-    git(['worktree', 'add', '-q', '-b', 'stream/01DEF-other', second], repo);
-    const options = { agileBin: 'agile', socketPath: '/s.sock', repoRoot: repo };
-    writeCodexHooks(codexHookPlacement(wt, repo).root, options);
-    const hooks = join(repo, '.codex', 'hooks.json');
-    const script = join(repo, '.codex', 'agile-pre-tool-use.sh');
-    const before = { hooks: readFileSync(hooks, 'utf8'), script: readFileSync(script, 'utf8') };
-    const inodes = { hooks: statSync(hooks).ino, script: statSync(script).ino };
-    writeCodexHooks(codexHookPlacement(second, repo).root, options);
-    writeCodexHooks(codexHookPlacement(wt, repo).root, options);
-    expect(readFileSync(hooks, 'utf8')).toBe(before.hooks);
-    expect(readFileSync(script, 'utf8')).toBe(before.script);
-    // Not rewritten: a Codex reading it (or running the script) is never raced.
-    expect(statSync(hooks).ino).toBe(inodes.hooks);
-    expect(statSync(script).ino).toBe(inodes.script);
-    // One set of our matchers, however many nodes wrote it.
-    expect(JSON.parse(readFileSync(hooks, 'utf8')).hooks.PreToolUse).toHaveLength(
-      CODEX_HOOK_MATCHERS.length,
-    );
-    // No temp file left behind.
-    expect(readdirSync(join(repo, '.codex')).sort()).toEqual([
-      'agile-pre-tool-use.sh',
-      'hooks.json',
-    ]);
-  });
-
-  test("merges with the operator's own hooks at the repo root, and replaces only ours on a change", () => {
-    const { repo, wt } = repoWithWorktree();
-    mkdirSync(join(repo, '.codex'));
-    const theirs = { type: 'command', command: '/home/p/bin/audit.sh' };
-    writeFileSync(
-      join(repo, '.codex', 'hooks.json'),
-      JSON.stringify({
-        hooks: {
-          PostToolUse: [{ matcher: 'Bash', hooks: [theirs] }],
-          PreToolUse: [{ matcher: 'Bash', hooks: [theirs] }],
-        },
-      }),
-    );
-    const root = codexHookPlacement(wt, repo).root;
-    writeCodexHooks(root, { agileBin: 'agile', repoRoot: repo });
-    // A new socket (a daemon restarted elsewhere) rewrites ours, theirs untouched.
-    const merged = writeCodexHooks(root, {
-      agileBin: 'agile',
-      socketPath: '/n.sock',
-      repoRoot: repo,
-    });
-    const script = join(repo, '.codex', 'agile-pre-tool-use.sh');
-    expect(merged.hooks.PostToolUse).toEqual([{ matcher: 'Bash', hooks: [theirs] }]);
-    expect(merged.hooks.PreToolUse).toEqual([
-      { matcher: 'Bash', hooks: [theirs] },
-      ...CODEX_HOOK_MATCHERS.map((matcher) => ({
-        matcher,
-        hooks: [{ type: 'command', command: script, statusMessage: 'agile gate' }],
-      })),
-    ]);
-    expect(readFileSync(script, 'utf8')).toContain('AGILE_SOCKET_PATH=/n.sock');
-  });
-
-  test('an unreadable hooks.json at the root is refused, never overwritten', () => {
-    const { repo, wt } = repoWithWorktree();
-    mkdirSync(join(repo, '.codex'));
-    writeFileSync(join(repo, '.codex', 'hooks.json'), '{"hooks": ');
-    const root = codexHookPlacement(wt, repo).root;
-    expect(() => writeCodexHooks(root, { agileBin: 'agile', repoRoot: repo })).toThrow(
-      `${join(repo, '.codex', 'hooks.json')} isn't valid JSON; Codex's gate can't be merged into it`,
-    );
-    expect(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8')).toBe('{"hooks": ');
-    expect(existsSync(join(repo, '.codex', 'agile-pre-tool-use.sh'))).toBe(false);
-  });
-
-  test('a repo that tracks the script or hooks.json at its root is refused, never changed', () => {
-    const { repo, wt } = repoWithWorktree();
-    mkdirSync(join(repo, '.codex'));
-    writeFileSync(join(repo, '.codex', 'agile-pre-tool-use.sh'), '#!/bin/sh\nexit 0\n');
-    git(['add', '-A'], repo);
-    git(['commit', '-q', '-m', 'their script'], repo);
-    const root = codexHookPlacement(wt, repo).root;
-    expect(() => writeCodexHooks(root, { agileBin: 'agile', repoRoot: repo })).toThrow(
-      `${repo} tracks .codex/agile-pre-tool-use.sh; Codex's gate would change a tracked file`,
-    );
-    expect(readFileSync(join(repo, '.codex', 'agile-pre-tool-use.sh'), 'utf8')).toBe(
-      '#!/bin/sh\nexit 0\n',
-    );
-    expect(existsSync(join(repo, '.codex', 'hooks.json'))).toBe(false);
-  });
-
-  test('placement: a session with no repo keeps its own cwd; a cwd outside <repo>/.worktrees/ is refused', () => {
-    const { repo, wt } = repoWithWorktree();
-    const sessionDir = join(dir, 'home', 'sessions', '01XYZ');
-    expect(codexHookPlacement(sessionDir)).toEqual({ root: sessionDir });
-    expect(() => codexHookPlacement(repo, repo)).toThrow(
-      `Codex's gate can't cover ${repo}: it isn't a worktree under ${join(repo, '.worktrees')}`,
-    );
-    expect(() => codexHookPlacement(join(dir, 'elsewhere'), repo)).toThrow(
-      /isn't a worktree under/,
-    );
-    expect(() => codexHookPlacement(join(repo, '.worktrees'), repo)).toThrow(
-      /isn't a worktree under/,
-    );
-    // Through a symlink to the worktree: its real path is under .worktrees/.
-    const link = join(dir, 'wt-link');
-    symlinkSync(wt, link);
-    expect(codexHookPlacement(link, repo)).toEqual({ root: repo, repoRoot: repo });
-  });
-
-  test('the script hands --repo to the CLI, quoted', () => {
-    const fake = join(dir, 'fake-agile');
-    writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" > ${join(dir, 'argv.txt')}\nexit 0\n`);
-    chmodSync(fake, 0o755);
-    const script = join(dir, 'gate.sh');
-    writeFileSync(script, renderCodexGateScript({ agileBin: fake, repoRoot: "/r/it's here" }));
-    chmodSync(script, 0o755);
-    expect(Bun.spawnSync([script], { stdin: Buffer.from('{}') }).exitCode).toBe(0);
     expect(readFileSync(join(dir, 'argv.txt'), 'utf8').trim().split('\n')).toEqual([
+      '/s.sock',
       'hook',
       'pre-tool-use',
       '--vendor',
       'codex',
+      '--home',
+      '/h',
+      '--repo',
+      '/r/a,b',
       '--repo',
       "/r/it's here",
     ]);
+    // Codex runs a call whose hook exited with anything but 2: a missing CLI must block.
+    writeFileSync(
+      script,
+      renderCodexGateScript({ agileBin: join(dir, 'missing-agile'), home: '/h', repoRoots: [] }),
+    );
+    const missing = Bun.spawnSync([script], { stdin: Buffer.from('{}'), stderr: 'pipe' });
+    expect(missing.exitCode).toBe(2);
+  });
+
+  test('written into the home, 0755, only when it changed (an unchanged file is never rewritten)', () => {
+    const home = join(dir, 'home');
+    mkdirSync(home);
+    const options = { agileBin: 'agile', socketPath: '/s.sock', home, repoRoots: ['/r'] };
+    const first = writeCodexGateScript(options);
+    expect(first).toEqual({ path: join(home, 'agile-pre-tool-use.sh'), changed: true });
+    expect(statSync(first.path).mode & 0o777).toBe(0o755);
+    const inode = statSync(first.path).ino;
+    expect(writeCodexGateScript(options).changed).toBe(false);
+    expect(statSync(first.path).ino).toBe(inode);
+    // A new repo (or CLI path, or socket) is picked up: renamed into place.
+    expect(writeCodexGateScript({ ...options, repoRoots: ['/r', '/s'] }).changed).toBe(true);
+    expect(readFileSync(first.path, 'utf8')).toContain('--repo /r --repo /s || exit 2');
+    expect(statSync(first.path).mode & 0o777).toBe(0o755);
+    expect(readdirSync(home)).toEqual(['agile-pre-tool-use.sh']);
+  });
+});
+
+describe('T512: agile codex install-gate (installCodexGate)', () => {
+  function setup() {
+    const home = join(dir, 'home');
+    mkdirSync(home);
+    const codexHome = join(dir, 'codex');
+    const script = { agileBin: 'agile', socketPath: '/s.sock', home, repoRoots: [] as string[] };
+    return { home, codexHome, script, hooks: join(codexHome, 'hooks.json') };
+  }
+
+  test('fresh: creates $CODEX_HOME/hooks.json with the three entries naming the home script, and the script', () => {
+    const { home, codexHome, script, hooks } = setup();
+    const result = installCodexGate({ codexHome, script });
+    expect(JSON.parse(readFileSync(hooks, 'utf8'))).toEqual({ hooks: { PreToolUse: GATE(home) } });
+    expect(result).toMatchObject({
+      hooks_path: hooks,
+      hooks: 'added',
+      script_path: join(home, 'agile-pre-tool-use.sh'),
+      script: 'written',
+      swept: [],
+    });
+    expect(readFileSync(join(home, 'agile-pre-tool-use.sh'), 'utf8')).toContain(
+      `--vendor codex --home ${home} || exit 2`,
+    );
+    // Installed, not yet trusted: that is Codex's own step (/hooks).
+    expect(result.status).toMatchObject({ installed: true, trusted: false });
+    // Codex's config is never written.
+    expect(existsSync(join(codexHome, 'config.toml'))).toBe(false);
+  });
+
+  test('again: nothing is written (the same bytes, the same file)', () => {
+    const { codexHome, script, hooks } = setup();
+    installCodexGate({ codexHome, script });
+    const before = readFileSync(hooks, 'utf8');
+    const inode = statSync(hooks).ino;
+    const again = installCodexGate({ codexHome, script });
+    expect(again.hooks).toBe('unchanged');
+    expect(again.script).toBe('unchanged');
+    expect(readFileSync(hooks, 'utf8')).toBe(before);
+    expect(statSync(hooks).ino).toBe(inode);
+    expect(readdirSync(codexHome)).toEqual(['hooks.json']);
+  });
+
+  test("keeps other keys, events and someone else's matchers; an entry added after ours stays put", () => {
+    const { home, codexHome, script, hooks } = setup();
+    mkdirSync(codexHome);
+    const theirs = { type: 'command', command: '/home/p/bin/audit.sh' };
+    writeFileSync(
+      hooks,
+      JSON.stringify({
+        mine: true,
+        hooks: {
+          Stop: [{ hooks: [theirs] }],
+          PreToolUse: [{ matcher: 'Bash', hooks: [theirs] }],
+        },
+      }),
+    );
+    expect(installCodexGate({ codexHome, script }).hooks).toBe('added');
+    const merged = JSON.parse(readFileSync(hooks, 'utf8'));
+    expect(merged.mine).toBe(true);
+    expect(merged.hooks.Stop).toEqual([{ hooks: [theirs] }]);
+    expect(merged.hooks.PreToolUse).toEqual([{ matcher: 'Bash', hooks: [theirs] }, ...GATE(home)]);
+
+    // The operator adds a matcher after ours: a re-install leaves the file
+    // alone, so our entries keep their index (and Codex's trust in them).
+    merged.hooks.PreToolUse.push({ matcher: 'Read', hooks: [theirs] });
+    writeFileSync(hooks, JSON.stringify(merged, null, 2));
+    const before = readFileSync(hooks, 'utf8');
+    expect(installCodexGate({ codexHome, script }).hooks).toBe('unchanged');
+    expect(readFileSync(hooks, 'utf8')).toBe(before);
+  });
+
+  test('an old entry of ours (another script path) is replaced, not doubled', () => {
+    const { home, codexHome, script, hooks } = setup();
+    mkdirSync(codexHome);
+    writeFileSync(
+      hooks,
+      JSON.stringify({ hooks: { PreToolUse: GATE(join(dir, 'old-home', '.codex')) } }),
+    );
+    expect(installCodexGate({ codexHome, script }).hooks).toBe('added');
+    expect(JSON.parse(readFileSync(hooks, 'utf8')).hooks.PreToolUse).toEqual(GATE(home));
+  });
+
+  test('a hooks.json that is not valid JSON is refused, never overwritten, and nothing else is written', () => {
+    const { home, codexHome, script, hooks } = setup();
+    mkdirSync(codexHome);
+    writeFileSync(hooks, '{"hooks": ');
+    expect(() => installCodexGate({ codexHome, script })).toThrow(
+      `${hooks} isn't valid JSON; Codex's gate can't be merged into it`,
+    );
+    expect(readFileSync(hooks, 'utf8')).toBe('{"hooks": ');
+    expect(existsSync(join(home, 'agile-pre-tool-use.sh'))).toBe(false);
+    writeFileSync(hooks, '[1]');
+    expect(() => installCodexGate({ codexHome, script })).toThrow("isn't a JSON object");
+  });
+
+  test('sweeps the legacy repo-root files of every repo it is given', () => {
+    const { codexHome, script } = setup();
+    const repo = join(dir, 'repo');
+    initRepo(repo);
+    mkdirSync(join(repo, '.codex'));
+    writeFileSync(
+      join(repo, '.codex', 'hooks.json'),
+      JSON.stringify({ hooks: { PreToolUse: GATE(join(repo, '.codex')) } }),
+    );
+    writeFileSync(join(repo, '.codex', 'agile-pre-tool-use.sh'), '#!/bin/sh\nexit 2\n');
+    const result = installCodexGate({
+      codexHome,
+      script: { ...script, repoRoots: [repo] },
+      sweep: [repo],
+    });
+    expect(result.swept).toEqual([
+      {
+        dir: repo,
+        removed: [
+          join(repo, '.codex', 'hooks.json'),
+          join(repo, '.codex', 'agile-pre-tool-use.sh'),
+          join(repo, '.codex'),
+        ],
+      },
+    ]);
+    expect(existsSync(join(repo, '.codex'))).toBe(false);
+  });
+});
+
+describe('T512: the start check reads hooks.json and config.toml (codexGateStatus, codexGateRefusal)', () => {
+  function installed(): { home: string; codexHome: string; hooks: string } {
+    const home = join(dir, 'home');
+    mkdirSync(home, { recursive: true });
+    const codexHome = join(dir, 'codex');
+    installCodexGate({ codexHome, script: { agileBin: 'agile', home, repoRoots: [] } });
+    return { home, codexHome, hooks: join(codexHome, 'hooks.json') };
+  }
+
+  test('missing: no hooks.json, or none of ours in it', () => {
+    const home = join(dir, 'home');
+    const codexHome = join(dir, 'codex');
+    mkdirSync(codexHome, { recursive: true });
+    const refusal = codexGateRefusal(codexHome, home);
+    expect(refusal).toBe(
+      `${CODEX_GATE_MISSING_LEAD} (no agile gate entries in ${join(codexHome, 'hooks.json')})`,
+    );
+    expect(CODEX_GATE_MISSING_LEAD).toBe(
+      "Codex's gate isn't installed: run `agile codex install-gate`, then trust it in Codex (/hooks)",
+    );
+    expect(codexGateStatus(codexHome, home)).toEqual({
+      hooks_path: join(codexHome, 'hooks.json'),
+      script_path: join(home, 'agile-pre-tool-use.sh'),
+      installed: false,
+      trusted: false,
+      entries: CODEX_HOOK_MATCHERS.map((matcher) => ({ matcher, trusted: false })),
+    });
+    // Someone else's hooks only, or two of our three: still missing.
+    writeFileSync(
+      join(codexHome, 'hooks.json'),
+      JSON.stringify({ hooks: { PreToolUse: GATE(home).slice(0, 2) } }),
+    );
+    expect(codexGateRefusal(codexHome, home)?.startsWith(CODEX_GATE_MISSING_LEAD)).toBe(true);
+    // Not valid JSON: missing, and says why.
+    writeFileSync(join(codexHome, 'hooks.json'), '{');
+    expect(codexGateRefusal(codexHome, home)).toBe(
+      `${CODEX_GATE_MISSING_LEAD} (${join(codexHome, 'hooks.json')} isn't valid JSON)`,
+    );
+  });
+
+  test('untrusted: installed, but Codex holds no trusted_hash for them', () => {
+    const { home, codexHome } = installed();
+    expect(codexGateRefusal(codexHome, home)).toBe(`${CODEX_GATE_UNTRUSTED_LEAD} (0 of 3 trusted)`);
+    expect(CODEX_GATE_UNTRUSTED_LEAD).toBe(
+      "Codex's gate isn't trusted yet: in Codex run /hooks and trust the three agile gate hooks",
+    );
+    // A project trust alone is not a hook's trust; nor is a state entry with no hash.
+    writeFileSync(
+      join(codexHome, 'config.toml'),
+      `[projects."/"]\ntrust_level = "trusted"\n[hooks.state.${JSON.stringify(`${join(codexHome, 'hooks.json')}:pre_tool_use:0:0`)}]\nenabled = true\n`,
+    );
+    expect(codexGateStatus(codexHome, home).entries.map((e) => e.trusted)).toEqual([
+      false,
+      false,
+      false,
+    ]);
+    // Not valid TOML: untrusted, never thrown.
+    writeFileSync(join(codexHome, 'config.toml'), '[hooks.state.\n');
+    expect(codexGateRefusal(codexHome, home)?.startsWith(CODEX_GATE_UNTRUSTED_LEAD)).toBe(true);
+  });
+
+  test('partially trusted: each entry says which; the start is still refused', () => {
+    const { home, codexHome } = installed();
+    trustSlots(codexHome, ['0:0', '2:0']);
+    const status = codexGateStatus(codexHome, home);
+    expect(status.installed).toBe(true);
+    expect(status.trusted).toBe(false);
+    expect(status.entries).toEqual([
+      { matcher: 'Bash', index: 0, trusted: true },
+      { matcher: 'apply_patch|Edit|Write', index: 1, trusted: false },
+      { matcher: 'mcp__.*', index: 2, trusted: true },
+    ]);
+    expect(codexGateRefusal(codexHome, home)).toBe(`${CODEX_GATE_UNTRUSTED_LEAD} (2 of 3 trusted)`);
+    // A hash for another slot or another file is not one of ours.
+    trustSlots(codexHome, ['0:0', '1:1', '2:0']);
+    expect(codexGateStatus(codexHome, home).trusted).toBe(false);
+    trustSlots(codexHome, ['0:0', '1:0', '2:0'], join(dir, 'other', 'hooks.json'));
+    expect(codexGateStatus(codexHome, home).trusted).toBe(false);
+  });
+
+  test('trusted: all three, by index; the hash itself is never returned', () => {
+    const { home, codexHome } = installed();
+    trustSlots(codexHome, ['0:0', '1:0', '2:0']);
+    const status = codexGateStatus(codexHome, home);
+    expect(status).toMatchObject({ installed: true, trusted: true });
+    expect(codexGateRefusal(codexHome, home)).toBeUndefined();
+    expect(JSON.stringify(status)).not.toContain('sha256');
+    // Read only.
+    const toml = readFileSync(join(codexHome, 'config.toml'), 'utf8');
+    codexGateStatus(codexHome, home);
+    expect(readFileSync(join(codexHome, 'config.toml'), 'utf8')).toBe(toml);
+  });
+
+  test('the path in config.toml may be the real path of a symlinked Codex home', () => {
+    const { home, codexHome } = installed();
+    const link = join(dir, 'codex-link');
+    symlinkSync(codexHome, link);
+    // Codex wrote the real path; the daemon reads through the link, and the other way round.
+    trustSlots(codexHome, ['0:0', '1:0', '2:0'], join(codexHome, 'hooks.json'));
+    expect(codexGateStatus(link, home).trusted).toBe(true);
+    trustSlots(codexHome, ['0:0', '1:0', '2:0'], join(link, 'hooks.json'));
+    expect(codexGateStatus(codexHome, home).trusted).toBe(true);
+  });
+
+  test("an entry inserted before ours moves our index: Codex's trust no longer matches", () => {
+    const { home, codexHome, hooks } = installed();
+    trustSlots(codexHome, ['0:0', '1:0', '2:0']);
+    const file = JSON.parse(readFileSync(hooks, 'utf8'));
+    file.hooks.PreToolUse.unshift({ matcher: 'Read', hooks: [{ type: 'command', command: '/x' }] });
+    writeFileSync(hooks, JSON.stringify(file));
+    expect(codexGateStatus(codexHome, home).entries.map((e) => e.index)).toEqual([1, 2, 3]);
+    expect(codexGateRefusal(codexHome, home)).toBe(`${CODEX_GATE_UNTRUSTED_LEAD} (2 of 3 trusted)`);
+  });
+});
+
+describe('T512: the legacy sweep of <repo>/.codex/', () => {
+  function legacy(repo: string, file: unknown): void {
+    mkdirSync(join(repo, '.codex'), { recursive: true });
+    writeFileSync(join(repo, '.codex', 'hooks.json'), JSON.stringify(file));
+    writeFileSync(join(repo, '.codex', 'agile-pre-tool-use.sh'), '#!/bin/sh\nexit 2\n');
+  }
+
+  test("ours go, everyone else's stay (their matchers, other events), and the script goes", () => {
+    const repo = join(dir, 'repo');
+    initRepo(repo);
+    const theirs = { type: 'command', command: '/home/p/bin/audit.sh' };
+    legacy(repo, {
+      hooks: {
+        Stop: [{ hooks: [theirs] }],
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [theirs, GATE(join(repo, '.codex'))[0]?.hooks[0]] },
+          ...GATE(join(repo, '.codex')),
+        ],
+      },
+    });
+    const result = sweepLegacyCodexHooks(repo);
+    expect(result).toEqual({
+      dir: repo,
+      removed: [join(repo, '.codex', 'hooks.json'), join(repo, '.codex', 'agile-pre-tool-use.sh')],
+    });
+    expect(JSON.parse(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8'))).toEqual({
+      hooks: { Stop: [{ hooks: [theirs] }], PreToolUse: [{ matcher: 'Bash', hooks: [theirs] }] },
+    });
+    expect(existsSync(join(repo, '.codex', 'agile-pre-tool-use.sh'))).toBe(false);
+    // Again: nothing more to do.
+    expect(sweepLegacyCodexHooks(repo)).toEqual({ dir: repo, removed: [] });
+  });
+
+  test('only ours: the file, the script and the empty .codex dir all go', () => {
+    const repo = join(dir, 'repo');
+    initRepo(repo);
+    legacy(repo, { hooks: { PreToolUse: GATE(join(repo, '.codex')) } });
+    sweepLegacyCodexHooks(repo);
+    expect(existsSync(join(repo, '.codex'))).toBe(false);
+  });
+
+  test('another top-level key keeps the file; a stray file keeps the dir', () => {
+    const repo = join(dir, 'repo');
+    initRepo(repo);
+    legacy(repo, { theirs: 1, hooks: { PreToolUse: GATE(join(repo, '.codex')) } });
+    writeFileSync(join(repo, '.codex', 'notes.md'), 'mine\n');
+    sweepLegacyCodexHooks(repo);
+    expect(JSON.parse(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8'))).toEqual({
+      theirs: 1,
+      hooks: {},
+    });
+    expect(readdirSync(join(repo, '.codex')).sort()).toEqual(['hooks.json', 'notes.md']);
+  });
+
+  test('a hooks.json that is not valid JSON is left as it is, and the result says so', () => {
+    const repo = join(dir, 'repo');
+    initRepo(repo);
+    mkdirSync(join(repo, '.codex'));
+    writeFileSync(join(repo, '.codex', 'hooks.json'), '{"hooks": ');
+    const result = sweepLegacyCodexHooks(repo);
+    expect(result.left).toBe(
+      `${join(repo, '.codex', 'hooks.json')} isn't valid JSON; left as it is`,
+    );
+    expect(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8')).toBe('{"hooks": ');
+  });
+
+  test('a tracked file is left as it is', () => {
+    const repo = join(dir, 'repo');
+    initRepo(repo);
+    legacy(repo, { hooks: { PreToolUse: GATE(join(repo, '.codex')) } });
+    git(['add', '-A'], repo);
+    git(['commit', '-q', '-m', 'their codex dir'], repo);
+    const before = readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8');
+    const result = sweepLegacyCodexHooks(repo);
+    expect(result.removed).toEqual([]);
+    expect(result.left).toContain('is tracked by git; left as it is');
+    expect(readFileSync(join(repo, '.codex', 'hooks.json'), 'utf8')).toBe(before);
+    expect(existsSync(join(repo, '.codex', 'agile-pre-tool-use.sh'))).toBe(true);
+  });
+
+  test('no .codex dir: nothing to do', () => {
+    expect(sweepLegacyCodexHooks(dir)).toEqual({ dir, removed: [] });
+  });
+});
+
+describe('T512: which calls the CLI gates (codexCallGated)', () => {
+  function layout() {
+    const repo = join(dir, 'repo');
+    const wt = join(repo, '.worktrees', '01ABC-csv');
+    const home = join(dir, 'agile-home');
+    mkdirSync(join(wt, 'src'), { recursive: true });
+    mkdirSync(join(home, 'sessions', '01XYZ'), { recursive: true });
+    return { repo, wt, home, scope: { repos: [join(dir, 'other'), repo], home } };
+  }
+
+  test('with --home: inside any .worktrees/ or under the home is gated; anything else is not', () => {
+    const { repo, wt, home, scope } = layout();
+    for (const cwd of [wt, join(wt, 'src'), home, join(home, 'sessions', '01XYZ')]) {
+      expect(codexCallGated(cwd, scope)).toBe(true);
+    }
+    for (const cwd of [
+      repo,
+      join(repo, 'src'),
+      join(repo, '.worktrees'),
+      `${repo}/.worktreesX/a`,
+      join(dir, 'elsewhere'),
+      `${home}-x`,
+    ]) {
+      expect(codexCallGated(cwd, scope)).toBe(false);
+    }
+  });
+
+  test('a missing, non-string or relative cwd is gated (fail closed)', () => {
+    const { scope } = layout();
+    for (const cwd of [undefined, '', 42, 'repo', './x']) {
+      expect(codexCallGated(cwd, scope)).toBe(true);
+    }
+  });
+
+  test('every path form: a link into a worktree or the home is gated, a repo reached by a link too', () => {
+    const { repo, wt, home, scope } = layout();
+    symlinkSync(wt, join(dir, 'into-wt'));
+    symlinkSync(home, join(dir, 'into-home'));
+    symlinkSync(repo, join(dir, 'repo-link'));
+    expect(codexCallGated(join(dir, 'into-wt'), scope)).toBe(true);
+    expect(codexCallGated(join(dir, 'into-home', 'sessions'), scope)).toBe(true);
+    expect(codexCallGated(wt, { repos: [join(dir, 'repo-link')], home })).toBe(true);
+    expect(codexCallGated(join(dir, 'repo-link', 'src'), scope)).toBe(false);
+  });
+
+  test('without --home (a T511 script): at or under <repo>/.worktrees is gated, as before', () => {
+    const { repo, wt } = layout();
+    expect(codexCallGated(join(repo, '.worktrees'), { repos: [repo] })).toBe(true);
+    expect(codexCallGated(wt, { repos: [repo] })).toBe(true);
+    expect(codexCallGated(repo, { repos: [repo] })).toBe(false);
   });
 });
 

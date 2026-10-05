@@ -282,7 +282,7 @@ An attached session is gated at three points, and only the first is new:
    - **Pi** — an in-process extension blocks with a reason and can rewrite tool results; the strongest surface of any vendor.
    - **Grok** — all file I/O goes through client `fs/*`, so reads and writes can be refused with a message; exec is ungated.
    - **Cursor** — ACP permission on every exec, nothing on reads or edits; project hooks do not fire headless.
-   - **Codex** — nothing is gated in any mode or approval policy.
+   - **Codex** — nothing is gated over ACP in any mode or approval policy. Since T506 (T512, spike-findings §C5) Codex's own `PreToolUse` hook is the per-call tier: three user-level entries in `$CODEX_HOME/hooks.json` (installed by `agile codex install-gate`, trusted per hook in Codex's `/hooks`) run `<home>/agile-pre-tool-use.sh`, which gates calls from a node's worktree or the agile home; a start is refused while they are missing or untrusted, and a session whose calls the hook never saw is stopped (fail closed).
 
    Consequence for this design, stated once: **vendors without a pre-tool-use hook get no per-action classifier tier.** They get diff-level rules at landing (§8.2) and guidance in the brief, and nothing else. A stream on such a vendor is not silently less safe — the daemon writes a `hook_unchecked` thread entry when it attaches, and the UI marks the session.
 
@@ -465,7 +465,7 @@ Rationale: fail-closed on everything means one API outage stops every agent in e
 
 The same policy covers the opt-out and a missing key: no classifier configured means no classifier tier, critical classifier rules deny, everything else proceeds with the thread entry.
 
-**Vendors with no pre-tool-use hook** (Cursor, Codex; Grok has only the client-fs surface) never reach this tier at all: they get the diff-level rules at landing (§8.2) and guidance in the brief. See §4.3 and `spike-findings.md` — do not re-derive. Nothing marks such a session's thread at attach time today; making the gap visible there is worth doing and is not yet built.
+**Vendors with no pre-tool-use hook** (Cursor; Grok has only the client-fs surface; Codex has one since T506/T512, §4.3) never reach this tier at all: they get the diff-level rules at landing (§8.2) and guidance in the brief. See §4.3 and `spike-findings.md` — do not re-derive. Nothing marks such a session's thread at attach time today; making the gap visible there is worth doing and is not yet built.
 
 **Opt-out** is per stream (`classifier: off`) with a per-repo default in `repos.yaml`. A stream working on something the operator does not want leaving the machine turns the tier off; pattern rules and guidance still apply.
 
@@ -569,7 +569,7 @@ Properties:
 - **One classifier call per action,** regardless of how many classifier rules are in scope.
 - **Per-call cost** is roughly 100 ms of Bun cold start plus, when classifier rules are in scope, one network round trip. This is why most rules should be `pattern` or `guidance`, and why §5.7's "fired often, never violated" prune matters.
 
-Vendors without a pre-tool-use hook (Cursor, Codex; Grok has only the client-fs surface) get steps 1–2 for nothing they can gate and skip step 3 entirely. See §4.3 and `spike-findings.md` — do not re-derive.
+Vendors without a pre-tool-use hook (Cursor; Grok has only the client-fs surface; Codex has its own since T506/T512, §4.3) get steps 1–2 for nothing they can gate and skip step 3 entirely. See §4.3 and `spike-findings.md` — do not re-derive.
 
 ### 8.2 Landing path, per stream
 

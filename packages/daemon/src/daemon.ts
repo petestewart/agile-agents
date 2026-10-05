@@ -66,7 +66,10 @@ import {
 import {
   HookService,
   HookSightings,
+  buildCodexGateRpcMethods,
   buildHookRpcMethods,
+  codexGateStatus,
+  codexHomeDir,
   wireClassifierRouteStats,
   wireGateDecisionDelivery,
 } from './hook';
@@ -85,7 +88,7 @@ import {
 } from './questions';
 import { CHOOSE_AGAIN_END_REASON, ModelPolicyService, buildModelPolicyRpcMethods } from './routing';
 import { type RpcServerHandle, startRpcServer } from './rpc';
-import { missingVendorCommand, resolveCliBin } from './runner';
+import { cliInvocationToShell, missingVendorCommand, resolveCliBin } from './runner';
 import { installedCliFor } from './runner/installed-cli';
 import { ModelCatalog, sessionVendorIndex } from './runner/model-catalog';
 import {
@@ -431,6 +434,9 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       : undefined;
   // T506: the hook tells the runner which sessions it saw (Codex's fail-closed check).
   const hookSightings = new HookSightings();
+  // T512: Codex's home as a Codex start resolves it (the provider's env over the daemon's).
+  const codexHome = () =>
+    codexHomeDir({ ...process.env, ...providerIn(config.home, ACP_PROVIDERS.codex).envOverrides });
   // Attach and questions know about each other: the turn-end rule asks
   // what is open, and an answer is delivered by prompting the session.
   const attachService: AttachService | undefined =
@@ -1015,6 +1021,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(attachService && verbService
             ? buildAttachRpcMethods(attachService, verbService, landingService)
             : {}),
+          // T512: `agile codex install-gate` and `agile codex status`.
+          ...buildCodexGateRpcMethods({
+            home: config.home,
+            codexHome,
+            repoRoots: () => Object.values(store.getRepos()).map((entry) => entry.path),
+            agileBin: cliInvocationToShell({ command: cliBin.command, args: cliBin.args }),
+            socketPath: config.socketPath,
+          }),
         }
       : undefined;
 
@@ -1115,6 +1129,8 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       ...(classifierKey ? { classifierStatus: () => classifierKey.status() } : {}),
       // T221 (§18): whether `gh` can supply a token, never the token.
       githubAuth,
+      // T512: whether Codex's user-level gate is installed and trusted (never a hash).
+      codexGateStatus: () => codexGateStatus(codexHome(), config.home),
       // T481: each vendor CLI's version and whether an update is known.
       ...(harnessUpdates ? { harnessStatus: () => harnessUpdates.status().harnesses } : {}),
       // T320 (D31): configured or not, read per call; never a token.

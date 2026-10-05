@@ -420,7 +420,7 @@ describe("T506: --vendor codex speaks Codex's hook contract", () => {
   /** Runs the hook capturing stdout and stderr (both `console.*` and `process.stderr.write`). */
   async function run(
     stdin: NodeJS.ReadableStream,
-    opts: { failClosed?: boolean; repo?: string } = {},
+    opts: { failClosed?: boolean; repo?: string; repos?: string[]; home?: string } = {},
   ): Promise<{ code: number; stdout: string; stderr: string }> {
     const out: string[] = [];
     const err: string[] = [];
@@ -439,7 +439,9 @@ describe("T506: --vendor codex speaks Codex's hook contract", () => {
         event: 'pre-tool-use',
         failClosed: opts.failClosed ?? true,
         vendor: 'codex',
-        ...(opts.repo !== undefined ? { repo: opts.repo } : {}),
+        ...(opts.repo !== undefined ? { repos: [opts.repo] } : {}),
+        ...(opts.repos !== undefined ? { repos: opts.repos } : {}),
+        ...(opts.home !== undefined ? { home: opts.home } : {}),
         stdin,
       });
       return { code, stdout: out.join('\n'), stderr: err.join('\n') };
@@ -616,7 +618,7 @@ describe("T506: --vendor codex speaks Codex's hook contract", () => {
       expect(codexCallInWorktrees(join(repoLink, '.worktrees', 'x'), repo)).toBe(true);
     });
 
-    test("end to end: the daemon's gate script runs the real CLI with --repo", async () => {
+    test("end to end: the daemon's gate script runs the real CLI with --home and --repo", async () => {
       const { repo, wt } = layout();
       const script = join(dir, 'agile-pre-tool-use.sh');
       writeFileSync(
@@ -624,7 +626,8 @@ describe("T506: --vendor codex speaks Codex's hook contract", () => {
         renderCodexGateScript({
           agileBin: `${shellQuote(process.execPath)} ${shellQuote(CLI_ENTRY)}`,
           socketPath: join(dir, 'no-daemon.sock'),
-          repoRoot: repo,
+          home: join(dir, 'agile-home'),
+          repoRoots: [repo],
         }),
       );
       chmodSync(script, 0o755);
@@ -657,7 +660,7 @@ describe("T506: --vendor codex speaks Codex's hook contract", () => {
         failClosed: true,
         timeoutMs: undefined,
         vendor: 'codex',
-        repo: '/r',
+        repos: ['/r'],
       });
       expect(() => parseHookArgs(parseArgs(['pre-tool-use', '--repo', '/r']))).toThrow(
         /--repo <root> goes with pre-tool-use --vendor codex/,
@@ -666,5 +669,142 @@ describe("T506: --vendor codex speaks Codex's hook contract", () => {
         /--repo <root> goes with/,
       );
     });
+  });
+  // T512: one user-level gate for every Codex the operator starts.
+  describe('--home <home> --repo <root>…: calls under a .worktrees/ or the home are gated', () => {
+    function layout() {
+      const repoA = join(dir, 'a');
+      const repoB = join(dir, 'b,with comma');
+      const wtB = join(repoB, '.worktrees', '01ABC-csv');
+      const home = join(dir, 'agile-home');
+      const session = join(home, 'sessions', '01XYZ');
+      mkdirSync(join(repoA, 'src'), { recursive: true });
+      mkdirSync(join(wtB, 'src'), { recursive: true });
+      mkdirSync(session, { recursive: true });
+      return { repoA, repoB, wtB, home, session, repos: [repoA, repoB] };
+    }
+
+    const DENY = () => ({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'curl needs the operator',
+      },
+    });
+
+    test('elsewhere: exit 0, nothing printed, no daemon call (also with no daemon at all)', async () => {
+      const { repoA, repoB, home, repos } = layout();
+      const { seen } = serve(DENY);
+      const outside = [
+        repoA,
+        join(repoA, 'src'),
+        repoB,
+        join(repoB, '.worktrees'),
+        join(dir, 'elsewhere'),
+        `${home}-other`,
+      ];
+      for (const cwd of outside) {
+        const result = await run(stdinWith({ ...CODEX_INPUT, cwd }), { repos, home });
+        expect(result).toEqual({ code: 0, stdout: '', stderr: '' });
+      }
+      expect(seen).toHaveLength(0);
+      await rpc?.close();
+      rpc = undefined;
+      for (const cwd of outside) {
+        expect((await run(stdinWith({ ...CODEX_INPUT, cwd }), { repos, home })).code).toBe(0);
+      }
+    });
+
+    test("inside any repo's worktree or under the home: gated by the daemon", async () => {
+      const { wtB, home, session, repos } = layout();
+      const { seen } = serve(DENY);
+      for (const cwd of [join(wtB, 'src'), session, home]) {
+        const result = await run(stdinWith({ ...CODEX_INPUT, cwd }), { repos, home });
+        expect(result.code).toBe(2);
+        expect(result.stderr).toBe('curl needs the operator');
+      }
+      expect(seen.map((p) => p.cwd)).toEqual([join(wtB, 'src'), session, home]);
+      expect(seen[0]).toMatchObject({ agile_vendor: 'codex' });
+    });
+
+    test('gated with the daemon down: blocked (fail closed)', async () => {
+      const { wtB, session, home, repos } = layout();
+      for (const cwd of [wtB, session]) {
+        const result = await run(stdinWith({ ...CODEX_INPUT, cwd }), { repos, home });
+        expect(result.code).toBe(2);
+        expect(result.stderr).toContain('AGILE-GATE: agile daemon unreachable');
+      }
+    });
+
+    test('a missing, non-string or relative cwd is gated', async () => {
+      const { home, repos } = layout();
+      const { seen } = serve(DENY);
+      const { cwd: _cwd, ...noCwd } = CODEX_INPUT;
+      for (const input of [noCwd, { ...CODEX_INPUT, cwd: 42 }, { ...CODEX_INPUT, cwd: 'a/src' }]) {
+        expect((await run(stdinWith(input), { repos, home })).code).toBe(2);
+      }
+      expect(seen).toHaveLength(3);
+      // --home alone (no repo registered): the home is still gated, the rest is not.
+      expect((await run(stdinWith({ ...CODEX_INPUT, cwd: dir }), { home })).code).toBe(0);
+      expect(seen).toHaveLength(3);
+    });
+
+    test('parses --home and repeated --repo (a comma stays part of the path); both need --vendor codex pre-tool-use', () => {
+      const argv = ['pre-tool-use', '--vendor', 'codex', '--home', '/h', '--repo', '/r/a,b'];
+      expect(parseHookArgs(parseArgs([...argv, '--repo', '/r/c']))).toEqual({
+        event: 'pre-tool-use',
+        failClosed: true,
+        timeoutMs: undefined,
+        vendor: 'codex',
+        repos: ['/r/a,b', '/r/c'],
+        home: '/h',
+      });
+      expect(() => parseHookArgs(parseArgs(['pre-tool-use', '--home', '/h']))).toThrow(
+        /--home <dir> goes with pre-tool-use --vendor codex/,
+      );
+      expect(() => parseHookArgs(parseArgs(['stop', '--vendor', 'codex', '--home', '/h']))).toThrow(
+        /--home <dir> goes with/,
+      );
+      expect(() =>
+        parseHookArgs(parseArgs(['pre-tool-use', '--vendor', 'codex', '--home'])),
+      ).toThrow(/--home <dir> goes with/);
+      expect(() =>
+        parseHookArgs(parseArgs(['pre-tool-use', '--vendor', 'codex', '--repo'])),
+      ).toThrow(/--repo <root> goes with/);
+    });
+
+    test("end to end: the home script runs the real CLI; the operator's Codex elsewhere runs with no daemon", async () => {
+      const { repoA, wtB, session, home, repos } = layout();
+      const script = join(dir, 'agile-pre-tool-use.sh');
+      writeFileSync(
+        script,
+        renderCodexGateScript({
+          agileBin: `${shellQuote(process.execPath)} ${shellQuote(CLI_ENTRY)}`,
+          socketPath: join(dir, 'no-daemon.sock'),
+          home,
+          repoRoots: repos,
+        }),
+      );
+      chmodSync(script, 0o755);
+      const runScript = async (cwd: string) => {
+        const proc = Bun.spawn([script], {
+          stdin: Buffer.from(JSON.stringify({ ...CODEX_INPUT, cwd })),
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        const [stdout, stderr] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+        ]);
+        return { code: await proc.exited, stdout, stderr };
+      };
+      expect(await runScript(repoA)).toEqual({ code: 0, stdout: '', stderr: '' });
+      expect(await runScript(join(dir, 'elsewhere'))).toEqual({ code: 0, stdout: '', stderr: '' });
+      for (const cwd of [join(wtB, 'src'), session]) {
+        const gated = await runScript(cwd);
+        expect(gated.code).toBe(2);
+        expect(gated.stderr).toContain('AGILE-GATE: agile daemon unreachable');
+      }
+    }, 30_000);
   });
 });
