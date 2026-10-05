@@ -3057,11 +3057,55 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** typecheck, lint; build then full `bun test`.
 ### Ticket: T511 Codex's hook goes at the repo root (Codex reads a worktree's hooks from its main repo)
 - **Priority:** P0
-- **Status:** Done (merged 2026-10-02; live re-check LIVE-CHECKLIST §24) (2026-10-02) — hook and script at `<repo>/.codex/` (repo root from the node's `repos.yaml` entry; no worktree copy; others' hooks kept; unchanged files not rewritten), script runs `agile hook pre-tool-use --vendor codex --repo <repo>` (cwd outside `<repo>/.worktrees/` allowed with no daemon call; missing cwd gated), trust checked at the repo root; live re-check owed, LIVE-CHECKLIST §24.
+- **Status:** Done (merged 2026-10-02), **failed live 2026-10-02/05, superseded by T512**: a trusted repo-root hook doesn't fire for a session in `<repo>/.worktrees/`. As built: hook and script at `<repo>/.codex/` (repo root from the node's `repos.yaml` entry; no worktree copy; others' hooks kept; unchanged files not rewritten), script runs `agile hook pre-tool-use --vendor codex --repo <repo>` (cwd outside `<repo>/.worktrees/` allowed with no daemon call; missing cwd gated), trust checked at the repo root; live re-check owed, LIVE-CHECKLIST §24.
 - **Owner:** worker
 - **Scope:** Pete's live check (2026-10-02): on a real Codex node T506's fail-closed check stopped the agent; the hook never ran. Spike `--worktree` (design/spike-findings.md C5 round 4): with the agent in a git worktree, a hook in the worktree's `.codex/hooks.json` saw **0** calls (curl ran); the same hook in the main repo's `<repo>/.codex/hooks.json` saw **9** and blocked curl with our reason. So for a worktree Codex loads project hooks from the main repo root. The daemon writes the Codex hook (and gate script) at `<repo>/.codex/` (the repo the node's worktree belongs to), merged with any hooks already there, `.codex/` added to that repo's git `info/exclude`, and a repo that tracks `.codex/hooks.json` is refused with a clear message (as T506 does for the worktree). The script must not gate the operator's own Codex use in that repo: the CLI is called with `--repo <root>` and allows (exit 0, no daemon call) when the hook input's `cwd` is not inside `<root>/.worktrees/`; inside one it gates as T506 does, fail-closed. Keep or drop the worktree copy (harmless); the fail-closed watch stays the backstop.
 - **Acceptance Criteria:** A Codex node's start writes `<repo>/.codex/hooks.json` with T506's matchers and a script calling `agile hook pre-tool-use --vendor codex --repo <root>`; git status of the repo stays clean; a hook call with `cwd` outside `<root>/.worktrees/` exits 0 without contacting the daemon; inside, it behaves as T506. LIVE-CHECKLIST §24 updated.
 - **Validation Steps:** Unit tests (writer at the repo root, merge with existing hooks, exclude, tracked-file refusal, the `--repo` guard both ways); typecheck, lint; build then full `bun test`; `test:e2e`.
+
+### Ticket: T512 Codex's gate is one user-level hook, trusted once
+- **Priority:** P0
+- **Status:** In progress (worker, branch `T512-codex-user-hook`)
+- **Owner:** worker
+- **Scope:** Pete's live checks (2026-10-02/05, Codex CLI 0.159.3) show that T511 fails. Codex trusts each hook separately: `/hooks` lists a new or changed hook as "review required", and trusting it writes `[hooks.state."<hooks.json path>:pre_tool_use:<i>:0"] trusted_hash` to `~/.codex/config.toml`. An untrusted hook is skipped silently. Once trusted, the repo-root hook fired for a Codex session started at the repo root, but **not** for a session in `<repo>/.worktrees/<id>`, so every node was fail-closed. Spike round 4 had trusted the root hook earlier and put the worktree hook at a new, untrusted path, so it was confounded by trust. Three user-level entries in `~/.codex/hooks.json` (matchers `Bash`, `apply_patch|Edit|Write`, `mcp__.*`, each running the gate script), trusted once in `/hooks`, gated a fresh worktree node:
+  - `ls` was allowed.
+  - `curl` was denied with "curl is not an allowed command for the engineer role".
+  - There was no fail-closed stop.
+  - `codex exec` in a non-repo folder added no `hook_decision`.
+
+  The build:
+  1. **The gate script lives in the agile home,** at `<home>/agile-pre-tool-use.sh`, and the daemon rewrites it (only if changed) at every Codex start. The `hooks.json` entries name only that path, so the entries never change and Codex's trust holds.
+  2. **The script runs `agile hook pre-tool-use --vendor codex` with one `--repo <root>` per registered repo, plus `--home <home>`.** The CLI gates a call whose `cwd` is under any `<root>/.worktrees/` or under `<home>`, where the Director and nodes with no repo run in `sessions/<id>`. A call with a missing or relative `cwd` is gated too. Any other call is allowed with no daemon contact, so the operator's own Codex anywhere works even with the daemon down. This is decided locally, from the arguments only.
+  3. **`agile codex install-gate`** (CLI, which asks the daemon to do it) is the operator's explicit step. The daemon never writes `~/.codex/hooks.json` on its own. The command:
+     - merges the three entries into `$CODEX_HOME/hooks.json`, keeping everything else (someone else's matchers and other events), writing nothing if the entries are already there, and refusing a file that is not valid JSON;
+     - writes the script;
+     - prints the next step: "open `codex`, run `/hooks`, and trust the three `agile gate` hooks".
+
+     `agile codex status`, and a line in `agile daemon status`, say whether the gate is installed and trusted.
+  4. **At a Codex start** the daemon reads `$CODEX_HOME/hooks.json` and `config.toml`, read-only. It refuses the start, with a Needs me card in T508's form, when:
+     - our three entries are missing ("run `agile codex install-gate`"), or
+     - any of them has no `[hooks.state."<path>:pre_tool_use:<i>:0"]` entry with a `trusted_hash` ("in Codex run `/hooks` and trust the agile gate").
+
+     The project-trust check (T506) stays: whether a user hook runs in an untrusted project is not measured. The fail-closed watch stays as the backstop, for example for a stale trust hash.
+  5. **T511's repo-root writes and T506's session-dir writes go.** At a Codex start the daemon removes its own legacy entries from that repo's `.codex/hooks.json`:
+     - our entries are matched by script file name;
+     - the file is deleted if nothing else is left in it;
+     - the script beside it is deleted.
+
+     `install-gate` does the same sweep across every registered repo, because a stale script's old CLI path would `exit 2` and block the operator's own Codex at the repo root.
+  6. **Docs:**
+     - `design/spike-findings.md` C5: add round 5, and correct round 4 (confounded by per-hook trust);
+     - `LIVE-CHECKLIST.md` §24 rewritten for the user-level gate;
+     - the README Permissions line;
+     - the stop and refusal card wording (`CODEX_UNGATED_REASON`, `CODEX_UNTRUSTED_LEAD` and its siblings, `lib/inbox.ts` "How to fix").
+- **Acceptance Criteria:**
+  - `install-gate` writes the three entries and the script. Running it again changes nothing, others' hooks are kept, and invalid JSON is refused.
+  - A Codex start refuses, with the right How to fix, when the entries are missing or untrusted, and starts when they are present and trusted.
+  - The CLI guard gates calls under any registered `.worktrees/` and under the home (also when the daemon is down: fail closed), and allows calls elsewhere with no daemon call.
+  - Legacy repo-root files are swept.
+  - Unit tests cover all of the above.
+  - LIVE-CHECKLIST §24 is re-run live by Pete.
+- **Validation Steps:** typecheck, lint; build then full `bun test`; `test:e2e`.
 
 ### Ticket: T513 Fixes from the 2026-10-02 live check (§21–§24)
 - **Priority:** P1
