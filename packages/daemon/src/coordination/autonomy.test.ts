@@ -144,6 +144,8 @@ describe('coordinator verbs through the gate', () => {
     const card = inbox.list().find((i) => i.kind === 'proposal');
     expect(card?.stream).toBe(node.id);
     expect(card?.context).toContain('docs: changelog');
+    // T514: who proposes it and which change, for the card.
+    expect(card?.proposal).toMatchObject({ principal: 'coordinator', change: 'add_child' });
 
     const applied = await autonomy.apply(card?.id ?? '');
     expect(applied.status).toBe('applied');

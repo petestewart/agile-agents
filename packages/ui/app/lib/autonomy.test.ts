@@ -6,7 +6,6 @@ import {
   confirmsRun,
   inheritsOption,
   proposalCardWords,
-  proposalChange,
   runConfirm,
 } from './autonomy';
 import { DIRECTOR_AUTONOMY } from './director';
@@ -40,22 +39,25 @@ describe('autonomy in words (T423)', () => {
 });
 
 describe('T446: a held proposal’s card names its level and what Apply does', () => {
-  test('which change a summary holds, in the words since T446 and before', () => {
-    expect(proposalChange('Add a part "Docs" on docs: a page')).toBe('add_child');
-    expect(proposalChange('add child "Docs" on docs: a page')).toBe('add_child');
-    expect(proposalChange('Make web wait on api')).toBe('add_waits_on');
-    expect(proposalChange('Let api own prices.ts')).toBe('set_owner');
-    expect(proposalChange('Approve a routine change to Key file: x')).toBe('approve_contract');
-    expect(proposalChange('Create "Wishlist" in Shop with 2 parts: A, B')).toBe('create_tree');
-    expect(proposalChange('Create "Docs" under Shop: g')).toBe('create_node');
-    expect(proposalChange('Start api')).toBe('start_node');
-    expect(proposalChange('something else')).toBe('other');
+  test('T514: what Apply does comes from the change itself, not its summary’s words', () => {
+    const apply = (change: Parameters<typeof proposalCardWords>[0]['change']) =>
+      proposalCardWords({ principal: 'coordinator', change, where: 'Shop', level: 'advise' }).apply;
+    expect(apply('add_child')).toBe('Apply creates the node and starts it.');
+    expect(apply('add_waits_on')).toBe('Apply makes it wait.');
+    expect(apply('set_owner')).toBe('Apply gives it those paths.');
+    expect(apply('approve_contract')).toBe('Apply approves the change and tells the parts.');
+    expect(apply('create_tree')).toBe('Apply creates the node and its parts and starts them.');
+    expect(apply('create_node')).toBe('Apply creates the node and starts it.');
+    expect(apply('restart_node')).toBe('Apply restarts its agent.');
+    // A change with no words of its own yet, or none named.
+    expect(apply('reorder')).toBe('Apply makes the change.');
+    expect(apply(undefined)).toBe('Apply makes the change.');
   });
 
   test('Advise: nothing changes until you apply; Apply creates the node and starts it', () => {
     const words = proposalCardWords({
       principal: 'coordinator',
-      summary: 'Add a part "Document sale prices" on docs: a page',
+      change: 'add_child',
       where: 'Shop',
       level: 'advise',
     });
@@ -65,22 +67,22 @@ describe('T446: a held proposal’s card names its level and what Apply does', (
   });
 
   test('a contract change at Organise and Run; the Director; a new project', () => {
-    const contract = 'Approve a change to Key file: x';
+    const contract = 'approve_contract';
     expect(
       proposalCardWords({
         principal: 'coordinator',
-        summary: contract,
+        change: contract,
         where: 'Blog',
         level: 'organise',
       }).why,
     ).toBe(': contract changes still come to you.');
     expect(
-      proposalCardWords({ principal: 'coordinator', summary: contract, where: 'Ops', level: 'run' })
+      proposalCardWords({ principal: 'coordinator', change: contract, where: 'Ops', level: 'run' })
         .why,
     ).toBe(': only routine contract changes apply on their own.');
     const director = proposalCardWords({
       principal: 'director',
-      summary: 'Start api',
+      change: 'start_node',
       where: 'Shop',
       level: 'advise',
     });
@@ -90,7 +92,7 @@ describe('T446: a held proposal’s card names its level and what Apply does', (
     expect(
       proposalCardWords({
         principal: 'director',
-        summary: 'Create the project Wishlist',
+        change: 'create_project',
         where: undefined,
         level: undefined,
       }),

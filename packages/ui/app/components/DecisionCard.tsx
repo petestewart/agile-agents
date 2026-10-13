@@ -86,7 +86,7 @@ import {
   fold,
   fullText,
   gateView,
-  isAgentFailure,
+  isLandGate,
   knowledgeView,
   mergeQuestion,
   noChangesText,
@@ -122,7 +122,7 @@ function iconOf(item: InboxItem): IconName {
     case 'question':
       return 'help-circle';
     case 'gate':
-      return item.context.startsWith('land:') ? 'git-merge' : 'shield-check';
+      return isLandGate(item) ? 'git-merge' : 'shield-check';
     case 'rule_accept':
     case 'rule_batch':
       return 'book-open';
@@ -1310,10 +1310,10 @@ export function Card({
       const own = principal === 'coordinator' ? row?.autonomy : undefined;
       const words = proposalCardWords({
         principal,
-        summary: p.summary,
+        change: p.change,
         where: own !== undefined ? row?.title : project?.name,
         level:
-          project === undefined || /^Create the project |in a new project, /.test(p.summary)
+          project === undefined || p.newProject
             ? undefined
             : (own ?? project.autonomy?.[principal] ?? 'advise'),
       });
@@ -1590,11 +1590,8 @@ export function Card({
               aria-label="Your reply"
               value={draft}
               disabled={busy !== undefined || settled !== undefined}
-              placeholder={
-                isAgentFailure(item.context)
-                  ? 'Fix its login or install, then reply to start it again…'
-                  : 'Reply to unblock…'
-              }
+              // A daemon failure note is a stop card (above): this block is the agent's own.
+              placeholder="Reply to unblock…"
               onChange={(e) => setDraft(e.target.value)}
             />
             <Button

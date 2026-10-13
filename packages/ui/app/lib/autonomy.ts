@@ -7,7 +7,7 @@
  * it is set. The Director's words are its own panel's (`DIRECTOR_AUTONOMY`).
  */
 
-import type { Autonomy } from '@agile-agents/shared';
+import type { Autonomy, CoordinatorAction } from '@agile-agents/shared';
 import { DIRECTOR_AUTONOMY } from './director';
 
 export const AUTONOMY_LEVELS: readonly Autonomy[] = ['advise', 'organise', 'run'];
@@ -81,39 +81,8 @@ export function runConfirm(
 
 // ---------------------------------------------------------------- a held proposal's card (T446)
 
-/** T446: the kinds of held change, as a proposal's summary starts (`describeChange`). */
-export type ProposalChange =
-  | 'add_child'
-  | 'add_waits_on'
-  | 'set_owner'
-  | 'approve_contract'
-  | 'create_tree'
-  | 'create_node'
-  | 'create_project'
-  | 'start_node'
-  | 'restart_node'
-  | 'other';
-
-/**
- * T446: which change a proposal holds, from its summary's first words (the
- * daemon's `describeChange`, and its wording before T446: "add child …").
- */
-export function proposalChange(summary: string): ProposalChange {
-  const s = summary.trim();
-  if (/^(?:Add a (?:part|node) |add child )/.test(s)) return 'add_child';
-  if (/^Make .+ wait on |^.+ waits on /s.test(s)) return 'add_waits_on';
-  if (/^Let .+ own |^.+ owns /s.test(s)) return 'set_owner';
-  if (/^(?:Approve a (?:routine )?change to |contract )/.test(s)) return 'approve_contract';
-  if (/^Create the project |^create project /.test(s)) return 'create_project';
-  if (/^Create "[^"]*" in .+ with \d+ parts?|^create "[^"]*" in /s.test(s)) return 'create_tree';
-  if (/^(?:Create|create node) "/.test(s)) return 'create_node';
-  if (/^[Ss]tart /.test(s)) return 'start_node';
-  if (/^[Rr]estart /.test(s)) return 'restart_node';
-  return 'other';
-}
-
-/** T446: what Apply does, per held change. */
-const APPLY_DOES: Record<ProposalChange, string> = {
+/** T446: what Apply does, per held change (T514: the proposal's own `change`, not its summary's words). */
+const APPLY_DOES: Partial<Record<CoordinatorAction, string>> = {
   add_child: 'Apply creates the node and starts it.',
   add_waits_on: 'Apply makes it wait.',
   set_owner: 'Apply gives it those paths.',
@@ -123,7 +92,6 @@ const APPLY_DOES: Record<ProposalChange, string> = {
   create_project: 'Apply creates the project.',
   start_node: 'Apply starts its agent.',
   restart_node: 'Apply restarts its agent.',
-  other: 'Apply makes the change.',
 };
 
 export interface ProposalCardWords {
@@ -145,13 +113,15 @@ export interface ProposalCardWords {
  */
 export function proposalCardWords(input: {
   principal: AutonomyWho;
-  summary: string;
+  /** Which change it holds (`InboxItem.proposal.change`); unknown reads as "makes the change". */
+  change: CoordinatorAction | undefined;
   /** The project, or the node whose own level overrides it. */
   where: string | undefined;
   level: Autonomy | undefined;
 }): ProposalCardWords {
-  const change = proposalChange(input.summary);
-  const apply = APPLY_DOES[change];
+  const change = input.change;
+  const apply =
+    (change !== undefined ? APPLY_DOES[change] : undefined) ?? 'Apply makes the change.';
   const who = input.principal === 'director' ? 'The Director' : 'Its coordinator';
   if (input.level === undefined || input.where === undefined) {
     return {

@@ -105,6 +105,84 @@ describe('InboxItemSchema', () => {
     expect(() => validateInboxItem(gate)).toThrow(/only a question item is unsettled/);
   });
 
+  test('T514: gate, knowledge, plan and proposal parts, each on its own kind and strict', () => {
+    const K = `K-${ulid()}`;
+    const gate = item({
+      kind: 'gate',
+      id: `HIL-${ulid()}`,
+      context: `classifier_review: edit x — tests-with-src (${K}): every change has a test`,
+      gate: {
+        name: 'classifier_review',
+        call: 'edit x',
+        reason: 'every change has a test',
+        rule: { id: K, name: 'tests-with-src' },
+        probability: 0.55,
+      },
+    });
+    expect(validateInboxItem(gate).gate?.rule).toEqual({ id: K, name: 'tests-with-src' });
+    const land = item({
+      kind: 'gate',
+      id: `HIL-${ulid()}`,
+      gate: { name: 'land', reason: 'land a into main', branch: 'stream/a', target: 'main' },
+    });
+    expect(validateInboxItem(land).gate?.name).toBe('land');
+    const rule = item({
+      kind: 'rule_accept',
+      id: K,
+      knowledge: { name: 'cents', scope: { kind: 'repo', repo: 'web' }, text: 'Store cents' },
+    });
+    expect(validateInboxItem(rule).knowledge?.scope).toEqual({ kind: 'repo', repo: 'web' });
+    const plan = item({
+      kind: 'plan_approve',
+      plan: { revised: true, owners: ['api owns `a.ts`'], contracts: [] },
+    });
+    expect(validateInboxItem(plan).plan?.revised).toBe(true);
+    const proposal = item({
+      kind: 'proposal',
+      id: `AP-${ulid()}`,
+      proposal: { principal: 'director', summary: 'Start api', change: 'start_node' },
+    });
+    expect(validateInboxItem(proposal).proposal?.change).toBe('start_node');
+
+    // Each on its own kind only.
+    expect(() => validateInboxItem(item({ gate: { name: 'land', reason: 'x' } }))).toThrow(
+      /only a gate item carries gate parts/,
+    );
+    expect(() =>
+      validateInboxItem(item({ knowledge: { scope: { kind: 'global' }, text: 'x' } })),
+    ).toThrow(/only a rule_accept item carries knowledge parts/);
+    expect(() =>
+      validateInboxItem(item({ plan: { revised: false, owners: [], contracts: [] } })),
+    ).toThrow(/only a plan_approve item carries plan parts/);
+    expect(() =>
+      validateInboxItem(
+        item({ proposal: { principal: 'director', summary: 'x', change: 'start_node' } }),
+      ),
+    ).toThrow(/only a proposal item carries proposal parts/);
+
+    // Strict, and bounded.
+    const extra = { ...(gate as { gate: object }).gate, owner: 'human' };
+    expect(InboxItemSchema.safeParse({ ...(gate as object), gate: extra }).success).toBe(false);
+    expect(
+      InboxItemSchema.safeParse({
+        ...(gate as object),
+        gate: { name: 'classifier_review', reason: 'x'.repeat(INBOX_DETAIL_MAX_CHARS + 1) },
+      }).success,
+    ).toBe(false);
+    expect(
+      InboxItemSchema.safeParse({
+        ...(rule as object),
+        knowledge: { scope: { kind: 'subtree', node: 'not-a-node' }, text: 'x' },
+      }).success,
+    ).toBe(false);
+    expect(
+      InboxItemSchema.safeParse({
+        ...(proposal as object),
+        proposal: { principal: 'human', summary: 'x', change: 'start_node' },
+      }).success,
+    ).toBe(false);
+  });
+
   test('context is one line, capped at the §3.2 budget', () => {
     expect(InboxItemSchema.safeParse(item({ context: 'x'.repeat(201) })).success).toBe(false);
     expect(inboxContext('a\n  long   question\n')).toBe('a long question');

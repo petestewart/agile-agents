@@ -66,6 +66,12 @@ test('a proposed rule on a stream carries the stream path, the scope and the rul
   expect(item?.context).toBe(
     `integration-first · subtree:${child.id}: always run the integration suite before pushing`,
   );
+  // T514: the card's name, scope and text, apart.
+  expect(item?.knowledge).toEqual({
+    name: 'integration-first',
+    scope: { kind: 'subtree', node: child.id },
+    text: 'always run the integration suite before pushing',
+  });
   expect(validateInboxItem(item).kind).toBe('rule_accept');
 });
 
@@ -76,6 +82,7 @@ test('a global proposed rule with no stream is still an item', async () => {
   expect(item?.stream).toBeUndefined();
   expect(item?.stream_path).toEqual([]);
   expect(item?.context).toBe('global: prefer the repo scripts');
+  expect(item?.knowledge).toEqual({ scope: { kind: 'global' }, text: 'prefer the repo scripts' });
   expect(validateInboxItem(item).id).toMatch(/^K-/);
 });
 

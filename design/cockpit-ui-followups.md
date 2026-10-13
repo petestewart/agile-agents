@@ -10,9 +10,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 
 ## P2 — polish
 
-- Inbox items carry the call, rule, name and scope only inside `context`
-  text (`gateText`, `ruleItem` in `packages/daemon/src/inbox/service.ts`); the
-  cards parse it. Add structured fields to `InboxItem` (`.strict()`).
 - A decision card stays dimmed until the frame that drops it; the card's
   action refreshes the frame at once, so this is only seen when the daemon is
   slow to drop the item. Removing it optimistically would need a way back

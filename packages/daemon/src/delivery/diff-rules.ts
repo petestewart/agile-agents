@@ -391,6 +391,7 @@ export class ClassifierDiffRules implements DiffRules {
       summary,
       // The routing rule, so the human's deny counts as its violation.
       rule: rule.id as KnowledgeId,
+      probability: answer.probability,
     });
     return {
       decision: 'route',

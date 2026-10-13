@@ -11,6 +11,8 @@
 import {
   DIRECTOR_NODE,
   type HilRequest,
+  INBOX_DETAIL_MAX_CHARS,
+  type InboxGate,
   type InboxItem,
   InboxItemOptionsSchema,
   type KnowledgeItem,
@@ -41,6 +43,14 @@ function withDetail(text: string): { detail?: string } {
   return detail === undefined ? {} : { detail };
 }
 
+/** T514: a structured part, bounded like `detail` (an item is a pointer, not the artifact). */
+function part(text: string): string {
+  return text.length <= INBOX_DETAIL_MAX_CHARS
+    ? text
+    : `${text.slice(0, INBOX_DETAIL_MAX_CHARS - 1)}…`;
+}
+
+/** The CLI's line for a gate (`agile inbox`); the card reads `gateParts` instead (T514). */
 function gateText(gate: HilRequest): string {
   return `${gate.gate}: ${gate.call !== undefined ? `${describeGateCall(gate.call)} — ` : ''}${
     gate.summary ?? gate.reason ?? 'needs your decision'
@@ -143,6 +153,12 @@ export class InboxService {
         context: inboxContext(text),
         ...withDetail(text),
         ref: `plans/${stream.id}.yaml`,
+        // T514: the card lists the parts and contracts from here, not from `text`.
+        plan: {
+          revised: plan.approved !== undefined,
+          owners: owners.map(part),
+          contracts: contracts.map(part),
+        },
       });
     }
     // T344: parts waiting for a plan no running coordinator will write.
@@ -176,6 +192,10 @@ export class InboxService {
       const stream = anchor === undefined ? undefined : byId.get(anchor);
       if (stream === undefined || stream.archived === true) continue;
       const text = `${proposal.principal} proposes: ${proposal.summary}`;
+      // T514: a new project has no level yet to hold the change at (the card says so).
+      const newProject =
+        c.action === 'create_project' ||
+        (c.action === 'create_tree' && c.tree.new_project !== undefined);
       items.push({
         kind: 'proposal',
         id: proposal.id,
@@ -185,6 +205,12 @@ export class InboxService {
         context: inboxContext(text),
         ...withDetail(text),
         ref: `proposals/${proposal.id}.yaml`,
+        proposal: {
+          principal: proposal.principal,
+          summary: proposal.summary,
+          change: c.action,
+          ...(newProject ? { new_project: true as const } : {}),
+        },
       });
     }
     for (const stream of byId.values()) {
@@ -258,6 +284,12 @@ export class InboxService {
       ...withDetail(label),
       ref: `knowledge/${rule.id}.yaml`,
       knowledge_kind: rule.kind,
+      // T514: the card's name, scope and text, which `label` runs together.
+      knowledge: {
+        ...(rule.name !== undefined ? { name: rule.name } : {}),
+        scope: rule.scope,
+        text: rule.text,
+      },
     };
   }
 
@@ -301,6 +333,34 @@ export class InboxService {
       ...(gate.read_root !== undefined && stream.project !== undefined
         ? { read_root: gate.read_root }
         : {}),
+      gate: this.gateParts(gate),
+    };
+  }
+
+  /**
+   * T514: what `gateText` runs together, apart. A rule-routed call's reason
+   * is the rule's own text and name (its summary leads with the rule's
+   * label); a rule no longer on record leaves the summary whole.
+   */
+  private gateParts(gate: HilRequest): InboxGate {
+    let rule: KnowledgeItem | undefined;
+    if (gate.rule !== undefined && this.deps.rules !== undefined) {
+      try {
+        rule = this.deps.rules.get(gate.rule);
+      } catch {
+        // Gone, or a pre-T260 `R-` rule: the card names it by id.
+      }
+    }
+    return {
+      name: gate.gate,
+      ...(gate.call !== undefined ? { call: part(describeGateCall(gate.call)) } : {}),
+      reason: part(rule?.text ?? gate.summary ?? gate.reason ?? 'needs your decision'),
+      ...(gate.rule !== undefined
+        ? { rule: { id: gate.rule, ...(rule?.name !== undefined ? { name: rule.name } : {}) } }
+        : {}),
+      ...(gate.probability !== undefined ? { probability: gate.probability } : {}),
+      ...(gate.branch !== undefined ? { branch: gate.branch } : {}),
+      ...(gate.target !== undefined ? { target: gate.target } : {}),
     };
   }
 
