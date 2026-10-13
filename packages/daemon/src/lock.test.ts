@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LockError, acquireLock } from './lock';
+import { LockError, acquireLock, lockHolder } from './lock';
 
 let dir: string;
 let lockPath: string;
@@ -66,5 +66,52 @@ describe('acquireLock', () => {
     const second = acquireLock(lockPath);
     expect(second.pid).toBe(process.pid);
     second.release();
+  });
+});
+
+describe('T533: a lock taken while starting', () => {
+  test('holds the lock but names no started pid until published', () => {
+    const lock = acquireLock(lockPath, { starting: true });
+    expect(readFileSync(lockPath, 'utf8')).toBe(`starting ${process.pid}`);
+    expect(lockHolder(lockPath)).toEqual({ pid: process.pid, started: false });
+    // A second daemon is refused while the first is still starting.
+    expect(() => acquireLock(lockPath)).toThrow(LockError);
+    expect(() => acquireLock(lockPath, { starting: true })).toThrow(LockError);
+
+    lock.publish();
+    expect(readFileSync(lockPath, 'utf8')).toBe(String(process.pid));
+    expect(lockHolder(lockPath)).toEqual({ pid: process.pid, started: true });
+    expect(() => acquireLock(lockPath)).toThrow(LockError);
+    lock.publish(); // idempotent
+    // The atomic write left no temp file next to the lock.
+    expect(readdirSync(dir)).toEqual(['.agile-daemon.lock']);
+
+    lock.release();
+    expect(existsSync(lockPath)).toBe(false);
+    expect(lockHolder(lockPath)).toBeUndefined();
+  });
+
+  test('released before publishing, the file is gone', () => {
+    const lock = acquireLock(lockPath, { starting: true });
+    lock.release();
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  test('a starting lock whose holder died is reclaimed', () => {
+    writeFileSync(lockPath, 'starting 999999999');
+    expect(lockHolder(lockPath)).toBeUndefined();
+    const lock = acquireLock(lockPath, { starting: true });
+    expect(lockHolder(lockPath)).toEqual({ pid: process.pid, started: false });
+    lock.release();
+  });
+
+  test('publishing a lock that is no longer ours fails and leaves the other holder alone', () => {
+    const lock = acquireLock(lockPath, { starting: true });
+    // Removed by hand, and taken by another daemon (pid 1 is always alive).
+    rmSync(lockPath);
+    writeFileSync(lockPath, '1');
+    expect(() => lock.publish()).toThrow(/lost its lock/);
+    lock.release();
+    expect(readFileSync(lockPath, 'utf8')).toBe('1');
   });
 });

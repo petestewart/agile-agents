@@ -190,6 +190,38 @@ export interface StartDaemonOptions extends DiscoverConfigOptions {
 
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
   const config = discoverConfig(options);
+  // T533: the lock comes first. Everything after it reads or writes the home
+  // (the store's temp-file sweep, ending the last run's sessions, the wake, the
+  // migration), so a second daemon must fail here, before it touches what the
+  // live one owns. The pid is published only once the port is bound (T127).
+  const lock = acquireLock(config.lockPath, { starting: true });
+  // What a start that fails part-way has started, stopped again newest first.
+  const started: StartedParts = [];
+  try {
+    return await startLocked(options, config, lock, started);
+  } catch (err) {
+    for (const stop of started.reverse()) {
+      try {
+        await stop();
+      } catch (stopErr) {
+        console.error('agiled: stopping a failed start:', stopErr);
+      }
+    }
+    lock.release();
+    throw err;
+  }
+}
+
+/** T533: the stop steps for what a start has started so far. */
+type StartedParts = Array<() => unknown>;
+
+/** The daemon under its lock (taken, not yet published); each part it starts goes on `started`. */
+async function startLocked(
+  options: StartDaemonOptions,
+  config: AgileConfig,
+  lock: LockHandle,
+  started: StartedParts,
+): Promise<DaemonHandle> {
   const startedAt = Date.now();
   // T221 (§18): whether `gh` can supply a token, never the token. T222's pr refusal asks it too.
   const githubAuth =
@@ -201,6 +233,12 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   // The home may not exist yet (before `agile init`): then only the stub
   // handlers run.
   const store = existsSync(config.stateRoot) ? StateStore.open(config.stateRoot) : undefined;
+  if (store) {
+    started.push(async () => {
+      await store.flush();
+      store.close();
+    });
+  }
   // One GateService behind `gate.*` RPC and the HTTP gate routes.
   const gateService = store
     ? new GateService(store, options.gateDelegate ? { delegate: options.gateDelegate } : {})
@@ -276,6 +314,12 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(emitRouted ? { emitRouted } : {}),
         })
       : undefined;
+  if (rulesService) {
+    started.push(async () => {
+      await rulesService.flushStats();
+      rulesService.dispose();
+    });
+  }
   // T281: plans and contracts (§14.4) — the coordinator's verbs, briefs, the inbox card.
   const contractService =
     store && streamService
@@ -398,6 +442,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           console.error(`vendor checks: ${err instanceof Error ? err.message : String(err)}`),
       }).load()
     : undefined;
+  if (vendorChecks) started.push(() => vendorChecks.stop());
   // T482: the model policy (node → ancestors → project → home → built-in), and the lock.
   const modelPolicy: ModelPolicyService | undefined =
     store && streamService
@@ -474,7 +519,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
         })
       : undefined;
-  if (attachService) restingSessions = attachService;
+  if (attachService) {
+    restingSessions = attachService;
+    // The wake below (and anything a recovery emits) can start sessions.
+    started.push(async () => {
+      attachService.delivery.stop();
+      await attachService.stopAll();
+    });
+  }
   // T300 (P16): the Director, above every project; its delivery is the attach service's.
   const directorService =
     store && streamService && routedEvents
@@ -494,7 +546,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
         })
       : undefined;
-  directorService?.startSight();
+  if (directorService) {
+    directorService.startSight();
+    started.push(() => directorService.stop());
+  }
   if (directorService && attachService) directorService.setDelivery(attachService.delivery);
   // T303: findings and PR review comments that repeat across projects wake the Director.
   const normWatch =
@@ -660,7 +715,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(emitRouted ? { emit: emitRouted } : {}),
         })
       : undefined;
-  mainSync?.start();
+  if (mainSync) {
+    mainSync.start();
+    started.push(() => mainSync.stop());
+  }
   const landingService =
     store && streamService
       ? new DeliveryService({
@@ -791,6 +849,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
         }, gateTickMs)
       : undefined;
   gateTimer?.unref();
+  if (gateTimer) started.push(() => clearInterval(gateTimer));
 
   // The classifier key behind Settings; mutates `config.classifier` in
   // place, which every key reader shares.
@@ -885,7 +944,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
             : {}),
         })
       : undefined;
-  overlapTracker?.start();
+  if (overlapTracker) {
+    overlapTracker.start();
+    started.push(() => overlapTracker.stop());
+  }
 
   // T225: the PR poller — the node's open PR is its status.
   const prPoller =
@@ -909,7 +971,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           home: config.home,
         })
       : undefined;
-  prPoller?.start();
+  if (prPoller) {
+    prPoller.start();
+    started.push(() => prPoller.stop());
+  }
 
   // T321: tracker links — the goal from the issue; edits as `external_changed`.
   const trackersConfig = () => {
@@ -938,7 +1003,10 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
           ...(emitRouted ? { emit: emitRouted } : {}),
         })
       : undefined;
-  trackerLinks?.start();
+  if (trackerLinks) {
+    trackerLinks.start();
+    started.push(() => trackerLinks.stop());
+  }
   if (store) {
     trackerPush = new TrackerStatusPush({
       project: (id) => {
@@ -1033,11 +1101,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       : undefined;
 
   /**
-   * Bind the port before taking the lock: the lock file is the pidfile
-   * `agile daemon start` waits for, so it must only appear for a daemon
-   * that is actually serving. The unix socket comes after the lock, since
-   * `startRpcServer` unlinks a stale socket a second daemon must never
-   * unlink under the live one.
+   * Bind the port before publishing the pid: the lock file is the pidfile
+   * `agile daemon start` waits for, so it must only name a pid for a daemon
+   * that is actually serving (T127; T533 holds it `starting` until then).
+   * The unix socket comes after the lock, since `startRpcServer` unlinks a
+   * stale socket a second daemon must never unlink under the live one.
    */
   // T414 (D41): untitled nodes are named by a cheap model, off the create path.
   const modelRun = options.titleRun === null ? undefined : (options.titleRun ?? claudeTitleRun());
@@ -1097,6 +1165,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     ...(harnessUpdates ? { harnessUpdates } : {}),
     githubAuth,
   });
+  started.push(() => http.stop());
 
   // §5.4's built-in pattern rules, idempotent, before any call is accepted
   // (a retired built-in stays retired).
@@ -1109,45 +1178,34 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
     }
   }
 
-  let lock: LockHandle;
-  try {
-    lock = acquireLock(config.lockPath);
-  } catch (err) {
-    await http.stop();
-    throw err;
-  }
+  // T533: serving now, so the lock (taken first) becomes the pidfile `agile daemon start` waits for.
+  lock.publish();
 
-  let rpc: RpcServerHandle;
-  try {
-    rpc = startRpcServer({
-      socketPath: config.socketPath,
-      version: DAEMON_VERSION,
-      stateRoot: config.stateRoot,
-      startedAt,
-      extraMethods,
-      // `agile daemon status`: whether a key is loaded and its source, never the key.
-      ...(classifierKey ? { classifierStatus: () => classifierKey.status() } : {}),
-      // T221 (§18): whether `gh` can supply a token, never the token.
-      githubAuth,
-      // T512: whether Codex's user-level gate is installed and trusted (never a hash).
-      codexGateStatus: () => codexGateStatus(codexHome(), config.home),
-      // T481: each vendor CLI's version and whether an update is known.
-      ...(harnessUpdates ? { harnessStatus: () => harnessUpdates.status().harnesses } : {}),
-      // T320 (D31): configured or not, read per call; never a token.
-      trackerStatus: () => {
-        try {
-          return trackerStatus(readHomeConfigFile(config.home).trackers);
-        } catch {
-          return trackerStatus(undefined);
-        }
-      },
-    });
-    await rpc.listening;
-  } catch (err) {
-    lock.release();
-    await http.stop();
-    throw err;
-  }
+  // A failure here is the caller's to clean up: it stops what started and releases the lock.
+  const rpc: RpcServerHandle = startRpcServer({
+    socketPath: config.socketPath,
+    version: DAEMON_VERSION,
+    stateRoot: config.stateRoot,
+    startedAt,
+    extraMethods,
+    // `agile daemon status`: whether a key is loaded and its source, never the key.
+    ...(classifierKey ? { classifierStatus: () => classifierKey.status() } : {}),
+    // T221 (§18): whether `gh` can supply a token, never the token.
+    githubAuth,
+    // T512: whether Codex's user-level gate is installed and trusted (never a hash).
+    codexGateStatus: () => codexGateStatus(codexHome(), config.home),
+    // T481: each vendor CLI's version and whether an update is known.
+    ...(harnessUpdates ? { harnessStatus: () => harnessUpdates.status().harnesses } : {}),
+    // T320 (D31): configured or not, read per call; never a token.
+    trackerStatus: () => {
+      try {
+        return trackerStatus(readHomeConfigFile(config.home).trackers);
+      } catch {
+        return trackerStatus(undefined);
+      }
+    },
+  });
+  await rpc.listening;
   // T481: the first check a little after start, then daily (unref'd timers).
   if (harnessUpdates && (options.harnessRunner !== undefined || !underTest)) {
     harnessUpdates.start();
