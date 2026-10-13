@@ -3613,7 +3613,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T519 The composer keeps everything you write
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done (merge 59ce928a on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** UI audit 2026-10-13 U1–U3, checked by the manager. (1) The composer still caps a message at 800 (`Composer.tsx` default `maxLength = 800`; review's `MESSAGE_MAX = THREAD_BODY_MAX_CHARS` in `lib/review.ts`) while the daemon accepts `HUMAN_LINE_MAX_CHARS` (4,000) for a line you write since T437; PLAN's T437 says the composer takes 4,000. Use the shared constant on the node page, the Director and review's "Add to message". (2) `send()` in `StreamPage.tsx` reads the draft, awaits the request (seconds when it starts the agent) and then clears the whole draft, so anything typed meanwhile is lost: clear only what was sent, keep the rest. (3) `useReviewUpkeep` (`lib/review.ts`) drops kept drafts and review comments for `closed` nodes on every frame, but since T471 a closed node's composer says "Write to reopen it…", so typing there is erased by the next push: keep drafts for nodes that can still be written to (closed); drop them only for nodes that can't (merged and deleted), per T436's intent.
 - **Acceptance Criteria:** A 3,000-character message sends from the node page and the Director; review's add-to-message allows up to 4,000 minus what's there; text typed while a send is in flight survives it (unit test with a held request); a closed node's draft survives a pushed frame, a merged or deleted node's still goes.
@@ -3829,6 +3829,14 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 - **Acceptance Criteria:** talk from A → work on B → talk from B keeps both parks; picking A again resumes A's branch and worktree and keeps B's park; Delete forever removes both; an existing record with the single-object `parked` still loads.
 - **Validation Steps:** `bun test packages/shared packages/daemon/src/streams packages/ui`; `bun run typecheck && bun run lint`.
 
+### Ticket: T557 The Director reads the whole line you wrote
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Found by T519's worker: the cockpit and the daemon take a human line of up to `HUMAN_LINE_MAX_CHARS` (4,000), and the Director's thread keeps it whole, but `DirectorService.say` (`director/service.ts`) emits `director_request` with `payload.body` cut to 800 (`ROUTED_EVENT_STRING_MAX`), and a live Director is told only that digest line (`events/producers.ts` `summarize`, `events/delivery.ts`). A node gets the whole line (prompted directly, or from its thread in the wake brief). Give the Director the full text: e.g. the digest for a human `director_request` reads the line from the Director's thread by the event's `ref` (its `ts`), or `say` prompts a live Director directly the way a node's `/say` does without a second delivery of the same line — follow how a node avoids double delivery. Keep the payload cap (it is the event log's bound).
+- **Acceptance Criteria:** A 3,000-character line to a live Director reaches its prompt whole, once; a Director started by the line sees it whole in its first prompt; a daemon notice (`by: daemon`) is unchanged.
+- **Validation Steps:** `bun test packages/daemon/src/director packages/daemon/src/events`; `bun run typecheck && bun run lint`.
+
 **From the performance audit (2026-10-13, `perf.md` P1–P17; benchmarks on a shared container, ratios reliable, absolute numbers ±30%).**
 
 ### Ticket: T544 The cockpit doesn't re-render everything on every event
@@ -3873,7 +3881,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T549 A hook decision reads each record once
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** worker
 - **Scope:** Perf P7, checked by the manager. One pre-tool-use decision (`hook/service.ts` `buildContext`, `streamRecord`, the pattern and classifier tiers) does `getStream` ×10, `listKnowledge` ×2, `listAgents` ×2, `getRepos` ×3 (69 ms with 103 knowledge items); a deny reads the whole thread for its last line. Resolve the stream record, its ancestors and `inScope` once per request and pass them to both tiers; take the deny-coalescing last line from a tail read. After T526 if both are open (both touch `hook/service.ts`).
 - **Acceptance Criteria:** A spy test: at most one read per record per decision; every existing hook test unchanged.
@@ -3881,7 +3889,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T550 Overlap is recomputed once per burst of edits
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge 639c0aac on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Perf P9, checked by the manager. Every non-read PostToolUse calls `onFilesMayHaveChanged` → `sync/overlap.ts` `recompute`, which lists every stream and spawns git 4–6 times synchronously (`merge-base`, `diff --name-only`, `ls-files --others`, `defaultBranch`). Debounce per stream (trailing ≈1.5 s, one run in flight), pass `recomputeAll`'s list into `recompute`, use T548's `defaultBranch` memo if merged. Coordinate with T534 (missing-cwd handling in the same loop).
 - **Acceptance Criteria:** Three calls inside the window run `computeTouched` once; the 60 s sweep's results are unchanged; an overlap alert still fires after a burst.
@@ -3889,7 +3897,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T551 The event log is read from its tail
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** worker
 - **Scope:** Perf P10, checked by the manager. `RecentEvents.load` (boot), `/api/snapshot` and the lessons retro read, parse and validate all of `log/events.jsonl` (never rotated; ≥4 lines per tool call): 985 ms and +280 MB RSS for a 50 MB log. Read the last `limit` lines backwards in chunks (as `feed/steps.ts` reads forwards); `/api/snapshot` passes `recent?.list()`; the retro streams the log and pre-filters on the `hook_decision` kind before parsing, as `StepIndex` does. Trade-off to note in §10: a corrupt line deep in history no longer refuses the connect snapshot (it still refuses any read that reaches it).
 - **Acceptance Criteria:** Over a log longer than `limit`, the tail read returns the same newest events as the full read, including when the last line is partial; boot reads a bounded number of bytes (test with a large synthetic log); lessons tests unchanged.
