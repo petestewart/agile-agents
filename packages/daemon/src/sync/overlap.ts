@@ -97,11 +97,24 @@ export interface OverlapTrackerOptions {
   emit?: EmitRouted;
   /** T284: after a node's `touched` changed (changed exports, `symbol_changed`). */
   afterTouched?: (id: string) => Promise<void>;
+  /** T550: how long `schedule` waits for a burst of edits to end. Default `OVERLAP_DEBOUNCE_MS`. */
+  debounceMs?: number;
 }
+
+/**
+ * T550: an editing call's recompute waits this long for the next one: a
+ * burst of edits is one recompute (each spawns git 4–6 times, blocking).
+ */
+export const OVERLAP_DEBOUNCE_MS = 1500;
 
 /** Keeps `touched` current for live work nodes; writes only on a change. */
 export class OverlapTracker {
   private timer: ReturnType<typeof setInterval> | undefined;
+  /** T550: a node's recompute waiting out a burst (`schedule`). */
+  private readonly waiting = new Map<string, ReturnType<typeof setTimeout>>();
+  /** T550: a node's recompute running now; one asked for meanwhile runs after it. */
+  private readonly running = new Set<string>();
+  private readonly again = new Set<string>();
 
   constructor(private readonly options: OverlapTrackerOptions) {}
 
@@ -117,6 +130,39 @@ export class OverlapTracker {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    for (const waiting of this.waiting.values()) clearTimeout(waiting);
+    this.waiting.clear();
+  }
+
+  /**
+   * T550: an editing call on `id` (the hook's post-tool-use): its recompute
+   * runs once the edits stop for `debounceMs`, one at a time per node (asked
+   * again while one runs, it runs once more after). The sweep is unchanged.
+   */
+  schedule(id: string): void {
+    const ms = this.options.debounceMs ?? OVERLAP_DEBOUNCE_MS;
+    const waiting = this.waiting.get(id);
+    if (waiting !== undefined) clearTimeout(waiting);
+    const timer = setTimeout(() => {
+      this.waiting.delete(id);
+      this.runScheduled(id);
+    }, ms);
+    timer.unref?.();
+    this.waiting.set(id, timer);
+  }
+
+  private runScheduled(id: string): void {
+    if (this.running.has(id)) {
+      this.again.add(id);
+      return;
+    }
+    this.running.add(id);
+    void this.recompute(id)
+      .catch((err) => console.error('overlap recompute failed:', err))
+      .finally(() => {
+        this.running.delete(id);
+        if (this.again.delete(id)) this.runScheduled(id);
+      });
   }
 
   async recomputeAll(): Promise<void> {
@@ -125,16 +171,20 @@ export class OverlapTracker {
       if (!isLiveWorkNode(s, all)) continue;
       // T534: one node failing never stops the sweep for the nodes after it.
       try {
-        await this.recompute(s.id);
+        // T550: the sweep's own list, not a fresh one per node.
+        await this.recompute(s.id, all);
       } catch (err) {
         console.error(`overlap recompute of ${s.id} failed:`, err);
       }
     }
   }
 
-  /** Recomputes one node's `touched`; a node that isn't live, or has no worktree yet, is skipped. */
-  async recompute(id: string): Promise<void> {
-    const all = this.options.streams.list();
+  /**
+   * Recomputes one node's `touched`; a node that isn't live, or has no
+   * worktree yet, is skipped. `nodes`: a list the caller already holds (T550).
+   */
+  async recompute(id: string, nodes?: readonly Stream[]): Promise<void> {
+    const all = nodes ?? this.options.streams.list();
     const s = all.find((x) => x.id === id);
     if (s === undefined || s.worktree === undefined || !isLiveWorkNode(s, all)) return;
     const entry = this.options.repos()[s.repo as string];
