@@ -531,6 +531,56 @@ describe('threadUpdatedAt (T395)', () => {
   });
 });
 
+/** T549: the hook's deny coalescing reads only the thread's last line, from the file's tail. */
+describe('lastThreadEntry (T549)', () => {
+  async function node() {
+    const { StreamService } = await import('../streams');
+    const store = StateStore.open(stateRoot);
+    const streams = new StreamService(store);
+    const created = await streams.create('human', { title: 'n', goal: 'g' });
+    return {
+      store,
+      streams,
+      id: created.id,
+      file: join(stateRoot, 'threads', `${created.id}.jsonl`),
+    };
+  }
+
+  test("is readThread's last entry, over a thread many chunks long", async () => {
+    const { store, streams, id } = await node();
+    expect(store.lastThreadEntry('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBeUndefined();
+    expect(store.lastThreadEntry(id)).toEqual(store.readThread(id).at(-1));
+    for (let i = 0; i < 60; i++) {
+      await streams.appendThread('human', id, { kind: 'line', body: `${i} ${'x'.repeat(700)}` });
+    }
+    expect(store.lastThreadEntry(id)).toEqual(store.readThread(id).at(-1));
+    expect(store.lastThreadEntry(id)?.body).toStartWith('59 ');
+  });
+
+  test('skips trailing blank lines, and reads a line longer than a chunk whole', async () => {
+    const { store, streams, id, file } = await node();
+    await streams.appendThread('human', id, { kind: 'line', body: 'first' });
+    // Body last, padded after: the multi-byte run straddles a chunk boundary.
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      by: 'human',
+      kind: 'line',
+      body: '€'.repeat(800),
+    });
+    writeFileSync(file, `${readFileSync(file, 'utf8')}${line}${' '.repeat(7000)}\n\n  \n`);
+    const last = store.lastThreadEntry(id);
+    expect(last).toEqual(store.readThread(id).at(-1));
+    expect(last?.body).toBe('€'.repeat(800));
+  });
+
+  test('a bad last line is refused with the file named', async () => {
+    const { store, streams, id, file } = await node();
+    await streams.appendThread('human', id, { kind: 'line', body: 'fine' });
+    writeFileSync(file, `${readFileSync(file, 'utf8')}{"not":"an entry"}\n`);
+    expect(() => store.lastThreadEntry(id)).toThrow(file);
+  });
+});
+
 /**
  * T547 (perf P2): a record's file is parsed again only when it changed. The
  * parse count is the store's test seam; every other check is what a reader
