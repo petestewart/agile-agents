@@ -3661,7 +3661,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T525 A push through a configured git alias is checked like `git push`
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done (merge 996afc93 on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** §10 triage (E42), reproduced by the manager: `detectProtectedBranchWrite` and `detectPush` (`permissions/push-detector.ts`) recognise only the literal `push` subcommand and refuse only the inline `-c alias.*` form, so with `alias.p = push` already in the operator's or repo's git config, `git p origin main` passes `no_push_protected` (and the never-list's force-push, branch-delete and reset-hard checks). Agents can't create an alias themselves (`git config` writes are held), so this needs a pre-existing alias. Resolve a non-builtin subcommand through the worktree's effective config, lazily and memoized like `worktreeBranchLookups` (`git config --get alias.<sub>`), and re-parse the expansion; a `!`-shell alias or a failed lookup gives the existing `CANNOT_DETERMINE_REASON`. Use it at the hook and ACP tiers. Builtin subcommands spawn no git. Coordinate with T516 (it changes `command.ts`; this lives in `push-detector.ts`).
 - **Acceptance Criteria:** With `alias.p=push` in a test repo, `git p origin main` is refused and `git p origin feature` allowed, at both tiers; `alias.pf='push --force'` held; `alias.x='!git push origin main'` refused; `git status` spawns no git.
@@ -3767,7 +3767,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T538 Delete forever is forever
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge d56a7f28 on claude/phase-16, 2026-10-13; a second Back to talk still replaces an earlier park: T556)
 - **Owner:** worker
 - **Scope:** Daemon audit D8, D12: (1) `RoutedEventService.recover()` (`events/service.ts`) re-creates `events/queue/<id>.jsonl` with pending lines for a node deleted forever (its events stay in `log.jsonl`); skip entries whose node has no record (the Director excepted). (2) `TrashService.preview`/`purge` (`streams/trash.ts`) read only `node.worktree`/`node.branch`, not T473's `parked` repo, branch and worktree, and leave `streams/<id>.docs/`; and a second `toTalk` (`streams/repo-in-place.ts`) overwrites an existing `parked` entry for another repo, orphaning it. Include `parked` in preview and purge, remove the docs dir, and don't lose a parked entry on a second Back to talk (keep one per repo, or refuse while another is parked — choose from the T473 design notes and say why).
 - **Acceptance Criteria:** After delete forever and a restart, no queue file for the node; a node sent back to talk then deleted forever leaves no worktree, branch or docs dir, and the preview lists them first; a second Back to talk keeps (or refuses, per the choice) the first parked repo.
@@ -3775,7 +3775,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T539 Thread lines get unique timestamps under concurrent appends
 - **Priority:** P2
-- **Status:** Done (merge 88f7e274 on claude/phase-16, 2026-10-13; the hook's own two event lines still stamp `now()`)
+- **Status:** Done (merge 88f7e274 on claude/phase-16, 2026-10-13; follow-up 69270f38: the time is taken at the call, not in the lock (the T509 e2e caught it in CI))
 - **Owner:** worker
 - **Scope:** Daemon audit D10 (reproduced): `streams/service.ts` computes a line's `ts` (its identity: anchor, thread and move key, T503/T504) from `store.threadUpdatedAt(id)` outside the store mutex, so two appends started in the same tick (worker and reviewer exits under `stop()`, model and effort picks at session start, two flushes from one stdout chunk) get the same millisecond; `assertThreadPlace` then picks the first line with that ts and UI keys collide. Assign `ts` inside the store's serialized append (strictly greater than the last).
 - **Acceptance Criteria:** Two appends started in one tick get distinct, increasing ts (the audit's test); replies anchor to the right line.
@@ -3820,6 +3820,14 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 - **Scope:** Found by the manager while reviewing T516 (its residual 5), reproduced with a coordinator's real read scope: P20 has the coordinator's table decide alone, skipping the never-without-human list, and that list is the only caller of `hasUnsafeShellConstruct`. So at both tiers a coordinator is allowed `echo $(touch pwned)`, `` git log `rm -rf src` `` and `wc -l $(git push origin main)` (the last caught only while the built-in push rule is in scope): command substitution, backticks and an unbalanced quote run whatever is inside. The coordinator's table denies them (its denies are never human prompts, P20).
 - **Acceptance Criteria:** For a coordinator, at the ACP tier and through the hook: `$( )`, backticks, `eval`, an unbalanced quote and T516's escape and continuation forms are denied; every existing coordinator allow (read-only git, `ls`, writes into its session dir) is unchanged; engineer and reviewer verdicts unchanged.
 - **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`; `bun run typecheck && bun run lint`.
+
+### Ticket: T556 A node keeps every repo's parked work
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Split from T538 (daemon audit D12): `parked` (`packages/shared/src/stream.ts`, T473) holds one repo, so a node that goes back to talk from repo A, takes repo B (A stays parked), and goes back to talk again replaces A's park: A's branch and worktree stay on disk with nothing pointing at them. T473 says a parked branch and worktree are kept, so keep one park per repo: make `parked` a list (accept the old single-object form when reading, write the list), resume the one for the repo picked (`resumeParked`, `repo-in-place.ts`), show "Back to work on …" per parked repo (`StreamPage.tsx`), and let Delete forever (T538's `sitesOf`, `streams/trash.ts`) take all of them.
+- **Acceptance Criteria:** talk from A → work on B → talk from B keeps both parks; picking A again resumes A's branch and worktree and keeps B's park; Delete forever removes both; an existing record with the single-object `parked` still loads.
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/streams packages/ui`; `bun run typecheck && bun run lint`.
 
 **From the performance audit (2026-10-13, `perf.md` P1–P17; benchmarks on a shared container, ratios reliable, absolute numbers ±30%).**
 
@@ -3926,6 +3934,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-10-13 (T525 worker, confirmed by the manager, for Pete): env prefixes that change what a command loads pass the engineer table: `HOME=. git status` (a `./.gitconfig` the agent wrote, `core.fsmonitor` runs a program), `PATH=. ls`, `LD_PRELOAD=./x.so ls`, `BASH_ENV=./x bash -c ls` are allowed (`GIT_CONFIG_GLOBAL=`, `GIT_SSH_COMMAND=` are held). This is the same class as the agent running code it wrote through the repo's own tests, which the gate allows by design; only a process sandbox closes it. Pete to decide whether the table should hold these prefixes anyway. T525 itself fails closed on them for an alias. Also from T525: `git subtree push` (and `p4 submit`, `svn dcommit`) push without the `push` subcommand and aren't caught; the ACP tier remembers upstream/HEAD for the whole session, so a later bare `git push` can be checked against a stale branch.
 - 2026-10-13 (T524 worker): T457's ACP read routing never worked in a real daemon: `attach/service.ts` passed `gates.request`/`gates.consume` unbound, so every route threw and the request stayed pending (unit tests passed the service directly). Fixed in T524 with an end-to-end Cursor test. For Pete: ACP carries no refusal reason, so a hook-less agent sees a generic refusal rather than "wait for the human" (a line in hook-less vendors' briefs would help); old `bus/inbox/human/` files stay on disk unread.
 - 2026-10-13 (T516 worker, residual, for later tickets): a quote inside a `#` comment, and heredoc bodies, can still throw off the parser's quote reading; `sh -c "…" > /etc/x` drops the outer redirect when the parser looks inside; bash's `${var@P}` and arithmetic array subscripts run a stored command with no `$(`. Its fifth (the coordinator never runs the unsafe-construct check) was a live hole: T555.
 - 2026-10-13 (T543 worker, for Pete): Pi's big `read`/`grep` now hit the 64 KiB raw-read limit like Claude's, but a Pi session has no MCP (`pi-acp` passes no MCP servers), so the deny's `read_summary` pointer can't be followed; exempting Pi is one line. An engineer's WebFetch/WebSearch is still allowed at the hook while the ACP tier allows an engineer's fetch only to package registries; unchanged.
