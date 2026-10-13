@@ -54,6 +54,7 @@ import {
   pathsForToolCall,
 } from './decide';
 import { fingerprintCall } from './fingerprint';
+import { PI_VENDOR, piToClaudePayload } from './pi';
 import { type RouteBandGates, routeCall, routePolicy } from './route-band';
 import {
   type ClaudePreToolUsePayload,
@@ -203,6 +204,17 @@ const DIRECTOR_NETWORK_TOOLS: ReadonlySet<string> = new Set(['WebFetch', 'WebSea
 
 const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered stream worktree';
 
+/**
+ * T543: a call as `decide.ts` reads it, by the vendor of the session it
+ * resolved to: Pi's own tool names and inputs are mapped (`hook/pi.ts`).
+ */
+function forVendor(
+  vendor: string | undefined,
+  payload: ClaudePreToolUsePayload,
+): ClaudePreToolUsePayload {
+  return vendor === PI_VENDOR ? piToClaudePayload(payload) : payload;
+}
+
 /** The `agile_agent` hint, written only by the CLI (from `AGILE_AGENT`); Claude's own payload never has it. */
 function agentHintFrom(payload: Record<string, unknown>): string | undefined {
   return typeof payload.agile_agent === 'string' ? payload.agile_agent : undefined;
@@ -214,6 +226,8 @@ export interface ResolvedHookIdentity {
   stream: string;
   role: SessionRole;
   worktreePath: string;
+  /** T543: the record's vendor; a `pi` session's calls are read as Claude's. */
+  vendor: string;
 }
 
 export class HookService {
@@ -292,6 +306,7 @@ export class HookService {
           stream: DIRECTOR_NODE,
           role: 'coordinator',
           worktreePath: scratch,
+          vendor: chosen.record.vendor,
         };
       }
       const worktreePath = this.absWorktree(chosen.record.worktree);
@@ -301,6 +316,7 @@ export class HookService {
         stream: streamId,
         role: chosen.record.role ?? 'worker',
         worktreePath,
+        vendor: chosen.record.vendor,
       };
     }
 
@@ -316,7 +332,9 @@ export class HookService {
   ): Promise<HookDecisionContext | undefined> {
     const resolved = this.resolveAgentByCwd(cwd, agentHint);
     if (resolved === undefined) return undefined;
-    const { session, stream, role, worktreePath } = resolved;
+    const { session, stream, role, worktreePath, vendor } = resolved;
+    // T543: Pi's `tool_call` result has no channel either, whatever its extension sent.
+    const noChannel = noAdditionalContextChannel || vendor === PI_VENDOR;
 
     // Liveness heartbeat rides on every hook call (store-side coalesced to
     // 30 s). A covering record may have been removed since resolution;
@@ -333,7 +351,8 @@ export class HookService {
       stream,
       role,
       worktreePath,
-      inbox: noAdditionalContextChannel
+      vendor,
+      inbox: noChannel
         ? this.bus.poll(session as AgentId).filter((m) => m.priority !== 'normal')
         : this.bus.poll(session as AgentId),
       limits: this.limits,
@@ -467,10 +486,11 @@ export class HookService {
    * and a call the table would route is denied (fail-closed).
    */
   private async directorPreToolUse(
-    payload: ClaudePreToolUsePayload,
+    raw: ClaudePreToolUsePayload,
   ): Promise<PreToolUseHookOutput | undefined> {
-    const who = this.resolveAgentByCwd(payload.cwd, agentHintFrom(payload), { streamless: true });
+    const who = this.resolveAgentByCwd(raw.cwd, agentHintFrom(raw), { streamless: true });
     if (who === undefined || who.stream !== DIRECTOR_NODE) return undefined;
+    const payload = forVendor(who.vendor, raw);
     this.options.sightings?.record(who.session);
     try {
       await this.store.heartbeat(who.session as AgentId, {}, this.now);
@@ -508,13 +528,13 @@ export class HookService {
 
   async preToolUse(raw: ClaudePreToolUsePayload): Promise<PreToolUseHookOutput> {
     // T506: `agile hook pre-tool-use --vendor codex` marks Codex's input, read as Claude's.
-    const payload = raw.agile_vendor === 'codex' ? codexToClaudePayload(raw) : raw;
-    const director = await this.directorPreToolUse(payload);
+    const marked = raw.agile_vendor === 'codex' ? codexToClaudePayload(raw) : raw;
+    const director = await this.directorPreToolUse(marked);
     if (director !== undefined) return director;
     const ctx = await this.buildContext(
-      payload.cwd,
-      agentHintFrom(payload),
-      payload.no_additional_context_channel === true,
+      marked.cwd,
+      agentHintFrom(marked),
+      marked.no_additional_context_channel === true,
     );
     if (ctx === undefined) {
       await this.logDecision(undefined, 'pre_tool_use', {
@@ -530,6 +550,8 @@ export class HookService {
       };
     }
     this.options.sightings?.record(ctx.session);
+    // T543: by the session's record, not the payload, so any copy of the Pi extension is gated.
+    const payload = forVendor(ctx.vendor, marked);
 
     let decision = decidePreToolUse(ctx, payload);
     let allowedBy: string | undefined;
@@ -891,7 +913,8 @@ export class HookService {
         }
       : { decision: 'allow' };
     await this.logDecision(ctx, 'post_tool_use', decision);
-    if (!READ_ONLY_TOOLS.has(payload.tool_name ?? '')) {
+    const tool = forVendor(ctx.vendor, payload).tool_name;
+    if (!READ_ONLY_TOOLS.has(tool ?? '')) {
       this.options.onFilesMayHaveChanged?.(ctx.stream);
     }
 

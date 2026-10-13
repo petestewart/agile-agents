@@ -34,6 +34,8 @@ export interface HookDecisionContext {
   stream: string;
   role: SessionRole;
   worktreePath: string;
+  /** T543: the session's vendor, from its registry record; a `pi` call is read as Claude's (`hook/pi.ts`). */
+  vendor?: string;
   /** This session's unread inbox, by priority (`bus.poll(session)`). */
   inbox: AgentMessage[];
   limits: HookLimits;
@@ -92,6 +94,13 @@ export interface ClaudePreToolUsePayload {
    * Codex's hook input, translated by `hook/codex.ts` before any decision.
    */
   agile_vendor?: string;
+  /**
+   * T543: set only by `piToClaudePayload` (`hook/pi.ts`), on a Pi tool it
+   * has no Claude name for. The hook is Pi's only gate (spike-findings §C4),
+   * so the call gets the ACP tier's verdict for kind `other`, whatever its
+   * name.
+   */
+  agile_tool_kind?: 'other';
   [key: string]: unknown;
 }
 
