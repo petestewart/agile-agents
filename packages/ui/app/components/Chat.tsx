@@ -441,8 +441,9 @@ export function MessageList<E extends ChatEntry>({
       : windowRows(all, THREAD_WINDOW + earlier.more);
   earlier.hidden.current = hidden;
   // T446: a system row links the node it made when the cockpit knows it.
-  const streams = useOptionalFeed()?.cockpit?.streams;
-  const known = (id: string): boolean => streams?.some((r) => r.id === id) === true;
+  // T544: from the provider's names (a node names itself; a project or contract names its node).
+  const names = useOptionalFeed()?.names;
+  const known = (id: string): boolean => names?.get(id)?.node === id;
   return (
     <ol className="cr-msgs" data-testid={testid} aria-label={label} ref={earlier.list}>
       {hidden > 0 && (

@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import { renderMarkdown } from './markdown';
-import { distinctTitle, namesOf, tokenize } from './names';
+import { distinctTitle, namesOf, stableNames, tokenize } from './names';
 
 const NODE = '01J8Z3K4M5N6P7Q8R9S0T1V2W3';
 const ROOT = '01J8Z3K4M5N6P7Q8R9S0T1V2W4';
@@ -120,5 +120,37 @@ describe('T446: distinctTitle', () => {
     ];
     expect(distinctTitle('C1', same)).toBe('Rotate keys › Docs');
     expect(distinctTitle('C2', same)).toBe('Unique › Docs');
+  });
+});
+
+describe('stableNames (T544)', () => {
+  const frame = (title: string, status: 'idle' | 'working') =>
+    namesOf({
+      streams: [
+        { id: NODE, title, role: 'work', agent_status: status, human_status: 'open' },
+        {
+          id: ROOT,
+          title: 'Show sale prices',
+          role: 'coordinating',
+          agent_status: 'idle',
+          human_status: 'open',
+        },
+      ],
+      projects: [{ id: PROJECT, name: 'Shop', root: ROOT }],
+      contracts: [{ id: CONTRACT, title: 'GET /price/:id', node: ROOT }],
+    });
+
+  test('a frame that changed only statuses keeps the map', () => {
+    const first = frame('api', 'idle');
+    expect(stableNames(first, frame('api', 'working'))).toBe(first);
+  });
+
+  test('a renamed, added or removed node gives the new map', () => {
+    const first = frame('api', 'idle');
+    const renamed = frame('api v2', 'idle');
+    expect(stableNames(first, renamed)).toBe(renamed);
+    const fewer = namesOf({ streams: [], projects: [], contracts: [] });
+    expect(stableNames(first, fewer)).toBe(fewer);
+    expect(stableNames(fewer, first)).toBe(first);
   });
 });

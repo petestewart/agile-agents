@@ -15,7 +15,7 @@
 import { type MouseEvent, useLayoutEffect, useMemo, useRef } from 'react';
 import { useOptionalFeed } from '../lib/feed-context';
 import { renderMarkdown } from '../lib/markdown';
-import { type Names, namesOf, tokenize } from '../lib/names';
+import { NO_NAMES, type Names, tokenize } from '../lib/names';
 import { useOptionalShell } from '../lib/shell';
 import { findPassage } from '../lib/threads';
 
@@ -94,9 +94,9 @@ function drawMark(root: HTMLElement, mark: PassageMark): void {
 
 /** The cockpit's names, and what opening a node does, when rendered inside the shell. */
 function useNames(): { names: Names; open?: (id: string) => void } {
-  const cockpit = useOptionalFeed()?.cockpit;
+  // T544: the provider's one map, kept across frames that rename nothing.
+  const names = useOptionalFeed()?.names ?? NO_NAMES;
   const shell = useOptionalShell();
-  const names = useMemo(() => namesOf(cockpit), [cockpit]);
   return shell ? { names, open: shell.select } : { names };
 }
 

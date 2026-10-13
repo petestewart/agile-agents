@@ -29,6 +29,19 @@ export function namesOf(
   return names;
 }
 
+/**
+ * T544: `prev` when `next` names the same ids the same way, so a frame that
+ * changed only statuses keeps the map (and every memo keyed on it).
+ */
+export function stableNames(prev: Names, next: Names): Names {
+  if (prev.size !== next.size) return next;
+  for (const [id, ref] of next) {
+    const was = prev.get(id);
+    if (was === undefined || was.title !== ref.title || was.node !== ref.node) return next;
+  }
+  return prev;
+}
+
 export type Token =
   | { kind: 'text'; text: string }
   | { kind: 'url'; url: string }
