@@ -20,15 +20,12 @@ import {
   useState,
 } from 'react';
 import type { CockpitFrame, FeedSnapshot } from './feed-types';
+import { NO_NAMES, type Names, namesOf, stableNames } from './names';
 import { withParts } from './status';
 import { connectFeedSocket } from './ws';
 
-/** Cap on the in-memory event tail (the Feed panel renders it). */
-const MAX_EVENTS = 500;
-
 export interface FeedContextValue {
   snapshot: FeedSnapshot | undefined;
-  events: Event[];
   connected: boolean;
   /**
    * T416: the socket has been down for a moment (not a blip, and not the
@@ -38,6 +35,11 @@ export interface FeedContextValue {
   offline: boolean;
   /** T160: the latest inbox + stream tree push; `undefined` until the first frame. */
   cockpit: CockpitFrame | undefined;
+  /**
+   * T544: the frame's ids as names (`namesOf`), one map for every
+   * `<Markdown>`, kept while no title changes so their renders are memo hits.
+   */
+  names: Names;
   /**
    * Re-reads `GET /api/cockpit` now — used right after the operator's own
    * write so the card they acted on goes at once, rather than on the next
@@ -78,7 +80,6 @@ function useOffline(connected: boolean): boolean {
 
 export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
   const [snapshot, setSnapshot] = useState<FeedSnapshot | undefined>(undefined);
-  const [events, setEvents] = useState<Event[]>([]);
   const [connected, setConnected] = useState(false);
   const [cockpit, setCockpit] = useState<CockpitFrame | undefined>(undefined);
   // Refs, not state: a new subscriber must never re-open the socket.
@@ -87,12 +88,9 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
 
   useEffect(() => {
     const handle = connectFeedSocket({
-      onSnapshot: (snap) => {
-        setSnapshot(snap);
-        setEvents(snap.events);
-      },
+      onSnapshot: (snap) => setSnapshot(snap),
+      // T544: events go to their subscribers only; no state, so an event re-renders nothing.
       onEvent: (event) => {
-        setEvents((prev) => [...prev, event].slice(-MAX_EVENTS));
         for (const handler of eventHandlers.current) handler(event);
       },
       onCockpit: (frame) => setCockpit(readFrame(frame)),
@@ -119,9 +117,15 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
       });
   }, []);
 
+  const lastNames = useRef<Names>(NO_NAMES);
+  const names = useMemo(() => {
+    lastNames.current = stableNames(lastNames.current, namesOf(cockpit));
+    return lastNames.current;
+  }, [cockpit]);
+
   const value = useMemo<FeedContextValue>(
-    () => ({ snapshot, events, connected, offline, cockpit, refresh, onEvent }),
-    [snapshot, events, connected, offline, cockpit, refresh, onEvent],
+    () => ({ snapshot, connected, offline, cockpit, names, refresh, onEvent }),
+    [snapshot, connected, offline, cockpit, names, refresh, onEvent],
   );
 
   return <FeedContext.Provider value={value}>{children}</FeedContext.Provider>;
