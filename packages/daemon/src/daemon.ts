@@ -1077,11 +1077,8 @@ async function startLocked(
               classifier: { ask: classifier, config: config.classifier },
               ...(overlapTracker
                 ? {
-                    onFilesMayHaveChanged: (stream: string) => {
-                      void overlapTracker
-                        .recompute(stream)
-                        .catch((err) => console.error('overlap recompute failed:', err));
-                    },
+                    // T550: a burst of edits is one recompute.
+                    onFilesMayHaveChanged: (stream: string) => overlapTracker.schedule(stream),
                   }
                 : {}),
             }),

@@ -147,6 +147,51 @@ describe('T534: one node never stops the overlap sweep', () => {
   });
 });
 
+describe('T550: a burst of edits is one recompute', () => {
+  test('three edits inside the window recompute once; another after it runs again; the sweep is unchanged', async () => {
+    const node = await workNode('Shop', 'stream/shop');
+    let reads = 0;
+    tracker = new OverlapTracker({
+      streams,
+      repos: () => {
+        reads += 1;
+        return store.getRepos();
+      },
+      intervalMs: 0,
+      debounceMs: 40,
+    });
+    tracker.schedule(node.id);
+    tracker.schedule(node.id);
+    tracker.schedule(node.id);
+    await Bun.sleep(150);
+    expect(reads).toBe(1);
+    tracker.schedule(node.id);
+    await Bun.sleep(150);
+    expect(reads).toBe(2);
+    await tracker.recomputeAll();
+    expect(reads).toBe(3);
+    tracker.stop();
+  });
+
+  test('stop drops a waiting recompute', async () => {
+    const node = await workNode('Shop', 'stream/shop');
+    let reads = 0;
+    tracker = new OverlapTracker({
+      streams,
+      repos: () => {
+        reads += 1;
+        return store.getRepos();
+      },
+      intervalMs: 0,
+      debounceMs: 40,
+    });
+    tracker.schedule(node.id);
+    tracker.stop();
+    await Bun.sleep(120);
+    expect(reads).toBe(0);
+  });
+});
+
 describe('overlap routed events (T244)', () => {
   test('a new overlap reaches both nodes and their ancestors, once', async () => {
     const emitted: RoutedEvent[] = [];
