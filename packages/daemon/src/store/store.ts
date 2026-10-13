@@ -36,6 +36,7 @@ import {
   type Delivery,
   type DirectorRecord,
   type Event,
+  type EventKind,
   type FavouriteModel,
   type HarnessId,
   type HarnessUpdateMode,
@@ -103,12 +104,15 @@ import {
 import { parse as parseYaml } from 'yaml';
 import { buildEvent, needsFsync } from './events';
 import {
+  type JsonlLine,
   appendJsonlLine,
   appendJsonlLines,
   fileExists,
+  forEachJsonlLine,
+  lineNumberAt,
   listDataFiles,
   readJsonFile,
-  readJsonlFile,
+  readJsonlTail,
   readYamlFile,
   removeFile,
   sweepStaleTempFiles,
@@ -154,6 +158,23 @@ function writeEntityFile(absPath: string, data: unknown): void {
     writeJsonFileAtomic(absPath, data);
   } else {
     writeYamlFileAtomic(absPath, data);
+  }
+}
+
+/**
+ * T551: one `events.jsonl` line as an Event, or refused with the path and its
+ * line number. The number is counted only on this error path (a tail read
+ * starts mid-file and doesn't know it otherwise).
+ */
+function eventOfLine(absPath: string, line: JsonlLine): Event {
+  try {
+    return validateEvent(JSON.parse(line.text));
+  } catch (err) {
+    throw new Error(
+      `corrupt event log file ${absPath}:${lineNumberAt(absPath, line.offset)}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 }
 
@@ -490,12 +511,41 @@ export class StateStore {
   }
 
   /**
-   * Read-only: the `log/events.jsonl` audit stream. `endOffset` stops at that
-   * byte (a line boundary), so a reader can pair it with a tailer's offset.
+   * Read-only: the `log/events.jsonl` audit stream, oldest first. `endOffset`
+   * stops at that byte, so a reader can pair it with a tailer's offset (a
+   * partial line there is left out: the tailer delivers it). With `limit`
+   * (T551), only the newest `limit` events, read backwards from the end, so
+   * the cost follows the tail and not the log, which is never rotated. Only
+   * the lines read are parsed and validated: a corrupt one is refused with
+   * the path and its line number. Trade-off: a tail read never reaches a
+   * corrupt line further back, so it no longer refuses it (a full read,
+   * or `forEachEvent`, that reaches the line still does).
    */
-  listEvents(endOffset?: number): Event[] {
-    return readJsonlFile<unknown>(this.abs('log', 'events.jsonl'), endOffset).map((line) =>
-      validateEvent(line),
+  listEvents(endOffset?: number, limit?: number): Event[] {
+    const path = this.abs('log', 'events.jsonl');
+    if (limit !== undefined) {
+      return readJsonlTail(path, limit, endOffset).lines.map((line) => eventOfLine(path, line));
+    }
+    const events: Event[] = [];
+    forEachJsonlLine(path, (line) => events.push(eventOfLine(path, line)), { endOffset });
+    return events;
+  }
+
+  /**
+   * T551: every event of `kind`, oldest first, streamed through the log in
+   * chunks. A line without the kind's `"kind":"…"` (as `JSON.stringify`
+   * writes every event) is skipped unparsed, so a corrupt line is refused,
+   * with its path and line number, only when it carries the kind.
+   */
+  forEachEvent(kind: EventKind, visit: (event: Event) => void): void {
+    const path = this.abs('log', 'events.jsonl');
+    forEachJsonlLine(
+      path,
+      (line) => {
+        const event = eventOfLine(path, line);
+        if (event.kind === kind) visit(event);
+      },
+      { mark: `"kind":${JSON.stringify(kind)}` },
     );
   }
 

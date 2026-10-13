@@ -83,7 +83,8 @@ export function buildSnapshot(
   /** T404: the newest events, kept by `RecentEvents`; the log is not read when given. */
   recent?: readonly Event[],
 ): FeedSnapshot {
-  const events = (recent ?? store.listEvents(eventsEndOffset)).slice(-eventLimit);
+  // T551: without `recent`, only the log's tail is read (see `listEvents`).
+  const events = (recent ?? store.listEvents(eventsEndOffset, eventLimit)).slice(-eventLimit);
   // T389: a deleted (archived) node's asks wait with it, as Needs me leaves them out.
   const archived = new Set(
     store
@@ -121,9 +122,15 @@ export class RecentEvents {
 
   constructor(private readonly limit: number = DEFAULT_SNAPSHOT_EVENT_LIMIT) {}
 
-  /** The log up to `endOffset`. A corrupt log throws, with its path, as `listEvents` does. */
+  /**
+   * The log's newest events up to `endOffset`, read from its tail (T551), so
+   * boot reads a bounded number of bytes however long the log is. A corrupt
+   * line in that tail throws, with the path and its line number, as
+   * `listEvents` does; one further back is not read, so it no longer stops
+   * the connect snapshot (a read that reaches it still refuses it).
+   */
   load(store: StateStore, endOffset: number): void {
-    this.events = store.listEvents(endOffset).slice(-this.limit);
+    this.events = store.listEvents(endOffset, this.limit);
   }
 
   /** One tailer batch. A line that isn't an event is reported and left out. */

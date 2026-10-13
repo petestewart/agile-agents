@@ -136,22 +136,22 @@ export class LessonsService {
     }
 
     const denials: string[] = [];
-    for (const event of this.options.store.listEvents()) {
-      if (event.kind !== 'hook_decision') continue;
+    // T551: streamed, and only `hook_decision` lines are parsed: the log is never rotated.
+    this.options.store.forEachEvent('hook_decision', (event) => {
       const data = (event.data ?? {}) as Record<string, unknown>;
       const decision = typeof data.decision === 'string' ? data.decision : undefined;
-      if (decision !== 'deny') continue;
+      if (decision !== 'deny') return;
       // Named by stream (the hook) or by session (the ACP responder).
       const onStream = data.stream === streamId;
       const onSession = event.agent !== undefined && sessionIds.has(event.agent);
-      if (!onStream && !onSession) continue;
+      if (!onStream && !onSession) return;
       const what = [data.tool, data.toolClass, data.command, data.targetPath]
         .filter((value): value is string => typeof value === 'string' && value.length > 0)
         .join(' ');
       denials.push(
         `denied ${what.length > 0 ? what : String(data.event ?? 'tool call')}: ${String(data.reason ?? 'no reason recorded')}`,
       );
-    }
+    });
 
     const questions = (this.options.questions?.list() ?? [])
       .filter((question) => question.stream === streamId && question.status === 'answered')
