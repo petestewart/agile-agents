@@ -28,7 +28,13 @@ import type { EmitRouted } from '../events/producers';
 import { clipLine } from '../events/producers';
 import type { GateRequestContext } from '../gates/service';
 import { type RuleStatsOutcome, knowledgeMatchesPaths } from '../knowledge/service';
-import { type DiffRuleGates, answeredDiffGate, changedFilesOf, diffCall } from './diff-rules';
+import {
+  type DiffRuleGates,
+  answeredDiffGate,
+  changedFilesOf,
+  diffCall,
+  supersedeStaleDiffGates,
+} from './diff-rules';
 import type { DiffRuleContext, DiffRuleVerdict, DiffRules } from './service';
 
 /** What a reviewer returns for one diff. `running`: started, not finished; delivery waits. */
@@ -136,6 +142,7 @@ export class ShipChecks implements DiffRules {
         const summary = cap(`review checklist unsure: ${result.reason}`);
         const gates = this.options.gates;
         if (gates === undefined) return { decision: 'route', reason: summary };
+        await supersedeStaleDiffGates(gates, ctx.stream, call);
         const gate = await gates.request('classifier_review', {
           policy: this.options.policy(),
           stream: ctx.stream.id,

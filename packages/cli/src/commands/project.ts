@@ -7,7 +7,14 @@
 
 import type { Project, TrackerSettings } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
-import { hasFlag, optionalList, optionalString, requireOption, requirePositional } from '../args';
+import {
+  hasFlag,
+  optionalList,
+  optionalString,
+  refuseExtraWords,
+  requireOption,
+  requirePositional,
+} from '../args';
 import { callRpc } from '../client';
 import { printFields, printJson, printTable } from '../format';
 
@@ -17,6 +24,7 @@ export async function runProjectNew(
   json: boolean,
 ): Promise<number> {
   const name = requireOption(args.options, 'name');
+  refuseExtraWords(args, 0, 'agile project new', '--name "My shop"');
   const repos = optionalList(args, 'repo');
   const project = await callRpc<Project>(socketPath, 'project.create', {
     name,
@@ -196,6 +204,7 @@ export async function runProjectSet(
   json: boolean,
 ): Promise<number> {
   const id = requirePositional(args, 0, 'project-id');
+  refuseExtraWords(args, 1, 'agile project set', '--status-map "in_progress=In Progress"');
   const o = args.options;
   const patch: Record<string, unknown> = {};
   const name = optionalString(o, 'name');
@@ -230,7 +239,7 @@ export async function runProjectSet(
   }
   if (Object.keys(autonomy).length > 0) patch.autonomy = autonomy;
   if (Object.keys(patch).length === 0) {
-    throw new Error('agile project set: nothing to set (see `agile` for the flags)');
+    throw new Error('agile project set: nothing to set (see `agile project --help` for the flags)');
   }
 
   const project = await callRpc<Project>(socketPath, 'project.update', { id, ...patch });

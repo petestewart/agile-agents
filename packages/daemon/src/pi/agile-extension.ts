@@ -12,6 +12,9 @@
  *
  * `tool_call` forwards to the same `hook.pre_tool_use` RPC as Claude's
  * PreToolUse hook and translates the reply into Pi's `{block, reason}`.
+ * Pi's own tool names and inputs go as they are: the daemon reads a Pi
+ * session's calls as Claude's (`hook/pi.ts`, T543), so no copy of this file
+ * needs to know Claude's names.
  * The heartbeat rides on that call, plus a timer for tool-call-free turns.
  *
  * `tool_result` rewriting is the one thing Claude's hook cannot do and

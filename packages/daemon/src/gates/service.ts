@@ -117,6 +117,11 @@ export interface GateRequestContext {
   rule?: KnowledgeId;
   /** T457: a held Ask read: the dir an "Always for this project" answer adds (`HilRequest.read_root`). */
   readRoot?: string;
+  /** T514: a land gate's branch and target (`HilRequest.branch`/`target`), for its card. */
+  branch?: string;
+  target?: string;
+  /** T514: a ship check's classifier probability (`HilRequest.probability`), for its card. */
+  probability?: number;
 }
 
 /**
@@ -166,11 +171,16 @@ export class UnknownBreakerSignalError extends Error {
   }
 }
 
+/** T527: what `GateService.onResolved` calls with each decided gate. */
+export type ResolvedListener = (gate: HilRequest) => Promise<void> | void;
+
 export class GateService {
   private readonly clock: () => Date;
   private readonly delegate: DelegateFn | undefined;
   /** Serializes `consume` so its read-decide-write is one critical section. */
   private consumeChain: Promise<unknown> = Promise.resolve();
+  /** T527: told of every decision (`onResolved`). */
+  private readonly resolvedListeners = new Set<ResolvedListener>();
 
   constructor(
     private readonly store: StateStore,
@@ -255,6 +265,9 @@ export class GateService {
       ...(ctx.session !== undefined ? { session: ctx.session } : {}),
       ...(ctx.rule !== undefined ? { rule: ctx.rule } : {}),
       ...(ctx.readRoot !== undefined ? { read_root: ctx.readRoot } : {}),
+      ...(ctx.branch !== undefined ? { branch: ctx.branch } : {}),
+      ...(ctx.target !== undefined ? { target: ctx.target } : {}),
+      ...(ctx.probability !== undefined ? { probability: ctx.probability } : {}),
     };
 
     let record: HilRequest = base; // plain human
@@ -306,8 +319,10 @@ export class GateService {
       const resolved = this.finalizeDecision(withoutReason, decision, this.clock(), via);
       const saved = await this.persist(resolved);
       await this.notifyResolved(saved);
-    })().catch(() => {
-      // Never unhandled.
+      await this.decided(saved);
+    })().catch((err) => {
+      // Never unhandled: the decision stands; what follows from it is logged.
+      console.error(`gate ${pending.id}: ${err instanceof Error ? err.message : String(err)}`);
     });
     this.inFlight.add(task);
     void task.finally(() => this.inFlight.delete(task));
@@ -404,6 +419,52 @@ export class GateService {
       ...(trimmed !== undefined ? { note: trimmed } : {}),
     });
     await this.announce(saved, by);
+    await this.decided(saved);
+    return saved;
+  }
+
+  /**
+   * T527: `listener` hears every gate decided, however it was decided: a
+   * human's (or owner's) `respond`, a `human_timeout` deadline falling
+   * through to the delegate (`tick`), a delegate deciding later. Listeners
+   * run in the order added, each awaited; for `respond` a throw reaches its
+   * caller and the rest don't run (a land refused on approval is the
+   * human's to see), elsewhere it is logged. A superseded gate decided
+   * nothing and is not heard. Returns the unsubscribe.
+   */
+  onResolved(listener: ResolvedListener): () => void {
+    this.resolvedListeners.add(listener);
+    return () => {
+      this.resolvedListeners.delete(listener);
+    };
+  }
+
+  private async decided(gate: HilRequest): Promise<void> {
+    for (const listener of [...this.resolvedListeners]) await listener(gate);
+  }
+
+  /**
+   * T527: a pending gate nobody needs to answer any more (a newer diff
+   * replaced the one it held): resolved with no decision and `reason`, so it
+   * leaves Needs me and a late answer is refused. No listener hears it.
+   */
+  async supersede(id: HilId, reason: string): Promise<HilRequest> {
+    const current = this.get(id);
+    if (current.status !== 'pending') throw new GateAlreadyResolvedError(id);
+    const { deadline: _deadline, ...withoutDeadline } = current;
+    const saved = await this.persist({
+      ...withoutDeadline,
+      status: 'resolved',
+      resolved_at: this.clock().toISOString(),
+      reason,
+    });
+    await this.store.appendEvent(
+      buildEvent('gate_resolved', {
+        stream: saved.stream,
+        agent: 'daemon',
+        data: { id: saved.id, superseded: true },
+      }),
+    );
     return saved;
   }
 
@@ -481,6 +542,12 @@ export class GateService {
       const saved = await this.persist(resolved);
       await this.notifyResolved(saved);
       fallenThrough.push(saved);
+      try {
+        await this.decided(saved);
+      } catch (err) {
+        // The decision stands; one gate's follow-on never stops the tick.
+        console.error(`gate ${saved.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     return fallenThrough;
   }

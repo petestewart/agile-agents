@@ -21,7 +21,7 @@ import { Icon } from './Icon';
 import { type PickOption, PickerField } from './Pickers';
 import { ModelChip } from './SessionPicker';
 import { ROLE_GLYPH } from './StreamTree';
-import { Button, Dialog, Field, Kbd, StatusDot } from './ui';
+import { Button, Dialog, Field, Kbd, StatusDot, useToast } from './ui';
 
 export function Ask({
   rows,
@@ -65,6 +65,7 @@ function AskBox({
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const toast = useToast();
   const box = useRef<HTMLTextAreaElement>(null);
   const targets = useMemo(() => askTargets(rows, projects), [rows, projects]);
   const chosen = targets.find((t) => t.value === target);
@@ -135,11 +136,19 @@ function AskBox({
         ...(pick ? { start: false } : {}),
       });
       if (pick) {
+        // T522 (audit U6): the node is made either way; a failed start is said, as
+        // New node says it, and the dialog still closes on it (Ask again made a second).
         await attachSession(created.id, 'worker', {
           vendor: pick.vendor,
           effort: pick.effort,
           ...(pick.model ? { model: pick.model } : {}),
-        });
+        }).catch((err: unknown) =>
+          toast({
+            title: 'The node was made, but its agent didn’t start',
+            body: err instanceof Error ? err.message : String(err),
+            tone: 'error',
+          }),
+        );
       }
       feed?.refresh();
       close();

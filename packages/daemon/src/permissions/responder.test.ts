@@ -1,17 +1,25 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type KnowledgeItem,
   type RulePattern,
   ulid,
-  validateAgentMessage,
   validateKnowledgeItem,
 } from '@agile-agents/shared';
+import { GateService } from '../gates';
+import { acpHilRouter } from '../hook/route-band';
 import { runInit } from '../init';
 import { StateStore } from '../store';
-import { type PermissionResponderSession, buildPermissionResponder } from './responder';
+import { StreamService } from '../streams/service';
+import { CANNOT_DETERMINE_REASON } from './push-detector';
+import {
+  type PermissionResponderContext,
+  type PermissionResponderSession,
+  type RoutedVerdict,
+  buildPermissionResponder,
+} from './responder';
 import type { AcpPermissionRequestParams } from './types';
 
 const WORKER = '01ARZ3NDEKTSV4RRFFQ69G5FA1';
@@ -138,7 +146,7 @@ describe('buildPermissionResponder', () => {
     expect(typeof events[0]?.data.reason).toBe('string');
   });
 
-  test('hil: writes a hil_request message instead of answering, then resolveHil answers it', async () => {
+  test('T524: a held call with no route is refused, never parked', async () => {
     const session = fakeSession();
     const responder = buildPermissionResponder(store, {
       role: 'engineer',
@@ -151,95 +159,312 @@ describe('buildPermissionResponder', () => {
       42,
       request('execute', { command: 'git push --force origin main' }),
     );
-    expect(decision.kind).toBe('hil');
-    expect(session.calls).toHaveLength(0); // still pending
-    expect(responder.pendingHilCount()).toBe(1);
-
+    expect(decision.kind).toBe('deny');
+    expect(session.calls).toEqual([
+      { id: 42, result: { outcome: { outcome: 'selected', optionId: 'reject' } } },
+    ]);
+    expect(responder.cancelPending()).toBe(0);
     const events = store.listEvents().filter((e) => e.kind === 'hook_decision');
-    expect(events[0]?.data.decision).toBe('hil');
+    expect(events[0]?.data.decision).toBe('deny');
+    expect(String(events[0]?.data.reason)).toContain('nothing here can hold it for the human');
+    // The old parked record is gone with the parking.
+    expect(existsSync(join(stateRoot, 'bus', 'inbox', 'human'))).toBe(false);
+  });
+});
 
-    // The message is discoverable through the generic entity trio at the
-    // documented path (bus/inbox/human/<id>.yaml).
-    if (decision.kind !== 'hil') throw new Error('unreachable');
-    // We don't get the message id back from handleRequest directly, so
-    // recover it the same way a real consumer would: list the human inbox
-    // directory the responder wrote into.
-    const files = readdirSync(join(stateRoot, 'bus', 'inbox', 'human'));
-    expect(files).toHaveLength(1);
-    const id = files[0]?.replace(/\.yaml$/, '') ?? '';
-    expect(id).not.toBe('');
+/**
+ * T524: a vendor without a pre-tool hook (Cursor, Gemini, Grok) has only
+ * this tier, and a call it holds for the human was parked: the ACP request
+ * left pending, a `hil_request` nobody read, the node `working` forever.
+ * Now it is the hook's route band: one Needs me card per call, a refusal
+ * now, the retry let through once on approval, refused on denial.
+ */
+describe('T524: a held ACP call raises a Needs me card instead of parking the turn', () => {
+  const HOOKLESS_OPTIONS = [
+    { optionId: 'yes', name: 'Allow', kind: 'allow_once' as const },
+    { optionId: 'always', name: 'Always allow', kind: 'allow_always' as const },
+    { optionId: 'no', name: 'Reject', kind: 'reject_once' as const },
+  ];
+  const ALLOW = { outcome: { outcome: 'selected', optionId: 'yes' } };
+  const REJECT = { outcome: { outcome: 'selected', optionId: 'no' } };
+  const CANCELLED = { outcome: { outcome: 'cancelled' } };
 
-    const message = store.getEntity(
-      join('bus', 'inbox', 'human', `${id}.yaml`),
-      validateAgentMessage,
-    );
-    expect(message.kind).toBe('hil_request');
-    expect(message.hil_kind).toBe('classifier_review');
-    expect(message.to).toEqual(['human']);
+  let gates: GateService;
+  let stream: string;
 
-    const resolved = await responder.resolveHil(id, { optionId: 'allow-once' });
-    expect(resolved).toBe(true);
+  beforeEach(async () => {
+    gates = new GateService(store);
+    stream = (await new StreamService(store).create('human', { title: 'n', goal: 'g' })).id;
+  });
+
+  function held(
+    toolCall: AcpPermissionRequestParams['toolCall'],
+    options: AcpPermissionRequestParams['options'] = HOOKLESS_OPTIONS,
+  ): AcpPermissionRequestParams {
+    return { sessionId: 's1', toolCall, options };
+  }
+
+  function hookless(
+    session: PermissionResponderSession,
+    routeHil: PermissionResponderContext['routeHil'] = acpHilRouter({
+      gates,
+      store,
+      session: WORKER,
+      stream,
+      worktreePath: repo,
+    }),
+  ) {
+    return buildPermissionResponder(store, {
+      role: 'engineer',
+      agent: WORKER,
+      worktreePath: repo,
+      session,
+      hooked: false,
+      ...(routeHil !== undefined ? { routeHil } : {}),
+    });
+  }
+
+  function noPushProtected(): KnowledgeItem {
+    return validateKnowledgeItem({
+      id: `K-${ulid()}`,
+      kind: 'standard',
+      text: 'never push to a protected branch',
+      scope: { kind: 'global' },
+      status: 'accepted',
+      enforcement: 'action',
+      check: { by: 'pattern', pattern: { kind: 'no_push_protected', args: {} } },
+      critical: true,
+      source: { by: 'builtin' },
+      stats: {},
+      created_at: new Date().toISOString(),
+    });
+  }
+
+  function answers(session: ReturnType<typeof fakeSession>): unknown[] {
+    return session.calls.map((call) => call.result);
+  }
+
+  function noParkedRecord(): void {
+    expect(existsSync(join(stateRoot, 'bus', 'inbox', 'human'))).toBe(false);
+  }
+
+  const HELD_CALLS: Array<[string, () => AcpPermissionRequestParams['toolCall'], object]> = [
+    [
+      'an exec the daemon cannot read',
+      () => ({ toolCallId: 'tc', kind: 'execute', title: 'Terminal', rawInput: {} }),
+      { tool: 'Bash' },
+    ],
+    [
+      'a sudo',
+      () => ({ toolCallId: 'tc', kind: 'execute', rawInput: { command: 'sudo whoami' } }),
+      { tool: 'Bash', command: 'sudo whoami' },
+    ],
+    [
+      'a package.json edit',
+      () => ({
+        toolCallId: 'tc',
+        kind: 'edit',
+        rawInput: { file_path: join(repo, 'package.json') },
+      }),
+      { tool: 'Edit' },
+    ],
+  ];
+
+  for (const [name, toolCall, shown] of HELD_CALLS) {
+    test(`${name}: one card however often it is asked; approved, the retry goes through once`, async () => {
+      const session = fakeSession();
+      const responder = hookless(session);
+
+      // Refused now with a card, and the same call again while it waits reuses that card.
+      expect((await responder.handleRequest(1, held(toolCall()))).kind).toBe('deny');
+      expect((await responder.handleRequest(2, held(toolCall()))).kind).toBe('deny');
+      expect(answers(session)).toEqual([REJECT, REJECT]);
+      const cards = gates.list();
+      expect(cards).toHaveLength(1);
+      const card = cards[0];
+      if (card === undefined) throw new Error('no card');
+      expect(card).toMatchObject({
+        gate: 'classifier_review',
+        status: 'pending',
+        stream,
+        session: WORKER,
+        requested_by: WORKER,
+      });
+      expect(card.call).toMatchObject(shown);
+      expect(card.summary?.length).toBeGreaterThan(0);
+
+      // Approved: that call goes through once (allow_once, never allow_always), then is held again.
+      await gates.respond(card.id, 'approve', 'pete');
+      expect((await responder.handleRequest(3, held(toolCall()))).kind).toBe('allow');
+      expect(session.calls.at(-1)).toEqual({ id: 3, result: ALLOW });
+      expect(gates.get(card.id).consumed_at).toBeDefined();
+      const allowed = store
+        .listEvents()
+        .filter((e) => e.kind === 'hook_decision' && e.data.decision === 'allow');
+      expect(allowed.map((e) => e.data.allowed_by)).toEqual([card.id]);
+      expect((await responder.handleRequest(4, held(toolCall()))).kind).toBe('deny');
+      expect(session.calls.at(-1)).toEqual({ id: 4, result: REJECT });
+      expect(answers(session)).not.toContainEqual({
+        outcome: { outcome: 'selected', optionId: 'always' },
+      });
+      // Every request answered, none left waiting, nothing parked.
+      expect(session.calls.map((c) => c.id)).toEqual([1, 2, 3, 4]);
+      expect(responder.cancelPending()).toBe(0);
+      noParkedRecord();
+    });
+
+    test(`${name}: denied, the retry is refused and raises no second card`, async () => {
+      const session = fakeSession();
+      const responder = hookless(session);
+      await responder.handleRequest(1, held(toolCall()));
+      const card = gates.list()[0];
+      if (card === undefined) throw new Error('no card');
+      await gates.respond(card.id, 'deny', 'pete', 'not on this machine');
+
+      const retry = await responder.handleRequest(2, held(toolCall()));
+      expect(retry.kind).toBe('deny');
+      if (retry.kind !== 'deny') throw new Error('expected a deny');
+      expect(retry.reason).toContain('not on this machine');
+      expect(answers(session)).toEqual([REJECT, REJECT]);
+      expect(gates.list()).toHaveLength(1);
+      noParkedRecord();
+    });
+  }
+
+  test('an exec it cannot read is keyed by its title: yes to one is not yes to another', async () => {
+    const session = fakeSession();
+    const responder = hookless(session);
+    const blind = (title: string) =>
+      held({ toolCallId: 'tc', kind: 'execute', title, rawInput: {} });
+    await responder.handleRequest(1, blind('Terminal'));
+    const card = gates.list()[0];
+    if (card === undefined) throw new Error('no card');
+    await gates.respond(card.id, 'approve', 'pete');
+
+    expect((await responder.handleRequest(2, blind('Shell'))).kind).toBe('deny');
+    expect(gates.list().filter((g) => g.status === 'pending')).toHaveLength(1);
+    expect((await responder.handleRequest(3, blind('Terminal'))).kind).toBe('allow');
+  });
+
+  test('two identical held calls in flight at once raise one card', async () => {
+    const session = fakeSession();
+    const responder = hookless(session);
+    const sudo = () =>
+      held({ toolCallId: 'tc', kind: 'execute', rawInput: { command: 'sudo id' } });
+    await Promise.all([responder.handleRequest(1, sudo()), responder.handleRequest(2, sudo())]);
+    expect(gates.list()).toHaveLength(1);
+    expect(answers(session)).toEqual([REJECT, REJECT]);
+  });
+
+  test('stopping answers a held call still being routed, once, and routes nothing after', async () => {
+    const session = fakeSession();
+    let release!: (verdict: RoutedVerdict) => void;
+    let routed = 0;
+    const responder = hookless(session, () => {
+      routed += 1;
+      return new Promise<RoutedVerdict>((resolve) => {
+        release = resolve;
+      });
+    });
+    const sudo = () =>
+      held({ toolCallId: 'tc', kind: 'execute', rawInput: { command: 'sudo id' } });
+
+    const inFlight = responder.handleRequest(7, sudo());
+    await Bun.sleep(0);
+    expect(routed).toBe(1);
+    expect(session.calls).toEqual([]);
+
+    expect(responder.cancelPending()).toBe(1);
+    expect(session.calls).toEqual([{ id: 7, result: CANCELLED }]);
+    // The route's late answer is dropped: the request was already answered.
+    release({ decision: 'allow' });
+    expect((await inFlight).kind).toBe('hil');
     expect(session.calls).toHaveLength(1);
-    expect(session.calls[0]?.id).toBe(42);
-    expect(session.calls[0]?.result).toEqual({
-      outcome: { outcome: 'selected', optionId: 'allow-once' },
-    });
-    expect(responder.pendingHilCount()).toBe(0);
 
-    // Review-round fix: resolveHil must not ack/delete the message itself —
-    // that lifecycle belongs to T018's GateService (or T006's bus ack), not
-    // this module.
-    expect(
-      store.getEntity(join('bus', 'inbox', 'human', `${id}.yaml`), validateAgentMessage).id,
-    ).toBe(id);
+    // A held call that arrives after the stop is cancelled with no card.
+    expect((await responder.handleRequest(8, sudo())).kind).toBe('hil');
+    expect(session.calls.at(-1)).toEqual({ id: 8, result: CANCELLED });
+    expect(routed).toBe(1);
+    const logged = store.listEvents().filter((e) => e.kind === 'hook_decision');
+    expect(logged.map((e) => e.data.outcome)).toEqual(['cancelled', 'cancelled']);
   });
 
-  test('resolveHil returns false for an unknown/already-resolved id', async () => {
+  test('a route that fails refuses the call rather than leaving it waiting', async () => {
+    const session = fakeSession();
+    const responder = hookless(session, async () => {
+      throw new Error('disk full');
+    });
+    const decision = await responder.handleRequest(
+      1,
+      held({ toolCallId: 'tc', kind: 'execute', rawInput: { command: 'sudo id' } }),
+    );
+    expect(decision.kind).toBe('deny');
+    if (decision.kind !== 'deny') throw new Error('expected a deny');
+    expect(decision.reason).toContain('disk full');
+    expect(answers(session)).toEqual([REJECT]);
+  });
+
+  test('a throw before the answer still answers: the request is refused, not left waiting', async () => {
     const session = fakeSession();
     const responder = buildPermissionResponder(store, {
       role: 'engineer',
       agent: WORKER,
-      worktreePath: '/work/.worktrees/TKT-0001-x',
+      worktreePath: repo,
       session,
-    });
-    expect(await responder.resolveHil('nonexistent', { optionId: 'allow-once' })).toBe(false);
-  });
-
-  test('requestHil is injectable, so T018 can own persistence instead of the default store writer', async () => {
-    const session = fakeSession();
-    const calls: Array<{
-      agent: string;
-      hilKind: string;
-      summary: string;
-      deadline: string;
-    }> = [];
-    const responder = buildPermissionResponder(store, {
-      role: 'engineer',
-      agent: WORKER,
-      worktreePath: '/work/.worktrees/TKT-0001-x',
-      session,
-      requestHil: async (input) => {
-        calls.push(input);
-        return { id: 'custom-id-1' };
+      patternRules: {
+        rules: () => {
+          throw new Error('rules unreadable');
+        },
+        protectedBranches: () => ['main'],
+        record: async () => {},
       },
     });
+    await expect(
+      responder.handleRequest(
+        1,
+        held({ toolCallId: 'tc', kind: 'execute', rawInput: { command: 'ls' } }),
+      ),
+    ).rejects.toThrow('rules unreadable');
+    expect(session.calls).toEqual([{ id: 1, result: REJECT }]);
+    expect(responder.cancelPending()).toBe(0);
+  });
 
+  test('no allow_once offered: refused with no card, never allow_always', async () => {
+    const session = fakeSession();
+    const responder = hookless(session);
+    const options = HOOKLESS_OPTIONS.filter((o) => o.kind !== 'allow_once');
     const decision = await responder.handleRequest(
-      99,
-      request('execute', { command: 'git push --force origin main' }),
+      1,
+      held({ toolCallId: 'tc', kind: 'execute', rawInput: { command: 'sudo id' } }, options),
     );
-    expect(decision.kind).toBe('hil');
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.agent).toBe(WORKER);
-    expect(calls[0]?.hilKind).toBe('classifier_review');
+    expect(decision.kind).toBe('deny');
+    expect(answers(session)).toEqual([REJECT]);
+    expect(gates.list()).toHaveLength(0);
+  });
 
-    // No message was written to the default bus path — the injected
-    // callback owns persistence entirely.
-    expect(() => readdirSync(join(stateRoot, 'bus', 'inbox', 'human'))).toThrow();
-
-    const resolved = await responder.resolveHil('custom-id-1', { optionId: 'allow-once' });
-    expect(resolved).toBe(true);
-    expect(session.calls[0]?.id).toBe(99);
+  test('no reject_once offered: a cancel and no card, so a deny it could only hold is not overridden', async () => {
+    const session = fakeSession();
+    const responder = buildPermissionResponder(store, {
+      role: 'engineer',
+      agent: WORKER,
+      worktreePath: repo,
+      session,
+      hooked: false,
+      routeHil: acpHilRouter({ gates, store, session: WORKER, stream, worktreePath: repo }),
+      patternRules: {
+        rules: () => [noPushProtected()],
+        protectedBranches: () => ['main'],
+        record: async () => {},
+      },
+    });
+    const options = HOOKLESS_OPTIONS.filter((o) => o.kind !== 'reject_once');
+    const call = (command: string) =>
+      held({ toolCallId: 'tc', kind: 'execute', rawInput: { command } }, options);
+    // A rule's deny with no way to say no, and a never-list hold: both cancelled, neither a card.
+    expect((await responder.handleRequest(1, call('git push origin main'))).kind).toBe('hil');
+    expect((await responder.handleRequest(2, call('sudo id'))).kind).toBe('hil');
+    expect(answers(session)).toEqual([CANCELLED, CANCELLED]);
+    expect(gates.list()).toHaveLength(0);
   });
 });
 
@@ -389,6 +614,57 @@ describe('buildPermissionResponder — pattern rules at the ACP tier', () => {
     // Still not an allow-list of git.
     const ok = await responder.handleRequest(id, request('execute', { command: 'git remote -v' }));
     expect(ok.kind).toBe('allow');
+  });
+
+  test('T525: a push through a configured git alias is checked like git push', async () => {
+    git(['config', 'alias.p', 'push'], repo);
+    git(['config', 'alias.pf', 'push --force'], repo);
+    git(['config', 'alias.x', '!git push origin main'], repo);
+    const rule = patternRule('no_push_protected');
+    const { responder } = gatedResponder([rule]);
+    let id = 30;
+    const decide = (command: string) =>
+      responder.handleRequest(id++, request('execute', { command }));
+
+    const toMain = await decide('git p origin main');
+    expect(toMain.kind).toBe('deny');
+    expect(toMain.kind === 'deny' ? toMain.reason : '').toContain(`rule ${rule.id}`);
+    expect((await decide('git p origin T143-x')).kind).toBe('allow');
+    expect((await decide(`git -C ${repo} p origin main`)).kind).toBe('deny');
+
+    // The never-without-human list reads it too: held exactly as the literal force-push is.
+    const literal = await decide('git push --force origin T143-x');
+    const forced = await decide('git pf origin T143-x');
+    expect(forced).toEqual(literal);
+    expect(forced.kind === 'allow' ? '' : forced.reason).toContain('force-push is never automatic');
+
+    // A shell alias can't be read: refused (the rule's deny beats the list's hold).
+    const shell = await decide('git x');
+    expect(shell.kind).toBe('deny');
+    expect(shell.kind === 'deny' ? shell.reason : '').toContain(CANNOT_DETERMINE_REASON);
+  });
+
+  test('T525: a builtin git subcommand spawns no git at this tier; an alias one git config per call', async () => {
+    git(['config', 'alias.p', 'push'], repo);
+    const { responder } = gatedResponder([patternRule('no_push_protected')]);
+    const spawn = spyOn(Bun, 'spawnSync');
+    const configCalls = () =>
+      spawn.mock.calls.filter(([argv]) => Array.isArray(argv) && argv[1] === 'config').length;
+    try {
+      for (const [n, command] of ['git status', 'git log --oneline -5 && git diff'].entries()) {
+        expect((await responder.handleRequest(40 + n, request('execute', { command }))).kind).toBe(
+          'allow',
+        );
+      }
+      expect(spawn).not.toHaveBeenCalled();
+      const command = 'git p origin T143-x && git p origin T143-y';
+      expect((await responder.handleRequest(42, request('execute', { command }))).kind).toBe(
+        'allow',
+      );
+      expect(configCalls()).toBe(1);
+    } finally {
+      spawn.mockRestore();
+    }
   });
 
   test('with no rules wired the tier behaves exactly as it did before T143', async () => {

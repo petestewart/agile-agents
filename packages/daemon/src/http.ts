@@ -3,8 +3,10 @@
  * and, with a `StateStore` + `GateService`, the cockpit's JSON routes
  * (snapshot, inbox, streams, rules, questions, gates, settings) plus a
  * `/ws` that sends `hello` + snapshot and then tails `log/events.jsonl` as
- * `{type:'event'}` frames. Every write route is same-origin only
- * (`isSameOriginRequest`) and records the actor as `human`. Without a
+ * `{type:'event'}` frames, and pushes the cockpit frame after each change
+ * (log lines or a routed event, T515). Every request must name a loopback
+ * `Host` (T517). Every write route, and `/ws`, is same-origin only
+ * (`isSameOriginRequest`); a write records the actor as `human`. Without a
  * store the feed routes 503 and `/ws` sends only the hello frame.
  */
 
@@ -74,6 +76,7 @@ import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import {
   AgentWorkingError,
   type AttachService,
+  NodeEndedError,
   SessionDefaultsService,
   StreamBusyError,
   UnknownVendorError,
@@ -298,6 +301,9 @@ interface WsHelloFrame {
 
 const FEED_WS_TOPIC = 'feed';
 
+/** T515: how long a cockpit frame push waits for the rest of its change (log lines, events). */
+const FRAME_PUSH_DELAY_MS = 50;
+
 function jsonResponse(body: unknown, status = 200): Response {
   return Response.json(body, { status });
 }
@@ -352,10 +358,10 @@ function isSameOriginRequest(req: Request, port: number): boolean {
 }
 
 /**
- * T362: the request's `Host` names this machine (or is absent). The
- * filesystem routes add this to the same-origin check: a page that
+ * T362: the request's `Host` names this machine (or is absent). A page that
  * DNS-rebinds its own name to 127.0.0.1 is same-origin to the browser, but
- * its requests still carry that name as `Host`.
+ * its requests still carry that name as `Host`. T517: checked for every
+ * request at the top of `startHttpServer`'s `fetch`, not per route.
  */
 function isLoopbackHost(req: Request): boolean {
   const host = req.headers.get('host');
@@ -615,7 +621,7 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     feed.store.getRepos(),
     (id) => feed.store.getCard(id),
     feed.contracts,
-    (s) => feed.plans?.waitingForPlan(s) === true,
+    (s, all) => feed.plans?.waitingForPlan(s, undefined, all) === true,
     (entry) => feed.remotes.peek(entry),
     feed.mergeState ? (s) => feed.mergeState?.peek(s) === true : undefined,
     (id) => feed.store.threadUpdatedAt(id),
@@ -731,6 +737,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
           mergeState: new NothingToMergeCache({
             preflight: (id) => options.landing?.preflight(id) ?? {},
             stat: (id) => options.landing?.diffStat(id),
+            batch: (fn) => (options.landing ? options.landing.batchReads(fn) : fn()),
           }),
         }
       : {}),
@@ -1779,7 +1786,7 @@ async function handleRepoRoute(
       );
     }
     if (name === 'clone' && ('url' in body || !Object.hasOwn(feed.store.getRepos(), 'clone'))) {
-      return handleRepoClone(req, feed, body, list, noTimeout);
+      return handleRepoClone(feed, body, list, noTimeout);
     }
     try {
       await setRepoSettings(feed.store, name, body, {
@@ -1830,15 +1837,13 @@ function samePath(a: string, b: string): boolean {
   }
 }
 
-/** T362: `POST /api/repos/clone`, after the same-origin check. */
+/** T362: `POST /api/repos/clone`, after the same-origin check (T517: and the loopback `Host`). */
 async function handleRepoClone(
-  req: Request,
   feed: FeedContext,
   body: Record<string, unknown>,
   list: () => Promise<unknown[]>,
   noTimeout: () => void,
 ): Promise<Response> {
-  if (!isLoopbackHost(req)) return errorResponse(403, 'cross-origin request rejected');
   noTimeout();
   try {
     const cloned = await cloneRepo(feed.store, body, {
@@ -1859,9 +1864,9 @@ async function handleRepoClone(
  *       default the home folder), each flagged `git` when it is a git toplevel, with `parent`
  *       and `home` to navigate by (`DirListing`); a missing folder is 404, any other refusal 400
  *
- * A read, but it shows the filesystem: same-origin only, and only on a
- * loopback `Host` (a DNS-rebound page is same-origin to the browser and a
- * GET carries no `Origin`).
+ * A read, but it shows the filesystem: same-origin only (and, as every
+ * request since T517, only on a loopback `Host`: a DNS-rebound page is
+ * same-origin to the browser and a GET carries no `Origin`).
  */
 function handleFsRoute(
   req: Request,
@@ -1870,9 +1875,7 @@ function handleFsRoute(
   sameOrigin: () => boolean,
 ): Response | undefined {
   if (url.pathname !== '/api/fs/dirs' || req.method !== 'GET') return undefined;
-  if (!sameOrigin() || !isLoopbackHost(req)) {
-    return errorResponse(403, 'cross-origin request rejected');
-  }
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
   const prefix = url.searchParams.get('prefix');
   try {
     return jsonResponse(
@@ -2037,10 +2040,11 @@ async function handleStreamRoute(
     action === 'trash-preview';
   if (isGet ? req.method !== 'GET' : req.method !== 'POST') return undefined;
   if (!feed?.streams) return errorResponse(503, 'streams not available');
+  // T531: a write's origin first, as on every other write route: another site gets 403, not 400.
+  if (!isGet && !sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
   const parsedId = UlidSchema.safeParse(decodeURIComponent(match[1] ?? ''));
   if (!parsedId.success) return errorResponse(400, `invalid stream id: ${match[1]}`);
   const id = parsedId.data;
-  if (!isGet && !sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
 
   try {
     if (action === undefined) {
@@ -2369,6 +2373,7 @@ async function handleStreamRoute(
     if (err instanceof NotFoundError) return errorResponse(404, message);
     if (
       err instanceof StreamBusyError ||
+      err instanceof NodeEndedError ||
       err instanceof LandRefusedError ||
       err instanceof TrashError
     ) {
@@ -2467,6 +2472,16 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         const url = new URL(req.url);
         const sameOrigin = () => isSameOriginRequest(req, srv.port ?? options.port);
 
+        // T517: a page whose own name DNS-rebinds to 127.0.0.1 is same-origin
+        // to the browser, so it reads every GET's response, and those GETs
+        // carry no `Origin` for `isSameOriginRequest` to refuse. Its
+        // requests still name it in `Host`. agiled binds loopback only, so
+        // every real client (the cockpit, the tests and e2e harnesses) names
+        // it 127.0.0.1, localhost or [::1]: anything else is refused, on
+        // every path. The static bundle holds nothing secret, but `/health`
+        // names the home, and one check up front covers a route added later.
+        if (!isLoopbackHost(req)) return errorResponse(403, 'cross-origin request rejected');
+
         if (url.pathname === '/health') {
           const payload: HealthPayload = {
             version: options.version,
@@ -2525,8 +2540,17 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         if (url.pathname === '/api/snapshot') {
           if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+          // T551: the events kept since boot, as a `/ws` connect sends; the log's tail without them.
           return jsonResponse(
-            buildSnapshot(feed.store, feed.gates, undefined, feed.questions, options.repoRoot),
+            buildSnapshot(
+              feed.store,
+              feed.gates,
+              undefined,
+              feed.questions,
+              options.repoRoot,
+              undefined,
+              recent?.list(),
+            ),
           );
         }
 
@@ -2739,6 +2763,16 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         }
 
         if (url.pathname === '/ws') {
+          // T517: CORS does not cover a WebSocket, so without this any page
+          // the operator has open could read every frame (snapshot, inbox,
+          // repo paths, the live log). A browser always sends `Origin` on
+          // the handshake (RFC 6455 §4.1), so the write routes' check refuses
+          // another site's page (and `Origin: null`). No `Origin` means a
+          // client that is not a browser (the tests; the CLI reads the home,
+          // not `/ws`), on this machine since the daemon binds loopback, and
+          // one that could read the home anyway. The loopback `Host` was
+          // checked above.
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           if (srv.upgrade(req)) {
             return undefined;
           }
@@ -2786,26 +2820,45 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
     }),
   );
 
-  // T362: a repo's remote is read in the background; when one changes, re-push the frame once.
-  // T380: the same for a finished node's "nothing to merge".
-  let remotePush: ReturnType<typeof setTimeout> | undefined;
+  // The one cockpit frame push (§3.3 "push, do not poll"), for every source:
+  // a batch of log lines, a routed event (T515: it writes no log line), a
+  // repo's remote read in the background (T362), a finished node's "nothing
+  // to merge" (T380), an update item (T481). Coalesced over
+  // `FRAME_PUSH_DELAY_MS`, and lines not yet tailed are read first, so one
+  // change that writes a log line and emits an event is one push. T546: with
+  // no cockpit open nothing is built (a socket that opens later is sent a
+  // fresh frame by `open`).
+  let framePush: ReturnType<typeof setTimeout> | undefined;
+  const watched = (): boolean => server.subscriberCount(FEED_WS_TOPIC) > 0;
+  const pushFrame = (): void => {
+    const streams = feed?.streams;
+    if (feed === undefined || streams === undefined || framePush !== undefined) return;
+    if (!watched()) return;
+    framePush = setTimeout(() => {
+      try {
+        // Log lines not yet read go out first; the push they ask for is this
+        // one (`framePush` is still set, so they schedule none of their own).
+        tailer?.pollNow();
+      } catch (err) {
+        console.error(messageOf(err));
+      }
+      framePush = undefined;
+      // The last socket may have closed while this waited.
+      if (!watched()) return;
+      try {
+        server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, streams)));
+      } catch (err) {
+        console.error(messageOf(err));
+      }
+    }, FRAME_PUSH_DELAY_MS);
+  };
+  // T515: the Events, Activity and repo views re-read on a pushed frame.
+  const offEmitted = feed?.streams ? feed.events?.onEmitted(pushFrame) : undefined;
   if (feed?.streams) {
-    const streams = feed.streams;
-    const repush = (): void => {
-      if (remotePush !== undefined) return;
-      remotePush = setTimeout(() => {
-        remotePush = undefined;
-        try {
-          server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, streams)));
-        } catch (err) {
-          console.error(messageOf(err));
-        }
-      }, 50);
-    };
-    feed.remotes.onChange = repush;
-    if (feed.mergeState) feed.mergeState.onChange = repush;
+    feed.remotes.onChange = pushFrame;
+    if (feed.mergeState) feed.mergeState.onChange = pushFrame;
     // T481: an update item comes and goes with a check or an update, not with the event log.
-    if (options.harnessUpdates) options.harnessUpdates.onChange = repush;
+    if (options.harnessUpdates) options.harnessUpdates.onChange = pushFrame;
     try {
       feed.remotes.warm(Object.values(feed.store.getRepos()));
     } catch {
@@ -2833,15 +2886,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         for (const event of newEvents) {
           server.publish(FEED_WS_TOPIC, JSON.stringify({ type: 'event', event }));
         }
-        // Any new batch may change the inbox or a status pair: re-derive and
-        // push the cockpit frame once per batch (§3.3 "push, do not poll").
-        if (feed.streams && newEvents.length > 0) {
-          try {
-            server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, feed.streams)));
-          } catch (err) {
-            console.error(messageOf(err));
-          }
-        }
+        // Any new batch may change the inbox or a status pair: re-derive the frame.
+        if (newEvents.length > 0) pushFrame();
       },
       onError: (err) => {
         console.error(err.message);
@@ -2854,10 +2900,11 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
     hostname,
     async stop() {
       tailer?.stop();
+      offEmitted?.();
       if (feed) feed.remotes.onChange = undefined;
       if (feed?.mergeState) feed.mergeState.onChange = undefined;
       if (options.harnessUpdates) options.harnessUpdates.onChange = undefined;
-      clearTimeout(remotePush);
+      clearTimeout(framePush);
       server.stop(true);
     },
   };

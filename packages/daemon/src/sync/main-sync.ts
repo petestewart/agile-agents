@@ -19,7 +19,13 @@
 import { isAbsolute, join } from 'node:path';
 import type { ReposConfig, Stream } from '@agile-agents/shared';
 import { liveSession } from '../attach/service';
-import { describeGitNetworkFailure, git, gitNetwork, gitWrite } from '../delivery/git';
+import {
+  describeGitNetworkFailure,
+  git,
+  gitNetwork,
+  gitWrite,
+  isOwnCheckout,
+} from '../delivery/git';
 import { mainBranch } from '../delivery/service';
 import { type EmitRouted, trimFiles } from '../events/producers';
 import type { StreamService } from '../streams/service';
@@ -30,7 +36,7 @@ export const MAIN_SYNC_SWEEP_MS = 60_000;
 export type SyncOutcome =
   | { status: 'synced'; pushed: boolean }
   | { status: 'up_to_date' }
-  | { status: 'deferred'; reason: 'mid_turn' | 'dirty' | 'failed' }
+  | { status: 'deferred'; reason: 'mid_turn' | 'dirty' | 'failed' | 'no_worktree' }
   | { status: 'conflict'; files: string[] }
   | { status: 'skipped' };
 
@@ -83,7 +89,7 @@ export class MainSync {
         if (s.id === except || s.repo !== repo || !isLiveWorkNode(s, all)) continue;
         // T288: a helper follows its parent's branch; main reaches it through the parent.
         if (s.helper_of !== undefined) continue;
-        out.set(s.id, await this.syncNode(s));
+        out.set(s.id, await this.syncNodeOrDefer(s));
       }
       if (opts.announce !== false) await this.announce(repo, out, except);
       return out;
@@ -145,20 +151,25 @@ export class MainSync {
   /** The periodic check: main moved outside the app, and deferred nodes that may be ready now. */
   async sweep(): Promise<void> {
     for (const repo of Object.keys(this.options.repos())) {
-      const before = this.lastMain.get(repo);
-      const now = this.readMain(repo);
-      if (now === undefined) continue;
-      // The first sweep reconciles (nodes left behind across a restart); a
-      // node already containing main is a no-op.
-      if (before === undefined || before !== now) {
-        await this.mainMoved(repo, undefined, { announce: before !== undefined });
+      // T534: a repo whose pass throws never skips the repos after it.
+      try {
+        const before = this.lastMain.get(repo);
+        const now = this.readMain(repo);
+        if (now === undefined) continue;
+        // The first sweep reconciles (nodes left behind across a restart); a
+        // node already containing main is a no-op.
+        if (before === undefined || before !== now) {
+          await this.mainMoved(repo, undefined, { announce: before !== undefined });
+        }
+      } catch (err) {
+        console.error(`main sync sweep of ${repo} failed:`, err);
       }
     }
     for (const id of [...this.deferred]) {
       await this.serial(async () => {
         const s = this.find(id);
         if (s === undefined) this.deferred.delete(id);
-        else await this.syncNode(s);
+        else await this.syncNodeOrDefer(s);
       });
     }
   }
@@ -188,6 +199,20 @@ export class MainSync {
     if (sha !== undefined) this.lastMain.set(repo, sha);
   }
 
+  /**
+   * T534: one node whose sync throws never stops a pass. It is logged and
+   * deferred, so the next sweep retries it: main is already recorded as
+   * seen, and nothing else would come back to it for this move.
+   */
+  private async syncNodeOrDefer(s: Stream): Promise<SyncOutcome> {
+    try {
+      return await this.syncNode(s);
+    } catch (err) {
+      console.error(`main sync of ${s.id} failed:`, err);
+      return this.defer(s.id, 'failed');
+    }
+  }
+
   private async syncNode(s: Stream, opts: { turnOver?: boolean } = {}): Promise<SyncOutcome> {
     const entry = this.options.repos()[s.repo as string];
     if (entry === undefined || s.worktree === undefined || s.branch === undefined) {
@@ -196,6 +221,10 @@ export class MainSync {
     }
     const repoRoot = entry.path;
     const wt = isAbsolute(s.worktree) ? s.worktree : join(repoRoot, s.worktree);
+    // T535: its worktree is gone, or a plain directory is in its place: git
+    // there would read and merge into the operator's own checkout. It syncs
+    // once its next start puts the worktree back (a later sweep).
+    if (!isOwnCheckout(wt)) return this.defer(s.id, 'no_worktree');
     const main = mainBranch(entry, repoRoot);
 
     if (git(['merge-base', '--is-ancestor', main, 'HEAD'], wt, repoRoot).exitCode === 0) {
@@ -271,7 +300,7 @@ export class MainSync {
     return { status: 'synced', pushed };
   }
 
-  private defer(id: string, reason: 'mid_turn' | 'dirty' | 'failed'): SyncOutcome {
+  private defer(id: string, reason: 'mid_turn' | 'dirty' | 'failed' | 'no_worktree'): SyncOutcome {
     this.deferred.add(id);
     return { status: 'deferred', reason };
   }

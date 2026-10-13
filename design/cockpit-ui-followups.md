@@ -10,9 +10,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
 
 ## P2 — polish
 
-- Inbox items carry the call, rule, name and scope only inside `context`
-  text (`gateText`, `ruleItem` in `packages/daemon/src/inbox/service.ts`); the
-  cards parse it. Add structured fields to `InboxItem` (`.strict()`).
 - A decision card stays dimmed until the frame that drops it; the card's
   action refreshes the frame at once, so this is only seen when the daemon is
   slow to drop the item. Removing it optimistically would need a way back
@@ -44,10 +41,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   Its `openWindow` branch (no cockpit tab open) isn't covered end to end:
   Chromium won't open a window from a synthetic click. (T394)
 
-
-- Live views refresh on the audit log's tailer; an event emitted without an
-  audit line shows only on the next push. The events service's `onEmitted`
-  could push the frame itself. (`http.ts`, the tailer)
 
 - A line sent with `start` appears in the first prompt twice (the brief's
   "Thread so far" and "What woke you"); by design for every wake (T336), a

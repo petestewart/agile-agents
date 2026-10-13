@@ -9,11 +9,14 @@
  */
 
 import { z } from 'zod';
+import { HilKindSchema } from './agent-message';
 import { HarnessIdSchema } from './harness-updates';
 import { UlidSchema, formatZodError } from './ids';
-import { KnowledgeIdSchema, KnowledgeKindSchema } from './knowledge';
+import { KnowledgeIdSchema, KnowledgeItemSchema, KnowledgeKindSchema } from './knowledge';
+import { AutonomyProposalSchema, CoordinatorActionSchema, PLAN_LIST_MAX } from './plan';
 import { ReadRootSchema } from './posture';
 import { QUESTION_OPTIONS_MAX, QuestionOptionSchema } from './question';
+import { LegacyRuleIdSchema } from './rule';
 
 /**
  * §3.1's kinds. `question` and `gate` are the two that carry a decision;
@@ -80,6 +83,73 @@ export const INBOX_CONTEXT_MAX_CHARS = 200;
 export const INBOX_DETAIL_MAX_CHARS = 4000;
 
 /**
+ * T514: the parts below are what `context` runs together for the CLI
+ * ("classifier_review: edit x — why", "name · scope: text"), kept apart so
+ * the cockpit's cards render from them instead of taking the line apart.
+ * `context` stays the readable line.
+ */
+const InboxPartText = z.string().min(1).max(INBOX_DETAIL_MAX_CHARS);
+
+/** T514: a `gate` item's parts (`HilRequest`). */
+export const InboxGateSchema = z
+  .object({
+    /** `land` (a merge waits for your OK) or `classifier_review` (a routed call). */
+    name: HilKindSchema,
+    /** The call it holds, as one line ("edit src/app.ts", "bash: rm -rf dist"); a routed call's only. */
+    call: InboxPartText.optional(),
+    /** Why it waits: the routing rule's text when a rule routed it, else the gate's summary. */
+    reason: InboxPartText,
+    /** The rule that routed the call; `name` when it has one. A gate raised before T260 names its `R-` rule. */
+    rule: z
+      .object({
+        id: z.union([KnowledgeIdSchema, LegacyRuleIdSchema]),
+        name: KnowledgeItemSchema.shape.name,
+      })
+      .strict()
+      .optional(),
+    /** A ship check's classifier probability that the diff breaks the rule. */
+    probability: z.number().finite().optional(),
+    /** A land gate's branch and the branch it merges into. */
+    branch: z.string().min(1).optional(),
+    target: z.string().min(1).optional(),
+  })
+  .strict();
+export type InboxGate = z.infer<typeof InboxGateSchema>;
+
+/** T514: a `rule_accept` item's parts: the proposed knowledge item's name, scope and text. */
+export const InboxKnowledgeSchema = z
+  .object({
+    name: KnowledgeItemSchema.shape.name,
+    scope: KnowledgeItemSchema.shape.scope,
+    text: KnowledgeItemSchema.shape.text,
+  })
+  .strict();
+export type InboxKnowledge = z.infer<typeof InboxKnowledgeSchema>;
+
+/** T514: a `plan_approve` item's parts: one line per part ("api owns `prices.ts`") and per contract. */
+export const InboxPlanSchema = z
+  .object({
+    /** A revision of an approved plan: each part's line says what changed. */
+    revised: z.boolean(),
+    owners: z.array(InboxPartText).max(PLAN_LIST_MAX),
+    contracts: z.array(InboxPartText).max(PLAN_LIST_MAX),
+  })
+  .strict();
+export type InboxPlan = z.infer<typeof InboxPlanSchema>;
+
+/** T514: a `proposal` item's parts (`AutonomyProposal`): who proposes it, the change in words, and which change. */
+export const InboxProposalSchema = z
+  .object({
+    principal: AutonomyProposalSchema.shape.principal,
+    summary: AutonomyProposalSchema.shape.summary,
+    change: CoordinatorActionSchema,
+    /** The change makes a new project, so no project's level holds it. */
+    new_project: z.literal(true).optional(),
+  })
+  .strict();
+export type InboxProposal = z.infer<typeof InboxProposalSchema>;
+
+/**
  * T361: a question item's choices, as buttons on its card. Bounded like an
  * `ask`'s (at least one here: a question raised over RPC may offer one).
  */
@@ -125,6 +195,14 @@ export const InboxItemSchema = z
     read_root: ReadRootSchema.optional(),
     /** T481: a `harness_update` item's CLI — present on that kind only. */
     harness: InboxHarnessSchema.optional(),
+    /** T514: a `gate` item's parts — that kind only. */
+    gate: InboxGateSchema.optional(),
+    /** T514: a `rule_accept` item's parts — that kind only. */
+    knowledge: InboxKnowledgeSchema.optional(),
+    /** T514: a `plan_approve` item's parts — that kind only. */
+    plan: InboxPlanSchema.optional(),
+    /** T514: a `proposal` item's parts — that kind only. */
+    proposal: InboxProposalSchema.optional(),
     /**
      * T502 (design/chat-threads.md §5): a choice question you replied to whose
      * agent finished the turn your reply started without settling it or
@@ -165,6 +243,22 @@ export const InboxItemSchema = z
   .refine((item) => (item.kind === 'harness_update') === (item.harness !== undefined), {
     message: 'a harness_update item names its CLI, and only it does',
     path: ['harness'],
+  })
+  .refine((item) => item.gate === undefined || item.kind === 'gate', {
+    message: 'only a gate item carries gate parts',
+    path: ['gate'],
+  })
+  .refine((item) => item.knowledge === undefined || item.kind === 'rule_accept', {
+    message: 'only a rule_accept item carries knowledge parts',
+    path: ['knowledge'],
+  })
+  .refine((item) => item.plan === undefined || item.kind === 'plan_approve', {
+    message: 'only a plan_approve item carries plan parts',
+    path: ['plan'],
+  })
+  .refine((item) => item.proposal === undefined || item.kind === 'proposal', {
+    message: 'only a proposal item carries proposal parts',
+    path: ['proposal'],
   });
 export type InboxItem = z.infer<typeof InboxItemSchema>;
 

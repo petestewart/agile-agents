@@ -31,7 +31,7 @@ import {
   updateProject,
   updateStream,
 } from '../lib/api';
-import { type TurnWhere, coordinatesIt, keepsTitle } from '../lib/ask';
+import { type TurnStep, type TurnWhere, coordinatesIt, keepsTitle, turnFailure } from '../lib/ask';
 import { writeFailure } from '../lib/errors';
 import type { CockpitProjectRow, CockpitRepoRow, CockpitStreamRow } from '../lib/feed-types';
 import { splitRepos, titleFromGoal } from '../lib/tree';
@@ -90,6 +90,10 @@ export function TurnIntoWorkDialog({
   const [where, setWhere] = useState<TurnWhere>('next-to');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  // T522 (audit U7): the steps a failed attempt already did, and where the first
+  // attempt moved it; a Retry skips the one and never moves it a level further.
+  const done = useRef(new Set<TurnStep>());
+  const moveTo = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
     let live = true;
@@ -150,30 +154,47 @@ export function TurnIntoWorkDialog({
     if (busy || text === '') return;
     setBusy(true);
     setError(undefined);
+    // Where "Next to" puts it, as the first attempt saw it: once moved, `parent` is
+    // its new parent, and reading it again would move it up another level.
+    if (moveTo.current === undefined) {
+      moveTo.current = nextTo && parent?.parent !== undefined ? parent.parent : null;
+    }
+    const target = moveTo.current;
+    let step: TurnStep = 'move';
+    const run = async (s: TurnStep, write: () => Promise<unknown>): Promise<void> => {
+      step = s;
+      if (done.current.has(s)) return;
+      await write();
+      done.current.add(s);
+    };
     try {
       // T435 (#3): beside its parent first, so the parent stays what it is.
-      if (nextTo && parent?.parent !== undefined) await moveStream(node, parent.parent);
+      if (target !== null) await run('move', () => moveStream(node, target));
       if (text !== current.trim()) {
         // T435 (#27): a title that is still the question follows the new goal.
         const placeholder = titleFromGoal(text);
-        await updateStream(node, {
-          goal: text,
-          ...(renames && placeholder !== '' ? { title: placeholder, auto_title: true } : {}),
-        });
+        await run('goal', () =>
+          updateStream(node, {
+            goal: text,
+            ...(renames && placeholder !== '' ? { title: placeholder, auto_title: true } : {}),
+          }),
+        );
       }
       // T435 (#13): as the hint under the picker says.
       if (joinsProject && project !== undefined) {
-        await updateProject(project.id, { repos: [...(project.repos ?? []), repo] });
+        await run('project', () =>
+          updateProject(project.id, { repos: [...(project.repos ?? []), repo] }),
+        );
       }
       // In place (T205, D42): its branch and worktree; a live agent restarts in it.
-      if (repo !== '') await addRepoToStream(node, repo);
-      await sayOnStream(node, START_ON_GOAL, { start: true });
+      if (repo !== '') await run('repo', () => addRepoToStream(node, repo));
+      await run('start', () => sayOnStream(node, START_ON_GOAL, { start: true }));
       onDone({
         ...(repo !== '' ? { repo } : {}),
         ...(asksWhere ? { where } : {}),
       });
     } catch (err) {
-      setError(writeFailure(err, 'Couldn’t reach the daemon; nothing was started.'));
+      setError(turnFailure(step, done.current, writeFailure(err, 'Couldn’t reach the daemon.')));
     } finally {
       setBusy(false);
     }

@@ -8,8 +8,8 @@
  * worktree removed, branch kept).
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HilRequest, Stream } from '@agile-agents/shared';
@@ -18,8 +18,10 @@ import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import {
+  DEFAULT_BRANCH_TTL_MS,
   DeliveryService,
   LandRefusedError,
+  defaultBranch,
   mainBranch,
   parseShortstat,
   wireLandGateResolution,
@@ -208,6 +210,9 @@ describe('the success path', () => {
     // Worktree removed, branch kept (git remembers the work).
     expect(existsSync(work.worktree)).toBe(false);
     expect(git(['rev-parse', '--verify', 'refs/heads/s-ok']).length).toBe(40);
+    // T535: the record says so too: no worktree path to start an agent in, the branch kept.
+    expect(landed.worktree).toBeUndefined();
+    expect(landed.branch).toBe('s-ok');
   });
 
   test("the repo entry's main branch beats the repo's default branch", async () => {
@@ -343,6 +348,144 @@ describe('conflict (acceptance: blocked, conflict files on the thread, worktree 
   });
 });
 
+describe('T535: a plain directory where a checkout of the target was', () => {
+  test("is not fast-forwarded: the operator's own checkout on another branch is left alone", async () => {
+    const stale = join(repo, '.worktrees', 'main-plain');
+    git(['worktree', 'add', '-q', '--force', stale, 'main']);
+    rmSync(stale, { recursive: true, force: true });
+    mkdirSync(stale); // deleted by hand, a plain directory left in its place
+    const work = branchWithWork('s-plain', 'pl.txt', 'pl\n');
+    const stream = await makeStream(work);
+    // The operator works on a branch of their own, clean.
+    git(['checkout', '-q', '-b', 'mine']);
+    const mine = git(['rev-parse', 'refs/heads/mine']);
+
+    const outcome = await landing.land(stream.id);
+    expect(outcome.status).toBe('landed');
+    expect(git(['show', 'main:pl.txt'])).toBe('pl');
+    // No `reset --hard` reached the operator's checkout through the plain directory.
+    expect(git(['rev-parse', 'refs/heads/mine'])).toBe(mine);
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('mine');
+    expect(existsSync(join(repo, 'pl.txt'))).toBe(false);
+  });
+});
+
+describe('T534: a worktree directory that is gone never breaks a land', () => {
+  test('a merge-together group whose first member has no worktree dir lands both, without a throw', async () => {
+    const a = branchWithWork('s-a', 'a.txt', 'a\n');
+    const b = branchWithWork('s-b', 'b.txt', 'b\n');
+    const sa = await makeStream({ title: 'A', ...a, merge_together: 'grp' });
+    const sb = await makeStream({ title: 'B', ...b, merge_together: 'grp' });
+    rmSync(a.worktree, { recursive: true, force: true }); // deleted outside the daemon
+
+    const outcome = await landing.land(sa.id);
+    expect(outcome.status).toBe('landed');
+    expect(git(['show', 'main:a.txt'])).toBe('a');
+    expect(git(['show', 'main:b.txt'])).toBe('b');
+    expect(streams.get(sa.id).human.status).toBe('landed');
+    expect(streams.get(sb.id).human.status).toBe('landed');
+    expect(streams.get(sb.id).delivery_state?.status).toBe('merged');
+    // Git forgot the deleted worktree; B's was removed as usual; both branches stay.
+    expect(git(['worktree', 'list', '--porcelain'])).not.toContain(a.worktree);
+    expect(existsSync(b.worktree)).toBe(false);
+    expect(git(['rev-parse', '--verify', 'refs/heads/s-a']).length).toBe(40);
+    expect(threadBodies(sa.id).some((line) => line.includes(' kept: '))).toBe(false);
+  });
+
+  test('a second checkout of the target whose dir is gone neither refuses nor breaks the land', async () => {
+    const stale = join(repo, '.worktrees', 'main-again');
+    git(['worktree', 'add', '-q', '--force', stale, 'main']);
+    rmSync(stale, { recursive: true, force: true });
+    const work = branchWithWork('s-stale', 'st.txt', 'st\n');
+    const stream = await makeStream(work);
+    expect(landing.preflight(stream.id).ready).toBe(true);
+    const outcome = await landing.land(stream.id);
+    expect(outcome.status).toBe('landed');
+    expect(git(['show', 'main:st.txt'])).toBe('st');
+    // The operator's own checkout on main was still brought along.
+    expect(existsSync(join(repo, 'st.txt'))).toBe(true);
+  });
+
+  test('a temp worktree that git could not add reports the real refusal, not a throw', async () => {
+    // A branch with work and no worktree, then a git dir where no worktree can be added.
+    git(['checkout', '-q', '-b', 's-nowt']);
+    writeFileSync(join(repo, 'n.txt'), 'n\n');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'work on s-nowt']);
+    git(['checkout', '-q', 'main']);
+    rmSync(join(repo, '.git', 'worktrees'), { recursive: true, force: true });
+    writeFileSync(join(repo, '.git', 'worktrees'), 'not a directory\n');
+    const mainBefore = git(['rev-parse', 'refs/heads/main']);
+    const stream = await makeStream({ branch: 's-nowt' });
+
+    // No throw from prepareMerge's cleanup of the `target` dir git never made,
+    // so its `finally` ran to the end (the temp dir's removal is its last step).
+    const outcome = await landing.land(stream.id);
+    expect(outcome.status).toBe('blocked');
+    expect(outcome.line).toContain('could not create leading directories');
+    expect(outcome.line).not.toContain('ENOENT');
+    expect(git(['rev-parse', 'refs/heads/main'])).toBe(mainBefore);
+    expect(streams.get(stream.id).human.status).toBe('open');
+  });
+});
+
+describe('T536: a land runs no repo hook', () => {
+  const HOOKS = [
+    'pre-merge-commit',
+    'prepare-commit-msg',
+    'commit-msg',
+    'post-merge',
+    'post-checkout',
+    'reference-transaction',
+  ];
+  let marker: string;
+  beforeEach(() => {
+    marker = `${repo}-hooks-ran`;
+  });
+  afterEach(() => rmSync(marker, { force: true }));
+
+  function armHooks(dir: string): void {
+    mkdirSync(dir, { recursive: true });
+    for (const hook of HOOKS) {
+      writeFileSync(join(dir, hook), `#!/bin/sh\necho ${hook} >> '${marker}'\n`, { mode: 0o755 });
+    }
+  }
+
+  /** Plain git runs the armed hooks (the fixture is live), then the marker is cleared. */
+  function provesLive(cwd: string): void {
+    git(['update-ref', 'refs/heads/control', 'HEAD'], cwd);
+    expect(readFileSync(marker, 'utf8')).toContain('reference-transaction');
+    rmSync(marker);
+  }
+
+  test('D4: hooks an agent committed into a tracked core.hooksPath run neither in the merge nor in the operator checkout', async () => {
+    git(['config', 'core.hooksPath', '.githooks']);
+    const worktree = join(repo, '.worktrees', 's-hooks');
+    git(['worktree', 'add', '-q', '-b', 's-hooks', worktree, 'main']);
+    armHooks(join(worktree, '.githooks'));
+    git(['-c', 'core.hooksPath=/dev/null', 'add', '-A'], worktree);
+    git(['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'agent work'], worktree);
+    provesLive(worktree);
+    const stream = await makeStream({ branch: 's-hooks', worktree });
+
+    const outcome = await landing.land(stream.id);
+    expect(outcome.status).toBe('landed');
+    // The operator's checkout on main was brought along: the hooks now sit in its tracked dir.
+    expect(existsSync(join(repo, '.githooks', 'post-merge'))).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("hooks in the repo's own git dir do not run on a land", async () => {
+    const work = branchWithWork('s-gitdir', 'g.txt', 'g\n');
+    armHooks(join(repo, '.git', 'hooks'));
+    provesLive(repo);
+    const stream = await makeStream(work);
+    const outcome = await landing.land(stream.id);
+    expect(outcome.status).toBe('landed');
+    expect(existsSync(marker)).toBe(false);
+  });
+});
+
 describe('T176: after a conflict — preflight, the Resolve prompt, and the re-land', () => {
   test('preflight names the files; the prompt says merge, resolve, test, commit; a resolved branch lands', async () => {
     const work = branchWithWork('s-resolve', 'shared.txt', 'from the stream\n');
@@ -414,6 +557,9 @@ describe('the land gate (repos.yaml `land_gate: true`)', () => {
     const gate: HilRequest = gatedOutcome.gate;
     expect(gate.gate).toBe('land');
     expect(gate.summary).toBe('land gated into main');
+    // T514: the card reads the branch and target from the record, not the summary.
+    expect(gate.branch).toBe('stream/01k2abcdefghjkmnpqrstvwxyz-gated');
+    expect(gate.target).toBe('main');
     expect(gate.stream).toBe(stream.id);
     expect(gate.status).toBe('pending');
     expect(gatedOutcome.line).toBe(`gate raised: ${gate.id}`);
@@ -709,6 +855,56 @@ describe('T161: the stream page reads (preflight and diff)', () => {
     });
   });
 
+  test("T552: a batch of preflights reads the target's worktrees and status once; the answers are the same", async () => {
+    const ready = [];
+    for (const name of ['s-b1', 's-b2', 's-b3']) {
+      ready.push(await makeStream({ ...branchWithWork(name, `${name}.txt`, 'x\n'), title: name }));
+    }
+    const waiting = await makeStream({ ...branchWithWork('s-b4', 'b4.txt', 'x\n'), title: 's-b4' });
+    await streams.wait('human', waiting.id, ready[0]?.id ?? '');
+    const ids = [...ready, waiting].map((s) => s.id);
+    const spawn = spyOn(Bun, 'spawnSync');
+    const count = (word: string) =>
+      spawn.mock.calls.filter(([argv]) => Array.isArray(argv) && argv.includes(word)).length;
+    try {
+      const one = ids.map((id) => landing.preflight(id));
+      expect(count('worktree')).toBe(ids.length);
+      expect(count('status')).toBe(ids.length);
+      spawn.mockClear();
+      const batched = landing.batchReads(() => ids.map((id) => landing.preflight(id)));
+      expect(count('worktree')).toBe(1);
+      expect(count('status')).toBe(1);
+      expect(batched).toEqual(one);
+      expect(batched.map((p) => p.ready)).toEqual([true, true, true, false]);
+      // Outside the batch, each read is fresh: a dirty target is seen at once.
+      writeFileSync(join(repo, 'README.md'), '# dirty\n');
+      expect(landing.preflight(ids[0] ?? '').reason).toMatch(/uncommitted changes/);
+    } finally {
+      spawn.mockRestore();
+    }
+  });
+
+  test('T552: the default branch is read once per repo per window; the main fallback every time', () => {
+    const spawn = spyOn(Bun, 'spawnSync');
+    const reads = () =>
+      spawn.mock.calls.filter(([argv]) => Array.isArray(argv) && argv.includes('symbolic-ref'))
+        .length;
+    try {
+      expect(defaultBranch(repo, 1_000)).toBe('main');
+      expect(defaultBranch(repo, 1_000 + DEFAULT_BRANCH_TTL_MS - 1)).toBe('main');
+      expect(reads()).toBe(1);
+      expect(defaultBranch(repo, 1_000 + DEFAULT_BRANCH_TTL_MS)).toBe('main');
+      expect(reads()).toBe(2);
+    } finally {
+      spawn.mockRestore();
+    }
+    // Neither main nor master (nor origin/HEAD): `main` is a guess, so it isn't kept.
+    git(['branch', '-m', 'main', 'trunk']);
+    expect(defaultBranch(repo, 1_000 + 2 * DEFAULT_BRANCH_TTL_MS)).toBe('main');
+    git(['branch', 'master']);
+    expect(defaultBranch(repo, 1_000 + 2 * DEFAULT_BRANCH_TTL_MS)).toBe('master');
+  });
+
   test('T410: diffStat is the size of what Merge brings: committed work only', async () => {
     const work = branchWithWork('s-stat', 'a.txt', 'one\ntwo\n');
     const stream = await makeStream(work);
@@ -780,6 +976,22 @@ describe('T166: a branch merged outside `land`', () => {
     const stream = await makeStream(work);
     git(['merge', '-q', '--ff-only', 's-ff']);
     expect(landing.preflight(stream.id).merged).toBe(true);
+  });
+
+  test('T531: an untouched branch forked off a commit a merge brought in is "nothing to merge"', async () => {
+    // A side branch merged --no-ff: its commit is in main, off main's first-parent line.
+    git(['checkout', '-q', '-b', 'side']);
+    writeFileSync(join(repo, 'side.txt'), 's\n');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'side work']);
+    git(['checkout', '-q', 'main']);
+    git(['merge', '-q', '--no-ff', '-m', 'merge side', 'side']);
+    const worktree = join(repo, '.worktrees', 's-off-side');
+    git(['worktree', 'add', '-q', '-b', 's-off-side', worktree, 'side']);
+    const stream = await makeStream({ branch: 's-off-side', worktree });
+    const pre = landing.preflight(stream.id);
+    expect(pre.merged).toBeUndefined();
+    expect(pre.reason).toMatch(/nothing to merge/);
   });
 
   test('a branch with no commits of its own stays "nothing to land" and cannot be marked', async () => {

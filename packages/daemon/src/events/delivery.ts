@@ -292,12 +292,18 @@ export class SessionDelivery {
     };
   }
 
-  /** T461: `events` with each human line's body as the thread has it, uncapped. */
+  /**
+   * T461: `events` with each human line's body as the thread has it, uncapped
+   * (a routed event's body stops at `ROUTED_EVENT_STRING_MAX`). T557: and the
+   * operator's line to the Director (`director_request` by `human`).
+   */
   private withFullLines(node: string, events: readonly RoutedEvent[]): RoutedEvent[] {
     const lineBody = this.options.lineBody;
     if (lineBody === undefined) return [...events];
     return events.map((e) => {
-      if (e.type !== 'human_line' || e.ref === undefined) return e;
+      const operatorLine =
+        e.type === 'human_line' || (e.type === 'director_request' && e.by === 'human');
+      if (!operatorLine || e.ref === undefined) return e;
       const body = lineBody(node, e.ref);
       return body === undefined ? e : { ...e, payload: { ...e.payload, body } };
     });

@@ -32,6 +32,7 @@ import {
   draftHeading,
   draftParts,
 } from '../lib/director';
+import { afterSend, sendableText } from '../lib/drafts';
 import { RECONNECTING, SEND_UNREACHABLE, writeFailure } from '../lib/errors';
 import { useFeed } from '../lib/feed-context';
 import { eventDetail, eventTitle } from '../lib/lenses';
@@ -353,8 +354,8 @@ export function DirectorPage(): JSX.Element {
   );
 
   const send = async (): Promise<void> => {
-    const line = draft.trim();
-    if (!line) return;
+    const line = sendableText(draft);
+    if (line === undefined) return;
     if (offline) {
       setSendError(SEND_UNREACHABLE);
       return;
@@ -363,7 +364,8 @@ export function DirectorPage(): JSX.Element {
     setSendError(undefined);
     try {
       await sayToDirector(line);
-      setDraft('');
+      // T519 (audit U2): only what went comes off; what was typed while it went stays.
+      setDraft((now) => afterSend(now, line));
       setSeq((n) => n + 1);
     } catch (err) {
       // The draft stays; Retry sends it again.
@@ -574,7 +576,7 @@ export function DirectorPage(): JSX.Element {
                         icon="refresh"
                         data-testid="send-retry"
                         busy={sending}
-                        disabled={offline || draft.trim() === ''}
+                        disabled={offline || sendableText(draft) === undefined}
                         title={offline ? RECONNECTING : 'Send it again'}
                         onClick={() => void send()}
                       >

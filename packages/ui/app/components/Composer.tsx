@@ -13,8 +13,15 @@
  * menu of them (arrows, Enter or Tab to pick, Escape to close), the hint
  * says what a command line will do, and one the cockpit can't run
  * (`/login`) is held with what to do instead.
+ *
+ * T519 (audit U1): a message runs to the cap on a line you write
+ * (`HUMAN_LINE_MAX_CHARS`), counted as the daemon counts it (the trimmed
+ * text's length). Nothing typed or pasted is cut: near the cap a count
+ * shows, as Send to <parent>'s does (T435), and past it Send is off with
+ * what to do.
  */
 
+import { HUMAN_LINE_MAX_CHARS } from '@agile-agents/shared';
 import {
   type ReactNode,
   forwardRef,
@@ -26,6 +33,7 @@ import {
 } from 'react';
 import { type SlashContext, commandHint, commandMenu, heldCommand } from '../lib/commands';
 import { useComposerDraft } from '../lib/drafts';
+import { TOO_LONG_FIX, lengthBudget } from '../lib/errors';
 import { Icon } from './Icon';
 import { Markdown } from './Markdown';
 import { Kbd, Spinner } from './ui';
@@ -47,6 +55,7 @@ export interface ComposerProps {
   effort?: ReactNode;
   /** T468: Shift+Tab in the box (steps the effort); absent, Shift+Tab moves focus as usual. */
   onShiftTab?: () => void;
+  /** T519: the most a message may hold, trimmed (the daemon's cap on a line you write). */
   maxLength?: number;
   label?: string;
   inputTestid?: string;
@@ -84,7 +93,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     chip,
     effort,
     onShiftTab,
-    maxLength = 800,
+    maxLength = HUMAN_LINE_MAX_CHARS,
     label = 'Message',
     inputTestid = 'composer-input',
     sendTestid = 'composer-send',
@@ -96,6 +105,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 ): JSX.Element {
   const area = useRef<HTMLTextAreaElement>(null);
   const menuId = useId();
+  const countId = useId();
   // T461: the `/` menu's highlighted row, whether Escape closed it, and a held command's note.
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState(false);
@@ -115,6 +125,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [],
   );
   const text = value.trim();
+  // T519: counted as the daemon counts a line (`.trim()`, then its length in UTF-16 units).
+  const budget = lengthBudget(text.length, maxLength);
 
   // Grow with the text, one line to ten; past that it scrolls.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `value` is the trigger.
@@ -150,7 +162,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   };
 
   const send = (): void => {
-    if (busy || disabled || text.length === 0) return;
+    if (busy || disabled || text.length === 0 || budget.over) return;
     const hold = slash ? heldCommand(text, slash) : undefined;
     if (hold !== undefined) {
       setHeld(hold);
@@ -239,11 +251,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           data-testid={inputTestid}
           aria-label={label}
           rows={1}
-          maxLength={maxLength}
           value={value}
           disabled={disabled}
           placeholder={placeholder}
           onChange={(e) => change(e.target.value)}
+          aria-invalid={budget.over ? true : undefined}
+          aria-describedby={budget.show ? countId : undefined}
           {...(menuOpen
             ? {
                 'aria-controls': menuId,
@@ -289,14 +302,28 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             className="cr-compose-send"
             data-testid={sendTestid}
             aria-label="Send"
-            title={sendBlocked ?? 'Send (Enter)'}
+            title={sendBlocked ?? (budget.over ? TOO_LONG_FIX : 'Send (Enter)')}
             data-blocked={sendBlocked !== undefined ? 'true' : undefined}
-            disabled={busy || disabled || text.length === 0 || sendBlocked !== undefined}
+            disabled={
+              busy || disabled || text.length === 0 || budget.over || sendBlocked !== undefined
+            }
           >
             {busy ? <Spinner size={14} /> : <Icon name="arrow-up" size={16} strokeWidth={2.25} />}
           </button>
         </div>
       </form>
+      {budget.show && (
+        <p
+          id={countId}
+          className="cr-charcount"
+          data-testid="composer-count"
+          data-over={budget.over ? 'true' : undefined}
+          aria-live="polite"
+        >
+          {budget.over && <span className="cr-charcount-fix">{TOO_LONG_FIX}</span>}
+          <span className="cr-charcount-num">{budget.count}</span>
+        </p>
+      )}
       {held !== undefined && (
         <div className="cr-compose-held" role="alert" data-testid="composer-held">
           <Markdown text={held} />

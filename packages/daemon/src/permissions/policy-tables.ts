@@ -23,6 +23,7 @@ import {
 } from '@agile-agents/shared';
 import * as cmd from './command';
 import { isPathInside, realpathNearestExisting } from './command';
+import { type GitAliasLookup, gitArgsThroughAliases } from './push-detector';
 import type { PermissionRequest, PermissionRole } from './types';
 
 /**
@@ -71,6 +72,8 @@ export interface PolicyContext {
    * bare test context): denied, as before T457.
    */
   posture?: PermissionPosture;
+  /** T525: the worktree's git aliases (`worktreeGitAliases`); absent, an engineer's git subcommand that isn't a builtin is held. */
+  gitAlias?: GitAliasLookup;
 }
 
 /**
@@ -567,7 +570,14 @@ function neverWithoutHumanForAtom(
   // `git -C` outside the worktree and pushes to protected branches are the
   // `no_worktree_escape`/`no_push_protected` built-in pattern rules (§5.4),
   // so a repo can retire or rescope them. The rest of the list stays here.
-  const args = cmd.parseGitInvocation(tokens).args;
+  // T525: read through a configured alias (`alias.pf = push --force`). Only
+  // the engineer's table allows a git subcommand it doesn't name; every
+  // other role's denies one it can't read anyway.
+  const git = gitArgsThroughAliases(atom, ctx.gitAlias);
+  if (git !== undefined && 'unreadable' in git && ctx.role === 'engineer') {
+    return hil(`cannot tell what this git call runs: ${git.unreadable}`);
+  }
+  const args = git !== undefined && 'args' in git ? git.args : undefined;
   if (args !== undefined) {
     if (cmd.isForcePush(args)) {
       return hil('force-push is never automatic');
@@ -905,7 +915,9 @@ function* walkCwds(
   for (const [i, atom] of atoms.entries()) {
     const here = atom.delimiterBefore === '&&' && atom.nested !== true ? current : all;
     current = here;
-    if (atom.tokens[0] !== 'cd') {
+    // T516: a `cd` with a process substitution (`cd ./x>({touch,y})`) runs a
+    // command too: it goes to the role's own check, which denies it.
+    if (atom.tokens[0] !== 'cd' || cmd.runsProcessSubstitution(atom)) {
       yield { atom, cwds: here };
       continue;
     }
@@ -971,13 +983,14 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
     const inputs = verifyBenignPaths(cmd.inputRedirectTargets(atom.tokens), ctx, true, cwds);
     if (isHeldRead(inputs)) held ??= inputs;
     else if (inputs.action !== 'allow') return inputs;
-    if (cmd.hasRedirectionOrTee(atom.tokens)) {
+    if (cmd.runsProcessSubstitution(atom) || cmd.hasRedirectionOrTee(atom.tokens)) {
       // Every non-benign redirection target (`>`, `1>`, `2>`, `&>`, a second
       // `>`, ...) must resolve inside the worktree. `tee`, an unresolvable
-      // target and `<(...)` have no path to verify and deny outright.
+      // target and `<(...)`/`>(...)` have no path to verify and deny outright
+      // (T516: `>(cmd)` is no file named `(cmd)`: bash runs `cmd`).
       // Benign targets (`/dev/null`, `&1`, `&-`) are not writes.
       const hasTee = atom.tokens.includes('tee');
-      const hasProcessSub = atom.tokens.some((t) => t.startsWith('<('));
+      const hasProcessSub = cmd.runsProcessSubstitution(atom);
       const unresolved = cmd.hasUnresolvedRedirection(atom.tokens);
       if (hasTee || hasProcessSub || unresolved) {
         return deny('redirected output escapes the worktree (or uses tee/process substitution)');
@@ -1148,8 +1161,9 @@ function reviewerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
       return deny('reviewer role denies xargs: it runs a command on paths no check can see');
     }
     // Benign redirects write nothing (`git diff 2>/dev/null` is a read);
-    // any other redirection or tee is a write primitive.
-    if (cmd.hasWritingRedirectionOrTee(atom.tokens)) {
+    // any other redirection, tee or process substitution (T516: mid-word too)
+    // is a write primitive.
+    if (cmd.runsProcessSubstitution(atom) || cmd.hasWritingRedirectionOrTee(atom.tokens)) {
       return deny('reviewer role denies exec with redirection/tee — those are write primitives');
     }
     // T457: its reads keep to the read scope, as a coordinator's do (the
@@ -1195,14 +1209,16 @@ function reviewerVerdict(classified: PermissionRequest, ctx: PolicyContext): Pol
  * unresolvable target deny.
  */
 function coordinatorRedirectVerdict(
-  tokens: string[],
+  atom: cmd.CommandAtom,
   ctx: PolicyContext,
   cwd: string = ctx.worktreePath,
 ): PolicyVerdict {
-  if (!cmd.hasWritingRedirectionOrTee(tokens)) return ALLOW;
-  if (tokens.includes('tee') || tokens.some((t) => t.startsWith('<('))) {
+  const { tokens } = atom;
+  // T516: before the redirect check, which can't see a mid-word `x>(cmd)`.
+  if (tokens.includes('tee') || cmd.runsProcessSubstitution(atom)) {
     return deny('coordinator role denies tee/process substitution — write files with Write');
   }
+  if (!cmd.hasWritingRedirectionOrTee(tokens)) return ALLOW;
   if (cmd.hasUnresolvedRedirection(tokens)) {
     return deny('coordinator role denies a redirect it cannot resolve');
   }
@@ -1304,7 +1320,7 @@ function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyV
       return deny('coordinator role denies xargs: it runs a command on paths no check can see');
     }
     for (const cwd of cwds) {
-      const redirect = coordinatorRedirectVerdict(atom.tokens, ctx, cwd);
+      const redirect = coordinatorRedirectVerdict(atom, ctx, cwd);
       if (redirect.action !== 'allow') return redirect;
       const reads = scopedReads(atom.tokens, ctx, cwd);
       if (isHeldRead(reads)) hold(reads);
@@ -1341,6 +1357,18 @@ function coordinatorVerdict(classified: PermissionRequest, ctx: PolicyContext): 
     case 'execute':
       if (classified.command === undefined) {
         return deny('coordinator role denies exec with no command to classify');
+      }
+      // T555: this table decides alone (P20: no never-without-human list), so it
+      // refuses what that list would hold: a substitution, backticks, `eval` or an
+      // open quote runs whatever is inside, which no check below sees; and
+      // `cd <name>` goes wherever CDPATH points.
+      if (cmd.hasUnsafeShellConstruct(classified.command)) {
+        return deny(
+          'coordinator role denies command substitution, backticks, eval and unbalanced quotes',
+        );
+      }
+      if (cmd.mentionsCdpath(classified.command)) {
+        return deny('coordinator role denies a command that sets or names CDPATH');
       }
       return coordinatorExecuteVerdict(classified.command, ctx);
     case 'fetch':

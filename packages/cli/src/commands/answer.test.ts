@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { HilRequest, Policy } from '@agile-agents/shared';
 import { parseArgs } from '../args';
+import { runCli } from '../index';
 import { type TestDaemon, startTestDaemon } from '../test-support';
 import { runAnswer } from './answer';
 
@@ -113,5 +114,55 @@ describe('agile answer', () => {
     const resolved = daemon.gateService.get(gate.id);
     expect(resolved.decision).toBe('deny');
     expect(resolved.note).toBe('use the lockfile');
+  });
+});
+
+/** T523 (CLI audit C3): `agile answer` keeps an unquoted answer as typed. */
+describe('agile answer free text', () => {
+  async function cli(argv: string[]): Promise<{ code: number; out: string; err: string }> {
+    const out: string[] = [];
+    const err: string[] = [];
+    const log = console.log;
+    const error = console.error;
+    console.log = (msg: string) => out.push(String(msg));
+    console.error = (msg: string) => err.push(String(msg));
+    try {
+      return { code: await runCli(argv, daemon.repo), out: out.join('\n'), err: err.join('\n') };
+    } finally {
+      console.log = log;
+      console.error = error;
+    }
+  }
+
+  test('an option-shaped word is refused by name and nothing is answered; -- keeps it', async () => {
+    const question = await daemon.questionService.raise({
+      stream,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'how do I push?',
+    });
+    // Was: `--no-verify` ate "then" and "use push" was sent, exit 0.
+    const refused = await cli(['answer', question.id, 'use', '--no-verify', 'then', 'push']);
+    expect(refused.code).toBe(1);
+    expect(refused.err).toBe(
+      'agile answer: unknown option --no-verify (its options: --by). If it is part of the text, quote the text or put -- before it',
+    );
+    expect(daemon.questionService.get(question.id).status).toBe('open');
+
+    const kept = await cli(['answer', question.id, '--', 'use', '--no-verify', 'then', 'push']);
+    expect(kept.code).toBe(0);
+    expect(daemon.questionService.get(question.id).answer).toBe('use --no-verify then push');
+  });
+
+  test('--by still reads anywhere, and a line may start with "-"', async () => {
+    const question = await daemon.questionService.raise({
+      stream,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      text: 'how far?',
+    });
+    const { code } = await cli(['answer', question.id, '-1', 'step', '--by', 'pete', 'back']);
+    expect(code).toBe(0);
+    const answered = daemon.questionService.get(question.id);
+    expect(answered.answer).toBe('-1 step back');
+    expect(answered.answered_by).toBe('pete');
   });
 });

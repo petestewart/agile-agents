@@ -29,13 +29,10 @@ export {
 } from './policy-tables';
 export {
   buildPermissionResponder,
-  DEFAULT_HIL_DEADLINE_MS,
-  type HilRequestInput,
-  type HilResolution,
   type PermissionResponderContext,
   type PermissionResponderHandle,
   type PermissionResponderSession,
-  type RequestHil,
+  type RoutedVerdict,
 } from './responder';
 export type {
   AcpPermissionOption,

@@ -888,6 +888,37 @@ describe('Codex calls through HookService: the same rules as Claude', () => {
     ).toBe('deny');
   });
 
+  test("T518: a reviewer's call to another MCP server's tool is denied; the daemon's own verbs and a worker's are not", async () => {
+    const reviewer = '01ARZ3NDEKTSV4RRFFQ69GC0RV';
+    await store.putAgent(reviewer, {
+      vendor: 'codex',
+      model: 'gpt-5.5',
+      stream,
+      pid: 4243,
+      role: 'reviewer',
+      worktree,
+      last_seen: new Date().toISOString(),
+    });
+    const svc = service();
+    const as = async (agent: string, tool: string) => {
+      const out = await svc.preToolUse({
+        ...codexInput(worktree, tool, { owner: 'o', repo: 'r', title: 'x' }),
+        agile_agent: agent,
+        agile_vendor: 'codex',
+      });
+      return {
+        decision: out.hookSpecificOutput.permissionDecision,
+        reason: out.hookSpecificOutput.permissionDecisionReason ?? '',
+      };
+    };
+
+    const denied = await as(reviewer, 'mcp__github__create_issue');
+    expect(denied.decision).toBe('deny');
+    expect(denied.reason).toContain('unknown tool kind (mcp__github__create_issue)');
+    expect((await as(reviewer, 'mcp__agile__finding')).decision).toBe('allow');
+    expect((await as(SESSION, 'mcp__github__create_issue')).decision).toBe('allow');
+  });
+
   test('every call it attributes is a sighting for that session', async () => {
     const sightings = new HookSightings();
     const svc = service(sightings);

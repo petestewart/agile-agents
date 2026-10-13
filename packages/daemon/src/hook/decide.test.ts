@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { AgentMessage, KnowledgeItem, ReposConfig } from '@agile-agents/shared';
+import { decidePermission } from '../permissions';
 import { decidePreToolUse } from './decide';
 import { DEFAULT_MAX_READ_BYTES, type HookDecisionContext } from './types';
 
@@ -383,6 +384,17 @@ describe('T336: a coordinator reads other repos with realistic Bash', () => {
   const bash = (command: string) =>
     decidePreToolUse(ctx, { tool_name: 'Bash', tool_input: { command, description: 'x' } });
 
+  test('T555: a substitution or backticks never run, inside a readable repo too', () => {
+    for (const command of [
+      `cat ${ledger}/README.md $(touch pwned)`,
+      `cd ${ledger} && git log \`rm -rf src\``,
+      'wc -l $(git push origin main)',
+      'echo "unbalanced',
+    ]) {
+      expect([command, bash(command).decision]).toEqual([command, 'deny']);
+    }
+  });
+
   test('read-only commands on a readable repo are allowed, cd included', () => {
     for (const command of [
       `ls ${ledger}`,
@@ -558,6 +570,157 @@ describe('T291: a coordinator has no network (P20)', () => {
   test('a worker (engineer) is unchanged: both fall through to allow', () => {
     expect(web('worker', 'WebFetch').decision).toBe('allow');
     expect(web('worker', 'WebSearch').decision).toBe('allow');
+  });
+
+  test("T543: a reviewer's or lessons session's are denied, with the ACP tier's reason for its fetch", () => {
+    const acp = decidePermission({
+      role: 'reviewer',
+      worktreePath: '/repo/.worktrees/TKT-0001',
+      request: {
+        toolCall: { kind: 'fetch', title: 'WebFetch', rawInput: { url: 'https://example.com' } },
+        options: [
+          { optionId: 'allow', kind: 'allow_once' },
+          { optionId: 'deny', kind: 'reject_once' },
+        ],
+      },
+    });
+    if (acp.kind !== 'deny') throw new Error('the ACP tier did not deny a reviewer fetch');
+    for (const role of ['reviewer', 'lessons'] as const) {
+      for (const tool of ['WebFetch', 'WebSearch']) {
+        expect([role, tool, web(role, tool)]).toEqual([
+          role,
+          tool,
+          { decision: 'deny', reason: acp.reason },
+        ]);
+      }
+    }
+    // Even to a package registry, which only an engineer's ACP fetch may reach.
+    const registry = decidePreToolUse(baseCtx({ role: 'reviewer' }), {
+      tool_name: 'WebFetch',
+      tool_input: { url: 'https://registry.npmjs.org/zod' },
+    });
+    expect(registry.decision).toBe('deny');
+  });
+});
+
+describe('T543: a vendor tool with no Claude name gets the ACP tier verdict for kind other', () => {
+  const worktreePath = '/repo/.worktrees/TKT-0001';
+  const unmapped = (
+    role: HookDecisionContext['role'],
+    tool_name: string,
+    tool_input: Record<string, unknown> = {},
+    overrides: Partial<HookDecisionContext> = {},
+  ) =>
+    decidePreToolUse(baseCtx({ role, worktreePath, ...overrides }), {
+      tool_name,
+      tool_input,
+      agile_tool_kind: 'other',
+    });
+
+  test('denied for every role, with the ACP reason; the daemon’s own verbs pass', () => {
+    for (const role of ['worker', 'reviewer', 'lessons', 'coordinator'] as const) {
+      const out = unmapped(role, 'powershell', { command: 'ls' });
+      expect([role, out.decision]).toEqual([role, 'deny']);
+      expect(out.reason).toBe('unknown tool kind (powershell) — safe default deny');
+      expect(unmapped(role, 'mcp__agile__finding').decision).toBe('allow');
+    }
+  });
+
+  test('a Claude-looking name decides nothing: no read check, no held-read ask, no web check', () => {
+    // A Claude `Read` here would be held for the human (Ask posture); unmapped, it is kind other.
+    const ctx = { readRoots: [], hiddenRoots: ['/home/u/.agile'], posture: 'ask' as const };
+    expect(
+      decidePreToolUse(baseCtx({ worktreePath, ...ctx }), {
+        tool_name: 'Read',
+        tool_input: { file_path: '/srv/elsewhere/a.ts' },
+      }).decision,
+    ).toBe('ask');
+    const read = unmapped('worker', 'Read', { file_path: '/srv/elsewhere/a.ts' }, ctx);
+    expect(read).toEqual({
+      decision: 'deny',
+      reason: 'unknown tool kind (Read) — safe default deny',
+    });
+    for (const tool of ['Edit', 'Bash', 'WebFetch']) {
+      expect([
+        tool,
+        unmapped('worker', tool, { file_path: `${worktreePath}/a.ts` }).decision,
+      ]).toEqual([tool, 'deny']);
+    }
+  });
+
+  test('without the mark, the same names keep their Claude verdicts', () => {
+    expect(
+      decidePreToolUse(baseCtx({ worktreePath }), {
+        tool_name: 'Edit',
+        tool_input: { file_path: `${worktreePath}/a.ts` },
+      }).decision,
+    ).toBe('allow');
+    expect(
+      decidePreToolUse(baseCtx({ worktreePath }), { tool_name: 'powershell', tool_input: {} })
+        .decision,
+    ).toBe('allow');
+  });
+});
+
+describe("T518: a read-only role gets the ACP tier's verdict for another MCP server's tool", () => {
+  const worktreePath = '/repo/.worktrees/TKT-0001';
+  const mcp = (role: HookDecisionContext['role'], tool_name: string) =>
+    decidePreToolUse(baseCtx({ role, worktreePath }), {
+      tool_name,
+      tool_input: { owner: 'o', repo: 'r', title: 'x', path: `${worktreePath}/a.ts` },
+    });
+  /** What the ACP tier decides for the same call, reported as kind `other`. */
+  const acp = (tool: string) =>
+    decidePermission({
+      role: 'reviewer',
+      worktreePath,
+      request: {
+        toolCall: { kind: 'other', title: tool, rawInput: {} },
+        options: [
+          { optionId: 'allow', kind: 'allow_once' },
+          { optionId: 'deny', kind: 'reject_once' },
+        ],
+      },
+    });
+
+  test('a reviewer or lessons session is denied, with the ACP tier reason', () => {
+    for (const tool of [
+      'mcp__github__create_issue',
+      'mcp__fs__write_file',
+      'mcp__plugin_tools_web__fetch',
+      'mcp__agile_other__progress',
+    ]) {
+      const ours = acp(tool);
+      if (ours.kind !== 'deny') throw new Error(`the ACP tier did not deny ${tool}`);
+      for (const role of ['reviewer', 'lessons'] as const) {
+        expect([role, tool, mcp(role, tool)]).toEqual([
+          role,
+          tool,
+          { decision: 'deny', reason: ours.reason },
+        ]);
+      }
+    }
+  });
+
+  test("the daemon's own verbs keep their verdict: allowed, as the ACP tier allows them", () => {
+    for (const tool of ['mcp__agile__finding', 'mcp__agile__read_stream', 'mcp__agile__ask']) {
+      expect(acp(tool).kind).toBe('allow');
+      for (const role of ['reviewer', 'lessons', 'worker', 'coordinator'] as const) {
+        expect([role, tool, mcp(role, tool).decision]).toEqual([role, tool, 'allow']);
+      }
+    }
+  });
+
+  test("an engineer or a coordinator is unchanged: another server's tool still allows", () => {
+    for (const role of ['worker', 'coordinator'] as const) {
+      expect(mcp(role, 'mcp__github__create_issue')).toEqual({ decision: 'allow' });
+    }
+  });
+
+  test('a non-MCP tool with no ACP kind is untouched for a reviewer', () => {
+    for (const tool of ['Glob', 'TodoWrite', 'Task']) {
+      expect(mcp('reviewer', tool).decision).toBe('allow');
+    }
   });
 });
 

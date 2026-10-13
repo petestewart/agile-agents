@@ -141,9 +141,15 @@ describe('itemHeadline (T388): what it is and where, in words', () => {
     expect(itemHeadline(item({ kind: 'gate', context: 'classifier_review: edit x — why' }))).toBe(
       'Action to allow on Ledger export format',
     );
-    expect(itemHeadline(item({ kind: 'gate', context: 'land: land stream/a into main' }))).toBe(
-      'Merge to approve: Ledger export format',
-    );
+    expect(
+      itemHeadline(
+        item({
+          kind: 'gate',
+          context: 'land: land a into main',
+          gate: { name: 'land', reason: 'land a into main', branch: 'stream/a', target: 'main' },
+        }),
+      ),
+    ).toBe('Merge to approve: Ledger export format');
     expect(itemHeadline(item({ kind: 'rule_accept', knowledge_kind: 'decision' }))).toBe(
       'Decision proposed on Ledger export format',
     );
@@ -169,7 +175,13 @@ describe('itemHeadline (T388): what it is and where, in words', () => {
       'Waiting for the plan: Ledger export format',
     );
     expect(
-      itemHeadline(item({ kind: 'proposal', context: 'director proposes: start the api part' })),
+      itemHeadline(
+        item({
+          kind: 'proposal',
+          context: 'director proposes: Start api',
+          proposal: { principal: 'director', summary: 'Start api', change: 'start_node' },
+        }),
+      ),
     ).toBe('Director proposal on Ledger export format');
     expect(itemHeadline(item({ kind: 'done' }))).toBe('Ready to merge: Ledger export format');
     expect(itemHeadline(item({ kind: 'blocked' }))).toBe('Blocked: Ledger export format');
@@ -237,6 +249,11 @@ describe('itemLine (T388): the first line of its text, plain, no ids', () => {
           kind: 'gate',
           context:
             'classifier_review: edit /tmp/wt/package.json — editing a dependency manifest is never automatic',
+          gate: {
+            name: 'classifier_review',
+            call: 'edit /tmp/wt/package.json',
+            reason: 'editing a dependency manifest is never automatic',
+          },
         }),
       ),
     ).toBe('edit /tmp/wt/package.json — editing a dependency manifest is never automatic');
@@ -244,7 +261,14 @@ describe('itemLine (T388): the first line of its text, plain, no ids', () => {
       item({
         kind: 'gate',
         context:
-          'classifier_review: bash: rm -rf dist — tests-with-src (K-01ARZ3NDEKTSV4RRFFQ69G5FAV): change tests with the source (probability 0.55)',
+          'classifier_review: bash: rm -rf dist — tests-with-src (K-01ARZ3NDEKTSV4RRFFQ69G5FAV): change tests with the source',
+        gate: {
+          name: 'classifier_review',
+          call: 'bash: rm -rf dist',
+          reason: 'change tests with the source',
+          rule: { id: 'K-01ARZ3NDEKTSV4RRFFQ69G5FAV', name: 'tests-with-src' },
+          probability: 0.55,
+        },
       }),
     );
     expect(line).toBe('bash: rm -rf dist — change tests with the source');
@@ -252,11 +276,13 @@ describe('itemLine (T388): the first line of its text, plain, no ids', () => {
   });
 
   test('a merge to approve names the branch without its prefix', () => {
+    const branch = 'stream/01arz3ndektsv4rrffq69g5fa1-add-csv-import';
     expect(
       itemLine(
         item({
           kind: 'gate',
-          context: 'land: land stream/01arz3ndektsv4rrffq69g5fa1-add-csv-import into main',
+          context: 'land: land add-csv-import into main',
+          gate: { name: 'land', reason: 'land add-csv-import into main', branch, target: 'main' },
         }),
       ),
     ).toBe('Merge add-csv-import into main');
@@ -268,6 +294,11 @@ describe('itemLine (T388): the first line of its text, plain, no ids', () => {
         item({
           kind: 'rule_accept',
           context: 'money-in-cents · global: Keep **money** in integer cents',
+          knowledge: {
+            name: 'money-in-cents',
+            scope: { kind: 'global' },
+            text: 'Keep **money** in integer cents',
+          },
         }),
       ),
     ).toBe('Keep money in integer cents');
@@ -277,12 +308,23 @@ describe('itemLine (T388): the first line of its text, plain, no ids', () => {
           kind: 'plan_approve',
           context:
             'Approve the plan for Sale prices: api owns `prices.ts`; web owns `shop.html`. Contracts: GET /price/:id',
+          plan: {
+            revised: false,
+            owners: ['api owns `prices.ts`', 'web owns `shop.html`'],
+            contracts: ['GET /price/:id'],
+          },
         }),
       ),
     ).toBe('api owns prices.ts; web owns shop.html');
     expect(
-      itemLine(item({ kind: 'proposal', context: 'coordinator proposes: start the api part' })),
-    ).toBe('start the api part');
+      itemLine(
+        item({
+          kind: 'proposal',
+          context: 'coordinator proposes: Start api',
+          proposal: { principal: 'coordinator', summary: 'Start api', change: 'start_node' },
+        }),
+      ),
+    ).toBe('Start api');
     expect(
       itemLine(item({ kind: 'done', context: 'Added the CSV importer.\n\nTests pass.' })),
     ).toBe('Added the CSV importer.');

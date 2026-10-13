@@ -48,17 +48,22 @@ let gates: GateService;
 let hooks: HookService;
 let inbox: InboxService;
 let attachService: AttachService;
+/** The vendor the next attach spawns: Claude running `workerScript()`, unless a test says otherwise. */
+let providerFor: () => AcpProviderConfig;
 
 function git(args: string[], cwd = repo): void {
   const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
   if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
 }
 
-function fakeProviderFor(script: FakeAgentScript): AcpProviderConfig {
+function fakeProviderFor(
+  script: FakeAgentScript,
+  vendor: AcpProviderConfig = ACP_PROVIDERS.claude,
+): AcpProviderConfig {
   const scriptPath = join(scratch, 'script.json');
   writeFileSync(scriptPath, JSON.stringify(script));
   return {
-    ...ACP_PROVIDERS.claude,
+    ...vendor,
     command: 'bun',
     args: [FAKE_AGENT_PATH],
     envOverrides: { AGILE_FAKE_AGENT_SCRIPT: scriptPath },
@@ -137,11 +142,12 @@ beforeEach(() => {
     deliver: (sessionId, question) => attachService.deliverAnswer(sessionId, question),
   });
   inbox = new InboxService({ streams, questions, gates });
+  providerFor = () => fakeProviderFor(workerScript());
   attachService = new AttachService({
     store,
     streams,
     home,
-    provider: () => fakeProviderFor(workerScript()),
+    provider: () => providerFor(),
     questions: { listOpen: () => questions.listOpen() },
     // T138, as `daemon.ts` wires it: an open routed call is what keeps a
     // denied session alive at turn end.
@@ -459,5 +465,78 @@ describe('T151 classifier tier — a routed classifier answer, through the same 
 
     writeFileSync(sentinel, '');
     writeFileSync(finishSentinel, '');
+  }, 90_000);
+});
+
+/**
+ * T524 (E38): a vendor with no pre-tool hook (Cursor here) is gated only by
+ * its ACP permission requests. A call that tier held for the human was
+ * parked: the request left unanswered, no card, the node `working` for
+ * ever. Now it is the same route band, end to end over a real ACP
+ * transport: a refusal and one card, the turn ends and the node waits on
+ * you, the approval is prompted in, and the retry goes through once.
+ */
+describe('T524: a hook-less vendor’s held call is a card, not a parked turn', () => {
+  test('a sudo over ACP: one card, the node waits on you, the approval lets the retry through once', async () => {
+    const [first, again, retry] = ['first', 'again', 'retry'].map((n) =>
+      join(scratch, `${n}.json`),
+    ) as [string, string, string];
+    const sudo = (toolCallId: string, resultFile: string) => ({
+      type: 'request_permission' as const,
+      toolCall: { toolCallId, kind: 'execute', rawInput: { command: 'sudo whoami' } },
+      options: [
+        { optionId: 'yes', kind: 'allow_once' },
+        { optionId: 'always', kind: 'allow_always' },
+        { optionId: 'no', kind: 'reject_once' },
+      ],
+      resultFile,
+    });
+    providerFor = () =>
+      fakeProviderFor(
+        {
+          logFile: promptLog,
+          turns: [
+            [sudo('t1', first), sudo('t2', again), { type: 'end_turn' }],
+            [sudo('t3', retry), { type: 'end_turn' }],
+          ],
+          steps: [{ type: 'hang' }],
+        },
+        ACP_PROVIDERS.cursor,
+      );
+    const answerOf = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'));
+    const { stream, session } = await liveSession({ withRepo: true });
+
+    // Refused at once, both attempts, with one card between them.
+    await waitFor(() => existsSync(again));
+    expect(answerOf(first)).toEqual({ outcome: { outcome: 'selected', optionId: 'no' } });
+    expect(answerOf(again)).toEqual({ outcome: { outcome: 'selected', optionId: 'no' } });
+    const cards = openGates();
+    expect(cards).toHaveLength(1);
+    const card = cards[0] as HilRequest;
+    expect(card).toMatchObject({ gate: 'classifier_review', stream: stream.id, session });
+    expect(card.call).toMatchObject({ tool: 'Bash', command: 'sudo whoami' });
+    expect(inbox.list().some((item) => item.id === card.id)).toBe(true);
+
+    // The turn ends on the card: the node waits on you, its session alive and idle.
+    await waitFor(
+      () => streams.get(stream.id).sessions.find((s) => s.id === session)?.status === 'idle',
+    );
+    expect(streams.get(stream.id).agent.status).toBe('question');
+    expect(streams.get(stream.id).human.status).toBe('waiting_on_you');
+
+    // Approved: prompted in, and the retry goes through once (allow_once, never always).
+    await gates.respond(card.id, 'approve', 'pete');
+    await waitFor(() => existsSync(retry));
+    expect(
+      prompts().some((line) =>
+        line.includes('The human approved your held Bash call: sudo whoami'),
+      ),
+    ).toBe(true);
+    expect(answerOf(retry)).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } });
+    expect(gates.get(card.id).consumed_at).toBeDefined();
+    await waitFor(() => streams.get(stream.id).agent.status === 'done');
+    expect(openGates()).toHaveLength(0);
+    // Nothing parked where nobody reads it.
+    expect(existsSync(join(home, 'bus', 'inbox', 'human'))).toBe(false);
   }, 90_000);
 });

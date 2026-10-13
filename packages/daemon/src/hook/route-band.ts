@@ -23,10 +23,10 @@ import type {
 import { MESSAGE_BODY_MAX_CHARS } from '@agile-agents/shared';
 import type { GateRequestContext, GateService } from '../gates/service';
 import type { RuleStatsOutcome } from '../knowledge/service';
-import type { RoutedReadVerdict } from '../permissions/responder';
-import type { HilRequestDraft } from '../permissions/types';
+import type { RoutedVerdict } from '../permissions/responder';
+import type { HilRequestDraft, PermissionRequest } from '../permissions/types';
 import { NotFoundError } from '../store';
-import { fingerprintCall } from './fingerprint';
+import { fingerprintCall, titledCall } from './fingerprint';
 import type { HookDecision } from './types';
 
 /** The slice of `GateService` the route band needs. */
@@ -64,7 +64,10 @@ function cap(text: string): string {
 }
 
 /** This session's gates on this exact call, newest first. */
-function matching(gates: RouteBandGates, ctx: RouteBandContext): HilRequest[] {
+function matching(
+  gates: RouteBandGates,
+  ctx: Pick<RouteBandContext, 'session' | 'call'>,
+): HilRequest[] {
   return gates
     .list()
     .filter(
@@ -78,12 +81,23 @@ function matching(gates: RouteBandGates, ctx: RouteBandContext): HilRequest[] {
     );
 }
 
-/** Runs the route band for one `hil` verdict. Its only writes: spending an approval, raising a gate. */
-export async function routeCall(
+/**
+ * T526: the answer a gate already gives this session's exact call: an
+ * unspent approval (spent here) allows it once, a pending gate holds it, a
+ * denial refuses it. `undefined` when no gate answers it (none, or only a
+ * spent approval). `reason` words a hold; absent, the pending gate's own.
+ */
+export async function settleFromGates(
   gates: RouteBandGates,
-  ctx: RouteBandContext,
-): Promise<RoutedDecision> {
-  const candidates = matching(gates, ctx);
+  ctx: Pick<RouteBandContext, 'session' | 'call'> & {
+    reason?: string;
+    /** Only gates a classifier rule raised (`rule` set). */
+    ruled?: boolean;
+  },
+): Promise<RoutedDecision | undefined> {
+  const candidates = matching(gates, ctx).filter(
+    (gate) => ctx.ruled !== true || gate.rule !== undefined,
+  );
   const approved = candidates.find(
     (gate) => gate.decision === 'approve' && gate.consumed_at === undefined,
   );
@@ -100,8 +114,9 @@ export async function routeCall(
 
   const open = candidates.find((gate) => gate.status === 'pending');
   if (open !== undefined) {
+    const why = ctx.reason ?? open.summary ?? 'a call held for the human';
     return {
-      decision: { decision: 'deny', reason: routedReason(ctx.reason) },
+      decision: { decision: 'deny', reason: routedReason(why) },
       gate: open.id,
     };
   }
@@ -119,6 +134,16 @@ export async function routeCall(
       gate: denied.id,
     };
   }
+  return undefined;
+}
+
+/** Runs the route band for one `hil` verdict. Its only writes: spending an approval, raising a gate. */
+export async function routeCall(
+  gates: RouteBandGates,
+  ctx: RouteBandContext,
+): Promise<RoutedDecision> {
+  const settled = await settleFromGates(gates, ctx);
+  if (settled !== undefined) return settled;
 
   const raised = await gates.request('classifier_review', {
     policy: ctx.policy,
@@ -166,35 +191,55 @@ export function routePolicy(store: { getPolicy(): Policy }): Policy {
   }
 }
 
-/** Claude's tool names for the ACP classes a held read comes in, so the card and fingerprint read the same at both tiers. */
-const ACP_TOOL_NAMES: Record<string, string> = { read: 'Read', execute: 'Bash' };
+/** Claude's tool names for the ACP classes, so the card and fingerprint read the same at both tiers. */
+const ACP_TOOL_NAMES: Record<string, string> = {
+  read: 'Read',
+  edit: 'Edit',
+  execute: 'Bash',
+  fetch: 'WebFetch',
+};
 
 /**
- * T457: the ACP tier's route for a read the Ask posture held (a vendor
- * with no pre-tool-use hook): the hook's fingerprint, gate and "retry this
- * exact call", so an approval — or Always — answers the retry the same way.
+ * The call a held ACP request is about, keyed as the hook keys the same
+ * call (tool + command, tool + path(s)). T524: with neither (an exec a
+ * hook-less vendor sends without its command), the vendor's title is all
+ * that tells two calls apart, so it keys the call.
  */
-export function acpReadRouter(opts: {
+function acpGateCall(c: PermissionRequest, worktreePath: string): GateCall | undefined {
+  const tool = ACP_TOOL_NAMES[c.toolClass] ?? c.toolClass;
+  if (c.command === undefined && c.targetPath === undefined && c.title !== undefined) {
+    return titledCall(tool, c.title);
+  }
+  const paths = c.targetPaths ?? [];
+  return fingerprintCall(
+    {
+      tool_name: tool,
+      tool_input:
+        c.command !== undefined
+          ? { command: c.command }
+          : c.targetPath !== undefined
+            ? { file_path: c.targetPath, ...(paths.length > 1 ? { file_paths: paths } : {}) }
+            : {},
+    },
+    worktreePath,
+  );
+}
+
+/**
+ * T457, T524: the ACP tier's route for a held call (a vendor with no
+ * pre-tool-use hook: Cursor, Gemini, Grok): the hook's fingerprint, gate
+ * and "retry this exact call", so the cockpit shows the hook's card and an
+ * approval (or Always, for a read) answers the retry the same way.
+ */
+export function acpHilRouter(opts: {
   gates: RouteBandGates;
   store: { getPolicy(): Policy };
   session: string;
   stream: string;
   worktreePath: string;
-}): (draft: HilRequestDraft, reason: string) => Promise<RoutedReadVerdict> {
+}): (draft: HilRequestDraft, reason: string) => Promise<RoutedVerdict> {
   return async (draft, reason) => {
-    const c = draft.classified;
-    const call = fingerprintCall(
-      {
-        tool_name: ACP_TOOL_NAMES[c.toolClass] ?? c.toolClass,
-        tool_input:
-          c.command !== undefined
-            ? { command: c.command }
-            : c.targetPath !== undefined
-              ? { file_path: c.targetPath }
-              : {},
-      },
-      opts.worktreePath,
-    );
+    const call = acpGateCall(draft.classified, opts.worktreePath);
     if (call === undefined) {
       return {
         decision: 'deny',
@@ -210,7 +255,10 @@ export function acpReadRouter(opts: {
       ...(draft.readAsk?.root !== undefined ? { readRoot: draft.readAsk.root } : {}),
     });
     return routed.decision.decision === 'allow'
-      ? { decision: 'allow' }
+      ? {
+          decision: 'allow',
+          ...(routed.allowedBy !== undefined ? { allowedBy: routed.allowedBy } : {}),
+        }
       : { decision: 'deny', reason: routed.decision.reason ?? reason };
   };
 }
@@ -220,16 +268,16 @@ export interface GateDecisionDelivery {
   deliverGateDecision(sessionId: string, gate: HilRequest): Promise<void>;
 }
 
-/** A decided `classifier_review` gate is delivered to the waiting session as a prompt. */
-export function wireGateDecisionDelivery(gates: GateService, attach: GateDecisionDelivery): void {
-  const respond = gates.respond.bind(gates);
-  gates.respond = async (id, decision, by, note) => {
-    const resolved = await respond(id, decision, by, note);
+/** A decided `classifier_review` gate is delivered to the waiting session as a prompt (T527: however it was decided). */
+export function wireGateDecisionDelivery(
+  gates: Pick<GateService, 'onResolved'>,
+  attach: GateDecisionDelivery,
+): void {
+  gates.onResolved(async (resolved) => {
     if (resolved.gate === 'classifier_review' && resolved.session !== undefined) {
       await attach.deliverGateDecision(resolved.session, resolved);
     }
-    return resolved;
-  };
+  });
 }
 
 /** The write side of `KnowledgeService` the routed-answer statistic needs. */
@@ -243,12 +291,10 @@ export interface RouteStatsRules {
  * the firing).
  */
 export function wireClassifierRouteStats(
-  gates: { respond: GateService['respond'] },
+  gates: Pick<GateService, 'onResolved'>,
   rules: RouteStatsRules,
 ): void {
-  const respond = gates.respond.bind(gates as GateService);
-  gates.respond = async (id, decision, by, note) => {
-    const resolved = await respond(id, decision, by, note);
+  gates.onResolved(async (resolved) => {
     if (
       resolved.gate === 'classifier_review' &&
       resolved.decision === 'deny' &&
@@ -260,6 +306,5 @@ export function wireClassifierRouteStats(
         // Telemetry: never fail a decision the human already made.
       }
     }
-    return resolved;
-  };
+  });
 }

@@ -119,6 +119,16 @@ describe('plans and contracts (T281)', () => {
     const card = inbox.list().find((i) => i.kind === 'plan_approve');
     expect(card?.id).toBe(node.id);
     expect(card?.detail ?? card?.context).toContain(CONTRACT_BODY);
+    // T514: the card's parts and contracts, one line each, as well as the CLI's line.
+    expect(card?.plan).toEqual({
+      revised: false,
+      owners: [
+        'api: add salePrice owns `prices.ts`',
+        'web: show salePrice owns `shop.html`',
+        'docs: changelog owns `CHANGELOG.md`',
+      ],
+      contracts: [`GET /price/:id: ${CONTRACT_BODY}`],
+    });
 
     const approved = await plans.approve(node.id, 'human');
     expect(approved).toMatchObject({ status: 'approved', version: 1, approved_by: 'human' });
@@ -296,6 +306,10 @@ describe('plans and contracts (T281)', () => {
     expect(card?.detail ?? card?.context).toContain(
       'owns `prices.ts`, `sale.ts` (was `prices.ts`)',
     );
+    expect(card?.plan?.revised).toBe(true);
+    expect(card?.plan?.owners[0]).toBe(
+      'api: add salePrice owns `prices.ts`, `sale.ts` (was `prices.ts`)',
+    );
 
     await plans.approve(node.id);
     const view = plans.childView(streams.get(api.id));
@@ -370,6 +384,26 @@ describe('T336: parts wait for the plan', () => {
       body: `${WAITING_FOR_PLAN}this part starts when "Show sale prices"'s plan is approved`,
     });
 
+  test('T541: a part deleted forever after the plan was written: approval still tells and starts the rest', async () => {
+    const { node, api, web, docs, started } = await planned();
+    for (const part of [api, web, docs]) await splitWaits(part.id);
+    await plans.write(node.id, [
+      { child: api.id, owns: ['prices.ts'] },
+      { child: web.id, owns: ['shop.html'] },
+      { child: docs.id, owns: ['CHANGELOG.md'] },
+    ]);
+    // web goes to the trash and is deleted forever while the plan waits.
+    await streams.archive('human', web.id);
+    await store.removeStream(web.id);
+    const approved = await plans.approve(node.id);
+    expect(approved.status).toBe('approved');
+    expect(started).toEqual([api.id, docs.id]);
+    for (const part of [api, docs]) {
+      const lines = streams.readThread(part.id, { limit: 100 }).entries;
+      expect(lines.some((e) => e.body.startsWith(`Plan v${approved.version} approved`))).toBe(true);
+    }
+  });
+
   test('approval starts each part it first gives paths to, and only those', async () => {
     const { node, api, web, docs, started, superseded } = await planned();
     for (const part of [api, web, docs]) await splitWaits(part.id);
@@ -383,6 +417,38 @@ describe('T336: parts wait for the plan', () => {
     ).streams;
     expect(rows.find((r) => r.id === api.id)?.waiting_for_plan).toBe(true);
     expect(rows.find((r) => r.id === web.id)?.waiting_for_plan).toBeUndefined();
+    // T545: the same answers from a list the caller holds, and one read of the home per frame.
+    const everyone = streams.list({ include_archived: true });
+    for (const part of [api, web, docs]) {
+      const s = streams.get(part.id);
+      expect(plans.waitingForPlan(s, undefined, everyone)).toBe(plans.waitingForPlan(s));
+    }
+    expect(plans.waitingParts(node.id, everyone).map((s) => s.id)).toEqual(
+      plans.waitingParts(node.id).map((s) => s.id),
+    );
+    const read = store.listStreams.bind(store);
+    let reads = 0;
+    store.listStreams = ((...args: Parameters<typeof store.listStreams>) => {
+      reads += 1;
+      return read(...args);
+    }) as typeof store.listStreams;
+    try {
+      const again = buildCockpitFrame(
+        streams,
+        undefined,
+        undefined,
+        {},
+        undefined,
+        undefined,
+        (s, all) => plans.waitingForPlan(s, undefined, all),
+      ).streams;
+      expect(reads).toBe(1);
+      expect(again.map((r) => [r.id, r.role, r.waiting_for_plan])).toEqual(
+        rows.map((r) => [r.id, r.role, r.waiting_for_plan]),
+      );
+    } finally {
+      store.listStreams = read;
+    }
 
     await plans.write(node.id, [
       { child: api.id, owns: ['prices.ts'] },

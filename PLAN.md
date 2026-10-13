@@ -1717,7 +1717,7 @@ agile tail --director
 
 ### Ticket: T330 Conversation nodes read repos; one message, one thread entry
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done (merge 1acb31e8 on claude/phase-7, 2026-09-25, merged forward through every phase; the board line was left at In Progress until 2026-10-13)
 - **Owner:** opus:worker-T330
 - **Scope:** From Pete's walkthrough §3.2: a conversation agent could not read the registered repos (design §4: a conversation "may read repos") and did not know where they were. Give it the visibility read scope on the hook and ACP paths, list readable repos (name, path) in its brief. Also: one agent message was split across several thread entries mid-sentence; keep one message in one entry.
 - **Acceptance Criteria:** Read allowed for a registered repo, denied for the agile home and an unlisted private repo; the brief lists repos; a long message stays one entry.
@@ -3564,6 +3564,369 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun install && bun run build && bun run typecheck && bun run lint && bun test && bun run test:integration && bun run test:e2e && bun run test:walkthrough`.
 - **Notes:** Branches T369-phase-15-qa, T369-ci-card-order, T369-wrapup. Gate on the integrated tip: lint and typecheck clean, `bun test` 2869 pass / 0 fail, integration and e2e green (control-room 68/0 after T380), walkthrough 39 steps, 0 findings. QA fixes: a node's Activity reads like Events (titles, routing words), the walkthrough and checklist follow; the j/k e2e reads Needs me's order from the page (two cards raised in one millisecond sort by id, which failed CI twice); the design doc names the palette and keys. The screenshot pass (every view, light, dark, phone) found T381's wording. Remaining findings: `design/cockpit-ui-followups.md`.
 
+### Phase 16 — Hardening: bugs, gate gaps, performance
+
+Pete (2026-10-13): away for at least 24 hours; do everything that doesn't need him, stacked PRs are fine, and have agents hunt for hidden bugs, issues and optimizations. Work on `claude/phase-16`, cut from `claude/phase-14` at 6ad8064b; its draft PR is based on `claude/phase-14` so PR #11 stays as it is for Pete's review. Each ticket: branch `T###-<slug>` off `claude/phase-16`, worktree `.worktrees/T###-<slug>`, merged `--no-ff` after the manager reads the diff and the suite is green. A fix that belongs to an earlier phase is still made here (Pete reviews the stack in order; merging forward through eight branches for a hardening pass would churn every PR).
+
+Sources: read-only audits on 2026-10-13 (the §10 log triaged against current code; daemon correctness; gates, permissions and HTTP security; cockpit UI and CLI; performance), and `design/cockpit-ui-followups.md`. Every finding is checked against the code by the manager before it becomes a ticket. Nothing here changes a decision of Pete's; anything that would is logged under §9 or §10 for him instead.
+
+### Ticket: T514 Inbox items carry structured fields
+- **Priority:** P2
+- **Status:** Done (merge eb2ec3d0 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** `design/cockpit-ui-followups.md` P2: inbox items carry the call, rule, name and scope only inside `context` text (`gateText`, `ruleItem` in `packages/daemon/src/inbox/service.ts`) and the cockpit's cards parse that text back. Add optional structured fields to `InboxItem` in `packages/shared/src/inbox.ts` (still `.strict()`), fill them in the inbox service, and have the cards read them; keep `context` as the human-readable line so older clients and the CLI still work.
+- **Acceptance Criteria:** A gate item and a rule item carry the structured fields; the decision cards render from them (no parsing of `context` left in `packages/ui`); the schema stays `.strict()`; CLI `agile inbox` output unchanged.
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/inbox packages/ui`; `bun run typecheck`; `bun run test:e2e` for the inbox cards.
+
+### Ticket: T515 Live views refresh on every emitted event
+- **Priority:** P3
+- **Status:** Done (merge 42b58a8b on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** `design/cockpit-ui-followups.md` P3: live views refresh on the audit log's tailer, so an event emitted without an audit line shows only on the next push. Have the events service's `onEmitted` push the frame too (`packages/daemon/src/http.ts`, the tailer, `daemon.ts`), debounced with the tailer's push so one change isn't sent twice.
+- **Acceptance Criteria:** A routed event emitted with no audit line reaches an open SSE client without any other change; one change produces one push (test counts pushes).
+- **Validation Steps:** `bun test packages/daemon/src/events packages/daemon/src/http`; `bun run test:integration`.
+
+### Ticket: T516 The command gate parses escapes and `>( )` the way bash does
+- **Priority:** P0
+- **Status:** Done (merge 3a4d5569 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Security audit 2026-10-13 (S1, S2), both reproduced by the manager with a scratch test against the real functions. (1) `splitCommandSegments` and `tokenizeSegment` (`packages/daemon/src/permissions/command.ts`) treat a backslash-escaped `\"` or `\'` outside quotes as opening a quote, while bash reads it as a literal; `hasUnsafeShellConstruct` counts quotes escape-aware, so it calls the line balanced. A fake quoted region then swallows `;`, `&&`, `&`: `echo \"; git push origin main` is one `echo` segment and the engineer verdict is `allow`, with `detectProtectedBranchWrite` undefined; `\'` and a hidden `rm -rf` the same. (2) Output process substitution `>(cmd)`: only `<(` is treated as process substitution (`policy-tables.ts` ~980, ~1203); `>(cmd)` matches the plain-redirect check and resolves inside the worktree, so `cat >(git push origin main)` is `allow`, though bash runs `cmd`. Same class as the lone-`&` bug (T345). Fix both in the parser so every caller (engineer, coordinator, reviewer, never-without-human list, `no_push_protected`, Codex and Claude hooks, ACP) sees the real segments: backslash escapes follow bash (outside quotes `\x` is a literal `x`; in double quotes `\"`, `\\`, `\$`, `` \` `` are escapes; in single quotes nothing is), and `>(`/`<(` anywhere outside single quotes are process substitution, held like `$( )` (the existing unsafe-construct path) or denied like `<(` today, whichever the code's comments and design §5 say applies; keep `<(`'s current verdict unless that is the same path.
+- **Acceptance Criteria:** A regression table in the command tests, each input asserted against the real verdict functions for engineer and coordinator: `echo \"; git push origin main`, `echo \'; git push origin main`, `echo \"; rm -rf /tmp/x`, `echo \" && git push origin HEAD:main`, `cat >(git push origin main)`, `echo hi >(rm -rf x)`, `tee >(sh)`, plus controls that must stay allowed: `echo "a;b"`, `echo 'a;b'`, `echo a\;b` (one segment), `grep "\"" file`, `printf '%s\n' x`, `echo a > out.txt`. None of the bypass inputs is `allow`; no allowed control changes verdict; the full existing permissions/hook suites still pass.
+- **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`; `bun run typecheck && bun run lint`.
+
+### Ticket: T517 The `/ws` upgrade is same-origin and loopback only
+- **Priority:** P1
+- **Status:** Done (merge e198d0d7 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Security audit S3: `/ws` calls `srv.upgrade(req)` with no Origin or Host check (`packages/daemon/src/http.ts`, the `/ws` branch). WebSockets aren't covered by CORS, so any web page the operator has open could connect to `ws://127.0.0.1:<port>/ws` and read the snapshot, inbox, questions, repo paths and the live event stream (read-only: no write channel; the classifier key isn't in those frames). Apply the same `isSameOriginRequest` and `isLoopbackHost` checks the write routes and `/api/fs/dirs` use before upgrading; refuse with 403 otherwise. The cockpit (same origin) and the CLI (check how `agile tail`/`status` connect, if they use `/ws`) must keep working.
+- **Scope addition (2026-10-13, daemon audit D5, reproduced):** every `/api/*` GET answers a request whose `Host` isn't loopback, so a DNS-rebinding page can read threads and diffs. The loopback-Host check goes at the top of `fetch` for `/api/*` and `/ws`.
+- **Acceptance Criteria:** A rebound `Host` gets 403 on a GET route and on `/ws`; an upgrade with a foreign `Origin` gets 403 and no frames; one with a non-loopback `Host` gets 403; the cockpit's own origin and a no-`Origin` client the CLI uses (if any, decided from the code and explained in a comment) still connect.
+- **Validation Steps:** `bun test packages/daemon/src/http packages/cli`; `bun run test:integration`; `bun run test:e2e` (the cockpit's live view).
+
+### Ticket: T518 Read-only roles can't call other MCP servers' tools through the hook
+- **Priority:** P1
+- **Status:** Done (merge 71149bfc on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Security audit S4: at the Claude/Codex hook tier, `claudeToolKind` (`packages/daemon/src/hook/decide.ts`) returns a kind only for Edit/Write/MultiEdit/NotebookEdit and Bash, so any other `mcp__<server>__<tool>` call (not the daemon's own) falls through the pattern rules to `allow` for every role, while the ACP tier classifies an unknown MCP call as kind `other`. A read-only role (reviewer, and any other role the policy marks read-only) could invoke a write verb of an MCP server the vendor harness inherited from the user's own config. First establish from code and design §4/§5 what the ACP tier decides for kind `other` per role; then make the hook tier give the same verdict for read-only roles. For engineer and coordinator roles, change nothing unless the ACP tier and design say the hook should match; if the tiers disagree for those roles, leave it and write the disagreement into the report so the manager logs it for Pete.
+- **Acceptance Criteria:** Tests: a reviewer's `mcp__github__create_issue` (any non-daemon MCP tool) through the Claude hook and the Codex hook gets the ACP tier's verdict for `other` (deny/hil, not allow); the daemon's own MCP tools keep their current verdicts; an engineer's verdicts are unchanged unless the report justifies it.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/permissions`; `bun run typecheck && bun run lint`.
+
+### Ticket: T519 The composer keeps everything you write
+- **Priority:** P1
+- **Status:** Done (merge 59ce928a on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** UI audit 2026-10-13 U1–U3, checked by the manager. (1) The composer still caps a message at 800 (`Composer.tsx` default `maxLength = 800`; review's `MESSAGE_MAX = THREAD_BODY_MAX_CHARS` in `lib/review.ts`) while the daemon accepts `HUMAN_LINE_MAX_CHARS` (4,000) for a line you write since T437; PLAN's T437 says the composer takes 4,000. Use the shared constant on the node page, the Director and review's "Add to message". (2) `send()` in `StreamPage.tsx` reads the draft, awaits the request (seconds when it starts the agent) and then clears the whole draft, so anything typed meanwhile is lost: clear only what was sent, keep the rest. (3) `useReviewUpkeep` (`lib/review.ts`) drops kept drafts and review comments for `closed` nodes on every frame, but since T471 a closed node's composer says "Write to reopen it…", so typing there is erased by the next push: keep drafts for nodes that can still be written to (closed); drop them only for nodes that can't (merged and deleted), per T436's intent.
+- **Acceptance Criteria:** A 3,000-character message sends from the node page and the Director; review's add-to-message allows up to 4,000 minus what's there; text typed while a send is in flight survives it (unit test with a held request); a closed node's draft survives a pushed frame, a merged or deleted node's still goes.
+- **Validation Steps:** `bun test packages/ui`; `bun run typecheck && bun run lint`; `bun run test:e2e` (composer specs).
+
+### Ticket: T520 A node's page never shows another node's results
+- **Priority:** P1
+- **Status:** Done (merge 39c97eda on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** UI audit U4 and U8, checked by the manager. (1) `<StreamPage id={selected} />` has no `key` (`App.tsx`), so one instance serves every node: the `[id]` reset effect clears state at switch time, but a slow call started on node A (Merge, Start/Stop, a send) completes afterwards into the page now showing B (A's spinner, A's refusal and fix button, A's result making B's Merge show, A's `load()` flashing B back to the skeleton). Key the page by node, or guard every completion with the current id; keep whatever per-node state the reset effect deliberately carries over (check its comments) working. (2) `refresh()` in `lib/feed-context.tsx` sets whatever `GET /api/cockpit` returns, with no ordering against pushed `/ws` frames or other refreshes, so a slow refresh can overwrite a newer frame: drop a refresh response when a frame arrived after the request was sent, and keep only the latest refresh (as `StreamPage.load`'s `loadSeq` does).
+- **Acceptance Criteria:** Unit/component tests: a held Merge on A then a switch to B leaves B's header, Delivery panel and composer untouched when A's call resolves; a refresh response older than a received frame is ignored. Existing e2e for the node page still pass.
+- **Validation Steps:** `bun test packages/ui`; `bun run typecheck && bun run lint`; `bun run test:e2e`.
+
+### Ticket: T521 Cockpit errors and focus say what happened
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** UI audit U5, U9–U12, checked against `design/cockpit-ui.md` §5/§7: (U5) a failed inline rename (`NodeHeader.tsx`) shows only as a hover tooltip — keep the input open with the draft and the error under it, as `GoalCard` does; (U9) the Knowledge screen (`Rules.tsx`) never re-reads after the socket reconnects — re-read on `connected` as `useSteps` does; (U10) a failed repo-norms read (`Lenses.tsx`) renders the empty state — show the error with Try again; (U11) a Needs me notification for a project root opens its Overview (`use-notify.ts`) — open the chat tab, as T403 and `use-unread.ts` do; (U12) after Move to trash focus falls to `<body>` — move it to the next sensible place per §7 "Focus after an action".
+- **Acceptance Criteria:** One test per item where the repo has a pattern for it (component/unit tests; e2e only where a spec already covers the area); no visual change beyond the error/focus states.
+- **Validation Steps:** `bun test packages/ui`; `bun run typecheck && bun run lint`; `bun run test:e2e`.
+
+### Ticket: T522 Ask and Turn into work are safe to retry
+- **Priority:** P2
+- **Status:** Done (merge 0b8c1a70 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** UI audit U6, U7. (U6) `Ask.tsx` creates the node then attaches its session; if the attach fails the dialog stays open with the question and the next Ask creates a second node. Treat an attach failure as `NewStream` does: say the node was made but its agent didn't start, close, open the node. (U7) `TurnIntoWork.tsx` runs five writes (move, update, project update, add repo, say) under one catch with a "nothing was started" message; a failure after the move leaves the node moved, and Retry moves it up another level. Make Retry skip steps already done (compare the node's current parent, goal, repos) and word the error by the step that failed.
+- **Acceptance Criteria:** Tests: an attach failure after a successful create leaves exactly one node and opens it; a Turn into work that fails at add-repo reports that step, and Retry finishes without moving the node again.
+- **Validation Steps:** `bun test packages/ui`; `bun run typecheck && bun run lint`; `bun run test:e2e` for Ask / Turn into work specs.
+
+### Ticket: T523 CLI: long verbs wait, help is help, free text is kept
+- **Priority:** P1
+- **Status:** Done (merge 40ac93f7 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** CLI audit C1–C5, checked by the manager. (C1) `callRpc` defaults to a 5 s timeout (`packages/cli/src/client.ts`); `agile land`/`deliver` (ship checks through the classifier with a 25 s deadline, `git push` with pre-push hooks, the GitHub API, settle) and `policy try` (Jev, 25 s) use it, so the CLI exits 1 "timed out" while the daemon finishes the merge. Give every long verb (land/deliver, resolve, attach, policy try; check the rest) a long timeout the way T155 did for `rules test`. (C2) `agile --help`/`help`/`-h` print usage to stderr and exit 1: print to stdout, exit 0, and support `<verb> --help` where usage exists. (C3) `parseArgs` turns any `--word` in free text into an option eating the next word, so `agile answer Q-1 use --no-verify then push` sends "use push": free-text verbs (`answer`, `node say`, `director say`, others found) keep the rest of the line verbatim apart from their known options, or refuse unknown options with a clear error. (C4) `agile status` "needs you" counts gates + questions while the cockpit counts `inbox.list`: count the inbox like the cockpit. (C5) `agile status` reports a daemon that timed out as "not running": say it didn't answer in time, with its pid.
+- **Acceptance Criteria:** CLI tests for each item; usage text lists only commands that exist; `agile --help` exit 0 on stdout.
+- **Validation Steps:** `bun test packages/cli`; `bun run typecheck && bun run lint`.
+
+### Ticket: T524 A held ACP call raises a Needs me card instead of parking the turn
+- **Priority:** P1
+- **Status:** Done (merge f6a58e54 on claude/phase-16, 2026-10-13; also fixed T457's ACP read route, which threw in the real daemon: the gate methods were passed unbound)
+- **Owner:** worker
+- **Scope:** §10 triage (E38), checked by the manager: `runner/session.ts` builds the permission responder without `requestHil`, so every non-read `hil` verdict goes to `defaultRequestHil` (`permissions/responder.ts`), which writes `bus/inbox/human/<ulid>.yaml` (nothing reads that directory) and leaves the ACP request pending: the node reads "working" and no card appears. It hits vendors without a pre-tool hook (Cursor, Gemini, Grok, Antigravity) on T476's unreadable exec, `sudo`, a force-push, `rm -rf` outside the worktree, a `package.json`/lockfile edit, `$( )`. Route every ACP `hil` into a gate the cockpit shows (generalise T457's `acpReadRouter` — `attach/service.ts`, `hook/route-band.ts` — or wire `requestHil` to `GateService` with a resolve on the decision), answer the pending ACP request on the human's decision, cancel pending requests on session stop. Then remove `defaultRequestHil` and, if nothing else uses it, the `hil_request` agent-message kind and their tests.
+- **Acceptance Criteria:** For a vendor without hooks: an unreadable exec, a `sudo` and a `package.json` edit each give exactly one card; approve lets that call through once, deny refuses it; stopping the session answers any pending request; nothing is written under `bus/inbox/human/`.
+- **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/runner packages/daemon/src/hook packages/daemon/src/gates packages/shared`; `bun run typecheck && bun run lint`; `bun run test:integration`.
+
+### Ticket: T525 A push through a configured git alias is checked like `git push`
+- **Priority:** P1
+- **Status:** Done (merge 996afc93 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** §10 triage (E42), reproduced by the manager: `detectProtectedBranchWrite` and `detectPush` (`permissions/push-detector.ts`) recognise only the literal `push` subcommand and refuse only the inline `-c alias.*` form, so with `alias.p = push` already in the operator's or repo's git config, `git p origin main` passes `no_push_protected` (and the never-list's force-push, branch-delete and reset-hard checks). Agents can't create an alias themselves (`git config` writes are held), so this needs a pre-existing alias. Resolve a non-builtin subcommand through the worktree's effective config, lazily and memoized like `worktreeBranchLookups` (`git config --get alias.<sub>`), and re-parse the expansion; a `!`-shell alias or a failed lookup gives the existing `CANNOT_DETERMINE_REASON`. Use it at the hook and ACP tiers. Builtin subcommands spawn no git. Coordinate with T516 (it changes `command.ts`; this lives in `push-detector.ts`).
+- **Acceptance Criteria:** With `alias.p=push` in a test repo, `git p origin main` is refused and `git p origin feature` allowed, at both tiers; `alias.pf='push --force'` held; `alias.x='!git push origin main'` refused; `git status` spawns no git.
+- **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`; `bun run typecheck && bun run lint`.
+
+### Ticket: T526 The hook settles a held call from its gate before asking the classifier
+- **Priority:** P2
+- **Status:** Done (merge 90ff6ded on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** §10 triage (E50): `hook/service.ts` calls `classifierTier` before `route()` looks for an existing gate for the call's fingerprint, so each retry of a held call is a paid classifier call, and after approval the retry is re-banded (a deny-band answer refuses what the human approved; an allow-band answer passes it with the approval unspent). Compute the fingerprint first: approved and unspent → spend and allow; pending → deny "held"; denied → deny; only with no gate ask the classifier.
+- **Acceptance Criteria:** Route → retry while pending → approve → retry makes exactly one `FakeClassifier` call; the post-approval retry is allowed even if the fake now scores high, and the approval is spent.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/gates`; `bun run typecheck && bun run lint`.
+
+### Ticket: T527 One "gate resolved" hook; stale diff gates are superseded
+- **Priority:** P2
+- **Status:** Done (merge 9ce56baf on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** §10 triage (E34b, E44, E51): gate resolution is observed by four monkey-patches of `GateService.respond` (`delivery/service.ts`, `questions/supersede.ts`, `hook/route-band.ts` ×2), so a resolution through `tick` (timeout) or a delegate skips all four. Add `GateService.onResolved(listener)` called from every resolution path and move the four onto it. Add `supersede(id, reason)` (resolved with no decision, leaves Needs me) and use it when `ClassifierDiffRules.route` raises a gate for a new diff: the node's older pending `diff_rules` gates go.
+- **Acceptance Criteria:** A timeout resolution triggers delivery, question supersession, rule stats and land exactly as a human `respond` does (one test per listener); routing a second, changed diff leaves one card; responding to a superseded gate is refused.
+- **Validation Steps:** `bun test packages/daemon/src/gates packages/daemon/src/delivery packages/daemon/src/hook packages/daemon/src/questions packages/daemon/src/inbox`; `bun run typecheck && bun run lint`.
+
+### Ticket: T528 The Changes tab shows a large diff whole, file by file
+- **Priority:** P2
+- **Status:** In Progress
+- **Owner:** worker
+- **Scope:** §10 triage (E59): `DeliveryService.diff` cuts the patch at 20,000 chars mid-hunk (`delivery/service.ts`), and the UI's "Open the worktree to see the rest" (`DiffView.tsx`) fails after a merge. Cut on file boundaries, list omitted files with their stat, and add a per-file read (`GET /api/streams/:id/diff?file=`, same-origin rules as its siblings) the tab loads on expand, with a total cap.
+- **Acceptance Criteria:** A 60k-char diff over 6 files shows every file (lazily) with no partial hunk; omitted files are listed; review comments work on a lazily loaded file.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/ui`; `bun run typecheck && bun run lint`; `bun run build && bun run test:e2e`.
+
+### Ticket: T529 Chat lines older than the newest 500 can be read
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** §10 triage (E59): `feed/stream-page.ts` returns only the newest 500 thread entries and the node page says so with no way back; with sessions kept alive (D48) long threads are common. Add `before=` paging (the thread reader already takes `after`/`limit`) and a "Show earlier" control that keeps the scroll position.
+- **Acceptance Criteria:** A 1,200-entry thread shows 500; "Show earlier" loads 500 more twice; scroll position holds.
+- **Validation Steps:** `bun test packages/daemon/src/feed packages/ui`; `bun run typecheck && bun run lint`; `bun run test:e2e`.
+
+### Ticket: T530 The scrubber redacts an unterminated key block only when a key follows
+- **Priority:** P2
+- **Status:** Done (merge e7a797f6 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** §10 triage (E46): `classifier/scrub.ts` redacts to the end of the text after any `BEGIN … PRIVATE KEY` marker with no footer, so a marker in a comment or fixture blanks everything after it from the classifier's view. Require a key-shaped body (e.g. two or more lines of 40+ base64 chars) before that fallthrough; keep a truncated real key redacted.
+- **Acceptance Criteria:** A marker followed by 50 lines of code redacts the marker line only; a truncated real key with no footer is still redacted to the end; existing scrub tests green.
+- **Validation Steps:** `bun test packages/daemon/src/classifier`; `bun run typecheck && bun run lint`.
+
+### Ticket: T531 Hygiene: merged-outside check, 403 before 400, the dead `land_` fsync prefix
+- **Priority:** P3
+- **Status:** Done (merge 9f108789 on claude/phase-16, 2026-10-13; the `land_` prefix kept, see §10)
+- **Owner:** worker
+- **Scope:** §10 triage (E62, E34a): `mergedOutside` (`delivery/service.ts`) should require the branch to have commits of its own (an untouched branch forked off a non-first-parent commit reads as merged); the HTTP route that validates an id before its same-origin check (`http.ts`, found by the triage near the stream-id routes) should check origin first, as every other write route does; the `land_` prefix in `store/events.ts`'s fsync family and its comment in `shared/src/event.ts` are dead (merges fsync through the routed `pr_merged` event): drop or retarget them.
+- **Acceptance Criteria:** A cross-origin POST with a bad id gets 403; an untouched branch off a non-first-parent commit reads as "nothing to merge"; lint clean.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/http.test.ts packages/daemon/src/store`; `bun run typecheck && bun run lint`.
+
+### Ticket: T532 CI keeps today's runner image and a supported checkout
+- **Priority:** P2
+- **Status:** Done (merge ea515bc8 on claude/phase-16, 2026-10-13)
+- **Owner:** manager
+- **Scope:** CI annotations (seen by the triage): `ubuntu-latest` moves to Ubuntu 26 from 2026-10-19 and `actions/checkout@v4` runs on deprecated Node 20 (`.github/workflows/ci.yml`). Pin `runs-on` to the current image explicitly and bump `actions/checkout` to the current major, so the stack's CI doesn't change under Pete's review.
+- **Acceptance Criteria:** CI green on the bump commit with no deprecation annotation for checkout.
+- **Validation Steps:** CI on the pushed commit.
+
+The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that fails on today's code (`scratchpad/audit/daemon-scratch/`, write-up `daemon.md`); the manager re-ran them. D3 is T524; D5 joined T517.
+
+### Ticket: T533 A second daemon start changes nothing before it holds the lock
+- **Priority:** P1
+- **Status:** Done (merge 9428b24e on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Daemon audit D1: every startup mutation (`routedEvents.recover`, `attachService.endOrphansAtStart`, `stampExistingProjects`, `wakePending`, `migrateHome`, timers) runs in `daemon.ts` before `acquireLock`. A second `agile daemon start` (or `--foreground`, which skips the pidfile check) marks the live daemon's running sessions `stopped` and its nodes `idle`, may wake agents, and only then fails with `LockError`; afterwards the next say/wake starts a second agent in the same worktree. Take the lock right after config discovery, before the store opens (its temp-file sweep is a mutation too); keep the port-bind/pidfile ordering the lifecycle tests rely on; on a failed start stop anything already started.
+- **Acceptance Criteria:** With a live daemon holding a running session, a second start fails with the lock error and leaves the session `running`, the node's statuses and its thread unchanged, and starts no agent; existing lifecycle tests green.
+- **Validation Steps:** `bun test packages/daemon/src/daemon.test.ts packages/daemon/src/lock.test.ts packages/cli`; `bun run typecheck && bun run lint`; `bun run test:integration`.
+
+### Ticket: T534 Git on a missing directory fails cleanly instead of throwing
+- **Priority:** P1
+- **Status:** Done (merge bf995db7 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Daemon audit D6, D9: Bun's `spawnSync` throws ENOENT when `cwd` doesn't exist, so `git()`, `gitWrite()` and `removeWorktreeSafely` (`delivery/git.ts`) throw for a node whose worktree directory is gone. `land()` then throws after `update-ref` has already merged (a merge-together group's other members stay open with `ready`; retro, main-sync and settle are skipped), `prepareMerge`'s `finally` masks the real refusal and leaks its temp dir, and the overlap and main-sync sweeps (`sync/overlap.ts`, `sync/main-sync.ts`) stop at the first such node every 60 s (main-sync records `lastMain` first, so later nodes never sync for that move). Make the helpers return a failed result (or `removed: false`) for a missing `cwd`, as `diff()` and `trash.dirty()` already guard, and give each node in the sweeps its own try.
+- **Acceptance Criteria:** A land of a merge-together group whose first member's worktree dir is missing finishes: both landed, no throw; the sweeps process every node after a missing one; `prepareMerge` with a failed temp worktree reports the real refusal.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/sync`; `bun run typecheck && bun run lint`.
+
+### Ticket: T535 An agent never starts in a recreated or merged node's worktree path
+- **Priority:** P1
+- **Status:** Done (merge bb4d8faa on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Daemon audit D2 (reproduced end to end): `attachSession` (`attach/service.ts`) uses `stream.worktree` with no existence check, and `subprocess-env.ts` `mkdirSync`s a cache dir under it, so a node whose worktree is gone gets a plain directory recreated under `<repo>/.worktrees/`, where git resolves to the operator's main checkout on `main`, and the agent works there. Routes there: Switch repo's `closeEmptyPart` (removes the worktree and branch but keeps both on the record) then writing to that closed part (T471 reopens it); `agile attach`/`review` on a merged node (`finishLanded` keeps `worktree`; `attach()` has no open-node check); a worktree deleted by hand. Before starting: if the worktree path is missing, re-add it from the branch with `createWorktree`'s no-hooks config when the branch exists, else refuse with a clear error; refuse attach/review on landed or archived nodes; clear `worktree` (and a deleted `branch`) in `closeEmptyPart` and `finishLanded`.
+- **Acceptance Criteria:** A node whose worktree dir was deleted restarts in a real worktree of its branch (`.git` file present, `git rev-parse --abbrev-ref HEAD` is its branch), or is refused when the branch is gone; nothing is created under the main checkout; attach on a landed node is refused; Switch repo's closed part has no stale worktree path.
+- **Validation Steps:** `bun test packages/daemon/src/attach packages/daemon/src/streams packages/daemon/src/delivery`; `bun run typecheck && bun run lint`; `bun run test:integration`.
+
+### Ticket: T536 The daemon's own git writes never run repo hooks
+- **Priority:** P1
+- **Status:** Done (merge bf995db7 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Daemon audit D4 (security, reproduced): D11's "no repo hook runs daemon-side" is enforced in `createWorktree` and T343's read env, but `gitWrite` (`delivery/git.ts`) sets no `core.hooksPath`, and it runs main-sync's `git merge` in each node's worktree (`sync/main-sync.ts`), land's temp-worktree add and merge (`delivery/service.ts`), and `resumeParked`'s `git worktree add` (`streams/repo-in-place.ts`). In a repo with a tracked hooks dir (`core.hooksPath=.githooks`, husky), an engineer commits `.githooks/post-merge` on its branch and the next main move runs it as the daemon, outside every gate and sandbox. Pass `-c core.hooksPath=<the empty no-hooks dir createWorktree uses>` on every daemon git write (and `-c core.fsmonitor=false` where cheap); find every other daemon git write that bypasses `gitWrite` and cover it too.
+- **Acceptance Criteria:** The audit's scenario (a tracked `post-merge` committed on a node's branch, then main-sync and a land) runs no hook: test with a marker file; a grep shows no daemon git write path without the override.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/sync packages/daemon/src/streams`; `bun run typecheck && bun run lint`.
+
+### Ticket: T537 Answering a question doesn't reopen a finished node or clear another wait
+- **Priority:** P1
+- **Status:** Done (merge a23bffc6 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Daemon audit D7 (reproduced): `QuestionService.answer` (and `reply`) in `questions/service.ts` always writes `human: {status: 'open'}`, so answering reopens a closed or merged node (a coordinator's `answer_child`, `agile answer`) and clears `waiting_on_you` while another question on the node is still open (`settle`/`withdraw` check `listOpen()`; `answer` doesn't). Move `waiting_on_you` to `open` only when no other question on the node is open; never touch `closed` or `landed`.
+- **Acceptance Criteria:** The audit's two failing cases pass (closed stays closed; with two open questions answering one leaves `waiting_on_you`); landed stays landed; the single-question case still goes to `open`.
+- **Validation Steps:** `bun test packages/daemon/src/questions packages/daemon/src/attach`; `bun run typecheck && bun run lint`.
+
+### Ticket: T538 Delete forever is forever
+- **Priority:** P2
+- **Status:** Done (merge d56a7f28 on claude/phase-16, 2026-10-13; a second Back to talk still replaces an earlier park: T556)
+- **Owner:** worker
+- **Scope:** Daemon audit D8, D12: (1) `RoutedEventService.recover()` (`events/service.ts`) re-creates `events/queue/<id>.jsonl` with pending lines for a node deleted forever (its events stay in `log.jsonl`); skip entries whose node has no record (the Director excepted). (2) `TrashService.preview`/`purge` (`streams/trash.ts`) read only `node.worktree`/`node.branch`, not T473's `parked` repo, branch and worktree, and leave `streams/<id>.docs/`; and a second `toTalk` (`streams/repo-in-place.ts`) overwrites an existing `parked` entry for another repo, orphaning it. Include `parked` in preview and purge, remove the docs dir, and don't lose a parked entry on a second Back to talk (keep one per repo, or refuse while another is parked — choose from the T473 design notes and say why).
+- **Acceptance Criteria:** After delete forever and a restart, no queue file for the node; a node sent back to talk then deleted forever leaves no worktree, branch or docs dir, and the preview lists them first; a second Back to talk keeps (or refuses, per the choice) the first parked repo.
+- **Validation Steps:** `bun test packages/daemon/src/events packages/daemon/src/streams`; `bun run typecheck && bun run lint`.
+
+### Ticket: T539 Thread lines get unique timestamps under concurrent appends
+- **Priority:** P2
+- **Status:** Done (merge 88f7e274 on claude/phase-16, 2026-10-13; follow-up 69270f38: the time is taken at the call, not in the lock (the T509 e2e caught it in CI))
+- **Owner:** worker
+- **Scope:** Daemon audit D10 (reproduced): `streams/service.ts` computes a line's `ts` (its identity: anchor, thread and move key, T503/T504) from `store.threadUpdatedAt(id)` outside the store mutex, so two appends started in the same tick (worker and reviewer exits under `stop()`, model and effort picks at session start, two flushes from one stdout chunk) get the same millisecond; `assertThreadPlace` then picks the first line with that ts and UI keys collide. Assign `ts` inside the store's serialized append (strictly greater than the last).
+- **Acceptance Criteria:** Two appends started in one tick get distinct, increasing ts (the audit's test); replies anchor to the right line.
+- **Validation Steps:** `bun test packages/daemon/src/streams packages/daemon/src/store`; `bun run typecheck && bun run lint`.
+
+### Ticket: T540 An ended session doesn't strand its gate or question
+- **Priority:** P2
+- **Status:** In Progress
+- **Owner:** worker
+- **Scope:** Daemon audit D11, D16. (1) A worker's turn ends on a `classifier_review` gate (node `question`/`waiting_on_you`), then its session goes (restart, vendor exit); approving the card writes one thread line, the node stays waiting with no Needs me item, nothing wakes it, and a new session can't spend the approval (it's keyed to the old session). In `deliverGateDecision`'s no-handle branch reset the statuses as `answer()` does and emit a routed event so the wake policy can start a session; when a session ends, expire or supersede its pending route-band gates. (2) Closing a node whose agent sits idle on a question or gate leaves the vendor process alive until the daemon stops (`onNodeUpdated` → `endResting` acts only on `resting`); end those sessions too.
+- **Acceptance Criteria:** Tests for both: approve-after-session-end leaves the node woken/open with no stale waiting; closing a node with an agent idle on a question ends that session.
+- **Validation Steps:** `bun test packages/daemon/src/attach packages/daemon/src/hook packages/daemon/src/gates`; `bun run typecheck && bun run lint`.
+
+### Ticket: T541 Plan approval survives a deleted part; the CLI can't archive a root
+- **Priority:** P2
+- **Status:** Done (merge 7ccd6e9a on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Daemon audit D13, D14. (1) Approving a plan (`coordination/plans.ts`) saves it `approved`, then throws NotFoundError fanning out to a part that was deleted forever, so later parts never get `plan_changed` and a retry says the plan isn't a draft: skip owners that no longer exist and fan out without throwing. (2) `agile stream archive` (`streams/rpc.ts`) allows archiving a project root, which then can be neither restored (`unarchiveTree` refuses roots) nor deleted (`TrashService.roots()` skips parentless nodes): refuse a root there as the cockpit does. Whether the CLI should archive the whole subtree like the cockpit stays Pete's call (`design/cockpit-ui-followups.md`); log the audit's evidence (children's agents keep running, delete forever on the parent refuses) for him in §10, don't change it.
+- **Acceptance Criteria:** A plan naming a purged part approves, notifies the remaining parts and starts the waiting ones; `agile stream archive <root>` refuses with a clear message.
+- **Validation Steps:** `bun test packages/daemon/src/coordination packages/daemon/src/streams packages/cli`; `bun run typecheck && bun run lint`.
+
+### Ticket: T542 Daemon robustness: one land at a time, one card per call, no fatal rejection, no torn line
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Daemon audit D15, D17, D18, D19. (D15) `DeliveryService.land()` has several awaits (ship check up to 25 s, reviewer) before merging and no per-node in-flight guard: a click racing `agile land` merges twice or opens two PRs — add a per-node promise lock over land/push/markLanded. (D17) `hook/route-band.ts` reads matching gates then awaits `gates.request`, so two parallel identical calls raise two cards — serialize per session and fingerprint. (D18) `void this.onTurnEnd(...)` (`attach/service.ts`) and the Director's `void handle.exited.then(...)` have no catch, and Bun exits on an unhandled rejection — catch and log them, and install a logging `unhandledRejection` handler with the shutdown signals. (D19) a failed JSONL append (`store/fs.ts`, ENOSPC or a crash) can leave a partial line the next append joins, and `readJsonlValidated` then refuses the whole file — record the size before appending and truncate back on a write error.
+- **Acceptance Criteria:** One test per item: two concurrent lands → one merge, the other refused or awaited; two parallel identical routed calls → one gate; a rejected `onTurnEnd` logs and the daemon keeps running; a simulated append failure leaves the file readable.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/hook packages/daemon/src/attach packages/daemon/src/store`; `bun run typecheck && bun run lint`.
+
+### Ticket: T543 The hook gates Pi's tools (and a reviewer's network) as the ACP tier would
+- **Priority:** P0
+- **Status:** Done (merge 346be78a on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Found by T518's worker, checked by the manager: the Pi extension (`packages/daemon/src/pi/agile-extension.ts`) sends Pi's own tool names (`bash`, `write`, `edit`, `read`, …) and input shapes to `hook.pre_tool_use` unmapped, while `hook/decide.ts` recognises only Claude's (`Bash`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Read`, …). So for Pi the role × tool table, the never-without-human list and the built-in read checks never run; and `pi-acp` raises no ACP permission requests (spike-findings §C4), so nothing else gates it: a Pi reviewer's `write`/`edit`, or `bash` with anything, is allowed. Map Pi's tool names and input fields to the Claude-shaped payload at the hook, the way `codexToClaudePayload` (`hook/codex.ts`) does for Codex — find Pi's tool list and input shapes from the extension's types, `spike/` and spike-findings; an unknown Pi tool gets the ACP tier's verdict for kind `other`. Also: reviewers (and lessons) have no network per the role policy (the ACP `fetch` tier denies it), but the hook still allows `WebFetch`/`WebSearch` for them; deny them as it already does for coordinators (P20), if the ACP tier and design agree — otherwise note it for Pete.
+- **Acceptance Criteria:** Through the hook with a Pi-shaped payload: a reviewer's `write`/`edit` is denied, an engineer's `edit` outside the worktree denied and inside allowed, `bash` with `git push origin main` refused by `no_push_protected`, `bash` `sudo …` held, `read` of the agile home denied; Claude and Codex verdicts unchanged; a reviewer's `WebFetch` denied (or the note for Pete).
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/pi packages/daemon/src/permissions`; `bun run typecheck && bun run lint`.
+
+### Ticket: T555 A coordinator's command never runs a substitution
+- **Priority:** P0
+- **Status:** Done (merge 40e92431 on claude/phase-16, 2026-10-13)
+- **Owner:** manager
+- **Scope:** Found by the manager while reviewing T516 (its residual 5), reproduced with a coordinator's real read scope: P20 has the coordinator's table decide alone, skipping the never-without-human list, and that list is the only caller of `hasUnsafeShellConstruct`. So at both tiers a coordinator is allowed `echo $(touch pwned)`, `` git log `rm -rf src` `` and `wc -l $(git push origin main)` (the last caught only while the built-in push rule is in scope): command substitution, backticks and an unbalanced quote run whatever is inside. The coordinator's table denies them (its denies are never human prompts, P20).
+- **Acceptance Criteria:** For a coordinator, at the ACP tier and through the hook: `$( )`, backticks, `eval`, an unbalanced quote and T516's escape and continuation forms are denied; every existing coordinator allow (read-only git, `ls`, writes into its session dir) is unchanged; engineer and reviewer verdicts unchanged.
+- **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`; `bun run typecheck && bun run lint`.
+
+### Ticket: T556 A node keeps every repo's parked work
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Split from T538 (daemon audit D12): `parked` (`packages/shared/src/stream.ts`, T473) holds one repo, so a node that goes back to talk from repo A, takes repo B (A stays parked), and goes back to talk again replaces A's park: A's branch and worktree stay on disk with nothing pointing at them. T473 says a parked branch and worktree are kept, so keep one park per repo: make `parked` a list (accept the old single-object form when reading, write the list), resume the one for the repo picked (`resumeParked`, `repo-in-place.ts`), show "Back to work on …" per parked repo (`StreamPage.tsx`), and let Delete forever (T538's `sitesOf`, `streams/trash.ts`) take all of them.
+- **Acceptance Criteria:** talk from A → work on B → talk from B keeps both parks; picking A again resumes A's branch and worktree and keeps B's park; Delete forever removes both; an existing record with the single-object `parked` still loads.
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/streams packages/ui`; `bun run typecheck && bun run lint`.
+
+### Ticket: T557 The Director reads the whole line you wrote
+- **Priority:** P2
+- **Status:** Done (merge 8989fee3 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Found by T519's worker: the cockpit and the daemon take a human line of up to `HUMAN_LINE_MAX_CHARS` (4,000), and the Director's thread keeps it whole, but `DirectorService.say` (`director/service.ts`) emits `director_request` with `payload.body` cut to 800 (`ROUTED_EVENT_STRING_MAX`), and a live Director is told only that digest line (`events/producers.ts` `summarize`, `events/delivery.ts`). A node gets the whole line (prompted directly, or from its thread in the wake brief). Give the Director the full text: e.g. the digest for a human `director_request` reads the line from the Director's thread by the event's `ref` (its `ts`), or `say` prompts a live Director directly the way a node's `/say` does without a second delivery of the same line — follow how a node avoids double delivery. Keep the payload cap (it is the event log's bound).
+- **Acceptance Criteria:** A 3,000-character line to a live Director reaches its prompt whole, once; a Director started by the line sees it whole in its first prompt; a daemon notice (`by: daemon`) is unchanged.
+- **Validation Steps:** `bun test packages/daemon/src/director packages/daemon/src/events`; `bun run typecheck && bun run lint`.
+
+**From the performance audit (2026-10-13, `perf.md` P1–P17; benchmarks on a shared container, ratios reliable, absolute numbers ±30%).**
+
+### Ticket: T544 The cockpit doesn't re-render everything on every event
+- **Priority:** P1
+- **Status:** Done (merge 12cf360d on claude/phase-16, 2026-10-13; the UI has no DOM test harness, so the event half is held by the type — `events` is gone from the context — and the names half by `stableNames` tests)
+- **Owner:** worker
+- **Scope:** Perf P4 + P8, checked by the manager. (1) `FeedProvider` (`ui/app/lib/feed-context.tsx`) keeps an `events` array in state and in the context value; nothing in `app/` reads it (live steps use `onEvent`), but every `{type:'event'}` frame (≥4 per tool call) replaces it, so the root and every `useFeed` consumer re-render. Drop it from state and the context value. (2) Every `<Markdown>` builds its own `names` map from the frame (`components/Markdown.tsx` `useNames`) and re-renders its text on every frame (≈29 ms per frame for 300 messages before React): compute the map once per frame signature (ids → titles of streams, projects, contracts) and keep its identity while that signature is unchanged; `Chat.tsx`'s `known()` uses the same map.
+- **Acceptance Criteria:** An event frame leaves the context value's identity unchanged (unit test with a fake socket); the names map keeps its identity across frames that change only statuses and changes when a title does; typecheck clean; the cockpit e2e specs pass.
+- **Validation Steps:** `bun test packages/ui`; `bun run typecheck && bun run lint`; `bun run test:e2e`.
+
+### Ticket: T545 One cockpit frame lists the nodes once
+- **Priority:** P1
+- **Status:** Done (merge 1a9ab713 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Perf P3 + P12, checked by the manager. `buildCockpitFrame` (`feed/snapshot.ts`) calls `waitingForPlan` per row, and `coordination/plans.ts` `waitingForPlan` does `streams.get(parent)`, `streams.list()` and `nodeRole` over the whole list for every idle part (and `waitingParts` lists again from the inbox): 92 `listStreams` and 23 s per frame at 300 nodes with 30% idle parts (19.7 s for `GET /api/cockpit` on a real daemon). Give `waitingForPlan`/`waitingParts` an optional `{all, byId}` the frame and the inbox pass in (behaviour unchanged without it); build a parent → live-children map once per frame and per inbox list and pass it to `nodeRole`/`liveChildrenOf`/`isTangent` and the inbox's `hasParts`.
+- **Acceptance Criteria:** Same frame and inbox output with and without the context (test over a tree with coordinators, idle parts and conversations); a spy shows one `listStreams` per `buildCockpitFrame`; same roles with and without the children map over a random tree.
+- **Validation Steps:** `bun test packages/daemon/src/feed packages/daemon/src/coordination packages/daemon/src/inbox packages/shared`; `bun run typecheck && bun run lint`.
+
+### Ticket: T546 No frame is built when no cockpit is open
+- **Priority:** P2
+- **Status:** Done (merge bb924c44 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Perf P6, checked by the manager. `pushFrame` (`http.ts`, T515) builds and publishes the cockpit frame on every emit even with no WebSocket client; agents often run with no cockpit open. Return early when `server.subscriberCount(FEED_WS_TOPIC) === 0` (works on Bun 1.4.2; `ws.open` already sends a fresh frame on connect). Don't add publish-if-changed (StreamPage and `usePushTick` use frame identity as their re-read trigger).
+- **Acceptance Criteria:** `http.test.ts`: with no client the frame builder isn't invoked on an emit; with a client, frames still arrive; a client that connects after emits gets the current frame.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts packages/daemon/src/events`; `bun run typecheck && bun run lint`.
+
+### Ticket: T547 The store doesn't re-parse a file that hasn't changed
+- **Priority:** P1
+- **Status:** Done (merge 8a406d4e on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Perf P2 (drives P7, P14, P16), checked by the manager: `yaml.parse` is ≈93% of every store read and nothing is cached, so `listStreams` at 300 nodes is ≈200 ms and an idle daemon with 300 nodes uses ≈12% of a core (the PR poller, tracker, gate, overlap and main-sync ticks each re-list everything). Add an instance-level cache in `StateStore` keyed by absolute path, validated by `statSync(path, {bigint: true})` (`ino:size:mtimeNs:ctimeNs`; atomic writes rename a new inode in), holding the **validated** value per validator and returning `structuredClone` of it. Apply it to `readRecord` (streams, knowledge, projects, director), agents, policy/repos/home config, and `readEntityFile` (gates, questions, plans, proposals, contracts, cards). Never cache a failure (a corrupt file is refused with path and line on every read); drop the entry on remove/delete; bound it (LRU ≈20k). Keep the `yaml` parser (no `Bun.YAML` swap: its errors and dialect differ).
+- **Acceptance Criteria:** `store.test.ts`: a second `listStreams` with nothing changed doesn't re-parse (test seam count); an external same-size rewrite is picked up; mutating a returned record doesn't change the next read; a corrupt file throws path:line on every read; a deleted file leaves the list. The full `bun test` stays green (manager runs it).
+- **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/streams packages/daemon/src/knowledge packages/daemon/src/gates packages/daemon/src/questions packages/daemon/src/feed`; `bun run typecheck && bun run lint`.
+
+### Ticket: T548 The node page refreshes at most a few times a second and reads its thread once
+- **Priority:** P2
+- **Status:** Done (merge adc4918a on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Perf P5, checked by the manager. `StreamPage.tsx` re-fetches `/api/streams/<id>/page` on every pushed frame with no coalescing; each build (`feed/stream-page.ts`) reads the whole thread twice (once for `total`), calls `rules.inScope` twice, and runs `landing.preflight` (≈6 synchronous git spawns): ≈73 ms per build on a 2,000-line thread. (UI) coalesce like Lenses/ProjectOverview's `usePushTick` (one request in flight plus one trailing; `loadSeq` keeps order). (Server) read the thread once (`readThread` returns `total`), call `inScope` once, and memoize `defaultBranch(repoRoot)` per repo for ≈30 s (`delivery/service.ts`, also used by overlap, main-sync and merge-state). Coordinate with T520 (it keys the node page per node).
+- **Acceptance Criteria:** N frames within 400 ms cause at most 2 page loads (fake timers); the page payload is unchanged and the thread is read once; `defaultBranch` spawns git once per repo per window and refreshes after it.
+- **Validation Steps:** `bun test packages/ui packages/daemon/src/feed packages/daemon/src/delivery`; `bun run typecheck && bun run lint`; `bun run test:e2e`.
+
+### Ticket: T549 A hook decision reads each record once
+- **Priority:** P2
+- **Status:** Done (merge 9cfca8a3 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Perf P7, checked by the manager. One pre-tool-use decision (`hook/service.ts` `buildContext`, `streamRecord`, the pattern and classifier tiers) does `getStream` ×10, `listKnowledge` ×2, `listAgents` ×2, `getRepos` ×3 (69 ms with 103 knowledge items); a deny reads the whole thread for its last line. Resolve the stream record, its ancestors and `inScope` once per request and pass them to both tiers; take the deny-coalescing last line from a tail read. After T526 if both are open (both touch `hook/service.ts`).
+- **Acceptance Criteria:** A spy test: at most one read per record per decision; every existing hook test unchanged.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/knowledge`; `bun run typecheck && bun run lint`.
+
+### Ticket: T550 Overlap is recomputed once per burst of edits
+- **Priority:** P2
+- **Status:** Done (merge 639c0aac on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Perf P9, checked by the manager. Every non-read PostToolUse calls `onFilesMayHaveChanged` → `sync/overlap.ts` `recompute`, which lists every stream and spawns git 4–6 times synchronously (`merge-base`, `diff --name-only`, `ls-files --others`, `defaultBranch`). Debounce per stream (trailing ≈1.5 s, one run in flight), pass `recomputeAll`'s list into `recompute`, use T548's `defaultBranch` memo if merged. Coordinate with T534 (missing-cwd handling in the same loop).
+- **Acceptance Criteria:** Three calls inside the window run `computeTouched` once; the 60 s sweep's results are unchanged; an overlap alert still fires after a burst.
+- **Validation Steps:** `bun test packages/daemon/src/sync packages/daemon/src/hook`; `bun run typecheck && bun run lint`.
+
+### Ticket: T551 The event log is read from its tail
+- **Priority:** P2
+- **Status:** Done (merge 7d3860b9 on claude/phase-16, 2026-10-13)
+- **Owner:** worker
+- **Scope:** Perf P10, checked by the manager. `RecentEvents.load` (boot), `/api/snapshot` and the lessons retro read, parse and validate all of `log/events.jsonl` (never rotated; ≥4 lines per tool call): 985 ms and +280 MB RSS for a 50 MB log. Read the last `limit` lines backwards in chunks (as `feed/steps.ts` reads forwards); `/api/snapshot` passes `recent?.list()`; the retro streams the log and pre-filters on the `hook_decision` kind before parsing, as `StepIndex` does. Trade-off to note in §10: a corrupt line deep in history no longer refuses the connect snapshot (it still refuses any read that reaches it).
+- **Acceptance Criteria:** Over a log longer than `limit`, the tail read returns the same newest events as the full read, including when the last line is partial; boot reads a bounded number of bytes (test with a large synthetic log); lessons tests unchanged.
+- **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/feed packages/daemon/src/lessons packages/daemon/src/http.test.ts`; `bun run typecheck && bun run lint`.
+
+### Ticket: T552 Merge-state checks share their git work
+- **Priority:** P3
+- **Status:** Done (merge 3dda2c9f on claude/phase-16, 2026-10-13; also carries the per-repo `defaultBranch` memo T548 asked for: an answer git gave is kept 30 s, the `main` fallback is asked each time)
+- **Owner:** worker
+- **Scope:** Perf P11, checked by the manager. `feed/merge-state.ts` queues a `preflight` per ready node every 30 s; each runs ≈6 synchronous git spawns, and nodes on the same target repeat the same `git worktree list` and target `git status`. Compute `worktreesOn(repo, target)` once per batch, pass the stream list to `openWaits`, and use T548's `defaultBranch` memo. Keep writes synchronous.
+- **Acceptance Criteria:** K ready nodes on one target run `worktree list` and the target's `status` once per batch (spawn-count test); merge states unchanged.
+- **Validation Steps:** `bun test packages/daemon/src/feed packages/daemon/src/delivery`; `bun run typecheck && bun run lint`.
+
+### Ticket: T553 Test fixtures copy a template repo instead of building one per test
+- **Priority:** P3
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Perf P13 (developer loop and CI): ≈48 test files (≈960 tests) run `git init`, two `config`s, `add` and `commit` in `beforeEach` (≈47 ms each); `cpSync` of a template built once in `beforeAll` is ≈7 ms and gives a valid repo. Convert per file, keeping the change inside each file (a shared fixture helper module would be a new convention: don't add one). Start with the slowest (`attach/service.test.ts`, `feed/snapshot.test.ts`, `hook/pattern-rules.test.ts`).
+- **Acceptance Criteria:** Each converted file has the same pass count before and after, and no test depends on another's repo state (each still gets its own copy); report the time saved.
+- **Validation Steps:** the converted files' `bun test`; `bun run typecheck && bun run lint`.
+
+### Ticket: T554 `agile hook` starts without loading the daemon
+- **Priority:** P1
+- **Status:** Blocked (needs Pete: a new import pattern)
+- **Owner:** worker
+- **Scope:** Perf P1: every Claude tool call runs `agile hook` twice (pre and post), and each process takes ≈0.6 s because `packages/cli/src/index.ts` and `commands/hook.ts` import `resolveHomePaths` and `codexCallGated` from the `@agile-agents/daemon` barrel, which loads the whole daemon (HTTP, every service, acp-client, the MCP SDK types). The modules the hook needs load in ≈0.13 s, so ≈1 s per tool call is avoidable. The fix needs either a deep import (`@agile-agents/daemon/src/config`, `…/hook/codex`) or a lean second entry/`exports` subpath in the daemon package, or moving the two helpers into `@agile-agents/shared`; the repo has no precedent for any of them, so per CLAUDE.md Pete picks. Then dispatch verbs with `await import()` as `mcp` already does (`index.ts`).
+- **Acceptance Criteria:** `agile hook pre-tool-use` with no daemon finishes in under ≈0.2 s on the CI runner (`hook-timing.test.ts` reports it); a structural test that neither `index.ts` nor `commands/hook.ts` imports the daemon barrel.
+- **Validation Steps:** `bun test packages/cli`; `bun run typecheck && bun run lint`.
+
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
 Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `plan/`, `review/` rounds, `sync/` (shelved on a branch), `feed/stories.ts`, `runner/pipeline-glue.ts`, sprint parts of `merge/`, `bus/` unless the thread reuses it. CLI: `run`, `send`, `halt`, `approve`, `sync`. Shared: `Ticket`, `Sprint`, `Stanza`, `Message`, `Halt`, `Quota`, `Review`, `Qa`, `Oracle`, `Kb`, `Ledger`. Briefs: all but `worker.md`, `reviewer.md`, `lessons.md`. UI: `plan/`, `sprint/`, `review/`, `OraclePanel`. State: the `agile-state` orphan branch and per-repo `.agile/`.
@@ -3579,6 +3942,22 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-10-13 (T551, trade-off as the ticket said): boot, the `/ws` connect snapshot and `/api/snapshot` now read only the tail of `log/events.jsonl` (49.7 MB log: boot 941 → 8 ms, +292 → +3 MB). A corrupt line older than the tail no longer stops them; any read that reaches it still refuses it, now with path and line (before: neither). The lessons retro parses only `hook_decision` lines. (T549): a hook decision now reads each record once (allow ≈11 → 7 ms at 104 knowledge items; a repeat deny on a 5,000-line thread 43 → 7 ms); post-tool-use and stop still compute rules and read scope they never use (≈4–5 ms), a possible follow-up.
+- 2026-10-13 (T535 worker): beyond the audit, a land could `reset --hard` the operator's own current branch to the merge commit (a worktree of the target whose dir was replaced by a plain one), and main-sync could merge main into the operator's checkout through a plain directory; both fixed with a `.git`-of-its-own check. Merged or trashed nodes now refuse Start/Review/Resolve (409 in the cockpit, -32602 from the CLI); a leftover plain directory with files at a worktree path is refused, never deleted. Open: an agent start that finishes after a land's live-session check but before the land removes the worktree loses its worktree mid-session (T540/T542's area); `agile stream show` prints "created on first attach" for a merged node's cleared worktree.
+- 2026-10-13 (T547 worker): the store's parse cache measured `listStreams` at 300 nodes 315 → 18 ms and `feed/snapshot.test.ts` 11.7 → 4.4 s. It keys on `ino:size:mtimeNs:ctimeNs` and, for a file read within 3 s of its ctime, also compares the text (git's "racily clean"), because ext4 reuses inode numbers on alternate atomic writes and older kernels have coarse ctime. On a network-mounted home (NFS attribute caching) a write from another host can be missed for up to the attribute cache time. (T533 worker): while the daemon starts, `agiled.pid` reads `starting <pid>` (the lock, not yet the pidfile) for under a second; `kill $(cat agiled.pid)` in that window gets a non-pid.
+- 2026-10-13 (T531, for Pete): design §7.4 says gate and land events are fsynced, but no `land_*` event kind was ever added: a land is recorded as `stream_updated` (human `landed`) plus the delivery state, and neither is fsynced (the triage's "merges fsync through the routed `pr_merged` event" is wrong: the routed log isn't fsynced either). The `land_` prefix in `needsFsync` is kept for §7.4. Pete to say whether a land should be fsynced (e.g. fsync the `stream_updated` that sets `landed`).
+- 2026-10-13 (T536 worker, accepted by the manager, for Pete): every daemon git call now carries `-c core.hooksPath=/dev/null -c core.fsmonitor=false`. The worker chose `/dev/null` over the in-repo empty `.agile-daemon-cache/git/no-hooks` dir createWorktree used, because a commit can fill that dir (`git add -f`), and a land's `reset --hard` of the operator checkout then writes the hook there (reproduced). T343's read env already used `/dev/null`. `design/cockpit-design.md` §8 (the D11 bullet) is reworded to match. With fsmonitor off, the daemon's `git status` is slower in huge repos that rely on it. (T534 worker): a plain directory left where a node's worktree was makes git walk up to the operator's main checkout; T535 should check `<worktree>/.git` before any write.
+- 2026-10-13 (T541, for Pete, daemon audit D14): `agile stream archive <id>` (RPC `stream.archive`) archives one node: its children stay unarchived and their agents keep running, and Delete forever on the parent then refuses ("X under it is not in the trash"). The cockpit's Delete archives the subtree. Whether the CLI should match is Pete's call (`design/cockpit-ui-followups.md`); T541 only refuses a project root there.
+- 2026-10-13 (T520 worker): with the node page keyed by node, a call still running when you leave a node and come back (A→B→A) is idle again on return: its refusal or error words aren't shown, its effect arrives with the next frame (as leaving for Needs me already did). A per-node in-flight registry would keep them; not done. (T523 worker): `agile` free-text verbs now refuse unknown `--options` (quote or use `--`); long verbs wait up to 10 min and say where to check if they stop waiting.
+- 2026-10-13 (T525 worker, confirmed by the manager, for Pete): env prefixes that change what a command loads pass the engineer table: `HOME=. git status` (a `./.gitconfig` the agent wrote, `core.fsmonitor` runs a program), `PATH=. ls`, `LD_PRELOAD=./x.so ls`, `BASH_ENV=./x bash -c ls` are allowed (`GIT_CONFIG_GLOBAL=`, `GIT_SSH_COMMAND=` are held). This is the same class as the agent running code it wrote through the repo's own tests, which the gate allows by design; only a process sandbox closes it. Pete to decide whether the table should hold these prefixes anyway. T525 itself fails closed on them for an alias. Also from T525: `git subtree push` (and `p4 submit`, `svn dcommit`) push without the `push` subcommand and aren't caught; the ACP tier remembers upstream/HEAD for the whole session, so a later bare `git push` can be checked against a stale branch.
+- 2026-10-13 (T524 worker): T457's ACP read routing never worked in a real daemon: `attach/service.ts` passed `gates.request`/`gates.consume` unbound, so every route threw and the request stayed pending (unit tests passed the service directly). Fixed in T524 with an end-to-end Cursor test. For Pete: ACP carries no refusal reason, so a hook-less agent sees a generic refusal rather than "wait for the human" (a line in hook-less vendors' briefs would help); old `bus/inbox/human/` files stay on disk unread.
+- 2026-10-13 (T516 worker, residual, for later tickets): a quote inside a `#` comment, and heredoc bodies, can still throw off the parser's quote reading; `sh -c "…" > /etc/x` drops the outer redirect when the parser looks inside; bash's `${var@P}` and arithmetic array subscripts run a stored command with no `$(`. Its fifth (the coordinator never runs the unsafe-construct check) was a live hole: T555.
+- 2026-10-13 (T543 worker, for Pete): Pi's big `read`/`grep` now hit the 64 KiB raw-read limit like Claude's, but a Pi session has no MCP (`pi-acp` passes no MCP servers), so the deny's `read_summary` pointer can't be followed; exempting Pi is one line. An engineer's WebFetch/WebSearch is still allowed at the hook while the ACP tier allows an engineer's fetch only to package registries; unchanged.
+- 2026-10-13 (performance audit, `perf.md`): 17 findings, verified by the manager on the code; ticketed as T544–T554. Not ticketed: P14 (slow tests; follows from T545/T547), P15 (the routed-event log held whole in memory; later), P16 (resolved gates/questions re-read; follows from T547), P17 (zod in the UI bundle; already in `design/cockpit-ui-followups.md`, needs a new shared entry point). T554 (the hook's 0.6 s start) waits on Pete: it needs an import pattern the repo doesn't have.
+- 2026-10-13 (T518 worker, for Pete): the hook now gives a reviewer's other-server MCP calls (`mcp__*`) the ACP tier's verdict for kind `other` (deny), but an engineer's or coordinator's are still allowed at the hook while the ACP tier holds kind `other`. Options: hold them at the hook too, route them to the classifier, an allowlist per server, or leave. Not changed.
+- 2026-10-13 (T517 worker, for Pete): every request now needs a loopback `Host` (DNS rebinding); CLAUDE.md's Conventions line names only `isSameOriginRequest`. Not edited (a worker suggested it); Pete to decide whether CLAUDE.md should say so. A client with no `Origin` (the CLI, a tunnel) still passes the write routes when its Host is loopback.
+- 2026-10-13 (T514 worker): land and ship-check gates raised before T514 carry no `branch`/`target`/`probability`, so their cards read "land x into y" and lack the probability tooltip until they resolve. A rule-routed gate's card shows the rule's current text. Blocked "stop" cards still match the daemon's failure prefixes in the progress line (T508); a structured field on the stream record would end that.
+- 2026-10-13 Pete: away ≥24 h; asked for all work that doesn't need him plus an agent hunt for hidden bugs and optimizations → Phase 16 (T514+) on `claude/phase-16`, stacked on `claude/phase-14`. T330's board line still said In Progress although it merged on 2026-09-25 (1acb31e8) and forward through every phase; corrected.
 - 2026-09-26 Pete: the cockpit is rough; asked for a full UX overhaul (his list is in Phase 15's intro) → Phase 15 (T360–T369), design in `design/cockpit-ui.md`, on `claude/phase-14`.
 - 2026-09-26 (T345 worker): a lone `&` was not a command separator in `splitCommandSegments`, so `echo hi & cat /etc/passwd` and `true & rm -rf ~` were auto-allowed for engineers since phase 7. Fixed on ci-fix-lone-ampersand (6ea669a), merged 7→14; reviewed (sonnet) APPROVE.
 - 2026-09-26 (T344 review): T336's `waitingForPlan` re-flagged a part that had started and gone idle, so plan approval could restart it and the rail/card said "waiting" again. Fixed on ci-fix-waiting-started (3e8724d, phase-11): waiting ends once a session starts after the split's waiting line (ULID time). Merged 11→14; reviewed and QA'd (sonnet).

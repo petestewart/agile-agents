@@ -224,6 +224,41 @@ describe('QuestionService.answer', () => {
       EmptyQuestionTextError,
     );
   });
+
+  test('T537: with another question open, answering one leaves the node waiting on you', async () => {
+    const first = await raised();
+    const second = await questions.raise({
+      stream: stream.id,
+      raised_by: '01ARZ3NDEKTSV4RRFFQ69GE001',
+      session: SESSION,
+      text: 'and the quote char?',
+    });
+    await questions.answer(first.id, { answer: 'semicolon', by: 'human' });
+    expect(streams.get(stream.id).human.status).toBe('waiting_on_you');
+    // No process behind it, and a question still open: still `question`.
+    expect(streams.get(stream.id).agent.status).toBe('question');
+    await questions.answer(second.id, { answer: 'double', by: 'human' });
+    expect(streams.get(stream.id).human.status).toBe('open');
+    expect(streams.get(stream.id).agent.status).toBe('idle');
+  });
+
+  test('T537: answering a closed node’s question (a coordinator, `agile answer`) leaves it closed', async () => {
+    const q = await raised();
+    await streams.close('human', stream.id);
+    await questions.answer(q.id, { answer: 'semicolon', by: 'agent:01ARZ3NDEKTSV4RRFFQ69GE002' });
+    expect(streams.get(stream.id).human.status).toBe('closed');
+    expect(questions.get(q.id).status).toBe('answered');
+  });
+
+  test('T537: answering a landed node’s question leaves it landed', async () => {
+    const q = await raised();
+    await store.updateStream('daemon', stream.id, (before) => ({
+      ...before,
+      human: { ...before.human, status: 'landed' },
+    }));
+    await questions.answer(q.id, { answer: 'semicolon', by: 'human' });
+    expect(streams.get(stream.id).human.status).toBe('landed');
+  });
 });
 
 describe('listOpen', () => {
@@ -320,7 +355,8 @@ describe('a human reply on the thread answers the asking session (T169)', () => 
     expect(
       entries.some((e) => e.kind === 'event' && e.body.includes(`question ${mine.id} answered`)),
     ).toBe(true);
-    expect(streams.get(stream.id).human.status).toBe('open');
+    // T537: the other session's question still waits on you.
+    expect(streams.get(stream.id).human.status).toBe('waiting_on_you');
     const event = store
       .listEvents()
       .filter((e) => e.kind === 'question_answered')
@@ -364,6 +400,16 @@ describe('T502 (D62): a choice question is its thread', () => {
     expect(replies).toEqual([{ id: q.id, text: 'What does Stripe use?' }]);
     // Not waiting on you any more.
     expect(streams.get(stream.id).human.status).toBe('open');
+  });
+
+  test('T537: a reply leaves the node waiting on you while another question is open, and never reopens it', async () => {
+    const q = await choice();
+    await choice('And the currency?');
+    await questions.reply(q.id, { text: 'what does Stripe use?', by: 'human' });
+    expect(streams.get(stream.id).human.status).toBe('waiting_on_you');
+    await streams.close('human', stream.id);
+    await questions.reply(q.id, { text: 'never mind', by: 'human' });
+    expect(streams.get(stream.id).human.status).toBe('closed');
   });
 
   test('with no delivery wired, the reply is still a line in its thread', async () => {

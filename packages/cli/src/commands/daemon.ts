@@ -8,10 +8,11 @@
  * `runDaemonForeground` serves) with its stdio redirected to
  * `<home>/log/agiled.log`. The child writes the pidfile itself — it holds
  * the per-home lock (`daemon/lock.ts`), so the pidfile and the lock are one
- * file and cannot disagree. The parent waits for that file to appear, prints
- * the pid, and exits; closing the terminal does not take the daemon with it
- * (`detached: true` puts the child in its own process group, so a terminal
- * SIGHUP never reaches it).
+ * file and cannot disagree. The parent waits for that file to name the pid
+ * (T533: the child takes the lock first, as `starting <pid>`, and publishes
+ * the bare pid once its port is bound), prints the pid, and exits; closing
+ * the terminal does not take the daemon with it (`detached: true` puts the
+ * child in its own process group, so a terminal SIGHUP never reaches it).
  *
  * A second `start` is a no-op that prints the running pid.
  */
@@ -21,6 +22,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 
 import {
   type HomePaths,
   installShutdownSignals,
+  lockHolder,
   readHomeConfigFile,
   resolveHomePaths,
   startDaemon,
@@ -34,7 +36,7 @@ import {
   formatSessionDefaults,
   resolveSessionDefaults,
 } from '@agile-agents/shared';
-import { callRpc } from '../client';
+import { callRpc, formatWait } from '../client';
 import { formatCodexGateLine } from './codex';
 
 /** How long `start` waits for the child to write its pidfile before giving up. */
@@ -118,12 +120,13 @@ export function describePortHolder(
   }`;
 }
 
-/** The pid in `<home>/agiled.pid`, or `undefined` when there is no live daemon. */
+/**
+ * The pid in `<home>/agiled.pid`, or `undefined` when there is no live daemon.
+ * T533: a daemon still starting holds the lock but isn't up: no pid yet.
+ */
 export function runningPid(paths: HomePaths): number | undefined {
-  if (!existsSync(paths.pidPath)) return undefined;
-  const pid = Number.parseInt(readFileSync(paths.pidPath, 'utf8').trim(), 10);
-  if (!Number.isFinite(pid)) return undefined;
-  return isAlive(pid) ? pid : undefined;
+  const holder = lockHolder(paths.pidPath);
+  return holder?.started === true ? holder.pid : undefined;
 }
 
 /**
@@ -198,8 +201,11 @@ export async function runDaemonStart(options: DaemonStartOptions = {}): Promise<
     return `agiled already running: pid=${already} home=${paths.home}`;
   }
   // A pidfile whose holder is gone would otherwise make the child fail to
-  // take the lock for a process that no longer exists.
-  if (existsSync(paths.pidPath)) rmSync(paths.pidPath, { force: true });
+  // take the lock for a process that no longer exists. T533: never the lock
+  // of a daemon still starting; this start's child fails on that lock instead.
+  if (existsSync(paths.pidPath) && lockHolder(paths.pidPath) === undefined) {
+    rmSync(paths.pidPath, { force: true });
+  }
 
   mkdirSync(paths.logDir, { recursive: true });
   const logFd = openSync(paths.logPath, 'a');
@@ -265,6 +271,11 @@ export async function runDaemonStop(home?: string): Promise<string> {
   const paths = resolveHomePaths(home ? { home } : {});
   const pid = runningPid(paths);
   if (pid === undefined) {
+    // T533: a daemon still starting holds the lock: leave it, it isn't up to stop yet.
+    const starting = lockHolder(paths.pidPath);
+    if (starting !== undefined) {
+      return `agiled is still starting (pid ${starting.pid}, home=${paths.home}); stop it once it is up`;
+    }
     // Clear a stale pidfile so the next `start` doesn't have to.
     if (existsSync(paths.pidPath)) rmSync(paths.pidPath, { force: true });
     const holder = portHolder(paths.port);
@@ -307,6 +318,11 @@ export interface DaemonStatusReport {
   codexGate?: CodexGateStatus;
   /** T170 (D17): what a session attached with nothing named gets (home config + built-in). */
   sessionDefaults?: ResolvedSessionDefaults;
+  /**
+   * T523 (CLI audit C5): the socket took `agile status`'s call and nothing
+   * answered within this many ms: busy or stuck, not gone.
+   */
+  unansweredAfterMs?: number;
 }
 
 /**
@@ -391,6 +407,14 @@ export function formatDaemonStatus(report: DaemonStatusReport): string {
   const defaults = report.sessionDefaults
     ? `\nsession default: ${formatSessionDefaults(report.sessionDefaults)}`
     : '';
+  if (report.unansweredAfterMs !== undefined) {
+    const wait = formatWait(report.unansweredAfterMs);
+    const line =
+      report.pid !== undefined
+        ? `agiled (pid ${report.pid}) did not answer within ${wait}: it is running, but busy or stuck. Its log: ${report.logPath}`
+        : `something at ${report.socketPath} took the call but did not answer within ${wait}, and ${report.pidPath} names no live agiled`;
+    return `${home}\n${line}${defaults}`;
+  }
   if (!report.running) return `${home}\nagiled is not running${defaults}`;
   const running =
     `${home}\nagiled running: pid=${report.pid} http=http://127.0.0.1:${report.port} ` +

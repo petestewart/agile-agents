@@ -1,7 +1,7 @@
 /**
  * A gate decision resolves every question the same session still has
- * open, as `superseded`. Wired around `GateService.respond`, which needn't
- * know what a question is.
+ * open, as `superseded`. Listens on `GateService.onResolved` (T527: however
+ * the gate was decided), which needn't know what a question is.
  */
 
 import type { GateService } from '../gates/service';
@@ -12,15 +12,12 @@ export interface QuestionSupersession {
 }
 
 export function wireQuestionSupersession(
-  gates: GateService,
+  gates: Pick<GateService, 'onResolved'>,
   questions: QuestionSupersession,
 ): void {
-  const respond = gates.respond.bind(gates);
-  gates.respond = async (id, decision, by, note) => {
-    const resolved = await respond(id, decision, by, note);
+  gates.onResolved(async (resolved) => {
     if (resolved.session !== undefined) {
       await questions.supersede(resolved.session, resolved.id);
     }
-    return resolved;
-  };
+  });
 }

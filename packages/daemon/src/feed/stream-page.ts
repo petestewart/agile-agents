@@ -98,12 +98,10 @@ export function buildStreamPage(sources: StreamPageSources, id: string): StreamP
     }
   }
 
-  const total = streams.readThread(id, { limit: 1 }).total;
-  const from = Math.max(0, total - STREAM_PAGE_THREAD_LIMIT);
-  const thread = streams.readThread(id, {
-    ...(from > 0 ? { after: from - 1 } : {}),
-    limit: STREAM_PAGE_THREAD_LIMIT,
-  }).entries;
+  // T548: one read of the thread (its total and its newest lines), not two.
+  const whole = streams.readThread(id, { limit: Number.MAX_SAFE_INTEGER });
+  const total = whole.total;
+  const thread = whole.entries.slice(-STREAM_PAGE_THREAD_LIMIT);
 
   // T463: the ones switched off here too, so the Knowledge tab can switch them back on.
   const rules = sources.rules?.inScope(id, undefined, undefined, { includeOff: true }) ?? [];

@@ -192,6 +192,7 @@ export async function runVendorsCheck(
     status: VendorChecksStatus;
   }>(socketPath, 'vendors.check', vendor !== undefined ? { vendor } : {}, {
     timeoutMs: CHECK_TIMEOUT_MS,
+    check: '`agile vendors`',
   });
   if (json) {
     printJson({ results, status });
@@ -231,7 +232,12 @@ export async function runVendorsInstall(
   const { manifest, status } = await callRpc<{
     manifest: BridgeManifest;
     status: VendorChecksStatus;
-  }>(socketPath, 'vendors.install', { vendor }, { timeoutMs: INSTALL_TIMEOUT_MS });
+  }>(
+    socketPath,
+    'vendors.install',
+    { vendor },
+    { timeoutMs: INSTALL_TIMEOUT_MS, check: '`agile vendors`' },
+  );
   if (json) {
     printJson({ manifest, status });
     return 0;

@@ -264,6 +264,86 @@ describe('createAgileExtension: tool_call gating', () => {
   });
 });
 
+describe('createAgileExtension: through the real hook (T543)', () => {
+  it("Pi's own tool names are gated by the role table and the read checks, end to end", async () => {
+    const REVIEWER = '01ARZ3NDEKTSV4RRFFQ69GP2R0';
+    const WORKER = '01ARZ3NDEKTSV4RRFFQ69GP2W0';
+    const worktree = join(dir, 'wt');
+    mkdirSync(join(worktree, 'src'), { recursive: true });
+    writeFileSync(join(worktree, 'src', 'a.ts'), 'export const a = 1;\n');
+    const stateRoot = runInit(join(dir, 'home')).stateRoot;
+    const store = StateStore.open(stateRoot);
+    const bus = new Bus(store, stateRoot);
+    const stream = ulid();
+    for (const [id, role] of [
+      [REVIEWER, 'reviewer'],
+      [WORKER, 'worker'],
+    ] as const) {
+      await store.putAgent(id, {
+        vendor: 'pi',
+        model: 'default',
+        stream,
+        pid: 4242,
+        role,
+        worktree,
+        last_seen: new Date().toISOString(),
+      });
+    }
+    const hooks = new HookService(store, bus, {
+      agileHome: stateRoot,
+      gates: new GateService(store),
+    });
+    rpcServer = startRpcServer({
+      socketPath,
+      version: '0.0.0-test',
+      stateRoot,
+      startedAt: Date.now(),
+      extraMethods: { ...buildHookRpcMethods(hooks), ...buildBusRpcMethods(bus) },
+    });
+
+    const piFor = (agent: string) => {
+      const pi = new FakePi();
+      createAgileExtension({
+        env: { [GATE_ENV_VAR]: '1', AGILE_SOCKET_PATH: socketPath, AGILE_AGENT: agent },
+        heartbeatIntervalMs: 60_000,
+      })(pi);
+      return (toolName: string, input: Record<string, unknown>) =>
+        pi.toolCall?.(
+          { type: 'tool_call', toolCallId: ulid(), toolName, input },
+          { cwd: worktree },
+        );
+    };
+
+    try {
+      const reviewer = piFor(REVIEWER);
+      const write = await reviewer('write', { path: 'src/new.ts', content: 'x' });
+      expect(write?.block).toBe(true);
+      expect(write?.reason).toContain('reviewer role denies all writes');
+      expect(await reviewer('read', { path: 'src/a.ts' })).toEqual({});
+
+      const worker = piFor(WORKER);
+      expect(
+        await worker('edit', { path: 'src/a.ts', edits: [{ oldText: '1', newText: '2' }] }),
+      ).toEqual({});
+      const outside = await worker('edit', {
+        path: '../elsewhere.ts',
+        edits: [{ oldText: '1', newText: '2' }],
+      });
+      expect(outside?.block).toBe(true);
+      expect(outside?.reason).toContain('outside the worktree');
+      const home = await worker('read', { path: join(stateRoot, 'config.yaml') });
+      expect(home?.block).toBe(true);
+      expect(home?.reason).toContain('agile home');
+      const sudo = await worker('bash', { command: 'sudo ls' });
+      expect(sudo?.block).toBe(true);
+      expect(sudo?.reason).toContain('sudo is never automatic');
+    } finally {
+      await store.flush();
+      store.close();
+    }
+  });
+});
+
 describe('createAgileExtension: tool_result rewriting', () => {
   it('rewrites a large test-run bash output, leaves a small one and non-test tools alone', async () => {
     rpcServer = startRpcServer({

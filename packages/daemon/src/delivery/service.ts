@@ -10,7 +10,7 @@
  * a child never lands into its parent's branch.
  */
 
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -34,6 +34,7 @@ import {
   git,
   gitNetwork,
   gitWrite,
+  isOwnCheckout,
   removeWorktreeSafely,
   runGit,
 } from './git';
@@ -190,11 +191,68 @@ export interface DeliveryServiceOptions {
   onRefused?: (streamId: string, key: string, words: string) => unknown;
 }
 
+/** T552: what a batch of `preflight`s reads once and shares (`DeliveryService.batchReads`). */
+interface BatchReads {
+  /** `<repo>\0<target>` → the target's checkouts, each with its `git status`. */
+  checkouts: Map<string, Checkout[]>;
+  /** `<repo>\0<target>` → whether the target branch exists. */
+  targets: Map<string, boolean>;
+  streams?: Stream[];
+}
+
 export class DeliveryService {
   private readonly diffRules: DiffRules;
+  private batch: BatchReads | undefined;
 
   constructor(private readonly options: DeliveryServiceOptions) {
     this.diffRules = options.diffRules ?? ALLOW_ALL_DIFF_RULES;
+  }
+
+  /**
+   * T552: runs `fn` with the reads several `preflight`s share made once: a
+   * target's `git worktree list` and its checkouts' `git status`, whether the
+   * target exists, and the node list. For the merge-state check, which asks
+   * about every ready node at once. Synchronous, so nothing the daemon writes
+   * lands between the reads and their use.
+   */
+  batchReads<T>(fn: () => T): T {
+    if (this.batch !== undefined) return fn();
+    this.batch = { checkouts: new Map(), targets: new Map() };
+    try {
+      return fn();
+    } finally {
+      this.batch = undefined;
+    }
+  }
+
+  /** `worktreesOn`, read once per target in a batch. */
+  private checkoutsOn(repoRoot: string, target: string): Checkout[] {
+    const memo = this.batch?.checkouts;
+    const key = `${repoRoot}\0${target}`;
+    const hit = memo?.get(key);
+    if (hit !== undefined) return hit;
+    const found = worktreesOn(repoRoot, target);
+    memo?.set(key, found);
+    return found;
+  }
+
+  /** `branchExists` for a target, read once per target in a batch. */
+  private targetExists(repoRoot: string, target: string): boolean {
+    const memo = this.batch?.targets;
+    const key = `${repoRoot}\0${target}`;
+    const hit = memo?.get(key);
+    if (hit !== undefined) return hit;
+    const found = branchExists(repoRoot, target);
+    memo?.set(key, found);
+    return found;
+  }
+
+  /** Every node, archived ones too (for `waits_on`), listed once in a batch. */
+  private everyStream(): Stream[] {
+    const list = () => this.options.streams.list({ include_archived: true });
+    if (this.batch === undefined) return list();
+    this.batch.streams ??= list();
+    return this.batch.streams;
   }
 
   async land(streamId: string, options: LandOptions = {}): Promise<LandOutcome> {
@@ -533,6 +591,13 @@ export class DeliveryService {
           kind: 'event',
           body: `worktree ${stream.worktree} kept: ${removal.reason}`,
         });
+      } else {
+        // T535: gone from the record too (its branch stays, as in git), so
+        // nothing reads or starts an agent in a path that is no longer a checkout.
+        await this.options.store.updateStream('daemon', stream.id, (before) => {
+          const { worktree: _w, ...rest } = before;
+          return rest;
+        });
       }
     }
     // §5.5's retro, after the worktree is gone.
@@ -641,7 +706,7 @@ export class DeliveryService {
           reason: `the last merge into ${conflict.target} conflicted in ${conflict.files.join(', ')}; Resolve, or fix the branch by hand, then merge again`,
         };
       }
-      if (!branchExists(repoRoot, target)) {
+      if (!this.targetExists(repoRoot, target)) {
         return {
           ready: false,
           branch,
@@ -671,12 +736,12 @@ export class DeliveryService {
           reason: nothingToMerge(branch, target),
         };
       }
-      const dirty = dirtyCheckoutReason(target, worktreesOn(repoRoot, target));
+      const dirty = dirtyCheckoutReason(target, this.checkoutsOn(repoRoot, target));
       if (dirty !== undefined) return { ready: false, branch, target, ahead, reason: dirty };
       // T412: a direct merge waits for what the node waits on (P8), as `land` does, so
       // the header and the Delivery panel don't offer a Merge that would be held.
       if ((stream.delivery_state?.mode ?? this.resolveMode(stream, repoEntry)) === 'direct') {
-        const open = openWaits(stream, this.options.streams.list({ include_archived: true }));
+        const open = openWaits(stream, this.everyStream());
         if (open.length > 0) {
           return { ready: false, branch, target, ahead, reason: `waits on ${open.join(', ')}` };
         }
@@ -752,7 +817,8 @@ export class DeliveryService {
     const repoEntry = this.registeredRepo(stream, stream.repo);
     const repoRoot = repoEntry.path;
     const target = this.resolveTarget(stream, repoEntry, repoRoot);
-    const inWorktree = stream.worktree !== undefined && existsSync(stream.worktree);
+    // T535: a plain directory where the worktree was would diff the operator's checkout.
+    const inWorktree = stream.worktree !== undefined && isOwnCheckout(stream.worktree);
     const cwd = inWorktree ? (stream.worktree as string) : repoRoot;
     const head = inWorktree ? 'HEAD' : stream.branch;
     const base = git(['merge-base', target, head], cwd, repoRoot);
@@ -835,7 +901,7 @@ export class DeliveryService {
     const repoRoot = repoEntry.path;
     const remote = repoEntry.remote ?? 'origin';
     const cwd =
-      stream.worktree !== undefined && existsSync(stream.worktree) ? stream.worktree : repoRoot;
+      stream.worktree !== undefined && isOwnCheckout(stream.worktree) ? stream.worktree : repoRoot;
     // T225: a merged PR is the end of the node; a new commit needs a new node.
     if (
       stream.delivery_state?.status === 'merged' ||
@@ -1028,7 +1094,7 @@ export class DeliveryService {
     let why: string | undefined;
     if (session !== undefined && (session.status === 'running' || session.status === 'starting')) {
       why = 'the parent is mid-turn';
-    } else if (host.worktree !== undefined && existsSync(host.worktree)) {
+    } else if (host.worktree !== undefined && isOwnCheckout(host.worktree)) {
       const status = git(
         ['status', '--porcelain=v1', '--untracked-files=no'],
         host.worktree,
@@ -1085,6 +1151,8 @@ export class DeliveryService {
       stream: stream.id,
       // T371: the short branch; the card names the node by its title.
       summary: `land ${branchLabel(branch)} into ${target}`,
+      branch,
+      target,
     });
     if (gate.status === 'resolved' && gate.decision === 'approve') return undefined;
     if (gate.status === 'resolved') {
@@ -1172,10 +1240,15 @@ export class DeliveryService {
       }
       return { ok: true, repoRoot, target, before, sha, checkouts, plans };
     } finally {
+      // T534: never throws past the outcome above (a `worktree add` that
+      // failed left no `target` dir), and the temp dir always goes.
       if (temp !== undefined) {
-        removeWorktreeSafely(repoRoot, join(temp, 'target'));
-        git(['worktree', 'prune'], repoRoot, repoRoot);
-        rmSync(temp, { recursive: true, force: true });
+        try {
+          removeWorktreeSafely(repoRoot, join(temp, 'target'));
+          git(['worktree', 'prune'], repoRoot, repoRoot);
+        } finally {
+          rmSync(temp, { recursive: true, force: true });
+        }
       }
     }
   }
@@ -1291,8 +1364,29 @@ export function mainBranch(entry: RepoEntry, repoRoot: string): string {
   return entry.main_branch ?? entry.target_branch ?? defaultBranch(repoRoot);
 }
 
-/** The repo's default branch: `origin/HEAD`, else whichever of `main`/`master` exists, else `main`. */
-export function defaultBranch(repoRoot: string): string {
+/** T552: how long a repo's default branch is remembered (`defaultBranch`). */
+export const DEFAULT_BRANCH_TTL_MS = 30_000;
+
+const defaultBranches = new Map<string, { branch: string; at: number }>();
+
+/**
+ * The repo's default branch: `origin/HEAD`, else whichever of `main`/`master` exists, else `main`.
+ * T552: an answer git gave is remembered per repo for `DEFAULT_BRANCH_TTL_MS` (the frame, the
+ * node page and the sync loops ask it often); the `main` fallback is asked again each time.
+ */
+export function defaultBranch(repoRoot: string, now: number = Date.now()): string {
+  const hit = defaultBranches.get(repoRoot);
+  if (hit !== undefined && now - hit.at < DEFAULT_BRANCH_TTL_MS) return hit.branch;
+  const found = readDefaultBranch(repoRoot);
+  if (found === undefined) {
+    defaultBranches.delete(repoRoot);
+    return 'main';
+  }
+  defaultBranches.set(repoRoot, { branch: found, at: now });
+  return found;
+}
+
+function readDefaultBranch(repoRoot: string): string | undefined {
   const head = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoRoot, repoRoot);
   if (head.exitCode === 0 && head.stdout.startsWith('origin/')) {
     return head.stdout.slice('origin/'.length);
@@ -1300,7 +1394,7 @@ export function defaultBranch(repoRoot: string): string {
   for (const candidate of ['main', 'master']) {
     if (branchExists(repoRoot, candidate)) return candidate;
   }
-  return 'main';
+  return undefined;
 }
 
 /** A worktree with the target checked out, and its uncommitted tracked paths. */
@@ -1317,7 +1411,10 @@ function worktreesOn(repoRoot: string, branch: string): Checkout[] {
   let path: string | undefined;
   for (const line of listed.stdout.split('\n')) {
     if (line.startsWith('worktree ')) path = line.slice('worktree '.length);
-    if (line === `branch refs/heads/${branch}` && path !== undefined) {
+    // T534: a checkout whose dir is gone has nothing to keep or bring along.
+    // T535: nor one whose dir is now a plain one, where git (its status, the
+    // fast-forward's `reset --hard`) would reach the operator's checkout.
+    if (line === `branch refs/heads/${branch}` && path !== undefined && isOwnCheckout(path)) {
       found.push({ path, dirty: uncommittedPaths(repoRoot, path) });
     }
   }
@@ -1343,13 +1440,15 @@ function uncommittedPaths(repoRoot: string, worktreePath: string): string[] {
 
 /**
  * Approving a `land` gate performs the merge (the gate is raised before
- * it). Wraps `GateService.respond` so the gate service needn't know what
- * any gate kind does; wired by `daemon.ts`.
+ * it). Listens on `GateService.onResolved` (T527: a timeout's or a
+ * delegate's approval lands too) so the gate service needn't know what any
+ * gate kind does; wired by `daemon.ts`.
  */
-export function wireLandGateResolution(gates: GateService, landing: DeliveryService): void {
-  const respond = gates.respond.bind(gates);
-  gates.respond = async (id, decision, by, note) => {
-    const resolved = await respond(id, decision, by, note);
+export function wireLandGateResolution(
+  gates: Pick<GateService, 'onResolved'>,
+  landing: DeliveryService,
+): void {
+  gates.onResolved(async (resolved) => {
     if (resolved.gate === 'land' && resolved.decision === 'approve') {
       await landing.land(resolved.stream, { gateApproved: true });
     }
@@ -1365,8 +1464,7 @@ export function wireLandGateResolution(gates: GateService, landing: DeliveryServ
     ) {
       await landing.land(resolved.stream);
     }
-    return resolved;
-  };
+  });
 }
 
 /**
@@ -1378,11 +1476,17 @@ export function mergedOutside(repoRoot: string, branch: string, target: string):
   if (git(['merge-base', '--is-ancestor', branch, target], repoRoot, repoRoot).exitCode !== 0) {
     return false;
   }
+  // T531: merged means it had commits of its own. Its reflog says so: one entry is
+  // its creation (it never moved, so an untouched branch forked off a commit a merge
+  // brought in is not "merged"), more is work. With no reflog (expired, or never
+  // kept), a tip off the target's first-parent line is the fallback.
+  const reflog = git(['reflog', 'show', '--format=%H', `refs/heads/${branch}`], repoRoot, repoRoot);
+  const moves = reflog.exitCode === 0 ? reflog.stdout.split('\n').filter(Boolean).length : 0;
+  if (moves > 1) return true;
+  if (moves === 1) return false;
   const tip = git(['rev-parse', `refs/heads/${branch}`], repoRoot, repoRoot).stdout;
   const firstParent = git(['rev-list', '--first-parent', target], repoRoot, repoRoot);
-  if (firstParent.exitCode === 0 && !firstParent.stdout.split('\n').includes(tip)) return true;
-  const reflog = git(['reflog', 'show', '--format=%H', `refs/heads/${branch}`], repoRoot, repoRoot);
-  return reflog.exitCode === 0 && reflog.stdout.split('\n').filter(Boolean).length > 1;
+  return firstParent.exitCode === 0 && !firstParent.stdout.split('\n').includes(tip);
 }
 
 /** The PR body: the node's goal, progress and (T322) the issue it rolls up to. */

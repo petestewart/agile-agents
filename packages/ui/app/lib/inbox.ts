@@ -1,10 +1,11 @@
 /**
  * T364: the pure half of Needs me and its decision cards
  * (design/cockpit-ui.md §7 "Decision cards"). What a card is called, what
- * its text says once the daemon's machine phrasing is taken apart, which
- * choices a question offers, how the list groups (project, then node,
- * oldest first), the kind filter, and the first-run steps. No DOM, so plain
- * `bun test` covers it; `components/Inbox.tsx` only renders.
+ * its text says (T514: from the item's parts — `gate`, `knowledge`, `plan`,
+ * `proposal` — never by taking its `context` line apart), which choices a
+ * question offers, how the list groups (project, then node, oldest first),
+ * the kind filter, and the first-run steps. No DOM, so plain `bun test`
+ * covers it; `components/Inbox.tsx` only renders.
  */
 
 import {
@@ -12,7 +13,9 @@ import {
   CODEX_GATE_UNTRUSTED_LEAD,
   CODEX_UNGATED_REASON,
   CODEX_UNTRUSTED_LEAD,
+  type CoordinatorAction,
   type InboxItem,
+  type KnowledgeScope,
   inboxContext,
   repoOfProposalRef,
 } from '@agile-agents/shared';
@@ -23,9 +26,9 @@ import type { CockpitFrame, CockpitProjectRow, CockpitStreamRow } from './feed-t
 /** The icon and title tone a card wears; each is a status token (design/cockpit-ui.md §4). */
 export type CardTone = 'amber' | 'blue' | 'green' | 'purple' | 'red' | 'gray' | 'accent';
 
-/** A gate item's context leads with its gate name (`inbox/service.ts`), which is how a `land` gate is told from a `classifier_review` one. */
-export function isLandGate(item: Pick<InboxItem, 'kind' | 'context'>): boolean {
-  return item.kind === 'gate' && item.context.startsWith('land:');
+/** A gate item names its gate (T514: `gate.name`), which is how a `land` gate is told from a `classifier_review` one. */
+export function isLandGate(item: Pick<InboxItem, 'kind' | 'gate'>): boolean {
+  return item.kind === 'gate' && item.gate?.name === 'land';
 }
 
 function capitalise(word: string): string {
@@ -351,92 +354,47 @@ export interface GateView {
   land: boolean;
   /** The call the classifier was unsure of ("edit src/app.ts", "bash: rm -rf dist"). */
   action?: string;
-  /** Why it was routed: the rule's text when the reason names a rule, else the whole reason. */
+  /** Why it was routed: the rule's text when a rule routed it, else the gate's summary. */
   reason: string;
   /** The rule the call may break, by name ("tests-with-src"); absent when it has none or none is named. */
   rule?: string;
   /** The rule's id (for a tooltip, never the primary text). */
   ruleId?: string;
-  /** The classifier's probability that the call breaks the rule, as written ("0.55"). */
-  probability?: string;
-  /** A land gate's branch and target, when its summary names them. */
+  /** A ship check's classifier probability that the call breaks the rule. */
+  probability?: number;
+  /** A land gate's branch and target. */
   branch?: string;
   target?: string;
 }
 
-const KNOWLEDGE_ID = String.raw`K-[0-9A-HJKMNP-TV-Z]{26}`;
-const RULE_NAME = String.raw`[A-Za-z0-9][\w.-]*`;
-/** The hook's reason: `<name> (<id>): <text>` or `<id>: <text>` (`hook/decide.ts` `ruleLabel`). */
-const HOOK_REASON = new RegExp(
-  `^(?:(${RULE_NAME}) \\((${KNOWLEDGE_ID})\\)|(${KNOWLEDGE_ID})): ([\\s\\S]+?)(?: \\(probability ([0-9.]+)\\))?$`,
-);
-/** A diff rule's summary: `<name or id>: <text> (probability <p>)` (`delivery/diff-rules.ts`). */
-const DIFF_REASON = new RegExp(
-  `^(${RULE_NAME}|${KNOWLEDGE_ID}): ([\\s\\S]+?) \\(probability ([0-9.]+)\\)$`,
-);
-
-/** Names the rule in a routed call's reason, when the reason leads with one. */
-function ruleOfReason(
-  reason: string,
-): Pick<GateView, 'reason' | 'rule' | 'ruleId' | 'probability'> {
-  const hook = HOOK_REASON.exec(reason);
-  if (hook) {
-    return {
-      reason: hook[4] ?? reason,
-      ...(hook[1] !== undefined ? { rule: hook[1] } : {}),
-      ruleId: hook[2] ?? hook[3],
-      ...(hook[5] !== undefined ? { probability: hook[5] } : {}),
-    };
-  }
-  const diff = DIFF_REASON.exec(reason);
-  if (diff) {
-    const label = diff[1] ?? '';
-    const isId = new RegExp(`^${KNOWLEDGE_ID}$`).test(label);
-    return {
-      reason: diff[2] ?? reason,
-      ...(isId ? { ruleId: label } : { rule: label }),
-      ...(diff[3] !== undefined ? { probability: diff[3] } : {}),
-    };
-  }
-  return { reason };
-}
-
-/**
- * Takes a gate's `<gate>: <call> — <why>` apart (`gateText` in
- * `inbox/service.ts`), and the why's rule when it names one.
- */
+/** A gate card's parts (T514: the item's `gate`; an item without them reads as its whole text). */
 export function gateView(item: InboxItem): GateView {
-  const land = isLandGate(item);
-  const text = fullText(item);
-  const colon = text.indexOf(': ');
-  const rest = colon >= 0 && /^[a-z_]+$/.test(text.slice(0, colon)) ? text.slice(colon + 2) : text;
-  if (land) {
-    const m = /^land (\S+) into (\S+)$/.exec(rest.trim());
-    return m ? { land, reason: rest, branch: m[1], target: m[2] } : { land, reason: rest };
-  }
-  const dash = rest.indexOf(' — ');
-  if (dash < 0) return { land, ...ruleOfReason(rest) };
-  return { land, action: rest.slice(0, dash), ...ruleOfReason(rest.slice(dash + 3)) };
+  const gate = item.gate;
+  if (gate === undefined) return { land: false, reason: fullText(item) };
+  return {
+    land: gate.name === 'land',
+    ...(gate.call !== undefined ? { action: gate.call } : {}),
+    reason: gate.reason,
+    ...(gate.rule?.name !== undefined ? { rule: gate.rule.name } : {}),
+    ...(gate.rule !== undefined ? { ruleId: gate.rule.id } : {}),
+    ...(gate.probability !== undefined ? { probability: gate.probability } : {}),
+    ...(gate.branch !== undefined ? { branch: gate.branch } : {}),
+    ...(gate.target !== undefined ? { target: gate.target } : {}),
+  };
 }
 
 export interface KnowledgeView {
   /** The item's short name, when it has one ("money-in-cents"). */
   name?: string;
-  /** `global`, `repo:<name>`, `project:<id>` or `subtree:<node>`. */
-  scope?: string;
+  scope?: KnowledgeScope;
   text: string;
 }
 
-/** Takes a proposal's `<name> · <scope>: <text>` apart (`ruleItem` in `inbox/service.ts`). */
+/** A proposal card's name, scope and text (T514: the item's `knowledge`). */
 export function knowledgeView(item: InboxItem): KnowledgeView {
-  const text = fullText(item);
-  const m = /^(?:([^\n]+?) · )?(global|(?:repo|project|subtree):[^\s:]+): ([\s\S]+)$/.exec(text);
-  if (!m) return { text };
-  return {
-    ...(m[1] !== undefined ? { name: m[1] } : {}),
-    scope: m[2],
-    text: m[3] ?? '',
-  };
+  const k = item.knowledge;
+  if (k === undefined) return { text: fullText(item) };
+  return { ...(k.name !== undefined ? { name: k.name } : {}), scope: k.scope, text: k.text };
 }
 
 /** A node branch without its `stream/<id>-` prefix: `stream/01h…-add-csv-import` → `add-csv-import`. */
@@ -446,69 +404,65 @@ export function branchName(branch: string): string {
 
 /** A knowledge scope in words: "everywhere", "the web-app repo", "Shop", "Checkout and the nodes under it". */
 export function scopeWords(
-  scope: string | undefined,
+  scope: KnowledgeScope | undefined,
   names: {
     node?: (id: string) => string | undefined;
     project?: (id: string) => string | undefined;
   } = {},
 ): string | undefined {
   if (scope === undefined) return undefined;
-  if (scope === 'global') return 'everywhere';
-  const [kind, value = ''] = [
-    scope.slice(0, scope.indexOf(':')),
-    scope.slice(scope.indexOf(':') + 1),
-  ];
-  if (kind === 'repo') return `the ${value} repo`;
-  if (kind === 'project') {
-    const name = names.project?.(value);
-    return name !== undefined ? `the ${name} project` : 'one project';
+  switch (scope.kind) {
+    case 'global':
+      return 'everywhere';
+    case 'repo':
+      return `the ${scope.repo} repo`;
+    case 'project': {
+      const name = names.project?.(scope.project);
+      return name !== undefined ? `the ${name} project` : 'one project';
+    }
+    case 'subtree': {
+      const title = names.node?.(scope.node);
+      return title !== undefined
+        ? `${title} and the nodes under it`
+        : 'one node and the nodes under it';
+    }
   }
-  if (kind === 'subtree') {
-    const title = names.node?.(value);
-    return title !== undefined
-      ? `${title} and the nodes under it`
-      : 'one node and the nodes under it';
-  }
-  return undefined;
 }
 
-/** A held change's `<principal> proposes: <summary>` (`inbox/service.ts`). */
-export function proposalOf(item: Pick<InboxItem, 'context' | 'detail'>): {
+/** A held change: who proposes it, what it does, and which change it is (T514: the item's `proposal`). */
+export function proposalOf(item: Pick<InboxItem, 'context' | 'detail' | 'proposal'>): {
   principal?: 'coordinator' | 'director';
   summary: string;
+  change?: CoordinatorAction;
+  /** It makes a new project: no project's level holds it yet. */
+  newProject: boolean;
 } {
-  const text = fullText(item);
-  const m = /^(coordinator|director) proposes: ([\s\S]+)$/.exec(text);
-  if (!m) return { summary: text };
-  return { principal: m[1] as 'coordinator' | 'director', summary: m[2] ?? '' };
+  const p = item.proposal;
+  if (p === undefined) return { summary: fullText(item), newProject: false };
+  return {
+    principal: p.principal,
+    summary: p.summary,
+    change: p.change,
+    newProject: p.new_project === true,
+  };
 }
 
 export interface PlanView {
-  /** "Sale prices", when the text names the node. */
-  node?: string;
   revised: boolean;
   /** One line per part: "api owns `prices.ts`". */
   owners: string[];
   contracts: string[];
 }
 
-/** Takes a plan card's `Approve the plan for <node>: <owner>; <owner>. Contracts: <c> | <c>` apart; `undefined` when it isn't that shape. */
+/** A plan card's parts and contracts (T514: the item's `plan`); `undefined` without them. */
 export function planView(item: InboxItem): PlanView | undefined {
-  if (item.kind !== 'plan_approve') return undefined;
-  const m =
-    /^Approve (the plan|the revised plan \(approved v\d+\)) for ([^\n]+?): ([\s\S]*?)(?:\. Contracts: ([\s\S]*))?$/.exec(
-      fullText(item),
-    );
-  if (!m) return undefined;
-  const owners = (m[3] ?? '')
-    .split('; ')
-    .map((o) => o.trim())
-    .filter((o) => o !== '' && o !== 'no owners');
-  const contracts = (m[4] ?? '')
-    .split(' | ')
-    .map((c) => c.replace(/\s+/g, ' ').trim())
-    .filter((c) => c !== '');
-  return { node: m[2], revised: m[1] !== 'the plan', owners, contracts };
+  if (item.kind !== 'plan_approve' || item.plan === undefined) return undefined;
+  return {
+    revised: item.plan.revised,
+    owners: [...item.plan.owners],
+    // One list line each: a contract's body may run over lines.
+    contracts: item.plan.contracts.map((c) => c.replace(/\s+/g, ' ').trim()),
+  };
 }
 
 /**
@@ -937,23 +891,15 @@ export function replyPreview(
 }
 
 /**
- * T437: a blocked card whose line is the daemon's failure note (a vendor that
- * isn't installed, or that stopped with an error): a reply alone restarts the
- * same vendor, so the card says to fix it first.
- */
-export function isAgentFailure(text: string): boolean {
-  return /^The agent (couldn’t start|stopped with an error): /.test(text.trim());
-}
-
-/**
  * T508: a node the daemon stopped (or wouldn't start), as a card: what
  * happened, why, and what to do. It reads only the daemon's own failure
- * notes (`isAgentFailure`): the two it writes for any agent (a start that
- * failed, a session that stopped with an error), with T506's Codex gate
- * stops in their own words. `restart` names the card's button: "Try again"
- * for a start that failed, "Restart agent" for one that ran. T512: a Codex
- * start refused because its user-level gate isn't installed, or isn't
- * trusted in Codex's `/hooks`, has its own card.
+ * notes on the node's progress line (T437: `FAILED_START_PREFIX` and
+ * `CRASHED_PREFIX` in `attach/service.ts`): the two it writes for any
+ * agent (a start that failed, a session that stopped with an error), with
+ * T506's Codex gate stops in their own words. `restart` names the card's
+ * button: "Try again" for a start that failed, "Restart agent" for one that
+ * ran. T512: a Codex start refused because its user-level gate isn't
+ * installed, or isn't trusted in Codex's `/hooks`, has its own card.
  */
 export interface StopCard {
   kind:
@@ -1122,7 +1068,7 @@ export function proposalLineAction(
  * `key` is the card's action (`DecisionCard`'s `act` keys).
  */
 export function cardOutcome(
-  item: Pick<InboxItem, 'kind' | 'context'>,
+  item: Pick<InboxItem, 'kind' | 'gate'>,
   key: string,
   target = 'main',
 ): string {

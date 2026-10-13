@@ -109,6 +109,7 @@ function ruleCheckContext(ctx: DecisionContext, classified: PermissionRequest): 
     protectedBranches: ctx.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
     upstream: ctx.upstreamBranch ?? (() => undefined),
     head: ctx.headBranch ?? (() => undefined),
+    ...(ctx.gitAlias !== undefined ? { alias: ctx.gitAlias } : {}),
   };
 }
 
@@ -122,6 +123,7 @@ export function decidePermission(ctx: DecisionContext): Decision {
     ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
     ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
     ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
+    ...(ctx.gitAlias !== undefined ? { gitAlias: ctx.gitAlias } : {}),
   };
   // The daemon's own MCP verbs are never gated here: each enforces its own
   // role rules, and the vendor reports them as kind `other`, which every

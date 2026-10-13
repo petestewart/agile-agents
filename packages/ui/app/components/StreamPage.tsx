@@ -25,6 +25,7 @@
 
 import {
   type ChatThread,
+  HUMAN_LINE_MAX_CHARS,
   type InboxItem,
   type ResolvedSessionDefaults,
   type SessionDefaultsStatus,
@@ -32,7 +33,7 @@ import {
   compactCommandFor,
   isAgentRole,
 } from '@agile-agents/shared';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   addRepoToStream,
   archiveStream,
@@ -84,7 +85,7 @@ import {
 } from '../lib/chat';
 import { useAgentCommands } from '../lib/commands';
 import { choiceOf, keptChoice, modelChip, resolvedFor } from '../lib/defaults';
-import { draftOf, useDraftSetter } from '../lib/drafts';
+import { afterSend, draftOf, sendableText, useDraftSetter } from '../lib/drafts';
 import {
   type MergeFix,
   type MergeRefusal,
@@ -95,7 +96,7 @@ import {
   mergeRefusal,
   writeFailure,
 } from '../lib/errors';
-import { useFeed } from '../lib/feed-context';
+import { createReloader, useFeed } from '../lib/feed-context';
 import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
 import { proposalLineAction, stopCardOfItem } from '../lib/inbox';
 import { withQuote } from '../lib/quote';
@@ -263,6 +264,16 @@ const PLAN_REQUEST =
  * holds whether a line there adds a note or starts the root's agent.
  */
 const ROOT_PLACEHOLDER = 'Write to the project — or press A to ask it a question';
+
+/**
+ * T520: the session defaults as last read. They are the operator's, not a node's, so the page
+ * of the next node opened (`App` keys the page by node) shows its model chip from its first
+ * frame, and reads them again.
+ */
+let lastDefaults: SessionDefaultsStatus | undefined;
+
+/** T548: the least gap between two frame-triggered reads of the page (Lenses re-read at 400 ms). */
+const FRAME_RELOAD_GAP_MS = 400;
 
 type Picker = 'start' | 'reviewer' | 'resolve';
 type Modal = 'repo' | 'wait' | 'close' | 'delete' | 'rename' | 'move' | 'talk';
@@ -486,7 +497,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   const [turning, setTurning] = useState(false);
   const [tangentQuestion, setTangentQuestion] = useState('');
   const [trackerOpen, setTrackerOpen] = useState(false);
-  const [defaults, setDefaults] = useState<SessionDefaultsStatus | undefined>(undefined);
+  const [defaults, setDefaults] = useState<SessionDefaultsStatus | undefined>(lastDefaults);
   // T423: the composer chip's pick for the next message only (undefined: the default, or what runs).
   const [nextSession, setNextSession] = useState<ResolvedSessionDefaults | undefined>(undefined);
   const [detailsOpen, setDetailsOpen] = useDetailsOpen();
@@ -509,9 +520,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   // (a worker still `starting` after it went `running`), and with the
   // session quiet no later frame would ever correct it.
   const loadSeq = useRef(0);
-  const load = useCallback(() => {
+  const load = useCallback((): Promise<void> => {
     const seq = ++loadSeq.current;
-    getStreamPage(id)
+    return getStreamPage(id)
       .then((next) => {
         if (seq !== loadSeq.current) return;
         setPage(next);
@@ -524,11 +535,16 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   }, [id]);
 
   // A pushed cockpit frame follows every batch of events — a new thread
-  // line, a session status, a finding — so it is the re-read trigger.
+  // line, a session status, a finding — so it is the re-read trigger. T548:
+  // through a reloader, so a busy turn's frames are at most two reads per
+  // `FRAME_RELOAD_GAP_MS`, never two at once; the first read and an
+  // action's own `load()` are immediate.
+  const reloader = useMemo(() => createReloader(load, FRAME_RELOAD_GAP_MS), [load]);
+  useEffect(() => () => reloader.cancel(), [reloader]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `cockpit` is the trigger, not an input.
   useEffect(() => {
-    load();
-  }, [load, cockpit]);
+    reloader.schedule();
+  }, [reloader, cockpit]);
 
   // T435 (#20): Ask just opened this conversation: its composer takes focus once it shows.
   const shownId = page?.stream.id;
@@ -538,29 +554,23 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     }
   }, [shownId, id]);
 
-  // A different node opened: nothing half-open (its tab is the shell's, its draft its own).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `id` is the trigger.
+  // T520 (audit U4): `App` keys this page by node, so another node opens a page of its own:
+  // nothing half-open, and a call started here (Merge, Start, a send) that finishes once
+  // another node is open writes only to this page, which is gone. A node's tab (the shell's)
+  // and draft (`lib/drafts.ts`) live outside the page, so both are there again when it opens.
+  const shown = useRef(true);
   useEffect(() => {
-    setActionError(undefined);
-    setSendError(undefined);
-    setMergeError(undefined);
-    setMergeNote(undefined);
-    setPicker(undefined);
-    setModal(undefined);
-    setRepoChoice('');
-    setLinkChoice('');
-    setBranching(undefined);
-    setThreadView(undefined);
-    setMoving(undefined);
-    setForgetting(undefined);
-    setPromoting(undefined);
-    setTangentQuestion('');
-    setTrackerOpen(false);
-    setNextSession(undefined);
+    shown.current = true;
     getSessionDefaults()
-      .then(setDefaults)
+      .then((read) => {
+        lastDefaults = read;
+        setDefaults(read);
+      })
       .catch(() => setDefaults(undefined));
-  }, [id]);
+    return () => {
+      shown.current = false;
+    };
+  }, []);
 
   const onDeliveryResult = useCallback(
     (result: { outcome?: LandOutcome; refused?: string }) => {
@@ -883,8 +893,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     });
 
   async function send(): Promise<void> {
-    const text = draftOf(stream.id).trim();
-    if (!text || intent.action === 'none') return;
+    const text = sendableText(draftOf(stream.id));
+    if (text === undefined || intent.action === 'none') return;
     if (offline) {
       setSendError(SEND_UNREACHABLE);
       return;
@@ -918,7 +928,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       } else {
         await sayOnStream(stream.id, text);
       }
-      setDraft('');
+      // T519 (audit U2): only what went comes off; what was typed while it went stays.
+      setDraft((now) => afterSend(now, text));
     } catch (err) {
       // T416 (finding 7): under the composer, in words, with Retry; the draft stays as typed.
       setSendError(writeFailure(err));
@@ -939,13 +950,17 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
         node: stream.title,
         id: stream.id,
         // T436 (#11): unsent review comments join the draft, and the chat opens on it.
+        // T520: the tab is the shell's: once another node is open, this one's read leaves it be.
         onAddReview: () => {
           addReviewToDraft(stream.id)
             .then((result) => {
+              if (!shown.current) return;
               setTab(result === 'added' ? 'thread' : 'diff');
               if (result === 'added') requestAnimationFrame(() => composer.current?.focusEnd());
             })
-            .catch(() => setTab('diff'));
+            .catch(() => {
+              if (shown.current) setTab('diff');
+            });
         },
         ...(page.land?.target !== undefined ? { target: page.land.target } : {}),
         ...(row?.diff_stat !== undefined ? { files: row.diff_stat.files } : {}),
@@ -2261,7 +2276,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               quoteIntoAnswer(question, text);
               return;
             }
-            setDraft((before) => withQuote(before, text));
+            // T519: the quote fits the composer's cap (a line you write), not an agent message's.
+            setDraft((before) => withQuote(before, text, HUMAN_LINE_MAX_CHARS));
             requestAnimationFrame(() => composer.current?.focusEnd());
           }}
           onThread={(text, on) => {
@@ -2322,7 +2338,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                     icon="refresh"
                     data-testid="send-retry"
                     busy={sending}
-                    disabled={offline || draft.trim() === ''}
+                    disabled={offline || sendableText(draft) === undefined}
                     title={offline ? RECONNECTING : 'Send it again'}
                     onClick={() => void send()}
                   >

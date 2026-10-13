@@ -888,23 +888,30 @@ export class StreamService {
         `thread body is ${input.body.length} characters; the cap is ${max} — write the detail to a file and pass it as "ref"`,
       );
     }
-    // T503: a line's `ts` names it (a thread's anchor and id are one), so each comes after the
-    // node's last line and after what it is in or on: the same millisecond is not after.
-    const ts = after([this.store.threadUpdatedAt(id), input.anchor?.entry ?? input.thread]);
-    return this.store.appendThreadEntry(id, {
-      ts,
-      by,
-      kind: input.kind,
-      body: input.body,
-      ...(input.ref !== undefined ? { ref: input.ref } : {}),
-      ...(input.agent_only ? { agent_only: true } : {}),
-      ...(input.op !== undefined ? { op: input.op } : {}),
-      // T503: a thread's first reply names itself; the store checks both against the node.
-      ...(input.anchor !== undefined
-        ? { thread: ts, anchor: input.anchor }
-        : input.thread !== undefined
-          ? { thread: input.thread }
-          : {}),
+    // T539: the time the line was written, not the time the store's lock gets to it: a line
+    // queued behind other writes keeps its place before what happened after it (a turn's
+    // narration before its tool calls, T509).
+    const calledAt = Date.now();
+    return this.store.appendThreadEntry(id, (lastAt: string | undefined) => {
+      // T503: a line's `ts` names it (a thread's anchor and id are one), so each comes after the
+      // node's last line and after what it is in or on: the same millisecond is not after.
+      // T539: `lastAt` is read inside the store's write lock, so concurrent appends are ordered.
+      const ts = after([lastAt, input.anchor?.entry ?? input.thread], calledAt);
+      return {
+        ts,
+        by,
+        kind: input.kind,
+        body: input.body,
+        ...(input.ref !== undefined ? { ref: input.ref } : {}),
+        ...(input.agent_only ? { agent_only: true } : {}),
+        ...(input.op !== undefined ? { op: input.op } : {}),
+        // T503: a thread's first reply names itself; the store checks both against the node.
+        ...(input.anchor !== undefined
+          ? { thread: ts, anchor: input.anchor }
+          : input.thread !== undefined
+            ? { thread: input.thread }
+            : {}),
+      };
     });
   }
 
@@ -939,8 +946,7 @@ function who(by: string): string {
 }
 
 /** Now, or a millisecond past the latest of `earlier` (ISO times) when now is not later. */
-function after(earlier: readonly (string | undefined)[]): string {
-  const now = Date.now();
+function after(earlier: readonly (string | undefined)[], now: number = Date.now()): string {
   let floor = Number.NEGATIVE_INFINITY;
   for (const at of earlier) {
     const t = at !== undefined ? Date.parse(at) : Number.NaN;

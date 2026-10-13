@@ -19,12 +19,28 @@ export const REDACTION_MARKER = '[REDACTED]';
  */
 const PATTERNS: ReadonlyArray<{ readonly name: string; readonly re: RegExp; readonly to: string }> =
   [
-    // Private-key blocks, generic on both delimiters and unterminated-safe:
-    // a truncated diff hunk with no footer is redacted to the end of the
-    // state, while a terminated block stops at its own footer.
+    // Private-key blocks, generic on both delimiters. A terminated block
+    // stops at its own footer.
     {
       name: 'private-key-block',
-      re: /-----BEGIN [^\n-]*PRIVATE KEY[^\n-]*-----[\s\S]*?(?:-----END [^\n-]*PRIVATE KEY[^\n-]*-----|$)/g,
+      re: /-----BEGIN [^\n-]*PRIVATE KEY[^\n-]*-----[\s\S]*?-----END [^\n-]*PRIVATE KEY[^\n-]*-----/g,
+      to: REDACTION_MARKER,
+    },
+    // Unterminated-safe: a truncated diff hunk with no footer is redacted to
+    // the end of the state, but only when a key body follows (T530): a line
+    // of 40+ base64 characters on its own, after any blank or `Name: value`
+    // header lines (PEM's `Proc-Type:`, PGP's `Version:`), each maybe with a
+    // diff's `+`/`-`/space. A marker in a comment or a fixture with code
+    // after it would otherwise blank everything below it from the classifier.
+    {
+      name: 'private-key-block-unterminated',
+      re: /-----BEGIN [^\n-]*PRIVATE KEY[^\n-]*-----(?=(?:\n[ \t+-]?(?:[A-Za-z][A-Za-z0-9-]*:[^\n]*)?[ \t]*)*\n[ \t+-]?[A-Za-z0-9+/=]{40,}[ \t]*(?:\n|$))[\s\S]*$/g,
+      to: REDACTION_MARKER,
+    },
+    // A marker with no key after it: only the marker goes.
+    {
+      name: 'private-key-marker',
+      re: /-----BEGIN [^\n-]*PRIVATE KEY[^\n-]*-----/g,
       to: REDACTION_MARKER,
     },
     // `Authorization:` / `Proxy-Authorization:` headers, in a header block

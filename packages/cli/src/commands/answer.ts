@@ -17,7 +17,7 @@
 import type { HilRequest, Question } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { optionalString, requirePositional } from '../args';
-import { callRpc } from '../client';
+import { LONG_RPC_TIMEOUT_MS, callRpc } from '../client';
 import { printFields, printJson } from '../format';
 
 export interface AnswerQuestionRpcResult {
@@ -82,11 +82,14 @@ async function answerGate(
     throw new Error(`usage: agile answer ${id} yes|no [note]`);
   }
   const note = parts.slice(1).join(' ').trim();
-  const result = await callRpc<HilRequest>(socketPath, approve ? 'gate.approve' : 'gate.deny', {
-    id,
-    by,
-    ...(note.length > 0 ? { note } : {}),
-  });
+  // T523: approving a merge gate (or a ship check's) merges before the
+  // daemon answers: ship checks, `git push`, the GitHub API, settle.
+  const result = await callRpc<HilRequest>(
+    socketPath,
+    approve ? 'gate.approve' : 'gate.deny',
+    { id, by, ...(note.length > 0 ? { note } : {}) },
+    { timeoutMs: LONG_RPC_TIMEOUT_MS, check: '`agile inbox` and `agile status`' },
+  );
   if (json) printJson(result);
   else
     printFields([

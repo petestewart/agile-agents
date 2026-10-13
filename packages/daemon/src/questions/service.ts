@@ -264,15 +264,18 @@ export class QuestionService {
     const liveSession = node.sessions.some((session) =>
       LIVE_SESSION_STATUSES.includes(session.status),
     );
-    await this.streams.update('daemon', saved.stream, {
+    // T537: another open question on the node still holds it.
+    const othersOpen = this.othersOpen(saved);
+    const patch = {
       ...(liveSession
-        ? { agent: { status: 'working' } }
-        : node.agent.status === 'question'
+        ? { agent: { status: 'working' as const } }
+        : node.agent.status === 'question' && !othersOpen
           ? // A question with no process behind it: `idle` only if none ever ran.
-            { agent: { status: node.sessions.length > 0 ? 'done' : 'idle' } }
+            { agent: { status: node.sessions.length > 0 ? ('done' as const) : ('idle' as const) } }
           : {}),
-      human: { status: 'open' },
-    });
+      ...this.humanAfterAnswer(node, othersOpen),
+    };
+    if (Object.keys(patch).length > 0) await this.streams.update('daemon', saved.stream, patch);
 
     await this.store.appendEvent(
       buildEvent('question_answered', {
@@ -314,14 +317,15 @@ export class QuestionService {
     // Waiting on the agent now, not on you. Its turn (if one is live) works on the reply.
     const node = this.streams.get(current.stream);
     const live = node.sessions.some((session) => LIVE_SESSION_STATUSES.includes(session.status));
-    await this.streams
-      .update('daemon', current.stream, {
-        ...(live ? { agent: { status: 'working' } } : {}),
-        human: { status: 'open' },
-      })
-      .catch(() => {
+    const patch = {
+      ...(live ? { agent: { status: 'working' as const } } : {}),
+      ...this.humanAfterAnswer(node, this.othersOpen(current)),
+    };
+    if (Object.keys(patch).length > 0) {
+      await this.streams.update('daemon', current.stream, patch).catch(() => {
         // The line and its delivery happened; the status pair is best effort.
       });
+    }
     return { question: this.get(id), entry };
   }
 
@@ -582,7 +586,7 @@ export class QuestionService {
       await this.streams
         .update('daemon', saved.stream, {
           agent: { status: 'working' },
-          human: { status: 'open' },
+          ...this.humanAfterAnswer(this.streams.get(saved.stream), this.othersOpen(saved)),
         })
         .catch(() => {
           // The record is already closed; the status half is best effort.
@@ -612,6 +616,24 @@ export class QuestionService {
   /** Durable: reads `questions/**` fresh from disk every call. */
   list(): Question[] {
     return this.store.listEntities(QUESTIONS_DIR, validateQuestion);
+  }
+
+  /** T537: whether a question other than `question` is still open on its node. */
+  private othersOpen(question: Question): boolean {
+    return this.listOpen().some((q) => q.stream === question.stream && q.id !== question.id);
+  }
+
+  /**
+   * T537: the human half once one of a node's questions is answered or
+   * replied to. Only `waiting_on_you` goes back to `open`, and only when no
+   * other question on the node still waits on you; an answer (a
+   * coordinator's `answer_child`, `agile answer`) never reopens a `closed`
+   * node or turns `landed` back to `open`.
+   */
+  private humanAfterAnswer(node: Stream, othersOpen: boolean): { human?: { status: 'open' } } {
+    return node.human.status === 'waiting_on_you' && !othersOpen
+      ? { human: { status: 'open' } }
+      : {};
   }
 
   /** The inbox slice: every question still waiting on an answer. */

@@ -39,7 +39,12 @@ import { ClassifierKeyService, FakeClassifier } from './classifier';
 import { readHomeConfigFile } from './config';
 import { DirectorService } from './director';
 import { RoutedEventService } from './events';
-import type { CockpitFrame, StepPage, StreamPagePayload } from './feed';
+import {
+  type CockpitFrame,
+  STREAM_PAGE_THREAD_LIMIT,
+  type StepPage,
+  type StreamPagePayload,
+} from './feed';
 import { GateService } from './gates';
 import { HarnessUpdateService } from './harness';
 import { type HttpServerHandle, startHttpServer } from './http';
@@ -111,6 +116,60 @@ describe('WebSocket /ws', () => {
     expect(frame.version).toBe('0.0.0-test');
     expect(frame.stateRoot).toBe('/tmp/fake-state-root');
   });
+
+  /** The frames a client sending `headers` gets: it closes after the first, or on a refusal. */
+  const framesFor = (headers: Record<string, string>) =>
+    new Promise<string[]>((resolve) => {
+      const frames: string[] = [];
+      const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, { headers });
+      ws.onmessage = (event) => {
+        frames.push(event.data as string);
+        ws.close();
+      };
+      ws.onerror = () => {};
+      ws.onclose = () => resolve(frames);
+    });
+
+  /** The handshake's status, read with `fetch` (a WebSocket client hides a refusal's code). */
+  const handshakeStatus = async (headers: Record<string, string>) =>
+    (
+      await fetch(`http://127.0.0.1:${server.port}/ws`, {
+        headers: {
+          connection: 'Upgrade',
+          upgrade: 'websocket',
+          'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+          'sec-websocket-version': '13',
+          ...headers,
+        },
+      })
+    ).status;
+
+  test('T517: another site, a null Origin, another local port or a non-loopback Host is 403 and gets no frames', async () => {
+    const refused: Record<string, string>[] = [
+      { origin: 'http://evil.example' },
+      { origin: 'null' },
+      { origin: `http://127.0.0.1:${server.port + 1}` },
+      { origin: `http://localhost:${server.port}`, 'sec-fetch-site': 'cross-site' },
+      // A DNS-rebound page, and the same name from a client sending no Origin.
+      { origin: `http://evil.example:${server.port}`, host: `evil.example:${server.port}` },
+      { host: `evil.example:${server.port}` },
+    ];
+    for (const headers of refused) {
+      expect(await handshakeStatus(headers)).toBe(403);
+      expect(await framesFor(headers)).toEqual([]);
+    }
+  });
+
+  test("T517: the cockpit's own origin, by either loopback name, still connects", async () => {
+    for (const name of ['127.0.0.1', 'localhost']) {
+      const frames = await framesFor({
+        origin: `http://${name}:${server.port}`,
+        host: `${name}:${server.port}`,
+        'sec-fetch-site': 'same-origin',
+      });
+      expect(frames.map((f) => (JSON.parse(f) as { type: string }).type)).toEqual(['hello']);
+    }
+  });
 });
 
 // --- Tests against a real .agile/ state root (T020: snapshot, live tail, HIL actions) ---
@@ -173,6 +232,45 @@ describe('T160 cockpit routes', () => {
   });
 
   const url = (path: string) => `http://127.0.0.1:${cockpit.port}${path}`;
+
+  test('T517: a DNS-rebound Host gets 403 on every path; each loopback name still reads', async () => {
+    const stream = await streams.create('human', { title: 'secret work', goal: 'g' });
+    await streams.appendThread('human', stream.id, { kind: 'line', body: 'the token is hunter2' });
+    const paths = [`/api/streams/${stream.id}`, '/api/snapshot', '/api/cockpit', '/health', '/'];
+    // What a rebound page's same-origin read sends: its own name, no `Origin`.
+    const rebound = { host: `evil.example:${cockpit.port}`, 'sec-fetch-site': 'same-origin' };
+    for (const path of paths) {
+      const res = await fetch(url(path), { headers: rebound });
+      expect(res.status).toBe(403);
+      expect(await res.text()).not.toContain('hunter2');
+    }
+    for (const name of ['127.0.0.1', 'localhost', '[::1]']) {
+      const res = await fetch(url(`/api/streams/${stream.id}`), {
+        headers: { host: `${name}:${cockpit.port}` },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('hunter2');
+    }
+    // A rebound write is refused before the same-origin check would see it.
+    const write = await fetch(url(`/api/streams/${stream.id}/say`), {
+      method: 'POST',
+      headers: { ...rebound, 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'x' }),
+    });
+    expect(write.status).toBe(403);
+    // And `/ws` refuses the same name, with or without its `Origin`.
+    const ws = await fetch(url('/ws'), {
+      headers: {
+        ...rebound,
+        origin: `http://evil.example:${cockpit.port}`,
+        connection: 'Upgrade',
+        upgrade: 'websocket',
+        'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        'sec-websocket-version': '13',
+      },
+    });
+    expect(ws.status).toBe(403);
+  });
 
   test('GET /api/cockpit carries the tree rows with their status pair and the inbox', async () => {
     const root = await streams.create('human', { title: 'root', goal: 'g' });
@@ -925,6 +1023,30 @@ describe('T160 cockpit routes', () => {
     expect(page.docs).toEqual([]);
     expect((await fetch(url(`/api/streams/${ulid()}`))).status).toBe(404);
     expect((await fetch(url('/api/streams/nope'))).status).toBe(400);
+  });
+
+  test('T548: the page reads its thread once and keeps its newest lines', async () => {
+    const node = await streams.create('human', { title: 'long', goal: 'g' });
+    for (let i = 0; i < STREAM_PAGE_THREAD_LIMIT + 5; i++) {
+      await streams.appendThread('daemon', node.id, { kind: 'event', body: `line ${i}` });
+    }
+    const read = streams.readThread.bind(streams);
+    let reads = 0;
+    streams.readThread = ((...args: Parameters<typeof streams.readThread>) => {
+      if (args[0] === node.id) reads += 1;
+      return read(...args);
+    }) as typeof streams.readThread;
+    try {
+      const page = (await (
+        await fetch(url(`/api/streams/${node.id}`))
+      ).json()) as StreamPagePayload;
+      expect(reads).toBe(1);
+      expect(page.thread).toHaveLength(STREAM_PAGE_THREAD_LIMIT);
+      expect(page.thread_total).toBe(STREAM_PAGE_THREAD_LIMIT + 6);
+      expect(page.thread.at(-1)?.body).toBe(`line ${STREAM_PAGE_THREAD_LIMIT + 4}`);
+    } finally {
+      streams.readThread = read;
+    }
   });
 
   test("T392: GET /api/streams/:id/steps is the node's tool calls, one per call, newest first", async () => {
@@ -1735,6 +1857,21 @@ describe('T160 cockpit routes', () => {
     expect(long.status).toBe(400);
   });
 
+  test('T531: a cross-origin write with a bad id is 403, not 400', async () => {
+    const foreign = await fetch(url('/api/streams/not-an-id/say'), {
+      method: 'POST',
+      headers: { origin: 'http://evil.example', 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'hello' }),
+    });
+    expect(foreign.status).toBe(403);
+    const local = await fetch(url('/api/streams/not-an-id/say'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'hello' }),
+    });
+    expect(local.status).toBe(400);
+  });
+
   test('T333: POST /api/streams/:id/move moves as human; strict body; a refusal is 400; cross-origin 403', async () => {
     const move = (id: string, body: unknown, headers: Record<string, string> = {}) =>
       fetch(url(`/api/streams/${id}/move`), {
@@ -2357,9 +2494,9 @@ describe('T160 cockpit routes', () => {
     await put();
     let reads = 0;
     const listEvents = store.listEvents.bind(store);
-    store.listEvents = (endOffset?: number) => {
+    store.listEvents = (endOffset?: number, limit?: number) => {
       reads += 1;
-      return listEvents(endOffset);
+      return listEvents(endOffset, limit);
     };
     const quick = startHttpServer({
       port: 0,
@@ -2395,6 +2532,11 @@ describe('T160 cockpit routes', () => {
         second = await snapshotOf();
       }
       expect(second.filter((e) => e.agent === agentId)).toHaveLength(2);
+      // T551: `GET /api/snapshot` sends the same events, without reading the log either.
+      const viaHttp = (await (
+        await fetch(`http://127.0.0.1:${quick.port}/api/snapshot`)
+      ).json()) as { events: Event[] };
+      expect(viaHttp.events.filter((e) => e.agent === agentId)).toHaveLength(2);
       expect(reads).toBe(1);
     } finally {
       store.listEvents = listEvents;
@@ -2843,6 +2985,127 @@ describe('T383 GET /api/events pages', () => {
   test('is 503 without the event service', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/api/events`);
     expect(res.status).toBe(503);
+  });
+});
+
+// --- T515: a routed event pushes the frame, once with the log line of its change ---
+
+describe('T515 a routed event pushes the cockpit frame', () => {
+  let home: string;
+  let cockpit: HttpServerHandle;
+  let store: StateStore;
+  let streams: StreamService;
+  let events: RoutedEventService;
+  let node: Stream;
+
+  beforeEach(async () => {
+    home = mkdtempSync(join(tmpdir(), 'agile-http-push-'));
+    const init = runInit(home);
+    store = StateStore.open(init.stateRoot);
+    streams = new StreamService(store);
+    events = new RoutedEventService(store);
+    // Before the start, so its log lines are history, not pushes.
+    node = await streams.create('human', { title: 's', goal: 'g' });
+    cockpit = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot: init.stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      events,
+      feedPollIntervalMs: 20,
+    });
+  });
+
+  afterEach(async () => {
+    await cockpit.stop();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  /** Every frame type the socket gets, in order, from its first cockpit frame on. */
+  const listen = async (): Promise<{ ws: WebSocket; kinds: string[] }> => {
+    const kinds: string[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${cockpit.port}/ws`);
+    ws.onmessage = (event) => {
+      const frame = JSON.parse(event.data as string) as { type: string };
+      if (frame.type === 'cockpit' || kinds.length > 0) kinds.push(frame.type);
+    };
+    const deadline = Date.now() + 5000;
+    while (kinds.length === 0 && Date.now() < deadline) await Bun.sleep(10);
+    expect(kinds).toEqual(['cockpit']);
+    return { ws, kinds };
+  };
+  /** A routed event, as a line on `id`'s thread: no audit line. */
+  const line = (id: string) =>
+    events.emit({
+      type: 'human_line',
+      subject: id,
+      payload: { body: 'hi' },
+      by: 'human',
+      routing: [{ node: id, because: 'self' }],
+    });
+
+  test('an event with no audit line reaches an open socket as a frame push', async () => {
+    const { ws, kinds } = await listen();
+    try {
+      const logged = store.listEvents().length;
+      await line(node.id);
+      expect(store.listEvents()).toHaveLength(logged);
+      const deadline = Date.now() + 5000;
+      while (kinds.length < 2 && Date.now() < deadline) await Bun.sleep(10);
+      expect(kinds).toEqual(['cockpit', 'cockpit']);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test('T546: with no socket open no frame is built; one that opens later gets the current frame', async () => {
+    let built = 0;
+    const list = streams.list.bind(streams);
+    streams.list = ((...args: Parameters<StreamService['list']>) => {
+      built += 1;
+      return list(...args);
+    }) as StreamService['list'];
+    await streams.update('human', node.id, { title: 'renamed' });
+    await line(node.id);
+    // Well past the poll interval and the push's wait.
+    await Bun.sleep(300);
+    expect(built).toBe(0);
+    let title: string | undefined;
+    const ws = new WebSocket(`ws://127.0.0.1:${cockpit.port}/ws`);
+    ws.onmessage = (event) => {
+      const frame = JSON.parse(event.data as string) as CockpitFrame | { type: string };
+      if (frame.type === 'cockpit')
+        title = (frame as CockpitFrame).streams.find((s) => s.id === node.id)?.title;
+    };
+    try {
+      const deadline = Date.now() + 5000;
+      while (title === undefined && Date.now() < deadline) await Bun.sleep(10);
+      expect(title).toBe('renamed');
+      expect(built).toBeGreaterThan(0);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test('one change that writes a log line and emits an event is one push', async () => {
+    const { ws, kinds } = await listen();
+    try {
+      await streams.update('human', node.id, { title: 'renamed' });
+      await line(node.id);
+      // Well past the poll interval and the push's wait: a second push has arrived by now.
+      await Bun.sleep(600);
+      // The log line goes out first, then the one frame.
+      expect(kinds).toEqual(['cockpit', 'event', 'cockpit']);
+      // A burst of events is one push too.
+      await Promise.all([line(node.id), line(node.id), line(node.id)]);
+      await Bun.sleep(600);
+      expect(kinds).toEqual(['cockpit', 'event', 'cockpit', 'cockpit']);
+    } finally {
+      ws.close();
+    }
   });
 });
 

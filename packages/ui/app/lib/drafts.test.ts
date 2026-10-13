@@ -1,13 +1,16 @@
 /** T436 (audit r6 #11, #22): drafts kept per id in this tab's storage, across a reload. */
 
 import { describe, expect, test } from 'bun:test';
+import { HUMAN_LINE_MAX_CHARS } from '@agile-agents/shared';
 import {
   KeptDrafts,
   type StorageLike,
+  afterSend,
   answerDrafts,
   composerDrafts,
   parseDraftText,
   parseProjectDraft,
+  sendableText,
   updateDraft,
 } from './drafts';
 
@@ -117,6 +120,91 @@ describe("a question card's answer (T499)", () => {
     answerDrafts.set('N1', 'an answer');
     expect(composerDrafts.get('N1')).toBeUndefined();
     answerDrafts.set('N1', undefined);
+  });
+});
+
+describe('T519: a send takes off what it sent, and nothing else', () => {
+  test('what was typed after the sent text stays, less what parted them', () => {
+    expect(afterSend('Fix the login bug', 'Fix the login bug')).toBe('');
+    expect(afterSend('Fix the login bug\n\nalso check the tests', 'Fix the login bug')).toBe(
+      'also check the tests',
+    );
+    expect(afterSend('Fix the login bug also the tests', 'Fix the login bug')).toBe(
+      'also the tests',
+    );
+    // Its first line keeps its indent (a code line), and the lines after it stay as typed.
+    expect(afterSend('Fix it\n\n    npm test\nthen push', 'Fix it')).toBe(
+      '    npm test\nthen push',
+    );
+    // The draft held spaces around what was sent (the send trims): they go with it.
+    expect(afterSend('  Fix it \n', 'Fix it')).toBe('');
+    expect(afterSend('\nFix it\nmore', 'Fix it')).toBe('more');
+  });
+
+  test('a draft changed any other way stays as it is', () => {
+    // Typed onto the sent text's last word: shown whole, so it reads in context.
+    expect(afterSend('Fix the bugs', 'Fix the bug')).toBe('Fix the bugs');
+    expect(afterSend('Fix the bug, and the tests', 'Fix the bug')).toBe(
+      'Fix the bug, and the tests',
+    );
+    // Edited inside, written before it, cleared, replaced.
+    expect(afterSend('Fix the login flow', 'Fix the login bug')).toBe('Fix the login flow');
+    expect(afterSend('Urgent: Fix it', 'Fix it')).toBe('Urgent: Fix it');
+    expect(afterSend('', 'Fix it')).toBe('');
+    expect(afterSend('Something else', 'Fix it')).toBe('Something else');
+    expect(afterSend('kept', '')).toBe('kept');
+  });
+
+  test('text typed while the request is held survives it; a failed one leaves the draft whole', async () => {
+    const kept = new KeptDrafts('k', parseDraftText, () => fakeStorage());
+    /** A request held until `release`, then resolved or refused. */
+    const held = () => {
+      let settle: (ok: boolean) => void = () => {};
+      const request = new Promise<void>((resolve, reject) => {
+        settle = (ok) => (ok ? resolve() : reject(new Error('refused')));
+      });
+      return { request, settle };
+    };
+    /** The page's send: the text it takes, the held request, then only what went comes off. */
+    const send = async (request: Promise<void>): Promise<void> => {
+      const text = sendableText(kept.get('N1') ?? '');
+      if (text === undefined) return;
+      try {
+        await request;
+        updateDraft(kept, 'N1', (now) => afterSend(now, text));
+      } catch {
+        // The draft stays as typed; Retry sends it again.
+      }
+    };
+
+    updateDraft(kept, 'N1', 'Fix the login bug');
+    const first = held();
+    const sending = send(first.request);
+    // Typed while the send is out (the box stays editable).
+    updateDraft(kept, 'N1', (before) => `${before}\nalso check the tests`);
+    first.settle(true);
+    await sending;
+    expect(kept.get('N1')).toBe('also check the tests');
+
+    const second = held();
+    const failing = send(second.request);
+    updateDraft(kept, 'N1', (before) => `${before} first`);
+    second.settle(false);
+    await failing;
+    expect(kept.get('N1')).toBe('also check the tests first');
+  });
+
+  test('the text a send takes is trimmed and within the cap, counted as the daemon counts it', () => {
+    expect(sendableText('  hi \n')).toBe('hi');
+    expect(sendableText(' \n ')).toBeUndefined();
+    const full = 'x'.repeat(HUMAN_LINE_MAX_CHARS);
+    expect(sendableText(`\n${full}  `)).toBe(full);
+    expect(sendableText(`${full}y`)).toBeUndefined();
+    // UTF-16 units, as zod's `.max` and `.length` count: an emoji is two.
+    expect(sendableText('😀'.repeat(HUMAN_LINE_MAX_CHARS / 2))).toBeDefined();
+    expect(sendableText(`😀${'x'.repeat(HUMAN_LINE_MAX_CHARS - 1)}`)).toBeUndefined();
+    expect(sendableText('x'.repeat(3000))?.length).toBe(3000);
+    expect(sendableText('abcd', 3)).toBeUndefined();
   });
 });
 

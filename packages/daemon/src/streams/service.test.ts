@@ -8,7 +8,7 @@
  * directory appears anywhere under it.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -302,6 +302,51 @@ describe('thread', () => {
     const second = streams.readThread(stream.id, { after: page.next, limit: 2 });
     expect(second.from).toBe(2);
     expect(second.entries.map((e) => e.body)).toEqual(['line 1', 'line 2']);
+  });
+
+  test('T539: appends started in the same tick get distinct, increasing ts; a reply anchors to its line', async () => {
+    const stream = await newStream();
+    await streams.appendThread('human', stream.id, { kind: 'line', body: 'first' });
+    // Not awaited one by one: worker and reviewer exits under `stop()`, model and effort picks.
+    const appended = await Promise.all(
+      ['A', 'B', 'C'].map((body) =>
+        streams.appendThread('daemon', stream.id, { kind: 'event', body }),
+      ),
+    );
+    const ts = appended.map((e) => e.ts);
+    expect(new Set(ts).size).toBe(3);
+    expect([...ts].sort()).toEqual(ts);
+    const lines = streams.readThread(stream.id, { limit: 100 }).entries;
+    expect(new Set(lines.map((l) => l.ts)).size).toBe(lines.length);
+    // A reply on B is in B's thread, not A's.
+    const b = appended[1];
+    if (b === undefined) throw new Error('no B');
+    const reply = await streams.appendThread('human', stream.id, {
+      kind: 'line',
+      body: 'about B',
+      anchor: { entry: b.ts },
+    });
+    expect(reply.anchor?.entry).toBe(b.ts);
+    expect(reply.thread).toBe(reply.ts);
+    expect(reply.ts > (appended[2]?.ts ?? '')).toBe(true);
+  });
+
+  test('T539: a line keeps the time it was written, not the time the store got to it', async () => {
+    const stream = await newStream();
+    const written = new Date(Date.now() + 60_000);
+    setSystemTime(written);
+    try {
+      const pending = streams.appendThread('daemon', stream.id, {
+        kind: 'event',
+        body: 'narration',
+      });
+      // The store's lock runs the write on a later tick; time moves on meanwhile.
+      setSystemTime(new Date(written.getTime() + 5_000));
+      const entry = await pending;
+      expect(entry.ts).toBe(written.toISOString());
+    } finally {
+      setSystemTime();
+    }
   });
 
   test('an agent author carries its session id; a bare agent principal cannot write', async () => {

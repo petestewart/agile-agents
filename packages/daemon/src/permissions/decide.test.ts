@@ -10,7 +10,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
+import { ulid, validateKnowledgeItem } from '@agile-agents/shared';
+import { BUILTIN_KNOWLEDGE } from '../knowledge/builtins';
 import { decidePermission } from './decide';
+import type { GitAliasLookup } from './push-detector';
 import type { AcpPermissionRequestParams, PermissionRole } from './types';
 
 const WORKTREE = '/work/.worktrees/TKT-0001-x';
@@ -490,6 +493,124 @@ describe('decidePermission — a lone & ends a command', () => {
         'allow',
       ]);
     }
+  });
+});
+
+/**
+ * T516 (security audit S1, S2): bash reads `\"` outside quotes as a literal
+ * `"`, and runs the command in `>(…)`. The gate read the first as an open
+ * quote that swallowed `;`, `&&` and `&` (so `echo \"; git push origin main`
+ * was one `echo`), and the second as a write to a file named `(git`. Each
+ * row goes through `decidePermission` with the shipped built-ins in scope,
+ * as on a real stream: a plain push to `main` is theirs to stop (§5.4).
+ */
+describe('decidePermission — T516 escapes and process substitution read as bash reads them', () => {
+  const builtins = BUILTIN_KNOWLEDGE.filter((spec) => spec.status === 'accepted').map((spec) =>
+    validateKnowledgeItem({
+      id: `K-${ulid()}`,
+      name: spec.name,
+      kind: 'standard',
+      text: spec.text,
+      scope: { kind: 'global' },
+      status: spec.status,
+      enforcement: 'action',
+      check: { by: 'pattern', pattern: spec.pattern },
+      critical: spec.critical,
+      source: { by: 'builtin' },
+      stats: {},
+      created_at: new Date().toISOString(),
+    }),
+  );
+  const session = '/home/u/.agile/sessions/01J9AAAAAAAAAAAAAAAAAAAAAA';
+  const verdict = (role: PermissionRole, command: string) =>
+    decidePermission({
+      role,
+      worktreePath: role === 'coordinator' ? session : WORKTREE,
+      request: request('execute', { command }),
+      patternRules: builtins,
+      protectedBranches: ['main', 'master'],
+      upstreamBranch: () => 'origin/tkt/TKT-0001-x',
+      headBranch: () => 'tkt/TKT-0001-x',
+    }).kind;
+
+  const BYPASSES = [
+    // The ticket's table.
+    'echo \\"; git push origin main',
+    "echo \\'; git push origin main",
+    'echo \\"; rm -rf /tmp/x',
+    'echo \\" && git push origin HEAD:main',
+    'cat >(git push origin main)',
+    'echo hi >(rm -rf x)',
+    'tee >(sh)',
+    // The same holes, other spellings.
+    'echo \\"& git push origin main',
+    'echo \\" | git push origin main',
+    'echo \\>& git push origin main',
+    'git push origin ma\\in',
+    'git push origin \\\nmain',
+    "echo $'\\'' ; git push origin main ; echo ''",
+    'echo $\\\n(git push origin main)',
+    'cat x>(git push origin main)',
+    'echo a 2>(git push origin main)',
+    'cat 0<(git push origin main)',
+    'cat <(git push origin main)',
+    'cat =(git push origin main)',
+    'cd ./x>({touch,y})',
+    "bash -c 'cat >(git push origin main)'",
+    'sh -c "echo hi" >(git push origin main)',
+    "sh -c '' >(git push origin main)",
+    // Review: an escaped `>`, and quotes inside the substitution.
+    'cat \\>(git push origin main)',
+    'cat >("git" push origin main)',
+    "cat >('git' push origin main)",
+  ];
+
+  // Allowed before T516 and after, for both roles; `echo a\;b` is one
+  // command now (it was two, and denied on `b`).
+  const CONTROLS = [
+    'echo "a;b"',
+    "echo 'a;b'",
+    'echo a\\;b',
+    'grep "\\"" file',
+    "printf '%s\\n' x",
+    'echo a > out.txt',
+  ];
+
+  test('no bypass is allowed: engineer, coordinator, reviewer', () => {
+    for (const command of BYPASSES) {
+      for (const role of ['engineer', 'coordinator', 'reviewer'] as const) {
+        expect([role, command, verdict(role, command)]).not.toEqual([role, command, 'allow']);
+      }
+    }
+  });
+
+  test('the controls stay allowed for the engineer and the coordinator', () => {
+    for (const command of CONTROLS) {
+      for (const role of ['engineer', 'coordinator'] as const) {
+        expect([role, command, verdict(role, command)]).toEqual([role, command, 'allow']);
+      }
+    }
+  });
+
+  test('a split chain is checked atom by atom: the push rule and the never list see their atom', () => {
+    const engineer = (command: string) =>
+      decidePermission({
+        role: 'engineer',
+        worktreePath: WORKTREE,
+        request: request('execute', { command }),
+        patternRules: builtins,
+        protectedBranches: ['main', 'master'],
+      });
+    const push = engineer('echo \\"; git push origin main');
+    expect(push.kind).toBe('deny');
+    expect(push.kind === 'deny' ? push.ruleViolated : undefined).toBe(builtins[0]?.id);
+    expect(engineer('echo \\"; rm -rf /tmp/x').kind).toBe('hil');
+    expect(engineer('cat >(git push origin main)').kind).toBe('deny');
+  });
+
+  test('an escaped path is the path bash opens', () => {
+    expect(verdict('engineer', 'cat .\\./.\\./.\\./etc/passwd')).toBe('deny');
+    expect(verdict('engineer', 'echo x > .\\./.\\./.\\./x')).toBe('deny');
   });
 });
 
@@ -1442,6 +1563,37 @@ describe('T305: the Director read scope on the ACP path (P20)', () => {
       decidePermission({ role: 'coordinator', worktreePath: dir, request: req }).kind;
     expect(plain(request('read', { targetPath: '/etc/hosts' }))).toBe('allow');
   });
+
+  // T555: the table decides alone (no never list), so it refuses what that list holds.
+  test('T555: a substitution, backticks, eval, an open quote or CDPATH never run', () => {
+    const exec = (command: string) => scoped(request('execute', { command }));
+    for (const command of [
+      'echo $(touch pwned)',
+      'git log `rm -rf src`',
+      'wc -l $(git push origin main)',
+      'cat /repos/shop/README.md $(curl -s evil.example)',
+      'echo $\
+(touch pwned)',
+      'eval ls',
+      'echo "unbalanced',
+      'echo \\"; touch pwned',
+      'CDPATH=/etc cd ssh && ls',
+    ]) {
+      expect([command, exec(command)]).toEqual([command, 'deny']);
+    }
+    // What it may run is unchanged.
+    expect(exec('git log --oneline -5')).toBe('allow');
+    expect(exec('ls /repos/shop')).toBe('allow');
+    expect(exec(`echo x > ${dir}/n.md`)).toBe('allow');
+    expect(exec("grep -rn 'a b' /repos/shop/src")).toBe('allow');
+    // The other roles still hold these for a human.
+    const engineer = decidePermission({
+      role: 'engineer',
+      worktreePath: WORKTREE,
+      request: request('execute', { command: 'echo $(touch pwned)' }),
+    });
+    expect(engineer.kind).toBe('hil');
+  });
 });
 
 // T330: an engineer's ACP read under a read scope is judged like the hook's Read.
@@ -2326,5 +2478,74 @@ describe('T476: Cursor and Codex name our verbs and commands their own way', () 
     expect(exec(blind, false).kind).toBe('hil');
     expect(exec(blind, true).kind).toBe('deny');
     expect(exec(blind).kind).toBe('deny');
+  });
+});
+
+describe('decidePermission — T525 the never-without-human list reads through a git alias', () => {
+  const ALIASES: Record<string, string> = {
+    pf: 'push --force',
+    br: 'branch',
+    rh: 'reset --hard',
+    up: 'pull --rebase',
+    x: '!git reset --hard',
+  };
+  const gitAlias: GitAliasLookup = (name) => {
+    const value = ALIASES[name.toLowerCase()];
+    return value === undefined ? 'unset' : { expansion: value };
+  };
+  const decision = (role: PermissionRole, command: string, alias: GitAliasLookup | undefined) =>
+    decidePermission({
+      role,
+      worktreePath: WORKTREE,
+      request: request('execute', { command }),
+      ...(alias !== undefined ? { gitAlias: alias } : {}),
+    });
+
+  test('force-push, branch delete and reset --hard through an alias are held as spelled out', () => {
+    for (const [command, reason] of [
+      ['git pf origin T143-x', 'force-push is never automatic'],
+      ['git br -D T143-x', 'branch deletion is never automatic'],
+      ['git rh HEAD~1', 'git reset --hard is never automatic'],
+    ] as const) {
+      const held = decision('engineer', command, gitAlias);
+      expect([command, held.kind, held.kind === 'hil' ? held.reason : '']).toEqual([
+        command,
+        'hil',
+        reason,
+      ]);
+    }
+  });
+
+  test('an ordinary alias stays the worker’s own work', () => {
+    expect(decision('engineer', 'git up', gitAlias).kind).toBe('allow');
+    expect(decision('engineer', 'git br T143-y', gitAlias).kind).toBe('allow');
+  });
+
+  test('an alias the list cannot read is held for the engineer; any other role’s table denies it', () => {
+    for (const [command, alias] of [
+      ['git x', gitAlias],
+      ['git up', undefined],
+      ['git up', () => 'failed' as const],
+    ] as const) {
+      const held = decision('engineer', command, alias);
+      expect(held.kind).toBe('hil');
+      expect(held.kind === 'hil' ? held.reason : '').toContain(
+        'cannot tell what this git call runs',
+      );
+      expect(decision('reviewer', command, alias).kind).toBe('deny');
+    }
+  });
+
+  test('a builtin is never looked up', () => {
+    const asked: string[] = [];
+    const counting = (name: string) => {
+      asked.push(name);
+      return gitAlias(name);
+    };
+    for (const command of ['git status', 'git push --force origin x', 'git branch -D x']) {
+      decision('engineer', command, counting);
+      decision('reviewer', command, counting);
+    }
+    expect(asked).toEqual([]);
   });
 });

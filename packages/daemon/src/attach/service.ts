@@ -21,7 +21,7 @@
  * stopping; the next start resumes it with ACP `session/load` when it can.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   type AcpProviderConfig,
@@ -74,7 +74,7 @@ import type { Classifier } from '../classifier';
 import { readHomeConfigFile } from '../config';
 import type { ContractService } from '../coordination/contracts';
 import type { PlanService } from '../coordination/plans';
-import { git } from '../delivery/git';
+import { git, isOwnCheckout } from '../delivery/git';
 import {
   type DeliveryTarget,
   REPLY_FIRST,
@@ -93,7 +93,7 @@ import {
   wakeVerdict,
 } from '../events/wake';
 import { CODEX_UNGATED_REASON, type HookSightings } from '../hook/codex';
-import { type RouteBandGates, acpReadRouter } from '../hook/route-band';
+import { type RouteBandGates, acpHilRouter } from '../hook/route-band';
 import { settingsFileName } from '../hook/settings';
 import type { RuleStatsOutcome } from '../knowledge/service';
 import { repoScriptChecks } from '../permissions/command';
@@ -115,7 +115,13 @@ import {
   missingVendorCommand,
   startAgentSession,
 } from '../runner/session';
-import { createWorktree, slugify } from '../runner/worktrees';
+import {
+  WorktreeRefusedError,
+  branchLabel,
+  createWorktree,
+  restoreWorktree,
+  slugify,
+} from '../runner/worktrees';
 import type { StateStore } from '../store';
 import { assertRepoHasCommits, buildEvent } from '../store';
 import type { StreamService } from '../streams/service';
@@ -147,6 +153,34 @@ export class StreamBusyError extends Error {
     );
     this.name = 'StreamBusyError';
   }
+}
+
+/**
+ * T535: a merged (landed) node or one in the trash starts no worker,
+ * reviewer or coordinator: its work is merged, or it is on its way out (a
+ * merge removed its worktree). The retro (`lessons`) still runs after a
+ * merge. RPC: -32602; HTTP: 409.
+ */
+export class NodeEndedError extends Error {
+  constructor(
+    public readonly stream: string,
+    title: string,
+    why: 'landed' | 'archived',
+  ) {
+    super(
+      why === 'landed'
+        ? `${title} is merged; no agent starts on it (make a new node for more work)`
+        : `${title} is in the trash; restore it before starting an agent`,
+    );
+    this.name = 'NodeEndedError';
+  }
+}
+
+/** T535: refuses a start that `NodeEndedError` names; the retro is let through. */
+function assertStartable(stream: Stream, role: SessionRole): void {
+  if (role === 'lessons') return;
+  if (stream.human.status === 'landed') throw new NodeEndedError(stream.id, stream.title, 'landed');
+  if (stream.archived === true) throw new NodeEndedError(stream.id, stream.title, 'archived');
 }
 
 /** The stream names a repo that is no longer registered in `repos.yaml`. */
@@ -245,7 +279,7 @@ export interface OpenQuestionsSource {
  */
 export interface OpenGatesSource {
   list(): HilRequest[];
-  /** T457: raise and spend a routed read's gate at the ACP tier (`acpReadRouter`); both or neither. */
+  /** T457, T524: raise and spend a held call's gate at the ACP tier (`acpHilRouter`); both or neither. */
   request?: RouteBandGates['request'];
   consume?: RouteBandGates['consume'];
 }
@@ -510,7 +544,11 @@ export class AttachService {
       ...(options.deliveryDelayMs !== undefined ? { delayMs: options.deliveryDelayMs } : {}),
       lineBody: (node, ts) => {
         try {
-          const thread = options.store.readThread(node);
+          // T557: the Director's lines are on its own thread.
+          const thread =
+            node === DIRECTOR_NODE
+              ? options.store.readDirectorThread()
+              : options.store.readThread(node);
           for (let i = thread.length - 1; i >= 0; i--) {
             const e = thread[i];
             if (e?.ts === ts && e.by === 'human') return e.body;
@@ -849,7 +887,8 @@ export class AttachService {
    * effort. A resting agent ends first; one working on a turn is refused
    * (`AgentWorkingError`: it waits). A node whose agent never ran has
    * nothing to forget: `undefined`. A closed or deleted node is not
-   * started: its next start is fresh anyway (`forgottenSince`).
+   * started: its next start is fresh anyway (`forgottenSince`). T535: nor a
+   * merged one, or one in the trash: a live agent there is only stopped.
    */
   async restartFresh(streamId: string, why: string): Promise<SessionRef | undefined> {
     const stream = this.options.streams.get(streamId);
@@ -873,6 +912,7 @@ export class AttachService {
     const release = this.delivery.hold(streamId);
     try {
       if (live !== undefined) await this.stop(streamId, live.role, { reason: why });
+      if (stream.archived === true || stream.human.status === 'landed') return undefined;
       const result = await this.attach(streamId, {
         vendor: was.vendor,
         ...(was.model !== 'default' ? { model: was.model } : {}),
@@ -935,6 +975,7 @@ export class AttachService {
     const coordinates = agentRole === 'coordinator';
     const requested: SessionRole = options.role ?? 'worker';
     const role: SessionRole = requested === 'worker' && coordinates ? 'coordinator' : requested;
+    assertStartable(stream, role);
     // One live session per role: a reviewer may run beside a worker on the
     // same worktree, but never beside a second reviewer (§4.2). A node has
     // one agent, worker or coordinator.
@@ -1042,6 +1083,9 @@ export class AttachService {
     // 2. Branch + worktree, only for a stream that has a repo (§4.4).
     // D20: a coordinating node has no worktree; its session runs in the session dir.
     const coordinating = coordinates;
+    // T535: again after the picks above, which can wait on Jev: a merge in
+    // that time removed the worktree, and this start must not put it back.
+    assertStartable(streams.get(stream.id), role);
     let worktreePath = coordinating ? undefined : stream.worktree;
     let branch = stream.branch;
     if (repoEntry !== undefined && !coordinating) {
@@ -1063,15 +1107,41 @@ export class AttachService {
         );
         worktreePath = created.path;
         branch = created.branch;
+      } else if (worktreePath !== undefined && role !== 'lessons' && !isOwnCheckout(worktreePath)) {
+        // T535: its worktree is gone (deleted by hand, removed while the
+        // record kept it) or a plain directory is in its place, where git
+        // would reach the operator's own checkout: put it back from its
+        // branch, or refuse.
+        if (branch === undefined) {
+          throw new WorktreeRefusedError(
+            `the worktree ${worktreePath} is gone and ${stream.title} has no branch to put it back from`,
+            'branch-missing',
+          );
+        }
+        await restoreWorktree(repoEntry.path, worktreePath, branch);
+        await streams.appendThread('daemon', stream.id, {
+          kind: 'event',
+          body: `its worktree was gone: put back from its branch ${branchLabel(branch)}`,
+        });
       }
       if (worktreePath !== undefined) {
         await streams.update('daemon', stream.id, { worktree: worktreePath, branch });
       }
     }
     // The retro starts after `land` removed the worktree: run it in the
-    // session dir rather than fail to spawn.
-    if (role === 'lessons' && worktreePath !== undefined && !existsSync(worktreePath)) {
+    // session dir rather than fail to spawn (T535: or in what is not a checkout).
+    if (role === 'lessons' && worktreePath !== undefined && !isOwnCheckout(worktreePath)) {
       worktreePath = undefined;
+    }
+    // T535: no agent ever starts in a path that is not a checkout of its own.
+    // Checked before the hook settings, whose git call would make the path.
+    if (worktreePath !== undefined && !isOwnCheckout(worktreePath)) {
+      // A merge that ended the node meanwhile removed it: say that.
+      assertStartable(streams.get(stream.id), role);
+      throw new WorktreeRefusedError(
+        `the worktree ${worktreePath} of ${stream.title} is not a git checkout; no agent starts there`,
+        'worktree-exists',
+      );
     }
     // A stream with no worktree runs in its session dir under the home.
     const sessionDir = join(this.options.home, 'sessions', sessionId);
@@ -1256,6 +1326,15 @@ export class AttachService {
     // session it recorded: `error` with the reason, the node `blocked`, never "Working".
     let handle: AgentSessionHandle;
     try {
+      // T535: the awaits since the checks above are where a merge can end the
+      // node and remove its worktree; nothing awaits from here to the spawn.
+      assertStartable(streams.get(stream.id), role);
+      if (worktreePath !== undefined && !isOwnCheckout(worktreePath)) {
+        throw new WorktreeRefusedError(
+          `the worktree ${worktreePath} of ${stream.title} went away while its agent was starting`,
+          'worktree-exists',
+        );
+      }
       handle = startAgentSession({
         store,
         streams,
@@ -1301,8 +1380,8 @@ export class AttachService {
         })(),
         provider,
         readScope,
-        // T457: a read the Ask posture held raises the same card as the hook tier's.
-        ...this.readRouter(stream.id, sessionId, cwd),
+        // T457, T524: a call the ACP tier holds raises the same card as the hook tier's.
+        ...this.hilRouter(stream.id, sessionId, cwd),
         ...(this.options.rules !== undefined ? { rules: this.options.rules } : {}),
         ...(this.options.spawn !== undefined ? { spawn: this.options.spawn } : {}),
         ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
@@ -1322,13 +1401,20 @@ export class AttachService {
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      await this.setSessionStatus(stream.id, sessionId, 'error', reason.slice(0, 300)).catch(
-        () => {},
-      );
+      // T535: a merge (or the trash) ended the node first: the start is called off, not failed.
+      const ended = err instanceof NodeEndedError;
+      await this.setSessionStatus(
+        stream.id,
+        sessionId,
+        ended ? 'stopped' : 'error',
+        reason.slice(0, 300),
+      ).catch(() => {});
       if (isAgentRole(role)) {
         await streams
           .update('daemon', stream.id, {
-            agent: { status: 'blocked', progress: `${FAILED_START_PREFIX}${reason}`.slice(0, 800) },
+            agent: ended
+              ? { status: stream.agent.status }
+              : { status: 'blocked', progress: `${FAILED_START_PREFIX}${reason}`.slice(0, 800) },
           })
           .catch(() => {});
       }
@@ -1488,17 +1574,20 @@ export class AttachService {
     }
   }
 
-  /** T457: the ACP tier's route for a held Ask read, when the gates can raise and spend. */
-  private readRouter(
+  /** T457, T524: the ACP tier's route for a held call, when the gates can raise and spend. */
+  private hilRouter(
     stream: string,
     session: string,
     worktreePath: string,
-  ): { routeRead?: NonNullable<ReturnType<typeof acpReadRouter>> } {
+  ): { routeHil?: ReturnType<typeof acpHilRouter> } {
     const gates = this.options.gates;
-    if (gates?.request === undefined || gates.consume === undefined) return {};
+    // T524: bound: passed bare, `GateService.request` lost its `this` and every route threw.
+    const request = gates?.request?.bind(gates);
+    const consume = gates?.consume?.bind(gates);
+    if (gates === undefined || request === undefined || consume === undefined) return {};
     return {
-      routeRead: acpReadRouter({
-        gates: { list: () => gates.list(), request: gates.request, consume: gates.consume },
+      routeHil: acpHilRouter({
+        gates: { list: () => gates.list(), request, consume },
         store: this.options.store,
         session,
         stream,
@@ -2627,7 +2716,8 @@ export class AttachService {
   private async maybeAutoReview(streamId: string): Promise<void> {
     try {
       const stream = this.options.streams.get(streamId);
-      if (stream.repo === undefined) return;
+      // T535: a merge or a close ends the resting worker; its exit reviews nothing.
+      if (stream.repo === undefined || !isOpen(stream)) return;
       const repoEntry = this.options.store.getRepos()[stream.repo];
       if (repoEntry?.auto_review !== true) return;
       if (liveSession(stream, 'reviewer') !== undefined) return;

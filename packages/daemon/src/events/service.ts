@@ -15,7 +15,7 @@
  * - `page({before, limit, repo})` (T383): the event log a page at a time,
  *   newest first, for the cockpit's Events and a repo card.
  * - `onEmitted(fn)`: called after each stored event (delivery, T242, wakes
- *   its recipients).
+ *   its recipients; T515, the cockpit's frame push). Returns the unsubscribe.
  * - `recover()`: run once at startup. A crash between the log append and
  *   the queue append leaves an event with no delivery; this re-adds its
  *   `pending` lines, so nothing routed is dropped.
@@ -24,6 +24,7 @@
  */
 
 import {
+  DIRECTOR_NODE,
   type Delivery,
   type EventDeliveryStatus,
   RECORD_ONLY_EVENT_TYPES,
@@ -125,7 +126,8 @@ export class RoutedEventService {
       log.at.set(stored.id, log.list.length);
       log.list.push(stored);
     }
-    for (const listener of this.listeners) {
+    // A copy: a listener may unsubscribe while the others are still called.
+    for (const listener of [...this.listeners]) {
       try {
         listener(stored);
       } catch {
@@ -135,8 +137,12 @@ export class RoutedEventService {
     return stored;
   }
 
-  onEmitted(listener: (event: RoutedEvent) => void): void {
+  onEmitted(listener: (event: RoutedEvent) => void): () => void {
     this.listeners.push(listener);
+    return () => {
+      const at = this.listeners.indexOf(listener);
+      if (at >= 0) this.listeners.splice(at, 1);
+    };
   }
 
   get(id: RoutedEventId | string): RoutedEvent | undefined {
@@ -261,12 +267,26 @@ export class RoutedEventService {
     );
   }
 
-  /** Re-adds `pending` for any routed node whose queue never got the event. Returns how many. */
+  /**
+   * Re-adds `pending` for any routed node whose queue never got the event.
+   * Returns how many. T538: a node deleted forever has no record (its queue
+   * went with it, its events stay in the log): it gets no queue back.
+   */
   async recover(): Promise<number> {
     const missing: { event: string; node: string; status: 'pending' | 'recorded' }[] = [];
     const seen = new Map<string, Set<string>>();
+    const gone = new Map<string, boolean>();
+    const deleted = (node: string): boolean => {
+      let is = gone.get(node);
+      if (is === undefined) {
+        is = node !== DIRECTOR_NODE && !this.store.hasStream(node);
+        gone.set(node, is);
+      }
+      return is;
+    };
     for (const event of this.index().list) {
       for (const { node } of event.routing) {
+        if (deleted(node)) continue;
         let ids = seen.get(node);
         if (ids === undefined) {
           ids = new Set(this.store.readDeliveries(node).map((d) => d.event));

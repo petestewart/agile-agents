@@ -22,7 +22,6 @@ import {
   gateView,
   groupNeedsMe,
   inboxLine,
-  isAgentFailure,
   isFirstRun,
   isLandGate,
   itemCommand,
@@ -63,6 +62,21 @@ function item(fields: Partial<InboxItem> & Pick<InboxItem, 'kind'>): InboxItem {
     context: 'something',
     ...fields,
   } as InboxItem;
+}
+
+/** T514: a land gate item as the daemon sends it: its line for the CLI, its parts for the card. */
+function landGate(fields: Partial<InboxItem> = {}): InboxItem {
+  return item({
+    kind: 'gate',
+    context: 'land: land parser into main',
+    gate: {
+      name: 'land',
+      reason: 'land parser into main',
+      branch: 'stream/01-parser',
+      target: 'main',
+    },
+    ...fields,
+  });
 }
 
 describe('parseChoices (T364): choices written into a question', () => {
@@ -272,30 +286,35 @@ describe('card titles and text (T364)', () => {
     expect(cardTitle(item({ kind: 'gate', context: 'classifier_review: edit x — why' }))).toBe(
       'Allow this action?',
     );
-    expect(cardTitle(item({ kind: 'gate', context: 'land: land stream/a into main' }))).toBe(
-      'Approve this merge?',
-    );
+    expect(cardTitle(landGate())).toBe('Approve this merge?');
     expect(cardTitle(item({ kind: 'rule_accept', knowledge_kind: 'decision' }))).toBe(
       'Decision proposed',
     );
     expect(cardTitle(item({ kind: 'rule_batch' }))).toBe('Knowledge to review');
     expect(cardTitle(item({ kind: 'plan_approve' }))).toBe('Plan to approve');
     expect(cardTitle(item({ kind: 'plan_waiting' }))).toBe('Waiting for the plan');
-    expect(cardTitle(item({ kind: 'proposal', context: 'coordinator proposes: x' }))).toBe(
-      'Coordinator proposal',
-    );
-    expect(cardTitle(item({ kind: 'proposal', context: 'director proposes: x' }))).toBe(
-      'Director proposal',
-    );
+    const proposal = (principal: 'coordinator' | 'director') =>
+      item({
+        kind: 'proposal',
+        context: `${principal} proposes: Start api`,
+        proposal: { principal, summary: 'Start api', change: 'start_node' },
+      });
+    expect(cardTitle(proposal('coordinator'))).toBe('Coordinator proposal');
+    expect(cardTitle(proposal('director'))).toBe('Director proposal');
     expect(cardTitle(item({ kind: 'done' }))).toBe('Ready to merge');
     expect(cardTitle(item({ kind: 'blocked' }))).toBe('Blocked');
   });
 
-  test('a classifier gate: the call and why', () => {
+  test('T514: a classifier gate: the call and why, from its parts', () => {
     const gate = item({
       kind: 'gate',
       context:
         'classifier_review: edit /tmp/wt/package.json — editing a dependency manifest is never automatic',
+      gate: {
+        name: 'classifier_review',
+        call: 'edit /tmp/wt/package.json',
+        reason: 'editing a dependency manifest is never automatic',
+      },
     });
     expect(isLandGate(gate)).toBe(false);
     expect(gateView(gate)).toEqual({
@@ -304,17 +323,29 @@ describe('card titles and text (T364)', () => {
       reason: 'editing a dependency manifest is never automatic',
     });
     expect(
-      gateView(item({ kind: 'gate', context: 'classifier_review: needs your decision' })),
+      gateView(
+        item({
+          kind: 'gate',
+          context: 'classifier_review: needs your decision',
+          gate: { name: 'classifier_review', reason: 'needs your decision' },
+        }),
+      ),
     ).toEqual({ land: false, reason: 'needs your decision' });
   });
 
-  test("a routed call's rule, from the hook's reason or a diff rule's summary", () => {
+  test("T514: a routed call's rule, by name and id, and a ship check's probability", () => {
     const K = 'K-01ARZ3NDEKTSV4RRFFQ69G5FAV';
     expect(
       gateView(
         item({
           kind: 'gate',
           context: `classifier_review: edit src/a.ts — tests-with-src (${K}): Every change under src/ has a test`,
+          gate: {
+            name: 'classifier_review',
+            call: 'edit src/a.ts',
+            reason: 'Every change under src/ has a test',
+            rule: { id: K, name: 'tests-with-src' },
+          },
         }),
       ),
     ).toEqual({
@@ -324,39 +355,55 @@ describe('card titles and text (T364)', () => {
       rule: 'tests-with-src',
       ruleId: K,
     });
-    expect(
-      gateView(item({ kind: 'gate', context: `classifier_review: bash: rm x — ${K}: No deletes` })),
-    ).toMatchObject({ action: 'bash: rm x', reason: 'No deletes', ruleId: K });
+    // A rule with no name is named by its id only.
     expect(
       gateView(
         item({
           kind: 'gate',
-          context:
-            'classifier_review: edit x — tests-with-src: every change under src/ comes with a test (probability 0.55)',
+          gate: {
+            name: 'classifier_review',
+            call: 'bash: rm x',
+            reason: 'No deletes',
+            rule: { id: K },
+          },
+        }),
+      ),
+    ).toEqual({ land: false, action: 'bash: rm x', reason: 'No deletes', ruleId: K });
+    expect(
+      gateView(
+        item({
+          kind: 'gate',
+          gate: {
+            name: 'classifier_review',
+            call: 'land stream/01-a → main',
+            reason: 'every change under src/ comes with a test',
+            rule: { id: K, name: 'tests-with-src' },
+            probability: 0.55,
+          },
         }),
       ),
     ).toMatchObject({
       rule: 'tests-with-src',
       reason: 'every change under src/ comes with a test',
-      probability: '0.55',
+      probability: 0.55,
     });
-    // A reason that names no rule stays whole.
+  });
+
+  test('T514: a gate item without parts is read whole, never taken apart', () => {
+    const old = item({ kind: 'gate', context: 'land: land stream/01-parser into main' });
+    expect(isLandGate(old)).toBe(false);
+    expect(gateView(old)).toEqual({ land: false, reason: 'land: land stream/01-parser into main' });
     expect(
-      gateView(
-        item({ kind: 'gate', context: 'classifier_review: edit x — review checklist unsure: y' }),
-      ),
-    ).toEqual({ land: false, action: 'edit x', reason: 'review checklist unsure: y' });
-    expect(
-      gateView(item({ kind: 'gate', context: 'classifier_review: edit x — note: not a rule' })),
-    ).toEqual({ land: false, action: 'edit x', reason: 'note: not a rule' });
+      gateView(item({ kind: 'gate', context: 'classifier_review: edit x — y', detail: 'whole' })),
+    ).toEqual({ land: false, reason: 'whole' });
   });
 
   test('a land gate: the branch and its target', () => {
-    const gate = item({ kind: 'gate', context: 'land: land stream/01-parser into main' });
+    const gate = landGate();
     expect(isLandGate(gate)).toBe(true);
     expect(gateView(gate)).toEqual({
       land: true,
-      reason: 'land stream/01-parser into main',
+      reason: 'land parser into main',
       branch: 'stream/01-parser',
       target: 'main',
     });
@@ -367,59 +414,102 @@ describe('card titles and text (T364)', () => {
     expect(branchName('feature/x')).toBe('feature/x');
   });
 
-  test('knowledge: name, scope and text; the scope in words', () => {
+  test('T514: knowledge: name, scope and text, from its parts; the scope in words', () => {
     expect(
       knowledgeView(
         item({
           kind: 'rule_accept',
           context: 'money-in-cents · project:P-01: Store money as cents',
+          knowledge: {
+            name: 'money-in-cents',
+            scope: { kind: 'project', project: 'P-01' },
+            text: 'Store money as cents',
+          },
         }),
       ),
-    ).toEqual({ name: 'money-in-cents', scope: 'project:P-01', text: 'Store money as cents' });
+    ).toEqual({
+      name: 'money-in-cents',
+      scope: { kind: 'project', project: 'P-01' },
+      text: 'Store money as cents',
+    });
     expect(
       knowledgeView(
-        item({ kind: 'rule_accept', context: `subtree:${NODE}: run the repo scripts` }),
+        item({
+          kind: 'rule_accept',
+          context: 'global: a standard',
+          knowledge: { scope: { kind: 'global' }, text: 'a standard' },
+        }),
       ),
-    ).toEqual({ scope: `subtree:${NODE}`, text: 'run the repo scripts' });
+    ).toEqual({ scope: { kind: 'global' }, text: 'a standard' });
+    // Without parts, the line is the text: nothing is read out of it.
     expect(knowledgeView(item({ kind: 'rule_accept', context: 'global: a standard' }))).toEqual({
-      scope: 'global',
-      text: 'a standard',
-    });
-    expect(knowledgeView(item({ kind: 'rule_accept', context: 'odd text' }))).toEqual({
-      text: 'odd text',
+      text: 'global: a standard',
     });
     const names = {
       node: (id: string) => (id === NODE ? 'parser' : undefined),
       project: (id: string) => (id === 'P-01' ? 'Shop' : undefined),
     };
-    expect(scopeWords('global', names)).toBe('everywhere');
-    expect(scopeWords('repo:web-app', names)).toBe('the web-app repo');
-    expect(scopeWords('project:P-01', names)).toBe('the Shop project');
-    expect(scopeWords(`subtree:${NODE}`, names)).toBe('parser and the nodes under it');
-    expect(scopeWords(`subtree:${NODE_B}`, names)).toBe('one node and the nodes under it');
+    expect(scopeWords({ kind: 'global' }, names)).toBe('everywhere');
+    expect(scopeWords({ kind: 'repo', repo: 'web-app' }, names)).toBe('the web-app repo');
+    expect(scopeWords({ kind: 'project', project: 'P-01' }, names)).toBe('the Shop project');
+    expect(scopeWords({ kind: 'project', project: 'P-02' }, names)).toBe('one project');
+    expect(scopeWords({ kind: 'subtree', node: NODE }, names)).toBe(
+      'parser and the nodes under it',
+    );
+    expect(scopeWords({ kind: 'subtree', node: NODE_B }, names)).toBe(
+      'one node and the nodes under it',
+    );
     expect(scopeWords(undefined, names)).toBeUndefined();
   });
 
-  test('a proposal: who proposes, and what', () => {
-    expect(proposalOf({ context: 'coordinator proposes: web waits on api' })).toEqual({
+  test('T514: a proposal: who proposes, what, and which change, from its parts', () => {
+    expect(
+      proposalOf({
+        context: 'coordinator proposes: Make web wait on api',
+        proposal: {
+          principal: 'coordinator',
+          summary: 'Make web wait on api',
+          change: 'add_waits_on',
+        },
+      }),
+    ).toEqual({
       principal: 'coordinator',
-      summary: 'web waits on api',
+      summary: 'Make web wait on api',
+      change: 'add_waits_on',
+      newProject: false,
     });
-    expect(proposalOf({ context: 'something else' })).toEqual({ summary: 'something else' });
+    expect(
+      proposalOf({
+        context: 'director proposes: Create the project Wishlist',
+        proposal: {
+          principal: 'director',
+          summary: 'Create the project Wishlist',
+          change: 'create_project',
+          new_project: true,
+        },
+      }),
+    ).toMatchObject({ principal: 'director', newProject: true });
+    // Without parts, the line is the summary, and nobody is read out of it.
+    expect(proposalOf({ context: 'director proposes: x' })).toEqual({
+      summary: 'director proposes: x',
+      newProject: false,
+    });
   });
 
-  test('a plan: its parts and contracts', () => {
+  test('T514: a plan: its parts and contracts, from its parts', () => {
     expect(
       planView(
         item({
           kind: 'plan_approve',
           context: 'clipped',
-          detail:
-            'Approve the plan for Sale prices: api owns `prices.ts`; web owns `shop.html`. Contracts: GET /price/:id: returns { cents } | Events: one per sale',
+          plan: {
+            revised: false,
+            owners: ['api owns `prices.ts`', 'web owns `shop.html`'],
+            contracts: ['GET /price/:id: returns\n{ cents }', 'Events: one per sale'],
+          },
         }),
       ),
     ).toEqual({
-      node: 'Sale prices',
       revised: false,
       owners: ['api owns `prices.ts`', 'web owns `shop.html`'],
       contracts: ['GET /price/:id: returns { cents }', 'Events: one per sale'],
@@ -429,10 +519,14 @@ describe('card titles and text (T364)', () => {
         item({
           kind: 'plan_approve',
           context: 'Approve the revised plan (approved v1) for X: a owns nothing (was `a.ts`)',
+          plan: { revised: true, owners: ['a owns nothing (was `a.ts`)'], contracts: [] },
         }),
       ),
-    ).toEqual({ node: 'X', revised: true, owners: ['a owns nothing (was `a.ts`)'], contracts: [] });
-    expect(planView(item({ kind: 'plan_approve', context: 'unexpected' }))).toBeUndefined();
+    ).toEqual({ revised: true, owners: ['a owns nothing (was `a.ts`)'], contracts: [] });
+    // Without parts there is no plan view: the card shows the line whole.
+    expect(
+      planView(item({ kind: 'plan_approve', context: 'Approve the plan for X: a owns `a.ts`' })),
+    ).toBeUndefined();
   });
 
   test("a finished or stuck card reads the agent's line, whole", () => {
@@ -459,7 +553,7 @@ describe('the filter (T364)', () => {
     item({ kind: 'question', id: 'q' }),
     item({ kind: 'blocked', id: 'b' }),
     item({ kind: 'gate', id: 'g', context: 'classifier_review: x' }),
-    item({ kind: 'gate', id: 'l', context: 'land: land a into b' }),
+    landGate({ id: 'l' }),
     item({ kind: 'done', id: 'd' }),
     item({ kind: 'rule_accept', id: 'r' }),
     item({ kind: 'plan_approve', id: 'p' }),
@@ -758,9 +852,15 @@ describe("T416: ⌘K's Needs me rows", () => {
       }),
     ).toBe('Close: x');
     expect(itemCommand(item({ kind: 'blocked', id: NODE, stream_path: ['x'] }))).toBe('Unblock: x');
+    expect(itemCommand(landGate({ stream_path: ['x'] }))).toBe('Approve the merge: x');
     expect(
-      itemCommand(item({ kind: 'gate', context: 'land: land a into main', stream_path: ['x'] })),
-    ).toBe('Approve the merge: x');
+      itemCommand(
+        item({
+          kind: 'rule_accept',
+          knowledge: { name: 'money-in-cents', scope: { kind: 'global' }, text: 'Store cents' },
+        }),
+      ),
+    ).toBe('Accept or retire: money-in-cents');
   });
 
   test('a long question clips to one line', () => {
@@ -826,14 +926,6 @@ describe('T436: a reply’s preview and its ⌘K row', () => {
     expect(replyCommand('Which repos does checkout touch?')).toBe(
       'Read reply: Which repos does checkout touch?',
     );
-  });
-});
-
-describe('isAgentFailure (T437)', () => {
-  test("the daemon's failure notes, and nothing else", () => {
-    expect(isAgentFailure('The agent couldn’t start: Gemini CLI can’t start')).toBe(true);
-    expect(isAgentFailure('The agent stopped with an error: Invalid API key')).toBe(true);
-    expect(isAgentFailure('The agent is stuck and needs a hand.')).toBe(false);
   });
 });
 
@@ -984,6 +1076,8 @@ describe('a decided card (T445, audit r7 #5)', () => {
     expect(cardOutcome(item({ kind: 'gate', context: 'Bash: rm -rf dist' }), 'approve')).toBe(
       'Allowed',
     );
+    expect(cardOutcome(landGate(), 'approve')).toBe('Merging');
+    expect(cardOutcome(landGate(), 'deny')).toBe('Held');
   });
 
   test('stays in the list a moment after the frame drops it, then goes', () => {

@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import { optionalList, optionalString, parseArgs, requireOption, requirePositional } from './args';
+import {
+  optionalList,
+  optionalString,
+  parseArgs,
+  parseKnownArgs,
+  refuseExtraWords,
+  requireOption,
+  requirePositional,
+} from './args';
 
 describe('parseArgs', () => {
   test('splits positionals from --flag value pairs', () => {
@@ -19,6 +27,98 @@ describe('parseArgs', () => {
     const result = parseArgs([]);
     expect(result.positionals).toEqual([]);
     expect(result.options).toEqual({});
+  });
+
+  test('T523: -- ends the options; every word after it is positional, as typed', () => {
+    const result = parseArgs(['--name', 'x', '--', '--weird', 'dir', '--json']);
+    expect(result.options).toEqual({ name: 'x' });
+    expect(result.positionals).toEqual(['--weird', 'dir', '--json']);
+  });
+});
+
+/** T523 (CLI audit C3): a free-text verb keeps its sentence. */
+describe('parseKnownArgs', () => {
+  const ANSWER = { verb: 'agile answer', values: ['by'] };
+
+  test('keeps every word in order, and reads the verb\u2019s own options wherever they are', () => {
+    const result = parseKnownArgs(['Q-1', 'use', 'the', '--by', 'pete', 'second', 'one'], ANSWER);
+    expect(result.positionals).toEqual(['Q-1', 'use', 'the', 'second', 'one']);
+    expect(result.options).toEqual({ by: 'pete' });
+  });
+
+  test('refuses an unknown --word by name and says how to keep it, instead of eating a word', () => {
+    // parseArgs made `--no-verify` an option that ate "then": "use push" was sent.
+    const lossy = parseArgs(['Q-1', 'use', '--no-verify', 'then', 'push']);
+    expect(lossy.positionals.slice(1).join(' ')).toBe('use push');
+
+    expect(() => parseKnownArgs(['Q-1', 'use', '--no-verify', 'then', 'push'], ANSWER)).toThrow(
+      'agile answer: unknown option --no-verify (its options: --by). If it is part of the text, quote the text or put -- before it',
+    );
+  });
+
+  test('-- keeps the rest verbatim, option-shaped words included', () => {
+    const result = parseKnownArgs(['Q-1', '--', 'use', '--no-verify', '--by', 'x'], ANSWER);
+    expect(result.positionals).toEqual(['Q-1', 'use', '--no-verify', '--by', 'x']);
+    expect(result.options).toEqual({});
+  });
+
+  test('a word with a single dash is text: a line may start with "-"', () => {
+    const result = parseKnownArgs(['N', '-', 'first,', 'check', '-1', 'and', '-h'], {
+      verb: 'agile node say',
+    });
+    expect(result.positionals).toEqual(['N', '-', 'first,', 'check', '-1', 'and', '-h']);
+  });
+
+  test('an option of its own with no value is an error, not `true`', () => {
+    expect(() => parseKnownArgs(['Q-1', 'yes', '--by'], ANSWER)).toThrow(
+      'agile answer: --by needs a value',
+    );
+    expect(() => parseKnownArgs(['Q-1', '--by', '--', 'x'], ANSWER)).toThrow('--by needs a value');
+    expect(() =>
+      parseKnownArgs(['try', '--node', '--project', 'P-1'], {
+        verb: 'agile policy try',
+        values: ['project', 'node'],
+      }),
+    ).toThrow('agile policy try: --node needs a value');
+  });
+
+  test('a value that starts with -- is still a value (a quoted note may start with one)', () => {
+    const result = parseKnownArgs(['N', '--note', '--force was wrong'], {
+      verb: 'agile node close',
+      values: ['note'],
+    });
+    expect(result.options.note).toBe('--force was wrong');
+    expect(result.positionals).toEqual(['N']);
+  });
+
+  test('a verb with no options of its own names none, and a custom hint replaces the -- advice', () => {
+    expect(() => parseKnownArgs(['N', 'retry', '--force'], { verb: 'agile node say' })).toThrow(
+      'agile node say: unknown option --force. If it is part of the text',
+    );
+    expect(() =>
+      parseKnownArgs(['--text', 'use', '--force'], {
+        verb: 'agile question raise',
+        values: ['text'],
+        hint: 'quote the whole text',
+      }),
+    ).toThrow(
+      'agile question raise: unknown option --force (its options: --text). quote the whole text',
+    );
+  });
+});
+
+describe('refuseExtraWords (T523)', () => {
+  test('words no option took are refused, never dropped', () => {
+    const args = parseArgs(['--text', 'which', 'branch', 'now']);
+    expect(args.options.text).toBe('which');
+    expect(() =>
+      refuseExtraWords(args, 0, 'agile question raise', '--text "which branch?"'),
+    ).toThrow(
+      'agile question raise: "branch now" belongs to no option; quote a value with spaces (--text "which branch?")',
+    );
+    expect(() =>
+      refuseExtraWords(parseArgs(['Q-1', '--answer', 'yes']), 1, 'v', 'e'),
+    ).not.toThrow();
   });
 });
 

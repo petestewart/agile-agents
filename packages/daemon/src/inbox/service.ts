@@ -11,6 +11,8 @@
 import {
   DIRECTOR_NODE,
   type HilRequest,
+  INBOX_DETAIL_MAX_CHARS,
+  type InboxGate,
   type InboxItem,
   InboxItemOptionsSchema,
   type KnowledgeItem,
@@ -41,6 +43,14 @@ function withDetail(text: string): { detail?: string } {
   return detail === undefined ? {} : { detail };
 }
 
+/** T514: a structured part, bounded like `detail` (an item is a pointer, not the artifact). */
+function part(text: string): string {
+  return text.length <= INBOX_DETAIL_MAX_CHARS
+    ? text
+    : `${text.slice(0, INBOX_DETAIL_MAX_CHARS - 1)}…`;
+}
+
+/** The CLI's line for a gate (`agile inbox`); the card reads `gateParts` instead (T514). */
 function gateText(gate: HilRequest): string {
   return `${gate.gate}: ${gate.call !== undefined ? `${describeGateCall(gate.call)} — ` : ''}${
     gate.summary ?? gate.reason ?? 'needs your decision'
@@ -79,9 +89,8 @@ export class InboxService {
 
   /** Every open item, oldest first (§3.3). A record whose stream is gone is skipped: an item you can't place is worse than none. */
   list(): InboxItem[] {
-    const byId = new Map<string, Stream>(
-      this.deps.streams.list({ include_archived: true }).map((s) => [s.id, s]),
-    );
+    const everyone = this.deps.streams.list({ include_archived: true });
+    const byId = new Map<string, Stream>(everyone.map((s) => [s.id, s]));
     const items: InboxItem[] = [];
 
     for (const question of this.deps.questions.listOpen()) {
@@ -143,12 +152,18 @@ export class InboxService {
         context: inboxContext(text),
         ...withDetail(text),
         ref: `plans/${stream.id}.yaml`,
+        // T514: the card lists the parts and contracts from here, not from `text`.
+        plan: {
+          revised: plan.approved !== undefined,
+          owners: owners.map(part),
+          contracts: contracts.map(part),
+        },
       });
     }
     // T344: parts waiting for a plan no running coordinator will write.
     const drafted = new Set(this.deps.plans?.listDraft().map((p) => p.node));
     for (const stream of byId.values()) {
-      const item = this.planWaitingItem(stream, byId, drafted);
+      const item = this.planWaitingItem(stream, byId, everyone, drafted);
       if (item) items.push(item);
     }
     // T443 (audit r7 #8): a project's root, where a Director draft that makes nodes sits.
@@ -176,6 +191,10 @@ export class InboxService {
       const stream = anchor === undefined ? undefined : byId.get(anchor);
       if (stream === undefined || stream.archived === true) continue;
       const text = `${proposal.principal} proposes: ${proposal.summary}`;
+      // T514: a new project has no level yet to hold the change at (the card says so).
+      const newProject =
+        c.action === 'create_project' ||
+        (c.action === 'create_tree' && c.tree.new_project !== undefined);
       items.push({
         kind: 'proposal',
         id: proposal.id,
@@ -185,10 +204,16 @@ export class InboxService {
         context: inboxContext(text),
         ...withDetail(text),
         ref: `proposals/${proposal.id}.yaml`,
+        proposal: {
+          principal: proposal.principal,
+          summary: proposal.summary,
+          change: c.action,
+          ...(newProject ? { new_project: true as const } : {}),
+        },
       });
     }
     for (const stream of byId.values()) {
-      const item = this.streamItem(stream, byId);
+      const item = this.streamItem(stream, byId, everyone);
       if (item) items.push(item);
       const stuck = this.stuckItem(stream, byId);
       if (stuck) items.push(stuck);
@@ -258,6 +283,12 @@ export class InboxService {
       ...withDetail(label),
       ref: `knowledge/${rule.id}.yaml`,
       knowledge_kind: rule.kind,
+      // T514: the card's name, scope and text, which `label` runs together.
+      knowledge: {
+        ...(rule.name !== undefined ? { name: rule.name } : {}),
+        scope: rule.scope,
+        text: rule.text,
+      },
     };
   }
 
@@ -301,6 +332,34 @@ export class InboxService {
       ...(gate.read_root !== undefined && stream.project !== undefined
         ? { read_root: gate.read_root }
         : {}),
+      gate: this.gateParts(gate),
+    };
+  }
+
+  /**
+   * T514: what `gateText` runs together, apart. A rule-routed call's reason
+   * is the rule's own text and name (its summary leads with the rule's
+   * label); a rule no longer on record leaves the summary whole.
+   */
+  private gateParts(gate: HilRequest): InboxGate {
+    let rule: KnowledgeItem | undefined;
+    if (gate.rule !== undefined && this.deps.rules !== undefined) {
+      try {
+        rule = this.deps.rules.get(gate.rule);
+      } catch {
+        // Gone, or a pre-T260 `R-` rule: the card names it by id.
+      }
+    }
+    return {
+      name: gate.gate,
+      ...(gate.call !== undefined ? { call: part(describeGateCall(gate.call)) } : {}),
+      reason: part(rule?.text ?? gate.summary ?? gate.reason ?? 'needs your decision'),
+      ...(gate.rule !== undefined
+        ? { rule: { id: gate.rule, ...(rule?.name !== undefined ? { name: rule.name } : {}) } }
+        : {}),
+      ...(gate.probability !== undefined ? { probability: gate.probability } : {}),
+      ...(gate.branch !== undefined ? { branch: gate.branch } : {}),
+      ...(gate.target !== undefined ? { target: gate.target } : {}),
     };
   }
 
@@ -313,6 +372,7 @@ export class InboxService {
   private planWaitingItem(
     stream: Stream,
     byId: Map<string, Stream>,
+    everyone: readonly Stream[],
     drafted: ReadonlySet<string>,
   ): InboxItem | undefined {
     const plans = this.deps.plans;
@@ -320,7 +380,7 @@ export class InboxService {
     if (stream.human.status === 'closed' || stream.human.status === 'landed') return undefined;
     // Only a node that has had a coordinator has parts waiting on it (`waitingForPlan`).
     if (!stream.sessions.some((s) => s.role === 'coordinator')) return undefined;
-    if (drafted.has(stream.id) || !hasParts(stream.id, byId)) return undefined;
+    if (drafted.has(stream.id) || !hasParts(stream.id, everyone)) return undefined;
     // T465: a coordinator resting after its finished turn is not writing one either.
     const live = stream.sessions.some(
       (s) =>
@@ -330,7 +390,8 @@ export class InboxService {
         !isRestingSession(stream, s),
     );
     if (live) return undefined;
-    const parts = plans.waitingParts(stream.id);
+    // T545: the list read once for the whole inbox.
+    const parts = plans.waitingParts(stream.id, everyone);
     if (parts.length === 0) return undefined;
     const titles = parts.map((p) => p.title).join(', ');
     const text = `${titles} ${parts.length === 1 ? 'waits' : 'wait'} for the plan, and no coordinator is running to write it. Wake the coordinator, or start the ${parts.length === 1 ? 'part' : 'parts'} without a plan.`;
@@ -371,7 +432,11 @@ export class InboxService {
    * §2.2's disagreeing pair: the agent stopped (`blocked` or `done`) and the
    * human half is still `open`. That pair is the "waiting for me" state.
    */
-  private streamItem(stream: Stream, byId: Map<string, Stream>): InboxItem | undefined {
+  private streamItem(
+    stream: Stream,
+    byId: Map<string, Stream>,
+    everyone: readonly Stream[],
+  ): InboxItem | undefined {
     if (stream.archived === true) return undefined;
     if (stream.human.status !== 'open') return undefined;
     if (stream.agent.status !== 'blocked' && stream.agent.status !== 'done') return undefined;
@@ -382,7 +447,7 @@ export class InboxService {
     const ownBranch = stream.repo !== undefined && stream.branch !== undefined;
     if (
       stream.agent.status === 'done' &&
-      ((hasParts(stream.id, byId) && !ownBranch) || isProjectRoot(stream))
+      ((hasParts(stream.id, everyone) && !ownBranch) || isProjectRoot(stream))
     ) {
       return undefined;
     }
@@ -435,8 +500,8 @@ export const BLOCKED_TEXT =
   'The agent is stuck and needs a hand. Open the node to see where it stopped.';
 
 /** Parts (D42: not helpers, not conversations): what makes a node coordinating (`nodeRole`). */
-function hasParts(id: string, byId: Map<string, Stream>): boolean {
-  return partsOf(id, [...byId.values()]).length > 0;
+function hasParts(id: string, everyone: readonly Stream[]): boolean {
+  return partsOf(id, everyone).length > 0;
 }
 
 /** A project's root node (P20: its agent is the project's coordinator). */

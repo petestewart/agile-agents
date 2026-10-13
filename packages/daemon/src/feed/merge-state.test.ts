@@ -128,6 +128,57 @@ describe('NothingToMergeCache (T380)', () => {
   });
 });
 
+describe('T552: the due nodes are checked together', () => {
+  test('one scheduled run in one batch per frame, and one push for all its changes', () => {
+    const jobs: Array<() => void> = [];
+    const order: string[] = [];
+    let changes = 0;
+    const cache = new NothingToMergeCache({
+      preflight: (id) => {
+        order.push(`check ${id}`);
+        return { ahead: 0 };
+      },
+      schedule: (fn) => jobs.push(fn),
+      batch: (fn) => {
+        order.push('batch');
+        fn();
+        order.push('end');
+      },
+      onChange: () => changes++,
+    });
+    const ids = [
+      '01ARZ3NDEKTSV4RRFFQ69G5FA1',
+      '01ARZ3NDEKTSV4RRFFQ69G5FA2',
+      '01ARZ3NDEKTSV4RRFFQ69G5FA3',
+    ];
+    for (const id of ids) expect(cache.peek(node({ id }))).toBe(false);
+    // A peek of a node already due queues nothing more.
+    cache.peek(node({ id: ids[0] }));
+    expect(jobs.length).toBe(1);
+    for (const job of jobs.splice(0)) job();
+    expect(order).toEqual(['batch', ...ids.map((id) => `check ${id}`), 'end']);
+    expect(changes).toBe(1);
+    for (const id of ids) expect(cache.peek(node({ id }))).toBe(true);
+    // Fresh answers: nothing is due, nothing is scheduled.
+    expect(jobs.length).toBe(0);
+  });
+
+  test('a failing batch wrapper still keeps what was checked', () => {
+    const jobs: Array<() => void> = [];
+    const cache = new NothingToMergeCache({
+      preflight: () => ({ ahead: 0 }),
+      schedule: (fn) => jobs.push(fn),
+      batch: (fn) => {
+        fn();
+        throw new Error('after the checks');
+      },
+    });
+    cache.peek(node());
+    for (const job of jobs.splice(0)) job();
+    expect(cache.peek(node())).toBe(true);
+  });
+});
+
 describe('T410: the size of what Merge brings', () => {
   function measured(
     ahead: () => number,

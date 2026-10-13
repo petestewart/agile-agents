@@ -291,7 +291,7 @@ An attached session is gated at three points, and only the first is new:
 `<repo>/.worktrees/<stream-id>-<slug>/`, ensured in the repo's `.gitignore`. Creation is hardened (T113, design borrowed from KiroCrew, **D11**):
 
 - created via git plumbing with **no shell interpolation**;
-- `core.hooksPath` pointed at an empty directory for the checkout, so a repo's own hooks cannot run arbitrary code during setup;
+- `core.hooksPath` pointed at `/dev/null` on the command line for every daemon git call, setup and after (T536: an empty directory inside the checkout could be filled by a landed commit), so a repo's own hooks cannot run arbitrary code;
 - repos with `.gitattributes` filter drivers are **refused with a reason** rather than checked out;
 - the branch is claimed atomically with `git update-ref` in its expected-old-value form, so two concurrent creates for the same stream leave exactly one winner;
 - creation fails if the branch already exists anywhere.

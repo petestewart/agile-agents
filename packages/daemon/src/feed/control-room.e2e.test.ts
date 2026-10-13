@@ -3613,6 +3613,408 @@ describe('Merge wording and hold tone (Playwright e2e, T347)', () => {
   );
 });
 
+describe("a node's page never shows another node's results (Playwright e2e, T520)", () => {
+  browserTest(
+    'a Merge, a Start and a send on one node that finish after another opened leave that one as it was',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        // Two work nodes with a commit each: both headers have Start agent and Merge.
+        const made: Stream[] = [];
+        for (const name of ['first', 'second']) {
+          const node = await cockpit.streams.create('human', {
+            title: `${name} node`,
+            goal: 'g',
+            project: shop.id,
+            parent: shop.root,
+            repo: 'demo',
+          });
+          const worktree = join(cockpit.repo, '.worktrees', `s-${name}`);
+          git(['worktree', 'add', '-q', '-b', `s-${name}`, worktree, 'main'], cockpit.repo);
+          writeFileSync(join(worktree, `${name}.txt`), `${name}\n`);
+          git(['add', '-A'], worktree);
+          git(['commit', '-q', '-m', name], worktree);
+          await cockpit.streams.update('daemon', node.id, { branch: `s-${name}`, worktree });
+          made.push(node);
+        }
+        const [a, b] = made as [Stream, Stream];
+        const p = await openPage();
+        page = p;
+
+        /** A's call to `path` waits until `release`, then gets `body`: slow, and it fails. */
+        const hold = async (
+          path: string,
+          status: number,
+          body: unknown,
+        ): Promise<{ called: Promise<void>; release: () => void }> => {
+          let seen: () => void = () => {};
+          const called = new Promise<void>((resolve) => {
+            seen = resolve;
+          });
+          let release: () => void = () => {};
+          const released = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await p.route(`**/api/streams/${a.id}/${path}`, async (route) => {
+            seen();
+            await released;
+            await route.fulfill({
+              status,
+              contentType: 'application/json',
+              body: JSON.stringify(body),
+            });
+          });
+          return { called, release };
+        };
+        const open = async (node: Stream): Promise<void> => {
+          await p.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+          await p.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+          await p.locator('[data-testid="land-panel"]').waitFor();
+        };
+        /** Lets A's call finish, and waits until it has: its last step re-reads the cockpit. */
+        const finish = async (release: () => void): Promise<void> => {
+          const reread = p.waitForResponse((res) => new URL(res.url()).pathname === '/api/cockpit');
+          release();
+          await reread;
+          await p.evaluate('new Promise((done) => requestAnimationFrame(() => done()))');
+        };
+        /** B's page, loaded and its own: no spinner, refusal, result or error of A's. */
+        const untouched = async (): Promise<void> => {
+          expect(
+            await p.locator(`[data-testid="stream-page"][data-stream="${b.id}"]`).count(),
+          ).toBe(1);
+          expect(await p.locator('[data-testid="stream-page"][aria-busy="true"]').count()).toBe(0);
+          const merge = p.locator('[data-testid="stream-land"]');
+          expect(await merge.textContent()).toBe('Merge');
+          expect(await merge.getAttribute('aria-busy')).toBeNull();
+          const start = p.locator('[data-testid="attach"]');
+          expect(await start.getAttribute('aria-busy')).toBeNull();
+          expect(await start.isEnabled()).toBe(true);
+          expect(await p.locator('[data-testid="merge-error"]').count()).toBe(0);
+          expect(await p.locator('[data-testid="stream-error"]').count()).toBe(0);
+          expect(await p.locator('[data-testid="land-before"]').count()).toBe(1);
+          expect(await p.locator('[data-testid="land-result"]').count()).toBe(0);
+          expect(await p.locator('[data-testid="send-error"]').count()).toBe(0);
+        };
+
+        await p.goto(`${cockpit.base}/?node=${a.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${a.id}"]`).waitFor();
+        if (!(await p.locator('[data-testid="node-details"]').isVisible())) {
+          await p.locator('[data-testid="details-toggle"]').click();
+        }
+        await p.locator('[data-testid="land-panel"]').waitFor();
+
+        // Merge on A, refused once B is open: B's Merge never spins, and A's refusal,
+        // its fix and its result line stay off B's header and Delivery panel.
+        const land = await hold('land', 200, {
+          status: 'refused',
+          reason: 'the first node’s own reason',
+          line: 'landing refused: the first node’s own reason',
+        });
+        await clickMerge(p);
+        await land.called;
+        await waitForText(p, '[data-testid="stream-land"]', 'Merging…');
+        await open(b);
+        await untouched();
+        await finish(land.release);
+        await untouched();
+
+        // Start agent on A, failing once B is open: B's buttons stay live, A's error stays off.
+        await open(a);
+        const start = await hold('attach', 500, { error: 'the first node’s agent didn’t start' });
+        await p.locator('[data-testid="attach"]').click();
+        await start.called;
+        await open(b);
+        await untouched();
+        await finish(start.release);
+        await untouched();
+
+        // A send on A, failing once B is open: B's composer sends, with no "wasn't sent" of A's.
+        await open(a);
+        const say = await hold('say', 500, { error: 'the first node’s message wasn’t sent' });
+        await p.locator('[data-testid="composer-input"]').fill('for the first node');
+        await p.locator('[data-testid="composer-send"]').click();
+        await say.called;
+        await open(b);
+        await p.locator('[data-testid="composer-input"]').fill('for the second node');
+        expect(await p.locator('[data-testid="composer-send"]').isEnabled()).toBe(true);
+        await untouched();
+        await finish(say.release);
+        await untouched();
+        expect(await p.locator('[data-testid="composer-send"]').isEnabled()).toBe(true);
+        // Each node's draft is its own: A's unsent message is still in A's composer.
+        expect(await p.locator('[data-testid="composer-input"]').inputValue()).toBe(
+          'for the second node',
+        );
+        await open(a);
+        expect(await p.locator('[data-testid="composer-input"]').inputValue()).toBe(
+          'for the first node',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('the composer keeps everything you write (Playwright e2e, T519)', () => {
+  /** 3,000 characters, past the old 800 cap: a long message you write. */
+  const LONG = `${'Round each line once, then sum the ledger. '.repeat(70).slice(0, 2999)}!`;
+
+  /**
+   * `path`'s next request waits until `release`, then goes on to the daemon,
+   * or fails with `error` (500) when one is given.
+   */
+  const holdNext = async (
+    p: Page,
+    path: string,
+    error?: string,
+  ): Promise<{ called: Promise<void>; release: () => void }> => {
+    let seen: () => void = () => {};
+    const called = new Promise<void>((resolve) => {
+      seen = resolve;
+    });
+    let release: () => void = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await p.route(
+      `**${path}`,
+      async (route) => {
+        seen();
+        await released;
+        if (error === undefined) await route.continue();
+        else {
+          await route.fulfill({
+            status: 500,
+            contentType: 'application/json',
+            body: JSON.stringify({ error }),
+          });
+        }
+      },
+      { times: 1 },
+    );
+    return { called, release };
+  };
+
+  /** Types `text` at the end of the box, as a person would (Shift+Enter is a new line). */
+  const typeAtEnd = async (p: Page, box: string, text: string): Promise<void> => {
+    await p.locator(box).focus();
+    await p.keyboard.press('Control+End');
+    for (const [i, line] of text.split('\n').entries()) {
+      if (i > 0) await p.keyboard.press('Shift+Enter');
+      await p.keyboard.type(line);
+    }
+  };
+
+  const keptDrafts = async (p: Page): Promise<Record<string, string>> =>
+    (await p.evaluate("JSON.parse(sessionStorage.getItem('agile.drafts') ?? '{}')")) as Record<
+      string,
+      string
+    >;
+
+  browserTest(
+    'the node page sends 3,000 characters and keeps what is typed while it goes; a failed send keeps it all; past 4,000 nothing is cut and Send is off',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const node = await cockpit.streams.create('human', {
+          title: 'Ledger',
+          goal: 'g',
+          project: shop.id,
+          parent: shop.root,
+        });
+        const p = await openPage();
+        page = p;
+        await p.goto(`${cockpit.base}/?node=${node.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        const box = '[data-testid="composer-input"]';
+        const input = p.locator(box);
+        const send = p.locator('[data-testid="composer-send"]');
+        const count = p.locator('[data-testid="composer-count"]');
+        const humanLines = () =>
+          cockpit.streams
+            .readThread(node.id)
+            .entries.filter((e) => e.by === 'human' && e.kind === 'line')
+            .map((e) => e.body);
+
+        // 3,000 characters go in whole (no count yet: it shows from 3,400).
+        await input.fill(LONG);
+        expect((await input.inputValue()).length).toBe(3000);
+        expect(await count.count()).toBe(0);
+
+        // Sent while the request is held, the box stays editable: what is typed then stays.
+        const say = await holdNext(p, `/api/streams/${node.id}/say`);
+        await send.click();
+        await say.called;
+        await typeAtEnd(p, box, '\nAlso check the tests.');
+        say.release();
+        await waitUntil('the 3,000 characters on the thread', () => humanLines().includes(LONG));
+        await waitUntilAsync(
+          'only what was sent off the draft',
+          async () => (await input.inputValue()) === 'Also check the tests.',
+        );
+        expect(await keptDrafts(p)).toEqual({ [node.id]: 'Also check the tests.' });
+
+        // A send that fails keeps the draft whole, with what was typed while it was out.
+        const failing = await holdNext(p, `/api/streams/${node.id}/say`, 'the daemon fell over');
+        await send.click();
+        await failing.called;
+        await typeAtEnd(p, box, ' Then push.');
+        failing.release();
+        await p.locator('[data-testid="send-error"]').waitFor();
+        expect(await input.inputValue()).toBe('Also check the tests. Then push.');
+        expect(humanLines()).toEqual([LONG]);
+
+        // Past 4,000 nothing is cut: the count says so, and Send, Enter and Retry are off.
+        await input.fill('y'.repeat(4100));
+        expect((await input.inputValue()).length).toBe(4100);
+        await waitForText(p, '[data-testid="composer-count"] .cr-charcount-num', '4,100 / 4,000');
+        expect(await count.getAttribute('data-over')).toBe('true');
+        expect(await count.textContent()).toContain('Shorten it, or send the key point.');
+        expect(await input.getAttribute('aria-invalid')).toBe('true');
+        expect(await send.isDisabled()).toBe(true);
+        expect(await send.getAttribute('title')).toBe('Shorten it, or send the key point.');
+        expect(await p.locator('[data-testid="send-retry"]').isDisabled()).toBe(true);
+        await input.press('Enter');
+        // Back within the cap: the count stays near it, without the warning, and Send is on.
+        await input.press('Control+End');
+        for (let i = 0; i < 100; i++) await p.keyboard.press('Backspace');
+        await waitForText(p, '[data-testid="composer-count"] .cr-charcount-num', '4,000 / 4,000');
+        expect(await count.getAttribute('data-over')).toBeNull();
+        expect(await send.isEnabled()).toBe(true);
+        expect(humanLines()).toEqual([LONG]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    "a closed node's draft survives a pushed frame; a deleted node's goes, and so does one its parent's delete took, once its page is left",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const make = async (title: string, parent: string) =>
+          (await cockpit.streams.create('human', { title, goal: 'g', project: shop.id, parent }))
+            .id;
+        const paused = await make('Paused idea', shop.root);
+        await cockpit.streams.close('human', paused);
+        const work = await make('Checkout', shop.root);
+        const part = await make('Checkout totals', work);
+        const p = await openPage();
+        page = p;
+        const input = p.locator('[data-testid="composer-input"]');
+        // A reload keeps the drafts (this tab's storage); the rail may fold a part away.
+        const open = async (id: string): Promise<void> => {
+          await p.goto(`${cockpit.base}/?node=${id}`);
+          await p.locator(`[data-testid="stream-page"][data-stream="${id}"]`).waitFor();
+        };
+
+        // Closed: its composer reopens it, so what is typed there is kept through a pushed frame.
+        await open(paused);
+        await p
+          .locator('[data-testid="composer-hint"]', { hasText: 'Reopens this node' })
+          .waitFor();
+        await input.fill('Pick this up again with the new totals.');
+        const other = await make('Something else', shop.root);
+        await p.locator(`[data-testid="stream-tree"] [data-stream="${other}"]`).waitFor();
+        // The frame's effects (the drafts' upkeep among them) run after it paints.
+        await p.evaluate(
+          'new Promise((done) => requestAnimationFrame(() => setTimeout(done, 50)))',
+        );
+        expect(await input.inputValue()).toBe('Pick this up again with the new totals.');
+        expect(await keptDrafts(p)).toEqual({
+          [paused]: 'Pick this up again with the new totals.',
+        });
+
+        // A part with a draft, then its parent deleted elsewhere: the part is gone with it. What
+        // is being typed on its page stays while the page is open, and goes once you leave it.
+        await open(part);
+        await input.fill('Round half to even.');
+        await waitUntilAsync(
+          'both drafts kept',
+          async () => Object.keys(await keptDrafts(p)).length === 2,
+        );
+        await cockpit.streams.archiveTree('human', work);
+        const later = await make('Later', shop.root);
+        await p.locator(`[data-testid="stream-tree"] [data-stream="${later}"]`).waitFor();
+        await p.evaluate(
+          'new Promise((done) => requestAnimationFrame(() => setTimeout(done, 50)))',
+        );
+        expect(await input.inputValue()).toBe('Round half to even.');
+        expect(Object.keys(await keptDrafts(p)).sort()).toEqual([paused, part].sort());
+        await p.locator('[data-view="inbox"]').click();
+        await p.locator('[data-testid="inbox"]').waitFor();
+        await waitUntilAsync('the deleted part’s draft dropped once left', async () => {
+          const kept = await keptDrafts(p);
+          return kept[part] === undefined && kept[paused] !== undefined;
+        });
+
+        // The closed node deleted: its draft goes too.
+        await cockpit.streams.archiveTree('human', paused);
+        await waitUntilAsync(
+          'the deleted node’s draft dropped',
+          async () => (await p.evaluate("sessionStorage.getItem('agile.drafts')")) === null,
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'the Director takes 3,000 characters, and what is typed while it goes stays',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const p = await openPage();
+        page = p;
+        await p.goto(`${cockpit.base}/`);
+        await p.locator('[data-view="director"]').click();
+        await p.locator('[data-testid="director-page"]').waitFor();
+        const box = '[data-testid="director-composer"]';
+        const input = p.locator(box);
+        await input.fill(LONG);
+        expect((await input.inputValue()).length).toBe(3000);
+        const say = await holdNext(p, '/api/director/say');
+        await p.locator('[data-testid="director-send"]').click();
+        await say.called;
+        await typeAtEnd(p, box, '\nAnd the shop’s totals.');
+        say.release();
+        await waitUntil('the 3,000 characters on the Director’s thread', () =>
+          cockpit.store
+            .readDirectorThread()
+            .some((e) => e.by === 'human' && e.kind === 'line' && e.body === LONG),
+        );
+        await waitUntilAsync(
+          'only what was sent off the draft',
+          async () => (await input.inputValue()) === 'And the shop’s totals.',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('one verdict on a finished branch (Playwright e2e, T412)', () => {
   browserTest(
     'a branch merged by hand reads "Already merged" with Mark as merged; one that waits on another node has no Merge',
@@ -11027,6 +11429,142 @@ describe('Ask picks the model (Playwright e2e, T472)', () => {
         expect(cockpit.streams.get(made as string).sessions).toMatchObject([
           { role: 'worker', vendor: 'claude', model: 'claude-sonnet-4-6' },
         ]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
+describe('Ask and Turn into work are safe to retry (Playwright e2e, T522)', () => {
+  browserTest(
+    "an Ask whose agent doesn't start still makes one node, says so, and opens it",
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const p = await openPage();
+        page = p;
+        await p.route('**/api/streams/*/attach', (route) =>
+          route.fulfill({
+            status: 500,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: 'the vendor would not start' }),
+          }),
+        );
+        await p.goto(`${cockpit.base}/?node=${shop.root}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${shop.root}"]`).waitFor();
+        await p.keyboard.press('a');
+        const ask = p.locator('[data-testid="ask"]');
+        await ask.waitFor({ state: 'visible' });
+        await waitForText(
+          p,
+          '[data-testid="ask"] [data-testid="composer-model"]',
+          'Claude Opus 5.5 · low',
+        );
+        await ask.locator('[data-testid="composer-model"]').click();
+        const popover = p.locator('[data-testid="model-popover"]');
+        await popover.locator('[data-model="claude-sonnet-4-6"]').click();
+        await p.waitForTimeout(300);
+        await ask.locator('[data-testid="composer-model"]').click();
+        await popover.waitFor({ state: 'detached' });
+        await waitForText(
+          p,
+          '[data-testid="ask"] [data-testid="composer-model"]',
+          'Claude Sonnet 4.6 · low',
+        );
+        await ask.locator('[data-testid="ask-input"]').fill('How are prices stored?');
+        await ask.locator('[data-testid="ask-send"]').click();
+        // It closes on the node it made, and says its agent didn't start.
+        await ask.waitFor({ state: 'detached' });
+        await waitForText(
+          p,
+          '[data-testid="toast"] .cr-toast-title',
+          'The node was made, but its agent didn’t start',
+        );
+        const made = cockpit.streams.list().filter((x) => x.goal === 'How are prices stored?');
+        expect(made).toHaveLength(1);
+        await p.locator(`[data-testid="stream-page"][data-stream="${made[0]?.id}"]`).waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a Turn into work that fails adding the repository says so, and Retry finishes without moving it again',
+    async () => {
+      const reply = 'Stream the upload in chunks.';
+      const cockpit = await startStreamCockpit([
+        {
+          turns: [[{ type: 'agent_text', text: reply }, { type: 'end_turn' }]],
+          steps: [{ type: 'end_turn' }],
+        },
+        { steps: [{ type: 'end_turn' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+          repos: ['demo'],
+        });
+        // A conversation under a work node: Turn into work offers "Next to" it.
+        const work = await finishedNode(cockpit, 'Add CSV import', 's-t522', shop.root);
+        const convo = await cockpit.streams.create('human', {
+          title: 'Why buffer the file?',
+          goal: 'why does the importer read the whole file?',
+          project: shop.id,
+          parent: work,
+        });
+        const p = await openPage();
+        page = p;
+        let refuse = true;
+        await p.route(`**/api/streams/${convo.id}/add-repo`, (route) =>
+          refuse
+            ? route.fulfill({
+                status: 500,
+                contentType: 'application/json',
+                body: JSON.stringify({ error: 'the repo is busy' }),
+              })
+            : route.continue(),
+        );
+        await p.goto(`${cockpit.base}/?node=${convo.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${convo.id}"]`).waitFor();
+        await p.locator('[data-testid="attach"]').click();
+        await p
+          .locator('[data-testid="thread-entry"][data-by="agent"]', { hasText: reply })
+          .waitFor();
+        await p.locator('[data-testid="header-turn-into-work"]').click();
+        const goal = p.locator('[data-testid="turn-into-work-goal"]');
+        await waitUntilAsync('the drafted goal', async () => (await goal.inputValue()) === reply);
+        await p.locator('[data-testid="turn-into-work-repo"]').click();
+        await p.locator('[data-testid="turn-into-work-repo-option"][data-repo="demo"]').click();
+        await goal.press('Enter');
+        // It moved next to its parent, then stopped at the repository, and says so.
+        const failed = p.locator('[data-testid="turn-into-work-error"]');
+        await waitUntilAsync('the step named', async () =>
+          ((await failed.count()) > 0 ? ((await failed.textContent()) ?? '') : '').startsWith(
+            'Couldn’t give it the repository',
+          ),
+        );
+        expect(await failed.textContent()).toContain('Already done: moved, goal saved');
+        await waitUntil(
+          'moved next to its parent',
+          () => cockpit.streams.get(convo.id).parent === shop.root,
+        );
+        refuse = false;
+        await goal.press('Enter');
+        await p.locator('[data-testid="turn-into-work"]').waitFor({ state: 'detached' });
+        await waitUntil('the work node', () => cockpit.streams.get(convo.id).repo === 'demo');
+        // Still next to its old parent: Retry didn't move it up again.
+        expect(cockpit.streams.get(convo.id).parent).toBe(shop.root);
       } finally {
         await teardown([page]);
         await cockpit.stop();

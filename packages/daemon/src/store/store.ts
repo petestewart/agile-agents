@@ -5,7 +5,8 @@
  * Every write validates with the shared zod schema first (so a failing
  * validation touches no file), then does an atomic file write (fs.ts) and
  * appends the one `Event` that operation mints to `log/events.jsonl`, the
- * audit trail. Reads never mutate.
+ * audit trail. Reads never mutate. A record's file is parsed again only
+ * when it changed (`parse-cache.ts`, T547); every read returns a copy.
  *
  * One daemon process (lock.ts guards against a second), so a plain async
  * mutex around each mutation is enough: it serializes this process's own
@@ -13,7 +14,19 @@
  * reasoning about interleaving.
  */
 
-import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } from 'node:path';
 import {
   type AgentId,
@@ -27,6 +40,7 @@ import {
   type Delivery,
   type DirectorRecord,
   type Event,
+  type EventKind,
   type FavouriteModel,
   type HarnessId,
   type HarnessUpdateMode,
@@ -94,18 +108,22 @@ import {
 import { parse as parseYaml } from 'yaml';
 import { buildEvent, needsFsync } from './events';
 import {
+  type JsonlLine,
   appendJsonlLine,
   appendJsonlLines,
   fileExists,
+  forEachJsonlLine,
+  lineNumberAt,
   listDataFiles,
   readJsonFile,
-  readJsonlFile,
+  readJsonlTail,
   readYamlFile,
   removeFile,
   sweepStaleTempFiles,
   writeJsonFileAtomic,
   writeYamlFileAtomic,
 } from './fs';
+import { ParseCache } from './parse-cache';
 
 export class NotFoundError extends Error {
   constructor(entity: string, id: string) {
@@ -147,9 +165,67 @@ function writeEntityFile(absPath: string, data: unknown): void {
   }
 }
 
-function readEntityFile<T>(absPath: string): T {
-  if (absPath.endsWith('.json')) return readJsonFile<T>(absPath);
-  return readYamlFile<T>(absPath);
+/**
+ * T551: one `events.jsonl` line as an Event, or refused with the path and its
+ * line number. The number is counted only on this error path (a tail read
+ * starts mid-file and doesn't know it otherwise).
+ */
+function eventOfLine(absPath: string, line: JsonlLine): Event {
+  try {
+    return validateEvent(JSON.parse(line.text));
+  } catch (err) {
+    throw new Error(
+      `corrupt event log file ${absPath}:${lineNumberAt(absPath, line.offset)}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+/** T549: how far back each step of `readLastLine` reads; one thread line (body ≤ 800 chars) fits. */
+const TAIL_CHUNK_BYTES = 8 * 1024;
+
+/**
+ * The last non-blank line of a file, trimmed, read backwards from the end
+ * in chunks only as far as that line's start. `undefined` when every line
+ * is blank.
+ */
+function readLastLine(absPath: string): string | undefined {
+  const fd = openSync(absPath, 'r');
+  try {
+    let start = fstatSync(fd).size;
+    let tail = Buffer.alloc(0);
+    while (start > 0) {
+      const from = Math.max(0, start - TAIL_CHUNK_BYTES);
+      const chunk = Buffer.alloc(start - from);
+      readSync(fd, chunk, 0, chunk.length, from);
+      tail = Buffer.concat([chunk, tail]);
+      start = from;
+      // Whole lines only: what comes before the first newline may begin earlier in the file.
+      const firstNewline = tail.indexOf(0x0a);
+      if (start > 0 && firstNewline === -1) continue;
+      const lines = tail
+        .subarray(start > 0 ? firstNewline + 1 : 0)
+        .toString('utf8')
+        .split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = (lines[i] ?? '').trim();
+        if (line.length > 0) return line;
+      }
+    }
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** `repos.yaml` and `config.yaml` may be empty: `{}`. Named, so the parse cache keys on one validator. */
+function validateReposOrEmpty(raw: unknown): ReposConfig {
+  return validateReposConfig(raw ?? {});
+}
+
+function validateHomeConfigOrEmpty(raw: unknown): HomeConfig {
+  return validateHomeConfig(raw ?? {});
 }
 
 /** What every stream event carries in `data` (§7.4): enough to rebuild state from the log alone. */
@@ -201,6 +277,8 @@ export class StateStore {
    * only when it follows something you said (or, on a node, its question).
    */
   private readonly answers = new Map<string, AnswerState>();
+  /** T547: records parsed again only when their file changed (parse-cache.ts). */
+  private readonly parsed = new ParseCache();
 
   // An absolute symlink target may resolve through a symlinked ancestor of
   // the state root (macOS `tmpdir()` under `/var -> /private/var`), so
@@ -393,6 +471,55 @@ export class StateStore {
     return normalized;
   }
 
+  // T547: every YAML record read goes through the parse cache, and every
+  // write or removal here forgets the file. JSON entities and JSONL
+  // (threads, events, deliveries) are read whole, uncached.
+
+  /** One YAML file through `validate`, parsed again only when the file changed. */
+  private readYaml<T>(absPath: string, validate: (raw: unknown) => T): T {
+    return this.parsed.read(absPath, validate, (text) => validate(parseYaml(text)));
+  }
+
+  /** Reads and validates one YAML record; a corrupt one is refused with its path and line (§7.3). */
+  private readRecord<T>(absPath: string, what: string, validate: (raw: unknown) => T): T {
+    try {
+      return this.readYaml(absPath, validate);
+    } catch (err) {
+      throw new Error(
+        `corrupt ${what} file ${absPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * A generic entity: YAML through the cache, `.json` read fresh (the import
+   * index: derived, possibly large, and cheap to parse).
+   */
+  private readEntity<T>(absPath: string, validator: (input: unknown) => T): T {
+    if (absPath.endsWith('.json')) return validator(readJsonFile(absPath));
+    return this.readYaml(absPath, validator);
+  }
+
+  private writeYaml(absPath: string, data: unknown, mode?: number): void {
+    writeYamlFileAtomic(absPath, data, mode);
+    this.parsed.drop(absPath);
+  }
+
+  private writeEntity(absPath: string, data: unknown): void {
+    writeEntityFile(absPath, data);
+    this.parsed.drop(absPath);
+  }
+
+  private removeStateFile(absPath: string): void {
+    removeFile(absPath);
+    this.parsed.drop(absPath);
+  }
+
+  /** T547 test seam: how many files this store has parsed (cache misses), and entries held. */
+  parseCacheStats(): { parses: number; entries: number } {
+    return this.parsed.stats();
+  }
+
   /** The one writer of `log/events.jsonl` (§7.4). Gate and land events are fsynced (`needsFsync`). */
 
   private writeEventLine(event: Event): void {
@@ -425,12 +552,41 @@ export class StateStore {
   }
 
   /**
-   * Read-only: the `log/events.jsonl` audit stream. `endOffset` stops at that
-   * byte (a line boundary), so a reader can pair it with a tailer's offset.
+   * Read-only: the `log/events.jsonl` audit stream, oldest first. `endOffset`
+   * stops at that byte, so a reader can pair it with a tailer's offset (a
+   * partial line there is left out: the tailer delivers it). With `limit`
+   * (T551), only the newest `limit` events, read backwards from the end, so
+   * the cost follows the tail and not the log, which is never rotated. Only
+   * the lines read are parsed and validated: a corrupt one is refused with
+   * the path and its line number. Trade-off: a tail read never reaches a
+   * corrupt line further back, so it no longer refuses it (a full read,
+   * or `forEachEvent`, that reaches the line still does).
    */
-  listEvents(endOffset?: number): Event[] {
-    return readJsonlFile<unknown>(this.abs('log', 'events.jsonl'), endOffset).map((line) =>
-      validateEvent(line),
+  listEvents(endOffset?: number, limit?: number): Event[] {
+    const path = this.abs('log', 'events.jsonl');
+    if (limit !== undefined) {
+      return readJsonlTail(path, limit, endOffset).lines.map((line) => eventOfLine(path, line));
+    }
+    const events: Event[] = [];
+    forEachJsonlLine(path, (line) => events.push(eventOfLine(path, line)), { endOffset });
+    return events;
+  }
+
+  /**
+   * T551: every event of `kind`, oldest first, streamed through the log in
+   * chunks. A line without the kind's `"kind":"…"` (as `JSON.stringify`
+   * writes every event) is skipped unparsed, so a corrupt line is refused,
+   * with its path and line number, only when it carries the kind.
+   */
+  forEachEvent(kind: EventKind, visit: (event: Event) => void): void {
+    const path = this.abs('log', 'events.jsonl');
+    forEachJsonlLine(
+      path,
+      (line) => {
+        const event = eventOfLine(path, line);
+        if (event.kind === kind) visit(event);
+      },
+      { mark: `"kind":${JSON.stringify(kind)}` },
     );
   }
 
@@ -444,7 +600,7 @@ export class StateStore {
     return this.mutate(() => {
       const validated = validateAgentRecord(record);
       const relPath = this.agentRelPath(id);
-      writeYamlFileAtomic(this.abs(relPath), validated);
+      this.writeYaml(this.abs(relPath), validated);
       const event = buildEvent('agent_put', { agent: id, data: {} });
       return { result: validated, event };
     });
@@ -487,7 +643,7 @@ export class StateStore {
       };
       const validated = validateAgentRecord(record);
       const relPath = this.agentRelPath(id);
-      writeYamlFileAtomic(this.abs(relPath), validated);
+      this.writeYaml(this.abs(relPath), validated);
       const event = buildEvent('agent_put', { agent: id, data: { heartbeat: true } });
       this.writeEventLine(event);
       return validated;
@@ -497,14 +653,14 @@ export class StateStore {
   getAgent(id: AgentId): AgentRecord {
     const path = this.abs(this.agentRelPath(id));
     if (!fileExists(path)) throw new NotFoundError('AgentRecord', id);
-    return validateAgentRecord(readYamlFile(path));
+    return this.readYaml(path, validateAgentRecord);
   }
 
   listAgents(): Array<{ id: string; record: AgentRecord }> {
     const dir = this.abs('bus', 'agents');
     return listDataFiles(dir, '.yaml').map((name) => ({
       id: name.slice(0, -'.yaml'.length),
-      record: validateAgentRecord(readYamlFile(join(dir, name))),
+      record: this.readYaml(join(dir, name), validateAgentRecord),
     }));
   }
 
@@ -517,8 +673,8 @@ export class StateStore {
     return this.mutate(() => {
       const relPath = this.agentRelPath(id);
       if (!fileExists(this.abs(relPath))) throw new NotFoundError('AgentRecord', id);
-      const record = validateAgentRecord(readYamlFile(this.abs(relPath)));
-      removeFile(this.abs(relPath));
+      const record = this.readYaml(this.abs(relPath), validateAgentRecord);
+      this.removeStateFile(this.abs(relPath));
       const event = buildEvent('agent_deleted', {
         agent: id,
         data: {
@@ -537,7 +693,7 @@ export class StateStore {
   getPolicy(): Policy {
     const path = this.abs('policy.yaml');
     if (!fileExists(path)) throw new NotFoundError('Policy', 'policy.yaml');
-    return validatePolicy(readYamlFile(path));
+    return this.readYaml(path, validatePolicy);
   }
 
   /** `options.by` records who changed the gates block (the cockpit's Settings writes `human`). */
@@ -545,7 +701,7 @@ export class StateStore {
     return this.mutate(() => {
       const validated = validatePolicy(policy);
       const relPath = 'policy.yaml';
-      writeYamlFileAtomic(this.abs(relPath), validated);
+      this.writeYaml(this.abs(relPath), validated);
       const event = buildEvent('policy_put', { agent: options.by, data: {} });
       return { result: validated, event };
     });
@@ -575,7 +731,7 @@ export class StateStore {
         // The schema's message could quote the value; never echo a key.
         throw new Error('config.yaml would not validate with this classifier key; nothing written');
       }
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', { data: {} });
       return { result: undefined, event };
     });
@@ -632,7 +788,7 @@ export class StateStore {
           `config.yaml would not validate with these ${system} settings${hint}; nothing written`,
         );
       }
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', { agent: options.by, data: {} });
       return { result: undefined, event };
     });
@@ -647,7 +803,7 @@ export class StateStore {
       else raw.quick_drafts = false;
       const validated = validateHomeConfig(raw);
       // 0600: the same file may hold the classifier key.
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { quick_drafts: on },
@@ -668,7 +824,7 @@ export class StateStore {
       else raw.knowledge_wake = mode;
       const validated = validateHomeConfig(raw);
       // 0600: the same file may hold the classifier key.
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { knowledge_wake: mode },
@@ -693,7 +849,7 @@ export class StateStore {
       else Reflect.deleteProperty(raw, 'installed_cli');
       const validated = validateHomeConfig(raw);
       // 0600: the same file may hold the classifier key.
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { installed_cli: { [vendor]: on } },
@@ -743,7 +899,7 @@ export class StateStore {
       else Reflect.deleteProperty(raw, 'favourite_models');
       const validated = validateHomeConfig(raw);
       // 0600: the same file may hold the classifier key.
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { favourite_model: { ...favourite, on } },
@@ -761,7 +917,7 @@ export class StateStore {
       else Reflect.deleteProperty(raw, 'auto_close');
       const validated = validateHomeConfig(raw);
       // 0600: the same file may hold the classifier key.
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { auto_close: on },
@@ -780,7 +936,7 @@ export class StateStore {
       else raw.session_idle_minutes = minutes;
       const validated = validateHomeConfig(raw);
       // 0600: the same file may hold the classifier key.
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { session_idle_minutes: minutes },
@@ -801,7 +957,7 @@ export class StateStore {
       else raw.vendor_checks = mode;
       const validated = validateHomeConfig(raw);
       // 0600: the same file may hold the classifier key.
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { vendor_checks: mode },
@@ -839,7 +995,7 @@ export class StateStore {
       else raw.harness_updates = block;
       const validated = validateHomeConfig(raw);
       // 0600: the same file may hold the classifier key.
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { harness_updates: { ...(vendor !== undefined ? { vendor } : {}), mode } },
@@ -866,7 +1022,7 @@ export class StateStore {
       if (Object.keys(block).length === 0) Reflect.deleteProperty(raw, 'harness_updates');
       else raw.harness_updates = block;
       const validated = validateHomeConfig(raw);
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { harness_updates: { dismissed: { harness, version: version ?? null } } },
@@ -887,7 +1043,7 @@ export class StateStore {
       else raw.permissions = posture;
       const validated = validateHomeConfig(raw);
       // 0600: the same file may hold the classifier key.
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { permissions: posture },
@@ -919,7 +1075,7 @@ export class StateStore {
       else Reflect.deleteProperty(raw, 'model_policy');
       const validated = validateHomeConfig(raw);
       // 0600: the same file may hold the classifier key.
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { model_policy: Object.keys(valid) },
@@ -949,7 +1105,7 @@ export class StateStore {
       if (Object.keys(profiles).length > 0) raw.model_profiles = profiles;
       else Reflect.deleteProperty(raw, 'model_profiles');
       const validated = validateHomeConfig(raw);
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { model_profiles: Object.keys(valid) },
@@ -962,7 +1118,7 @@ export class StateStore {
   getHomeConfig(): HomeConfig {
     const path = this.abs('config.yaml');
     if (!fileExists(path)) return {};
-    return validateHomeConfig(readYamlFile(path) ?? {});
+    return this.readYaml(path, validateHomeConfigOrEmpty);
   }
 
   /**
@@ -987,7 +1143,7 @@ export class StateStore {
       });
       const validated = validateHomeConfig(raw);
       // 0600: the same file may hold the classifier key.
-      writeYamlFileAtomic(path, raw, 0o600);
+      this.writeYaml(path, raw, 0o600);
       const event = buildEvent('home_config_put', {
         agent: options.by,
         data: { session_defaults: sessionDefaultsEventData(validPatch) },
@@ -1012,7 +1168,7 @@ export class StateStore {
       const entry = validateRepoEntry(raw);
       const validated = validateReposConfig({ ...repos, [name]: entry });
       const relPath = 'repos.yaml';
-      writeYamlFileAtomic(this.abs(relPath), validated);
+      this.writeYaml(this.abs(relPath), validated);
       const event = buildEvent('repos_put', {
         agent: options.by,
         data: { repo: name, session_defaults: sessionDefaultsEventData(validPatch) },
@@ -1042,7 +1198,7 @@ export class StateStore {
       }
       const entry = validateRepoEntry(raw);
       const validated = validateReposConfig({ ...repos, [name]: entry });
-      writeYamlFileAtomic(this.abs('repos.yaml'), validated);
+      this.writeYaml(this.abs('repos.yaml'), validated);
       const event = buildEvent('repos_put', {
         agent: options.by,
         data: { repo: name, settings: Object.keys(patch) },
@@ -1057,14 +1213,14 @@ export class StateStore {
   getRepos(): ReposConfig {
     const path = this.abs('repos.yaml');
     if (!fileExists(path)) return {};
-    return validateReposConfig(readYamlFile(path) ?? {});
+    return this.readYaml(path, validateReposOrEmpty);
   }
 
   async putRepos(repos: unknown, options: { by?: string } = {}): Promise<ReposConfig> {
     return this.mutate(() => {
       const validated = validateReposConfig(repos);
       const relPath = 'repos.yaml';
-      writeYamlFileAtomic(this.abs(relPath), validated);
+      this.writeYaml(this.abs(relPath), validated);
       const event = buildEvent('repos_put', { agent: options.by });
       return { result: validated, event };
     });
@@ -1116,7 +1272,7 @@ export class StateStore {
   }
 
   private readStreamFile(absPath: string): Stream {
-    return readRecord(absPath, 'stream', validateStream);
+    return this.readRecord(absPath, 'stream', validateStream);
   }
 
   getStream(id: string): Stream {
@@ -1151,7 +1307,7 @@ export class StateStore {
       }
       assertNoStreamCycle(validated.id, validated.parent, (sid) => this.lookupStreamParent(sid));
       this.assertWaitsOn(validated, undefined);
-      writeYamlFileAtomic(this.abs(relPath), validated);
+      this.writeYaml(this.abs(relPath), validated);
       const event = buildEvent('stream_created', {
         stream: validated.id,
         data: {
@@ -1213,7 +1369,7 @@ export class StateStore {
       if (JSON.stringify(before.waits_on) !== JSON.stringify(after.waits_on)) {
         this.assertWaitsOn(after, before);
       }
-      writeYamlFileAtomic(this.abs(relPath), after);
+      this.writeYaml(this.abs(relPath), after);
       const event = buildEvent(options.kind ?? 'stream_updated', {
         stream: after.id,
         data: { ...streamStateData(after), principal },
@@ -1236,10 +1392,15 @@ export class StateStore {
       if (before.archived !== true) {
         throw new Error(`invalid Stream delete: ${id} is not in the trash`);
       }
-      removeFile(this.abs(this.threadRelPath(id)));
-      removeFile(this.abs(this.cardRelPath(id)));
-      removeFile(this.abs(this.deliveryQueueRelPath(id)));
-      removeFile(this.abs(relPath));
+      this.removeStateFile(this.abs(this.threadRelPath(id)));
+      this.removeStateFile(this.abs(this.cardRelPath(id)));
+      this.removeStateFile(this.abs(this.deliveryQueueRelPath(id)));
+      // T538: its docs (`streams/<id>.docs/`, DocsService) go with it.
+      rmSync(this.abs(join('streams', `${this.streamIdSegment(id)}.docs`)), {
+        recursive: true,
+        force: true,
+      });
+      this.removeStateFile(this.abs(relPath));
       this.threadAt.delete(id);
       this.answers.delete(id);
       const event = buildEvent('stream_deleted', { stream: id, data: { stream: id } });
@@ -1247,12 +1408,22 @@ export class StateStore {
     });
   }
 
-  /** Appends one validated entry to `threads/<stream>.jsonl`. */
-  async appendThreadEntry(streamId: string, entry: unknown): Promise<ThreadEntry> {
+  /**
+   * Appends one validated entry to `threads/<stream>.jsonl`. T539: `entry`
+   * may be built from the node's last line time inside the write lock, so
+   * two appends started in the same tick still get distinct `ts` (a line's
+   * identity, T503).
+   */
+  async appendThreadEntry(
+    streamId: string,
+    entry: unknown | ((lastAt: string | undefined) => unknown),
+  ): Promise<ThreadEntry> {
     return this.mutate(() => {
       const streamRel = this.streamRelPath(streamId);
       if (!fileExists(this.abs(streamRel))) throw new NotFoundError('Stream', streamId);
-      const validated = validateThreadEntry(entry);
+      const validated = validateThreadEntry(
+        typeof entry === 'function' ? entry(this.threadUpdatedAt(streamId)) : entry,
+      );
       this.assertThreadPlace(streamId, validated);
       const relPath = this.threadRelPath(streamId);
       appendJsonlLine(this.abs(relPath), validated);
@@ -1416,13 +1587,13 @@ export class StateStore {
   getDirector(): DirectorRecord | undefined {
     const path = this.abs('director.yaml');
     if (!fileExists(path)) return undefined;
-    return readRecord(path, 'director', validateDirectorRecord);
+    return this.readRecord(path, 'director', validateDirectorRecord);
   }
 
   async putDirector(record: unknown): Promise<DirectorRecord> {
     return this.mutate(() => {
       const validated = validateDirectorRecord(record);
-      writeYamlFileAtomic(this.abs('director.yaml'), validated);
+      this.writeYaml(this.abs('director.yaml'), validated);
       return {
         result: validated,
         event: buildEvent('director_put', {
@@ -1518,7 +1689,7 @@ export class StateStore {
   }
 
   private readKnowledgeFile(absPath: string): KnowledgeItem {
-    return readRecord(absPath, 'knowledge item', validateKnowledgeItem);
+    return this.readRecord(absPath, 'knowledge item', validateKnowledgeItem);
   }
 
   getKnowledge(id: string): KnowledgeItem {
@@ -1553,7 +1724,7 @@ export class StateStore {
       if (fileExists(this.abs(relPath))) {
         throw new AlreadyExistsError('KnowledgeItem', validated.id);
       }
-      writeYamlFileAtomic(this.abs(relPath), validated);
+      this.writeYaml(this.abs(relPath), validated);
       return {
         result: validated,
         event: buildEvent('knowledge_put', {
@@ -1582,7 +1753,7 @@ export class StateStore {
       const after = assertKnowledgeAcceptable(
         assertKnowledgeWrite(principal, before, validateKnowledgeItem(mutator(before))),
       );
-      writeYamlFileAtomic(this.abs(relPath), after);
+      this.writeYaml(this.abs(relPath), after);
       return {
         result: after,
         event: buildEvent(options.kind ?? 'knowledge_put', {
@@ -1606,7 +1777,7 @@ export class StateStore {
         if (!LegacyRuleIdSchema.safeParse(id).success) {
           throw new Error(`invalid Rule file: rules/${name} must be named R-<ulid>.yaml`);
         }
-        return readRecord(join(dir, name), 'rule', validateLegacyRule);
+        return this.readRecord(join(dir, name), 'rule', validateLegacyRule);
       })
       .sort((a, b) => a.id.localeCompare(b.id));
   }
@@ -1621,7 +1792,7 @@ export class StateStore {
   }
 
   private readProjectFile(absPath: string): Project {
-    return readRecord(absPath, 'project', validateProject);
+    return this.readRecord(absPath, 'project', validateProject);
   }
 
   getProject(id: string): Project {
@@ -1651,7 +1822,7 @@ export class StateStore {
       const relPath = this.projectRelPath(validated.id);
       if (fileExists(this.abs(relPath))) throw new AlreadyExistsError('Project', validated.id);
       this.assertProjectNameFree(validated.name);
-      writeYamlFileAtomic(this.abs(relPath), validated);
+      this.writeYaml(this.abs(relPath), validated);
       return { result: validated, event: projectEvent('project_created', validated) };
     });
   }
@@ -1669,7 +1840,7 @@ export class StateStore {
         }
       }
       this.assertProjectNameFree(after.name, after.id);
-      writeYamlFileAtomic(this.abs(relPath), after);
+      this.writeYaml(this.abs(relPath), after);
       return { result: after, event: projectEvent('project_updated', after) };
     });
   }
@@ -1702,6 +1873,28 @@ export class StateStore {
       'thread',
       validateThreadEntry,
     );
+  }
+
+  /**
+   * T549: the thread's newest entry, from the file's tail: the hook's deny
+   * coalescing asks on every refused call, and `readThread` reads and
+   * validates every line. `undefined` for a missing or empty thread; a bad
+   * last line is refused with the file named, as `readThread` would.
+   */
+  lastThreadEntry(streamId: string): ThreadEntry | undefined {
+    const absPath = this.abs(this.threadRelPath(streamId));
+    if (!fileExists(absPath)) return undefined;
+    const line = readLastLine(absPath);
+    if (line === undefined) return undefined;
+    try {
+      return validateThreadEntry(JSON.parse(line));
+    } catch (err) {
+      throw new Error(
+        `corrupt thread file ${absPath} (last line): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   /** Every line validated; a bad one is refused with the file and its line number (§7.3). */
@@ -1737,7 +1930,7 @@ export class StateStore {
   getCard(node: string): StatusCard | undefined {
     const path = this.abs(this.cardRelPath(node));
     if (!fileExists(path)) return undefined;
-    return readCardFile(path);
+    return this.parsed.read(path, parseCardText, (text) => parseCardText(path, text));
   }
 
   /** Read-modify-write under the mutex; the mutator returns `undefined` to leave the file alone. */
@@ -1752,7 +1945,7 @@ export class StateStore {
       if (next === undefined) return before;
       const after = validateStatusCard(next);
       if (after.node !== node) throw new Error(`invalid card write: node ${after.node} ≠ ${node}`);
-      writeYamlFileAtomic(this.abs(relPath), after);
+      this.writeYaml(this.abs(relPath), after);
       return after;
     });
   }
@@ -1819,6 +2012,8 @@ export class StateStore {
   /**
    * Validating put/get/delete for entities with no dedicated helper (the
    * bus inbox and gate records). YAML unless `relPath` ends in `.json`.
+   * Pass a named validator, not one built per call: the parse cache keeps
+   * one value per validator (T547).
    */
   async putEntity<T>(
     rawRelPath: string,
@@ -1828,7 +2023,7 @@ export class StateStore {
     const relPath = this.containedRelPath(rawRelPath);
     return this.mutate(() => {
       const validated = validator(data);
-      writeEntityFile(this.abs(relPath), validated);
+      this.writeEntity(this.abs(relPath), validated);
       const event = buildEvent('entity_put', { data: { relPath } });
       return { result: validated, event };
     });
@@ -1838,14 +2033,14 @@ export class StateStore {
     const relPath = this.containedRelPath(rawRelPath);
     const path = this.abs(relPath);
     if (!fileExists(path)) throw new NotFoundError('Entity', relPath);
-    return validator(readEntityFile(path));
+    return this.readEntity(path, validator);
   }
 
   async deleteEntity(rawRelPath: string): Promise<void> {
     const relPath = this.containedRelPath(rawRelPath);
     return this.mutate(() => {
       if (!fileExists(this.abs(relPath))) throw new NotFoundError('Entity', relPath);
-      removeFile(this.abs(relPath));
+      this.removeStateFile(this.abs(relPath));
       const event = buildEvent('entity_deleted', { data: { relPath } });
       return { result: undefined, event };
     });
@@ -1856,7 +2051,7 @@ export class StateStore {
     const relDir = this.containedRelPath(rawRelDir);
     const dirAbs = this.abs(relDir);
     const names = [...listDataFiles(dirAbs, '.yaml'), ...listDataFiles(dirAbs, '.json')];
-    return names.map((name) => validator(readEntityFile(this.abs(relDir, name))));
+    return names.map((name) => this.readEntity(this.abs(relDir, name), validator));
   }
 }
 
@@ -1928,13 +2123,11 @@ function projectEvent(kind: 'project_created' | 'project_updated', project: Proj
   });
 }
 
-/** Reads and validates one YAML record; a corrupt one is refused with its path (§7.3). */
 /**
- * A card, refused with `path:line` when corrupt (T283): the YAML error's
- * line, or the line of the first invalid top-level key (1 if none).
+ * A card's text, refused with `path:line` when corrupt (T283): the YAML
+ * error's line, or the line of the first invalid top-level key (1 if none).
  */
-function readCardFile(absPath: string): StatusCard {
-  const text = readFileSync(absPath, 'utf8');
+function parseCardText(absPath: string, text: string): StatusCard {
   const fail = (line: number, msg: string): never => {
     throw new Error(`corrupt card file ${absPath}:${line}: ${msg}`);
   };
@@ -1951,14 +2144,4 @@ function readCardFile(absPath: string): StatusCard {
   const idx =
     typeof key === 'string' ? text.split('\n').findIndex((l) => l.startsWith(`${key}:`)) : -1;
   return fail(idx >= 0 ? idx + 1 : 1, formatZodError('StatusCard', result.error));
-}
-
-function readRecord<T>(absPath: string, what: string, validate: (raw: unknown) => T): T {
-  try {
-    return validate(readYamlFile(absPath));
-  } catch (err) {
-    throw new Error(
-      `corrupt ${what} file ${absPath}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
 }

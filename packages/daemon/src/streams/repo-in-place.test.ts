@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ACP_PROVIDERS } from '@agile-agents/acp-client';
@@ -152,6 +152,47 @@ describe('T473: back to talk, and back to work', () => {
     expect(elsewhere.repo).toBe('web');
     // The api work stays parked until api comes back.
     expect(elsewhere.parked?.repo).toBe('api');
+  }, 30_000);
+
+  test('T535: an empty plain directory left where the parked worktree was is replaced by a real checkout', async () => {
+    const node = await conversation();
+    const { node: working } = await reshape.addRepo(node.id, 'api');
+    await reshape.toTalk(node.id);
+    const wt = working.worktree as string;
+    rmSync(wt, { recursive: true, force: true });
+    mkdirSync(wt);
+    const { node: back } = await reshape.addRepo(node.id, 'api');
+    expect(back.worktree).toBe(wt);
+    expect(existsSync(join(wt, '.git'))).toBe(true);
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], wt)).toBe(working.branch as string);
+  }, 30_000);
+
+  test('T536: checking a parked branch out again runs no repo hook', async () => {
+    const node = await conversation();
+    const { node: working } = await reshape.addRepo(node.id, 'api');
+    await reshape.toTalk(node.id);
+    git(['worktree', 'remove', '--force', working.worktree as string], api);
+    const marker = `${api}-hooks-ran`;
+    try {
+      for (const hook of ['post-checkout', 'reference-transaction']) {
+        writeFileSync(
+          join(api, '.git', 'hooks', hook),
+          `#!/bin/sh\necho ${hook} >> '${marker}'\n`,
+          {
+            mode: 0o755,
+          },
+        );
+      }
+      git(['update-ref', 'refs/heads/control', 'HEAD'], api);
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
+      const { node: back } = await reshape.addRepo(node.id, 'api');
+      expect(back.branch).toBe(working.branch);
+      expect(existsSync(back.worktree as string)).toBe(true);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(marker, { force: true });
+    }
   }, 30_000);
 });
 
@@ -350,6 +391,33 @@ describe('T205 + Repo in place', () => {
     expect(webPart?.human.status).toBe('open');
     expect(roleOf(node.id)).toBe('coordinating');
     expect(liveChildrenOf(node.id, streams.list()).map((c) => c.repo)).toEqual(['web']);
+    // T535: what was removed is off the record too: no stale worktree path, no deleted branch.
+    expect(apiPart?.worktree).toBeUndefined();
+    expect(apiPart?.branch).toBeUndefined();
+    expect(apiPart?.repo).toBe('api');
+  }, 30_000);
+
+  test("T535 (D2): writing to Switch repo's closed part starts it in a fresh worktree, never in the main checkout", async () => {
+    const node = await conversation();
+    const work = (await reshape.addRepo(node.id, 'api')).node;
+    const { parts } = await reshape.switchRepo(node.id, 'web');
+    const apiPart = parts[0] as Stream;
+    await attach.stopAll();
+
+    // T471: a message reopens it and starts its agent.
+    const said = await attach.say(apiPart.id, 'keep going on api', { start: true });
+    expect(said.started).toBe(true);
+    const reopened = streams.get(apiPart.id);
+    expect(reopened.human.status).toBe('open');
+    const wt = reopened.worktree as string;
+    expect(existsSync(join(wt, '.git'))).toBe(true);
+    expect(git(['rev-parse', '--show-toplevel'], wt)).toBe(realpathSync(wt));
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], wt)).toBe(reopened.branch as string);
+    expect(reopened.branch).not.toBe(git(['rev-parse', '--abbrev-ref', 'HEAD'], api));
+    expect(reopened.sessions.at(-1)?.worktree).toBe(wt);
+    // Nothing made in the operator's checkout; the old node's path holds no plain directory.
+    expect(git(['status', '--porcelain'], api)).toBe('');
+    if (work.worktree !== wt) expect(existsSync(work.worktree as string)).toBe(false);
   }, 30_000);
 
   test('switch refuses a branch with commits; add-repo refuses the same repo and a project', async () => {

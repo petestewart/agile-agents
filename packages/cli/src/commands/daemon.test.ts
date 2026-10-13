@@ -21,11 +21,18 @@
  */
 
 import { afterEach, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { resolveHomePaths } from '@agile-agents/daemon';
 import { freePort } from '../test-support';
-import { formatDaemonStatus, runDaemonStart } from './daemon';
+import {
+  daemonStatusReport,
+  formatDaemonStatus,
+  runDaemonStart,
+  runDaemonStop,
+  runningPid,
+} from './daemon';
 
 const CLI_ENTRY = join(import.meta.dir, '..', 'index.ts');
 
@@ -95,6 +102,21 @@ test('a busy port is never reported as a started daemon, even with a state home'
   expect(Date.now() - startedAt).toBeLessThan(2_000);
   expect(existsSync(join(home, 'agiled.pid'))).toBe(false);
 }, 30_000);
+
+test('T533: a daemon still starting holds the lock: no pid yet, and stop leaves its lock alone', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'agile-starting-home-'));
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+  const pidPath = join(home, 'agiled.pid');
+  // This test process stands in for the starting daemon: a live pid.
+  writeFileSync(pidPath, `starting ${process.pid}`);
+  expect(runningPid(resolveHomePaths({ home }))).toBeUndefined();
+  expect(daemonStatusReport(home).running).toBe(false);
+  expect(await runDaemonStop(home)).toContain(`agiled is still starting (pid ${process.pid}`);
+  expect(readFileSync(pidPath, 'utf8')).toBe(`starting ${process.pid}`);
+  // Published, it is the running daemon.
+  writeFileSync(pidPath, String(process.pid));
+  expect(runningPid(resolveHomePaths({ home }))).toBe(process.pid);
+});
 
 test('T166: daemon status prints the state home first', () => {
   const base = {

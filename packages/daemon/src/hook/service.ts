@@ -40,7 +40,7 @@ import { type RuleStatsOutcome, knowledgeMatchesPaths } from '../knowledge/servi
 import { isPathInside } from '../permissions/command';
 import { nodeReadScope } from '../permissions/policy-tables';
 import { projectReadSettings } from '../permissions/posture';
-import { worktreeBranchLookups } from '../permissions/push-detector';
+import { worktreeBranchLookups, worktreeGitAliases } from '../permissions/push-detector';
 import { patternRulesOf, protectedBranchesFor, touchedPaths } from '../permissions/rule-checks';
 import { directorReadScope } from '../permissions/visibility';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
@@ -54,7 +54,8 @@ import {
   pathsForToolCall,
 } from './decide';
 import { fingerprintCall } from './fingerprint';
-import { type RouteBandGates, routeCall, routePolicy } from './route-band';
+import { PI_VENDOR, piToClaudePayload } from './pi';
+import { type RouteBandGates, routeCall, routePolicy, settleFromGates } from './route-band';
 import {
   type ClaudePreToolUsePayload,
   DEFAULT_MAX_READ_BYTES,
@@ -160,6 +161,8 @@ export interface HookServiceOptions {
 export interface HookRules {
   /** §5.3's one scope filter, for this session's stream. */
   inScope(streamId: string): KnowledgeItem[];
+  /** The same filter for the record this decision already read (T549); without it, `inScope`. */
+  inScopeOf?(stream: Stream): KnowledgeItem[];
   /** §5.7's counters, bumped for every rule the decision evaluated. */
   recordFired(id: string, outcome: RuleStatsOutcome): Promise<unknown>;
 }
@@ -203,6 +206,17 @@ const DIRECTOR_NETWORK_TOOLS: ReadonlySet<string> = new Set(['WebFetch', 'WebSea
 
 const UNRESOLVED_CWD_REASON = 'agile: cwd is not a registered stream worktree';
 
+/**
+ * T543: a call as `decide.ts` reads it, by the vendor of the session it
+ * resolved to: Pi's own tool names and inputs are mapped (`hook/pi.ts`).
+ */
+function forVendor(
+  vendor: string | undefined,
+  payload: ClaudePreToolUsePayload,
+): ClaudePreToolUsePayload {
+  return vendor === PI_VENDOR ? piToClaudePayload(payload) : payload;
+}
+
 /** The `agile_agent` hint, written only by the CLI (from `AGILE_AGENT`); Claude's own payload never has it. */
 function agentHintFrom(payload: Record<string, unknown>): string | undefined {
   return typeof payload.agile_agent === 'string' ? payload.agile_agent : undefined;
@@ -214,7 +228,28 @@ export interface ResolvedHookIdentity {
   stream: string;
   role: SessionRole;
   worktreePath: string;
+  /** T543: the record's vendor; a `pi` session's calls are read as Claude's. */
+  vendor: string;
 }
+
+/**
+ * T549: the records one decision needs, each read from the store at most
+ * once: the node's record (its ancestors are read once, by the rules
+ * service), `repos.yaml` and the rules in scope. Built per call with its
+ * context (`contextFor`) and dropped with it, so no call is answered from
+ * another's reads.
+ */
+interface DecisionReads {
+  /** The node's record; `undefined` when it is missing or unreadable (each reader fails closed, as before). */
+  readonly record: Stream | undefined;
+  /** `repos.yaml`, read on first use; a read error is thrown again to every caller, each of which handles it. */
+  repos(): ReposConfig;
+  /** Every rule in scope for the node (§5.3), computed on first use. */
+  rules(): KnowledgeItem[];
+}
+
+/** A decision's context and the reads it was built from (T549), for the tiers after `decidePreToolUse`. */
+type HookCallContext = HookDecisionContext & { reads: DecisionReads };
 
 export class HookService {
   private readonly limits: HookLimits;
@@ -292,6 +327,7 @@ export class HookService {
           stream: DIRECTOR_NODE,
           role: 'coordinator',
           worktreePath: scratch,
+          vendor: chosen.record.vendor,
         };
       }
       const worktreePath = this.absWorktree(chosen.record.worktree);
@@ -301,6 +337,7 @@ export class HookService {
         stream: streamId,
         role: chosen.record.role ?? 'worker',
         worktreePath,
+        vendor: chosen.record.vendor,
       };
     }
 
@@ -310,13 +347,23 @@ export class HookService {
   private async buildContext(
     cwd: string | undefined,
     agentHint?: string,
-    // Strips normal-priority messages for a caller with no
-    // `additionalContext` channel, so they are never folded in and acked.
     noAdditionalContextChannel = false,
-  ): Promise<HookDecisionContext | undefined> {
+  ): Promise<HookCallContext | undefined> {
     const resolved = this.resolveAgentByCwd(cwd, agentHint);
     if (resolved === undefined) return undefined;
-    const { session, stream, role, worktreePath } = resolved;
+    return this.contextFor(resolved, noAdditionalContextChannel);
+  }
+
+  /** The decision context for a resolved session, from one read of each record it needs (T549). */
+  private async contextFor(
+    resolved: ResolvedHookIdentity,
+    // Strips normal-priority messages for a caller with no
+    // `additionalContext` channel, so they are never folded in and acked.
+    noAdditionalContextChannel: boolean,
+  ): Promise<HookCallContext> {
+    const { session, stream, role, worktreePath, vendor } = resolved;
+    // T543: Pi's `tool_call` result has no channel either, whatever its extension sent.
+    const noChannel = noAdditionalContextChannel || vendor === PI_VENDOR;
 
     // Liveness heartbeat rides on every hook call (store-side coalesced to
     // 30 s). A covering record may have been removed since resolution;
@@ -327,41 +374,89 @@ export class HookService {
       if (!(err instanceof NotFoundError)) throw err;
     }
 
+    const reads = this.readsFor(stream);
     const branches = worktreeBranchLookups(worktreePath);
     return {
       session,
       stream,
       role,
       worktreePath,
-      inbox: noAdditionalContextChannel
+      vendor,
+      inbox: noChannel
         ? this.bus.poll(session as AgentId).filter((m) => m.priority !== 'normal')
         : this.bus.poll(session as AgentId),
       limits: this.limits,
       fileSize: this.fileSize,
-      ...this.readScope(stream),
+      ...this.readScope(reads),
       // Both git lookups are lazy and memoized: an ordinary call spawns none.
-      patternRules: this.patternRulesFor(stream),
-      protectedBranches: protectedBranchesFor(this.store, stream),
+      patternRules: patternRulesOf(reads.rules()),
+      protectedBranches: this.protectedBranches(stream, reads),
       upstreamBranch: branches.upstream,
       headBranch: branches.head,
-      ...this.visibilityFor(stream, worktreePath),
+      // T525: lazy and memoized too: a builtin git subcommand looks up no alias.
+      gitAlias: worktreeGitAliases(worktreePath),
+      ...this.visibilityFor(reads, worktreePath),
       // T442: a conversation (no repo of its own) reads repos as a coordinator does.
-      ...(stream !== DIRECTOR_NODE && this.streamRecord(stream)?.repo === undefined
+      ...(stream !== DIRECTOR_NODE && reads.record?.repo === undefined
         ? { noOwnRepo: true as const }
         : {}),
+      reads,
     };
+  }
+
+  /**
+   * T549: this call's reads (`DecisionReads`). The record is read now (every
+   * context needs it); the registry and the rules on first use, then kept
+   * for the rest of this call only.
+   */
+  private readsFor(stream: string): DecisionReads {
+    const record = this.streamRecord(stream);
+    let repos: { value: ReposConfig } | { error: unknown } | undefined;
+    let rules: KnowledgeItem[] | undefined;
+    return {
+      record,
+      repos: () => {
+        if (repos === undefined) {
+          try {
+            repos = { value: this.store.getRepos() };
+          } catch (error) {
+            repos = { error };
+          }
+        }
+        if ('error' in repos) throw repos.error;
+        return repos.value;
+      },
+      rules: () => {
+        rules ??= this.rulesInScope(stream, record);
+        return rules;
+      },
+    };
+  }
+
+  /** D8's protected branches (`protectedBranchesFor`), over this call's record and registry. */
+  private protectedBranches(stream: string, reads: DecisionReads): readonly string[] {
+    return protectedBranchesFor(
+      {
+        getStream: (id) => {
+          if (reads.record === undefined) throw new NotFoundError('Stream', id);
+          return reads.record;
+        },
+        getRepos: () => reads.repos(),
+      },
+      stream,
+    );
   }
 
   /** P13's inputs: the node's repo and project, and the registry. An unreadable repos.yaml fails closed (`reposError`). */
   private visibilityFor(
-    stream: string,
+    reads: DecisionReads,
     worktreePath: string,
   ): Pick<HookDecisionContext, 'visibility'> {
-    const record = this.streamRecord(stream);
+    const record = reads.record;
     let repos: ReposConfig = {};
     let reposError: string | undefined;
     try {
-      repos = this.store.getRepos();
+      repos = reads.repos();
     } catch (err) {
       reposError = err instanceof Error ? err.message : String(err);
     }
@@ -378,19 +473,14 @@ export class HookService {
 
   /** T213, T330, T457: the roots this node may read, what it never may, and its posture. */
   private readScope(
-    stream: string,
+    reads: DecisionReads,
   ): Pick<HookDecisionContext, 'readRoots' | 'hiddenRoots' | 'posture'> {
     return nodeReadScope(
-      this.streamRecord(stream),
-      () => this.store.getRepos(),
+      reads.record,
+      () => reads.repos(),
       this.options.agileHome,
       projectReadSettings(this.store),
     );
-  }
-
-  /** The accepted pattern rules in scope for this stream (§5.3). */
-  private patternRulesFor(stream: string): KnowledgeItem[] {
-    return patternRulesOf(this.rulesInScope(stream));
   }
 
   /** §5.7's counters for every rule this decision evaluated — `stats.fired`, plus `violated` for the one it denied on. */
@@ -467,10 +557,10 @@ export class HookService {
    * and a call the table would route is denied (fail-closed).
    */
   private async directorPreToolUse(
-    payload: ClaudePreToolUsePayload,
-  ): Promise<PreToolUseHookOutput | undefined> {
-    const who = this.resolveAgentByCwd(payload.cwd, agentHintFrom(payload), { streamless: true });
-    if (who === undefined || who.stream !== DIRECTOR_NODE) return undefined;
+    who: ResolvedHookIdentity,
+    raw: ClaudePreToolUsePayload,
+  ): Promise<PreToolUseHookOutput> {
+    const payload = forVendor(who.vendor, raw);
     this.options.sightings?.record(who.session);
     try {
       await this.store.heartbeat(who.session as AgentId, {}, this.now);
@@ -508,14 +598,15 @@ export class HookService {
 
   async preToolUse(raw: ClaudePreToolUsePayload): Promise<PreToolUseHookOutput> {
     // T506: `agile hook pre-tool-use --vendor codex` marks Codex's input, read as Claude's.
-    const payload = raw.agile_vendor === 'codex' ? codexToClaudePayload(raw) : raw;
-    const director = await this.directorPreToolUse(payload);
-    if (director !== undefined) return director;
-    const ctx = await this.buildContext(
-      payload.cwd,
-      agentHintFrom(payload),
-      payload.no_additional_context_channel === true,
-    );
+    const marked = raw.agile_vendor === 'codex' ? codexToClaudePayload(raw) : raw;
+    // T549: one registry read places the call, the Director's streamless
+    // session included; a session with a stream resolves the same either way.
+    const who = this.resolveAgentByCwd(marked.cwd, agentHintFrom(marked), { streamless: true });
+    if (who?.stream === DIRECTOR_NODE) return this.directorPreToolUse(who, marked);
+    const ctx =
+      who === undefined
+        ? undefined
+        : await this.contextFor(who, marked.no_additional_context_channel === true);
     if (ctx === undefined) {
       await this.logDecision(undefined, 'pre_tool_use', {
         decision: 'deny',
@@ -530,6 +621,8 @@ export class HookService {
       };
     }
     this.options.sightings?.record(ctx.session);
+    // T543: by the session's record, not the payload, so any copy of the Pi extension is gated.
+    const payload = forVendor(ctx.vendor, marked);
 
     let decision = decidePreToolUse(ctx, payload);
     let allowedBy: string | undefined;
@@ -547,9 +640,24 @@ export class HookService {
     }
 
     // 3. The classifier tier (§8.1 step 3), only for a call the tiers above
-    // allowed: a settled call is not worth a round trip.
-    if (decision.decision === 'allow') {
-      const tier = await this.classifierTier(ctx, payload);
+    // allowed: a settled call is not worth a round trip. A call the human
+    // approved just now (the route above) is not asked either (T526).
+    const rules =
+      decision.decision === 'allow' && allowedBy === undefined
+        ? this.classifierRulesFor(ctx, payload)
+        : [];
+    // T526: what the human already said about this exact call, when a
+    // classifier rule held it, settles it before the classifier is asked:
+    // approved (spent now) passes, pending or denied refuses. A paid call per
+    // retry, and a re-banding that could refuse what the human approved, are
+    // what this saves.
+    const settled = rules.length > 0 ? await this.settledByGate(ctx, payload) : undefined;
+    if (settled !== undefined) {
+      if (settled.decision.decision !== 'allow') wasRouted = true;
+      decision = { ...decision, ...settled.decision };
+      allowedBy = settled.allowedBy;
+    } else if (rules.length > 0) {
+      const tier = await this.classifierTier(ctx, payload, rules);
       if (tier !== undefined) {
         const applied = await this.applyClassifierTier(ctx, payload, tier, decision);
         if (tier.outcome.band === 'route') wasRouted = true;
@@ -589,33 +697,47 @@ export class HookService {
    * case). The opt-out and a missing key go through the same fail policy as
    * an outage (§6.4), by failing with `not_configured`.
    */
-  private async classifierTier(
-    ctx: HookDecisionContext,
+  /** The classifier rules in scope for this call (§6.2): none, and the tier is free. */
+  private classifierRulesFor(
+    ctx: HookCallContext,
     payload: ClaudePreToolUsePayload,
-  ): Promise<{ outcome: ClassifierTierOutcome; called: boolean } | undefined> {
+  ): KnowledgeItem[] {
     const command = payload.tool_input?.command;
     const touched = touchedPaths({
       worktreePath: ctx.worktreePath,
       paths: pathsForToolCall(payload),
       ...(typeof command === 'string' && command.length > 0 ? { command } : {}),
     });
-    const rules = classifierRulesOf(this.rulesInScope(ctx.stream)).filter(
+    return classifierRulesOf(ctx.reads.rules()).filter(
       (rule) => touched === undefined || knowledgeMatchesPaths(rule, touched),
     );
+  }
+
+  private async classifierTier(
+    ctx: HookCallContext,
+    payload: ClaudePreToolUsePayload,
+    rules: KnowledgeItem[],
+  ): Promise<{ outcome: ClassifierTierOutcome; called: boolean } | undefined> {
     if (rules.length === 0) return undefined;
 
+    // The record and registry as this call's context read them (T549).
+    const { record } = ctx.reads;
     const tier = this.options.classifier;
     const enabled =
       tier !== undefined &&
       classifierEnabled({
-        stream: this.streamRecord(ctx.stream),
-        repo: this.repoEntry(ctx.stream),
+        stream: record,
+        repo: this.repoEntry(ctx.reads),
         config: tier.config,
         ...(tier.env !== undefined ? { env: tier.env } : {}),
       });
 
     const state = buildClassifierState(
-      { stream: ctx.stream, worktreePath: ctx.worktreePath, ...(this.repoOf(ctx.stream) ?? {}) },
+      {
+        stream: ctx.stream,
+        worktreePath: ctx.worktreePath,
+        ...(record?.repo !== undefined ? { repo: record.repo } : {}),
+      },
       payload,
     );
     const classifier: Classifier =
@@ -748,7 +870,7 @@ export class HookService {
    * deny gets a plain line. Best effort; the decision is already made.
    */
   private async noteHit(
-    ctx: HookDecisionContext,
+    ctx: HookCallContext,
     payload: ClaudePreToolUsePayload,
     decision: HookDecision,
     routed: boolean,
@@ -759,7 +881,7 @@ export class HookService {
     const target = hitTarget(payload);
     let body: string;
     if (ruleId !== undefined) {
-      const rule = this.rulesInScope(ctx.stream).find((each) => each.id === ruleId);
+      const rule = ctx.reads.rules().find((each) => each.id === ruleId);
       const label = rule?.name !== undefined ? `${rule.name} (${ruleId})` : ruleId;
       body = `rule_hit: ${label} ${outcome} \`${target}\`${rule !== undefined ? ` — rule: ${rule.text}` : ''}`;
     } else {
@@ -768,22 +890,24 @@ export class HookService {
     const capped = body.slice(0, THREAD_BODY_MAX_CHARS);
     // Coalesce a retry storm: if the newest thread entry is this same hit
     // from the same session, append nothing and flag `thread_repeat` on the
-    // event instead.
+    // event instead. T549: the in-memory key first, and only on a match the
+    // thread's last line, read from its tail.
     const key = `${ctx.session}\u0000${capped}`;
-    try {
-      const last = this.store.readThread(ctx.stream).at(-1);
-      if (
-        last !== undefined &&
-        last.by === 'daemon' &&
-        last.kind === 'event' &&
-        last.body === capped &&
-        last.ref === ruleId &&
-        this.lastHit.get(ctx.stream) === key
-      ) {
-        return true;
+    if (this.lastHit.get(ctx.stream) === key) {
+      try {
+        const last = this.store.lastThreadEntry(ctx.stream);
+        if (
+          last !== undefined &&
+          last.by === 'daemon' &&
+          last.kind === 'event' &&
+          last.body === capped &&
+          last.ref === ruleId
+        ) {
+          return true;
+        }
+      } catch {
+        // Unreadable thread: fall through and try the append.
       }
-    } catch {
-      // Unreadable thread: fall through and try the append.
     }
     try {
       await this.store.appendThreadEntry(ctx.stream, {
@@ -801,11 +925,13 @@ export class HookService {
   }
 
   /** Every rule in scope for this stream, or none when no rules service is wired. */
-  private rulesInScope(stream: string): KnowledgeItem[] {
+  private rulesInScope(stream: string, record: Stream | undefined): KnowledgeItem[] {
     const rules = this.options.rules;
     if (rules === undefined) return [];
     try {
-      return rules.inScope(stream);
+      if (rules.inScopeOf === undefined) return rules.inScope(stream);
+      // No record: `inScope` would fail reading it the same way.
+      return record === undefined ? [] : rules.inScopeOf(record);
     } catch {
       return [];
     }
@@ -819,20 +945,32 @@ export class HookService {
     }
   }
 
-  /** `{ repo }` for the state's stream/repo line, or nothing when the stream has none. */
-  private repoOf(stream: string): { repo: string } | undefined {
-    const repo = this.streamRecord(stream)?.repo;
-    return repo === undefined ? undefined : { repo };
-  }
-
-  private repoEntry(stream: string): RepoEntry | undefined {
-    const repo = this.streamRecord(stream)?.repo;
+  private repoEntry(reads: DecisionReads): RepoEntry | undefined {
+    const repo = reads.record?.repo;
     if (repo === undefined) return undefined;
     try {
-      return this.store.getRepos()[repo];
+      return reads.repos()[repo];
     } catch {
       return undefined;
     }
+  }
+
+  /** T526: the answer an existing gate gives this exact call (`settleFromGates`), or none. */
+  private async settledByGate(
+    ctx: HookDecisionContext,
+    payload: ClaudePreToolUsePayload,
+  ): Promise<{ decision: HookDecision; allowedBy?: string } | undefined> {
+    const gates = this.options.gates;
+    const call = fingerprintCall(payload, ctx.worktreePath);
+    if (gates === undefined || call === undefined) return undefined;
+    // Only a gate a classifier rule raised: a read held under Ask, then allowed
+    // by a posture change, is the tiers' to clear, not a stale card's (T457).
+    const settled = await settleFromGates(gates, { session: ctx.session, call, ruled: true });
+    if (settled === undefined) return undefined;
+    return {
+      decision: settled.decision,
+      ...(settled.allowedBy !== undefined ? { allowedBy: settled.allowedBy } : {}),
+    };
   }
 
   /** The route band for one `ask` verdict. No gates or no fingerprintable call: plain deny, never allow. */
@@ -891,7 +1029,8 @@ export class HookService {
         }
       : { decision: 'allow' };
     await this.logDecision(ctx, 'post_tool_use', decision);
-    if (!READ_ONLY_TOOLS.has(payload.tool_name ?? '')) {
+    const tool = forVendor(ctx.vendor, payload).tool_name;
+    if (!READ_ONLY_TOOLS.has(tool ?? '')) {
       this.options.onFilesMayHaveChanged?.(ctx.stream);
     }
 

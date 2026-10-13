@@ -9,7 +9,7 @@
 
 import type { Question } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
-import { optionalString, requireOption, requirePositional } from '../args';
+import { optionalString, refuseExtraWords, requireOption, requirePositional } from '../args';
 import { callRpc } from '../client';
 import { printFields, printJson } from '../format';
 
@@ -36,6 +36,7 @@ export async function runQuestionAnswer(
 ): Promise<number> {
   const id = requirePositional(args, 0, 'question-id');
   const answer = requireOption(args.options, 'answer');
+  refuseExtraWords(args, 1, 'agile question answer', '--answer "use the second one"');
   const result = await callRpc<AnswerQuestionRpcResult>(socketPath, 'question.answer', {
     id,
     answer,
@@ -60,6 +61,7 @@ export async function runQuestionRaise(
 ): Promise<number> {
   const stream = requireOption(args.options, 'stream');
   const text = requireOption(args.options, 'text');
+  refuseExtraWords(args, 0, 'agile question raise', '--text "which branch?"');
   const result = await callRpc<Question>(socketPath, 'question.raise', {
     stream,
     raised_by: optionalString(args.options, 'by') ?? 'human',

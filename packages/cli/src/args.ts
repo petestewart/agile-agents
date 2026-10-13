@@ -15,6 +15,9 @@ export interface ParsedArgs {
   repeated?: Record<string, string[]>;
 }
 
+/** `--`: the end of the options, as in most CLIs. */
+export const END_OF_OPTIONS = '--';
+
 export function parseArgs(argv: string[]): ParsedArgs {
   const positionals: string[] = [];
   const options: Record<string, string | true> = {};
@@ -22,6 +25,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string;
+    // T523: `--` ends the options; every word after it is positional, as typed.
+    if (arg === END_OF_OPTIONS) {
+      positionals.push(...argv.slice(i + 1));
+      break;
+    }
     if (arg.startsWith('--')) {
       const key = arg.slice(2);
       const next = argv[i + 1];
@@ -38,6 +46,93 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
 
   return { positionals, options, repeated };
+}
+
+/** T523: a verb whose words are a sentence, and the options it has of its own. */
+export interface KnownArgsSpec {
+  /** The command as typed, for its errors (`agile answer`). */
+  verb: string;
+  /** Its options that take a value (`by` for `--by <who>`). */
+  values?: readonly string[];
+  /** Its on/off options. */
+  flags?: readonly string[];
+  /** How to keep a word that looks like an option. Default: quote the text or put `--` before it. */
+  hint?: string;
+}
+
+/**
+ * T523 (CLI audit C3): argv for a verb that takes a sentence (`agile answer
+ * Q-1 use the second option`, `agile node say <id> …`). `parseArgs` made any
+ * `--word` an option that ate the next word, so `agile answer Q-1 use
+ * --no-verify then push` sent "use push" and exited 0. Here only the verb's
+ * own options are read (wherever they are), every other word is kept as
+ * typed and in order, `--` ends the options, and any other `--word` is
+ * refused by name rather than dropped. A word starting with a single `-`
+ * (`-1`, `- first`) is text.
+ */
+export function parseKnownArgs(argv: readonly string[], spec: KnownArgsSpec): ParsedArgs {
+  const positionals: string[] = [];
+  const options: Record<string, string | true> = {};
+  const repeated: Record<string, string[]> = {};
+  const values = new Set(spec.values ?? []);
+  const flags = new Set(spec.flags ?? []);
+  const own = (word: string) =>
+    word.startsWith('--') && (values.has(word.slice(2)) || flags.has(word.slice(2)));
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i] as string;
+    if (arg === END_OF_OPTIONS) {
+      positionals.push(...argv.slice(i + 1));
+      break;
+    }
+    if (!arg.startsWith('--')) {
+      positionals.push(arg);
+      continue;
+    }
+    const name = arg.slice(2);
+    if (flags.has(name)) {
+      options[name] = true;
+      continue;
+    }
+    if (values.has(name)) {
+      // The next word is the value, whatever it looks like (`--note "--force
+      // was wrong"`), unless it is `--` or another of the verb's own options.
+      const value = argv[i + 1];
+      if (value === undefined || value === END_OF_OPTIONS || own(value)) {
+        throw new Error(`${spec.verb}: --${name} needs a value`);
+      }
+      options[name] = value;
+      repeated[name] = [...(repeated[name] ?? []), value];
+      i++;
+      continue;
+    }
+    const known = [...values, ...flags].map((o) => `--${o}`);
+    throw new Error(
+      `${spec.verb}: unknown option ${arg}${known.length > 0 ? ` (its options: ${known.join(', ')})` : ''}. ${
+        spec.hint ?? 'If it is part of the text, quote the text or put -- before it'
+      }`,
+    );
+  }
+
+  return { positionals, options, repeated };
+}
+
+/**
+ * T523 (CLI audit C3): words a verb has no place for are refused, never
+ * dropped. An option takes one word, so an unquoted `--text which branch`
+ * kept "which" and lost "branch" without a sign.
+ */
+export function refuseExtraWords(
+  args: ParsedArgs,
+  keep: number,
+  verb: string,
+  example: string,
+): void {
+  const extra = args.positionals.slice(keep);
+  if (extra.length === 0) return;
+  throw new Error(
+    `${verb}: "${extra.join(' ')}" belongs to no option; quote a value with spaces (${example})`,
+  );
 }
 
 /** Reads a required string option, throwing a CLI-friendly error if absent. */

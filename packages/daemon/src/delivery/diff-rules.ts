@@ -46,6 +46,37 @@ export interface DiffRuleGates {
   list(): HilRequest[];
   request(gate: GateKind, ctx: GateRequestContext): Promise<HilRequest>;
   consume(id: HilId): Promise<HilRequest>;
+  /** T527: drops a card a newer diff replaced (`supersedeStaleDiffGates`). */
+  supersede?(id: HilId, reason: string): Promise<HilRequest>;
+}
+
+/**
+ * T527: the node's pending ship-check cards for an older diff (another
+ * fingerprint) leave Needs me before a card for the new diff is raised:
+ * answering one would approve or refuse changes that are no longer what
+ * merges. One the human answers meanwhile (no longer pending) is left.
+ */
+export async function supersedeStaleDiffGates(
+  gates: DiffRuleGates,
+  stream: Stream,
+  call: GateCall,
+): Promise<void> {
+  if (gates.supersede === undefined) return;
+  for (const gate of gates.list()) {
+    if (
+      gate.status === 'pending' &&
+      gate.gate === 'classifier_review' &&
+      gate.stream === stream.id &&
+      gate.call?.origin === 'diff_rules' &&
+      gate.call.fingerprint !== call.fingerprint
+    ) {
+      try {
+        await gates.supersede(gate.id, 'superseded: the branch changed since this ship check');
+      } catch {
+        // Answered in the meantime: the human's decision stands.
+      }
+    }
+  }
 }
 
 /** The thread writer, for §6.4's `hook_unchecked` entry. */
@@ -384,6 +415,7 @@ export class ClassifierDiffRules implements DiffRules {
       // Nowhere to put the card: refuse rather than merge unreviewed.
       return { decision: 'route', rule: nameOf(rule), reason: summary };
     }
+    await supersedeStaleDiffGates(gates, ctx.stream, call);
     const gate = await gates.request('classifier_review', {
       policy: this.options.policy(),
       stream: ctx.stream.id,
@@ -391,6 +423,7 @@ export class ClassifierDiffRules implements DiffRules {
       summary,
       // The routing rule, so the human's deny counts as its violation.
       rule: rule.id as KnowledgeId,
+      probability: answer.probability,
     });
     return {
       decision: 'route',

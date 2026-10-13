@@ -211,9 +211,9 @@ const PUSH_REREAD_MS = 400;
 
 /**
  * T383: a count that goes up once after the feed pushes a frame (a batch of
- * log events, which is when routed events arrive), at most every
- * `PUSH_REREAD_MS` however busy the feed is. Starts at 0; an effect keyed on
- * it re-reads on each push without re-reading per frame.
+ * log events, or a routed event: T515), at most every `PUSH_REREAD_MS`
+ * however busy the feed is. Starts at 0; an effect keyed on it re-reads on
+ * each push without re-reading per frame.
  */
 function usePushTick(): number {
   const { cockpit } = useFeed();

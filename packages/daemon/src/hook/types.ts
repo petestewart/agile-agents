@@ -12,6 +12,7 @@ import type {
   SessionRole,
 } from '@agile-agents/shared';
 import type { ReadAsk } from '../permissions/policy-tables';
+import type { GitAliasLookup } from '../permissions/push-detector';
 import type { VisibilityContext } from '../permissions/visibility';
 
 /** The outcomes of the pure decision (spike-findings.md §B); `ask` never reaches the wire. */
@@ -34,6 +35,8 @@ export interface HookDecisionContext {
   stream: string;
   role: SessionRole;
   worktreePath: string;
+  /** T543: the session's vendor, from its registry record; a `pi` call is read as Claude's (`hook/pi.ts`). */
+  vendor?: string;
   /** This session's unread inbox, by priority (`bus.poll(session)`). */
   inbox: AgentMessage[];
   limits: HookLimits;
@@ -47,6 +50,8 @@ export interface HookDecisionContext {
   upstreamBranch?: () => string | undefined;
   /** The worktree's checked-out branch; called only for a `git merge` with no preceding checkout. */
   headBranch?: () => string | undefined;
+  /** T525: the worktree's git aliases; looked up only for a git subcommand that isn't a builtin. */
+  gitAlias?: GitAliasLookup;
   /** P13: the node's repo, project and the registry; absent checks no visibility. */
   visibility?: VisibilityContext;
   /**
@@ -92,6 +97,13 @@ export interface ClaudePreToolUsePayload {
    * Codex's hook input, translated by `hook/codex.ts` before any decision.
    */
   agile_vendor?: string;
+  /**
+   * T543: set only by `piToClaudePayload` (`hook/pi.ts`), on a Pi tool it
+   * has no Claude name for. The hook is Pi's only gate (spike-findings §C4),
+   * so the call gets the ACP tier's verdict for kind `other`, whatever its
+   * name.
+   */
+  agile_tool_kind?: 'other';
   [key: string]: unknown;
 }
 

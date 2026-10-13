@@ -302,6 +302,57 @@ describe('agile stream against a daemon on a temp AGILE_HOME', () => {
     }
     expect(errors.join('\n')).toContain('the cap is 4000');
   });
+
+  /** T523 (CLI audit C3): unquoted free text is kept, or refused by name, never cut. */
+  test('node say keeps the line as typed: an option-shaped word is refused, -- keeps it', async () => {
+    const stream = await newStream('Free text');
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => errors.push(String(msg));
+    try {
+      // `--force` used to become an option eating "flag": "retry with please" was sent.
+      expect(
+        await runCli(
+          ['node', 'say', stream.id, 'retry', 'with', '--force', 'flag', 'please'],
+          daemon.repo,
+        ),
+      ).toBe(1);
+    } finally {
+      console.error = original;
+    }
+    expect(errors.join('\n')).toBe(
+      'agile node say: unknown option --force. If it is part of the text, quote the text or put -- before it',
+    );
+    const lines = () =>
+      daemon.streamService
+        .readThread(stream.id)
+        .entries.filter((e) => e.kind === 'line')
+        .map((e) => e.body);
+    expect(lines()).toEqual([]);
+
+    // After `--`, every word is text, `--json` too; a line may start with "-".
+    const kept = await cli(['node', 'say', stream.id, '--', 'retry', 'with', '--force', '--json']);
+    expect(kept.code).toBe(0);
+    expect(kept.out).toBe(`agile stream say: appended to ${stream.id}`);
+    expect((await cli(['node', 'say', stream.id, '-', 'then', 'check', '-1'])).code).toBe(0);
+    expect(lines()).toEqual(['retry with --force --json', '- then check -1']);
+  });
+
+  test('node close refuses the words an unquoted --note would have lost', async () => {
+    const stream = await newStream('Close me');
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => errors.push(String(msg));
+    try {
+      expect(
+        await runCli(['node', 'close', stream.id, '--note', 'shipped', 'elsewhere'], daemon.repo),
+      ).toBe(1);
+    } finally {
+      console.error = original;
+    }
+    expect(errors.join('\n')).toContain('agile node close: "elsewhere" belongs to no option');
+    expect(daemon.streamService.get(stream.id).human.status).toBe('open');
+  });
 });
 
 describe('agile attach (T130) on a no-repo stream, against the fake driver', () => {
