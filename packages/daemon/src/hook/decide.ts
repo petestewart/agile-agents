@@ -9,9 +9,10 @@
  *   2b. repo visibility (P13): a private repo's path outside the listed
  *      projects, or a write into any repo but the node's own → deny;
  *   3. role × tool policy through `decidePermission` for edit-kind tools,
- *      `Bash` and, for a read-only role, MCP tools (`hil` → `ask`, `deny` →
+ *      `Bash`, a vendor tool with no Claude name (kind `other`, T543) and,
+ *      for a read-only role, MCP and web tools (`hil` → `ask`, `deny` →
  *      `deny`), so every role's policy is enforced at the hook, not only at
- *      the ACP tier;
+ *      the ACP tier (Pi's calls arrive as Claude's, `hook/pi.ts`);
  *   4. pattern rules in scope;
  *   5. else allow.
  *
@@ -132,7 +133,7 @@ const SYNTHETIC_OPTIONS: AcpPermissionOption[] = [
 /**
  * Maps a Claude tool call onto the ACP kind `decidePermission` classifies.
  * `undefined` for anything not gated here (Read/Grep have the size gate;
- * Glob, Task, WebFetch, ... are allowed).
+ * Glob, Task, an engineer's WebFetch, ... are allowed).
  */
 function claudeToolKind(payload: ClaudePreToolUsePayload): AcpToolKind | undefined {
   if (payload.tool_name !== undefined && EDIT_TOOL_NAMES.has(payload.tool_name)) return 'edit';
@@ -158,7 +159,27 @@ function readOnlyMcpToolKind(
   return payload.tool_name?.startsWith('mcp__') === true ? 'other' : undefined;
 }
 
-/** Just enough of `tool_input` for `classifyPermissionRequest` to read the command or path back. */
+/** Claude's web tools: kind `fetch` to the ACP tier. */
+const WEB_TOOL_NAMES: ReadonlySet<string> = new Set(['WebFetch', 'WebSearch']);
+
+/**
+ * T543: a read-only role's `WebFetch`/`WebSearch` is kind `fetch`, as the ACP
+ * tier sees it, so the role table denies it as it denies a reviewer's or
+ * lessons session's `fetch` (no network, design §14). An engineer's is not
+ * gated here, although the ACP tier allows an engineer only package
+ * registries (open for Pete); a coordinator's is denied by name (P20).
+ */
+function readOnlyWebToolKind(
+  ctx: HookDecisionContext,
+  payload: ClaudePreToolUsePayload,
+): AcpToolKind | undefined {
+  if (permissionRoleFor(ctx.role) !== 'reviewer') return undefined;
+  return payload.tool_name !== undefined && WEB_TOOL_NAMES.has(payload.tool_name)
+    ? 'fetch'
+    : undefined;
+}
+
+/** Just enough of `tool_input` for `classifyPermissionRequest` to read the command, URL or path back. */
 function claudeToolRawInput(
   kind: AcpToolKind,
   payload: ClaudePreToolUsePayload,
@@ -166,6 +187,9 @@ function claudeToolRawInput(
   const input = payload.tool_input ?? {};
   if (kind === 'execute') {
     return typeof input.command === 'string' ? { command: input.command } : {};
+  }
+  if (kind === 'fetch') {
+    return typeof input.url === 'string' ? { url: input.url } : {};
   }
   const path = input.file_path ?? input.path ?? input.notebook_path;
   return typeof path === 'string' ? { file_path: path } : {};
@@ -219,20 +243,31 @@ function roleToolVerdict(
   ctx: HookDecisionContext,
   payload: ClaudePreToolUsePayload,
 ): HookDecision | undefined {
-  const read = builtInReadVerdict(ctx, payload);
-  if (read !== undefined) return read;
-  // P20: a coordinator has no network. WebFetch/WebSearch have no ACP kind,
-  // so the role table never sees them; deny them here by name.
-  if (
-    permissionRoleFor(ctx.role) === 'coordinator' &&
-    (payload.tool_name === 'WebFetch' || payload.tool_name === 'WebSearch')
-  ) {
-    return {
-      decision: 'deny',
-      reason: `${payload.tool_name} denied: a coordinator has no network access (P20)`,
-    };
+  // T543: a vendor tool with no Claude name (an unknown Pi tool) is kind
+  // `other` and nothing else, so a name that looks like Claude's (`Read`)
+  // can't take it through the read check, or a held read's card, instead.
+  const unmapped = payload.agile_tool_kind === 'other';
+  if (!unmapped) {
+    const read = builtInReadVerdict(ctx, payload);
+    if (read !== undefined) return read;
+    // P20: a coordinator has no network. WebFetch/WebSearch reach the role
+    // table only for a read-only role (`readOnlyWebToolKind`); deny them here by name.
+    if (
+      permissionRoleFor(ctx.role) === 'coordinator' &&
+      payload.tool_name !== undefined &&
+      WEB_TOOL_NAMES.has(payload.tool_name)
+    ) {
+      return {
+        decision: 'deny',
+        reason: `${payload.tool_name} denied: a coordinator has no network access (P20)`,
+      };
+    }
   }
-  const kind = claudeToolKind(payload) ?? readOnlyMcpToolKind(ctx, payload);
+  const kind: AcpToolKind | undefined = unmapped
+    ? 'other'
+    : (claudeToolKind(payload) ??
+      readOnlyMcpToolKind(ctx, payload) ??
+      readOnlyWebToolKind(ctx, payload));
   if (kind === undefined) return undefined;
 
   // T506: an edit naming several files (Codex's `apply_patch`) checks every one, as
