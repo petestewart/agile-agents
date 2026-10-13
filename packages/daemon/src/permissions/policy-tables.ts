@@ -1348,6 +1348,18 @@ function coordinatorVerdict(classified: PermissionRequest, ctx: PolicyContext): 
       if (classified.command === undefined) {
         return deny('coordinator role denies exec with no command to classify');
       }
+      // T555: this table decides alone (P20: no never-without-human list), so it
+      // refuses what that list would hold: a substitution, backticks, `eval` or an
+      // open quote runs whatever is inside, which no check below sees; and
+      // `cd <name>` goes wherever CDPATH points.
+      if (cmd.hasUnsafeShellConstruct(classified.command)) {
+        return deny(
+          'coordinator role denies command substitution, backticks, eval and unbalanced quotes',
+        );
+      }
+      if (cmd.mentionsCdpath(classified.command)) {
+        return deny('coordinator role denies a command that sets or names CDPATH');
+      }
       return coordinatorExecuteVerdict(classified.command, ctx);
     case 'fetch':
       return deny('coordinator role has no network access');
