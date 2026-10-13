@@ -3650,6 +3650,78 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 - **Acceptance Criteria:** CLI tests for each item; usage text lists only commands that exist; `agile --help` exit 0 on stdout.
 - **Validation Steps:** `bun test packages/cli`; `bun run typecheck && bun run lint`.
 
+### Ticket: T524 A held ACP call raises a Needs me card instead of parking the turn
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** §10 triage (E38), checked by the manager: `runner/session.ts` builds the permission responder without `requestHil`, so every non-read `hil` verdict goes to `defaultRequestHil` (`permissions/responder.ts`), which writes `bus/inbox/human/<ulid>.yaml` (nothing reads that directory) and leaves the ACP request pending: the node reads "working" and no card appears. It hits vendors without a pre-tool hook (Cursor, Gemini, Grok, Antigravity) on T476's unreadable exec, `sudo`, a force-push, `rm -rf` outside the worktree, a `package.json`/lockfile edit, `$( )`. Route every ACP `hil` into a gate the cockpit shows (generalise T457's `acpReadRouter` — `attach/service.ts`, `hook/route-band.ts` — or wire `requestHil` to `GateService` with a resolve on the decision), answer the pending ACP request on the human's decision, cancel pending requests on session stop. Then remove `defaultRequestHil` and, if nothing else uses it, the `hil_request` agent-message kind and their tests.
+- **Acceptance Criteria:** For a vendor without hooks: an unreadable exec, a `sudo` and a `package.json` edit each give exactly one card; approve lets that call through once, deny refuses it; stopping the session answers any pending request; nothing is written under `bus/inbox/human/`.
+- **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/runner packages/daemon/src/hook packages/daemon/src/gates packages/shared`; `bun run typecheck && bun run lint`; `bun run test:integration`.
+
+### Ticket: T525 A push through a configured git alias is checked like `git push`
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** §10 triage (E42), reproduced by the manager: `detectProtectedBranchWrite` and `detectPush` (`permissions/push-detector.ts`) recognise only the literal `push` subcommand and refuse only the inline `-c alias.*` form, so with `alias.p = push` already in the operator's or repo's git config, `git p origin main` passes `no_push_protected` (and the never-list's force-push, branch-delete and reset-hard checks). Agents can't create an alias themselves (`git config` writes are held), so this needs a pre-existing alias. Resolve a non-builtin subcommand through the worktree's effective config, lazily and memoized like `worktreeBranchLookups` (`git config --get alias.<sub>`), and re-parse the expansion; a `!`-shell alias or a failed lookup gives the existing `CANNOT_DETERMINE_REASON`. Use it at the hook and ACP tiers. Builtin subcommands spawn no git. Coordinate with T516 (it changes `command.ts`; this lives in `push-detector.ts`).
+- **Acceptance Criteria:** With `alias.p=push` in a test repo, `git p origin main` is refused and `git p origin feature` allowed, at both tiers; `alias.pf='push --force'` held; `alias.x='!git push origin main'` refused; `git status` spawns no git.
+- **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`; `bun run typecheck && bun run lint`.
+
+### Ticket: T526 The hook settles a held call from its gate before asking the classifier
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** §10 triage (E50): `hook/service.ts` calls `classifierTier` before `route()` looks for an existing gate for the call's fingerprint, so each retry of a held call is a paid classifier call, and after approval the retry is re-banded (a deny-band answer refuses what the human approved; an allow-band answer passes it with the approval unspent). Compute the fingerprint first: approved and unspent → spend and allow; pending → deny "held"; denied → deny; only with no gate ask the classifier.
+- **Acceptance Criteria:** Route → retry while pending → approve → retry makes exactly one `FakeClassifier` call; the post-approval retry is allowed even if the fake now scores high, and the approval is spent.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/gates`; `bun run typecheck && bun run lint`.
+
+### Ticket: T527 One "gate resolved" hook; stale diff gates are superseded
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** §10 triage (E34b, E44, E51): gate resolution is observed by four monkey-patches of `GateService.respond` (`delivery/service.ts`, `questions/supersede.ts`, `hook/route-band.ts` ×2), so a resolution through `tick` (timeout) or a delegate skips all four. Add `GateService.onResolved(listener)` called from every resolution path and move the four onto it. Add `supersede(id, reason)` (resolved with no decision, leaves Needs me) and use it when `ClassifierDiffRules.route` raises a gate for a new diff: the node's older pending `diff_rules` gates go.
+- **Acceptance Criteria:** A timeout resolution triggers delivery, question supersession, rule stats and land exactly as a human `respond` does (one test per listener); routing a second, changed diff leaves one card; responding to a superseded gate is refused.
+- **Validation Steps:** `bun test packages/daemon/src/gates packages/daemon/src/delivery packages/daemon/src/hook packages/daemon/src/questions packages/daemon/src/inbox`; `bun run typecheck && bun run lint`.
+
+### Ticket: T528 The Changes tab shows a large diff whole, file by file
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** §10 triage (E59): `DeliveryService.diff` cuts the patch at 20,000 chars mid-hunk (`delivery/service.ts`), and the UI's "Open the worktree to see the rest" (`DiffView.tsx`) fails after a merge. Cut on file boundaries, list omitted files with their stat, and add a per-file read (`GET /api/streams/:id/diff?file=`, same-origin rules as its siblings) the tab loads on expand, with a total cap.
+- **Acceptance Criteria:** A 60k-char diff over 6 files shows every file (lazily) with no partial hunk; omitted files are listed; review comments work on a lazily loaded file.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/ui`; `bun run typecheck && bun run lint`; `bun run build && bun run test:e2e`.
+
+### Ticket: T529 Chat lines older than the newest 500 can be read
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** §10 triage (E59): `feed/stream-page.ts` returns only the newest 500 thread entries and the node page says so with no way back; with sessions kept alive (D48) long threads are common. Add `before=` paging (the thread reader already takes `after`/`limit`) and a "Show earlier" control that keeps the scroll position.
+- **Acceptance Criteria:** A 1,200-entry thread shows 500; "Show earlier" loads 500 more twice; scroll position holds.
+- **Validation Steps:** `bun test packages/daemon/src/feed packages/ui`; `bun run typecheck && bun run lint`; `bun run test:e2e`.
+
+### Ticket: T530 The scrubber redacts an unterminated key block only when a key follows
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** §10 triage (E46): `classifier/scrub.ts` redacts to the end of the text after any `BEGIN … PRIVATE KEY` marker with no footer, so a marker in a comment or fixture blanks everything after it from the classifier's view. Require a key-shaped body (e.g. two or more lines of 40+ base64 chars) before that fallthrough; keep a truncated real key redacted.
+- **Acceptance Criteria:** A marker followed by 50 lines of code redacts the marker line only; a truncated real key with no footer is still redacted to the end; existing scrub tests green.
+- **Validation Steps:** `bun test packages/daemon/src/classifier`; `bun run typecheck && bun run lint`.
+
+### Ticket: T531 Hygiene: merged-outside check, 403 before 400, the dead `land_` fsync prefix
+- **Priority:** P3
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** §10 triage (E62, E34a): `mergedOutside` (`delivery/service.ts`) should require the branch to have commits of its own (an untouched branch forked off a non-first-parent commit reads as merged); the HTTP route that validates an id before its same-origin check (`http.ts`, found by the triage near the stream-id routes) should check origin first, as every other write route does; the `land_` prefix in `store/events.ts`'s fsync family and its comment in `shared/src/event.ts` are dead (merges fsync through the routed `pr_merged` event): drop or retarget them.
+- **Acceptance Criteria:** A cross-origin POST with a bad id gets 403; an untouched branch off a non-first-parent commit reads as "nothing to merge"; lint clean.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/http.test.ts packages/daemon/src/store`; `bun run typecheck && bun run lint`.
+
+### Ticket: T532 CI keeps today's runner image and a supported checkout
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** manager
+- **Scope:** CI annotations (seen by the triage): `ubuntu-latest` moves to Ubuntu 26 from 2026-10-19 and `actions/checkout@v4` runs on deprecated Node 20 (`.github/workflows/ci.yml`). Pin `runs-on` to the current image explicitly and bump `actions/checkout` to the current major, so the stack's CI doesn't change under Pete's review.
+- **Acceptance Criteria:** CI green on the bump commit with no deprecation annotation for checkout.
+- **Validation Steps:** CI on the pushed commit.
+
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
 Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `plan/`, `review/` rounds, `sync/` (shelved on a branch), `feed/stories.ts`, `runner/pipeline-glue.ts`, sprint parts of `merge/`, `bus/` unless the thread reuses it. CLI: `run`, `send`, `halt`, `approve`, `sync`. Shared: `Ticket`, `Sprint`, `Stanza`, `Message`, `Halt`, `Quota`, `Review`, `Qa`, `Oracle`, `Kb`, `Ledger`. Briefs: all but `worker.md`, `reviewer.md`, `lessons.md`. UI: `plan/`, `sprint/`, `review/`, `OraclePanel`. State: the `agile-state` orphan branch and per-repo `.agile/`.
