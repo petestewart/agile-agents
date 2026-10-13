@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { spawnSession } from '@agile-agents/acp-client';
 import { ulid } from '@agile-agents/shared';
 import { type DaemonHandle, startDaemon } from './daemon';
+import { RoutedEventService } from './events';
 import { runInit } from './init';
+import { LockError } from './lock';
 import type { JsonRpcResponse } from './rpc';
 import { StateStore } from './store';
 
@@ -182,6 +185,131 @@ describe('T444: sessions a dead daemon left running', () => {
     expect(after).toBeDefined();
     expect(after?.agent.status).toBe('idle');
     expect(after?.sessions.map((s) => s.status)).toEqual(['stopped']);
+  });
+});
+
+describe('T533: a second start changes nothing before it holds the lock', () => {
+  /** Records every agent start; never runs a vendor. */
+  function recordingSpawn(): { spawn: typeof spawnSession; calls: unknown[] } {
+    const calls: unknown[] = [];
+    const spawn = ((opts: unknown) => {
+      calls.push(opts);
+      throw new Error('no agent may start here');
+    }) as unknown as typeof spawnSession;
+    return { spawn, calls };
+  }
+
+  test('with a live daemon holding a running session, the second start leaves it all alone', async () => {
+    runInit(home);
+    const first = recordingSpawn();
+    handle = await startDaemon({
+      port: 0,
+      socketPath: join(repo, 'a.sock'),
+      titleRun: null,
+      gateTickMs: 0,
+      overlapRecomputeMs: 0,
+      spawn: first.spawn,
+    });
+    const streams = handle.streamService;
+    const store = handle.store;
+    if (streams === undefined || store === undefined) throw new Error('no state home');
+    const node = await streams.create('human', { title: 'live work', goal: 'g' }, {});
+    const session = ulid();
+    await store.updateStream('daemon', node.id, (before) => ({
+      ...before,
+      agent: { ...before.agent, status: 'working' },
+      sessions: [{ id: session, vendor: 'claude', model: 'm', role: 'worker', status: 'running' }],
+    }));
+    // A line for the node while it works: pending, as the live daemon queues it.
+    // Emitted by another service instance, so the live daemon's delivery never hears it.
+    await new RoutedEventService(store).emit({
+      type: 'human_line',
+      subject: node.id,
+      payload: { body: 'one more thing' },
+      by: 'human',
+      routing: [{ node: node.id, because: 'self' }],
+    });
+    await store.flush();
+    const before = streams.get(node.id);
+    const threadBefore = streams.readThread(node.id).entries;
+    const deliveriesBefore = store.readDeliveries(node.id);
+    const lockBefore = readFileSync(handle.config.lockPath, 'utf8');
+
+    const second = recordingSpawn();
+    await expect(
+      startDaemon({
+        port: 0,
+        socketPath: join(repo, 'b.sock'),
+        titleRun: null,
+        gateTickMs: 0,
+        overlapRecomputeMs: 0,
+        spawn: second.spawn,
+      }),
+    ).rejects.toThrow(LockError);
+    // Past the delivery's coalescing delay (250 ms): a wake would have started by now.
+    await Bun.sleep(600);
+
+    const after = streams.get(node.id);
+    expect(after.sessions).toEqual(before.sessions);
+    expect(after.sessions[0]?.status).toBe('running');
+    expect(after.agent.status).toBe('working');
+    expect(after.human.status).toBe(before.human.status);
+    expect(streams.readThread(node.id).entries).toEqual(threadBefore);
+    expect(store.readDeliveries(node.id)).toEqual(deliveriesBefore);
+    expect(second.calls).toHaveLength(0);
+    expect(first.calls).toHaveLength(0);
+    // The live daemon still holds its lock, and its socket was never touched.
+    expect(readFileSync(handle.config.lockPath, 'utf8')).toBe(lockBefore);
+    expect(existsSync(join(repo, 'b.sock'))).toBe(false);
+    const pong = await call(handle.rpc.socketPath, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'daemon.ping',
+    });
+    expect('result' in pong ? pong.result : undefined).toBe('pong');
+  });
+
+  test('a start that fails after taking the lock (port in use) releases it and stops what it started', async () => {
+    runInit(home);
+    const squatter = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      fetch: () => new Response('busy'),
+    });
+    try {
+      const { spawn, calls } = recordingSpawn();
+      await expect(
+        startDaemon({
+          port: squatter.port,
+          socketPath: join(repo, '.agile-daemon.sock'),
+          titleRun: null,
+          spawn,
+        }),
+      ).rejects.toThrow(/address in use/);
+      const lockPath = join(home, 'agiled.pid');
+      expect(existsSync(lockPath)).toBe(false);
+      expect(existsSync(join(repo, '.agile-daemon.sock'))).toBe(false);
+      expect(calls).toHaveLength(0);
+    } finally {
+      squatter.stop(true);
+    }
+    // Nothing of the failed start is left holding the home: a fresh start succeeds.
+    handle = await startDaemon({ port: 0, socketPath: join(repo, '.agile-daemon.sock') });
+    expect(readFileSync(handle.config.lockPath, 'utf8').trim()).toBe(String(process.pid));
+  });
+
+  test('a lock left by a daemon that crashed (started or still starting) is reclaimed', async () => {
+    runInit(home);
+    const lockPath = join(home, 'agiled.pid');
+    const deadPid = 999_999_999;
+    for (const stale of [String(deadPid), `starting ${deadPid}`]) {
+      writeFileSync(lockPath, stale);
+      handle = await startDaemon({ port: 0, socketPath: join(repo, '.agile-daemon.sock') });
+      expect(readFileSync(lockPath, 'utf8').trim()).toBe(String(process.pid));
+      await handle.stop();
+      handle = undefined;
+      expect(existsSync(lockPath)).toBe(false);
+    }
   });
 });
 

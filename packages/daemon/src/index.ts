@@ -14,7 +14,7 @@ export {
   type DiscoverConfigOptions,
 } from './config';
 export { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from './subprocess-env';
-export { acquireLock, LockError, type LockHandle } from './lock';
+export { acquireLock, lockHolder, LockError, type LockHandle, type LockHolder } from './lock';
 export {
   startRpcServer,
   dispatch,

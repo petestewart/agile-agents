@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 
 import {
   type HomePaths,
   installShutdownSignals,
+  lockHolder,
   readHomeConfigFile,
   resolveHomePaths,
   startDaemon,
@@ -118,12 +119,13 @@ export function describePortHolder(
   }`;
 }
 
-/** The pid in `<home>/agiled.pid`, or `undefined` when there is no live daemon. */
+/**
+ * The pid in `<home>/agiled.pid`, or `undefined` when there is no live daemon.
+ * T533: a daemon still starting holds the lock but isn't up: no pid yet.
+ */
 export function runningPid(paths: HomePaths): number | undefined {
-  if (!existsSync(paths.pidPath)) return undefined;
-  const pid = Number.parseInt(readFileSync(paths.pidPath, 'utf8').trim(), 10);
-  if (!Number.isFinite(pid)) return undefined;
-  return isAlive(pid) ? pid : undefined;
+  const holder = lockHolder(paths.pidPath);
+  return holder?.started === true ? holder.pid : undefined;
 }
 
 /**
@@ -198,8 +200,11 @@ export async function runDaemonStart(options: DaemonStartOptions = {}): Promise<
     return `agiled already running: pid=${already} home=${paths.home}`;
   }
   // A pidfile whose holder is gone would otherwise make the child fail to
-  // take the lock for a process that no longer exists.
-  if (existsSync(paths.pidPath)) rmSync(paths.pidPath, { force: true });
+  // take the lock for a process that no longer exists. T533: never the lock
+  // of a daemon still starting; this start's child fails on that lock instead.
+  if (existsSync(paths.pidPath) && lockHolder(paths.pidPath) === undefined) {
+    rmSync(paths.pidPath, { force: true });
+  }
 
   mkdirSync(paths.logDir, { recursive: true });
   const logFd = openSync(paths.logPath, 'a');
@@ -265,6 +270,11 @@ export async function runDaemonStop(home?: string): Promise<string> {
   const paths = resolveHomePaths(home ? { home } : {});
   const pid = runningPid(paths);
   if (pid === undefined) {
+    // T533: a daemon still starting holds the lock: leave it, it isn't up to stop yet.
+    const starting = lockHolder(paths.pidPath);
+    if (starting !== undefined) {
+      return `agiled is still starting (pid ${starting.pid}, home=${paths.home}); stop it once it is up`;
+    }
     // Clear a stale pidfile so the next `start` doesn't have to.
     if (existsSync(paths.pidPath)) rmSync(paths.pidPath, { force: true });
     const holder = portHolder(paths.port);
