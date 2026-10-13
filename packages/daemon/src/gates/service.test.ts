@@ -337,3 +337,164 @@ describe('GateService.consume (T151 — compare-and-swap)', () => {
     expect(service.consume(req.id)).rejects.toThrow(GateAlreadyConsumedError);
   });
 });
+
+describe('T527: GateService.onResolved hears every decision; supersede decides nothing', () => {
+  const approveDelegate = (): GateDecision => ({ decision: 'approve', by: 'delegate' });
+
+  test('respond, a timeout fall-through and a late delegate decision all reach the listeners', async () => {
+    let deciding: (d: GateDecision) => void = () => {};
+    const late = new Promise<GateDecision>((resolve) => {
+      deciding = resolve;
+    });
+    const service = new GateService(store, {
+      clock,
+      delegate: (input) => (input.note !== undefined ? late : approveDelegate()),
+    });
+    const heard: string[] = [];
+    service.onResolved((gate) => {
+      heard.push(`${gate.id}:${gate.decision}`);
+    });
+    const byHuman = await service.request('land', ctx({ land: 'human' }));
+    await service.respond(byHuman.id, 'deny', 'human');
+    const byTimeout = await service.request('land', ctx({ land: 'human_timeout:1h' }));
+    advance(3_600_000);
+    await service.tick(now);
+    const byDelegate = await service.request('land', ctx({ land: 'human' }));
+    await service.addNote(byDelegate.id, 'go ahead', 'human');
+    deciding({ decision: 'approve', by: 'delegate' });
+    await service.settled();
+    expect(heard).toEqual([
+      `${byHuman.id}:deny`,
+      `${byTimeout.id}:approve`,
+      `${byDelegate.id}:approve`,
+    ]);
+  });
+
+  test('a throwing listener reaches respond’s caller but never stops a tick', async () => {
+    const service = new GateService(store, { clock, delegate: approveDelegate });
+    const off = service.onResolved(() => {
+      throw new Error('land refused');
+    });
+    const gate = await service.request('land', ctx({ land: 'human' }));
+    await expect(service.respond(gate.id, 'approve', 'human')).rejects.toThrow('land refused');
+    expect(service.get(gate.id).status).toBe('resolved');
+    const timed = await service.request('land', ctx({ land: 'human_timeout:1h' }));
+    advance(3_600_000);
+    const fallen = await service.tick(now);
+    expect(fallen.map((g) => g.id)).toEqual([timed.id]);
+    off();
+    const quiet = await service.request('land', ctx({ land: 'human' }));
+    await service.respond(quiet.id, 'approve', 'human');
+  });
+
+  test('supersede leaves Needs me with no decision, is heard by no listener, and refuses a late answer', async () => {
+    const service = new GateService(store, { clock });
+    const heard: string[] = [];
+    service.onResolved((gate) => {
+      heard.push(gate.id);
+    });
+    const gate = await service.request('classifier_review', ctx({ classifier_review: 'human' }));
+    const saved = await service.supersede(gate.id, 'superseded: the branch changed');
+    expect(saved.status).toBe('resolved');
+    expect(saved.decision).toBeUndefined();
+    expect(saved.reason).toBe('superseded: the branch changed');
+    expect(
+      service
+        .list()
+        .filter((g) => g.status === 'pending')
+        .map((g) => g.id),
+    ).not.toContain(gate.id);
+    await expect(service.respond(gate.id, 'approve', 'human')).rejects.toBeInstanceOf(
+      GateAlreadyResolvedError,
+    );
+    expect(heard).toEqual([]);
+  });
+});
+
+describe('T527: what a human respond sets off, a timeout sets off too', () => {
+  test('delivery, question supersession, rule stats and land each hear a timed-out gate', async () => {
+    const { wireLandGateResolution } = await import('../delivery/service');
+    const { wireQuestionSupersession } = await import('../questions/supersede');
+    const { wireClassifierRouteStats, wireGateDecisionDelivery } = await import(
+      '../hook/route-band'
+    );
+    const service = new GateService(store, {
+      clock,
+      delegate: (input) =>
+        input.gate === 'land'
+          ? { decision: 'approve', by: 'delegate' }
+          : { decision: 'deny', by: 'delegate' },
+    });
+    const landed: string[] = [];
+    const superseded: string[] = [];
+    const delivered: string[] = [];
+    const stats: string[] = [];
+    wireLandGateResolution(service, {
+      land: async (stream: string) => {
+        landed.push(stream);
+      },
+    } as never);
+    wireQuestionSupersession(service, {
+      supersede: async (session: string) => {
+        superseded.push(session);
+      },
+    });
+    wireGateDecisionDelivery(service, {
+      deliverGateDecision: async (session: string) => {
+        delivered.push(session);
+      },
+    });
+    wireClassifierRouteStats(service, {
+      recordFired: async (id: string, outcome: string) => {
+        stats.push(`${id}:${outcome}`);
+      },
+    });
+    const session = ulid();
+    const rule = `K-${ulid()}`;
+    await service.request('land', ctx({ land: 'human_timeout:1h' }, { session }));
+    await service.request(
+      'classifier_review',
+      ctx(
+        { classifier_review: 'human_timeout:1h' },
+        { session, rule, call: { tool: 'Bash', fingerprint: '00000000000000f1' } },
+      ),
+    );
+    advance(3_600_000);
+    await service.tick(now);
+    expect(landed).toEqual([STREAM]);
+    expect(superseded).toEqual([session, session]);
+    expect(delivered).toEqual([session]);
+    expect(stats).toEqual([`${rule}:resolved_violation`]);
+  });
+});
+
+describe('T527: a changed diff leaves one ship-check card', () => {
+  test('the older pending card is superseded; an answered one stays', async () => {
+    const { supersedeStaleDiffGates } = await import('../delivery/diff-rules');
+    const service = new GateService(store, { clock });
+    const call = (fingerprint: string) => ({
+      tool: 'land',
+      path: 'stream/x → main',
+      fingerprint,
+      origin: 'diff_rules' as const,
+    });
+    const older = await service.request(
+      'classifier_review',
+      ctx({ classifier_review: 'human' }, { call: call('00000000000000f1') }),
+    );
+    const answered = await service.request(
+      'classifier_review',
+      ctx({ classifier_review: 'human' }, { call: call('00000000000000f0') }),
+    );
+    await service.respond(answered.id, 'deny', 'human');
+    await supersedeStaleDiffGates(service, { id: STREAM } as never, call('00000000000000f2'));
+    await service.request(
+      'classifier_review',
+      ctx({ classifier_review: 'human' }, { call: call('00000000000000f2') }),
+    );
+    const pending = service.list().filter((g) => g.status === 'pending');
+    expect(pending.map((g) => g.call?.fingerprint)).toEqual(['00000000000000f2']);
+    expect(service.get(older.id).reason).toMatch(/superseded/);
+    expect(service.get(answered.id).decision).toBe('deny');
+  });
+});
