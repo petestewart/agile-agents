@@ -21,7 +21,7 @@ import {
   type ReposConfig,
   formatZodError,
 } from '@agile-agents/shared';
-import { networkGitEnv } from '../delivery/git';
+import { NO_HOOKS_GIT_CONFIG, networkGitEnv } from '../delivery/git';
 import { DirListError, expandHome, resolveAbsolutePath } from './browse-dirs';
 import { parseRemoteUrl, redactUserinfo } from './remote-url';
 import { buildStateRpcMethods } from './rpc-methods';
@@ -224,7 +224,8 @@ async function runClone(
   try {
     let proc: ReturnType<typeof Bun.spawn>;
     try {
-      proc = Bun.spawn(['git', 'clone', '--', source.url, dest], {
+      // T536: no hook runs (a template's, or a global hooks dir's `post-checkout`).
+      proc = Bun.spawn(['git', ...NO_HOOKS_GIT_CONFIG, 'clone', '--', source.url, dest], {
         cwd: dirname(dest),
         env,
         stdin: 'ignore',

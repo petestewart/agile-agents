@@ -1,7 +1,7 @@
 /** T226: sync after merge against a real temp git repo and state home; no vendor, no network. */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RoutedEvent } from '@agile-agents/shared';
@@ -217,6 +217,93 @@ describe('sync after merge (T226)', () => {
       );
     } finally {
       rmSync(remote, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('T534: one node never stops a sync pass', () => {
+  test('a node whose worktree dir is gone is passed over; the node after it syncs', async () => {
+    const gone = await workNode('gone');
+    const two = await workNode('two');
+    const order = streams.list().map((s) => s.id);
+    expect(order.indexOf(gone.id)).toBeLessThan(order.indexOf(two.id));
+    rmSync(gone.wt, { recursive: true, force: true });
+    commit(repo, 'a.ts', 'a2\n');
+
+    await sync.sweep();
+    expect(mainIsIn(two.wt)).toBe(true);
+    // Nothing was made where the worktree was.
+    expect(existsSync(gone.wt)).toBe(false);
+
+    commit(repo, 'a.ts', 'a3\n');
+    const out = await sync.mainMoved('api');
+    expect(out.get(gone.id)?.status).toBe('deferred');
+    expect(out.get(two.id)).toEqual({ status: 'synced', pushed: false });
+  });
+
+  test('a node whose sync throws is logged and deferred; the next node syncs; the next sweep retries it', async () => {
+    const one = await workNode('one');
+    const two = await workNode('two');
+    const order = streams.list().map((s) => s.id);
+    expect(order.indexOf(one.id)).toBeLessThan(order.indexOf(two.id));
+    commit(one.wt, 'a.ts', 'one\n');
+    commit(repo, 'a.ts', 'main\n'); // one conflicts; recording that conflict is what throws
+    const update = streams.update.bind(streams);
+    streams.update = ((by, id, patch) => {
+      if (id === one.id) throw new Error('the store refused the write');
+      return update(by, id, patch);
+    }) as typeof streams.update;
+    const errors = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const out = await sync.mainMoved('api');
+      expect(out.get(one.id)).toEqual({ status: 'deferred', reason: 'failed' });
+      expect(out.get(two.id)).toEqual({ status: 'synced', pushed: false });
+      expect(errors.mock.calls.map((c) => c.map(String).join(' ')).join('\n')).toContain(
+        `main sync of ${one.id} failed`,
+      );
+    } finally {
+      errors.mockRestore();
+      streams.update = update;
+    }
+    expect(streams.get(one.id).delivery_state).toBeUndefined();
+    // Main is recorded as seen, so only the deferral brings the sweep back to it.
+    await sync.sweep();
+    expect(streams.get(one.id).delivery_state?.status).toBe('conflict');
+    expect(streams.get(one.id).land_conflict?.files).toEqual(['a.ts']);
+  });
+});
+
+describe('T536: a sync merge runs no repo hook', () => {
+  test('D4: a post-merge an agent committed into a tracked core.hooksPath does not run', async () => {
+    const marker = `${repo}-hooks-ran`;
+    try {
+      sh(['config', 'core.hooksPath', '.githooks'], repo);
+      const two = await workNode('two');
+      mkdirSync(join(two.wt, '.githooks'));
+      for (const hook of [
+        'pre-merge-commit',
+        'commit-msg',
+        'post-merge',
+        'reference-transaction',
+      ]) {
+        writeFileSync(join(two.wt, '.githooks', hook), `#!/bin/sh\necho ${hook} >> '${marker}'\n`, {
+          mode: 0o755,
+        });
+      }
+      sh(['-c', 'core.hooksPath=/dev/null', 'add', '-A'], two.wt);
+      sh(['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'agent work'], two.wt);
+      sh(['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '--allow-empty', '-m', 'main'], repo);
+      // The hooks are live in that worktree: plain git runs them.
+      sh(['update-ref', 'refs/heads/control', 'HEAD'], two.wt);
+      expect(readFileSync(marker, 'utf8')).toContain('reference-transaction');
+      rmSync(marker);
+
+      const out = await sync.mainMoved('api');
+      expect(out.get(two.id)).toEqual({ status: 'synced', pushed: false });
+      expect(mainIsIn(two.wt)).toBe(true);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(marker, { force: true });
     }
   });
 });

@@ -153,6 +153,34 @@ describe('T473: back to talk, and back to work', () => {
     // The api work stays parked until api comes back.
     expect(elsewhere.parked?.repo).toBe('api');
   }, 30_000);
+
+  test('T536: checking a parked branch out again runs no repo hook', async () => {
+    const node = await conversation();
+    const { node: working } = await reshape.addRepo(node.id, 'api');
+    await reshape.toTalk(node.id);
+    git(['worktree', 'remove', '--force', working.worktree as string], api);
+    const marker = `${api}-hooks-ran`;
+    try {
+      for (const hook of ['post-checkout', 'reference-transaction']) {
+        writeFileSync(
+          join(api, '.git', 'hooks', hook),
+          `#!/bin/sh\necho ${hook} >> '${marker}'\n`,
+          {
+            mode: 0o755,
+          },
+        );
+      }
+      git(['update-ref', 'refs/heads/control', 'HEAD'], api);
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
+      const { node: back } = await reshape.addRepo(node.id, 'api');
+      expect(back.branch).toBe(working.branch);
+      expect(existsSync(back.worktree as string)).toBe(true);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(marker, { force: true });
+    }
+  }, 30_000);
 });
 
 describe('T205 + Repo in place', () => {

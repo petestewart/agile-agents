@@ -1,7 +1,7 @@
 /** T227: overlap tracking against a real temp git repo and state home; no vendor, no network. */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RoutedEvent } from '@agile-agents/shared';
@@ -103,6 +103,47 @@ describe('overlap tracking (T227)', () => {
     writeFileSync(join(blog.wt, 'posts.ts'), 'export const p = 2;\n');
     await tracker.recompute(blog.id);
     expect(findOverlaps(streams.list())).toEqual([]);
+  });
+});
+
+describe('T534: one node never stops the overlap sweep', () => {
+  test('a node whose worktree dir is gone is passed over; the node after it is recomputed', async () => {
+    const gone = await workNode('Gone', 'gone');
+    const blog = await workNode('Blog', 'blog');
+    const order = streams.list().map((s) => s.id);
+    expect(order.indexOf(gone.id)).toBeLessThan(order.indexOf(blog.id));
+    rmSync(gone.wt, { recursive: true, force: true });
+    writeFileSync(join(blog.wt, 'posts.ts'), 'export const p = 2;\n');
+
+    await tracker.recomputeAll();
+    expect(streams.get(blog.id).touched?.files).toEqual(['posts.ts']);
+    expect(streams.get(gone.id).touched).toBeUndefined();
+    expect(existsSync(gone.wt)).toBe(false);
+  });
+
+  test('a node whose recompute throws is logged; the node after it is recomputed', async () => {
+    const shop = await workNode('Shop', 'shop');
+    const blog = await workNode('Blog', 'blog');
+    const order = streams.list().map((s) => s.id);
+    expect(order.indexOf(shop.id)).toBeLessThan(order.indexOf(blog.id));
+    writeFileSync(join(shop.wt, 'prices.ts'), 'export const a = 2;\n');
+    writeFileSync(join(blog.wt, 'posts.ts'), 'export const p = 2;\n');
+    const update = streams.update.bind(streams);
+    streams.update = ((by, id, patch) => {
+      if (id === shop.id) throw new Error('the store refused the write');
+      return update(by, id, patch);
+    }) as typeof streams.update;
+    const errors = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await tracker.recomputeAll();
+      expect(errors.mock.calls.map((c) => c.map(String).join(' ')).join('\n')).toContain(
+        `overlap recompute of ${shop.id} failed`,
+      );
+    } finally {
+      errors.mockRestore();
+      streams.update = update;
+    }
+    expect(streams.get(blog.id).touched?.files).toEqual(['posts.ts']);
   });
 });
 

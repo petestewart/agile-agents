@@ -1174,10 +1174,15 @@ export class DeliveryService {
       }
       return { ok: true, repoRoot, target, before, sha, checkouts, plans };
     } finally {
+      // T534: never throws past the outcome above (a `worktree add` that
+      // failed left no `target` dir), and the temp dir always goes.
       if (temp !== undefined) {
-        removeWorktreeSafely(repoRoot, join(temp, 'target'));
-        git(['worktree', 'prune'], repoRoot, repoRoot);
-        rmSync(temp, { recursive: true, force: true });
+        try {
+          removeWorktreeSafely(repoRoot, join(temp, 'target'));
+          git(['worktree', 'prune'], repoRoot, repoRoot);
+        } finally {
+          rmSync(temp, { recursive: true, force: true });
+        }
       }
     }
   }
@@ -1319,7 +1324,8 @@ function worktreesOn(repoRoot: string, branch: string): Checkout[] {
   let path: string | undefined;
   for (const line of listed.stdout.split('\n')) {
     if (line.startsWith('worktree ')) path = line.slice('worktree '.length);
-    if (line === `branch refs/heads/${branch}` && path !== undefined) {
+    // T534: a checkout whose dir is gone has nothing to keep or bring along.
+    if (line === `branch refs/heads/${branch}` && path !== undefined && existsSync(path)) {
       found.push({ path, dirty: uncommittedPaths(repoRoot, path) });
     }
   }
