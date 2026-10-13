@@ -33,9 +33,15 @@ describe('AgentMessage schema', () => {
     expect(() => validateAgentMessage({ ...base, requires_ack: true })).toThrow();
   });
 
-  test('a hil_request must name its hil_kind', () => {
-    const request = { ...base, kind: 'hil_request', priority: 'urgent' };
-    expect(() => validateAgentMessage(request)).toThrow(/hil_kind/);
-    expect(() => validateAgentMessage({ ...request, hil_kind: 'classifier_review' })).not.toThrow();
+  test('T524: a hil_request is no message kind any more, and hil_kind no field', () => {
+    expect(() =>
+      validateAgentMessage({
+        ...base,
+        kind: 'hil_request',
+        priority: 'urgent',
+        hil_kind: 'classifier_review',
+      }),
+    ).toThrow();
+    expect(() => validateAgentMessage({ ...base, hil_kind: 'classifier_review' })).toThrow();
   });
 });

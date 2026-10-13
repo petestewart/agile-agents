@@ -200,8 +200,8 @@ export interface AgentSessionOptions {
     hiddenRoots: readonly string[];
     posture?: PermissionPosture;
   };
-  /** T457: how the ACP tier routes a read the Ask posture held (`acpReadRouter`); absent parks it. */
-  routeRead?: PermissionResponderContext['routeRead'];
+  /** T457, T524: how the ACP tier routes a call it holds for the human (`acpHilRouter`); absent refuses it. */
+  routeHil?: PermissionResponderContext['routeHil'];
   /** Test seam: a fake `spawnSession`. */
   spawn?: typeof defaultSpawnSession;
   now?: () => Date;
@@ -899,7 +899,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     // T476: a vendor with no pre-tool hook gets a card, not a refusal, for a command it can't show.
     hooked: vendorHasHooks(provider.id),
     ...(opts.readScope ?? {}),
-    ...(opts.routeRead !== undefined ? { routeRead: opts.routeRead } : {}),
+    ...(opts.routeHil !== undefined ? { routeHil: opts.routeHil } : {}),
     // The same rules the hook tier enforces, bound to this stream: the
     // only tier a vendor without a pre-tool-use hook has.
     ...(opts.rules !== undefined && streamId !== undefined
@@ -1024,6 +1024,8 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
   ): Promise<void> {
     if (settled) return;
     settled = true;
+    // T524: a held call still being routed is answered now, never after the end.
+    responder.cancelPending();
     gateWatch?.dispose();
     sightings?.forget(sessionId);
     unsubscribe();
@@ -1082,7 +1084,12 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     }
     if (frame.acp === 'request' && frame.method === 'session/request_permission') {
       const params = frame.params as AcpPermissionRequestParams;
-      void responder.handleRequest(frame.id, params);
+      // T524: the request is answered either way; a failed log write after it is the daemon's to report.
+      responder.handleRequest(frame.id, params).catch((err: unknown) => {
+        stderrLog.append(
+          `[agiled] permission request: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      });
       return;
     }
 
@@ -1196,7 +1203,9 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
    * throw on a failed send (it reports it as the session's transport error),
    * so the catch is defence in depth: a provider or a future `cancel()` that
    * throws for any reason must still never skip the close and `finish()`
-   * after it, or the session is left half-stopped.
+   * after it, or the session is left half-stopped. T524: then every
+   * permission request still unanswered is answered `cancelled`, as ACP
+   * asks of a client that cancels.
    */
   function cancelBeforeClose(): void {
     try {
@@ -1204,6 +1213,7 @@ export function startAgentSession(opts: AgentSessionOptions): AgentSessionHandle
     } catch {
       // Already reported through the session's error path, or moot: closing.
     }
+    responder.cancelPending();
   }
   /** T506: the Codex hook never saw this session's calls: stop it, blocked, with the reason. */
   function stopUngated(): void {

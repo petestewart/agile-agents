@@ -3118,6 +3118,77 @@ describe('a send to an agent already gone (CI job 108169280649)', () => {
   }, 30_000);
 });
 
+/**
+ * T524: a held call is answered at once (a card and a refusal), but while
+ * its card is being raised the ACP request is still open. Stopping the
+ * session then answers it `cancelled` (what ACP asks of a client that
+ * cancels), once: the route's late verdict is dropped.
+ */
+describe('T524: stopping a session answers the permission request it holds', () => {
+  test('a held call still being routed is answered cancelled at the stop, once', async () => {
+    const answered: Array<{ result: unknown; sent: boolean }> = [];
+    const recording: typeof spawnSession = (opts) => {
+      const session = spawnSession(opts);
+      const respond = session.respondPermission.bind(session);
+      session.respondPermission = (id, result) => {
+        const sent = respond(id, result);
+        answered.push({ result, sent });
+        return sent;
+      };
+      return session;
+    };
+    let release!: () => void;
+    let raised = 0;
+    attachService = new AttachService({
+      store,
+      streams,
+      home,
+      provider: () =>
+        fakeProviderFor(ACP_PROVIDERS.cursor, {
+          steps: [
+            {
+              type: 'request_permission',
+              // An exec whose command Cursor doesn't send: held for the human (T476).
+              toolCall: { toolCallId: 'blind-1', kind: 'execute', title: 'Terminal', rawInput: {} },
+              options: [
+                { optionId: 'yes', kind: 'allow_once' },
+                { optionId: 'no', kind: 'reject_once' },
+              ],
+            },
+            { type: 'hang' },
+          ],
+        }),
+      questions: { listOpen: () => questions.listOpen() },
+      // The card is still being raised when the stop comes.
+      gates: {
+        list: () => gates.list(),
+        request: (gate, ctx) => {
+          raised += 1;
+          return new Promise((resolve) => {
+            release = () => void gates.request(gate, ctx).then(resolve);
+          });
+        },
+        consume: (id) => gates.consume(id),
+      },
+      spawn: recording,
+    });
+    const stream = await makeStream();
+    await attachService.attach(stream.id);
+    await waitFor(() => raised === 1);
+    expect(answered).toEqual([]);
+
+    await attachService.stop(stream.id);
+    // Answered before the close, while the agent could still read it.
+    expect(answered).toEqual([{ result: { outcome: { outcome: 'cancelled' } }, sent: true }]);
+
+    // The card the route finishes raising changes nothing on the wire.
+    release();
+    await waitFor(() => gates.list().length === 1);
+    await Bun.sleep(50);
+    expect(answered).toHaveLength(1);
+  }, 30_000);
+});
+
 describe('T361: a live agent follows its node’s role', () => {
   /** Wired as `daemon.ts` wires it: every tree change asks the attach service. */
   beforeEach(async () => {

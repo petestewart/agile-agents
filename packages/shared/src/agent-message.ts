@@ -3,10 +3,10 @@
  * (`bus/inbox/<agent>/<ulid>.yaml`) and handed to that session by its hooks
  * (`hook/decide.ts`: urgent denies, normal is injected as additional
  * context, low is drained at `Stop`). T168 narrowed it from the old team
- * `Message` envelope to the two kinds the reshape still writes: a
- * `hil_response` (a human's note on the gate a session is parked on,
- * `gates/service.ts`) and a `hil_request` (the ACP permission responder's
- * record of a routed call, `permissions/responder.ts`).
+ * `Message` envelope; T524 dropped `hil_request` (the ACP responder's
+ * record of a parked call at `bus/inbox/human/`, which nothing read: a held
+ * call is a gate now). The one kind left is a `hil_response`: a human's
+ * note on the gate a session is held on (`gates/service.ts`).
  *
  * Also home to the 800-char body cap (CLAUDE.md tunable) and the closed set
  * of gate kinds, which every other schema imports from here.
@@ -34,7 +34,7 @@ export const HIL_KINDS = ['land', 'rule_accept', 'classifier_review'] as const;
 export const HilKindSchema = z.enum(HIL_KINDS);
 export type HilKind = z.infer<typeof HilKindSchema>;
 
-export const AGENT_MESSAGE_KINDS = ['hil_request', 'hil_response'] as const;
+export const AGENT_MESSAGE_KINDS = ['hil_response'] as const;
 export const AgentMessageKindSchema = z.enum(AGENT_MESSAGE_KINDS);
 export type AgentMessageKind = z.infer<typeof AgentMessageKindSchema>;
 
@@ -53,18 +53,8 @@ export const AgentMessageSchema = z
     priority: MessagePrioritySchema,
     body: MessageBodySchema,
     refs: z.array(z.string().min(1)).default([]),
-    hil_kind: HilKindSchema.optional(),
   })
-  .strict()
-  .superRefine((message, ctx) => {
-    if (message.kind === 'hil_request' && message.hil_kind === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['hil_kind'],
-        message: 'hil_request messages must carry a hil_kind',
-      });
-    }
-  });
+  .strict();
 
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 

@@ -10,7 +10,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentId, ReposConfig } from '@agile-agents/shared';
 import { GateService } from '../gates';
-import { acpReadRouter } from '../hook/route-band';
+import { acpHilRouter } from '../hook/route-band';
 import { runInit } from '../init';
 import { ProjectService } from '../projects/service';
 import { StateStore } from '../store';
@@ -227,7 +227,7 @@ describe('the ACP tier routes a held read like the hook (T457)', () => {
         readRoots: [],
         hiddenRoots: [],
         posture,
-        routeRead: acpReadRouter({
+        routeHil: acpHilRouter({
           gates,
           store,
           session: WORKER,
