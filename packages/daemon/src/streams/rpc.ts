@@ -252,7 +252,15 @@ export function buildStreamRpcMethods(
       const p = requireObject(params);
       const id = requireStreamId(p.id);
       // T398: no agent runs on a node nobody can see any more.
-      service.get(id);
+      const node = service.get(id);
+      // T541 (daemon audit D14): as the cockpit's Delete. An archived root could be
+      // neither restored (`unarchiveTree`) nor deleted forever (`TrashService.roots`).
+      if (node.parent === undefined) {
+        throw new RpcParamError(
+          "a project's root can't be archived on its own; archive the project instead",
+          { id },
+        );
+      }
       await options.stopSessions?.(id);
       return service.archive(EDGE_PRINCIPAL, id);
     },
