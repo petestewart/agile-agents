@@ -3831,7 +3831,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T557 The Director reads the whole line you wrote
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge 8989fee3 on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Found by T519's worker: the cockpit and the daemon take a human line of up to `HUMAN_LINE_MAX_CHARS` (4,000), and the Director's thread keeps it whole, but `DirectorService.say` (`director/service.ts`) emits `director_request` with `payload.body` cut to 800 (`ROUTED_EVENT_STRING_MAX`), and a live Director is told only that digest line (`events/producers.ts` `summarize`, `events/delivery.ts`). A node gets the whole line (prompted directly, or from its thread in the wake brief). Give the Director the full text: e.g. the digest for a human `director_request` reads the line from the Director's thread by the event's `ref` (its `ts`), or `say` prompts a live Director directly the way a node's `/say` does without a second delivery of the same line — follow how a node avoids double delivery. Keep the payload cap (it is the event log's bound).
 - **Acceptance Criteria:** A 3,000-character line to a live Director reaches its prompt whole, once; a Director started by the line sees it whole in its first prompt; a daemon notice (`by: daemon`) is unchanged.
