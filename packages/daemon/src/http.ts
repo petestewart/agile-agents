@@ -76,6 +76,7 @@ import { CONTROL_ROOM_DIST_DIR, FEED_HTML_PATH } from '@agile-agents/ui';
 import {
   AgentWorkingError,
   type AttachService,
+  NodeEndedError,
   SessionDefaultsService,
   StreamBusyError,
   UnknownVendorError,
@@ -2371,6 +2372,7 @@ async function handleStreamRoute(
     if (err instanceof NotFoundError) return errorResponse(404, message);
     if (
       err instanceof StreamBusyError ||
+      err instanceof NodeEndedError ||
       err instanceof LandRefusedError ||
       err instanceof TrashError
     ) {

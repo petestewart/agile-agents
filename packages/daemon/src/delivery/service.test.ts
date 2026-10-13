@@ -208,6 +208,9 @@ describe('the success path', () => {
     // Worktree removed, branch kept (git remembers the work).
     expect(existsSync(work.worktree)).toBe(false);
     expect(git(['rev-parse', '--verify', 'refs/heads/s-ok']).length).toBe(40);
+    // T535: the record says so too: no worktree path to start an agent in, the branch kept.
+    expect(landed.worktree).toBeUndefined();
+    expect(landed.branch).toBe('s-ok');
   });
 
   test("the repo entry's main branch beats the repo's default branch", async () => {
@@ -340,6 +343,28 @@ describe('conflict (acceptance: blocked, conflict files on the thread, worktree 
     expect(threadBodies(stream.id)).toContain(outcome.line);
     // The worktree is kept — that is where the conflict gets resolved.
     expect(existsSync(work.worktree)).toBe(true);
+  });
+});
+
+describe('T535: a plain directory where a checkout of the target was', () => {
+  test("is not fast-forwarded: the operator's own checkout on another branch is left alone", async () => {
+    const stale = join(repo, '.worktrees', 'main-plain');
+    git(['worktree', 'add', '-q', '--force', stale, 'main']);
+    rmSync(stale, { recursive: true, force: true });
+    mkdirSync(stale); // deleted by hand, a plain directory left in its place
+    const work = branchWithWork('s-plain', 'pl.txt', 'pl\n');
+    const stream = await makeStream(work);
+    // The operator works on a branch of their own, clean.
+    git(['checkout', '-q', '-b', 'mine']);
+    const mine = git(['rev-parse', 'refs/heads/mine']);
+
+    const outcome = await landing.land(stream.id);
+    expect(outcome.status).toBe('landed');
+    expect(git(['show', 'main:pl.txt'])).toBe('pl');
+    // No `reset --hard` reached the operator's checkout through the plain directory.
+    expect(git(['rev-parse', 'refs/heads/mine'])).toBe(mine);
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('mine');
+    expect(existsSync(join(repo, 'pl.txt'))).toBe(false);
   });
 });
 

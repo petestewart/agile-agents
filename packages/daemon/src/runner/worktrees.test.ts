@@ -1,11 +1,23 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isOwnCheckout } from '../delivery/git';
+import { DAEMON_CACHE_DIR } from '../subprocess-env';
 import {
   WorktreeRefusedError,
   branchLabel,
   createWorktree,
+  restoreWorktree,
   slugify,
   worktreePathFor,
 } from './worktrees';
@@ -189,5 +201,128 @@ describe('T113: hardened worktree creation', () => {
     const result = await createWorktree(repo, name);
     expect(existsSync(result.path)).toBe(true);
     expect(existsSync(marker)).toBe(false);
+  });
+});
+
+describe('T535: restoreWorktree puts a gone worktree back from its branch', () => {
+  const name = { id: 'str-5', slug: 'restore me' };
+
+  /** A worktree with a commit on its branch, then its directory deleted by hand. */
+  async function deletedByHand(): Promise<{ path: string; branch: string }> {
+    const { path, branch } = await createWorktree(repo, name);
+    writeFileSync(join(path, 'work.txt'), 'work\n');
+    git(['add', '-A'], path);
+    git(['commit', '-q', '-m', 'work'], path);
+    rmSync(path, { recursive: true, force: true });
+    return { path, branch };
+  }
+
+  function refusal(err: unknown): string | undefined {
+    return err instanceof WorktreeRefusedError ? err.reason : undefined;
+  }
+
+  test('a deleted directory comes back as a real worktree of its branch, with its commits', async () => {
+    const { path, branch } = await deletedByHand();
+    expect(isOwnCheckout(path)).toBe(false);
+    const restored = await restoreWorktree(repo, path, branch);
+    expect(restored.path).toBe(path);
+    expect(isOwnCheckout(path)).toBe(true);
+    expect(existsSync(join(path, '.git'))).toBe(true);
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], path)).toBe(branch);
+    expect(git(['rev-parse', '--show-toplevel'], path)).toBe(realpathSync(path));
+    expect(readFileSync(join(path, 'work.txt'), 'utf8')).toBe('work\n');
+    expect(restored.head).toBe(git(['rev-parse', `refs/heads/${branch}`]));
+    // The operator's checkout is untouched.
+    expect(git(['status', '--porcelain'])).toBe('');
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'])).not.toBe(branch);
+  });
+
+  test('an empty plain directory (or one with only the daemon cache) is replaced', async () => {
+    const { path, branch } = await deletedByHand();
+    mkdirSync(join(path, DAEMON_CACHE_DIR, 'git', 'home'), { recursive: true });
+    expect(isOwnCheckout(path)).toBe(false);
+    await restoreWorktree(repo, path, branch);
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], path)).toBe(branch);
+  });
+
+  test('a plain directory with something in it is refused, and nothing in it is deleted', async () => {
+    const { path, branch } = await deletedByHand();
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'notes.md'), 'mine\n');
+    const err = await restoreWorktree(repo, path, branch).catch((e: unknown) => e);
+    expect(refusal(err)).toBe('worktree-exists');
+    expect(String(err)).toContain('notes.md');
+    expect(readFileSync(join(path, 'notes.md'), 'utf8')).toBe('mine\n');
+    expect(existsSync(join(path, '.git'))).toBe(false);
+  });
+
+  test('a symlink at the path is refused and left alone', async () => {
+    const { path, branch } = await deletedByHand();
+    symlinkSync(repo, path);
+    expect(isOwnCheckout(path)).toBe(false);
+    const err = await restoreWorktree(repo, path, branch).catch((e: unknown) => e);
+    expect(refusal(err)).toBe('worktree-exists');
+    expect(String(err)).toContain('symlink');
+  });
+
+  test('a branch that is gone too is refused, and nothing is made at the path', async () => {
+    const { path, branch } = await deletedByHand();
+    git(['worktree', 'prune']);
+    git(['branch', '-D', branch]);
+    const err = await restoreWorktree(repo, path, branch).catch((e: unknown) => e);
+    expect(refusal(err)).toBe('branch-missing');
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test('a branch checked out in another worktree is refused, in git words', async () => {
+    const { path, branch } = await deletedByHand();
+    git(['worktree', 'prune']);
+    const elsewhere = join(repo, '.worktrees', 'elsewhere');
+    git(['worktree', 'add', '-q', elsewhere, branch]);
+    const err = await restoreWorktree(repo, path, branch).catch((e: unknown) => e);
+    expect(refusal(err)).toBe('checkout-failed');
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test('no repo hook runs on the way back (T536)', async () => {
+    const { path, branch } = await deletedByHand();
+    const marker = join(repo, 'hook-ran.txt');
+    git(['config', 'core.hooksPath', '.githooks']);
+    mkdirSync(join(repo, '.githooks'));
+    writeFileSync(join(repo, '.githooks', 'post-checkout'), `#!/bin/sh\necho ran >> ${marker}\n`, {
+      mode: 0o755,
+    });
+    await restoreWorktree(repo, path, branch);
+    expect(isOwnCheckout(path)).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test('two at once (a worker and a reviewer starting): both get the one worktree, neither removes it', async () => {
+    const { path, branch } = await deletedByHand();
+    const both = await Promise.allSettled([
+      restoreWorktree(repo, path, branch),
+      restoreWorktree(repo, path, branch),
+    ]);
+    expect(both.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+    expect(isOwnCheckout(path)).toBe(true);
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], path)).toBe(branch);
+    expect(git(['worktree', 'list', '--porcelain'])).toContain(`worktree ${path}`);
+  });
+
+  test('a relative path is refused before anything is touched', async () => {
+    const { branch } = await deletedByHand();
+    const err = await restoreWorktree(repo, '.worktrees/str-5-restore-me', branch).catch(
+      (e: unknown) => e,
+    );
+    expect(refusal(err)).toBe('worktree-exists');
+    expect(String(err)).toContain('not an absolute path');
+  });
+
+  test('a repo with a filter driver is refused', async () => {
+    const { path, branch } = await deletedByHand();
+    git(['config', 'filter.lfs.smudge', 'cat']);
+    const err = await restoreWorktree(repo, path, branch).catch((e: unknown) => e);
+    expect(refusal(err)).toBe('filter-driver');
+    expect(existsSync(path)).toBe(false);
   });
 });

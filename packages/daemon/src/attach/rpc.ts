@@ -19,7 +19,12 @@ import { WorktreeRefusedError } from '../runner/worktrees';
 import { EmptyRepoError } from '../store/rpc-methods';
 import { NotFoundError } from '../store/store';
 import { UnknownVendorError } from './resolve';
-import { type AttachService, StreamBusyError, UnregisteredRepoError } from './service';
+import {
+  type AttachService,
+  NodeEndedError,
+  StreamBusyError,
+  UnregisteredRepoError,
+} from './service';
 import { NoWorktreeError, UnknownSessionError, type VerbService, verbHandlers } from './verbs';
 
 function requireObject(params: unknown): Record<string, unknown> {
@@ -36,6 +41,7 @@ function requireObject(params: unknown): Record<string, unknown> {
 /** Errors here that are caller input: -32602, not an internal fault. */
 const asParamErrors = paramErrors(
   StreamBusyError,
+  NodeEndedError,
   UnregisteredRepoError,
   UnknownVendorError,
   UnknownSessionError,

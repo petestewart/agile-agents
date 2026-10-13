@@ -2,13 +2,14 @@
  * Worktree creation for a stream's first attach (§4.4):
  * `<repo>/.worktrees/<stream-id>-<slug>/`, ignored via the repo's
  * `<git-common-dir>/info/exclude` (never `.gitignore`, so the user's
- * checkout stays clean). A worktree is created only here.
+ * checkout stays clean). A worktree is created only here, and put back
+ * from its branch only here (`restoreWorktree`, T535).
  */
 
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { NO_HOOKS_GIT_CONFIG } from '../delivery/git';
-import { sandboxedSubprocessEnv } from '../subprocess-env';
+import { NO_HOOKS_GIT_CONFIG, isOwnCheckout } from '../delivery/git';
+import { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from '../subprocess-env';
 
 interface GitResult {
   exitCode: number;
@@ -63,6 +64,7 @@ export class WorktreeRefusedError extends Error {
       | 'filter-driver'
       | 'branch-exists'
       | 'branch-claim-lost'
+      | 'branch-missing'
       | 'worktree-exists'
       | 'checkout-failed',
   ) {
@@ -279,4 +281,105 @@ export async function createWorktree(
   }
 
   return { path, branch, head };
+}
+
+/**
+ * T535: what is at a worktree path that is not a checkout, cleared when it
+ * holds nothing: gone, or a plain directory that is empty (or holds only
+ * the daemon's own scratch, `.agile-daemon-cache`, which a git call made
+ * there leaves). Anything else is refused, never deleted: a symlink, a
+ * file, a checkout, or a directory with something in it.
+ */
+function clearForRestore(path: string): void {
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    return;
+  }
+  const refuse = (what: string): never => {
+    throw new WorktreeRefusedError(
+      `${path} is ${what}, not this node's worktree; move it away (nothing there was deleted) and start the agent again`,
+      'worktree-exists',
+    );
+  };
+  if (stat.isSymbolicLink()) refuse('a symlink');
+  if (!stat.isDirectory()) refuse('a file');
+  if (existsSync(join(path, '.git'))) refuse('another checkout');
+  const entries = readdirSync(path).filter((name) => name !== DAEMON_CACHE_DIR);
+  if (entries.length > 0) {
+    const shown = entries.slice(0, 3).join(', ');
+    refuse(
+      `a plain directory holding ${shown}${entries.length > 3 ? ` and ${entries.length - 3} more` : ''}`,
+    );
+  }
+  rmSync(path, { recursive: true, force: true });
+}
+
+/**
+ * T535: puts a node's worktree back at `path`, checked out on its existing
+ * `branch`, when the directory is gone (deleted by hand, or removed while
+ * the record kept it) or an empty plain directory was left in its place.
+ * The same hardening as `createWorktree` (no shell, no repo hook, no filter
+ * driver); `worktree prune` first, so git's record of the old checkout
+ * doesn't hold the branch. Refuses (`WorktreeRefusedError`) rather than
+ * guess: the branch is gone (`branch-missing`); something else is at
+ * `path`, or it is relative (`worktree-exists`, see `clearForRestore`);
+ * git won't check the branch out there, e.g. another worktree has it
+ * (`checkout-failed`). A worktree of `branch` already back at `path` (a
+ * reviewer starting beside the worker put it back first) is taken as is.
+ */
+export async function restoreWorktree(
+  repoRoot: string,
+  path: string,
+  branch: string,
+): Promise<CreatedWorktree> {
+  // The checks below read `path` from here, git from `repoRoot`: one place only.
+  if (!isAbsolute(path)) {
+    throw new WorktreeRefusedError(
+      `refusing to put back the worktree ${path}: not an absolute path`,
+      'worktree-exists',
+    );
+  }
+  const refusal = await filterDriverRefusal(repoRoot);
+  if (refusal) {
+    throw new WorktreeRefusedError(
+      `refusing to put back the worktree ${path}: ${refusal}`,
+      'filter-driver',
+    );
+  }
+  await ensureWorktreesIgnored(repoRoot);
+  // Nothing awaits from here to the add, so a second start can't interleave.
+  const head = runGit(
+    ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`],
+    repoRoot,
+  );
+  if (head.exitCode !== 0 || head.stdout === '') {
+    throw new WorktreeRefusedError(
+      `the worktree ${path} is gone and so is its branch ${branch}: there is nothing to put it back from`,
+      'branch-missing',
+    );
+  }
+  const restored = { path, branch, head: head.stdout };
+  if (isCheckoutOf(repoRoot, path, branch)) return restored;
+  clearForRestore(path);
+  runGit(['worktree', 'prune'], repoRoot);
+  const add = runGit(['worktree', 'add', '--', path, branch], repoRoot);
+  if (add.exitCode !== 0) {
+    // Never removed here: git cleans up its own failed add, and what is at
+    // `path` now may be someone else's.
+    runGit(['worktree', 'prune'], repoRoot);
+    throw new WorktreeRefusedError(
+      `could not put back the worktree ${path} on ${branch}: ${add.stderr}`,
+      'checkout-failed',
+    );
+  }
+  return restored;
+}
+
+/** `path` is a checkout of its own with `branch` checked out (git run from `repoRoot`). */
+function isCheckoutOf(repoRoot: string, path: string, branch: string): boolean {
+  if (!isOwnCheckout(path)) return false;
+  const at = runGit(['-C', path, 'symbolic-ref', '--quiet', '--short', 'HEAD'], repoRoot);
+  return at.exitCode === 0 && at.stdout === branch;
 }

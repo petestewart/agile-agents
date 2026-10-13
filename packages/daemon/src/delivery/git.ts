@@ -21,7 +21,8 @@
  * (`runner/worktrees.ts`) and a clone (`store/clone.ts`).
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
+import { join } from 'node:path';
 import { sandboxedSubprocessEnv } from '../subprocess-env';
 
 const textDecoder = new TextDecoder();
@@ -214,6 +215,21 @@ export function gitWrite(args: string[], cwd: string, repoRoot: string): GitResu
   return spawnGit(['git', ...NO_HOOKS_GIT_CONFIG, '-c', 'commit.gpgsign=false', ...args], cwd, () =>
     daemonEnv(repoRoot),
   );
+}
+
+/**
+ * T535: `path` is a checkout of its own: a real directory (not a symlink)
+ * with a `.git` file or dir in it. Anything else is not a node's worktree.
+ * Git run in a plain directory left under `<repo>/.worktrees/` walks up to
+ * the operator's own checkout, so no agent starts there and no daemon git
+ * write runs there.
+ */
+export function isOwnCheckout(path: string): boolean {
+  try {
+    return lstatSync(path).isDirectory() && existsSync(join(path, '.git'));
+  } catch {
+    return false;
+  }
 }
 
 export interface RemoveWorktreeResult {

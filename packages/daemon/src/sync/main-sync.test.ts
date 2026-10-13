@@ -273,6 +273,30 @@ describe('T534: one node never stops a sync pass', () => {
   });
 });
 
+describe("T535: a plain directory where a node's worktree was", () => {
+  test("is never merged into: the operator's own checkout and branch stay as they were", async () => {
+    const node = await workNode('plain');
+    // The operator works on another branch in the main checkout.
+    sh(['checkout', '-q', '-b', 'mine'], repo);
+    commit(repo, 'b.ts', 'mine\n');
+    sh(['checkout', '-q', 'main'], repo);
+    commit(repo, 'a.ts', 'a2\n');
+    sh(['checkout', '-q', 'mine'], repo);
+    const mine = sh(['rev-parse', 'mine'], repo);
+    // The worktree is deleted by hand and a plain directory is left in its place.
+    rmSync(node.wt, { recursive: true, force: true });
+    mkdirSync(node.wt);
+
+    const out = await sync.mainMoved('api');
+    expect(out.get(node.id)).toEqual({ status: 'deferred', reason: 'no_worktree' });
+    expect(sh(['rev-parse', 'mine'], repo)).toBe(mine);
+    expect(sh(['rev-parse', '--abbrev-ref', 'HEAD'], repo)).toBe('mine');
+    expect(sh(['status', '--porcelain', '--untracked-files=no'], repo)).toBe('');
+    expect(readFileSync(join(repo, 'a.ts'), 'utf8')).toBe('a1\n');
+    expect(existsSync(join(node.wt, '.git'))).toBe(false);
+  });
+});
+
 describe('T536: a sync merge runs no repo hook', () => {
   test('D4: a post-merge an agent committed into a tracked core.hooksPath does not run', async () => {
     const marker = `${repo}-hooks-ran`;

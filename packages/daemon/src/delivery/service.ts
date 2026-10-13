@@ -10,7 +10,7 @@
  * a child never lands into its parent's branch.
  */
 
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -34,6 +34,7 @@ import {
   git,
   gitNetwork,
   gitWrite,
+  isOwnCheckout,
   removeWorktreeSafely,
   runGit,
 } from './git';
@@ -533,6 +534,13 @@ export class DeliveryService {
           kind: 'event',
           body: `worktree ${stream.worktree} kept: ${removal.reason}`,
         });
+      } else {
+        // T535: gone from the record too (its branch stays, as in git), so
+        // nothing reads or starts an agent in a path that is no longer a checkout.
+        await this.options.store.updateStream('daemon', stream.id, (before) => {
+          const { worktree: _w, ...rest } = before;
+          return rest;
+        });
       }
     }
     // §5.5's retro, after the worktree is gone.
@@ -752,7 +760,8 @@ export class DeliveryService {
     const repoEntry = this.registeredRepo(stream, stream.repo);
     const repoRoot = repoEntry.path;
     const target = this.resolveTarget(stream, repoEntry, repoRoot);
-    const inWorktree = stream.worktree !== undefined && existsSync(stream.worktree);
+    // T535: a plain directory where the worktree was would diff the operator's checkout.
+    const inWorktree = stream.worktree !== undefined && isOwnCheckout(stream.worktree);
     const cwd = inWorktree ? (stream.worktree as string) : repoRoot;
     const head = inWorktree ? 'HEAD' : stream.branch;
     const base = git(['merge-base', target, head], cwd, repoRoot);
@@ -835,7 +844,7 @@ export class DeliveryService {
     const repoRoot = repoEntry.path;
     const remote = repoEntry.remote ?? 'origin';
     const cwd =
-      stream.worktree !== undefined && existsSync(stream.worktree) ? stream.worktree : repoRoot;
+      stream.worktree !== undefined && isOwnCheckout(stream.worktree) ? stream.worktree : repoRoot;
     // T225: a merged PR is the end of the node; a new commit needs a new node.
     if (
       stream.delivery_state?.status === 'merged' ||
@@ -1028,7 +1037,7 @@ export class DeliveryService {
     let why: string | undefined;
     if (session !== undefined && (session.status === 'running' || session.status === 'starting')) {
       why = 'the parent is mid-turn';
-    } else if (host.worktree !== undefined && existsSync(host.worktree)) {
+    } else if (host.worktree !== undefined && isOwnCheckout(host.worktree)) {
       const status = git(
         ['status', '--porcelain=v1', '--untracked-files=no'],
         host.worktree,
@@ -1325,7 +1334,9 @@ function worktreesOn(repoRoot: string, branch: string): Checkout[] {
   for (const line of listed.stdout.split('\n')) {
     if (line.startsWith('worktree ')) path = line.slice('worktree '.length);
     // T534: a checkout whose dir is gone has nothing to keep or bring along.
-    if (line === `branch refs/heads/${branch}` && path !== undefined && existsSync(path)) {
+    // T535: nor one whose dir is now a plain one, where git (its status, the
+    // fast-forward's `reset --hard`) would reach the operator's checkout.
+    if (line === `branch refs/heads/${branch}` && path !== undefined && isOwnCheckout(path)) {
       found.push({ path, dirty: uncommittedPaths(repoRoot, path) });
     }
   }
