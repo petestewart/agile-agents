@@ -8,7 +8,7 @@
 
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { NO_HOOKS_GIT_CONFIG } from '../delivery/git';
+import { NO_HOOKS_GIT_CONFIG, isOwnCheckout } from '../delivery/git';
 import { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from '../subprocess-env';
 
 interface GitResult {
@@ -326,7 +326,8 @@ function clearForRestore(path: string): void {
  * guess: the branch is gone (`branch-missing`); something else is at
  * `path`, or it is relative (`worktree-exists`, see `clearForRestore`);
  * git won't check the branch out there, e.g. another worktree has it
- * (`checkout-failed`).
+ * (`checkout-failed`). A worktree of `branch` already back at `path` (a
+ * reviewer starting beside the worker put it back first) is taken as is.
  */
 export async function restoreWorktree(
   repoRoot: string,
@@ -347,6 +348,8 @@ export async function restoreWorktree(
       'filter-driver',
     );
   }
+  await ensureWorktreesIgnored(repoRoot);
+  // Nothing awaits from here to the add, so a second start can't interleave.
   const head = runGit(
     ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`],
     repoRoot,
@@ -357,18 +360,26 @@ export async function restoreWorktree(
       'branch-missing',
     );
   }
+  const restored = { path, branch, head: head.stdout };
+  if (isCheckoutOf(repoRoot, path, branch)) return restored;
   clearForRestore(path);
-  await ensureWorktreesIgnored(repoRoot);
   runGit(['worktree', 'prune'], repoRoot);
   const add = runGit(['worktree', 'add', '--', path, branch], repoRoot);
   if (add.exitCode !== 0) {
-    // Nothing was at `path` before the add: whatever it left is its own.
-    rmSync(path, { recursive: true, force: true });
+    // Never removed here: git cleans up its own failed add, and what is at
+    // `path` now may be someone else's.
     runGit(['worktree', 'prune'], repoRoot);
     throw new WorktreeRefusedError(
       `could not put back the worktree ${path} on ${branch}: ${add.stderr}`,
       'checkout-failed',
     );
   }
-  return { path, branch, head: head.stdout };
+  return restored;
+}
+
+/** `path` is a checkout of its own with `branch` checked out (git run from `repoRoot`). */
+function isCheckoutOf(repoRoot: string, path: string, branch: string): boolean {
+  if (!isOwnCheckout(path)) return false;
+  const at = runGit(['-C', path, 'symbolic-ref', '--quiet', '--short', 'HEAD'], repoRoot);
+  return at.exitCode === 0 && at.stdout === branch;
 }

@@ -297,6 +297,18 @@ describe('T535: restoreWorktree puts a gone worktree back from its branch', () =
     expect(existsSync(marker)).toBe(false);
   });
 
+  test('two at once (a worker and a reviewer starting): both get the one worktree, neither removes it', async () => {
+    const { path, branch } = await deletedByHand();
+    const both = await Promise.allSettled([
+      restoreWorktree(repo, path, branch),
+      restoreWorktree(repo, path, branch),
+    ]);
+    expect(both.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+    expect(isOwnCheckout(path)).toBe(true);
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], path)).toBe(branch);
+    expect(git(['worktree', 'list', '--porcelain'])).toContain(`worktree ${path}`);
+  });
+
   test('a relative path is refused before anything is touched', async () => {
     const { branch } = await deletedByHand();
     const err = await restoreWorktree(repo, '.worktrees/str-5-restore-me', branch).catch(
