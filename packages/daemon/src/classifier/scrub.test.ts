@@ -94,6 +94,31 @@ describe('scrub — positive (§6.5, known secret shapes are redacted)', () => {
     expect(out).toContain('@@ -0,0 +1,9 @@');
   });
 
+  test('T530: a marker with code after it redacts the marker only', () => {
+    const code = Array.from({ length: 50 }, (_, i) => `+const line${i} = parsePem(input, ${i});`);
+    const state = [
+      '@@ -0,0 +1,52 @@',
+      '+// Reads "-----BEGIN RSA PRIVATE KEY-----" headers from a PEM file.',
+      ...code,
+    ].join('\n');
+    const out = scrub(state);
+    expect(out).toContain(`+// Reads "${REDACTION_MARKER}" headers from a PEM file.`);
+    for (const line of code) expect(out).toContain(line);
+  });
+
+  test('T530: a truncated key after PEM headers or a blank line is still redacted to the end', () => {
+    const body = 'MIIEowIBAAKCAQEAxLotsOfBase64Here0123456789abcdefghijklmnopqrstuv';
+    for (const head of ['Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,ABCDEF\n', '\n']) {
+      const out = scrub(`before\n-----BEGIN RSA PRIVATE KEY-----\n${head}${body}\nmore`);
+      expect(out).toBe(`before\n${REDACTION_MARKER}`);
+    }
+    // A diff hunk's `+` and a PGP block with a blank line and a header.
+    const pgp = scrub(
+      `+-----BEGIN PGP PRIVATE KEY BLOCK-----\n+Version: GnuPG v2\n+\n+${body}\n+${body}`,
+    );
+    expect(pgp).toBe(`+${REDACTION_MARKER}`);
+  });
+
   test('a terminated block stops at its own footer and does not swallow the rest', () => {
     const out = scrub(
       '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\nand this survives',
