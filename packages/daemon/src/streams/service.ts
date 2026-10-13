@@ -888,11 +888,15 @@ export class StreamService {
         `thread body is ${input.body.length} characters; the cap is ${max} — write the detail to a file and pass it as "ref"`,
       );
     }
+    // T539: the time the line was written, not the time the store's lock gets to it: a line
+    // queued behind other writes keeps its place before what happened after it (a turn's
+    // narration before its tool calls, T509).
+    const calledAt = Date.now();
     return this.store.appendThreadEntry(id, (lastAt: string | undefined) => {
       // T503: a line's `ts` names it (a thread's anchor and id are one), so each comes after the
       // node's last line and after what it is in or on: the same millisecond is not after.
       // T539: `lastAt` is read inside the store's write lock, so concurrent appends are ordered.
-      const ts = after([lastAt, input.anchor?.entry ?? input.thread]);
+      const ts = after([lastAt, input.anchor?.entry ?? input.thread], calledAt);
       return {
         ts,
         by,
@@ -942,8 +946,7 @@ function who(by: string): string {
 }
 
 /** Now, or a millisecond past the latest of `earlier` (ISO times) when now is not later. */
-function after(earlier: readonly (string | undefined)[]): string {
-  const now = Date.now();
+function after(earlier: readonly (string | undefined)[], now: number = Date.now()): string {
   let floor = Number.NEGATIVE_INFINITY;
   for (const at of earlier) {
     const t = at !== undefined ? Date.parse(at) : Number.NaN;

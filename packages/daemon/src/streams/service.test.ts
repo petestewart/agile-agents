@@ -8,7 +8,7 @@
  * directory appears anywhere under it.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -329,6 +329,24 @@ describe('thread', () => {
     expect(reply.anchor?.entry).toBe(b.ts);
     expect(reply.thread).toBe(reply.ts);
     expect(reply.ts > (appended[2]?.ts ?? '')).toBe(true);
+  });
+
+  test('T539: a line keeps the time it was written, not the time the store got to it', async () => {
+    const stream = await newStream();
+    const written = new Date(Date.now() + 60_000);
+    setSystemTime(written);
+    try {
+      const pending = streams.appendThread('daemon', stream.id, {
+        kind: 'event',
+        body: 'narration',
+      });
+      // The store's lock runs the write on a later tick; time moves on meanwhile.
+      setSystemTime(new Date(written.getTime() + 5_000));
+      const entry = await pending;
+      expect(entry.ts).toBe(written.toISOString());
+    } finally {
+      setSystemTime();
+    }
   });
 
   test('an agent author carries its session id; a bare agent principal cannot write', async () => {
