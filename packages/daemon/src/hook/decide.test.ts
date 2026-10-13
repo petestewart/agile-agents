@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { AgentMessage, KnowledgeItem, ReposConfig } from '@agile-agents/shared';
+import { decidePermission } from '../permissions';
 import { decidePreToolUse } from './decide';
 import { DEFAULT_MAX_READ_BYTES, type HookDecisionContext } from './types';
 
@@ -558,6 +559,68 @@ describe('T291: a coordinator has no network (P20)', () => {
   test('a worker (engineer) is unchanged: both fall through to allow', () => {
     expect(web('worker', 'WebFetch').decision).toBe('allow');
     expect(web('worker', 'WebSearch').decision).toBe('allow');
+  });
+});
+
+describe("T518: a read-only role gets the ACP tier's verdict for another MCP server's tool", () => {
+  const worktreePath = '/repo/.worktrees/TKT-0001';
+  const mcp = (role: HookDecisionContext['role'], tool_name: string) =>
+    decidePreToolUse(baseCtx({ role, worktreePath }), {
+      tool_name,
+      tool_input: { owner: 'o', repo: 'r', title: 'x', path: `${worktreePath}/a.ts` },
+    });
+  /** What the ACP tier decides for the same call, reported as kind `other`. */
+  const acp = (tool: string) =>
+    decidePermission({
+      role: 'reviewer',
+      worktreePath,
+      request: {
+        toolCall: { kind: 'other', title: tool, rawInput: {} },
+        options: [
+          { optionId: 'allow', kind: 'allow_once' },
+          { optionId: 'deny', kind: 'reject_once' },
+        ],
+      },
+    });
+
+  test('a reviewer or lessons session is denied, with the ACP tier reason', () => {
+    for (const tool of [
+      'mcp__github__create_issue',
+      'mcp__fs__write_file',
+      'mcp__plugin_tools_web__fetch',
+      'mcp__agile_other__progress',
+    ]) {
+      const ours = acp(tool);
+      if (ours.kind !== 'deny') throw new Error(`the ACP tier did not deny ${tool}`);
+      for (const role of ['reviewer', 'lessons'] as const) {
+        expect([role, tool, mcp(role, tool)]).toEqual([
+          role,
+          tool,
+          { decision: 'deny', reason: ours.reason },
+        ]);
+      }
+    }
+  });
+
+  test("the daemon's own verbs keep their verdict: allowed, as the ACP tier allows them", () => {
+    for (const tool of ['mcp__agile__finding', 'mcp__agile__read_stream', 'mcp__agile__ask']) {
+      expect(acp(tool).kind).toBe('allow');
+      for (const role of ['reviewer', 'lessons', 'worker', 'coordinator'] as const) {
+        expect([role, tool, mcp(role, tool).decision]).toEqual([role, tool, 'allow']);
+      }
+    }
+  });
+
+  test("an engineer or a coordinator is unchanged: another server's tool still allows", () => {
+    for (const role of ['worker', 'coordinator'] as const) {
+      expect(mcp(role, 'mcp__github__create_issue')).toEqual({ decision: 'allow' });
+    }
+  });
+
+  test('a non-MCP tool with no ACP kind is untouched for a reviewer', () => {
+    for (const tool of ['Glob', 'TodoWrite', 'Task']) {
+      expect(mcp('reviewer', tool).decision).toBe('allow');
+    }
   });
 });
 
