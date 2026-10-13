@@ -545,10 +545,10 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     }
   }, [shownId, id]);
 
-  // T520 (audit U4): `App` keys this page by node, so a different node opens a fresh page:
-  // nothing half-open, and a call started here (Merge, Start, a send) that finishes after it
-  // opened lands on this page, gone, never on that one. A node's tab is the shell's, its draft
-  // its own (`lib/drafts.ts`), so both are there again when it opens.
+  // T520 (audit U4): `App` keys this page by node, so another node opens a page of its own:
+  // nothing half-open, and a call started here (Merge, Start, a send) that finishes once
+  // another node is open writes only to this page, which is gone. A node's tab (the shell's)
+  // and draft (`lib/drafts.ts`) live outside the page, so both are there again when it opens.
   const shown = useRef(true);
   useEffect(() => {
     shown.current = true;

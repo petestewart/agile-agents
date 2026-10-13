@@ -236,7 +236,7 @@ export function App(): JSX.Element {
               <EventLog />
             ) : view === 'stream' && selected !== undefined ? (
               // T520 (audit U4): a page per node. A call started on one (Merge, Start, a send)
-              // that finishes after another opened ends with its own page, never on the next one.
+              // that finishes once another is open stays on its own page, never on the next one.
               <StreamPage key={selected} id={selected} />
             ) : (
               <Inbox items={items} onChanged={refresh} />
