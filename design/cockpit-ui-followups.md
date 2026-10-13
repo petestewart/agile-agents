@@ -45,10 +45,6 @@ None open. (The last ones were fixed in T379, T380, T382 and T383.)
   Chromium won't open a window from a synthetic click. (T394)
 
 
-- Live views refresh on the audit log's tailer; an event emitted without an
-  audit line shows only on the next push. The events service's `onEmitted`
-  could push the frame itself. (`http.ts`, the tailer)
-
 - A line sent with `start` appears in the first prompt twice (the brief's
   "Thread so far" and "What woke you"); by design for every wake (T336), a
   few tokens, invisible to the user.

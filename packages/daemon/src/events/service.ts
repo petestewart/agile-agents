@@ -15,7 +15,7 @@
  * - `page({before, limit, repo})` (T383): the event log a page at a time,
  *   newest first, for the cockpit's Events and a repo card.
  * - `onEmitted(fn)`: called after each stored event (delivery, T242, wakes
- *   its recipients).
+ *   its recipients; T515, the cockpit's frame push). Returns the unsubscribe.
  * - `recover()`: run once at startup. A crash between the log append and
  *   the queue append leaves an event with no delivery; this re-adds its
  *   `pending` lines, so nothing routed is dropped.
@@ -125,7 +125,8 @@ export class RoutedEventService {
       log.at.set(stored.id, log.list.length);
       log.list.push(stored);
     }
-    for (const listener of this.listeners) {
+    // A copy: a listener may unsubscribe while the others are still called.
+    for (const listener of [...this.listeners]) {
       try {
         listener(stored);
       } catch {
@@ -135,8 +136,12 @@ export class RoutedEventService {
     return stored;
   }
 
-  onEmitted(listener: (event: RoutedEvent) => void): void {
+  onEmitted(listener: (event: RoutedEvent) => void): () => void {
     this.listeners.push(listener);
+    return () => {
+      const at = this.listeners.indexOf(listener);
+      if (at >= 0) this.listeners.splice(at, 1);
+    };
   }
 
   get(id: RoutedEventId | string): RoutedEvent | undefined {

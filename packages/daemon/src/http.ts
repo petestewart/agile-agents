@@ -3,7 +3,8 @@
  * and, with a `StateStore` + `GateService`, the cockpit's JSON routes
  * (snapshot, inbox, streams, rules, questions, gates, settings) plus a
  * `/ws` that sends `hello` + snapshot and then tails `log/events.jsonl` as
- * `{type:'event'}` frames. Every write route is same-origin only
+ * `{type:'event'}` frames, and pushes the cockpit frame after each change
+ * (log lines or a routed event, T515). Every write route is same-origin only
  * (`isSameOriginRequest`) and records the actor as `human`. Without a
  * store the feed routes 503 and `/ws` sends only the hello frame.
  */
@@ -297,6 +298,9 @@ interface WsHelloFrame {
 }
 
 const FEED_WS_TOPIC = 'feed';
+
+/** T515: how long a cockpit frame push waits for the rest of its change (log lines, events). */
+const FRAME_PUSH_DELAY_MS = 50;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return Response.json(body, { status });
@@ -2786,26 +2790,39 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
     }),
   );
 
-  // T362: a repo's remote is read in the background; when one changes, re-push the frame once.
-  // T380: the same for a finished node's "nothing to merge".
-  let remotePush: ReturnType<typeof setTimeout> | undefined;
+  // The one cockpit frame push (§3.3 "push, do not poll"), for every source:
+  // a batch of log lines, a routed event (T515: it writes no log line), a
+  // repo's remote read in the background (T362), a finished node's "nothing
+  // to merge" (T380), an update item (T481). Coalesced over
+  // `FRAME_PUSH_DELAY_MS`, and lines not yet tailed are read first, so one
+  // change that writes a log line and emits an event is one push.
+  let framePush: ReturnType<typeof setTimeout> | undefined;
+  const pushFrame = (): void => {
+    const streams = feed?.streams;
+    if (feed === undefined || streams === undefined || framePush !== undefined) return;
+    framePush = setTimeout(() => {
+      try {
+        // Log lines not yet read go out first; the push they ask for is this
+        // one (`framePush` is still set, so they schedule none of their own).
+        tailer?.pollNow();
+      } catch (err) {
+        console.error(messageOf(err));
+      }
+      framePush = undefined;
+      try {
+        server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, streams)));
+      } catch (err) {
+        console.error(messageOf(err));
+      }
+    }, FRAME_PUSH_DELAY_MS);
+  };
+  // T515: the Events, Activity and repo views re-read on a pushed frame.
+  const offEmitted = feed?.streams ? feed.events?.onEmitted(pushFrame) : undefined;
   if (feed?.streams) {
-    const streams = feed.streams;
-    const repush = (): void => {
-      if (remotePush !== undefined) return;
-      remotePush = setTimeout(() => {
-        remotePush = undefined;
-        try {
-          server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, streams)));
-        } catch (err) {
-          console.error(messageOf(err));
-        }
-      }, 50);
-    };
-    feed.remotes.onChange = repush;
-    if (feed.mergeState) feed.mergeState.onChange = repush;
+    feed.remotes.onChange = pushFrame;
+    if (feed.mergeState) feed.mergeState.onChange = pushFrame;
     // T481: an update item comes and goes with a check or an update, not with the event log.
-    if (options.harnessUpdates) options.harnessUpdates.onChange = repush;
+    if (options.harnessUpdates) options.harnessUpdates.onChange = pushFrame;
     try {
       feed.remotes.warm(Object.values(feed.store.getRepos()));
     } catch {
@@ -2833,15 +2850,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         for (const event of newEvents) {
           server.publish(FEED_WS_TOPIC, JSON.stringify({ type: 'event', event }));
         }
-        // Any new batch may change the inbox or a status pair: re-derive and
-        // push the cockpit frame once per batch (§3.3 "push, do not poll").
-        if (feed.streams && newEvents.length > 0) {
-          try {
-            server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, feed.streams)));
-          } catch (err) {
-            console.error(messageOf(err));
-          }
-        }
+        // Any new batch may change the inbox or a status pair: re-derive the frame.
+        if (newEvents.length > 0) pushFrame();
       },
       onError: (err) => {
         console.error(err.message);
@@ -2854,10 +2864,11 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
     hostname,
     async stop() {
       tailer?.stop();
+      offEmitted?.();
       if (feed) feed.remotes.onChange = undefined;
       if (feed?.mergeState) feed.mergeState.onChange = undefined;
       if (options.harnessUpdates) options.harnessUpdates.onChange = undefined;
-      clearTimeout(remotePush);
+      clearTimeout(framePush);
       server.stop(true);
     },
   };

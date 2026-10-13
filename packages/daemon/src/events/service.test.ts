@@ -94,6 +94,20 @@ describe('RoutedEventService (T240)', () => {
     const after = existsSync(auditPath) ? readFileSync(auditPath, 'utf8') : '';
     expect(after).toBe(before);
   });
+
+  test('T515: onEmitted returns an unsubscribe that stops only that listener', async () => {
+    const heard: string[] = [];
+    const off = events.onEmitted(() => {
+      heard.push('first');
+      // Unsubscribing during an emit still calls the listeners after it.
+      off();
+    });
+    events.onEmitted(() => heard.push('second'));
+    await events.emit(line());
+    await events.emit(line());
+    expect(heard).toEqual(['first', 'second', 'second']);
+    off();
+  });
 });
 
 describe('activity (T245)', () => {
