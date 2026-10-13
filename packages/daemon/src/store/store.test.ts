@@ -510,6 +510,11 @@ describe('parse cache (T547): an unchanged file is not parsed again', () => {
     writeFileSync(tmp, text.replace('title: Alpha', 'title: Gamma'));
     renameSync(tmp, path);
     expect(store.getStream(node.id).title).toBe('Gamma');
+
+    // Deleted and recreated: ext4 hands the freed inode number straight back.
+    rmSync(path);
+    writeFileSync(path, text.replace('title: Alpha', 'title: Delta'));
+    expect(store.getStream(node.id).title).toBe('Delta');
   });
 
   test("another store over the same home writes; this store's next read sees it", async () => {

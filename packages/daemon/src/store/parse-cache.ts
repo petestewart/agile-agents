@@ -73,6 +73,8 @@ export class ParseCache {
    * `parse(text)` of the file at `absPath` (it parses and validates, and
    * throws on a corrupt file), from the cache when the file is unchanged.
    * `validator` names what `parse` produces: one value is kept per validator.
+   * Values are plain data (records parsed from YAML or JSON): what a reader
+   * gets is a `structuredClone`.
    */
   read<T>(absPath: string, validator: object, parse: (text: string) => T): T {
     // Taken before the stat: a change that lands after it reads as racy.
@@ -107,8 +109,9 @@ export class ParseCache {
 
     text ??= readFileSync(absPath, 'utf8');
     this.parseCount += 1;
-    // A throw here caches nothing, and a stale entry is already gone.
+    // A throw here (or from the clone) caches nothing, and a stale entry is already gone.
     const value = parse(text);
+    const copy = structuredClone(value);
     if (entry === undefined) {
       entry = { key, text: settled ? undefined : text, values: new Map() };
       this.entries.set(absPath, entry);
@@ -119,7 +122,7 @@ export class ParseCache {
     }
     if (entry.values.size >= MAX_VALUES_PER_ENTRY) entry.values.clear();
     entry.values.set(validator, value);
-    return structuredClone(value);
+    return copy;
   }
 
   /** Forgets one file: the store calls this when it writes or removes it. */
