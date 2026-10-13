@@ -19,35 +19,130 @@ export interface RawSegment {
 }
 
 /**
- * Splits on `;`, `&&`, `||`, `|`, `&` and newlines, never inside quotes, so
- * `sh -c "git push origin main"` stays one segment (its `-c` argument is
- * recursed into by `parseCommandIntoAtoms`).
+ * T516: what one character of a command line is to bash: `plain` (unquoted,
+ * where operators and whitespace act), inside `'…'`, `"…"` or `$'…'`,
+ * a `quote` mark itself, an `escape` backslash, or the `escaped` character
+ * after one (a literal). The splitter, the tokenizer and the unsafe-construct
+ * check share this one reading, so they can't disagree about where a quote
+ * ends: `echo \"; git push origin main` is two commands to bash, but was one
+ * `echo` here while the quote count called the line balanced.
+ */
+type CharRole = 'plain' | 'single' | 'double' | 'ansi' | 'quote' | 'escape' | 'escaped';
+
+interface LexedChar {
+  ch: string;
+  role: CharRole;
+}
+
+interface LexedCommand {
+  /** Every character bash reads, in order, with each `\`+newline continuation removed. */
+  chars: LexedChar[];
+  /** The command ends inside a quote. */
+  unterminated: boolean;
+}
+
+/** In double quotes a backslash escapes only these; before anything else it is a literal `\`. */
+const DOUBLE_QUOTE_ESCAPES = new Set(['"', '\\', '$', '`']);
+
+/**
+ * T516: reads `command` the way bash does. Outside quotes `\x` is a literal
+ * `x` (so `\"` opens nothing); in double quotes only `\"`, `\\`, `\$` and
+ * `` \` `` are escapes; in single quotes nothing is; `$'…'` (ANSI-C) quotes
+ * up to an unescaped `'` (`$'\''` is one quote mark, not a closed and an
+ * open quote); `$$` is a pair, so a `'` after it is a plain single quote.
+ * `\`+newline outside single quotes is deleted, as bash deletes it before
+ * reading words (`$\⏎(…)` is `$(…)`). A trailing lone `\` is a literal.
+ */
+function lexCommand(command: string): LexedCommand {
+  const chars: LexedChar[] = [];
+  let state: 'plain' | 'single' | 'double' | 'ansi' = 'plain';
+  // A plain `$` was just read that isn't the second of `$$`.
+  let dollar = false;
+  const emit = (ch: string, role: CharRole) => {
+    dollar = role === 'plain' && ch === '$' && !dollar;
+    chars.push({ ch, role });
+  };
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i] as string;
+    const next = command[i + 1];
+    if (state === 'single') {
+      if (c === "'") state = 'plain';
+      emit(c, c === "'" ? 'quote' : 'single');
+    } else if (state === 'ansi') {
+      if (c === '\\' && next !== undefined) {
+        emit(c, 'ansi');
+        emit(next, 'ansi');
+        i++;
+      } else {
+        if (c === "'") state = 'plain';
+        emit(c, c === "'" ? 'quote' : 'ansi');
+      }
+    } else if (c === '\\' && next === '\n') {
+      i++; // a line continuation: neither character is read
+    } else if (state === 'double') {
+      if (c === '\\' && next !== undefined && DOUBLE_QUOTE_ESCAPES.has(next)) {
+        emit(c, 'escape');
+        emit(next, 'escaped');
+        i++;
+      } else {
+        if (c === '"') state = 'plain';
+        emit(c, c === '"' ? 'quote' : 'double');
+      }
+    } else if (c === '\\') {
+      if (next === undefined) {
+        emit(c, 'escaped');
+      } else {
+        emit(c, 'escape');
+        emit(next, 'escaped');
+        i++;
+      }
+    } else if (c === "'" || c === '"') {
+      state = c === '"' ? 'double' : dollar ? 'ansi' : 'single';
+      emit(c, 'quote');
+    } else {
+      emit(c, 'plain');
+    }
+  }
+  return { chars, unterminated: state !== 'plain' };
+}
+
+/** `chars` as text, without the unquoted whitespace at either end. */
+function trimmedText(chars: LexedChar[]): string {
+  const blank = (c: LexedChar | undefined) => c?.role === 'plain' && /\s/.test(c.ch);
+  let start = 0;
+  let end = chars.length;
+  while (start < end && blank(chars[start])) start++;
+  while (end > start && blank(chars[end - 1])) end--;
+  return chars
+    .slice(start, end)
+    .map((c) => c.ch)
+    .join('');
+}
+
+/**
+ * Splits on `;`, `&&`, `||`, `|`, `&` and newlines, never inside quotes or
+ * escaped, so `sh -c "git push origin main"` stays one segment (its `-c`
+ * argument is recursed into by `parseCommandIntoAtoms`) and so does `echo
+ * a\;b`. Each segment's `raw` keeps its quotes and escapes, without line
+ * continuations.
  */
 export function splitCommandSegments(command: string): RawSegment[] {
+  const { chars } = lexCommand(command);
   const segments: RawSegment[] = [];
-  let current = '';
+  let current: LexedChar[] = [];
   let delimiterBefore: SegmentDelimiter = 'start';
-  let quote: '"' | "'" | null = null;
 
   const push = (next: SegmentDelimiter) => {
-    const trimmed = current.trim();
+    const trimmed = trimmedText(current);
     if (trimmed.length > 0) segments.push({ raw: trimmed, delimiterBefore });
-    current = '';
+    current = [];
     delimiterBefore = next;
   };
+  // The character at `j` when it is unquoted and unescaped: only those are operators.
+  const plainAt = (j: number) => (chars[j]?.role === 'plain' ? chars[j]?.ch : undefined);
 
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i] ?? '';
-    if (quote) {
-      current += c;
-      if (c === quote) quote = null;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      quote = c;
-      current += c;
-      continue;
-    }
+  for (let i = 0; i < chars.length; i++) {
+    const c = plainAt(i);
     if (c === '\n') {
       push('\n');
       continue;
@@ -56,12 +151,12 @@ export function splitCommandSegments(command: string): RawSegment[] {
       push(';');
       continue;
     }
-    if (c === '&' && command[i + 1] === '&') {
+    if (c === '&' && plainAt(i + 1) === '&') {
       push('&&');
       i++;
       continue;
     }
-    if (c === '|' && command[i + 1] === '|') {
+    if (c === '|' && plainAt(i + 1) === '|') {
       push('||');
       i++;
       continue;
@@ -69,44 +164,35 @@ export function splitCommandSegments(command: string): RawSegment[] {
     if (c === '|') {
       // `|&` pipes stderr too: still a pipe.
       push('|');
-      if (command[i + 1] === '&') i++;
+      if (plainAt(i + 1) === '&') i++;
       continue;
     }
     // A lone `&` runs what came before in the background and starts a new
-    // command (`echo & cat /etc/passwd`). Not `>&`, `<&` or `&>`.
-    if (c === '&' && !/[<>]/.test(command[i - 1] ?? '') && command[i + 1] !== '>') {
+    // command (`echo & cat /etc/passwd`). Not `>&`, `<&` or `&>`; an escaped
+    // `\>&` is a literal `>` and then a lone `&`.
+    if (c === '&' && !/[<>]/.test(plainAt(i - 1) ?? '') && plainAt(i + 1) !== '>') {
       push('&');
       continue;
     }
-    current += c;
+    current.push(chars[i] as LexedChar);
   }
   push('start'); // flush the tail; the synthetic delimiter is never read
   return segments;
 }
 
-/** Tokenizes one segment on whitespace, respecting (and stripping) quotes — a quoted phrase becomes one token. */
+/**
+ * Tokenizes one segment on unquoted whitespace, stripping quotes and escapes
+ * as bash does: a quoted phrase becomes one token, `\"` a literal `"`, `a\ b`
+ * one token. A `$'…'` token keeps its `$` and its text undecoded, so it still
+ * reads as unresolved wherever a `$` does (`git push origin $'\x6dain'`).
+ */
 export function tokenizeSegment(segment: string): string[] {
   const tokens: string[] = [];
   let current = '';
-  let quote: '"' | "'" | null = null;
   let inToken = false;
 
-  for (const c of segment) {
-    if (quote) {
-      if (c === quote) {
-        quote = null;
-      } else {
-        current += c;
-      }
-      inToken = true;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      quote = c;
-      inToken = true;
-      continue;
-    }
-    if (/\s/.test(c)) {
+  for (const { ch, role } of lexCommand(segment).chars) {
+    if (role === 'plain' && /\s/.test(ch)) {
       if (inToken) {
         tokens.push(current);
         current = '';
@@ -114,8 +200,8 @@ export function tokenizeSegment(segment: string): string[] {
       }
       continue;
     }
-    current += c;
     inToken = true;
+    if (role !== 'quote' && role !== 'escape') current += ch;
   }
   if (inToken) tokens.push(current);
   return tokens;
@@ -128,9 +214,14 @@ export function tokenizeSegment(segment: string): string[] {
  * there is no sound way to know what will run. Always `hil`, any role.
  */
 export function hasUnsafeShellConstruct(command: string): boolean {
-  if (command.includes('$(')) return true;
-  if (command.includes('`')) return true;
-  if (/(^|[\s;&|])eval\b/.test(command)) return true;
+  const lexed = lexCommand(command);
+  // T516: as written and as bash reads it, continuations removed (`$\⏎(…)`).
+  const read = lexed.chars.map((c) => c.ch).join('');
+  for (const text of [command, read]) {
+    if (text.includes('$(')) return true;
+    if (text.includes('`')) return true;
+    if (/(^|[\s;&|])eval\b/.test(text)) return true;
+  }
   const countUnescaped = (ch: string) => {
     let count = 0;
     for (let i = 0; i < command.length; i++) {
@@ -140,7 +231,28 @@ export function hasUnsafeShellConstruct(command: string): boolean {
   };
   if (countUnescaped('"') % 2 !== 0) return true;
   if (countUnescaped("'") % 2 !== 0) return true;
+  // T516: the count is blind to `\\"` and `$'\''`; bash's own reading is not.
+  if (lexed.unterminated) return true;
   return false;
+}
+
+/**
+ * T516: `<(…)` or `>(…)` outside single quotes, mid-word too (`x>(cmd)`,
+ * `2>(cmd)`: bash still runs `cmd`), or zsh's unquoted `=(…)`. Bash runs the
+ * command inside and passes a `/dev/fd` path, so it is a command no check
+ * here sees. Inside double quotes bash leaves it literal, but an `sh -c "…"`
+ * reads it again, so it counts there too.
+ */
+export function hasProcessSubstitution(command: string): boolean {
+  const { chars } = lexCommand(command);
+  return chars.some((c, i) => {
+    const next = chars[i + 1];
+    if (next?.ch !== '(') return false;
+    if (c.ch === '<' || c.ch === '>') {
+      return (c.role === 'plain' || c.role === 'double') && next.role === c.role;
+    }
+    return c.ch === '=' && c.role === 'plain' && next.role === 'plain';
+  });
 }
 
 /**
@@ -192,6 +304,8 @@ export interface CommandAtom {
   delimiterBefore?: SegmentDelimiter;
   /** T345: the atom came from inside an `sh -c "..."`, whose `cd` never moves the outer shell. */
   nested?: true;
+  /** T516: its segment holds a process substitution (`hasProcessSubstitution`). */
+  processSubstitution?: true;
 }
 
 const SHELL_RUNNERS = new Set(['sh', 'bash', 'zsh']);
@@ -306,8 +420,17 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
       tokens.length < raw.length
         ? { prefixed: true as const, prefix: raw.slice(0, raw.length - tokens.length) }
         : {};
-    if (isShellDashC(tokens)) {
-      const nested = parseCommandIntoAtoms(tokens[2] ?? '');
+    // T516: one in the segment marks every atom it yields, so an `sh -c` whose
+    // own arguments hold one (`sh -c "echo" >(git push origin main)`) keeps it.
+    const substituted = hasProcessSubstitution(seg.raw);
+    const procSub = (atom?: CommandAtom) =>
+      substituted || atom?.processSubstitution === true
+        ? { processSubstitution: true as const }
+        : {};
+    // An empty script yields no atom: the `sh -c ''` itself is then the atom,
+    // so its own arguments are still seen (`sh -c '' >(git push origin main)`).
+    const nested = isShellDashC(tokens) ? parseCommandIntoAtoms(tokens[2] ?? '') : [];
+    if (nested.length > 0) {
       for (const [idx, atom] of nested.entries()) {
         if (idx === 0) {
           const prev = atoms.at(-1);
@@ -317,9 +440,14 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
             prevTokens: seg.delimiterBefore === '|' ? prev?.tokens : undefined,
             ...(atom.prefixed ? { prefixed: true as const, prefix: atom.prefix ?? [] } : prefixed),
             nested: true,
+            ...procSub(atom),
           });
         } else {
-          atoms.push({ ...(atom.prefixed ? atom : { ...atom, ...prefixed }), nested: true });
+          atoms.push({
+            ...(atom.prefixed ? atom : { ...atom, ...prefixed }),
+            nested: true,
+            ...procSub(atom),
+          });
         }
       }
       continue;
@@ -331,6 +459,7 @@ export function parseCommandIntoAtoms(command: string): CommandAtom[] {
       prevTokens: seg.delimiterBefore === '|' ? prev?.tokens : undefined,
       ...prefixed,
       delimiterBefore: seg.delimiterBefore,
+      ...procSub(),
     });
   }
   return atoms;
@@ -935,10 +1064,24 @@ export function isManifestPath(path: string | undefined): boolean {
  * reads, and needs neither containment nor a write deny.
  */
 const REDIRECTION_TOKEN_RE = /^(\d+|&)?(>>?|<>|>\|)/;
-/** `tee`, any redirection operator (own token or fused), or a `<(...)` process substitution. */
+
+/** T516: a token that opens a `<(...)`/`>(...)` process substitution (or names one, quoted: fails closed). */
+function opensProcessSubstitution(token: string): boolean {
+  return token.startsWith('<(') || token.startsWith('>(');
+}
+
+/**
+ * T516: the atom runs a process substitution: its segment holds one
+ * (`hasProcessSubstitution`, mid-word and quote-aware), or a token opens one.
+ */
+export function runsProcessSubstitution(atom: CommandAtom): boolean {
+  return atom.processSubstitution === true || atom.tokens.some(opensProcessSubstitution);
+}
+
+/** `tee`, any redirection operator (own token or fused), or a `<(...)`/`>(...)` process substitution. */
 export function hasRedirectionOrTee(tokens: string[]): boolean {
   if (tokens.includes('tee')) return true;
-  return tokens.some((t) => REDIRECTION_TOKEN_RE.test(t) || t.startsWith('<('));
+  return tokens.some((t) => REDIRECTION_TOKEN_RE.test(t) || opensProcessSubstitution(t));
 }
 
 /** `&1`, `&2`, ... (fd duplication) or `&-` (fd close): a stream operation, no file. */
@@ -955,7 +1098,7 @@ interface RedirectionOccurrence {
   target: string | undefined;
 }
 
-/** Every redirection operator in `tokens` with its target. `tee` and `<(...)` are checked separately. */
+/** Every redirection operator in `tokens` with its target. `tee` and `<(...)`/`>(...)` are checked separately. */
 function redirectionOccurrences(tokens: string[]): RedirectionOccurrence[] {
   const occurrences: RedirectionOccurrence[] = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -1017,14 +1160,15 @@ export function redirectionTargets(tokens: string[]): string[] {
 }
 
 /**
- * Something that writes, or can't be proven not to: `tee`, `<(...)`, an
- * unresolvable redirection, or a redirection to a real file. Benign
+ * Something that writes, or can't be proven not to: `tee`, `<(...)`/`>(...)`,
+ * an unresolvable redirection, or a redirection to a real file. Benign
  * redirects are excluded. `hasRedirectionOrTee` is the broader "any
- * redirection syntax at all" check.
+ * redirection syntax at all" check. A process substitution mid-word
+ * (`x>(cmd)`) is only in the atom: see `runsProcessSubstitution`.
  */
 export function hasWritingRedirectionOrTee(tokens: string[]): boolean {
   if (tokens.includes('tee')) return true;
-  if (tokens.some((t) => t.startsWith('<('))) return true;
+  if (tokens.some(opensProcessSubstitution)) return true;
   if (hasUnresolvedRedirection(tokens)) return true;
   return redirectionTargets(tokens).length > 0;
 }

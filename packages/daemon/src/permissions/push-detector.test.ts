@@ -268,6 +268,41 @@ const ROWS: Row[] = [
   { command: 'git ${SUB} origin main', expect: 'unknown', why: 'a computed subcommand' },
   { command: 'git push origin "main', expect: 'unknown', why: 'unbalanced quotes' },
 
+  // --- T516: escapes and continuations are read as bash reads them -------
+  {
+    command: 'echo \\"; git push origin main',
+    expect: 'deny',
+    why: 'an escaped quote opens no quote, so the ; separates',
+  },
+  { command: "echo \\'; git push origin main", expect: 'deny', why: 'nor does an escaped single' },
+  {
+    command: 'echo \\" && git push origin HEAD:main',
+    expect: 'deny',
+    why: 'and && after one',
+  },
+  { command: 'git push origin ma\\in', expect: 'deny', why: 'an escaped letter is the letter' },
+  { command: 'git push origin \\\nmain', expect: 'deny', why: 'a continuation joins the line' },
+  {
+    command: "echo $'\\'' ; git push origin main ; echo ''",
+    expect: 'deny',
+    why: "$'\\'' is one quote mark, not a closed and an open quote",
+  },
+  {
+    command: 'echo \\\\ "; git push origin main"',
+    expect: 'allow',
+    why: 'an escaped backslash escapes nothing after it: the quote is real, the push is text',
+  },
+  {
+    command: "git push origin $'\\x6dain'",
+    expect: 'unknown',
+    why: "an ANSI-C refspec can't be read",
+  },
+  {
+    command: 'echo $\\\n(git push origin main)',
+    expect: 'unknown',
+    why: 'a continuation inside $( is still $(',
+  },
+
   // --- merging into a protected branch is the same act (§5.4) ------------
   {
     command: 'git checkout main && git merge T143-x',

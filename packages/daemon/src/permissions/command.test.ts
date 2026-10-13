@@ -8,6 +8,7 @@ import {
   findSearchRoots,
   flagPathValues,
   grepPathArgs,
+  hasProcessSubstitution,
   hasRedirectionOrTee,
   hasUnresolvedRedirection,
   hasUnsafeShellConstruct,
@@ -29,6 +30,7 @@ import {
   refspecDestBranch,
   repoScriptChecks,
   resolveTargetPath,
+  runsProcessSubstitution,
   scriptExecutionPath,
   splitCommandSegments,
   stripPrefixes,
@@ -74,6 +76,62 @@ describe('splitCommandSegments', () => {
     ]);
     expect(split('echo "a & b"')).toEqual([['echo "a & b"', 'start']]);
   });
+
+  // T516: a backslash outside quotes makes the next character a literal,
+  // as in bash, so an escaped quote opens no quote that swallows `;`.
+  test('an escaped quote opens nothing; an escaped separator separates nothing', () => {
+    const raws = (c: string) => splitCommandSegments(c).map((s) => s.raw);
+    expect(raws('echo \\"; git push origin main')).toEqual(['echo \\"', 'git push origin main']);
+    expect(raws("echo \\'; git push origin main")).toEqual(["echo \\'", 'git push origin main']);
+    expect(raws('echo \\" && git push origin HEAD:main')).toEqual([
+      'echo \\"',
+      'git push origin HEAD:main',
+    ]);
+    expect(raws('echo a\\;b')).toEqual(['echo a\\;b']);
+    expect(raws('echo a\\&b')).toEqual(['echo a\\&b']);
+    // `\\` is one escaped backslash: the quote after it is real.
+    expect(raws('echo \\\\"; b"')).toEqual(['echo \\\\"; b"']);
+    expect(raws('echo \\\\; b')).toEqual(['echo \\\\', 'b']);
+  });
+
+  test('in double quotes only \\" \\\\ \\$ \\` are escapes; in single quotes nothing is', () => {
+    const raws = (c: string) => splitCommandSegments(c).map((s) => s.raw);
+    expect(raws('echo "a\\"; b"')).toEqual(['echo "a\\"; b"']);
+    expect(raws('echo "a\\\\"; b')).toEqual(['echo "a\\\\"', 'b']);
+    expect(raws("echo 'a\\'; b")).toEqual(["echo 'a\\'", 'b']);
+  });
+
+  test("$'...' quotes up to an unescaped quote mark; $$ is a pair", () => {
+    const raws = (c: string) => splitCommandSegments(c).map((s) => s.raw);
+    expect(raws("echo $'\\'' ; git push origin main ; echo ''")).toEqual([
+      "echo $'\\''",
+      'git push origin main',
+      "echo ''",
+    ]);
+    expect(raws("echo $'a;b'; c")).toEqual(["echo $'a;b'", 'c']);
+    // `$$` then a plain single quote, which a backslash can't close.
+    expect(raws("echo $$'\\'; c")).toEqual(["echo $$'\\'", 'c']);
+  });
+
+  test('a backslash-newline is deleted, not a separator; a trailing backslash is literal', () => {
+    const raws = (c: string) => splitCommandSegments(c).map((s) => s.raw);
+    expect(raws('git push origin \\\nmain')).toEqual(['git push origin main']);
+    expect(raws('echo "a\\\nb"; c')).toEqual(['echo "ab"', 'c']);
+    expect(raws("echo 'a\\\nb'")).toEqual(["echo 'a\\\nb'"]);
+    expect(raws('echo a\\')).toEqual(['echo a\\']);
+  });
+
+  test('an escaped > before & leaves a lone &', () => {
+    const split = (c: string) => splitCommandSegments(c).map((s) => [s.raw, s.delimiterBefore]);
+    expect(split('echo \\>& cat /etc/passwd')).toEqual([
+      ['echo \\>', 'start'],
+      ['cat /etc/passwd', '&'],
+    ]);
+    expect(split('echo ">"& cat /etc/passwd')).toEqual([
+      ['echo ">"', 'start'],
+      ['cat /etc/passwd', '&'],
+    ]);
+  });
 });
 
 describe('tokenizeSegment', () => {
@@ -82,6 +140,29 @@ describe('tokenizeSegment', () => {
       'sh',
       '-c',
       'git push origin main',
+    ]);
+  });
+
+  test('T516: strips escapes the way bash does', () => {
+    expect(tokenizeSegment('echo \\"')).toEqual(['echo', '"']);
+    expect(tokenizeSegment('git push origin ma\\in')).toEqual(['git', 'push', 'origin', 'main']);
+    expect(tokenizeSegment('cat a\\ b')).toEqual(['cat', 'a b']);
+    expect(tokenizeSegment('cat .\\./.\\./etc/passwd')).toEqual(['cat', '../../etc/passwd']);
+    expect(tokenizeSegment('grep "\\"" file')).toEqual(['grep', '"', 'file']);
+    expect(tokenizeSegment('echo "a\\xb"')).toEqual(['echo', 'a\\xb']);
+    expect(tokenizeSegment("echo 'a\\'")).toEqual(['echo', 'a\\']);
+    expect(tokenizeSegment("printf '%s\\n' x")).toEqual(['printf', '%s\\n', 'x']);
+    expect(tokenizeSegment('echo a\\')).toEqual(['echo', 'a\\']);
+    // Codex's argv quoting: `it's` as `'it'\''s'`.
+    expect(tokenizeSegment("echo 'it'\\''s'")).toEqual(['echo', "it's"]);
+  });
+
+  test("T516: a $'...' token keeps its $, so it still reads as unresolved", () => {
+    expect(tokenizeSegment("git push origin $'\\x6dain'")).toEqual([
+      'git',
+      'push',
+      'origin',
+      '$\\x6dain',
     ]);
   });
 });
@@ -311,6 +392,68 @@ describe('hasUnsafeShellConstruct', () => {
     expect(hasUnsafeShellConstruct("echo 'unterminated")).toBe(true);
     expect(hasUnsafeShellConstruct('git status')).toBe(false);
     expect(hasUnsafeShellConstruct('npm test')).toBe(false);
+  });
+
+  test('T516: reads quotes and continuations as bash does', () => {
+    // `\\` is one backslash, so the quote after it opens and never closes.
+    expect(hasUnsafeShellConstruct('echo \\\\"; git push origin main')).toBe(true);
+    expect(hasUnsafeShellConstruct("echo $'\\'")).toBe(true);
+    // `$\⏎(` is `$(` once bash deletes the continuation.
+    expect(hasUnsafeShellConstruct('echo $\\\n(git push origin main)')).toBe(true);
+    expect(hasUnsafeShellConstruct('ev\\\nal git push origin main')).toBe(true);
+    expect(hasUnsafeShellConstruct('echo \\"; git push origin main')).toBe(false);
+    expect(hasUnsafeShellConstruct("echo $'\\''")).toBe(false);
+    expect(hasUnsafeShellConstruct('grep "\\"" file')).toBe(false);
+  });
+});
+
+describe('hasProcessSubstitution (T516)', () => {
+  test('<( and >( outside single quotes, mid-word too; zsh =( unquoted', () => {
+    for (const command of [
+      'cat >(git push origin main)',
+      'cat <(git push origin main)',
+      'cat x>(git push origin main)',
+      'echo a 2>(git push origin main)',
+      'cat 0<(git push origin main)',
+      'tee >(sh)',
+      'sh -c "cat >(git push origin main)"',
+      'cat =(git push origin main)',
+    ]) {
+      expect([command, hasProcessSubstitution(command)]).toEqual([command, true]);
+    }
+  });
+
+  test("not in single quotes, $'...', escaped, or a quoted =(", () => {
+    for (const command of [
+      "grep '>(' file",
+      "echo $'<(x)'",
+      'echo \\>(x)',
+      'cat >\\(x',
+      'echo "=(x)"',
+      'echo a > out.txt',
+      'diff a b',
+    ]) {
+      expect([command, hasProcessSubstitution(command)]).toEqual([command, false]);
+    }
+  });
+
+  test("an atom keeps the mark, from inside sh -c and from sh -c's own arguments", () => {
+    const marked = (command: string) =>
+      parseCommandIntoAtoms(command).map((a) => [a.tokens, runsProcessSubstitution(a)]);
+    expect(marked('cat x>(git push origin main)')).toEqual([
+      [['cat', 'x>(git', 'push', 'origin', 'main)'], true],
+    ]);
+    expect(marked("bash -c 'cat >(git push origin main)'")).toEqual([
+      [['cat', '>(git', 'push', 'origin', 'main)'], true],
+    ]);
+    expect(marked('sh -c "echo hi" >(git push origin main)')).toEqual([[['echo', 'hi'], true]]);
+    expect(marked("sh -c '' >(git push origin main)")).toEqual([
+      [['sh', '-c', '', '>(git', 'push', 'origin', 'main)'], true],
+    ]);
+    expect(marked('echo hi; cat x')).toEqual([
+      [['echo', 'hi'], false],
+      [['cat', 'x'], false],
+    ]);
   });
 });
 
