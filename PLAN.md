@@ -3817,7 +3817,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T544 The cockpit doesn't re-render everything on every event
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge 12cf360d on claude/phase-16, 2026-10-13; the UI has no DOM test harness, so the event half is held by the type — `events` is gone from the context — and the names half by `stableNames` tests)
 - **Owner:** worker
 - **Scope:** Perf P4 + P8, checked by the manager. (1) `FeedProvider` (`ui/app/lib/feed-context.tsx`) keeps an `events` array in state and in the context value; nothing in `app/` reads it (live steps use `onEvent`), but every `{type:'event'}` frame (≥4 per tool call) replaces it, so the root and every `useFeed` consumer re-render. Drop it from state and the context value. (2) Every `<Markdown>` builds its own `names` map from the frame (`components/Markdown.tsx` `useNames`) and re-renders its text on every frame (≈29 ms per frame for 300 messages before React): compute the map once per frame signature (ids → titles of streams, projects, contracts) and keep its identity while that signature is unchanged; `Chat.tsx`'s `known()` uses the same map.
 - **Acceptance Criteria:** An event frame leaves the context value's identity unchanged (unit test with a fake socket); the names map keeps its identity across frames that change only statuses and changes when a title does; typecheck clean; the cockpit e2e specs pass.
