@@ -3759,7 +3759,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T537 Answering a question doesn't reopen a finished node or clear another wait
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge a23bffc6 on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Daemon audit D7 (reproduced): `QuestionService.answer` (and `reply`) in `questions/service.ts` always writes `human: {status: 'open'}`, so answering reopens a closed or merged node (a coordinator's `answer_child`, `agile answer`) and clears `waiting_on_you` while another question on the node is still open (`settle`/`withdraw` check `listOpen()`; `answer` doesn't). Move `waiting_on_you` to `open` only when no other question on the node is open; never touch `closed` or `landed`.
 - **Acceptance Criteria:** The audit's two failing cases pass (closed stays closed; with two open questions answering one leaves `waiting_on_you`); landed stays landed; the single-question case still goes to `open`.
