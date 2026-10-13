@@ -604,12 +604,15 @@ describe('parse cache (T547): an unchanged file is not parsed again', () => {
     expect(store.listAgents()).toEqual([]);
   });
 
-  test('generic entities and cards are cached too', async () => {
+  test('generic YAML entities and cards are cached too; JSON entities are read fresh', async () => {
     const { store, streams } = await withStreams();
     const node = await streams.create('human', { title: 'n', goal: 'g' });
     const validateNote = (raw: unknown) => raw as { n: number };
     await store.putEntity('notes/a.yaml', validateNote, { n: 1 });
     await store.putEntity('notes/b.json', validateNote, { n: 2 });
+    const held = store.parseCacheStats().entries;
+    store.getEntity('notes/b.json', validateNote);
+    expect(store.parseCacheStats().entries).toBe(held);
     expect(store.listEntities('notes', validateNote)).toEqual([{ n: 1 }, { n: 2 }]);
     await store.updateCard(node.id, () => ({
       node: node.id,

@@ -107,6 +107,7 @@ import {
   appendJsonlLines,
   fileExists,
   listDataFiles,
+  readJsonFile,
   readJsonlFile,
   readYamlFile,
   removeFile,
@@ -154,10 +155,6 @@ function writeEntityFile(absPath: string, data: unknown): void {
   } else {
     writeYamlFileAtomic(absPath, data);
   }
-}
-
-function parseEntityText(absPath: string, text: string): unknown {
-  return absPath.endsWith('.json') ? JSON.parse(text) : parseYaml(text);
 }
 
 /** `repos.yaml` and `config.yaml` may be empty: `{}`. Named, so the parse cache keys on one validator. */
@@ -412,9 +409,9 @@ export class StateStore {
     return normalized;
   }
 
-  // T547: every YAML/JSON record read goes through the parse cache, and every
-  // write or removal here forgets the file. JSONL (threads, events,
-  // deliveries) is read whole, uncached.
+  // T547: every YAML record read goes through the parse cache, and every
+  // write or removal here forgets the file. JSON entities and JSONL
+  // (threads, events, deliveries) are read whole, uncached.
 
   /** One YAML file through `validate`, parsed again only when the file changed. */
   private readYaml<T>(absPath: string, validate: (raw: unknown) => T): T {
@@ -432,11 +429,13 @@ export class StateStore {
     }
   }
 
-  /** A generic entity: `.json`, or YAML for everything else. */
+  /**
+   * A generic entity: YAML through the cache, `.json` read fresh (the import
+   * index: derived, possibly large, and cheap to parse).
+   */
   private readEntity<T>(absPath: string, validator: (input: unknown) => T): T {
-    return this.parsed.read(absPath, validator, (text) =>
-      validator(parseEntityText(absPath, text)),
-    );
+    if (absPath.endsWith('.json')) return validator(readJsonFile(absPath));
+    return this.readYaml(absPath, validator);
   }
 
   private writeYaml(absPath: string, data: unknown, mode?: number): void {
@@ -1900,6 +1899,8 @@ export class StateStore {
   /**
    * Validating put/get/delete for entities with no dedicated helper (the
    * bus inbox and gate records). YAML unless `relPath` ends in `.json`.
+   * Pass a named validator, not one built per call: the parse cache keeps
+   * one value per validator (T547).
    */
   async putEntity<T>(
     rawRelPath: string,
