@@ -13,7 +13,7 @@
 import { EFFORT_LEVELS, type SessionRef, type Stream } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { hasFlag, optionalString, requirePositional } from '../args';
-import { callRpc } from '../client';
+import { LONG_RPC_TIMEOUT_MS, callRpc, nodeCheck } from '../client';
 import { printJson } from '../format';
 
 interface AttachResult {
@@ -49,13 +49,19 @@ export async function runAttach(
   }
 
   const method = resolve ? 'attach.resolve' : 'attach.start';
-  const result = await callRpc<AttachResult>(socketPath, method, {
-    stream,
-    ...(vendor !== undefined ? { vendor } : {}),
-    ...(model !== undefined ? { model } : {}),
-    ...(effort !== undefined ? { effort } : {}),
-    ...(role !== undefined && !resolve ? { role } : {}),
-  });
+  // T523: a start cuts the worktree, asks Jev for the model and opens the vendor.
+  const result = await callRpc<AttachResult>(
+    socketPath,
+    method,
+    {
+      stream,
+      ...(vendor !== undefined ? { vendor } : {}),
+      ...(model !== undefined ? { model } : {}),
+      ...(effort !== undefined ? { effort } : {}),
+      ...(role !== undefined && !resolve ? { role } : {}),
+    },
+    { timeoutMs: LONG_RPC_TIMEOUT_MS, check: nodeCheck(stream) },
+  );
 
   if (json) {
     printJson(result.session);

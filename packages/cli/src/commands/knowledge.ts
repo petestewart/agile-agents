@@ -39,7 +39,14 @@ import {
   rulePatternFromArgs,
 } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
-import { hasFlag, optionalList, optionalString, requireOption, requirePositional } from '../args';
+import {
+  hasFlag,
+  optionalList,
+  optionalString,
+  refuseExtraWords,
+  requireOption,
+  requirePositional,
+} from '../args';
 import { callRpc } from '../client';
 import { printFields, printJson, printTable } from '../format';
 
@@ -357,6 +364,7 @@ export async function runKnowledgeAdd(
   argv: readonly string[] = [],
 ): Promise<number> {
   const text = requireOption(args.options, 'text');
+  refuseExtraWords(args, 0, 'agile knowledge add', '--text "never force-push main"');
   const name = optionalString(args.options, 'name');
   const kind = optionalChoice<KnowledgeKind>(args, 'kind', KNOWLEDGE_KINDS);
   const scopeText = optionalString(args.options, 'scope');
@@ -398,6 +406,7 @@ export async function runKnowledgeEdit(
   argv: readonly string[] = [],
 ): Promise<number> {
   const id = requirePositional(args, 0, 'knowledge-id');
+  refuseExtraWords(args, 1, 'agile knowledge edit', '--text "never force-push main"');
   const text = optionalString(args.options, 'text');
   const name = optionalString(args.options, 'name');
   const kind = optionalChoice<KnowledgeKind>(args, 'kind', KNOWLEDGE_KINDS);

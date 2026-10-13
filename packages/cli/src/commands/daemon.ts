@@ -34,7 +34,7 @@ import {
   formatSessionDefaults,
   resolveSessionDefaults,
 } from '@agile-agents/shared';
-import { callRpc } from '../client';
+import { callRpc, formatWait } from '../client';
 import { formatCodexGateLine } from './codex';
 
 /** How long `start` waits for the child to write its pidfile before giving up. */
@@ -307,6 +307,11 @@ export interface DaemonStatusReport {
   codexGate?: CodexGateStatus;
   /** T170 (D17): what a session attached with nothing named gets (home config + built-in). */
   sessionDefaults?: ResolvedSessionDefaults;
+  /**
+   * T523 (CLI audit C5): the socket took `agile status`'s call and nothing
+   * answered within this many ms: busy or stuck, not gone.
+   */
+  unansweredAfterMs?: number;
 }
 
 /**
@@ -391,6 +396,14 @@ export function formatDaemonStatus(report: DaemonStatusReport): string {
   const defaults = report.sessionDefaults
     ? `\nsession default: ${formatSessionDefaults(report.sessionDefaults)}`
     : '';
+  if (report.unansweredAfterMs !== undefined) {
+    const wait = formatWait(report.unansweredAfterMs);
+    const line =
+      report.pid !== undefined
+        ? `agiled (pid ${report.pid}) did not answer within ${wait}: it is running, but busy or stuck. Its log: ${report.logPath}`
+        : `something at ${report.socketPath} took the call but did not answer within ${wait}, and ${report.pidPath} names no live agiled`;
+    return `${home}\n${line}${defaults}`;
+  }
   if (!report.running) return `${home}\nagiled is not running${defaults}`;
   const running =
     `${home}\nagiled running: pid=${report.pid} http=http://127.0.0.1:${report.port} ` +
