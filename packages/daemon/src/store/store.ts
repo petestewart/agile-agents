@@ -15,9 +15,13 @@
  */
 
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   readFileSync,
+  readSync,
   readlinkSync,
   realpathSync,
   rmSync,
@@ -154,6 +158,43 @@ function writeEntityFile(absPath: string, data: unknown): void {
     writeJsonFileAtomic(absPath, data);
   } else {
     writeYamlFileAtomic(absPath, data);
+  }
+}
+
+/** T549: how far back each step of `readLastLine` reads; one thread line (body ≤ 800 chars) fits. */
+const TAIL_CHUNK_BYTES = 8 * 1024;
+
+/**
+ * The last non-blank line of a file, trimmed, read backwards from the end
+ * in chunks only as far as that line's start. `undefined` when every line
+ * is blank.
+ */
+function readLastLine(absPath: string): string | undefined {
+  const fd = openSync(absPath, 'r');
+  try {
+    let start = fstatSync(fd).size;
+    let tail = Buffer.alloc(0);
+    while (start > 0) {
+      const from = Math.max(0, start - TAIL_CHUNK_BYTES);
+      const chunk = Buffer.alloc(start - from);
+      readSync(fd, chunk, 0, chunk.length, from);
+      tail = Buffer.concat([chunk, tail]);
+      start = from;
+      // Whole lines only: what comes before the first newline may begin earlier in the file.
+      const firstNewline = tail.indexOf(0x0a);
+      if (start > 0 && firstNewline === -1) continue;
+      const lines = tail
+        .subarray(start > 0 ? firstNewline + 1 : 0)
+        .toString('utf8')
+        .split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = (lines[i] ?? '').trim();
+        if (line.length > 0) return line;
+      }
+    }
+    return undefined;
+  } finally {
+    closeSync(fd);
   }
 }
 
@@ -1782,6 +1823,28 @@ export class StateStore {
       'thread',
       validateThreadEntry,
     );
+  }
+
+  /**
+   * T549: the thread's newest entry, from the file's tail: the hook's deny
+   * coalescing asks on every refused call, and `readThread` reads and
+   * validates every line. `undefined` for a missing or empty thread; a bad
+   * last line is refused with the file named, as `readThread` would.
+   */
+  lastThreadEntry(streamId: string): ThreadEntry | undefined {
+    const absPath = this.abs(this.threadRelPath(streamId));
+    if (!fileExists(absPath)) return undefined;
+    const line = readLastLine(absPath);
+    if (line === undefined) return undefined;
+    try {
+      return validateThreadEntry(JSON.parse(line));
+    } catch (err) {
+      throw new Error(
+        `corrupt thread file ${absPath} (last line): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   /** Every line validated; a bad one is refused with the file and its line number (§7.3). */

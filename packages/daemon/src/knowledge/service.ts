@@ -230,7 +230,16 @@ export class KnowledgeService {
     paths?: readonly string[],
     options: { includeOff?: boolean } = {},
   ): KnowledgeItem[] {
-    const stream = this.options.streams.get(streamId);
+    return this.inScopeOf(this.options.streams.get(streamId), enforcement, paths, options);
+  }
+
+  /** `inScope` for a record the caller has already read (T549: a hook decision reads it once). */
+  inScopeOf(
+    stream: Stream,
+    enforcement?: KnowledgeEnforcement,
+    paths?: readonly string[],
+    options: { includeOff?: boolean } = {},
+  ): KnowledgeItem[] {
     return knowledgeInScope(
       this.options.store.listKnowledge(),
       stream,

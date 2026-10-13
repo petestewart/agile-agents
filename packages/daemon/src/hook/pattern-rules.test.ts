@@ -16,8 +16,14 @@ import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type AgentRecord, type KnowledgeItem, patternOf } from '@agile-agents/shared';
+import {
+  type AgentRecord,
+  type KnowledgeItem,
+  patternOf,
+  validateClassifierConfig,
+} from '@agile-agents/shared';
 import { Bus } from '../bus';
+import { FakeClassifier } from '../classifier';
 import { runInit } from '../init';
 import { ensureBuiltinKnowledge } from '../knowledge/builtins';
 import { KnowledgeService } from '../knowledge/service';
@@ -410,4 +416,112 @@ test('T525: a builtin git subcommand spawns no git; an alias one git config per 
   } finally {
     spawn.mockRestore();
   }
+});
+
+test('T549: a decision reads each record once, through both tiers, a deny and its repeat', async () => {
+  // A three-level tree: the session's node, its parent and the root.
+  const streams = new StreamService(store);
+  const mid = await streams.create('human', {
+    title: 'mid',
+    goal: 'g',
+    repo: 'demo',
+    parent: stream,
+  });
+  const leaf = await streams.create('human', {
+    title: 'leaf',
+    goal: 'g',
+    repo: 'demo',
+    parent: mid.id,
+  });
+  await store.putAgent(session, {
+    vendor: 'claude',
+    model: 'claude-sonnet-4-5',
+    stream: leaf.id,
+    pid: 4242,
+    role: 'worker',
+    worktree: repo,
+    last_seen: new Date().toISOString(),
+  });
+  const wipe = await rules.create('human', {
+    text: 'never wipe build output',
+    enforcement: 'action',
+    check: { by: 'pattern', pattern: { kind: 'command_deny', args: { patterns: ['rm -rf'] } } },
+    scope: { kind: 'global' },
+  });
+  await rules.accept(wipe.id, 'human');
+  // Scoped to the root: in scope for the leaf only through its ancestors.
+  const deps = await rules.create('human', {
+    text: 'do not add a dependency without asking',
+    enforcement: 'action',
+    check: {
+      by: 'classifier',
+      examples: [
+        { action: 'npm i left-pad', violates: true },
+        { action: 'bun test', violates: false },
+      ],
+    },
+    scope: { kind: 'subtree', node: stream },
+  });
+  await rules.accept(deps.id, 'human');
+  const fake = new FakeClassifier((_state, questions) =>
+    questions.map((q) => ({ id: q.id, probability: 0.05 })),
+  );
+  const hook = new HookService(store, bus, {
+    rules,
+    classifier: { ask: fake, config: validateClassifierConfig({ api_key: 'test-key' }) },
+  });
+
+  const spies = {
+    getStream: spyOn(store, 'getStream'),
+    listKnowledge: spyOn(store, 'listKnowledge'),
+    listAgents: spyOn(store, 'listAgents'),
+    getRepos: spyOn(store, 'getRepos'),
+    readThread: spyOn(store, 'readThread'),
+  };
+  const decisions: string[] = [];
+  const readsOf = async (call: () => Promise<unknown>) => {
+    for (const spy of Object.values(spies)) spy.mockClear();
+    await call();
+    return {
+      streams: spies.getStream.mock.calls.map(([id]) => id).sort(),
+      listKnowledge: spies.listKnowledge.mock.calls.length,
+      listAgents: spies.listAgents.mock.calls.length,
+      getRepos: spies.getRepos.mock.calls.length,
+      readThread: spies.readThread.mock.calls.length,
+    };
+  };
+  const pre = (command: string) => async () => {
+    const out = await hook.preToolUse(bash(command));
+    decisions.push(out.hookSpecificOutput.permissionDecision);
+  };
+  const once = {
+    streams: [stream, mid.id, leaf.id].sort(),
+    listKnowledge: 1,
+    listAgents: 1,
+    getRepos: 1,
+    readThread: 0,
+  };
+  try {
+    // Allowed by the pattern tier, then asked of the classifier.
+    expect(await readsOf(pre('git status'))).toEqual(once);
+    expect(fake.calls).toHaveLength(1);
+    // Denied by the pattern rule; the repeat is coalesced from the thread's tail.
+    expect(await readsOf(pre('rm -rf dist'))).toEqual(once);
+    expect(await readsOf(pre('rm -rf dist'))).toEqual(once);
+    expect(decisions).toEqual(['allow', 'deny', 'deny']);
+    expect(await readsOf(() => hook.postToolUse({ ...bash('ls'), tool_response: 'x' }))).toEqual(
+      once,
+    );
+    // A call no session covers reads the registry once and nothing else.
+    expect(await readsOf(() => hook.preToolUse({ ...bash('ls'), cwd: tmpdir() }))).toEqual({
+      streams: [],
+      listKnowledge: 0,
+      listAgents: 1,
+      getRepos: 0,
+      readThread: 0,
+    });
+  } finally {
+    for (const spy of Object.values(spies)) spy.mockRestore();
+  }
+  expect(store.readThread(leaf.id).filter((entry) => entry.ref === wipe.id)).toHaveLength(1);
 });
