@@ -8,7 +8,7 @@
  * worktree removed, branch kept).
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,8 +18,10 @@ import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import {
+  DEFAULT_BRANCH_TTL_MS,
   DeliveryService,
   LandRefusedError,
+  defaultBranch,
   mainBranch,
   parseShortstat,
   wireLandGateResolution,
@@ -851,6 +853,56 @@ describe('T161: the stream page reads (preflight and diff)', () => {
       ahead: 1,
       reason: 'waits on the docs',
     });
+  });
+
+  test("T552: a batch of preflights reads the target's worktrees and status once; the answers are the same", async () => {
+    const ready = [];
+    for (const name of ['s-b1', 's-b2', 's-b3']) {
+      ready.push(await makeStream({ ...branchWithWork(name, `${name}.txt`, 'x\n'), title: name }));
+    }
+    const waiting = await makeStream({ ...branchWithWork('s-b4', 'b4.txt', 'x\n'), title: 's-b4' });
+    await streams.wait('human', waiting.id, ready[0]?.id ?? '');
+    const ids = [...ready, waiting].map((s) => s.id);
+    const spawn = spyOn(Bun, 'spawnSync');
+    const count = (word: string) =>
+      spawn.mock.calls.filter(([argv]) => Array.isArray(argv) && argv.includes(word)).length;
+    try {
+      const one = ids.map((id) => landing.preflight(id));
+      expect(count('worktree')).toBe(ids.length);
+      expect(count('status')).toBe(ids.length);
+      spawn.mockClear();
+      const batched = landing.batchReads(() => ids.map((id) => landing.preflight(id)));
+      expect(count('worktree')).toBe(1);
+      expect(count('status')).toBe(1);
+      expect(batched).toEqual(one);
+      expect(batched.map((p) => p.ready)).toEqual([true, true, true, false]);
+      // Outside the batch, each read is fresh: a dirty target is seen at once.
+      writeFileSync(join(repo, 'README.md'), '# dirty\n');
+      expect(landing.preflight(ids[0] ?? '').reason).toMatch(/uncommitted changes/);
+    } finally {
+      spawn.mockRestore();
+    }
+  });
+
+  test('T552: the default branch is read once per repo per window; the main fallback every time', () => {
+    const spawn = spyOn(Bun, 'spawnSync');
+    const reads = () =>
+      spawn.mock.calls.filter(([argv]) => Array.isArray(argv) && argv.includes('symbolic-ref'))
+        .length;
+    try {
+      expect(defaultBranch(repo, 1_000)).toBe('main');
+      expect(defaultBranch(repo, 1_000 + DEFAULT_BRANCH_TTL_MS - 1)).toBe('main');
+      expect(reads()).toBe(1);
+      expect(defaultBranch(repo, 1_000 + DEFAULT_BRANCH_TTL_MS)).toBe('main');
+      expect(reads()).toBe(2);
+    } finally {
+      spawn.mockRestore();
+    }
+    // Neither main nor master (nor origin/HEAD): `main` is a guess, so it isn't kept.
+    git(['branch', '-m', 'main', 'trunk']);
+    expect(defaultBranch(repo, 1_000 + 2 * DEFAULT_BRANCH_TTL_MS)).toBe('main');
+    git(['branch', 'master']);
+    expect(defaultBranch(repo, 1_000 + 2 * DEFAULT_BRANCH_TTL_MS)).toBe('master');
   });
 
   test('T410: diffStat is the size of what Merge brings: committed work only', async () => {
