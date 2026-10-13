@@ -3813,6 +3813,96 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 - **Acceptance Criteria:** Through the hook with a Pi-shaped payload: a reviewer's `write`/`edit` is denied, an engineer's `edit` outside the worktree denied and inside allowed, `bash` with `git push origin main` refused by `no_push_protected`, `bash` `sudo …` held, `read` of the agile home denied; Claude and Codex verdicts unchanged; a reviewer's `WebFetch` denied (or the note for Pete).
 - **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/pi packages/daemon/src/permissions`; `bun run typecheck && bun run lint`.
 
+**From the performance audit (2026-10-13, `perf.md` P1–P17; benchmarks on a shared container, ratios reliable, absolute numbers ±30%).**
+
+### Ticket: T544 The cockpit doesn't re-render everything on every event
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Perf P4 + P8, checked by the manager. (1) `FeedProvider` (`ui/app/lib/feed-context.tsx`) keeps an `events` array in state and in the context value; nothing in `app/` reads it (live steps use `onEvent`), but every `{type:'event'}` frame (≥4 per tool call) replaces it, so the root and every `useFeed` consumer re-render. Drop it from state and the context value. (2) Every `<Markdown>` builds its own `names` map from the frame (`components/Markdown.tsx` `useNames`) and re-renders its text on every frame (≈29 ms per frame for 300 messages before React): compute the map once per frame signature (ids → titles of streams, projects, contracts) and keep its identity while that signature is unchanged; `Chat.tsx`'s `known()` uses the same map.
+- **Acceptance Criteria:** An event frame leaves the context value's identity unchanged (unit test with a fake socket); the names map keeps its identity across frames that change only statuses and changes when a title does; typecheck clean; the cockpit e2e specs pass.
+- **Validation Steps:** `bun test packages/ui`; `bun run typecheck && bun run lint`; `bun run test:e2e`.
+
+### Ticket: T545 One cockpit frame lists the nodes once
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Perf P3 + P12, checked by the manager. `buildCockpitFrame` (`feed/snapshot.ts`) calls `waitingForPlan` per row, and `coordination/plans.ts` `waitingForPlan` does `streams.get(parent)`, `streams.list()` and `nodeRole` over the whole list for every idle part (and `waitingParts` lists again from the inbox): 92 `listStreams` and 23 s per frame at 300 nodes with 30% idle parts (19.7 s for `GET /api/cockpit` on a real daemon). Give `waitingForPlan`/`waitingParts` an optional `{all, byId}` the frame and the inbox pass in (behaviour unchanged without it); build a parent → live-children map once per frame and per inbox list and pass it to `nodeRole`/`liveChildrenOf`/`isTangent` and the inbox's `hasParts`.
+- **Acceptance Criteria:** Same frame and inbox output with and without the context (test over a tree with coordinators, idle parts and conversations); a spy shows one `listStreams` per `buildCockpitFrame`; same roles with and without the children map over a random tree.
+- **Validation Steps:** `bun test packages/daemon/src/feed packages/daemon/src/coordination packages/daemon/src/inbox packages/shared`; `bun run typecheck && bun run lint`.
+
+### Ticket: T546 No frame is built when no cockpit is open
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Perf P6, checked by the manager. `pushFrame` (`http.ts`, T515) builds and publishes the cockpit frame on every emit even with no WebSocket client; agents often run with no cockpit open. Return early when `server.subscriberCount(FEED_WS_TOPIC) === 0` (works on Bun 1.4.2; `ws.open` already sends a fresh frame on connect). Don't add publish-if-changed (StreamPage and `usePushTick` use frame identity as their re-read trigger).
+- **Acceptance Criteria:** `http.test.ts`: with no client the frame builder isn't invoked on an emit; with a client, frames still arrive; a client that connects after emits gets the current frame.
+- **Validation Steps:** `bun test packages/daemon/src/http.test.ts packages/daemon/src/events`; `bun run typecheck && bun run lint`.
+
+### Ticket: T547 The store doesn't re-parse a file that hasn't changed
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Perf P2 (drives P7, P14, P16), checked by the manager: `yaml.parse` is ≈93% of every store read and nothing is cached, so `listStreams` at 300 nodes is ≈200 ms and an idle daemon with 300 nodes uses ≈12% of a core (the PR poller, tracker, gate, overlap and main-sync ticks each re-list everything). Add an instance-level cache in `StateStore` keyed by absolute path, validated by `statSync(path, {bigint: true})` (`ino:size:mtimeNs:ctimeNs`; atomic writes rename a new inode in), holding the **validated** value per validator and returning `structuredClone` of it. Apply it to `readRecord` (streams, knowledge, projects, director), agents, policy/repos/home config, and `readEntityFile` (gates, questions, plans, proposals, contracts, cards). Never cache a failure (a corrupt file is refused with path and line on every read); drop the entry on remove/delete; bound it (LRU ≈20k). Keep the `yaml` parser (no `Bun.YAML` swap: its errors and dialect differ).
+- **Acceptance Criteria:** `store.test.ts`: a second `listStreams` with nothing changed doesn't re-parse (test seam count); an external same-size rewrite is picked up; mutating a returned record doesn't change the next read; a corrupt file throws path:line on every read; a deleted file leaves the list. The full `bun test` stays green (manager runs it).
+- **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/streams packages/daemon/src/knowledge packages/daemon/src/gates packages/daemon/src/questions packages/daemon/src/feed`; `bun run typecheck && bun run lint`.
+
+### Ticket: T548 The node page refreshes at most a few times a second and reads its thread once
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Perf P5, checked by the manager. `StreamPage.tsx` re-fetches `/api/streams/<id>/page` on every pushed frame with no coalescing; each build (`feed/stream-page.ts`) reads the whole thread twice (once for `total`), calls `rules.inScope` twice, and runs `landing.preflight` (≈6 synchronous git spawns): ≈73 ms per build on a 2,000-line thread. (UI) coalesce like Lenses/ProjectOverview's `usePushTick` (one request in flight plus one trailing; `loadSeq` keeps order). (Server) read the thread once (`readThread` returns `total`), call `inScope` once, and memoize `defaultBranch(repoRoot)` per repo for ≈30 s (`delivery/service.ts`, also used by overlap, main-sync and merge-state). Coordinate with T520 (it keys the node page per node).
+- **Acceptance Criteria:** N frames within 400 ms cause at most 2 page loads (fake timers); the page payload is unchanged and the thread is read once; `defaultBranch` spawns git once per repo per window and refreshes after it.
+- **Validation Steps:** `bun test packages/ui packages/daemon/src/feed packages/daemon/src/delivery`; `bun run typecheck && bun run lint`; `bun run test:e2e`.
+
+### Ticket: T549 A hook decision reads each record once
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Perf P7, checked by the manager. One pre-tool-use decision (`hook/service.ts` `buildContext`, `streamRecord`, the pattern and classifier tiers) does `getStream` ×10, `listKnowledge` ×2, `listAgents` ×2, `getRepos` ×3 (69 ms with 103 knowledge items); a deny reads the whole thread for its last line. Resolve the stream record, its ancestors and `inScope` once per request and pass them to both tiers; take the deny-coalescing last line from a tail read. After T526 if both are open (both touch `hook/service.ts`).
+- **Acceptance Criteria:** A spy test: at most one read per record per decision; every existing hook test unchanged.
+- **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/knowledge`; `bun run typecheck && bun run lint`.
+
+### Ticket: T550 Overlap is recomputed once per burst of edits
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Perf P9, checked by the manager. Every non-read PostToolUse calls `onFilesMayHaveChanged` → `sync/overlap.ts` `recompute`, which lists every stream and spawns git 4–6 times synchronously (`merge-base`, `diff --name-only`, `ls-files --others`, `defaultBranch`). Debounce per stream (trailing ≈1.5 s, one run in flight), pass `recomputeAll`'s list into `recompute`, use T548's `defaultBranch` memo if merged. Coordinate with T534 (missing-cwd handling in the same loop).
+- **Acceptance Criteria:** Three calls inside the window run `computeTouched` once; the 60 s sweep's results are unchanged; an overlap alert still fires after a burst.
+- **Validation Steps:** `bun test packages/daemon/src/sync packages/daemon/src/hook`; `bun run typecheck && bun run lint`.
+
+### Ticket: T551 The event log is read from its tail
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Perf P10, checked by the manager. `RecentEvents.load` (boot), `/api/snapshot` and the lessons retro read, parse and validate all of `log/events.jsonl` (never rotated; ≥4 lines per tool call): 985 ms and +280 MB RSS for a 50 MB log. Read the last `limit` lines backwards in chunks (as `feed/steps.ts` reads forwards); `/api/snapshot` passes `recent?.list()`; the retro streams the log and pre-filters on the `hook_decision` kind before parsing, as `StepIndex` does. Trade-off to note in §10: a corrupt line deep in history no longer refuses the connect snapshot (it still refuses any read that reaches it).
+- **Acceptance Criteria:** Over a log longer than `limit`, the tail read returns the same newest events as the full read, including when the last line is partial; boot reads a bounded number of bytes (test with a large synthetic log); lessons tests unchanged.
+- **Validation Steps:** `bun test packages/daemon/src/store packages/daemon/src/feed packages/daemon/src/lessons packages/daemon/src/http.test.ts`; `bun run typecheck && bun run lint`.
+
+### Ticket: T552 Merge-state checks share their git work
+- **Priority:** P3
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Perf P11, checked by the manager. `feed/merge-state.ts` queues a `preflight` per ready node every 30 s; each runs ≈6 synchronous git spawns, and nodes on the same target repeat the same `git worktree list` and target `git status`. Compute `worktreesOn(repo, target)` once per batch, pass the stream list to `openWaits`, and use T548's `defaultBranch` memo. Keep writes synchronous.
+- **Acceptance Criteria:** K ready nodes on one target run `worktree list` and the target's `status` once per batch (spawn-count test); merge states unchanged.
+- **Validation Steps:** `bun test packages/daemon/src/feed packages/daemon/src/delivery`; `bun run typecheck && bun run lint`.
+
+### Ticket: T553 Test fixtures copy a template repo instead of building one per test
+- **Priority:** P3
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Perf P13 (developer loop and CI): ≈48 test files (≈960 tests) run `git init`, two `config`s, `add` and `commit` in `beforeEach` (≈47 ms each); `cpSync` of a template built once in `beforeAll` is ≈7 ms and gives a valid repo. Convert per file, keeping the change inside each file (a shared fixture helper module would be a new convention: don't add one). Start with the slowest (`attach/service.test.ts`, `feed/snapshot.test.ts`, `hook/pattern-rules.test.ts`).
+- **Acceptance Criteria:** Each converted file has the same pass count before and after, and no test depends on another's repo state (each still gets its own copy); report the time saved.
+- **Validation Steps:** the converted files' `bun test`; `bun run typecheck && bun run lint`.
+
+### Ticket: T554 `agile hook` starts without loading the daemon
+- **Priority:** P1
+- **Status:** Blocked (needs Pete: a new import pattern)
+- **Owner:** worker
+- **Scope:** Perf P1: every Claude tool call runs `agile hook` twice (pre and post), and each process takes ≈0.6 s because `packages/cli/src/index.ts` and `commands/hook.ts` import `resolveHomePaths` and `codexCallGated` from the `@agile-agents/daemon` barrel, which loads the whole daemon (HTTP, every service, acp-client, the MCP SDK types). The modules the hook needs load in ≈0.13 s, so ≈1 s per tool call is avoidable. The fix needs either a deep import (`@agile-agents/daemon/src/config`, `…/hook/codex`) or a lean second entry/`exports` subpath in the daemon package, or moving the two helpers into `@agile-agents/shared`; the repo has no precedent for any of them, so per CLAUDE.md Pete picks. Then dispatch verbs with `await import()` as `mcp` already does (`index.ts`).
+- **Acceptance Criteria:** `agile hook pre-tool-use` with no daemon finishes in under ≈0.2 s on the CI runner (`hook-timing.test.ts` reports it); a structural test that neither `index.ts` nor `commands/hook.ts` imports the daemon barrel.
+- **Validation Steps:** `bun test packages/cli`; `bun run typecheck && bun run lint`.
+
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
 Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `plan/`, `review/` rounds, `sync/` (shelved on a branch), `feed/stories.ts`, `runner/pipeline-glue.ts`, sprint parts of `merge/`, `bus/` unless the thread reuses it. CLI: `run`, `send`, `halt`, `approve`, `sync`. Shared: `Ticket`, `Sprint`, `Stanza`, `Message`, `Halt`, `Quota`, `Review`, `Qa`, `Oracle`, `Kb`, `Ledger`. Briefs: all but `worker.md`, `reviewer.md`, `lessons.md`. UI: `plan/`, `sprint/`, `review/`, `OraclePanel`. State: the `agile-state` orphan branch and per-repo `.agile/`.
@@ -3828,6 +3918,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-10-13 (performance audit, `perf.md`): 17 findings, verified by the manager on the code; ticketed as T544–T554. Not ticketed: P14 (slow tests; follows from T545/T547), P15 (the routed-event log held whole in memory; later), P16 (resolved gates/questions re-read; follows from T547), P17 (zod in the UI bundle; already in `design/cockpit-ui-followups.md`, needs a new shared entry point). T554 (the hook's 0.6 s start) waits on Pete: it needs an import pattern the repo doesn't have.
 - 2026-10-13 (T518 worker, for Pete): the hook now gives a reviewer's other-server MCP calls (`mcp__*`) the ACP tier's verdict for kind `other` (deny), but an engineer's or coordinator's are still allowed at the hook while the ACP tier holds kind `other`. Options: hold them at the hook too, route them to the classifier, an allowlist per server, or leave. Not changed.
 - 2026-10-13 (T517 worker, for Pete): every request now needs a loopback `Host` (DNS rebinding); CLAUDE.md's Conventions line names only `isSameOriginRequest`. Not edited (a worker suggested it); Pete to decide whether CLAUDE.md should say so. A client with no `Origin` (the CLI, a tunnel) still passes the write routes when its Host is loopback.
 - 2026-10-13 (T514 worker): land and ship-check gates raised before T514 carry no `branch`/`target`/`probability`, so their cards read "land x into y" and lack the probability tooltip until they resolve. A rule-routed gate's card shows the rule's current text. Blocked "stop" cards still match the daemon's failure prefixes in the progress line (T508); a structured field on the stream record would end that.
