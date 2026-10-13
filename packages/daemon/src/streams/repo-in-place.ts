@@ -25,7 +25,6 @@
  * `--no-start` and not attached since).
  */
 
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   type SessionRef,
@@ -36,10 +35,10 @@ import {
   nodeRole,
 } from '@agile-agents/shared';
 import { WAITING_FOR_PLAN } from '../coordination/plans';
-import { git, removeWorktreeSafely } from '../delivery/git';
+import { git, isOwnCheckout, removeWorktreeSafely } from '../delivery/git';
 import { mainBranch } from '../delivery/service';
 import { stoppedByHuman } from '../events/wake';
-import { branchLabel, createWorktree, slugify } from '../runner/worktrees';
+import { branchLabel, createWorktree, restoreWorktree, slugify } from '../runner/worktrees';
 import { assertRepoHasCommits } from '../store/rpc-methods';
 import type { StateStore } from '../store/store';
 import { type StreamService, UnknownRepoError } from './service';
@@ -200,7 +199,7 @@ export class RepoInPlaceService {
     let parts: Stream[] = [];
     if (inPlace) {
       // T473: the repo it went back to talk from: the same branch and worktree again.
-      const resumed = this.resumeParked(node, repo, entry.path);
+      const resumed = await this.resumeParked(node, repo, entry.path);
       const created =
         resumed ?? (await createWorktree(entry.path, { id: node.id, slug: slugify(node.title) }));
       await this.streams.update('daemon', node.id, {
@@ -362,13 +361,26 @@ export class RepoInPlaceService {
     }
   }
 
+  /**
+   * T535: what is removed comes off the record too, so writing to the closed
+   * part later (T471 reopens it) cuts a fresh branch and worktree, never
+   * starts its agent in the removed worktree's path.
+   */
   private async closeEmptyPart(part: Stream): Promise<void> {
     const entry = part.repo === undefined ? undefined : this.store.getRepos()[part.repo];
+    let removed = false;
+    let deleted = false;
     if (entry !== undefined && part.worktree !== undefined) {
-      const removed = removeWorktreeSafely(entry.path, part.worktree);
-      if (removed.removed && part.branch !== undefined) {
-        git(['branch', '-D', part.branch], entry.path, entry.path);
+      removed = removeWorktreeSafely(entry.path, part.worktree).removed;
+      if (removed && part.branch !== undefined) {
+        deleted = git(['branch', '-D', part.branch], entry.path, entry.path).exitCode === 0;
       }
+    }
+    if (removed) {
+      await this.store.updateStream('daemon', part.id, (before) => {
+        const { worktree: _w, branch, ...rest } = before;
+        return deleted || branch === undefined ? rest : { ...rest, branch };
+      });
     }
     await this.streams.close('daemon', part.id, 'switched away with nothing committed');
   }
@@ -387,13 +399,14 @@ export class RepoInPlaceService {
 
   /**
    * T473: the parked branch and worktree for `repo`, when there are some to
-   * resume: the worktree as it was, or the branch checked out again.
+   * resume: the worktree as it was, or the branch checked out again (T535:
+   * through `restoreWorktree`, so never into a plain directory left there).
    */
-  private resumeParked(
+  private async resumeParked(
     node: Stream,
     repo: string,
     repoRoot: string,
-  ): { branch: string; path: string } | undefined {
+  ): Promise<{ branch: string; path: string } | undefined> {
     const parked = node.parked;
     if (parked === undefined || parked.repo !== repo) return undefined;
     const exists = git(
@@ -402,12 +415,15 @@ export class RepoInPlaceService {
       repoRoot,
     );
     if (exists.exitCode !== 0) return undefined;
-    if (parked.worktree !== undefined && existsSync(parked.worktree)) {
+    if (parked.worktree !== undefined && isOwnCheckout(parked.worktree)) {
       return { branch: parked.branch, path: parked.worktree };
     }
     const path = parked.worktree ?? join(repoRoot, '.worktrees', node.id);
-    const add = git(['worktree', 'add', '--', path, parked.branch], repoRoot, repoRoot);
-    return add.exitCode === 0 ? { branch: parked.branch, path } : undefined;
+    try {
+      return await restoreWorktree(repoRoot, path, parked.branch);
+    } catch {
+      return undefined;
+    }
   }
 
   private async event(id: string, body: string): Promise<void> {

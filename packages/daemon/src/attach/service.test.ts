@@ -42,6 +42,7 @@ import {
   validateClassifierConfig,
 } from '@agile-agents/shared';
 import { ClassifierUnavailableError, FakeClassifier } from '../classifier';
+import { removeWorktreeSafely } from '../delivery/git';
 import { DeliveryService } from '../delivery/service';
 import { KnowledgeWakeJudge } from '../events/knowledge-wake';
 import { makeEmitter } from '../events/producers';
@@ -62,6 +63,7 @@ import { ChatThreadOps } from '../questions/thread-ops';
 import type { FakeAgentScript } from '../runner/fake-agent';
 import { ModelCatalog } from '../runner/model-catalog';
 import { SESSION_STATE_FILE, USAGE_LOG_FILE, missingVendorCommand } from '../runner/session';
+import { branchLabel } from '../runner/worktrees';
 import { StateStore } from '../store';
 import { AutoClose } from '../streams/auto-close';
 import { RepoInPlaceService } from '../streams/repo-in-place';
@@ -74,6 +76,7 @@ import {
   DAEMON_RESTART_IDLE_REASON,
   DAEMON_SHUTDOWN_REASON,
   FAILED_START_PREFIX,
+  NodeEndedError,
   RESUMED_LINE,
   REVIEW_TURN_FINISHED,
   StreamBusyError,
@@ -375,6 +378,211 @@ describe('T288: a helper attaches off its parent', () => {
     const { stream: updated } = await attachService.attach(helper.id);
     expect(existsSync(join(updated.worktree ?? '', 'host.txt'))).toBe(true);
   });
+});
+
+describe('T535: an agent never starts in a worktree path that is not a checkout', () => {
+  /** A work node whose worker ran (worktree and branch made, one commit on it), then stopped. */
+  async function ranThenStopped(): Promise<{ id: string; worktree: string; branch: string }> {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const stream = await makeStream('demo');
+    await attachService.attach(stream.id);
+    // The service's stop: a bare `handle.stop()` reads as a crash, and the retry starts again.
+    await attachService.stop(stream.id);
+    const after = streams.get(stream.id);
+    const worktree = after.worktree as string;
+    writeFileSync(join(worktree, 'work.txt'), 'work\n');
+    git(['add', 'work.txt'], worktree);
+    git(['commit', '-q', '-m', 'work'], worktree);
+    return { id: stream.id, worktree, branch: after.branch as string };
+  }
+
+  /** Where the session's git resolves: its own checkout, on its branch. */
+  function expectOwnCheckout(worktree: string, branch: string): void {
+    expect(statSync(join(worktree, '.git')).isFile()).toBe(true);
+    expect(git(['rev-parse', '--show-toplevel'], worktree)).toBe(realpathSync(worktree));
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], worktree)).toBe(branch);
+  }
+
+  test('a worktree deleted by hand: the next start puts it back from its branch and runs there', async () => {
+    const { id, worktree, branch } = await ranThenStopped();
+    const operatorHead = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+    rmSync(worktree, { recursive: true, force: true });
+
+    const { session } = await attachService.attach(id);
+    expect(session.worktree).toBe(worktree);
+    expectOwnCheckout(worktree, branch);
+    // Its commits came back with it.
+    expect(readFileSync(join(worktree, 'work.txt'), 'utf8')).toBe('work\n');
+    expect(threadBodies(id)).toContain(
+      `its worktree was gone: put back from its branch ${branchLabel(branch)}`,
+    );
+    // Nothing was made in, or changed on, the operator's own checkout.
+    expect(git(['status', '--porcelain'])).toBe('');
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'])).toBe(operatorHead);
+    await waitFor(() => existsSync(join(worktree, '.claude', 'settings.json')));
+  }, 30_000);
+
+  test('the reviewer, which also starts in the worktree, puts it back too', async () => {
+    const { id, worktree, branch } = await ranThenStopped();
+    rmSync(worktree, { recursive: true, force: true });
+    const { session } = await attachService.attach(id, { role: 'reviewer' });
+    expect(session.role).toBe('reviewer');
+    expect(session.worktree).toBe(worktree);
+    expectOwnCheckout(worktree, branch);
+  }, 30_000);
+
+  test('the branch gone too: the start is refused and nothing is made where the worktree was', async () => {
+    const { id, worktree, branch } = await ranThenStopped();
+    rmSync(worktree, { recursive: true, force: true });
+    git(['worktree', 'prune']);
+    git(['branch', '-D', branch]);
+    const sessions = streams.get(id).sessions.length;
+    await expect(attachService.attach(id)).rejects.toThrow('nothing to put it back from');
+    expect(existsSync(worktree)).toBe(false);
+    expect(streams.get(id).sessions).toHaveLength(sessions);
+  }, 30_000);
+
+  test('a plain directory with files in its place (D2) is refused; nothing in it is deleted', async () => {
+    const { id, worktree } = await ranThenStopped();
+    rmSync(worktree, { recursive: true, force: true });
+    mkdirSync(worktree);
+    writeFileSync(join(worktree, 'notes.md'), 'the agent wrote this in the wrong place\n');
+    const sessions = streams.get(id).sessions.length;
+    await expect(attachService.attach(id)).rejects.toThrow('a plain directory holding notes.md');
+    expect(readFileSync(join(worktree, 'notes.md'), 'utf8')).toContain('wrong place');
+    expect(existsSync(join(worktree, '.git'))).toBe(false);
+    expect(existsSync(join(worktree, '.claude'))).toBe(false);
+    expect(streams.get(id).sessions).toHaveLength(sessions);
+  }, 30_000);
+
+  test('D2: a closed node whose worktree was removed, written to (T471), restarts in a real worktree', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const parent = await streams.create('human', { title: 'node', goal: 'g' });
+    const part = await streams.create('human', {
+      title: 'part a',
+      goal: 'g',
+      repo: 'demo',
+      parent: parent.id,
+    });
+    await attachService.attach(part.id);
+    await attachService.stop(part.id);
+    const { worktree, branch } = streams.get(part.id) as { worktree: string; branch: string };
+    // A record from before T535's Switch repo fix: the worktree removed, the record keeps it.
+    expect(removeWorktreeSafely(repo, worktree).removed).toBe(true);
+    await streams.close('daemon', part.id, 'switched away with nothing committed');
+
+    const said = await attachService.say(part.id, 'please continue', { start: true });
+    expect(said.started).toBe(true);
+    expect(streams.get(part.id).human.status).toBe('open');
+    expectOwnCheckout(worktree, branch);
+    expect(git(['status', '--porcelain'])).toBe('');
+  }, 30_000);
+
+  test('a merged node starts no worker or reviewer, by the service or the RPC; the path stays gone', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: [] } });
+    const landing = new DeliveryService({ store, streams });
+    const methods = buildAttachRpcMethods(attachService, verbs, landing);
+    const { id, worktree, branch } = await ranThenStopped();
+    expect((await landing.land(id)).status).toBe('landed');
+    expect(existsSync(worktree)).toBe(false);
+    expect(streams.get(id).worktree).toBeUndefined();
+    expect(streams.get(id).branch).toBe(branch);
+
+    await expect(attachService.attach(id)).rejects.toThrow(NodeEndedError);
+    await expect(attachService.attach(id, { role: 'reviewer' })).rejects.toThrow('is merged');
+    await expect(
+      Promise.resolve(methods['attach.start']?.({ stream: id, role: 'reviewer' })),
+    ).rejects.toThrow('is merged');
+    expect(existsSync(worktree)).toBe(false);
+    expect(streams.get(id).sessions.every((s) => s.status === 'stopped')).toBe(true);
+  }, 30_000);
+
+  test('a merge that lands while a start is on its way: the start is called off, the path stays gone', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: [] } });
+    const { id, worktree } = await ranThenStopped();
+    const landing = new DeliveryService({ store, streams });
+    // The merge lands in the gap between the start's checks and its spawn
+    // (its `working` write), as a click and a wake can line up.
+    let landed: Promise<unknown> | undefined;
+    const racing = new StreamService(store, {
+      onUpdated: async (before, after) => {
+        if (
+          after.id === id &&
+          after.agent.status === 'working' &&
+          before.agent.status !== 'working'
+        ) {
+          landed ??= landing.land(id);
+          await landed;
+        }
+      },
+    });
+    const racer = new AttachService({
+      installedCli: () => undefined,
+      codexHome,
+      store,
+      streams: racing,
+      home,
+      provider: () => fakeProviderFor(ACP_PROVIDERS.claude, SPEAKS),
+      questions: { listOpen: () => questions.listOpen() },
+      gates: { list: () => gates.list() },
+    });
+    try {
+      await expect(racer.attach(id)).rejects.toThrow(NodeEndedError);
+      expect(await landed).toMatchObject({ status: 'landed' });
+      const after = streams.get(id);
+      expect(after.human.status).toBe('landed');
+      expect(after.agent.status).not.toBe('working');
+      expect(after.sessions.at(-1)?.status).toBe('stopped');
+      expect(racer.handleFor(id)).toBeUndefined();
+      expect(existsSync(worktree)).toBe(false);
+    } finally {
+      await racer.stopAll();
+    }
+  }, 30_000);
+
+  test("Archive and forget on a merged node with a live agent stops it and starts none (T504's restart)", async () => {
+    const stream = await makeStream();
+    const { session } = await attachService.attach(stream.id);
+    await waitFor(() => streams.get(stream.id).sessions[0]?.status === 'idle');
+    // Merged on GitHub while its agent rests (the poller's write).
+    await store.updateStream('daemon', stream.id, (before) => ({
+      ...before,
+      human: { ...before.human, status: 'landed' },
+    }));
+    await expect(attachService.restartFresh(stream.id, 'forget')).resolves.toBeUndefined();
+    expect(attachService.handleFor(stream.id)).toBeUndefined();
+    const sessions = streams.get(stream.id).sessions;
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.id).toBe(session.id);
+    expect(sessions[0]?.status).toBe('stopped');
+  }, 30_000);
+
+  test('restored from the trash (T471) with its worktree deleted meanwhile, it starts in a put-back worktree', async () => {
+    await store.putRepos({ demo: { path: repo, protected_branches: ['main'] } });
+    const parent = await streams.create('human', { title: 'node', goal: 'g' });
+    const part = await streams.create('human', {
+      title: 'part a',
+      goal: 'g',
+      repo: 'demo',
+      parent: parent.id,
+    });
+    await attachService.attach(part.id);
+    await attachService.stop(part.id);
+    const { worktree, branch } = streams.get(part.id) as { worktree: string; branch: string };
+    await streams.archive('human', part.id);
+    await expect(attachService.attach(part.id)).rejects.toThrow('is in the trash');
+    rmSync(worktree, { recursive: true, force: true });
+    await streams.unarchiveTree('human', part.id);
+    const { session } = await attachService.attach(part.id);
+    expect(session.worktree).toBe(worktree);
+    expectOwnCheckout(worktree, branch);
+  }, 30_000);
+
+  test('a node in the trash starts no agent', async () => {
+    const { id } = await ranThenStopped();
+    await streams.archive('human', id);
+    await expect(attachService.attach(id)).rejects.toThrow('is in the trash');
+  }, 30_000);
 });
 
 describe('T207: both .claude settings files tracked', () => {
@@ -1256,6 +1464,36 @@ describe('the reviewer (§4.2)', () => {
     await waitFor(() => streams.get(stream.id).agent.status === 'done');
     await Bun.sleep(200);
     expect(streams.get(stream.id).sessions.length).toBe(1);
+  }, 30_000);
+
+  test('T535: a turn that finishes after its node merged starts no auto_review, and says nothing of it', async () => {
+    await store.putRepos({
+      demo: { path: repo, protected_branches: ['main'], auto_review: true },
+    });
+    const go = join(scratch, 't535-go');
+    attachService = buildAttachService(
+      fakeProviderFor(ACP_PROVIDERS.claude, {
+        steps: [
+          { type: 'agent_text', text: 'looking at the parser now' },
+          { type: 'tool_call', toolCallId: 'read-1', title: 'read parser.ts' },
+          { type: 'wait_for_file', path: go },
+          { type: 'end_turn' },
+        ],
+      }),
+    );
+    const stream = await makeStream('demo');
+    await attachService.attach(stream.id);
+    await waitFor(() => threadBodies(stream.id).includes('looking at the parser now'));
+    // Its PR merged on GitHub mid-turn (the poller's write); then the turn finishes.
+    await store.updateStream('daemon', stream.id, (before) => ({
+      ...before,
+      human: { ...before.human, status: 'landed' },
+    }));
+    writeFileSync(go, 'go\n');
+    await waitFor(() => threadBodies(stream.id).includes(TURN_FINISHED_LINE));
+    await Bun.sleep(200);
+    expect(streams.get(stream.id).sessions.map((s) => s.role)).toEqual(['worker']);
+    expect(threadBodies(stream.id).some((b) => b.startsWith('auto-review'))).toBe(false);
   }, 30_000);
 });
 

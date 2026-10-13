@@ -19,7 +19,13 @@
 import { isAbsolute, join } from 'node:path';
 import type { ReposConfig, Stream } from '@agile-agents/shared';
 import { liveSession } from '../attach/service';
-import { describeGitNetworkFailure, git, gitNetwork, gitWrite } from '../delivery/git';
+import {
+  describeGitNetworkFailure,
+  git,
+  gitNetwork,
+  gitWrite,
+  isOwnCheckout,
+} from '../delivery/git';
 import { mainBranch } from '../delivery/service';
 import { type EmitRouted, trimFiles } from '../events/producers';
 import type { StreamService } from '../streams/service';
@@ -30,7 +36,7 @@ export const MAIN_SYNC_SWEEP_MS = 60_000;
 export type SyncOutcome =
   | { status: 'synced'; pushed: boolean }
   | { status: 'up_to_date' }
-  | { status: 'deferred'; reason: 'mid_turn' | 'dirty' | 'failed' }
+  | { status: 'deferred'; reason: 'mid_turn' | 'dirty' | 'failed' | 'no_worktree' }
   | { status: 'conflict'; files: string[] }
   | { status: 'skipped' };
 
@@ -215,6 +221,10 @@ export class MainSync {
     }
     const repoRoot = entry.path;
     const wt = isAbsolute(s.worktree) ? s.worktree : join(repoRoot, s.worktree);
+    // T535: its worktree is gone, or a plain directory is in its place: git
+    // there would read and merge into the operator's own checkout. It syncs
+    // once its next start puts the worktree back (a later sweep).
+    if (!isOwnCheckout(wt)) return this.defer(s.id, 'no_worktree');
     const main = mainBranch(entry, repoRoot);
 
     if (git(['merge-base', '--is-ancestor', main, 'HEAD'], wt, repoRoot).exitCode === 0) {
@@ -290,7 +300,7 @@ export class MainSync {
     return { status: 'synced', pushed };
   }
 
-  private defer(id: string, reason: 'mid_turn' | 'dirty' | 'failed'): SyncOutcome {
+  private defer(id: string, reason: 'mid_turn' | 'dirty' | 'failed' | 'no_worktree'): SyncOutcome {
     this.deferred.add(id);
     return { status: 'deferred', reason };
   }
