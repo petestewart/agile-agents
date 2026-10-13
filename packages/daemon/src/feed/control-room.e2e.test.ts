@@ -3805,11 +3805,8 @@ describe('the composer keeps everything you write (Playwright e2e, T519)', () =>
 
   /** Types `text` at the end of the box, as a person would (Shift+Enter is a new line). */
   const typeAtEnd = async (p: Page, box: string, text: string): Promise<void> => {
-    await p.locator(box).evaluate((el) => {
-      const area = el as HTMLTextAreaElement;
-      area.focus();
-      area.setSelectionRange(area.value.length, area.value.length);
-    });
+    await p.locator(box).focus();
+    await p.keyboard.press('Control+End');
     for (const [i, line] of text.split('\n').entries()) {
       if (i > 0) await p.keyboard.press('Shift+Enter');
       await p.keyboard.type(line);
@@ -3904,7 +3901,7 @@ describe('the composer keeps everything you write (Playwright e2e, T519)', () =>
   );
 
   browserTest(
-    "a closed node's draft survives a pushed frame; a deleted node's goes, and so does one its parent's delete took",
+    "a closed node's draft survives a pushed frame; a deleted node's goes, and so does one its parent's delete took, once its page is left",
     async () => {
       const cockpit = await startCockpit();
       let page: Page | undefined;
@@ -3934,12 +3931,17 @@ describe('the composer keeps everything you write (Playwright e2e, T519)', () =>
         await input.fill('Pick this up again with the new totals.');
         const other = await make('Something else', shop.root);
         await p.locator(`[data-testid="stream-tree"] [data-stream="${other}"]`).waitFor();
+        // The frame's effects (the drafts' upkeep among them) run after it paints.
+        await p.evaluate(
+          'new Promise((done) => requestAnimationFrame(() => setTimeout(done, 50)))',
+        );
         expect(await input.inputValue()).toBe('Pick this up again with the new totals.');
         expect(await keptDrafts(p)).toEqual({
           [paused]: 'Pick this up again with the new totals.',
         });
 
-        // A part with a draft, then its parent deleted: the part is gone with it, its draft too.
+        // A part with a draft, then its parent deleted elsewhere: the part is gone with it. What
+        // is being typed on its page stays while the page is open, and goes once you leave it.
         await open(part);
         await input.fill('Round half to even.');
         await waitUntilAsync(
@@ -3947,7 +3949,16 @@ describe('the composer keeps everything you write (Playwright e2e, T519)', () =>
           async () => Object.keys(await keptDrafts(p)).length === 2,
         );
         await cockpit.streams.archiveTree('human', work);
-        await waitUntilAsync('the deleted part’s draft dropped', async () => {
+        const later = await make('Later', shop.root);
+        await p.locator(`[data-testid="stream-tree"] [data-stream="${later}"]`).waitFor();
+        await p.evaluate(
+          'new Promise((done) => requestAnimationFrame(() => setTimeout(done, 50)))',
+        );
+        expect(await input.inputValue()).toBe('Round half to even.');
+        expect(Object.keys(await keptDrafts(p)).sort()).toEqual([paused, part].sort());
+        await p.locator('[data-view="inbox"]').click();
+        await p.locator('[data-testid="inbox"]').waitFor();
+        await waitUntilAsync('the deleted part’s draft dropped once left', async () => {
           const kept = await keptDrafts(p);
           return kept[part] === undefined && kept[paused] !== undefined;
         });

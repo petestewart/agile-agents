@@ -508,21 +508,39 @@ describe('T436: review comments survive a reload', () => {
       { id: 'C', human_status: 'closed' },
     ];
     // C is closed: a message reopens it (T471), so what is typed there stays.
-    expect(unwritableIds(['A', 'B', 'C', 'D', 'E'], rows, [{ id: 'D' }])).toEqual(['B', 'D']);
+    expect(
+      unwritableIds(['A', 'B', 'C', 'D', 'E'], { streams: rows, archived: [{ id: 'D' }] }),
+    ).toEqual(['B', 'D']);
   });
 
   test('T519: a node a frame listed and the next lists nowhere is gone (a deleted parent took it, or Delete forever)', () => {
-    const before = new Set(['A', 'C', 'F']);
-    const rows = [
+    const seen = new Set(['A', 'C', 'F']);
+    const streams = [
       { id: 'A', human_status: 'open' },
       { id: 'C', human_status: 'closed' },
     ];
     // F was listed and now is neither live nor in the trash; E was never listed (just created).
-    expect(unwritableIds(['A', 'C', 'E', 'F'], rows, [], before)).toEqual(['F']);
-    // Still listed, or in the trash: not gone twice over.
+    expect(unwritableIds(['A', 'C', 'E', 'F'], { streams }, { seen })).toEqual(['F']);
+    // Still listed: not gone.
     expect(
-      unwritableIds(['A', 'F'], [...rows, { id: 'F', human_status: 'open' }], [], before),
+      unwritableIds(
+        ['A', 'F'],
+        { streams: [...streams, { id: 'F', human_status: 'open' }] },
+        { seen },
+      ),
     ).toEqual([]);
-    expect(unwritableIds(['F'], rows, [{ id: 'F' }], before)).toEqual(['F']);
+    expect(unwritableIds(['F'], { streams, archived: [{ id: 'F' }] }, { seen })).toEqual(['F']);
+  });
+
+  test('T519: a deleted node whose page is open keeps what is being typed there until you leave it; a merged one does not', () => {
+    const frame = { streams: [{ id: 'B', human_status: 'landed' }], archived: [{ id: 'D' }] };
+    const seen = new Set(['B', 'F']);
+    const ids = ['B', 'D', 'F'];
+    expect(unwritableIds(ids, frame, { seen })).toEqual(['B', 'D', 'F']);
+    // In the trash, or gone with its parent: its composer still takes text while it is open.
+    expect(unwritableIds(ids, frame, { seen, onScreen: 'D' })).toEqual(['B', 'F']);
+    expect(unwritableIds(ids, frame, { seen, onScreen: 'F' })).toEqual(['B', 'D']);
+    // Merged: its page is read-only, so nothing is being typed there.
+    expect(unwritableIds(ids, frame, { seen, onScreen: 'B' })).toEqual(['B', 'D', 'F']);
   });
 });

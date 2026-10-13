@@ -403,7 +403,8 @@ keeps a hollow dot's ring (stopped, waiting).
   and past the cap Send is off with "Shorten it, or send the key point." A
   send takes off only what it sent, so what you type while it goes stays in
   the box; a closed node's draft is kept like an open one's (a message
-  reopens it).
+  reopens it), and one deleted elsewhere while you type on it keeps the
+  draft until you leave its page.
   T447 (audit r7 #15): the composer holds the draft (`DraftComposer`), so a
   keystroke re-renders the composer, not the page and its chat; and a long
   thread renders its newest 80 rows, with a "Show 80 earlier messages" row

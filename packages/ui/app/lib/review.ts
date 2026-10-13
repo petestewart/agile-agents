@@ -463,45 +463,57 @@ export function unsentReviewQuestion(input: {
 
 /**
  * T436: which kept drafts and reviews belong to nodes that can't be written
- * to any more: merged, or deleted (in the trash, or gone: a frame before
- * listed it, `listedBefore`, and this one lists it nowhere, as when its
- * parent's delete took it or it was deleted forever). A node no frame has
- * named yet (just created) is left alone. T519 (audit U3): a closed node
- * keeps its draft and comments: since T471 a message reopens it ("Write to
- * reopen it…"), so what you type there is meant to be sent.
+ * to any more: merged, or deleted (in the trash, or gone: an earlier frame
+ * listed it, `seen`, and this one lists it nowhere, as when its parent's
+ * delete took it or it was deleted forever). A node no frame has named yet
+ * (just created) is left alone.
+ *
+ * T519 (audit U3): a closed node keeps its draft and comments: since T471 a
+ * message reopens it ("Write to reopen it…"), so what you type there is
+ * meant to be sent. And a node deleted elsewhere while its page is open
+ * (`onScreen`: its composer still takes text) keeps them while you are on
+ * it, so what you are typing never vanishes under the caret; they go once
+ * you leave. A merged node's page is read-only: its go at once.
  */
 export function unwritableIds(
   ids: readonly string[],
-  rows: ReadonlyArray<{ id: string; human_status: string }>,
-  archived: ReadonlyArray<{ id: string }> = [],
-  listedBefore: ReadonlySet<string> = new Set(),
+  frame: {
+    streams: ReadonlyArray<{ id: string; human_status: string }>;
+    archived?: ReadonlyArray<{ id: string }>;
+  },
+  options: { seen?: ReadonlySet<string>; onScreen?: string } = {},
 ): string[] {
-  const listed = new Set(rows.map((r) => r.id));
-  const drop = new Set(rows.filter((r) => r.human_status === 'landed').map((r) => r.id));
-  for (const row of archived) drop.add(row.id);
-  for (const id of listedBefore) if (!listed.has(id)) drop.add(id);
-  return ids.filter((id) => drop.has(id));
+  const listed = new Set(frame.streams.map((r) => r.id));
+  const merged = new Set(frame.streams.filter((r) => r.human_status === 'landed').map((r) => r.id));
+  const deleted = new Set((frame.archived ?? []).map((r) => r.id));
+  for (const id of options.seen ?? []) if (!listed.has(id)) deleted.add(id);
+  if (options.onScreen !== undefined) deleted.delete(options.onScreen);
+  return ids.filter((id) => merged.has(id) || deleted.has(id));
 }
 
 /**
  * T436: mounted once in `App`. While any review comment is unsent, leaving
  * the page (closing the tab, a reload) asks first — the browser's own
  * "Leave site?" (a reload keeps them all the same). And a node that is
- * merged or deleted drops its kept draft and comments (`unwritableIds`).
+ * merged or deleted drops its kept draft and comments (`unwritableIds`):
+ * T519, a deleted node whose page is open (`onScreen`) once you leave it.
  */
-export function useReviewUpkeep(): void {
+export function useReviewUpkeep(onScreen?: string): void {
   const cockpit = useOptionalFeed()?.cockpit;
-  // The nodes the last frame listed: one missing from the next is gone.
-  const listed = useRef<ReadonlySet<string>>(new Set());
+  // Every node a frame has listed since the page loaded: one no longer listed is gone.
+  const seen = useRef(new Set<string>());
   useEffect(() => {
     if (!cockpit) return;
+    for (const row of cockpit.streams) seen.current.add(row.id);
     const ids = [...new Set([...reviews.nodes(), ...composerDrafts.ids()])];
-    for (const id of unwritableIds(ids, cockpit.streams, cockpit.archived ?? [], listed.current)) {
+    for (const id of unwritableIds(ids, cockpit, {
+      seen: seen.current,
+      ...(onScreen !== undefined ? { onScreen } : {}),
+    })) {
       reviews.set(id, { comments: [] });
       composerDrafts.set(id, undefined);
     }
-    listed.current = new Set(cockpit.streams.map((r) => r.id));
-  }, [cockpit]);
+  }, [cockpit, onScreen]);
   useEffect(() => {
     const onLeave = (event: BeforeUnloadEvent): void => {
       if (reviews.unsent().length === 0) return;
