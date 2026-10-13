@@ -235,8 +235,8 @@ export interface ResolvedHookIdentity {
 /**
  * T549: the records one decision needs, each read from the store at most
  * once: the node's record (its ancestors are read once, by the rules
- * service), `repos.yaml` and the rules in scope. Built per call by
- * `buildContext` and dropped with its context, so no call is answered from
+ * service), `repos.yaml` and the rules in scope. Built per call with its
+ * context (`contextFor`) and dropped with it, so no call is answered from
  * another's reads.
  */
 interface DecisionReads {
@@ -720,7 +720,7 @@ export class HookService {
   ): Promise<{ outcome: ClassifierTierOutcome; called: boolean } | undefined> {
     if (rules.length === 0) return undefined;
 
-    // The record and registry as `buildContext` read them for this call (T549).
+    // The record and registry as this call's context read them (T549).
     const { record } = ctx.reads;
     const tier = this.options.classifier;
     const enabled =
