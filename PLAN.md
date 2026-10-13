@@ -3661,7 +3661,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T525 A push through a configured git alias is checked like `git push`
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** worker
 - **Scope:** §10 triage (E42), reproduced by the manager: `detectProtectedBranchWrite` and `detectPush` (`permissions/push-detector.ts`) recognise only the literal `push` subcommand and refuse only the inline `-c alias.*` form, so with `alias.p = push` already in the operator's or repo's git config, `git p origin main` passes `no_push_protected` (and the never-list's force-push, branch-delete and reset-hard checks). Agents can't create an alias themselves (`git config` writes are held), so this needs a pre-existing alias. Resolve a non-builtin subcommand through the worktree's effective config, lazily and memoized like `worktreeBranchLookups` (`git config --get alias.<sub>`), and re-parse the expansion; a `!`-shell alias or a failed lookup gives the existing `CANNOT_DETERMINE_REASON`. Use it at the hook and ACP tiers. Builtin subcommands spawn no git. Coordinate with T516 (it changes `command.ts`; this lives in `push-detector.ts`).
 - **Acceptance Criteria:** With `alias.p=push` in a test repo, `git p origin main` is refused and `git p origin feature` allowed, at both tiers; `alias.pf='push --force'` held; `alias.x='!git push origin main'` refused; `git status` spawns no git.
@@ -3833,7 +3833,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T546 No frame is built when no cockpit is open
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge bb924c44 on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Perf P6, checked by the manager. `pushFrame` (`http.ts`, T515) builds and publishes the cockpit frame on every emit even with no WebSocket client; agents often run with no cockpit open. Return early when `server.subscriberCount(FEED_WS_TOPIC) === 0` (works on Bun 1.4.2; `ws.open` already sends a fresh frame on connect). Don't add publish-if-changed (StreamPage and `usePushTick` use frame identity as their re-read trigger).
 - **Acceptance Criteria:** `http.test.ts`: with no client the frame builder isn't invoked on an emit; with a client, frames still arrive; a client that connects after emits gets the current frame.
