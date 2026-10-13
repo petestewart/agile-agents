@@ -33,7 +33,7 @@ import {
   compactCommandFor,
   isAgentRole,
 } from '@agile-agents/shared';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   addRepoToStream,
   archiveStream,
@@ -96,7 +96,7 @@ import {
   mergeRefusal,
   writeFailure,
 } from '../lib/errors';
-import { useFeed } from '../lib/feed-context';
+import { createReloader, useFeed } from '../lib/feed-context';
 import type { LandOutcome, StreamPagePayload } from '../lib/feed-types';
 import { proposalLineAction, stopCardOfItem } from '../lib/inbox';
 import { withQuote } from '../lib/quote';
@@ -271,6 +271,9 @@ const ROOT_PLACEHOLDER = 'Write to the project — or press A to ask it a questi
  * frame, and reads them again.
  */
 let lastDefaults: SessionDefaultsStatus | undefined;
+
+/** T548: the least gap between two frame-triggered reads of the page (Lenses re-read at 400 ms). */
+const FRAME_RELOAD_GAP_MS = 400;
 
 type Picker = 'start' | 'reviewer' | 'resolve';
 type Modal = 'repo' | 'wait' | 'close' | 'delete' | 'rename' | 'move' | 'talk';
@@ -517,9 +520,9 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   // (a worker still `starting` after it went `running`), and with the
   // session quiet no later frame would ever correct it.
   const loadSeq = useRef(0);
-  const load = useCallback(() => {
+  const load = useCallback((): Promise<void> => {
     const seq = ++loadSeq.current;
-    getStreamPage(id)
+    return getStreamPage(id)
       .then((next) => {
         if (seq !== loadSeq.current) return;
         setPage(next);
@@ -532,11 +535,16 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
   }, [id]);
 
   // A pushed cockpit frame follows every batch of events — a new thread
-  // line, a session status, a finding — so it is the re-read trigger.
+  // line, a session status, a finding — so it is the re-read trigger. T548:
+  // through a reloader, so a busy turn's frames are at most two reads per
+  // `FRAME_RELOAD_GAP_MS`, never two at once; the first read and an
+  // action's own `load()` are immediate.
+  const reloader = useMemo(() => createReloader(load, FRAME_RELOAD_GAP_MS), [load]);
+  useEffect(() => () => reloader.cancel(), [reloader]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `cockpit` is the trigger, not an input.
   useEffect(() => {
-    load();
-  }, [load, cockpit]);
+    reloader.schedule();
+  }, [reloader, cockpit]);
 
   // T435 (#20): Ask just opened this conversation: its composer takes focus once it shows.
   const shownId = page?.stream.id;

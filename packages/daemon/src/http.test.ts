@@ -39,7 +39,12 @@ import { ClassifierKeyService, FakeClassifier } from './classifier';
 import { readHomeConfigFile } from './config';
 import { DirectorService } from './director';
 import { RoutedEventService } from './events';
-import type { CockpitFrame, StepPage, StreamPagePayload } from './feed';
+import {
+  type CockpitFrame,
+  STREAM_PAGE_THREAD_LIMIT,
+  type StepPage,
+  type StreamPagePayload,
+} from './feed';
 import { GateService } from './gates';
 import { HarnessUpdateService } from './harness';
 import { type HttpServerHandle, startHttpServer } from './http';
@@ -1018,6 +1023,30 @@ describe('T160 cockpit routes', () => {
     expect(page.docs).toEqual([]);
     expect((await fetch(url(`/api/streams/${ulid()}`))).status).toBe(404);
     expect((await fetch(url('/api/streams/nope'))).status).toBe(400);
+  });
+
+  test('T548: the page reads its thread once and keeps its newest lines', async () => {
+    const node = await streams.create('human', { title: 'long', goal: 'g' });
+    for (let i = 0; i < STREAM_PAGE_THREAD_LIMIT + 5; i++) {
+      await streams.appendThread('daemon', node.id, { kind: 'event', body: `line ${i}` });
+    }
+    const read = streams.readThread.bind(streams);
+    let reads = 0;
+    streams.readThread = ((...args: Parameters<typeof streams.readThread>) => {
+      if (args[0] === node.id) reads += 1;
+      return read(...args);
+    }) as typeof streams.readThread;
+    try {
+      const page = (await (
+        await fetch(url(`/api/streams/${node.id}`))
+      ).json()) as StreamPagePayload;
+      expect(reads).toBe(1);
+      expect(page.thread).toHaveLength(STREAM_PAGE_THREAD_LIMIT);
+      expect(page.thread_total).toBe(STREAM_PAGE_THREAD_LIMIT + 6);
+      expect(page.thread.at(-1)?.body).toBe(`line ${STREAM_PAGE_THREAD_LIMIT + 4}`);
+    } finally {
+      streams.readThread = read;
+    }
   });
 
   test("T392: GET /api/streams/:id/steps is the node's tool calls, one per call, newest first", async () => {
