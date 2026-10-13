@@ -12,13 +12,8 @@ import { z } from 'zod';
 import { HilKindSchema } from './agent-message';
 import { HarnessIdSchema } from './harness-updates';
 import { UlidSchema, formatZodError } from './ids';
-import {
-  KnowledgeIdSchema,
-  KnowledgeKindSchema,
-  KnowledgeScopeSchema,
-  RULE_TEXT_MAX_CHARS,
-} from './knowledge';
-import { CoordinatorActionSchema, PLAN_LIST_MAX } from './plan';
+import { KnowledgeIdSchema, KnowledgeItemSchema, KnowledgeKindSchema } from './knowledge';
+import { AutonomyProposalSchema, CoordinatorActionSchema, PLAN_LIST_MAX } from './plan';
 import { ReadRootSchema } from './posture';
 import { QUESTION_OPTIONS_MAX, QuestionOptionSchema } from './question';
 import { LegacyRuleIdSchema } from './rule';
@@ -108,7 +103,7 @@ export const InboxGateSchema = z
     rule: z
       .object({
         id: z.union([KnowledgeIdSchema, LegacyRuleIdSchema]),
-        name: z.string().min(1).max(64).optional(),
+        name: KnowledgeItemSchema.shape.name,
       })
       .strict()
       .optional(),
@@ -124,9 +119,9 @@ export type InboxGate = z.infer<typeof InboxGateSchema>;
 /** T514: a `rule_accept` item's parts: the proposed knowledge item's name, scope and text. */
 export const InboxKnowledgeSchema = z
   .object({
-    name: z.string().min(1).max(64).optional(),
-    scope: KnowledgeScopeSchema,
-    text: z.string().min(1).max(RULE_TEXT_MAX_CHARS),
+    name: KnowledgeItemSchema.shape.name,
+    scope: KnowledgeItemSchema.shape.scope,
+    text: KnowledgeItemSchema.shape.text,
   })
   .strict();
 export type InboxKnowledge = z.infer<typeof InboxKnowledgeSchema>;
@@ -145,8 +140,8 @@ export type InboxPlan = z.infer<typeof InboxPlanSchema>;
 /** T514: a `proposal` item's parts (`AutonomyProposal`): who proposes it, the change in words, and which change. */
 export const InboxProposalSchema = z
   .object({
-    principal: z.enum(['coordinator', 'director']),
-    summary: z.string().min(1).max(800),
+    principal: AutonomyProposalSchema.shape.principal,
+    summary: AutonomyProposalSchema.shape.summary,
     change: CoordinatorActionSchema,
     /** The change makes a new project, so no project's level holds it. */
     new_project: z.literal(true).optional(),
