@@ -397,6 +397,38 @@ describe('T336: parts wait for the plan', () => {
     ).streams;
     expect(rows.find((r) => r.id === api.id)?.waiting_for_plan).toBe(true);
     expect(rows.find((r) => r.id === web.id)?.waiting_for_plan).toBeUndefined();
+    // T545: the same answers from a list the caller holds, and one read of the home per frame.
+    const everyone = streams.list({ include_archived: true });
+    for (const part of [api, web, docs]) {
+      const s = streams.get(part.id);
+      expect(plans.waitingForPlan(s, undefined, everyone)).toBe(plans.waitingForPlan(s));
+    }
+    expect(plans.waitingParts(node.id, everyone).map((s) => s.id)).toEqual(
+      plans.waitingParts(node.id).map((s) => s.id),
+    );
+    const read = store.listStreams.bind(store);
+    let reads = 0;
+    store.listStreams = ((...args: Parameters<typeof store.listStreams>) => {
+      reads += 1;
+      return read(...args);
+    }) as typeof store.listStreams;
+    try {
+      const again = buildCockpitFrame(
+        streams,
+        undefined,
+        undefined,
+        {},
+        undefined,
+        undefined,
+        (s, all) => plans.waitingForPlan(s, undefined, all),
+      ).streams;
+      expect(reads).toBe(1);
+      expect(again.map((r) => [r.id, r.role, r.waiting_for_plan])).toEqual(
+        rows.map((r) => [r.id, r.role, r.waiting_for_plan]),
+      );
+    } finally {
+      store.listStreams = read;
+    }
 
     await plans.write(node.id, [
       { child: api.id, owns: ['prices.ts'] },
