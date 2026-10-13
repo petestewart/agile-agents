@@ -182,8 +182,10 @@ export function buildPermissionResponder(
   /**
    * T524: a held call's answer. Routed to a card when it can be (a deny
    * now, its retry allowed once approved), else refused: there is no
-   * route, or no `allow_once` to let the retry through with (never
-   * `allow_always`). With no `reject_once` a refusal is `cancelled`.
+   * route, no `allow_once` to let the retry through with (never
+   * `allow_always`), or no `reject_once` (then `decidePermission` holds
+   * even a deny it can't say, which is no card for the human to override;
+   * the refusal is `cancelled`).
    */
   async function placeHeld(
     decision: Extract<Decision, { kind: 'hil' }>,
@@ -202,10 +204,9 @@ export function buildPermissionResponder(
 
     // The session is stopping: no card for a call nobody will retry.
     if (stopping) return { decision, result: CANCELLED_RESULT };
-    if (allow === undefined) {
-      return refuse(
-        `${decision.reason} (no allow_once option offered, so it can't be let through once)`,
-      );
+    if (allow === undefined || reject === undefined) {
+      const missing = allow === undefined ? 'allow_once' : 'reject_once';
+      return refuse(`${decision.reason} (no ${missing} option offered, so no card)`);
     }
     if (ctx.routeHil === undefined) {
       return refuse(`${decision.reason} — nothing here can hold it for the human`);

@@ -223,6 +223,22 @@ describe('T524: a held ACP call raises a Needs me card instead of parking the tu
     });
   }
 
+  function noPushProtected(): KnowledgeItem {
+    return validateKnowledgeItem({
+      id: `K-${ulid()}`,
+      kind: 'standard',
+      text: 'never push to a protected branch',
+      scope: { kind: 'global' },
+      status: 'accepted',
+      enforcement: 'action',
+      check: { by: 'pattern', pattern: { kind: 'no_push_protected', args: {} } },
+      critical: true,
+      source: { by: 'builtin' },
+      stats: {},
+      created_at: new Date().toISOString(),
+    });
+  }
+
   function answers(session: ReturnType<typeof fakeSession>): unknown[] {
     return session.calls.map((call) => call.result);
   }
@@ -425,19 +441,29 @@ describe('T524: a held ACP call raises a Needs me card instead of parking the tu
     expect(gates.list()).toHaveLength(0);
   });
 
-  test('no reject_once offered: the card is raised and the refusal is a cancel', async () => {
+  test('no reject_once offered: a cancel and no card, so a deny it could only hold is not overridden', async () => {
     const session = fakeSession();
-    const responder = hookless(session);
-    const options = HOOKLESS_OPTIONS.filter((o) => o.kind === 'allow_once');
-    const sudo = () =>
-      held({ toolCallId: 'tc', kind: 'execute', rawInput: { command: 'sudo id' } }, options);
-    expect((await responder.handleRequest(1, sudo())).kind).toBe('hil');
-    expect(answers(session)).toEqual([CANCELLED]);
-    const card = gates.list()[0];
-    if (card === undefined) throw new Error('no card');
-    await gates.respond(card.id, 'approve', 'pete');
-    expect((await responder.handleRequest(2, sudo())).kind).toBe('allow');
-    expect(answers(session)).toEqual([CANCELLED, ALLOW]);
+    const responder = buildPermissionResponder(store, {
+      role: 'engineer',
+      agent: WORKER,
+      worktreePath: repo,
+      session,
+      hooked: false,
+      routeHil: acpHilRouter({ gates, store, session: WORKER, stream, worktreePath: repo }),
+      patternRules: {
+        rules: () => [noPushProtected()],
+        protectedBranches: () => ['main'],
+        record: async () => {},
+      },
+    });
+    const options = HOOKLESS_OPTIONS.filter((o) => o.kind !== 'reject_once');
+    const call = (command: string) =>
+      held({ toolCallId: 'tc', kind: 'execute', rawInput: { command } }, options);
+    // A rule's deny with no way to say no, and a never-list hold: both cancelled, neither a card.
+    expect((await responder.handleRequest(1, call('git push origin main'))).kind).toBe('hil');
+    expect((await responder.handleRequest(2, call('sudo id'))).kind).toBe('hil');
+    expect(answers(session)).toEqual([CANCELLED, CANCELLED]);
+    expect(gates.list()).toHaveLength(0);
   });
 });
 
