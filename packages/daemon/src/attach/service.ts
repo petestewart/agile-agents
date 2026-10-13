@@ -93,7 +93,7 @@ import {
   wakeVerdict,
 } from '../events/wake';
 import { CODEX_UNGATED_REASON, type HookSightings } from '../hook/codex';
-import { type RouteBandGates, acpReadRouter } from '../hook/route-band';
+import { type RouteBandGates, acpHilRouter } from '../hook/route-band';
 import { settingsFileName } from '../hook/settings';
 import type { RuleStatsOutcome } from '../knowledge/service';
 import { repoScriptChecks } from '../permissions/command';
@@ -245,7 +245,7 @@ export interface OpenQuestionsSource {
  */
 export interface OpenGatesSource {
   list(): HilRequest[];
-  /** T457: raise and spend a routed read's gate at the ACP tier (`acpReadRouter`); both or neither. */
+  /** T457, T524: raise and spend a held call's gate at the ACP tier (`acpHilRouter`); both or neither. */
   request?: RouteBandGates['request'];
   consume?: RouteBandGates['consume'];
 }
@@ -1301,8 +1301,8 @@ export class AttachService {
         })(),
         provider,
         readScope,
-        // T457: a read the Ask posture held raises the same card as the hook tier's.
-        ...this.readRouter(stream.id, sessionId, cwd),
+        // T457, T524: a call the ACP tier holds raises the same card as the hook tier's.
+        ...this.hilRouter(stream.id, sessionId, cwd),
         ...(this.options.rules !== undefined ? { rules: this.options.rules } : {}),
         ...(this.options.spawn !== undefined ? { spawn: this.options.spawn } : {}),
         ...(this.options.cliBin !== undefined ? { cliBin: this.options.cliBin } : {}),
@@ -1488,17 +1488,20 @@ export class AttachService {
     }
   }
 
-  /** T457: the ACP tier's route for a held Ask read, when the gates can raise and spend. */
-  private readRouter(
+  /** T457, T524: the ACP tier's route for a held call, when the gates can raise and spend. */
+  private hilRouter(
     stream: string,
     session: string,
     worktreePath: string,
-  ): { routeRead?: NonNullable<ReturnType<typeof acpReadRouter>> } {
+  ): { routeHil?: ReturnType<typeof acpHilRouter> } {
     const gates = this.options.gates;
-    if (gates?.request === undefined || gates.consume === undefined) return {};
+    // T524: bound: passed bare, `GateService.request` lost its `this` and every route threw.
+    const request = gates?.request?.bind(gates);
+    const consume = gates?.consume?.bind(gates);
+    if (gates === undefined || request === undefined || consume === undefined) return {};
     return {
-      routeRead: acpReadRouter({
-        gates: { list: () => gates.list(), request: gates.request, consume: gates.consume },
+      routeHil: acpHilRouter({
+        gates: { list: () => gates.list(), request, consume },
         store: this.options.store,
         session,
         stream,

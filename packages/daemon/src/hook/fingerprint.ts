@@ -76,3 +76,12 @@ export function fingerprintCall(
   // A gated tool with no path or command: the tool name alone is the call.
   return { tool, fingerprint: digest([tool]) };
 }
+
+/**
+ * T524: a call with no command or path to key on (an exec a hook-less
+ * vendor sends without its command), keyed by the vendor's title for it:
+ * yes to one such call is not yes to the next one titled otherwise.
+ */
+export function titledCall(tool: string, title: string): GateCall {
+  return { tool, fingerprint: digest([tool, 'title', title]) };
+}
