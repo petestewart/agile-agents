@@ -61,6 +61,29 @@ export function readFrame(frame: CockpitFrame): CockpitFrame {
   return { ...frame, streams: withParts(frame.streams) };
 }
 
+/**
+ * T520 (audit U8): where the cockpit was when a `refresh()` read was sent,
+ * and where it is when the read comes back: how many reads had been sent,
+ * and how many pushed frames had arrived.
+ */
+export interface RefreshMark {
+  refreshes: number;
+  frames: number;
+}
+
+/**
+ * T520 (audit U8): whether a `refresh()` read, sent at `sent`, may replace
+ * the cockpit `now`. Only the latest read lands, as `StreamPage.load`'s
+ * `loadSeq` does: reads overlap and resolve in any order. And none lands
+ * once a frame has arrived since it was sent: frames carry no sequence, so
+ * that frame may be newer than the read, and with the system then quiet
+ * nothing would put the older state right. A dropped read loses nothing:
+ * the next frame carries the same state.
+ */
+export function refreshLands(sent: RefreshMark, now: RefreshMark): boolean {
+  return sent.refreshes === now.refreshes && sent.frames === now.frames;
+}
+
 /** How long the socket may be down before the cockpit says so (a reconnect blip says nothing). */
 export const OFFLINE_AFTER_MS = 2000;
 
@@ -84,6 +107,8 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
   const [cockpit, setCockpit] = useState<CockpitFrame | undefined>(undefined);
   // Refs, not state: a new subscriber must never re-open the socket.
   const eventHandlers = useRef(new Set<(event: Event) => void>());
+  // T520: the reads `refresh()` sent and the frames pushed so far (`refreshLands`).
+  const mark = useRef<RefreshMark>({ refreshes: 0, frames: 0 });
   const offline = useOffline(connected);
 
   useEffect(() => {
@@ -93,7 +118,10 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
       onEvent: (event) => {
         for (const handler of eventHandlers.current) handler(event);
       },
-      onCockpit: (frame) => setCockpit(readFrame(frame)),
+      onCockpit: (frame) => {
+        mark.current = { ...mark.current, frames: mark.current.frames + 1 };
+        setCockpit(readFrame(frame));
+      },
       onStatusChange: (status) => setConnected(status === 'open'),
     });
     return () => handle.close();
@@ -107,10 +135,13 @@ export function FeedProvider({ children }: PropsWithChildren): JSX.Element {
   }, []);
 
   const refresh = useCallback(() => {
+    const sent = { ...mark.current, refreshes: mark.current.refreshes + 1 };
+    mark.current = sent;
     fetch('/api/cockpit')
       .then((res) => (res.ok ? (res.json() as Promise<CockpitFrame>) : undefined))
       .then((frame) => {
-        if (frame) setCockpit(readFrame(frame));
+        // T520 (audit U8): an older read, or one a pushed frame overtook, never puts back older state.
+        if (frame && refreshLands(sent, mark.current)) setCockpit(readFrame(frame));
       })
       .catch(() => {
         // The next pushed frame carries the same state.
