@@ -1717,7 +1717,7 @@ agile tail --director
 
 ### Ticket: T330 Conversation nodes read repos; one message, one thread entry
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done (merge 1acb31e8 on claude/phase-7, 2026-09-25, merged forward through every phase; the board line was left at In Progress until 2026-10-13)
 - **Owner:** opus:worker-T330
 - **Scope:** From Pete's walkthrough §3.2: a conversation agent could not read the registered repos (design §4: a conversation "may read repos") and did not know where they were. Give it the visibility read scope on the hook and ACP paths, list readable repos (name, path) in its brief. Also: one agent message was split across several thread entries mid-sentence; keep one message in one entry.
 - **Acceptance Criteria:** Read allowed for a registered repo, denied for the agile home and an unlisted private repo; the brief lists repos; a long message stays one entry.
@@ -3564,6 +3564,28 @@ Pete (2026-09-26): the cockpit works but is rough; take it to a polished, profes
 - **Validation Steps:** `bun install && bun run build && bun run typecheck && bun run lint && bun test && bun run test:integration && bun run test:e2e && bun run test:walkthrough`.
 - **Notes:** Branches T369-phase-15-qa, T369-ci-card-order, T369-wrapup. Gate on the integrated tip: lint and typecheck clean, `bun test` 2869 pass / 0 fail, integration and e2e green (control-room 68/0 after T380), walkthrough 39 steps, 0 findings. QA fixes: a node's Activity reads like Events (titles, routing words), the walkthrough and checklist follow; the j/k e2e reads Needs me's order from the page (two cards raised in one millisecond sort by id, which failed CI twice); the design doc names the palette and keys. The screenshot pass (every view, light, dark, phone) found T381's wording. Remaining findings: `design/cockpit-ui-followups.md`.
 
+### Phase 16 — Hardening: bugs, gate gaps, performance
+
+Pete (2026-10-13): away for at least 24 hours; do everything that doesn't need him, stacked PRs are fine, and have agents hunt for hidden bugs, issues and optimizations. Work on `claude/phase-16`, cut from `claude/phase-14` at 6ad8064b; its draft PR is based on `claude/phase-14` so PR #11 stays as it is for Pete's review. Each ticket: branch `T###-<slug>` off `claude/phase-16`, worktree `.worktrees/T###-<slug>`, merged `--no-ff` after the manager reads the diff and the suite is green. A fix that belongs to an earlier phase is still made here (Pete reviews the stack in order; merging forward through eight branches for a hardening pass would churn every PR).
+
+Sources: read-only audits on 2026-10-13 (the §10 log triaged against current code; daemon correctness; gates, permissions and HTTP security; cockpit UI and CLI; performance), and `design/cockpit-ui-followups.md`. Every finding is checked against the code by the manager before it becomes a ticket. Nothing here changes a decision of Pete's; anything that would is logged under §9 or §10 for him instead.
+
+### Ticket: T514 Inbox items carry structured fields
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** `design/cockpit-ui-followups.md` P2: inbox items carry the call, rule, name and scope only inside `context` text (`gateText`, `ruleItem` in `packages/daemon/src/inbox/service.ts`) and the cockpit's cards parse that text back. Add optional structured fields to `InboxItem` in `packages/shared/src/inbox.ts` (still `.strict()`), fill them in the inbox service, and have the cards read them; keep `context` as the human-readable line so older clients and the CLI still work.
+- **Acceptance Criteria:** A gate item and a rule item carry the structured fields; the decision cards render from them (no parsing of `context` left in `packages/ui`); the schema stays `.strict()`; CLI `agile inbox` output unchanged.
+- **Validation Steps:** `bun test packages/shared packages/daemon/src/inbox packages/ui`; `bun run typecheck`; `bun run test:e2e` for the inbox cards.
+
+### Ticket: T515 Live views refresh on every emitted event
+- **Priority:** P3
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** `design/cockpit-ui-followups.md` P3: live views refresh on the audit log's tailer, so an event emitted without an audit line shows only on the next push. Have the events service's `onEmitted` push the frame too (`packages/daemon/src/http.ts`, the tailer, `daemon.ts`), debounced with the tailer's push so one change isn't sent twice.
+- **Acceptance Criteria:** A routed event emitted with no audit line reaches an open SSE client without any other change; one change produces one push (test counts pushes).
+- **Validation Steps:** `bun test packages/daemon/src/events packages/daemon/src/http`; `bun run test:integration`.
+
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
 Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `plan/`, `review/` rounds, `sync/` (shelved on a branch), `feed/stories.ts`, `runner/pipeline-glue.ts`, sprint parts of `merge/`, `bus/` unless the thread reuses it. CLI: `run`, `send`, `halt`, `approve`, `sync`. Shared: `Ticket`, `Sprint`, `Stanza`, `Message`, `Halt`, `Quota`, `Review`, `Qa`, `Oracle`, `Kb`, `Ledger`. Briefs: all but `worker.md`, `reviewer.md`, `lessons.md`. UI: `plan/`, `sprint/`, `review/`, `OraclePanel`. State: the `agile-state` orphan branch and per-repo `.agile/`.
@@ -3579,6 +3601,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-10-13 Pete: away ≥24 h; asked for all work that doesn't need him plus an agent hunt for hidden bugs and optimizations → Phase 16 (T514+) on `claude/phase-16`, stacked on `claude/phase-14`. T330's board line still said In Progress although it merged on 2026-09-25 (1acb31e8) and forward through every phase; corrected.
 - 2026-09-26 Pete: the cockpit is rough; asked for a full UX overhaul (his list is in Phase 15's intro) → Phase 15 (T360–T369), design in `design/cockpit-ui.md`, on `claude/phase-14`.
 - 2026-09-26 (T345 worker): a lone `&` was not a command separator in `splitCommandSegments`, so `echo hi & cat /etc/passwd` and `true & rm -rf ~` were auto-allowed for engineers since phase 7. Fixed on ci-fix-lone-ampersand (6ea669a), merged 7→14; reviewed (sonnet) APPROVE.
 - 2026-09-26 (T344 review): T336's `waitingForPlan` re-flagged a part that had started and gone idle, so plan approval could restart it and the rail/card said "waiting" again. Fixed on ci-fix-waiting-started (3e8724d, phase-11): waiting ends once a session starts after the split's waiting line (ULID time). Merged 11→14; reviewed and QA'd (sonnet).
