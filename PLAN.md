@@ -3775,7 +3775,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T539 Thread lines get unique timestamps under concurrent appends
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge 88f7e274 on claude/phase-16, 2026-10-13; the hook's own two event lines still stamp `now()`)
 - **Owner:** worker
 - **Scope:** Daemon audit D10 (reproduced): `streams/service.ts` computes a line's `ts` (its identity: anchor, thread and move key, T503/T504) from `store.threadUpdatedAt(id)` outside the store mutex, so two appends started in the same tick (worker and reviewer exits under `stop()`, model and effort picks at session start, two flushes from one stdout chunk) get the same millisecond; `assertThreadPlace` then picks the first line with that ts and UI keys collide. Assign `ts` inside the store's serialized append (strictly greater than the last).
 - **Acceptance Criteria:** Two appends started in one tick get distinct, increasing ts (the audit's test); replies anchor to the right line.
