@@ -267,6 +267,23 @@ describe('list / close / archive', () => {
     expect(stopped).toEqual([node.id]);
   });
 
+  test("T541: a project's root can't be archived on its own (the cockpit refuses it too)", async () => {
+    const stopped: string[] = [];
+    const streams = new StreamService(store);
+    const withStop = buildStreamRpcMethods(streams, {
+      stopSessions: async (id) => {
+        stopped.push(id);
+      },
+    });
+    const node = await create('a part');
+    const rootId = node.parent as string;
+    await expect(withStop['stream.archive']?.({ id: rootId })).rejects.toThrow(
+      /root can't be archived on its own/,
+    );
+    expect(streams.get(rootId).archived).toBeUndefined();
+    expect(stopped).toEqual([]);
+  });
+
   test('close sets human.status and an unknown stream is not found', async () => {
     const stream = await create();
     const closed = await call<Stream>('stream.close', { id: stream.id, note: 'done thinking' });

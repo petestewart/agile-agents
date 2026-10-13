@@ -98,6 +98,17 @@ export interface ChildPlanView {
 export class PlanService {
   constructor(private readonly options: PlanServiceOptions) {}
 
+  /** T541: whether a node still has a record (a part deleted forever has none). */
+  private exists(id: string): boolean {
+    try {
+      this.options.streams.get(id);
+      return true;
+    } catch (err) {
+      if (err instanceof NotFoundError) return false;
+      throw err;
+    }
+  }
+
   private now(): string {
     return (this.options.now?.() ?? new Date()).toISOString();
   }
@@ -183,6 +194,9 @@ export class PlanService {
     const contracts = saved.contracts.map((id) => this.options.contracts.find(id));
     await this.options.questions?.supersedeByPlan(node, saved.version);
     for (const owner of saved.owners) {
+      // T541 (daemon audit D13): a part deleted forever since the plan was written
+      // has no thread to tell; the approval already holds, so the others still hear.
+      if (!this.exists(owner.child)) continue;
       // T338: each part reads its share on its own thread too.
       await this.options.streams.appendThread('daemon', owner.child, {
         kind: 'event',

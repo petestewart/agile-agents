@@ -384,6 +384,26 @@ describe('T336: parts wait for the plan', () => {
       body: `${WAITING_FOR_PLAN}this part starts when "Show sale prices"'s plan is approved`,
     });
 
+  test('T541: a part deleted forever after the plan was written: approval still tells and starts the rest', async () => {
+    const { node, api, web, docs, started } = await planned();
+    for (const part of [api, web, docs]) await splitWaits(part.id);
+    await plans.write(node.id, [
+      { child: api.id, owns: ['prices.ts'] },
+      { child: web.id, owns: ['shop.html'] },
+      { child: docs.id, owns: ['CHANGELOG.md'] },
+    ]);
+    // web goes to the trash and is deleted forever while the plan waits.
+    await streams.archive('human', web.id);
+    await store.removeStream(web.id);
+    const approved = await plans.approve(node.id);
+    expect(approved.status).toBe('approved');
+    expect(started).toEqual([api.id, docs.id]);
+    for (const part of [api, docs]) {
+      const lines = streams.readThread(part.id, { limit: 100 }).entries;
+      expect(lines.some((e) => e.body.startsWith(`Plan v${approved.version} approved`))).toBe(true);
+    }
+  });
+
   test('approval starts each part it first gives paths to, and only those', async () => {
     const { node, api, web, docs, started, superseded } = await planned();
     for (const part of [api, web, docs]) await splitWaits(part.id);
