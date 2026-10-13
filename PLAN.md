@@ -3588,7 +3588,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T516 The command gate parses escapes and `>( )` the way bash does
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done (merge 3a4d5569 on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Security audit 2026-10-13 (S1, S2), both reproduced by the manager with a scratch test against the real functions. (1) `splitCommandSegments` and `tokenizeSegment` (`packages/daemon/src/permissions/command.ts`) treat a backslash-escaped `\"` or `\'` outside quotes as opening a quote, while bash reads it as a literal; `hasUnsafeShellConstruct` counts quotes escape-aware, so it calls the line balanced. A fake quoted region then swallows `;`, `&&`, `&`: `echo \"; git push origin main` is one `echo` segment and the engineer verdict is `allow`, with `detectProtectedBranchWrite` undefined; `\'` and a hidden `rm -rf` the same. (2) Output process substitution `>(cmd)`: only `<(` is treated as process substitution (`policy-tables.ts` ~980, ~1203); `>(cmd)` matches the plain-redirect check and resolves inside the worktree, so `cat >(git push origin main)` is `allow`, though bash runs `cmd`. Same class as the lone-`&` bug (T345). Fix both in the parser so every caller (engineer, coordinator, reviewer, never-without-human list, `no_push_protected`, Codex and Claude hooks, ACP) sees the real segments: backslash escapes follow bash (outside quotes `\x` is a literal `x`; in double quotes `\"`, `\\`, `\$`, `` \` `` are escapes; in single quotes nothing is), and `>(`/`<(` anywhere outside single quotes are process substitution, held like `$( )` (the existing unsafe-construct path) or denied like `<(` today, whichever the code's comments and design §5 say applies; keep `<(`'s current verdict unless that is the same path.
 - **Acceptance Criteria:** A regression table in the command tests, each input asserted against the real verdict functions for engineer and coordinator: `echo \"; git push origin main`, `echo \'; git push origin main`, `echo \"; rm -rf /tmp/x`, `echo \" && git push origin HEAD:main`, `cat >(git push origin main)`, `echo hi >(rm -rf x)`, `tee >(sh)`, plus controls that must stay allowed: `echo "a;b"`, `echo 'a;b'`, `echo a\;b` (one segment), `grep "\"" file`, `printf '%s\n' x`, `echo a > out.txt`. None of the bypass inputs is `allow`; no allowed control changes verdict; the full existing permissions/hook suites still pass.
@@ -3653,7 +3653,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T524 A held ACP call raises a Needs me card instead of parking the turn
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** In Review
 - **Owner:** worker
 - **Scope:** §10 triage (E38), checked by the manager: `runner/session.ts` builds the permission responder without `requestHil`, so every non-read `hil` verdict goes to `defaultRequestHil` (`permissions/responder.ts`), which writes `bus/inbox/human/<ulid>.yaml` (nothing reads that directory) and leaves the ACP request pending: the node reads "working" and no card appears. It hits vendors without a pre-tool hook (Cursor, Gemini, Grok, Antigravity) on T476's unreadable exec, `sudo`, a force-push, `rm -rf` outside the worktree, a `package.json`/lockfile edit, `$( )`. Route every ACP `hil` into a gate the cockpit shows (generalise T457's `acpReadRouter` — `attach/service.ts`, `hook/route-band.ts` — or wire `requestHil` to `GateService` with a resolve on the decision), answer the pending ACP request on the human's decision, cancel pending requests on session stop. Then remove `defaultRequestHil` and, if nothing else uses it, the `hil_request` agent-message kind and their tests.
 - **Acceptance Criteria:** For a vendor without hooks: an unreadable exec, a `sudo` and a `package.json` edit each give exactly one card; approve lets that call through once, deny refuses it; stopping the session answers any pending request; nothing is written under `bus/inbox/human/`.
@@ -3807,11 +3807,19 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T543 The hook gates Pi's tools (and a reviewer's network) as the ACP tier would
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done (merge 346be78a on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Found by T518's worker, checked by the manager: the Pi extension (`packages/daemon/src/pi/agile-extension.ts`) sends Pi's own tool names (`bash`, `write`, `edit`, `read`, …) and input shapes to `hook.pre_tool_use` unmapped, while `hook/decide.ts` recognises only Claude's (`Bash`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Read`, …). So for Pi the role × tool table, the never-without-human list and the built-in read checks never run; and `pi-acp` raises no ACP permission requests (spike-findings §C4), so nothing else gates it: a Pi reviewer's `write`/`edit`, or `bash` with anything, is allowed. Map Pi's tool names and input fields to the Claude-shaped payload at the hook, the way `codexToClaudePayload` (`hook/codex.ts`) does for Codex — find Pi's tool list and input shapes from the extension's types, `spike/` and spike-findings; an unknown Pi tool gets the ACP tier's verdict for kind `other`. Also: reviewers (and lessons) have no network per the role policy (the ACP `fetch` tier denies it), but the hook still allows `WebFetch`/`WebSearch` for them; deny them as it already does for coordinators (P20), if the ACP tier and design agree — otherwise note it for Pete.
 - **Acceptance Criteria:** Through the hook with a Pi-shaped payload: a reviewer's `write`/`edit` is denied, an engineer's `edit` outside the worktree denied and inside allowed, `bash` with `git push origin main` refused by `no_push_protected`, `bash` `sudo …` held, `read` of the agile home denied; Claude and Codex verdicts unchanged; a reviewer's `WebFetch` denied (or the note for Pete).
 - **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/pi packages/daemon/src/permissions`; `bun run typecheck && bun run lint`.
+
+### Ticket: T555 A coordinator's command never runs a substitution
+- **Priority:** P0
+- **Status:** In Progress
+- **Owner:** manager
+- **Scope:** Found by the manager while reviewing T516 (its residual 5), reproduced with a coordinator's real read scope: P20 has the coordinator's table decide alone, skipping the never-without-human list, and that list is the only caller of `hasUnsafeShellConstruct`. So at both tiers a coordinator is allowed `echo $(touch pwned)`, `` git log `rm -rf src` `` and `wc -l $(git push origin main)` (the last caught only while the built-in push rule is in scope): command substitution, backticks and an unbalanced quote run whatever is inside. The coordinator's table denies them (its denies are never human prompts, P20).
+- **Acceptance Criteria:** For a coordinator, at the ACP tier and through the hook: `$( )`, backticks, `eval`, an unbalanced quote and T516's escape and continuation forms are denied; every existing coordinator allow (read-only git, `ls`, writes into its session dir) is unchanged; engineer and reviewer verdicts unchanged.
+- **Validation Steps:** `bun test packages/daemon/src/permissions packages/daemon/src/hook`; `bun run typecheck && bun run lint`.
 
 **From the performance audit (2026-10-13, `perf.md` P1–P17; benchmarks on a shared container, ratios reliable, absolute numbers ±30%).**
 
@@ -3825,7 +3833,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T545 One cockpit frame lists the nodes once
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge 1a9ab713 on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Perf P3 + P12, checked by the manager. `buildCockpitFrame` (`feed/snapshot.ts`) calls `waitingForPlan` per row, and `coordination/plans.ts` `waitingForPlan` does `streams.get(parent)`, `streams.list()` and `nodeRole` over the whole list for every idle part (and `waitingParts` lists again from the inbox): 92 `listStreams` and 23 s per frame at 300 nodes with 30% idle parts (19.7 s for `GET /api/cockpit` on a real daemon). Give `waitingForPlan`/`waitingParts` an optional `{all, byId}` the frame and the inbox pass in (behaviour unchanged without it); build a parent → live-children map once per frame and per inbox list and pass it to `nodeRole`/`liveChildrenOf`/`isTangent` and the inbox's `hasParts`.
 - **Acceptance Criteria:** Same frame and inbox output with and without the context (test over a tree with coordinators, idle parts and conversations); a spy shows one `listStreams` per `buildCockpitFrame`; same roles with and without the children map over a random tree.
@@ -3918,6 +3926,8 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-10-13 (T516 worker, residual, for later tickets): a quote inside a `#` comment, and heredoc bodies, can still throw off the parser's quote reading; `sh -c "…" > /etc/x` drops the outer redirect when the parser looks inside; bash's `${var@P}` and arithmetic array subscripts run a stored command with no `$(`. Its fifth (the coordinator never runs the unsafe-construct check) was a live hole: T555.
+- 2026-10-13 (T543 worker, for Pete): Pi's big `read`/`grep` now hit the 64 KiB raw-read limit like Claude's, but a Pi session has no MCP (`pi-acp` passes no MCP servers), so the deny's `read_summary` pointer can't be followed; exempting Pi is one line. An engineer's WebFetch/WebSearch is still allowed at the hook while the ACP tier allows an engineer's fetch only to package registries; unchanged.
 - 2026-10-13 (performance audit, `perf.md`): 17 findings, verified by the manager on the code; ticketed as T544–T554. Not ticketed: P14 (slow tests; follows from T545/T547), P15 (the routed-event log held whole in memory; later), P16 (resolved gates/questions re-read; follows from T547), P17 (zod in the UI bundle; already in `design/cockpit-ui-followups.md`, needs a new shared entry point). T554 (the hook's 0.6 s start) waits on Pete: it needs an import pattern the repo doesn't have.
 - 2026-10-13 (T518 worker, for Pete): the hook now gives a reviewer's other-server MCP calls (`mcp__*`) the ACP tier's verdict for kind `other` (deny), but an engineer's or coordinator's are still allowed at the hook while the ACP tier holds kind `other`. Options: hold them at the hook too, route them to the classifier, an allowlist per server, or leave. Not changed.
 - 2026-10-13 (T517 worker, for Pete): every request now needs a loopback `Host` (DNS rebinding); CLAUDE.md's Conventions line names only `isSameOriginRequest`. Not edited (a worker suggested it); Pete to decide whether CLAUDE.md should say so. A client with no `Origin` (the CLI, a tunnel) still passes the write routes when its Host is loopback.
