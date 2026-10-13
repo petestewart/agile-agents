@@ -558,6 +558,10 @@ describe('decidePermission — T516 escapes and process substitution read as bas
     "bash -c 'cat >(git push origin main)'",
     'sh -c "echo hi" >(git push origin main)',
     "sh -c '' >(git push origin main)",
+    // Review: an escaped `>`, and quotes inside the substitution.
+    'cat \\>(git push origin main)',
+    'cat >("git" push origin main)',
+    "cat >('git' push origin main)",
   ];
 
   // Allowed before T516 and after, for both roles; `echo a\;b` is one

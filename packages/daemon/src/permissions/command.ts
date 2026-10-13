@@ -20,7 +20,7 @@ export interface RawSegment {
 
 /**
  * T516: what one character of a command line is to bash: `plain` (unquoted,
- * where operators, whitespace and `#` act), inside `'…'`, `"…"` or `$'…'`,
+ * where operators and whitespace act), inside `'…'`, `"…"` or `$'…'`,
  * a `quote` mark itself, an `escape` backslash, or the `escaped` character
  * after one (a literal). The splitter, the tokenizer and the unsafe-construct
  * check share this one reading, so they can't disagree about where a quote
