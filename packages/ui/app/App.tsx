@@ -189,8 +189,9 @@ export function App(): JSX.Element {
   // T429: the open node is read as it changes; a reply while you're away notifies.
   useReadOpenNode();
   useReplyNotifications();
-  // T436: leaving with review comments unsent asks first; a finished node's drafts are dropped.
-  useReviewUpkeep();
+  // T436: leaving with review comments unsent asks first; a merged or deleted node's drafts are
+  // dropped (T519: the open node's once you leave it).
+  useReviewUpkeep(view === 'stream' ? selected : undefined);
   useWarmChunks();
   // T394: a caught error resets when you go somewhere else.
   const place = `${view}:${selected ?? ''}`;

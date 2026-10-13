@@ -25,6 +25,7 @@
 
 import {
   type ChatThread,
+  HUMAN_LINE_MAX_CHARS,
   type InboxItem,
   type ResolvedSessionDefaults,
   type SessionDefaultsStatus,
@@ -84,7 +85,7 @@ import {
 } from '../lib/chat';
 import { useAgentCommands } from '../lib/commands';
 import { choiceOf, keptChoice, modelChip, resolvedFor } from '../lib/defaults';
-import { draftOf, useDraftSetter } from '../lib/drafts';
+import { afterSend, draftOf, sendableText, useDraftSetter } from '../lib/drafts';
 import {
   type MergeFix,
   type MergeRefusal,
@@ -884,8 +885,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
     });
 
   async function send(): Promise<void> {
-    const text = draftOf(stream.id).trim();
-    if (!text || intent.action === 'none') return;
+    const text = sendableText(draftOf(stream.id));
+    if (text === undefined || intent.action === 'none') return;
     if (offline) {
       setSendError(SEND_UNREACHABLE);
       return;
@@ -919,7 +920,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
       } else {
         await sayOnStream(stream.id, text);
       }
-      setDraft('');
+      // T519 (audit U2): only what went comes off; what was typed while it went stays.
+      setDraft((now) => afterSend(now, text));
     } catch (err) {
       // T416 (finding 7): under the composer, in words, with Retry; the draft stays as typed.
       setSendError(writeFailure(err));
@@ -2266,7 +2268,8 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
               quoteIntoAnswer(question, text);
               return;
             }
-            setDraft((before) => withQuote(before, text));
+            // T519: the quote fits the composer's cap (a line you write), not an agent message's.
+            setDraft((before) => withQuote(before, text, HUMAN_LINE_MAX_CHARS));
             requestAnimationFrame(() => composer.current?.focusEnd());
           }}
           onThread={(text, on) => {
@@ -2327,7 +2330,7 @@ export function StreamPage({ id }: { id: string }): JSX.Element {
                     icon="refresh"
                     data-testid="send-retry"
                     busy={sending}
-                    disabled={offline || draft.trim() === ''}
+                    disabled={offline || sendableText(draft) === undefined}
                     title={offline ? RECONNECTING : 'Send it again'}
                     onClick={() => void send()}
                   >

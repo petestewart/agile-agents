@@ -3763,6 +3763,258 @@ describe("a node's page never shows another node's results (Playwright e2e, T520
   );
 });
 
+describe('the composer keeps everything you write (Playwright e2e, T519)', () => {
+  /** 3,000 characters, past the old 800 cap: a long message you write. */
+  const LONG = `${'Round each line once, then sum the ledger. '.repeat(70).slice(0, 2999)}!`;
+
+  /**
+   * `path`'s next request waits until `release`, then goes on to the daemon,
+   * or fails with `error` (500) when one is given.
+   */
+  const holdNext = async (
+    p: Page,
+    path: string,
+    error?: string,
+  ): Promise<{ called: Promise<void>; release: () => void }> => {
+    let seen: () => void = () => {};
+    const called = new Promise<void>((resolve) => {
+      seen = resolve;
+    });
+    let release: () => void = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await p.route(
+      `**${path}`,
+      async (route) => {
+        seen();
+        await released;
+        if (error === undefined) await route.continue();
+        else {
+          await route.fulfill({
+            status: 500,
+            contentType: 'application/json',
+            body: JSON.stringify({ error }),
+          });
+        }
+      },
+      { times: 1 },
+    );
+    return { called, release };
+  };
+
+  /** Types `text` at the end of the box, as a person would (Shift+Enter is a new line). */
+  const typeAtEnd = async (p: Page, box: string, text: string): Promise<void> => {
+    await p.locator(box).focus();
+    await p.keyboard.press('Control+End');
+    for (const [i, line] of text.split('\n').entries()) {
+      if (i > 0) await p.keyboard.press('Shift+Enter');
+      await p.keyboard.type(line);
+    }
+  };
+
+  const keptDrafts = async (p: Page): Promise<Record<string, string>> =>
+    (await p.evaluate("JSON.parse(sessionStorage.getItem('agile.drafts') ?? '{}')")) as Record<
+      string,
+      string
+    >;
+
+  browserTest(
+    'the node page sends 3,000 characters and keeps what is typed while it goes; a failed send keeps it all; past 4,000 nothing is cut and Send is off',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const node = await cockpit.streams.create('human', {
+          title: 'Ledger',
+          goal: 'g',
+          project: shop.id,
+          parent: shop.root,
+        });
+        const p = await openPage();
+        page = p;
+        await p.goto(`${cockpit.base}/?node=${node.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+        const box = '[data-testid="composer-input"]';
+        const input = p.locator(box);
+        const send = p.locator('[data-testid="composer-send"]');
+        const count = p.locator('[data-testid="composer-count"]');
+        const humanLines = () =>
+          cockpit.streams
+            .readThread(node.id)
+            .entries.filter((e) => e.by === 'human' && e.kind === 'line')
+            .map((e) => e.body);
+
+        // 3,000 characters go in whole (no count yet: it shows from 3,400).
+        await input.fill(LONG);
+        expect((await input.inputValue()).length).toBe(3000);
+        expect(await count.count()).toBe(0);
+
+        // Sent while the request is held, the box stays editable: what is typed then stays.
+        const say = await holdNext(p, `/api/streams/${node.id}/say`);
+        await send.click();
+        await say.called;
+        await typeAtEnd(p, box, '\nAlso check the tests.');
+        say.release();
+        await waitUntil('the 3,000 characters on the thread', () => humanLines().includes(LONG));
+        await waitUntilAsync(
+          'only what was sent off the draft',
+          async () => (await input.inputValue()) === 'Also check the tests.',
+        );
+        expect(await keptDrafts(p)).toEqual({ [node.id]: 'Also check the tests.' });
+
+        // A send that fails keeps the draft whole, with what was typed while it was out.
+        const failing = await holdNext(p, `/api/streams/${node.id}/say`, 'the daemon fell over');
+        await send.click();
+        await failing.called;
+        await typeAtEnd(p, box, ' Then push.');
+        failing.release();
+        await p.locator('[data-testid="send-error"]').waitFor();
+        expect(await input.inputValue()).toBe('Also check the tests. Then push.');
+        expect(humanLines()).toEqual([LONG]);
+
+        // Past 4,000 nothing is cut: the count says so, and Send, Enter and Retry are off.
+        await input.fill('y'.repeat(4100));
+        expect((await input.inputValue()).length).toBe(4100);
+        await waitForText(p, '[data-testid="composer-count"] .cr-charcount-num', '4,100 / 4,000');
+        expect(await count.getAttribute('data-over')).toBe('true');
+        expect(await count.textContent()).toContain('Shorten it, or send the key point.');
+        expect(await input.getAttribute('aria-invalid')).toBe('true');
+        expect(await send.isDisabled()).toBe(true);
+        expect(await send.getAttribute('title')).toBe('Shorten it, or send the key point.');
+        expect(await p.locator('[data-testid="send-retry"]').isDisabled()).toBe(true);
+        await input.press('Enter');
+        // Back within the cap: the count stays near it, without the warning, and Send is on.
+        await input.press('Control+End');
+        for (let i = 0; i < 100; i++) await p.keyboard.press('Backspace');
+        await waitForText(p, '[data-testid="composer-count"] .cr-charcount-num', '4,000 / 4,000');
+        expect(await count.getAttribute('data-over')).toBeNull();
+        expect(await send.isEnabled()).toBe(true);
+        expect(humanLines()).toEqual([LONG]);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    "a closed node's draft survives a pushed frame; a deleted node's goes, and so does one its parent's delete took, once its page is left",
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const shop = await cockpit.projects.create({ name: 'shop' });
+        const make = async (title: string, parent: string) =>
+          (await cockpit.streams.create('human', { title, goal: 'g', project: shop.id, parent }))
+            .id;
+        const paused = await make('Paused idea', shop.root);
+        await cockpit.streams.close('human', paused);
+        const work = await make('Checkout', shop.root);
+        const part = await make('Checkout totals', work);
+        const p = await openPage();
+        page = p;
+        const input = p.locator('[data-testid="composer-input"]');
+        // A reload keeps the drafts (this tab's storage); the rail may fold a part away.
+        const open = async (id: string): Promise<void> => {
+          await p.goto(`${cockpit.base}/?node=${id}`);
+          await p.locator(`[data-testid="stream-page"][data-stream="${id}"]`).waitFor();
+        };
+
+        // Closed: its composer reopens it, so what is typed there is kept through a pushed frame.
+        await open(paused);
+        await p
+          .locator('[data-testid="composer-hint"]', { hasText: 'Reopens this node' })
+          .waitFor();
+        await input.fill('Pick this up again with the new totals.');
+        const other = await make('Something else', shop.root);
+        await p.locator(`[data-testid="stream-tree"] [data-stream="${other}"]`).waitFor();
+        // The frame's effects (the drafts' upkeep among them) run after it paints.
+        await p.evaluate(
+          'new Promise((done) => requestAnimationFrame(() => setTimeout(done, 50)))',
+        );
+        expect(await input.inputValue()).toBe('Pick this up again with the new totals.');
+        expect(await keptDrafts(p)).toEqual({
+          [paused]: 'Pick this up again with the new totals.',
+        });
+
+        // A part with a draft, then its parent deleted elsewhere: the part is gone with it. What
+        // is being typed on its page stays while the page is open, and goes once you leave it.
+        await open(part);
+        await input.fill('Round half to even.');
+        await waitUntilAsync(
+          'both drafts kept',
+          async () => Object.keys(await keptDrafts(p)).length === 2,
+        );
+        await cockpit.streams.archiveTree('human', work);
+        const later = await make('Later', shop.root);
+        await p.locator(`[data-testid="stream-tree"] [data-stream="${later}"]`).waitFor();
+        await p.evaluate(
+          'new Promise((done) => requestAnimationFrame(() => setTimeout(done, 50)))',
+        );
+        expect(await input.inputValue()).toBe('Round half to even.');
+        expect(Object.keys(await keptDrafts(p)).sort()).toEqual([paused, part].sort());
+        await p.locator('[data-view="inbox"]').click();
+        await p.locator('[data-testid="inbox"]').waitFor();
+        await waitUntilAsync('the deleted part’s draft dropped once left', async () => {
+          const kept = await keptDrafts(p);
+          return kept[part] === undefined && kept[paused] !== undefined;
+        });
+
+        // The closed node deleted: its draft goes too.
+        await cockpit.streams.archiveTree('human', paused);
+        await waitUntilAsync(
+          'the deleted node’s draft dropped',
+          async () => (await p.evaluate("sessionStorage.getItem('agile.drafts')")) === null,
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'the Director takes 3,000 characters, and what is typed while it goes stays',
+    async () => {
+      const cockpit = await startCockpit();
+      let page: Page | undefined;
+      try {
+        const p = await openPage();
+        page = p;
+        await p.goto(`${cockpit.base}/`);
+        await p.locator('[data-view="director"]').click();
+        await p.locator('[data-testid="director-page"]').waitFor();
+        const box = '[data-testid="director-composer"]';
+        const input = p.locator(box);
+        await input.fill(LONG);
+        expect((await input.inputValue()).length).toBe(3000);
+        const say = await holdNext(p, '/api/director/say');
+        await p.locator('[data-testid="director-send"]').click();
+        await say.called;
+        await typeAtEnd(p, box, '\nAnd the shop’s totals.');
+        say.release();
+        await waitUntil('the 3,000 characters on the Director’s thread', () =>
+          cockpit.store
+            .readDirectorThread()
+            .some((e) => e.by === 'human' && e.kind === 'line' && e.body === LONG),
+        );
+        await waitUntilAsync(
+          'only what was sent off the draft',
+          async () => (await input.inputValue()) === 'And the shop’s totals.',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('one verdict on a finished branch (Playwright e2e, T412)', () => {
   browserTest(
     'a branch merged by hand reads "Already merged" with Mark as merged; one that waits on another node has no Merge',

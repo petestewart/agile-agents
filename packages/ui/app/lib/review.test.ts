@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { HUMAN_LINE_MAX_CHARS } from '@agile-agents/shared';
 import { parseDiff } from './chat';
 import type { StorageLike } from './drafts';
 import { renderMarkdown } from './markdown';
@@ -9,7 +10,6 @@ import {
   appendToDraft,
   clearComments,
   codeSpan,
-  finishedIds,
   formatReview,
   isOutdated,
   lineLabel,
@@ -23,6 +23,7 @@ import {
   rowKey,
   rowsBetween,
   unsentReviewQuestion,
+  unwritableIds,
   whereLabel,
 } from './review';
 
@@ -280,6 +281,12 @@ describe('formatReview', () => {
 });
 
 describe('the draft', () => {
+  const on = (line: number, body: string) => {
+    const c = newComment(importTs, `n${line}`, `n${line}`, body, `c${line}`);
+    if (!c) throw new Error(`no comment at line ${line}`);
+    return c;
+  };
+
   test('the review goes after the draft with a blank line, or alone', () => {
     expect(appendToDraft('', 'R')).toBe('R');
     expect(appendToDraft('  \n', 'R')).toBe('R');
@@ -289,6 +296,31 @@ describe('the draft', () => {
   test('the room left is the cap less the draft and its blank line', () => {
     expect(roomAfter('')).toBe(MESSAGE_MAX);
     expect(roomAfter('abc\n')).toBe(MESSAGE_MAX - 5);
+  });
+
+  test('T519: the cap is a line you write (4,000), so a review joins a long draft up to it', () => {
+    expect(MESSAGE_MAX).toBe(HUMAN_LINE_MAX_CHARS);
+    const draft = 'd'.repeat(3000);
+    expect(roomAfter(draft)).toBe(HUMAN_LINE_MAX_CHARS - 3002);
+    const comments = [on(2, 'x'.repeat(400))];
+    const message = formatReview(comments, files, roomAfter(draft));
+    expect(message.fits).toBe(true);
+    const joined = appendToDraft(draft, message.text);
+    expect(joined.trim().length).toBeLessThanOrEqual(HUMAN_LINE_MAX_CHARS);
+    // A draft near the cap leaves no room: it doesn't fit, and the bar says so (nothing is cut).
+    const full = 'd'.repeat(HUMAN_LINE_MAX_CHARS - 10);
+    expect(formatReview(comments, files, roomAfter(full)).fits).toBe(false);
+    expect(roomAfter('d'.repeat(HUMAN_LINE_MAX_CHARS))).toBeLessThan(0);
+    expect(formatReview(comments, files, roomAfter('d'.repeat(HUMAN_LINE_MAX_CHARS))).fits).toBe(
+      false,
+    );
+  });
+
+  test('T519: three long comments, past the old 800, fit one message on their own', () => {
+    const comments = [1, 2, 3].map((n) => on(n, 'y'.repeat(450)));
+    const message = formatReview(comments, files);
+    expect(message.text.length).toBeGreaterThan(1300);
+    expect(message.fits).toBe(true);
   });
 });
 
@@ -469,12 +501,46 @@ describe('T436: review comments survive a reload', () => {
     expect(two.confirm).toBe('Open pull request anyway');
   });
 
-  test('a merged, closed or deleted node drops its kept draft; one the frame does not name yet stays', () => {
+  test('T519: a merged or deleted node drops its kept draft; a closed one and one the frame does not name yet keep it', () => {
     const rows = [
       { id: 'A', human_status: 'open' },
       { id: 'B', human_status: 'landed' },
       { id: 'C', human_status: 'closed' },
     ];
-    expect(finishedIds(['A', 'B', 'C', 'D', 'E'], rows, [{ id: 'D' }])).toEqual(['B', 'C', 'D']);
+    // C is closed: a message reopens it (T471), so what is typed there stays.
+    expect(
+      unwritableIds(['A', 'B', 'C', 'D', 'E'], { streams: rows, archived: [{ id: 'D' }] }),
+    ).toEqual(['B', 'D']);
+  });
+
+  test('T519: a node a frame listed and the next lists nowhere is gone (a deleted parent took it, or Delete forever)', () => {
+    const seen = new Set(['A', 'C', 'F']);
+    const streams = [
+      { id: 'A', human_status: 'open' },
+      { id: 'C', human_status: 'closed' },
+    ];
+    // F was listed and now is neither live nor in the trash; E was never listed (just created).
+    expect(unwritableIds(['A', 'C', 'E', 'F'], { streams }, { seen })).toEqual(['F']);
+    // Still listed: not gone.
+    expect(
+      unwritableIds(
+        ['A', 'F'],
+        { streams: [...streams, { id: 'F', human_status: 'open' }] },
+        { seen },
+      ),
+    ).toEqual([]);
+    expect(unwritableIds(['F'], { streams, archived: [{ id: 'F' }] }, { seen })).toEqual(['F']);
+  });
+
+  test('T519: a deleted node whose page is open keeps what is being typed there until you leave it; a merged one does not', () => {
+    const frame = { streams: [{ id: 'B', human_status: 'landed' }], archived: [{ id: 'D' }] };
+    const seen = new Set(['B', 'F']);
+    const ids = ['B', 'D', 'F'];
+    expect(unwritableIds(ids, frame, { seen })).toEqual(['B', 'D', 'F']);
+    // In the trash, or gone with its parent: its composer still takes text while it is open.
+    expect(unwritableIds(ids, frame, { seen, onScreen: 'D' })).toEqual(['B', 'F']);
+    expect(unwritableIds(ids, frame, { seen, onScreen: 'F' })).toEqual(['B', 'D']);
+    // Merged: its page is read-only, so nothing is being typed there.
+    expect(unwritableIds(ids, frame, { seen, onScreen: 'B' })).toEqual(['B', 'D', 'F']);
   });
 });

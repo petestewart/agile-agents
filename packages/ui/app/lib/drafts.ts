@@ -12,6 +12,7 @@
  * anything that doesn't read right is dropped, never trusted.
  */
 
+import { HUMAN_LINE_MAX_CHARS } from '@agile-agents/shared';
 import { useCallback, useSyncExternalStore } from 'react';
 
 /** The part of `Storage` a kept draft uses (a fake in tests). */
@@ -137,6 +138,40 @@ export function updateDraft(kept: KeptDrafts<string>, id: string, next: DraftUpd
   kept.set(id, value === '' ? undefined : value);
 }
 
+/**
+ * T519 (audit U1): the text a send takes from `draft`: trimmed, as the
+ * daemon trims it, or `undefined` when nothing is left or it runs past
+ * `max` (counted as the daemon counts it, in UTF-16 units: the node's
+ * `say` refuses more, the Director's would cut it). The composer shows the
+ * count; this keeps a Retry from sending what Send wouldn't.
+ */
+export function sendableText(
+  draft: string,
+  max: number = HUMAN_LINE_MAX_CHARS,
+): string | undefined {
+  const text = draft.trim();
+  return text !== '' && text.length <= max ? text : undefined;
+}
+
+/**
+ * T519 (audit U2): a draft once `sent` (the trimmed text a send took from
+ * it) has gone. A send awaits the daemon, for seconds when it starts an
+ * agent, and the box stays editable meanwhile, so only what was sent comes
+ * off: text typed after it stays, less the space or line break that parted
+ * it from the sent text. A draft changed any other way (edited inside the
+ * sent text, cleared, replaced) is left as it is: nothing typed is lost.
+ */
+export function afterSend(now: string, sent: string): string {
+  const body = now.trimStart();
+  if (sent === '' || !body.startsWith(sent)) return now;
+  const rest = body.slice(sent.length);
+  if (rest.trim() === '') return '';
+  // Typed onto the sent text's last word ("bug" became "bugs"): not text of its own.
+  if (!/^\s/.test(rest)) return now;
+  // The line breaks before it (its first line keeps its indent), or the spaces.
+  return rest.replace(/^\s*\n|^\s+/, '');
+}
+
 /** One id's text draft in `kept`, read again whenever it changes. */
 function useKeptText(kept: KeptDrafts<string>, id: string): string {
   return useSyncExternalStore(
@@ -149,7 +184,7 @@ function useKeptText(kept: KeptDrafts<string>, id: string): string {
 /**
  * A node's composer draft and its setter. The setter stays bound to the
  * node it was made for, so a send that finishes after you moved on clears
- * that node's draft, not the one now on screen.
+ * that node's draft (what it sent: `afterSend`), not the one now on screen.
  */
 export function useComposerDraft(node: string): [string, (next: DraftUpdate) => void] {
   return [useKeptText(composerDrafts, node), useDraftSetter(node)];
