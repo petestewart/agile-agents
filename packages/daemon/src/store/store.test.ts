@@ -4,7 +4,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -452,5 +454,181 @@ describe('threadUpdatedAt (T395)', () => {
     expect(at).toBeDefined();
     expect(Number.isNaN(Date.parse(at ?? ''))).toBe(false);
     expect(reopened.threadUpdatedAt('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBeUndefined();
+  });
+});
+
+/**
+ * T547 (perf P2): a record's file is parsed again only when it changed. The
+ * parse count is the store's test seam; every other check is what a reader
+ * gets back.
+ */
+describe('parse cache (T547): an unchanged file is not parsed again', () => {
+  async function withStreams() {
+    const { StreamService } = await import('../streams');
+    const store = StateStore.open(stateRoot);
+    return { store, streams: new StreamService(store) };
+  }
+
+  const streamPath = (id: string) => join(stateRoot, 'streams', `${id}.yaml`);
+
+  function messageOf(fn: () => unknown): string {
+    try {
+      fn();
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    throw new Error('expected a throw');
+  }
+
+  test('a second listStreams with nothing changed parses nothing', async () => {
+    const { store, streams } = await withStreams();
+    for (const title of ['a', 'b', 'c']) await streams.create('human', { title, goal: 'g' });
+    const before = store.parseCacheStats().parses;
+    const first = store.listStreams();
+    expect(store.parseCacheStats().parses - before).toBeLessThanOrEqual(3);
+    const parsed = store.parseCacheStats().parses;
+    expect(store.listStreams()).toEqual(first);
+    for (const s of first) store.getStream(s.id);
+    expect(store.parseCacheStats().parses).toBe(parsed);
+  });
+
+  test('an external same-size rewrite is picked up, in place (same inode) or renamed in', async () => {
+    const { store, streams } = await withStreams();
+    const node = await streams.create('human', { title: 'Alpha', goal: 'g' });
+    const path = streamPath(node.id);
+    expect(store.getStream(node.id).title).toBe('Alpha');
+    const text = readFileSync(path, 'utf8');
+
+    const ino = statSync(path).ino;
+    writeFileSync(path, text.replace('title: Alpha', 'title: Omega'));
+    expect(statSync(path).ino).toBe(ino);
+    expect(statSync(path).size).toBe(Buffer.byteLength(text));
+    expect(store.getStream(node.id).title).toBe('Omega');
+    expect(store.listStreams().find((s) => s.id === node.id)?.title).toBe('Omega');
+
+    const tmp = join(stateRoot, 'streams', '.rename-in');
+    writeFileSync(tmp, text.replace('title: Alpha', 'title: Gamma'));
+    renameSync(tmp, path);
+    expect(store.getStream(node.id).title).toBe('Gamma');
+
+    // Deleted and recreated: ext4 hands the freed inode number straight back.
+    rmSync(path);
+    writeFileSync(path, text.replace('title: Alpha', 'title: Delta'));
+    expect(store.getStream(node.id).title).toBe('Delta');
+  });
+
+  test("another store over the same home writes; this store's next read sees it", async () => {
+    const store = StateStore.open(stateRoot);
+    await store.addRepo('a', { path: '/tmp/a' });
+    expect(store.getPolicy().gates.land).toBe('human');
+    expect(store.getRepos().a?.path).toBe('/tmp/a');
+
+    const other = StateStore.open(stateRoot);
+    await other.putPolicy({ gates: { land: 'human_timeout:1h' }, breaker_signals: [] });
+    await other.addRepo('a', { path: '/tmp/b' });
+    expect(store.getPolicy().gates.land).toBe('human_timeout:1h');
+    expect(store.getRepos().a?.path).toBe('/tmp/b');
+  });
+
+  test('a record repointed by a symlink inside the home is read from its new target', async () => {
+    const { store, streams } = await withStreams();
+    const node = await streams.create('human', { title: 'Alpha', goal: 'g' });
+    const path = streamPath(node.id);
+    const text = readFileSync(path, 'utf8');
+    for (const title of ['Alpha', 'Omega']) {
+      writeFileSync(join(stateRoot, `${title}.yaml.txt`), text.replace('Alpha', title));
+    }
+    rmSync(path);
+    symlinkSync(join(stateRoot, 'Alpha.yaml.txt'), path);
+    expect(store.getStream(node.id).title).toBe('Alpha');
+    rmSync(path);
+    symlinkSync(join(stateRoot, 'Omega.yaml.txt'), path);
+    expect(store.getStream(node.id).title).toBe('Omega');
+  });
+
+  test('mutating a returned record does not change the next read', async () => {
+    const { store, streams } = await withStreams();
+    const node = await streams.create('human', { title: 'Alpha', goal: 'g' });
+    const got = store.getStream(node.id);
+    got.title = 'mutated';
+    got.sessions.push(...structuredClone(got.sessions));
+    const listed = store.listStreams()[0];
+    if (listed !== undefined) listed.goal = 'mutated';
+    expect(store.getStream(node.id)).toEqual(node);
+
+    await store.addRepo('a', { path: '/tmp/a' });
+    store.getRepos().a?.protected_branches?.push('mutated');
+    expect(store.getRepos().a?.protected_branches).toEqual(['main', 'master']);
+
+    const validateNote = (raw: unknown) => raw as { tags: string[] };
+    await store.putEntity('notes/n.json', validateNote, { tags: ['x'] });
+    store.getEntity('notes/n.json', validateNote).tags.push('mutated');
+    store.listEntities('notes', validateNote)[0]?.tags.push('mutated');
+    expect(store.getEntity('notes/n.json', validateNote).tags).toEqual(['x']);
+  });
+
+  test('a corrupt record is refused with its path and line on every read', async () => {
+    const { store, streams } = await withStreams();
+    const node = await streams.create('human', { title: 'Alpha', goal: 'g' });
+    const path = streamPath(node.id);
+    store.getStream(node.id);
+    writeFileSync(path, 'title: [unclosed\n');
+    for (let i = 0; i < 3; i++) {
+      for (const read of [() => store.getStream(node.id), () => store.listStreams()]) {
+        const message = messageOf(read);
+        expect(message).toContain(`corrupt stream file ${path}`);
+        expect(message).toMatch(/at line 2, column 1/);
+      }
+    }
+  });
+
+  test('a deleted file leaves the list; the store forgets what it removes', async () => {
+    const { store, streams } = await withStreams();
+    const a = await streams.create('human', { title: 'a', goal: 'g' });
+    const b = await streams.create('human', { title: 'b', goal: 'g' });
+    expect(store.listStreams().map((s) => s.id)).toEqual([a.id, b.id].sort());
+    rmSync(streamPath(a.id));
+    expect(store.listStreams().map((s) => s.id)).toEqual([b.id]);
+
+    const agent = '01ARZ3NDEKTSV4RRFFQ69GE001' as never;
+    await store.putAgent(agent, {
+      vendor: 'claude',
+      model: 'sonnet',
+      pid: 1,
+      last_seen: '2026-09-08T00:00:00Z',
+    } as never);
+    store.getAgent(agent);
+    const held = store.parseCacheStats().entries;
+    await store.deleteAgent(agent);
+    expect(store.parseCacheStats().entries).toBe(held - 1);
+    expect(store.listAgents()).toEqual([]);
+  });
+
+  test('generic YAML entities and cards are cached too; JSON entities are read fresh', async () => {
+    const { store, streams } = await withStreams();
+    const node = await streams.create('human', { title: 'n', goal: 'g' });
+    const validateNote = (raw: unknown) => raw as { n: number };
+    await store.putEntity('notes/a.yaml', validateNote, { n: 1 });
+    await store.putEntity('notes/b.json', validateNote, { n: 2 });
+    const held = store.parseCacheStats().entries;
+    store.getEntity('notes/b.json', validateNote);
+    expect(store.parseCacheStats().entries).toBe(held);
+    expect(store.listEntities('notes', validateNote)).toEqual([{ n: 1 }, { n: 2 }]);
+    await store.updateCard(node.id, () => ({
+      node: node.id,
+      doing: 'tests',
+      state: 'working',
+      files: [],
+      exports_changed: [],
+      relies_on: [],
+      updated_at: '2026-10-13T00:00:00.000Z',
+    }));
+    expect(store.getCard(node.id)?.doing).toBe('tests');
+    const parsed = store.parseCacheStats().parses;
+    expect(store.listEntities('notes', validateNote)).toEqual([{ n: 1 }, { n: 2 }]);
+    expect(store.getCard(node.id)?.doing).toBe('tests');
+    expect(store.parseCacheStats().parses).toBe(parsed);
+    await store.putEntity('notes/a.yaml', validateNote, { n: 3 });
+    expect(store.getEntity('notes/a.yaml', validateNote)).toEqual({ n: 3 });
   });
 });
