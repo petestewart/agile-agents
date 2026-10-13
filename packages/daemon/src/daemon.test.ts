@@ -298,6 +298,22 @@ describe('T533: a second start changes nothing before it holds the lock', () => 
     expect(readFileSync(handle.config.lockPath, 'utf8').trim()).toBe(String(process.pid));
   });
 
+  test('a start that fails after publishing its pid (no socket) closes the port and releases the lock', async () => {
+    runInit(home);
+    const probe = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => new Response('') });
+    const port = probe.port as number;
+    probe.stop(true);
+    // The socket's directory doesn't exist: the listen fails after the HTTP bind.
+    await expect(
+      startDaemon({ port, socketPath: join(repo, 'missing-dir', 'agiled.sock'), titleRun: null }),
+    ).rejects.toThrow();
+    expect(existsSync(join(home, 'agiled.pid'))).toBe(false);
+    await expect(fetch(`http://127.0.0.1:${port}/health`)).rejects.toThrow();
+    // The port and the home are free again.
+    handle = await startDaemon({ port, socketPath: join(repo, '.agile-daemon.sock') });
+    expect(handle.http.port).toBe(port);
+  });
+
   test('a lock left by a daemon that crashed (started or still starting) is reclaimed', async () => {
     runInit(home);
     const lockPath = join(home, 'agiled.pid');
