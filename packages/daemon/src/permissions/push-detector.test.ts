@@ -9,12 +9,18 @@
  * deny too, but with the fail-closed reason, which is a different claim).
  */
 
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   CANNOT_DETERMINE_REASON,
+  type GitAliasValue,
   type PushDetectorContext,
   detectProtectedBranchWrite,
   detectPush,
+  readGitAlias,
+  worktreeGitAliases,
 } from './push-detector';
 
 const PROTECTED = ['main', 'master'];
@@ -388,5 +394,243 @@ describe('no_push detector (D7: retired by default)', () => {
 
   test('an undeterminable command fails closed', () => {
     expect(detectPush('$(echo git) push origin main')).toContain(CANNOT_DETERMINE_REASON);
+  });
+});
+
+// T525: a subcommand that isn't a builtin is read through the alias the
+// worktree's config gives it, as git does (builtin first, then the alias).
+describe('T525: a push through a configured git alias', () => {
+  const ALIASES: Record<string, string> = {
+    p: 'push',
+    pf: 'push --force',
+    pm: 'push origin HEAD:main',
+    x: '!git push origin main',
+    co: 'checkout',
+    a: 'b',
+    b: 'push',
+    l1: 'l2',
+    l2: 'l1',
+    sp: 'send-pack',
+    q: '"push" origin',
+    bs: 'push origin feature\\x',
+    empty: '',
+    opts: '--no-pager',
+    // Shadowed by the builtin: git never runs it, so neither is it read.
+    status: 'push origin main',
+  };
+
+  /** A lookup like git's: alias names ignore case. */
+  function lookup(name: string): GitAliasValue {
+    const value = ALIASES[name.toLowerCase()];
+    return value === undefined ? 'unset' : { expansion: value };
+  }
+
+  function aliasCtx(overrides: Partial<PushDetectorContext> = {}): PushDetectorContext {
+    return ctx({ alias: lookup, ...overrides });
+  }
+
+  const ALIAS_ROWS: Row[] = [
+    { command: 'git p origin main', expect: 'deny', why: 'the acceptance criterion' },
+    { command: 'git p origin T143-x', expect: 'allow', why: 'a non-protected branch, as for push' },
+    { command: 'git P origin main', expect: 'deny', why: 'alias names ignore case' },
+    { command: 'git pm', expect: 'deny', why: 'the alias names the refspec HEAD:main' },
+    {
+      command: 'git p',
+      expect: 'deny',
+      context: { upstream: () => 'origin/main' },
+      why: 'no refspec: the upstream is main',
+    },
+    { command: 'git p', expect: 'allow', why: 'no refspec: the upstream is the ticket branch' },
+    { command: 'git -C /tmp/repo p origin main', expect: 'deny', why: '-C prefix skipped' },
+    { command: 'git -c user.name=x p origin main', expect: 'deny', why: '-c k=v prefix skipped' },
+    { command: 'git -c user.name=x p origin T143-x', expect: 'allow', why: 'and not an offence' },
+    { command: 'git --no-pager p origin master', expect: 'deny', why: 'a global option first' },
+    { command: 'git q main', expect: 'deny', why: 'a quoted word in the alias value' },
+    { command: 'git a origin main', expect: 'deny', why: 'an alias naming another alias' },
+    { command: 'sh -c "git p origin main"', expect: 'deny', why: 'sh -c is recursed into' },
+    {
+      command: 'git co main && git merge T143-x',
+      expect: 'deny',
+      why: 'checkout through an alias still moves HEAD',
+    },
+    { command: 'git status', expect: 'allow', why: 'a builtin: alias.status is never run' },
+    { command: 'git zz origin main', expect: 'allow', why: 'no such alias: not a push' },
+    { command: 'git x', expect: 'unknown', why: 'a ! alias is a shell command' },
+    { command: 'git l1', expect: 'unknown', why: 'an alias loop' },
+    { command: 'git sp origin x:main', expect: 'unknown', why: 'push plumbing through an alias' },
+    {
+      command: 'git bs',
+      expect: 'unknown',
+      why: 'a backslash escape the tokenizer does not model',
+    },
+    { command: 'git empty origin main', expect: 'unknown', why: 'an empty alias names nothing' },
+    { command: 'git opts push origin main', expect: 'unknown', why: 'nor one of options only' },
+    {
+      command: 'git Push origin main',
+      expect: 'unknown',
+      why: 'a builtin in another case runs the builtin on a case-insensitive filesystem',
+    },
+    {
+      command: 'git HTTP-PUSH https://x refs/heads/main',
+      expect: 'unknown',
+      why: 'so does push plumbing',
+    },
+    {
+      command: 'git p.q origin main',
+      expect: 'unknown',
+      why: 'an alias subsection git matches ignoring case',
+    },
+    {
+      command: 'git --git-dir=/x/.git p origin T143-x',
+      expect: 'unknown',
+      why: "another repo's aliases",
+    },
+    {
+      command: 'HOME=. git p origin T143-x',
+      expect: 'unknown',
+      why: 'a global config the agent may have written',
+    },
+    {
+      command: 'HOME=.; git p origin T143-x',
+      expect: 'unknown',
+      why: 'a bare assignment moves it for every later command',
+    },
+    {
+      command: 'HOME=. git push origin T143-x',
+      expect: 'allow',
+      why: 'a builtin reads no alias, wherever the config is',
+    },
+    {
+      command: 'git --config-env alias.zz=V zz origin T143-x',
+      expect: 'unknown',
+      why: '--config-env defines an alias as -c does',
+    },
+    {
+      command: 'git --config-env=alias.zz=V zz origin T143-x',
+      expect: 'unknown',
+      why: 'in either form',
+    },
+    {
+      command: 'git -c include.path=/tmp/aliases zz origin T143-x',
+      expect: 'unknown',
+      why: 'an included file can define one',
+    },
+    {
+      command: 'git p origin main',
+      expect: 'unknown',
+      context: { alias: () => 'failed' },
+      why: 'a lookup that failed',
+    },
+    {
+      command: 'git p origin T143-x',
+      expect: 'unknown',
+      context: { alias: undefined },
+      why: 'no lookup wired: fail closed',
+    },
+  ];
+
+  for (const row of ALIAS_ROWS) {
+    test(`${row.expect}: ${row.command} (${row.why})`, () => {
+      const reason = detectProtectedBranchWrite(row.command, aliasCtx(row.context));
+      if (row.expect === 'allow') {
+        expect(reason).toBeUndefined();
+        return;
+      }
+      expect(reason).toBeString();
+      if (row.expect === 'unknown') expect(reason).toContain(CANNOT_DETERMINE_REASON);
+      else expect(reason).not.toContain(CANNOT_DETERMINE_REASON);
+    });
+  }
+
+  test('the shell alias reason names it and says what to do instead', () => {
+    expect(detectProtectedBranchWrite('git x', aliasCtx())).toContain(
+      'git alias `x` runs a shell command (`!git push origin main`): run what it stands for directly',
+    );
+  });
+
+  test.each([
+    ['git p origin T143-x', true],
+    ['git a origin T143-x', true],
+    ['git x', true],
+    ['git co main', false],
+    ['git status', false],
+  ] as const)('no_push: %s -> %p', (command, denied) => {
+    expect(detectPush(command, lookup) !== undefined).toBe(denied);
+  });
+
+  test('a builtin spawns no lookup; an alias name is looked up once per worktree', () => {
+    const reads: string[] = [];
+    const aliases = worktreeGitAliases('/wt', (_cwd, name) => {
+      reads.push(name);
+      return lookup(name);
+    });
+    const context = aliasCtx({ alias: aliases });
+    for (const command of [
+      'git status',
+      'git log --oneline -5 && git diff',
+      'git push origin T143-x',
+      'git -C /tmp/repo commit -m x',
+      'git checkout -b T143-y',
+    ]) {
+      detectProtectedBranchWrite(command, context);
+      detectPush(command, aliases);
+    }
+    expect(reads).toEqual([]);
+
+    detectProtectedBranchWrite('git p origin T143-x && git p origin T143-y', context);
+    detectProtectedBranchWrite('git P origin T143-x', context);
+    detectPush('git p origin T143-x', aliases);
+    expect(reads).toEqual(['p']);
+  });
+});
+
+// T525: the lookup itself, against a real repo's git config.
+describe('T525: readGitAlias reads the config git would', () => {
+  let repo: string;
+  let home: string;
+
+  function git(args: string[], cwd = repo): void {
+    const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+    if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
+  }
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'agile-alias-'));
+    home = mkdtempSync(join(tmpdir(), 'agile-alias-home-'));
+    git(['init', '-q', '-b', 'main']);
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  /** Only a fake `HOME` for the global config: nothing of the developer's leaks in. */
+  function env(): Record<string, string> {
+    return { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, GIT_CONFIG_NOSYSTEM: '1' };
+  }
+
+  test("the repo's alias, its value exactly, and unset", () => {
+    git(['config', 'alias.pf', 'push --force']);
+    git(['config', 'alias.x', '!git push origin main']);
+    expect(readGitAlias(repo, 'pf', env())).toEqual({ expansion: 'push --force' });
+    expect(readGitAlias(repo, 'x', env())).toEqual({ expansion: '!git push origin main' });
+    expect(readGitAlias(repo, 'PF', env())).toEqual({ expansion: 'push --force' });
+    expect(readGitAlias(repo, 'nope', env())).toBe('unset');
+  });
+
+  test('an alias only in the global config, and one in an included file', () => {
+    writeFileSync(join(home, '.gitconfig'), '[alias]\n\tgp = push\n');
+    const included = join(home, 'aliases.inc');
+    writeFileSync(included, '[alias]\n\tip = push origin main\n');
+    git(['config', 'include.path', included]);
+    expect(readGitAlias(repo, 'gp', env())).toEqual({ expansion: 'push' });
+    expect(readGitAlias(repo, 'ip', env())).toEqual({ expansion: 'push origin main' });
+  });
+
+  test('a lookup that cannot run fails, never reads as unset', () => {
+    expect(readGitAlias(join(repo, 'gone'), 'p', env())).toBe('failed');
+    writeFileSync(join(repo, '.git', 'config'), '[alias\n');
+    expect(readGitAlias(repo, 'p', env())).toBe('failed');
   });
 });

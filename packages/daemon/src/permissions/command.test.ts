@@ -215,6 +215,17 @@ describe('parseGitInvocation', () => {
     ]);
   });
 
+  test('T525: --config-env sets config as -c does, in either form', () => {
+    for (const tokens of [
+      ['git', '--config-env', 'alias.p=V', 'p', 'origin', 'main'],
+      ['git', '--config-env=alias.p=V', 'p', 'origin', 'main'],
+    ]) {
+      const parsed = parseGitInvocation(tokens);
+      expect(parsed.args).toEqual(['p', 'origin', 'main']);
+      expect(parsed.configs).toEqual(['alias.p=V']);
+    }
+  });
+
   test('not a git invocation, or no subcommand found, yields undefined args', () => {
     expect(parseGitInvocation(['npm', 'test']).args).toBeUndefined();
     expect(parseGitInvocation(['git', '-C']).args).toBeUndefined();

@@ -14,6 +14,7 @@
 
 import type { KnowledgeItem, PermissionPosture } from '@agile-agents/shared';
 import type { ReadAsk } from './policy-tables';
+import type { GitAliasLookup } from './push-detector';
 
 /** The permission-table role a session is judged under (`permissionRoleFor`): worker = `engineer`, reviewer/lessons = `reviewer`, coordinator = `coordinator` (P20). */
 export type PermissionRole = 'engineer' | 'reviewer' | 'coordinator';
@@ -104,6 +105,12 @@ export interface DecisionContext {
   upstreamBranch?: () => string | undefined;
   /** The worktree's checked-out branch. */
   headBranch?: () => string | undefined;
+  /**
+   * T525: the worktree's git aliases (`worktreeGitAliases`), for the
+   * never-without-human list and the push rules. Absent: a git subcommand
+   * that isn't a builtin is held for the engineer, and refused by the rules.
+   */
+  gitAlias?: GitAliasLookup;
   /**
    * T476: this agent's own daemon session id. A daemon verb named the way a
    * hook-less vendor names MCP tools (`agile-progress: progress`,

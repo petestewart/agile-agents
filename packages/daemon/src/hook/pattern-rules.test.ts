@@ -12,7 +12,7 @@
  * (§5.3) — which is the whole reason these are rules and not a table.
  */
 
-import { afterEach, beforeEach, expect, test } from 'bun:test';
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +21,7 @@ import { Bus } from '../bus';
 import { runInit } from '../init';
 import { ensureBuiltinKnowledge } from '../knowledge/builtins';
 import { KnowledgeService } from '../knowledge/service';
+import { CANNOT_DETERMINE_REASON } from '../permissions';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
 import { HookService } from './service';
@@ -365,4 +366,48 @@ test('T169: three identical denied retries leave one thread entry; a new target 
   expect((await decide('curl https://example.com')).decision).toBe('deny');
   expect(hits()).toHaveLength(3);
   expect(hits().map((e) => e.ref)).toEqual([wipe.id, wipe.id, curl.id]);
+});
+
+test('T525: a push through a configured git alias is checked like git push', async () => {
+  git(['config', 'alias.p', 'push']);
+  git(['config', 'alias.pf', 'push --force']);
+  git(['config', 'alias.x', '!git push origin main']);
+  const rule = ruleOfKind('no_push_protected');
+
+  const toMain = await decide('git p origin main');
+  expect(toMain.decision).toBe('deny');
+  expect(toMain.reason).toContain(`rule ${rule.id}`);
+  expect(toMain.reason).toContain('push to main');
+  expect((await decide(`git p origin ${BRANCH}`)).decision).toBe('allow');
+  expect((await decide(`git -C ${repo} p origin main`)).decision).toBe('deny');
+
+  // The never-without-human list reads it too: held exactly as the literal force-push.
+  const literal = await decide(`git push --force origin ${BRANCH}`);
+  const forced = await decide(`git pf origin ${BRANCH}`);
+  expect(forced).toEqual(literal);
+  expect(forced.reason).toContain('force-push is never automatic');
+
+  // A shell alias can't be read: refused, fail closed.
+  const shell = await decide('git x');
+  expect(shell.decision).toBe('deny');
+  expect(shell.reason).toContain(`rule ${rule.id}`);
+  expect(shell.reason).toContain(CANNOT_DETERMINE_REASON);
+});
+
+test('T525: a builtin git subcommand spawns no git; an alias one git config per call', async () => {
+  git(['config', 'alias.p', 'push']);
+  const spawn = spyOn(Bun, 'spawnSync');
+  const configCalls = () =>
+    spawn.mock.calls.filter(([argv]) => Array.isArray(argv) && argv[1] === 'config').length;
+  try {
+    expect((await decide('git status')).decision).toBe('allow');
+    expect((await decide('git log --oneline -5 && git diff')).decision).toBe('allow');
+    expect(spawn).not.toHaveBeenCalled();
+    expect((await decide(`git p origin ${BRANCH} && git p origin ${BRANCH}`)).decision).toBe(
+      'allow',
+    );
+    expect(configCalls()).toBe(1);
+  } finally {
+    spawn.mockRestore();
+  }
 });

@@ -135,7 +135,7 @@ export function checkPatternRule(rule: KnowledgeItem, ctx: RuleCheckContext): st
     case 'no_push_protected':
       return ctx.command === undefined ? undefined : detectProtectedBranchWrite(ctx.command, ctx);
     case 'no_push':
-      return ctx.command === undefined ? undefined : detectPush(ctx.command);
+      return ctx.command === undefined ? undefined : detectPush(ctx.command, ctx.alias);
     case 'path_deny':
       return checkPathDeny(pattern.args, ctx);
     case 'command_deny':

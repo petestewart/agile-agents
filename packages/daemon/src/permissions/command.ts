@@ -652,9 +652,9 @@ export interface ParsedGitInvocation {
   /** Every `-C <path>` before the subcommand (git applies them left to right). */
   cPaths: string[];
   /**
-   * Every `-c <key>=<value>` before the subcommand: these change what the
-   * subcommand means (`-c alias.p=push p` is a push), so the push detector
-   * must see them.
+   * Every `-c <key>=<value>` (and T525: `--config-env <key>=<var>`) before the
+   * subcommand: these change what the subcommand means (`-c alias.p=push p`
+   * is a push), so the push detector must see them.
    */
   configs: string[];
 }
@@ -678,7 +678,7 @@ export function parseGitInvocation(tokens: string[]): ParsedGitInvocation {
       i += eq !== -1 ? 1 : 2;
       continue;
     }
-    if (flagName === '-c') {
+    if (flagName === '-c' || flagName === '--config-env') {
       const value = eq !== -1 ? t.slice(eq + 1) : tokens[i + 1];
       if (value !== undefined) configs.push(value);
       i += eq !== -1 ? 1 : 2;
