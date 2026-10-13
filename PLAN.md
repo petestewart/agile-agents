@@ -3905,7 +3905,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T552 Merge-state checks share their git work
 - **Priority:** P3
-- **Status:** Todo
+- **Status:** Done (merge 3dda2c9f on claude/phase-16, 2026-10-13; also carries the per-repo `defaultBranch` memo T548 asked for: an answer git gave is kept 30 s, the `main` fallback is asked each time)
 - **Owner:** worker
 - **Scope:** Perf P11, checked by the manager. `feed/merge-state.ts` queues a `preflight` per ready node every 30 s; each runs ≈6 synchronous git spawns, and nodes on the same target repeat the same `git worktree list` and target `git status`. Compute `worktreesOn(repo, target)` once per batch, pass the stream list to `openWaits`, and use T548's `defaultBranch` memo. Keep writes synchronous.
 - **Acceptance Criteria:** K ready nodes on one target run `worktree list` and the target's `status` once per batch (spawn-count test); merge states unchanged.
