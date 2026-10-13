@@ -3613,6 +3613,156 @@ describe('Merge wording and hold tone (Playwright e2e, T347)', () => {
   );
 });
 
+describe("a node's page never shows another node's results (Playwright e2e, T520)", () => {
+  browserTest(
+    'a Merge, a Start and a send on one node that finish after another opened leave that one as it was',
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        // Two work nodes with a commit each: both headers have Start agent and Merge.
+        const made: Stream[] = [];
+        for (const name of ['first', 'second']) {
+          const node = await cockpit.streams.create('human', {
+            title: `${name} node`,
+            goal: 'g',
+            project: shop.id,
+            parent: shop.root,
+            repo: 'demo',
+          });
+          const worktree = join(cockpit.repo, '.worktrees', `s-${name}`);
+          git(['worktree', 'add', '-q', '-b', `s-${name}`, worktree, 'main'], cockpit.repo);
+          writeFileSync(join(worktree, `${name}.txt`), `${name}\n`);
+          git(['add', '-A'], worktree);
+          git(['commit', '-q', '-m', name], worktree);
+          await cockpit.streams.update('daemon', node.id, { branch: `s-${name}`, worktree });
+          made.push(node);
+        }
+        const [a, b] = made as [Stream, Stream];
+        const p = await openPage();
+        page = p;
+
+        /** A's call to `path` waits until `release`, then gets `body`: slow, and it fails. */
+        const hold = async (
+          path: string,
+          status: number,
+          body: unknown,
+        ): Promise<{ called: Promise<void>; release: () => void }> => {
+          let seen: () => void = () => {};
+          const called = new Promise<void>((resolve) => {
+            seen = resolve;
+          });
+          let release: () => void = () => {};
+          const released = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await p.route(`**/api/streams/${a.id}/${path}`, async (route) => {
+            seen();
+            await released;
+            await route.fulfill({
+              status,
+              contentType: 'application/json',
+              body: JSON.stringify(body),
+            });
+          });
+          return { called, release };
+        };
+        const open = async (node: Stream): Promise<void> => {
+          await p.locator(`[data-testid="stream-tree"] [data-stream="${node.id}"]`).click();
+          await p.locator(`[data-testid="stream-page"][data-stream="${node.id}"]`).waitFor();
+          await p.locator('[data-testid="land-panel"]').waitFor();
+        };
+        /** Lets A's call finish, and waits until it has: its last step re-reads the cockpit. */
+        const finish = async (release: () => void): Promise<void> => {
+          const reread = p.waitForResponse((res) => new URL(res.url()).pathname === '/api/cockpit');
+          release();
+          await reread;
+          await p.evaluate('new Promise((done) => requestAnimationFrame(() => done()))');
+        };
+        /** B's page, loaded and its own: no spinner, refusal, result or error of A's. */
+        const untouched = async (): Promise<void> => {
+          expect(
+            await p.locator(`[data-testid="stream-page"][data-stream="${b.id}"]`).count(),
+          ).toBe(1);
+          expect(await p.locator('[data-testid="stream-page"][aria-busy="true"]').count()).toBe(0);
+          const merge = p.locator('[data-testid="stream-land"]');
+          expect(await merge.textContent()).toBe('Merge');
+          expect(await merge.getAttribute('aria-busy')).toBeNull();
+          const start = p.locator('[data-testid="attach"]');
+          expect(await start.getAttribute('aria-busy')).toBeNull();
+          expect(await start.isEnabled()).toBe(true);
+          expect(await p.locator('[data-testid="merge-error"]').count()).toBe(0);
+          expect(await p.locator('[data-testid="stream-error"]').count()).toBe(0);
+          expect(await p.locator('[data-testid="land-before"]').count()).toBe(1);
+          expect(await p.locator('[data-testid="land-result"]').count()).toBe(0);
+          expect(await p.locator('[data-testid="send-error"]').count()).toBe(0);
+        };
+
+        await p.goto(`${cockpit.base}/?node=${a.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${a.id}"]`).waitFor();
+        if (!(await p.locator('[data-testid="node-details"]').isVisible())) {
+          await p.locator('[data-testid="details-toggle"]').click();
+        }
+        await p.locator('[data-testid="land-panel"]').waitFor();
+
+        // Merge on A, refused once B is open: B's Merge never spins, and A's refusal,
+        // its fix and its result line stay off B's header and Delivery panel.
+        const land = await hold('land', 200, {
+          status: 'refused',
+          reason: 'the first node’s own reason',
+          line: 'landing refused: the first node’s own reason',
+        });
+        await clickMerge(p);
+        await land.called;
+        await waitForText(p, '[data-testid="stream-land"]', 'Merging…');
+        await open(b);
+        await untouched();
+        await finish(land.release);
+        await untouched();
+
+        // Start agent on A, failing once B is open: B's buttons stay live, A's error stays off.
+        await open(a);
+        const start = await hold('attach', 500, { error: 'the first node’s agent didn’t start' });
+        await p.locator('[data-testid="attach"]').click();
+        await start.called;
+        await open(b);
+        await untouched();
+        await finish(start.release);
+        await untouched();
+
+        // A send on A, failing once B is open: B's composer sends, with no "wasn't sent" of A's.
+        await open(a);
+        const say = await hold('say', 500, { error: 'the first node’s message wasn’t sent' });
+        await p.locator('[data-testid="composer-input"]').fill('for the first node');
+        await p.locator('[data-testid="composer-send"]').click();
+        await say.called;
+        await open(b);
+        await p.locator('[data-testid="composer-input"]').fill('for the second node');
+        expect(await p.locator('[data-testid="composer-send"]').isEnabled()).toBe(true);
+        await untouched();
+        await finish(say.release);
+        await untouched();
+        expect(await p.locator('[data-testid="composer-send"]').isEnabled()).toBe(true);
+        // Each node's draft is its own: A's unsent message is still in A's composer.
+        expect(await p.locator('[data-testid="composer-input"]').inputValue()).toBe(
+          'for the second node',
+        );
+        await open(a);
+        expect(await p.locator('[data-testid="composer-input"]').inputValue()).toBe(
+          'for the first node',
+        );
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('one verdict on a finished branch (Playwright e2e, T412)', () => {
   browserTest(
     'a branch merged by hand reads "Already merged" with Mark as merged; one that waits on another node has no Merge',
