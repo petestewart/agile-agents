@@ -84,6 +84,79 @@ export function refreshLands(sent: RefreshMark, now: RefreshMark): boolean {
   return sent.refreshes === now.refreshes && sent.frames === now.frames;
 }
 
+/** The timers a `Reloader` runs on (fakes in tests). */
+export interface ReloadClock {
+  now(): number;
+  set(run: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+}
+
+const REAL_CLOCK: ReloadClock = {
+  now: () => Date.now(),
+  set: (run, ms) => setTimeout(run, ms),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+export interface Reloader {
+  /** Something changed: reload now, or once the gap since the last load has passed. */
+  schedule(): void;
+  /** The view is gone: nothing more loads. */
+  cancel(): void;
+}
+
+/**
+ * T548 (perf P5): reloads a view on pushed frames without one read per
+ * frame. A frame loads at once when the last load started `gapMs` ago;
+ * frames inside the gap, or while a load is in flight, make one trailing
+ * load when both are over. So never two loads at a time, and at most two
+ * in any `gapMs`.
+ */
+export function createReloader(
+  load: () => Promise<unknown>,
+  gapMs: number,
+  clock: ReloadClock = REAL_CLOCK,
+): Reloader {
+  let dirty = false;
+  let inFlight = false;
+  let cancelled = false;
+  let timer: unknown;
+  let last = Number.NEGATIVE_INFINITY;
+  const pump = (): void => {
+    if (cancelled || !dirty || inFlight || timer !== undefined) return;
+    const wait = last + gapMs - clock.now();
+    if (wait > 0) {
+      timer = clock.set(() => {
+        timer = undefined;
+        pump();
+      }, wait);
+      return;
+    }
+    dirty = false;
+    inFlight = true;
+    last = clock.now();
+    void Promise.resolve()
+      .then(load)
+      .catch(() => {
+        // The view says its own load failure.
+      })
+      .finally(() => {
+        inFlight = false;
+        pump();
+      });
+  };
+  return {
+    schedule() {
+      dirty = true;
+      pump();
+    },
+    cancel() {
+      cancelled = true;
+      if (timer !== undefined) clock.clear(timer);
+      timer = undefined;
+    },
+  };
+}
+
 /** How long the socket may be down before the cockpit says so (a reconnect blip says nothing). */
 export const OFFLINE_AFTER_MS = 2000;
 
