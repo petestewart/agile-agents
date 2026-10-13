@@ -220,19 +220,24 @@ export class PlanService {
    * wait (its thread has the `WAITING_FOR_PLAN` line), it sits under a
    * coordinating node that has had a coordinator, has not run since (idle,
    * nothing live), and no approved plan gives it paths yet (`owned`: the
-   * children the approved plan owns; the parent's by default).
+   * children the approved plan owns; the parent's by default). T545: `nodes`
+   * is the node list a caller already holds (the cockpit frame, the inbox),
+   * read here when it is left out; archived nodes in it are ignored, as
+   * every role helper does.
    */
-  waitingForPlan(child: Stream, owned?: ReadonlySet<string>): boolean {
+  waitingForPlan(child: Stream, owned?: ReadonlySet<string>, nodes?: readonly Stream[]): boolean {
     if (child.parent === undefined || child.archived === true) return false;
     if (child.human.status === 'closed' || child.human.status === 'landed') return false;
     if (child.agent.status !== 'idle' || child.sessions.some(isLive)) return false;
-    let parent: Stream;
-    try {
-      parent = this.options.streams.get(child.parent);
-    } catch {
-      return false;
+    let parent: Stream | undefined = nodes?.find((s) => s.id === child.parent);
+    if (parent === undefined) {
+      try {
+        parent = this.options.streams.get(child.parent);
+      } catch {
+        return false;
+      }
     }
-    const all = this.options.streams.list();
+    const all = nodes ?? this.options.streams.list();
     // D42: a conversation under a coordinator is not one of its parts.
     if (isConversationNode(child, all)) return false;
     if (nodeRole(parent, liveChildrenOf(parent.id, all), all) !== 'coordinating') {
@@ -252,12 +257,11 @@ export class PlanService {
     return !child.sessions.some((s) => s.id.slice(0, ULID_TIME_CHARS) >= since);
   }
 
-  /** T344: the node's live parts still waiting for its plan (`waitingForPlan`). */
-  waitingParts(node: string): Stream[] {
+  /** T344: the node's live parts still waiting for its plan (`waitingForPlan`); `nodes` as there (T545). */
+  waitingParts(node: string, nodes?: readonly Stream[]): Stream[] {
     const owned = approvedOwners(this.get(node));
-    return liveChildrenOf(node, this.options.streams.list()).filter((c) =>
-      this.waitingForPlan(c, owned),
-    );
+    const all = nodes ?? this.options.streams.list();
+    return liveChildrenOf(node, all).filter((c) => this.waitingForPlan(c, owned, all));
   }
 
   /**

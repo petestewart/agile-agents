@@ -26,7 +26,6 @@ import {
   type TrackerSettings,
   isAgentRole,
   isRestingSession,
-  liveChildrenOf,
   nodeRole,
   validateEvent,
   vendorHasHooks,
@@ -312,7 +311,8 @@ export function buildCockpitFrame(
   repos: ReposConfig = {},
   cardOf?: (node: string) => StatusCard | undefined,
   contracts?: { list(): CockpitContractRow[] },
-  waitingForPlan?: (node: Stream) => boolean,
+  /** T545: `all` is the frame's own node list, so the check lists nothing again. */
+  waitingForPlan?: (node: Stream, all: readonly Stream[]) => boolean,
   /** T362: a repo's remote, from a cache: the frame never waits on git. */
   remoteOf?: (entry: RepoEntry) => RepoRemote | undefined,
   /** T380: a finished node with nothing to merge, from a cache (`NothingToMergeCache`). */
@@ -340,6 +340,14 @@ export function buildCockpitFrame(
   // One read of the home: the archived ones are only for Restore (T361).
   const everything = streams.list({ include_archived: true });
   const all = everything.filter((s) => s.archived !== true);
+  // T545: each node's live children (`liveChildrenOf`), indexed once for every row's role.
+  const liveChildren = new Map<string, Stream[]>();
+  for (const s of all) {
+    if (s.parent === undefined || s.human.status === 'closed') continue;
+    const siblings = liveChildren.get(s.parent);
+    if (siblings === undefined) liveChildren.set(s.parent, [s]);
+    else siblings.push(s);
+  }
   const overlaps = findOverlaps(all);
   const marked = overlapMarked(overlaps, all);
   const items = inbox?.list() ?? [];
@@ -357,7 +365,7 @@ export function buildCockpitFrame(
       title: s.title,
       ...(s.parent !== undefined ? { parent: s.parent } : {}),
       ...(s.project !== undefined ? { project: s.project } : {}),
-      role: nodeRole(s, liveChildrenOf(s.id, all), all),
+      role: nodeRole(s, liveChildren.get(s.id) ?? [], all),
       agent_status: s.agent.status,
       human_status: s.human.status,
       ...(s.repo !== undefined ? { repo: s.repo } : {}),
@@ -367,7 +375,7 @@ export function buildCockpitFrame(
       ...waitsOn(s),
       ...(marked.has(s.id) ? { overlap: true as const } : {}),
       ...(visibilityAdvisory(s, repos) ? { visibility_advisory: true as const } : {}),
-      ...(waitingForPlan?.(s) === true ? { waiting_for_plan: true as const } : {}),
+      ...(waitingForPlan?.(s, all) === true ? { waiting_for_plan: true as const } : {}),
       ...(deciding.has(s.id) ? { pending_decision: true as const } : {}),
       ...(s.autonomy !== undefined ? { autonomy: s.autonomy } : {}),
       ...(s.delivery_state?.status === 'pr_open' ? { pr_open: true as const } : {}),

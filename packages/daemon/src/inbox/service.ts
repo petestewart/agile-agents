@@ -89,9 +89,8 @@ export class InboxService {
 
   /** Every open item, oldest first (§3.3). A record whose stream is gone is skipped: an item you can't place is worse than none. */
   list(): InboxItem[] {
-    const byId = new Map<string, Stream>(
-      this.deps.streams.list({ include_archived: true }).map((s) => [s.id, s]),
-    );
+    const everyone = this.deps.streams.list({ include_archived: true });
+    const byId = new Map<string, Stream>(everyone.map((s) => [s.id, s]));
     const items: InboxItem[] = [];
 
     for (const question of this.deps.questions.listOpen()) {
@@ -164,7 +163,7 @@ export class InboxService {
     // T344: parts waiting for a plan no running coordinator will write.
     const drafted = new Set(this.deps.plans?.listDraft().map((p) => p.node));
     for (const stream of byId.values()) {
-      const item = this.planWaitingItem(stream, byId, drafted);
+      const item = this.planWaitingItem(stream, byId, everyone, drafted);
       if (item) items.push(item);
     }
     // T443 (audit r7 #8): a project's root, where a Director draft that makes nodes sits.
@@ -214,7 +213,7 @@ export class InboxService {
       });
     }
     for (const stream of byId.values()) {
-      const item = this.streamItem(stream, byId);
+      const item = this.streamItem(stream, byId, everyone);
       if (item) items.push(item);
       const stuck = this.stuckItem(stream, byId);
       if (stuck) items.push(stuck);
@@ -373,6 +372,7 @@ export class InboxService {
   private planWaitingItem(
     stream: Stream,
     byId: Map<string, Stream>,
+    everyone: readonly Stream[],
     drafted: ReadonlySet<string>,
   ): InboxItem | undefined {
     const plans = this.deps.plans;
@@ -380,7 +380,7 @@ export class InboxService {
     if (stream.human.status === 'closed' || stream.human.status === 'landed') return undefined;
     // Only a node that has had a coordinator has parts waiting on it (`waitingForPlan`).
     if (!stream.sessions.some((s) => s.role === 'coordinator')) return undefined;
-    if (drafted.has(stream.id) || !hasParts(stream.id, byId)) return undefined;
+    if (drafted.has(stream.id) || !hasParts(stream.id, everyone)) return undefined;
     // T465: a coordinator resting after its finished turn is not writing one either.
     const live = stream.sessions.some(
       (s) =>
@@ -390,7 +390,8 @@ export class InboxService {
         !isRestingSession(stream, s),
     );
     if (live) return undefined;
-    const parts = plans.waitingParts(stream.id);
+    // T545: the list read once for the whole inbox.
+    const parts = plans.waitingParts(stream.id, everyone);
     if (parts.length === 0) return undefined;
     const titles = parts.map((p) => p.title).join(', ');
     const text = `${titles} ${parts.length === 1 ? 'waits' : 'wait'} for the plan, and no coordinator is running to write it. Wake the coordinator, or start the ${parts.length === 1 ? 'part' : 'parts'} without a plan.`;
@@ -431,7 +432,11 @@ export class InboxService {
    * §2.2's disagreeing pair: the agent stopped (`blocked` or `done`) and the
    * human half is still `open`. That pair is the "waiting for me" state.
    */
-  private streamItem(stream: Stream, byId: Map<string, Stream>): InboxItem | undefined {
+  private streamItem(
+    stream: Stream,
+    byId: Map<string, Stream>,
+    everyone: readonly Stream[],
+  ): InboxItem | undefined {
     if (stream.archived === true) return undefined;
     if (stream.human.status !== 'open') return undefined;
     if (stream.agent.status !== 'blocked' && stream.agent.status !== 'done') return undefined;
@@ -442,7 +447,7 @@ export class InboxService {
     const ownBranch = stream.repo !== undefined && stream.branch !== undefined;
     if (
       stream.agent.status === 'done' &&
-      ((hasParts(stream.id, byId) && !ownBranch) || isProjectRoot(stream))
+      ((hasParts(stream.id, everyone) && !ownBranch) || isProjectRoot(stream))
     ) {
       return undefined;
     }
@@ -495,8 +500,8 @@ export const BLOCKED_TEXT =
   'The agent is stuck and needs a hand. Open the node to see where it stopped.';
 
 /** Parts (D42: not helpers, not conversations): what makes a node coordinating (`nodeRole`). */
-function hasParts(id: string, byId: Map<string, Stream>): boolean {
-  return partsOf(id, [...byId.values()]).length > 0;
+function hasParts(id: string, everyone: readonly Stream[]): boolean {
+  return partsOf(id, everyone).length > 0;
 }
 
 /** A project's root node (P20: its agent is the project's coordinator). */

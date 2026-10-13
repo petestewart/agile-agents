@@ -620,7 +620,7 @@ function cockpitFrame(feed: FeedContext, streams: StreamService): CockpitFrame {
     feed.store.getRepos(),
     (id) => feed.store.getCard(id),
     feed.contracts,
-    (s) => feed.plans?.waitingForPlan(s) === true,
+    (s, all) => feed.plans?.waitingForPlan(s, undefined, all) === true,
     (entry) => feed.remotes.peek(entry),
     feed.mergeState ? (s) => feed.mergeState?.peek(s) === true : undefined,
     (id) => feed.store.threadUpdatedAt(id),
