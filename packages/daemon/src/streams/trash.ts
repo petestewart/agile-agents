@@ -9,7 +9,9 @@
  *
  * Git runs through the injected `git`, as delivery runs it. A node whose
  * repo is no longer registered, or whose worktree is already gone, is
- * removed all the same: the record is what makes a node.
+ * removed all the same: the record is what makes a node. T538: the branch
+ * and worktree a node parked going back to talk (`parked`, T473) go the same
+ * way, and so does its docs dir (`StateStore.removeStream`).
  */
 
 import { existsSync, rmSync } from 'node:fs';
@@ -64,6 +66,33 @@ export interface PurgeResult {
   kept_branches: string[];
 }
 
+/** Where a node's work is on disk: its repo's branch and worktree. */
+interface WorkSite {
+  repo: string;
+  branch?: string;
+  worktree?: string;
+}
+
+/**
+ * T538: a node's own work, and the work it parked going back to talk (T473:
+ * kept on disk under `parked` for when that repo is picked again).
+ */
+function sitesOf(node: Stream): WorkSite[] {
+  const sites: WorkSite[] = [];
+  if (node.repo !== undefined) {
+    sites.push({
+      repo: node.repo,
+      ...(node.branch !== undefined ? { branch: node.branch } : {}),
+      ...(node.worktree !== undefined ? { worktree: node.worktree } : {}),
+    });
+  }
+  const parked = node.parked;
+  if (parked !== undefined && !(parked.repo === node.repo && parked.branch === node.branch)) {
+    sites.push(parked);
+  }
+  return sites;
+}
+
 export class TrashError extends Error {
   constructor(message: string) {
     super(message);
@@ -92,13 +121,17 @@ export class TrashService {
     const branches: TrashBranch[] = [];
     const uncommitted: string[] = [];
     for (const node of tree) {
-      const root = this.repoRoot(node);
-      if (root === undefined) continue;
-      const unmerged = this.unmerged(node, root);
-      if (unmerged !== 0 && node.branch !== undefined && this.branchExists(node.branch, root)) {
-        branches.push({ node: node.id, title: node.title, branch: node.branch, unmerged });
+      for (const site of sitesOf(node)) {
+        const root = this.repoRoot(site.repo);
+        if (root === undefined) continue;
+        const unmerged = this.unmerged(node, site, root);
+        if (unmerged !== 0 && site.branch !== undefined && this.branchExists(site.branch, root)) {
+          branches.push({ node: node.id, title: node.title, branch: site.branch, unmerged });
+        }
+        if (this.dirty(site, root) && !uncommitted.includes(node.title)) {
+          uncommitted.push(node.title);
+        }
       }
-      if (this.dirty(node, root)) uncommitted.push(node.title);
     }
     return { nodes: tree.map((s) => ({ id: s.id, title: s.title })), branches, uncommitted };
   }
@@ -109,10 +142,12 @@ export class TrashService {
     const gone = new Set(tree.map((s) => s.id));
     const kept: string[] = [];
     for (const node of [...tree].reverse()) {
-      const root = this.repoRoot(node);
-      if (root !== undefined) {
-        this.removeWorktree(node, root);
-        const branch = this.removeBranch(node, root, options.deleteBranches === true);
+      // T538: its own repo's work and any it parked going back to talk (T473).
+      for (const site of sitesOf(node)) {
+        const root = this.repoRoot(site.repo);
+        if (root === undefined) continue;
+        this.removeWorktree(site, root);
+        const branch = this.removeBranch(node, site, root, options.deleteBranches === true);
         if (branch !== undefined) kept.push(branch);
       }
       await this.dropRecordsOf(node.id);
@@ -161,9 +196,8 @@ export class TrashService {
     return tree;
   }
 
-  private repoRoot(node: Stream): string | undefined {
-    if (node.repo === undefined) return undefined;
-    const path = this.options.store.getRepos()[node.repo]?.path;
+  private repoRoot(repo: string): string | undefined {
+    const path = this.options.store.getRepos()[repo]?.path;
     return path !== undefined && existsSync(path) ? path : undefined;
   }
 
@@ -174,13 +208,17 @@ export class TrashService {
     );
   }
 
-  /** Commits on the node's branch its target doesn't have: 0 none (or no branch), -1 unknown. */
-  private unmerged(node: Stream, root: string): number {
-    if (node.branch === undefined || !this.branchExists(node.branch, root)) return 0;
-    const target = this.options.targetOf(node, root);
+  /** Commits on the site's branch its target doesn't have: 0 none (or no branch), -1 unknown. */
+  private unmerged(node: Stream, site: WorkSite, root: string): number {
+    if (site.branch === undefined || !this.branchExists(site.branch, root)) return 0;
+    // A parked site's target is its own repo's (T538): the node no longer names that repo.
+    const target = this.options.targetOf(
+      site.repo === node.repo ? node : { ...node, repo: site.repo },
+      root,
+    );
     if (target === undefined || !this.branchExists(target, root)) return -1;
     const count = this.options.git(
-      ['rev-list', '--count', `${target}..${node.branch}`],
+      ['rev-list', '--count', `${target}..${site.branch}`],
       root,
       root,
     );
@@ -189,9 +227,9 @@ export class TrashService {
   }
 
   /** Uncommitted tracked changes in its worktree (untracked scratch is not work). */
-  private dirty(node: Stream, root: string): boolean {
-    if (node.worktree === undefined || !existsSync(node.worktree)) return false;
-    const status = this.options.git(['status', '--porcelain=v1'], node.worktree, root);
+  private dirty(site: WorkSite, root: string): boolean {
+    if (site.worktree === undefined || !existsSync(site.worktree)) return false;
+    const status = this.options.git(['status', '--porcelain=v1'], site.worktree, root);
     if (status.exitCode !== 0) return false;
     return status.stdout.split('\n').some((l) => l.length > 0 && !l.startsWith('??'));
   }
@@ -201,21 +239,26 @@ export class TrashService {
    * made) is removed: a record pointing anywhere else, the repo itself
    * above all, is left alone.
    */
-  private removeWorktree(node: Stream, root: string): void {
-    if (node.worktree === undefined) return;
-    const inside = resolve(node.worktree).startsWith(`${resolve(root, '.worktrees')}${sep}`);
-    if (inside && existsSync(node.worktree)) {
-      this.options.git(['worktree', 'remove', '--force', node.worktree], root, root);
-      if (existsSync(node.worktree)) rmSync(node.worktree, { recursive: true, force: true });
+  private removeWorktree(site: WorkSite, root: string): void {
+    if (site.worktree === undefined) return;
+    const inside = resolve(site.worktree).startsWith(`${resolve(root, '.worktrees')}${sep}`);
+    if (inside && existsSync(site.worktree)) {
+      this.options.git(['worktree', 'remove', '--force', site.worktree], root, root);
+      if (existsSync(site.worktree)) rmSync(site.worktree, { recursive: true, force: true });
     }
     this.options.git(['worktree', 'prune'], root, root);
   }
 
   /** Deletes a merged branch, or any with `force`; returns a branch it kept. */
-  private removeBranch(node: Stream, root: string, force: boolean): string | undefined {
-    if (node.branch === undefined || !this.branchExists(node.branch, root)) return undefined;
-    if (this.unmerged(node, root) !== 0 && !force) return node.branch;
-    this.options.git(['branch', '-D', node.branch], root, root);
+  private removeBranch(
+    node: Stream,
+    site: WorkSite,
+    root: string,
+    force: boolean,
+  ): string | undefined {
+    if (site.branch === undefined || !this.branchExists(site.branch, root)) return undefined;
+    if (this.unmerged(node, site, root) !== 0 && !force) return site.branch;
+    this.options.git(['branch', '-D', site.branch], root, root);
     return undefined;
   }
 

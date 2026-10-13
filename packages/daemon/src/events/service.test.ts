@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { ROUTED_EVENT_STRING_MAX, ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
 import { StateStore } from '../store';
+import { StreamService } from '../streams/service';
 import { RoutedEventService, UnknownEventError } from './service';
 
 let home: string;
@@ -50,13 +51,42 @@ describe('RoutedEventService (T240)', () => {
   });
 
   test('a crash between the log and the queue append is recovered as pending', async () => {
-    const e = await events.emit(line());
-    rmSync(join(root, 'events', 'queue', `${b}.jsonl`));
+    // Real nodes: `recover` skips one with no record (T538, deleted forever).
+    const streams = new StreamService(store);
+    const x = await streams.create('human', { title: 'x', goal: 'g' });
+    const y = await streams.create('human', { title: 'y', goal: 'g' });
+    const e = await events.emit({
+      ...line(),
+      subject: x.id,
+      routing: [
+        { node: x.id, because: 'self' },
+        { node: y.id, because: 'ancestor' },
+      ],
+    });
+    rmSync(join(root, 'events', 'queue', `${y.id}.jsonl`));
     const after = restart();
-    expect(after.pendingFor(b)).toEqual([]);
+    expect(after.pendingFor(y.id)).toEqual([]);
     expect(await after.recover()).toBe(1);
-    expect(after.pendingFor(b).map((p) => p.event.id)).toEqual([e.id]);
+    expect(after.pendingFor(y.id).map((p) => p.event.id)).toEqual([e.id]);
     expect(await after.recover()).toBe(0);
+  });
+
+  test('T538: a node deleted forever gets no queue back at a restart', async () => {
+    const streams = new StreamService(store);
+    const x = await streams.create('human', { title: 'x', goal: 'g' });
+    await events.emit({
+      ...line(),
+      subject: x.id,
+      routing: [{ node: x.id, because: 'self' }],
+    });
+    await streams.archive('human', x.id);
+    await store.removeStream(x.id);
+    const queue = join(root, 'events', 'queue', `${x.id}.jsonl`);
+    expect(existsSync(queue)).toBe(false);
+    const after = restart();
+    expect(await after.recover()).toBe(0);
+    expect(existsSync(queue)).toBe(false);
+    expect(after.pendingFor(x.id)).toEqual([]);
   });
 
   test('mark delivered moves only pending deliveries, per node', async () => {
