@@ -3783,7 +3783,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T540 An ended session doesn't strand its gate or question
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** worker
 - **Scope:** Daemon audit D11, D16. (1) A worker's turn ends on a `classifier_review` gate (node `question`/`waiting_on_you`), then its session goes (restart, vendor exit); approving the card writes one thread line, the node stays waiting with no Needs me item, nothing wakes it, and a new session can't spend the approval (it's keyed to the old session). In `deliverGateDecision`'s no-handle branch reset the statuses as `answer()` does and emit a routed event so the wake policy can start a session; when a session ends, expire or supersede its pending route-band gates. (2) Closing a node whose agent sits idle on a question or gate leaves the vendor process alive until the daemon stops (`onNodeUpdated` → `endResting` acts only on `resting`); end those sessions too.
 - **Acceptance Criteria:** Tests for both: approve-after-session-end leaves the node woken/open with no stale waiting; closing a node with an agent idle on a question ends that session.
@@ -3873,7 +3873,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T548 The node page refreshes at most a few times a second and reads its thread once
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge adc4918a on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Perf P5, checked by the manager. `StreamPage.tsx` re-fetches `/api/streams/<id>/page` on every pushed frame with no coalescing; each build (`feed/stream-page.ts`) reads the whole thread twice (once for `total`), calls `rules.inScope` twice, and runs `landing.preflight` (≈6 synchronous git spawns): ≈73 ms per build on a 2,000-line thread. (UI) coalesce like Lenses/ProjectOverview's `usePushTick` (one request in flight plus one trailing; `loadSeq` keeps order). (Server) read the thread once (`readThread` returns `total`), call `inScope` once, and memoize `defaultBranch(repoRoot)` per repo for ≈30 s (`delivery/service.ts`, also used by overlap, main-sync and merge-state). Coordinate with T520 (it keys the node page per node).
 - **Acceptance Criteria:** N frames within 400 ms cause at most 2 page loads (fake timers); the page payload is unchanged and the thread is read once; `defaultBranch` spawns git once per repo per window and refreshes after it.
@@ -3881,7 +3881,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T549 A hook decision reads each record once
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** Done (merge 9cfca8a3 on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Perf P7, checked by the manager. One pre-tool-use decision (`hook/service.ts` `buildContext`, `streamRecord`, the pattern and classifier tiers) does `getStream` ×10, `listKnowledge` ×2, `listAgents` ×2, `getRepos` ×3 (69 ms with 103 knowledge items); a deny reads the whole thread for its last line. Resolve the stream record, its ancestors and `inScope` once per request and pass them to both tiers; take the deny-coalescing last line from a tail read. After T526 if both are open (both touch `hook/service.ts`).
 - **Acceptance Criteria:** A spy test: at most one read per record per decision; every existing hook test unchanged.
@@ -3897,7 +3897,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T551 The event log is read from its tail
 - **Priority:** P2
-- **Status:** In Progress
+- **Status:** Done (merge 7d3860b9 on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Perf P10, checked by the manager. `RecentEvents.load` (boot), `/api/snapshot` and the lessons retro read, parse and validate all of `log/events.jsonl` (never rotated; ≥4 lines per tool call): 985 ms and +280 MB RSS for a 50 MB log. Read the last `limit` lines backwards in chunks (as `feed/steps.ts` reads forwards); `/api/snapshot` passes `recent?.list()`; the retro streams the log and pre-filters on the `hook_decision` kind before parsing, as `StepIndex` does. Trade-off to note in §10: a corrupt line deep in history no longer refuses the connect snapshot (it still refuses any read that reaches it).
 - **Acceptance Criteria:** Over a log longer than `limit`, the tail read returns the same newest events as the full read, including when the last line is partial; boot reads a bounded number of bytes (test with a large synthetic log); lessons tests unchanged.
@@ -3942,6 +3942,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-10-13 (T551, trade-off as the ticket said): boot, the `/ws` connect snapshot and `/api/snapshot` now read only the tail of `log/events.jsonl` (49.7 MB log: boot 941 → 8 ms, +292 → +3 MB). A corrupt line older than the tail no longer stops them; any read that reaches it still refuses it, now with path and line (before: neither). The lessons retro parses only `hook_decision` lines. (T549): a hook decision now reads each record once (allow ≈11 → 7 ms at 104 knowledge items; a repeat deny on a 5,000-line thread 43 → 7 ms); post-tool-use and stop still compute rules and read scope they never use (≈4–5 ms), a possible follow-up.
 - 2026-10-13 (T535 worker): beyond the audit, a land could `reset --hard` the operator's own current branch to the merge commit (a worktree of the target whose dir was replaced by a plain one), and main-sync could merge main into the operator's checkout through a plain directory; both fixed with a `.git`-of-its-own check. Merged or trashed nodes now refuse Start/Review/Resolve (409 in the cockpit, -32602 from the CLI); a leftover plain directory with files at a worktree path is refused, never deleted. Open: an agent start that finishes after a land's live-session check but before the land removes the worktree loses its worktree mid-session (T540/T542's area); `agile stream show` prints "created on first attach" for a merged node's cleared worktree.
 - 2026-10-13 (T547 worker): the store's parse cache measured `listStreams` at 300 nodes 315 → 18 ms and `feed/snapshot.test.ts` 11.7 → 4.4 s. It keys on `ino:size:mtimeNs:ctimeNs` and, for a file read within 3 s of its ctime, also compares the text (git's "racily clean"), because ext4 reuses inode numbers on alternate atomic writes and older kernels have coarse ctime. On a network-mounted home (NFS attribute caching) a write from another host can be missed for up to the attribute cache time. (T533 worker): while the daemon starts, `agiled.pid` reads `starting <pid>` (the lock, not yet the pidfile) for under a second; `kill $(cat agiled.pid)` in that window gets a non-pid.
 - 2026-10-13 (T531, for Pete): design §7.4 says gate and land events are fsynced, but no `land_*` event kind was ever added: a land is recorded as `stream_updated` (human `landed`) plus the delivery state, and neither is fsynced (the triage's "merges fsync through the routed `pr_merged` event" is wrong: the routed log isn't fsynced either). The `land_` prefix in `needsFsync` is kept for §7.4. Pete to say whether a land should be fsynced (e.g. fsync the `stream_updated` that sets `landed`).
