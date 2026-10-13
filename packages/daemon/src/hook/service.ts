@@ -40,7 +40,7 @@ import { type RuleStatsOutcome, knowledgeMatchesPaths } from '../knowledge/servi
 import { isPathInside } from '../permissions/command';
 import { nodeReadScope } from '../permissions/policy-tables';
 import { projectReadSettings } from '../permissions/posture';
-import { worktreeBranchLookups } from '../permissions/push-detector';
+import { worktreeBranchLookups, worktreeGitAliases } from '../permissions/push-detector';
 import { patternRulesOf, protectedBranchesFor, touchedPaths } from '../permissions/rule-checks';
 import { directorReadScope } from '../permissions/visibility';
 import { NotFoundError, type StateStore, buildEvent } from '../store';
@@ -363,6 +363,8 @@ export class HookService {
       protectedBranches: protectedBranchesFor(this.store, stream),
       upstreamBranch: branches.upstream,
       headBranch: branches.head,
+      // T525: lazy and memoized too: a builtin git subcommand looks up no alias.
+      gitAlias: worktreeGitAliases(worktreePath),
       ...this.visibilityFor(stream, worktreePath),
       // T442: a conversation (no repo of its own) reads repos as a coordinator does.
       ...(stream !== DIRECTOR_NODE && this.streamRecord(stream)?.repo === undefined

@@ -13,6 +13,7 @@ import { join as joinPath } from 'node:path';
 import { ulid, validateKnowledgeItem } from '@agile-agents/shared';
 import { BUILTIN_KNOWLEDGE } from '../knowledge/builtins';
 import { decidePermission } from './decide';
+import type { GitAliasLookup } from './push-detector';
 import type { AcpPermissionRequestParams, PermissionRole } from './types';
 
 const WORKTREE = '/work/.worktrees/TKT-0001-x';
@@ -2477,5 +2478,74 @@ describe('T476: Cursor and Codex name our verbs and commands their own way', () 
     expect(exec(blind, false).kind).toBe('hil');
     expect(exec(blind, true).kind).toBe('deny');
     expect(exec(blind).kind).toBe('deny');
+  });
+});
+
+describe('decidePermission — T525 the never-without-human list reads through a git alias', () => {
+  const ALIASES: Record<string, string> = {
+    pf: 'push --force',
+    br: 'branch',
+    rh: 'reset --hard',
+    up: 'pull --rebase',
+    x: '!git reset --hard',
+  };
+  const gitAlias: GitAliasLookup = (name) => {
+    const value = ALIASES[name.toLowerCase()];
+    return value === undefined ? 'unset' : { expansion: value };
+  };
+  const decision = (role: PermissionRole, command: string, alias: GitAliasLookup | undefined) =>
+    decidePermission({
+      role,
+      worktreePath: WORKTREE,
+      request: request('execute', { command }),
+      ...(alias !== undefined ? { gitAlias: alias } : {}),
+    });
+
+  test('force-push, branch delete and reset --hard through an alias are held as spelled out', () => {
+    for (const [command, reason] of [
+      ['git pf origin T143-x', 'force-push is never automatic'],
+      ['git br -D T143-x', 'branch deletion is never automatic'],
+      ['git rh HEAD~1', 'git reset --hard is never automatic'],
+    ] as const) {
+      const held = decision('engineer', command, gitAlias);
+      expect([command, held.kind, held.kind === 'hil' ? held.reason : '']).toEqual([
+        command,
+        'hil',
+        reason,
+      ]);
+    }
+  });
+
+  test('an ordinary alias stays the worker’s own work', () => {
+    expect(decision('engineer', 'git up', gitAlias).kind).toBe('allow');
+    expect(decision('engineer', 'git br T143-y', gitAlias).kind).toBe('allow');
+  });
+
+  test('an alias the list cannot read is held for the engineer; any other role’s table denies it', () => {
+    for (const [command, alias] of [
+      ['git x', gitAlias],
+      ['git up', undefined],
+      ['git up', () => 'failed' as const],
+    ] as const) {
+      const held = decision('engineer', command, alias);
+      expect(held.kind).toBe('hil');
+      expect(held.kind === 'hil' ? held.reason : '').toContain(
+        'cannot tell what this git call runs',
+      );
+      expect(decision('reviewer', command, alias).kind).toBe('deny');
+    }
+  });
+
+  test('a builtin is never looked up', () => {
+    const asked: string[] = [];
+    const counting = (name: string) => {
+      asked.push(name);
+      return gitAlias(name);
+    };
+    for (const command of ['git status', 'git push --force origin x', 'git branch -D x']) {
+      decision('engineer', command, counting);
+      decision('reviewer', command, counting);
+    }
+    expect(asked).toEqual([]);
   });
 });

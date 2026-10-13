@@ -289,6 +289,7 @@ function roleToolVerdict(
     ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
     ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
     ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
+    ...(ctx.gitAlias !== undefined ? { gitAlias: ctx.gitAlias } : {}),
     request,
   });
 
@@ -341,6 +342,7 @@ function patternRuleVerdict(
     protectedBranches: ctx.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
     upstream: ctx.upstreamBranch ?? (() => undefined),
     head: ctx.headBranch ?? (() => undefined),
+    ...(ctx.gitAlias !== undefined ? { alias: ctx.gitAlias } : {}),
     // T336: only a coordinator's read-only git -C may reach a repo it can read. T442: and a
     // conversation's (a worker on a node with no repo of its own: it has no worktree to read).
     ...(permissionRoleFor(ctx.role) === 'coordinator' ||

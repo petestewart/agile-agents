@@ -23,6 +23,7 @@ import {
 } from '@agile-agents/shared';
 import * as cmd from './command';
 import { isPathInside, realpathNearestExisting } from './command';
+import { type GitAliasLookup, gitArgsThroughAliases } from './push-detector';
 import type { PermissionRequest, PermissionRole } from './types';
 
 /**
@@ -71,6 +72,8 @@ export interface PolicyContext {
    * bare test context): denied, as before T457.
    */
   posture?: PermissionPosture;
+  /** T525: the worktree's git aliases (`worktreeGitAliases`); absent, an engineer's git subcommand that isn't a builtin is held. */
+  gitAlias?: GitAliasLookup;
 }
 
 /**
@@ -567,7 +570,14 @@ function neverWithoutHumanForAtom(
   // `git -C` outside the worktree and pushes to protected branches are the
   // `no_worktree_escape`/`no_push_protected` built-in pattern rules (§5.4),
   // so a repo can retire or rescope them. The rest of the list stays here.
-  const args = cmd.parseGitInvocation(tokens).args;
+  // T525: read through a configured alias (`alias.pf = push --force`). Only
+  // the engineer's table allows a git subcommand it doesn't name; every
+  // other role's denies one it can't read anyway.
+  const git = gitArgsThroughAliases(atom, ctx.gitAlias);
+  if (git !== undefined && 'unreadable' in git && ctx.role === 'engineer') {
+    return hil(`cannot tell what this git call runs: ${git.unreadable}`);
+  }
+  const args = git !== undefined && 'args' in git ? git.args : undefined;
   if (args !== undefined) {
     if (cmd.isForcePush(args)) {
       return hil('force-push is never automatic');

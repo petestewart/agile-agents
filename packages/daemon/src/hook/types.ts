@@ -12,6 +12,7 @@ import type {
   SessionRole,
 } from '@agile-agents/shared';
 import type { ReadAsk } from '../permissions/policy-tables';
+import type { GitAliasLookup } from '../permissions/push-detector';
 import type { VisibilityContext } from '../permissions/visibility';
 
 /** The outcomes of the pure decision (spike-findings.md §B); `ask` never reaches the wire. */
@@ -49,6 +50,8 @@ export interface HookDecisionContext {
   upstreamBranch?: () => string | undefined;
   /** The worktree's checked-out branch; called only for a `git merge` with no preceding checkout. */
   headBranch?: () => string | undefined;
+  /** T525: the worktree's git aliases; looked up only for a git subcommand that isn't a builtin. */
+  gitAlias?: GitAliasLookup;
   /** P13: the node's repo, project and the registry; absent checks no visibility. */
   visibility?: VisibilityContext;
   /**

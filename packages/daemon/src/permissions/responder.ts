@@ -22,7 +22,7 @@ import type { StateStore } from '../store';
 import { buildEvent } from '../store';
 import { classifyPermissionRequest } from './classify';
 import { decidePermission } from './decide';
-import { worktreeBranchLookups } from './push-detector';
+import { worktreeBranchLookups, worktreeGitAliases } from './push-detector';
 import type { PatternRuleGate } from './rule-checks';
 import type {
   AcpPermissionRequestParams,
@@ -243,6 +243,8 @@ export function buildPermissionResponder(
       ...(ctx.readRoots !== undefined ? { readRoots: ctx.readRoots } : {}),
       ...(ctx.hiddenRoots !== undefined ? { hiddenRoots: ctx.hiddenRoots } : {}),
       ...(ctx.posture !== undefined ? { posture: ctx.posture } : {}),
+      // T525: per request, so an alias the operator adds mid-session counts.
+      gitAlias: worktreeGitAliases(ctx.worktreePath),
       ...(gate !== undefined
         ? {
             patternRules: gate.rules(),

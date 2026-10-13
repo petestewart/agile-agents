@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +13,7 @@ import { acpHilRouter } from '../hook/route-band';
 import { runInit } from '../init';
 import { StateStore } from '../store';
 import { StreamService } from '../streams/service';
+import { CANNOT_DETERMINE_REASON } from './push-detector';
 import {
   type PermissionResponderContext,
   type PermissionResponderSession,
@@ -613,6 +614,57 @@ describe('buildPermissionResponder — pattern rules at the ACP tier', () => {
     // Still not an allow-list of git.
     const ok = await responder.handleRequest(id, request('execute', { command: 'git remote -v' }));
     expect(ok.kind).toBe('allow');
+  });
+
+  test('T525: a push through a configured git alias is checked like git push', async () => {
+    git(['config', 'alias.p', 'push'], repo);
+    git(['config', 'alias.pf', 'push --force'], repo);
+    git(['config', 'alias.x', '!git push origin main'], repo);
+    const rule = patternRule('no_push_protected');
+    const { responder } = gatedResponder([rule]);
+    let id = 30;
+    const decide = (command: string) =>
+      responder.handleRequest(id++, request('execute', { command }));
+
+    const toMain = await decide('git p origin main');
+    expect(toMain.kind).toBe('deny');
+    expect(toMain.kind === 'deny' ? toMain.reason : '').toContain(`rule ${rule.id}`);
+    expect((await decide('git p origin T143-x')).kind).toBe('allow');
+    expect((await decide(`git -C ${repo} p origin main`)).kind).toBe('deny');
+
+    // The never-without-human list reads it too: held exactly as the literal force-push is.
+    const literal = await decide('git push --force origin T143-x');
+    const forced = await decide('git pf origin T143-x');
+    expect(forced).toEqual(literal);
+    expect(forced.kind === 'allow' ? '' : forced.reason).toContain('force-push is never automatic');
+
+    // A shell alias can't be read: refused (the rule's deny beats the list's hold).
+    const shell = await decide('git x');
+    expect(shell.kind).toBe('deny');
+    expect(shell.kind === 'deny' ? shell.reason : '').toContain(CANNOT_DETERMINE_REASON);
+  });
+
+  test('T525: a builtin git subcommand spawns no git at this tier; an alias one git config per call', async () => {
+    git(['config', 'alias.p', 'push'], repo);
+    const { responder } = gatedResponder([patternRule('no_push_protected')]);
+    const spawn = spyOn(Bun, 'spawnSync');
+    const configCalls = () =>
+      spawn.mock.calls.filter(([argv]) => Array.isArray(argv) && argv[1] === 'config').length;
+    try {
+      for (const [n, command] of ['git status', 'git log --oneline -5 && git diff'].entries()) {
+        expect((await responder.handleRequest(40 + n, request('execute', { command }))).kind).toBe(
+          'allow',
+        );
+      }
+      expect(spawn).not.toHaveBeenCalled();
+      const command = 'git p origin T143-x && git p origin T143-y';
+      expect((await responder.handleRequest(42, request('execute', { command }))).kind).toBe(
+        'allow',
+      );
+      expect(configCalls()).toBe(1);
+    } finally {
+      spawn.mockRestore();
+    }
   });
 
   test('with no rules wired the tier behaves exactly as it did before T143', async () => {
