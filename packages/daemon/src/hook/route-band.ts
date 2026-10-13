@@ -64,7 +64,10 @@ function cap(text: string): string {
 }
 
 /** This session's gates on this exact call, newest first. */
-function matching(gates: RouteBandGates, ctx: RouteBandContext): HilRequest[] {
+function matching(
+  gates: RouteBandGates,
+  ctx: Pick<RouteBandContext, 'session' | 'call'>,
+): HilRequest[] {
   return gates
     .list()
     .filter(
@@ -78,12 +81,23 @@ function matching(gates: RouteBandGates, ctx: RouteBandContext): HilRequest[] {
     );
 }
 
-/** Runs the route band for one `hil` verdict. Its only writes: spending an approval, raising a gate. */
-export async function routeCall(
+/**
+ * T526: the answer a gate already gives this session's exact call: an
+ * unspent approval (spent here) allows it once, a pending gate holds it, a
+ * denial refuses it. `undefined` when no gate answers it (none, or only a
+ * spent approval). `reason` words a hold; absent, the pending gate's own.
+ */
+export async function settleFromGates(
   gates: RouteBandGates,
-  ctx: RouteBandContext,
-): Promise<RoutedDecision> {
-  const candidates = matching(gates, ctx);
+  ctx: Pick<RouteBandContext, 'session' | 'call'> & {
+    reason?: string;
+    /** Only gates a classifier rule raised (`rule` set). */
+    ruled?: boolean;
+  },
+): Promise<RoutedDecision | undefined> {
+  const candidates = matching(gates, ctx).filter(
+    (gate) => ctx.ruled !== true || gate.rule !== undefined,
+  );
   const approved = candidates.find(
     (gate) => gate.decision === 'approve' && gate.consumed_at === undefined,
   );
@@ -100,8 +114,9 @@ export async function routeCall(
 
   const open = candidates.find((gate) => gate.status === 'pending');
   if (open !== undefined) {
+    const why = ctx.reason ?? open.summary ?? 'a call held for the human';
     return {
-      decision: { decision: 'deny', reason: routedReason(ctx.reason) },
+      decision: { decision: 'deny', reason: routedReason(why) },
       gate: open.id,
     };
   }
@@ -119,6 +134,16 @@ export async function routeCall(
       gate: denied.id,
     };
   }
+  return undefined;
+}
+
+/** Runs the route band for one `hil` verdict. Its only writes: spending an approval, raising a gate. */
+export async function routeCall(
+  gates: RouteBandGates,
+  ctx: RouteBandContext,
+): Promise<RoutedDecision> {
+  const settled = await settleFromGates(gates, ctx);
+  if (settled !== undefined) return settled;
 
   const raised = await gates.request('classifier_review', {
     policy: ctx.policy,

@@ -55,7 +55,7 @@ import {
 } from './decide';
 import { fingerprintCall } from './fingerprint';
 import { PI_VENDOR, piToClaudePayload } from './pi';
-import { type RouteBandGates, routeCall, routePolicy } from './route-band';
+import { type RouteBandGates, routeCall, routePolicy, settleFromGates } from './route-band';
 import {
   type ClaudePreToolUsePayload,
   DEFAULT_MAX_READ_BYTES,
@@ -571,9 +571,24 @@ export class HookService {
     }
 
     // 3. The classifier tier (§8.1 step 3), only for a call the tiers above
-    // allowed: a settled call is not worth a round trip.
-    if (decision.decision === 'allow') {
-      const tier = await this.classifierTier(ctx, payload);
+    // allowed: a settled call is not worth a round trip. A call the human
+    // approved just now (the route above) is not asked either (T526).
+    const rules =
+      decision.decision === 'allow' && allowedBy === undefined
+        ? this.classifierRulesFor(ctx, payload)
+        : [];
+    // T526: what the human already said about this exact call, when a
+    // classifier rule held it, settles it before the classifier is asked:
+    // approved (spent now) passes, pending or denied refuses. A paid call per
+    // retry, and a re-banding that could refuse what the human approved, are
+    // what this saves.
+    const settled = rules.length > 0 ? await this.settledByGate(ctx, payload) : undefined;
+    if (settled !== undefined) {
+      if (settled.decision.decision !== 'allow') wasRouted = true;
+      decision = { ...decision, ...settled.decision };
+      allowedBy = settled.allowedBy;
+    } else if (rules.length > 0) {
+      const tier = await this.classifierTier(ctx, payload, rules);
       if (tier !== undefined) {
         const applied = await this.applyClassifierTier(ctx, payload, tier, decision);
         if (tier.outcome.band === 'route') wasRouted = true;
@@ -613,19 +628,27 @@ export class HookService {
    * case). The opt-out and a missing key go through the same fail policy as
    * an outage (§6.4), by failing with `not_configured`.
    */
-  private async classifierTier(
+  /** The classifier rules in scope for this call (§6.2): none, and the tier is free. */
+  private classifierRulesFor(
     ctx: HookDecisionContext,
     payload: ClaudePreToolUsePayload,
-  ): Promise<{ outcome: ClassifierTierOutcome; called: boolean } | undefined> {
+  ): KnowledgeItem[] {
     const command = payload.tool_input?.command;
     const touched = touchedPaths({
       worktreePath: ctx.worktreePath,
       paths: pathsForToolCall(payload),
       ...(typeof command === 'string' && command.length > 0 ? { command } : {}),
     });
-    const rules = classifierRulesOf(this.rulesInScope(ctx.stream)).filter(
+    return classifierRulesOf(this.rulesInScope(ctx.stream)).filter(
       (rule) => touched === undefined || knowledgeMatchesPaths(rule, touched),
     );
+  }
+
+  private async classifierTier(
+    ctx: HookDecisionContext,
+    payload: ClaudePreToolUsePayload,
+    rules: KnowledgeItem[],
+  ): Promise<{ outcome: ClassifierTierOutcome; called: boolean } | undefined> {
     if (rules.length === 0) return undefined;
 
     const tier = this.options.classifier;
@@ -857,6 +880,24 @@ export class HookService {
     } catch {
       return undefined;
     }
+  }
+
+  /** T526: the answer an existing gate gives this exact call (`settleFromGates`), or none. */
+  private async settledByGate(
+    ctx: HookDecisionContext,
+    payload: ClaudePreToolUsePayload,
+  ): Promise<{ decision: HookDecision; allowedBy?: string } | undefined> {
+    const gates = this.options.gates;
+    const call = fingerprintCall(payload, ctx.worktreePath);
+    if (gates === undefined || call === undefined) return undefined;
+    // Only a gate a classifier rule raised: a read held under Ask, then allowed
+    // by a posture change, is the tiers' to clear, not a stale card's (T457).
+    const settled = await settleFromGates(gates, { session: ctx.session, call, ruled: true });
+    if (settled === undefined) return undefined;
+    return {
+      decision: settled.decision,
+      ...(settled.allowedBy !== undefined ? { allowedBy: settled.allowedBy } : {}),
+    };
   }
 
   /** The route band for one `ask` verdict. No gates or no fingerprintable call: plain deny, never allow. */
