@@ -3637,7 +3637,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T522 Ask and Turn into work are safe to retry
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge 0b8c1a70 on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** UI audit U6, U7. (U6) `Ask.tsx` creates the node then attaches its session; if the attach fails the dialog stays open with the question and the next Ask creates a second node. Treat an attach failure as `NewStream` does: say the node was made but its agent didn't start, close, open the node. (U7) `TurnIntoWork.tsx` runs five writes (move, update, project update, add repo, say) under one catch with a "nothing was started" message; a failure after the move leaves the node moved, and Retry moves it up another level. Make Retry skip steps already done (compare the node's current parent, goal, repos) and word the error by the step that failed.
 - **Acceptance Criteria:** Tests: an attach failure after a successful create leaves exactly one node and opens it; a Turn into work that fails at add-repo reports that step, and Retry finishes without moving the node again.
@@ -3685,7 +3685,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T528 The Changes tab shows a large diff whole, file by file
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** worker
 - **Scope:** §10 triage (E59): `DeliveryService.diff` cuts the patch at 20,000 chars mid-hunk (`delivery/service.ts`), and the UI's "Open the worktree to see the rest" (`DiffView.tsx`) fails after a merge. Cut on file boundaries, list omitted files with their stat, and add a per-file read (`GET /api/streams/:id/diff?file=`, same-origin rules as its siblings) the tab loads on expand, with a total cap.
 - **Acceptance Criteria:** A 60k-char diff over 6 files shows every file (lazily) with no partial hunk; omitted files are listed; review comments work on a lazily loaded file.
@@ -3743,7 +3743,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T535 An agent never starts in a recreated or merged node's worktree path
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done (merge bb4d8faa on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Daemon audit D2 (reproduced end to end): `attachSession` (`attach/service.ts`) uses `stream.worktree` with no existence check, and `subprocess-env.ts` `mkdirSync`s a cache dir under it, so a node whose worktree is gone gets a plain directory recreated under `<repo>/.worktrees/`, where git resolves to the operator's main checkout on `main`, and the agent works there. Routes there: Switch repo's `closeEmptyPart` (removes the worktree and branch but keeps both on the record) then writing to that closed part (T471 reopens it); `agile attach`/`review` on a merged node (`finishLanded` keeps `worktree`; `attach()` has no open-node check); a worktree deleted by hand. Before starting: if the worktree path is missing, re-add it from the branch with `createWorktree`'s no-hooks config when the branch exists, else refuse with a clear error; refuse attach/review on landed or archived nodes; clear `worktree` (and a deleted `branch`) in `closeEmptyPart` and `finishLanded`.
 - **Acceptance Criteria:** A node whose worktree dir was deleted restarts in a real worktree of its branch (`.git` file present, `git rev-parse --abbrev-ref HEAD` is its branch), or is refused when the branch is gone; nothing is created under the main checkout; attach on a landed node is refused; Switch repo's closed part has no stale worktree path.
@@ -3942,6 +3942,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-10-13 (T535 worker): beyond the audit, a land could `reset --hard` the operator's own current branch to the merge commit (a worktree of the target whose dir was replaced by a plain one), and main-sync could merge main into the operator's checkout through a plain directory; both fixed with a `.git`-of-its-own check. Merged or trashed nodes now refuse Start/Review/Resolve (409 in the cockpit, -32602 from the CLI); a leftover plain directory with files at a worktree path is refused, never deleted. Open: an agent start that finishes after a land's live-session check but before the land removes the worktree loses its worktree mid-session (T540/T542's area); `agile stream show` prints "created on first attach" for a merged node's cleared worktree.
 - 2026-10-13 (T547 worker): the store's parse cache measured `listStreams` at 300 nodes 315 → 18 ms and `feed/snapshot.test.ts` 11.7 → 4.4 s. It keys on `ino:size:mtimeNs:ctimeNs` and, for a file read within 3 s of its ctime, also compares the text (git's "racily clean"), because ext4 reuses inode numbers on alternate atomic writes and older kernels have coarse ctime. On a network-mounted home (NFS attribute caching) a write from another host can be missed for up to the attribute cache time. (T533 worker): while the daemon starts, `agiled.pid` reads `starting <pid>` (the lock, not yet the pidfile) for under a second; `kill $(cat agiled.pid)` in that window gets a non-pid.
 - 2026-10-13 (T531, for Pete): design §7.4 says gate and land events are fsynced, but no `land_*` event kind was ever added: a land is recorded as `stream_updated` (human `landed`) plus the delivery state, and neither is fsynced (the triage's "merges fsync through the routed `pr_merged` event" is wrong: the routed log isn't fsynced either). The `land_` prefix in `needsFsync` is kept for §7.4. Pete to say whether a land should be fsynced (e.g. fsync the `stream_updated` that sets `landed`).
 - 2026-10-13 (T536 worker, accepted by the manager, for Pete): every daemon git call now carries `-c core.hooksPath=/dev/null -c core.fsmonitor=false`. The worker chose `/dev/null` over the in-repo empty `.agile-daemon-cache/git/no-hooks` dir createWorktree used, because a commit can fill that dir (`git add -f`), and a land's `reset --hard` of the operator checkout then writes the hook there (reproduced). T343's read env already used `/dev/null`. `design/cockpit-design.md` §8 (the D11 bullet) is reworded to match. With fsmonitor off, the daemon's `git status` is slower in huge repos that rely on it. (T534 worker): a plain directory left where a node's worktree was makes git walk up to the operator's main checkout; T535 should check `<worktree>/.git` before any write.
