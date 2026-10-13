@@ -74,6 +74,21 @@ describe('parseKnownArgs', () => {
       'agile answer: --by needs a value',
     );
     expect(() => parseKnownArgs(['Q-1', '--by', '--', 'x'], ANSWER)).toThrow('--by needs a value');
+    expect(() =>
+      parseKnownArgs(['try', '--node', '--project', 'P-1'], {
+        verb: 'agile policy try',
+        values: ['project', 'node'],
+      }),
+    ).toThrow('agile policy try: --node needs a value');
+  });
+
+  test('a value that starts with -- is still a value (a quoted note may start with one)', () => {
+    const result = parseKnownArgs(['N', '--note', '--force was wrong'], {
+      verb: 'agile node close',
+      values: ['note'],
+    });
+    expect(result.options.note).toBe('--force was wrong');
+    expect(result.positionals).toEqual(['N']);
   });
 
   test('a verb with no options of its own names none, and a custom hint replaces the -- advice', () => {

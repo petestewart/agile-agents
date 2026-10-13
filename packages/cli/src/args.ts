@@ -76,6 +76,8 @@ export function parseKnownArgs(argv: readonly string[], spec: KnownArgsSpec): Pa
   const repeated: Record<string, string[]> = {};
   const values = new Set(spec.values ?? []);
   const flags = new Set(spec.flags ?? []);
+  const own = (word: string) =>
+    word.startsWith('--') && (values.has(word.slice(2)) || flags.has(word.slice(2)));
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string;
@@ -93,8 +95,10 @@ export function parseKnownArgs(argv: readonly string[], spec: KnownArgsSpec): Pa
       continue;
     }
     if (values.has(name)) {
+      // The next word is the value, whatever it looks like (`--note "--force
+      // was wrong"`), unless it is `--` or another of the verb's own options.
       const value = argv[i + 1];
-      if (value === undefined || value.startsWith('--')) {
+      if (value === undefined || value === END_OF_OPTIONS || own(value)) {
         throw new Error(`${spec.verb}: --${name} needs a value`);
       }
       options[name] = value;
@@ -102,9 +106,9 @@ export function parseKnownArgs(argv: readonly string[], spec: KnownArgsSpec): Pa
       i++;
       continue;
     }
-    const own = [...values, ...flags].map((o) => `--${o}`);
+    const known = [...values, ...flags].map((o) => `--${o}`);
     throw new Error(
-      `${spec.verb}: unknown option ${arg}${own.length > 0 ? ` (its options: ${own.join(', ')})` : ''}. ${
+      `${spec.verb}: unknown option ${arg}${known.length > 0 ? ` (its options: ${known.join(', ')})` : ''}. ${
         spec.hint ?? 'If it is part of the text, quote the text or put -- before it'
       }`,
     );
