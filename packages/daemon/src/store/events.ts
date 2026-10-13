@@ -33,7 +33,12 @@ export function buildEvent(kind: EventKind, input: BuildEventInput = {}): Event 
   });
 }
 
-/** §7.4: fsync gate and land events; prefix-based, so new kinds in either family are covered. */
+/**
+ * §7.4: fsync gate and land events; prefix-based, so new kinds in either
+ * family are covered. T531: no `land_*` kind exists yet; a land is recorded
+ * as `stream_updated` (human `landed`) and the delivery state, neither
+ * fsynced (in §10 for Pete).
+ */
 export function needsFsync(kind: EventKind | string): boolean {
   return kind.startsWith('gate_') || kind.startsWith('land_');
 }

@@ -2038,10 +2038,11 @@ async function handleStreamRoute(
     action === 'trash-preview';
   if (isGet ? req.method !== 'GET' : req.method !== 'POST') return undefined;
   if (!feed?.streams) return errorResponse(503, 'streams not available');
+  // T531: a write's origin first, as on every other write route: another site gets 403, not 400.
+  if (!isGet && !sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
   const parsedId = UlidSchema.safeParse(decodeURIComponent(match[1] ?? ''));
   if (!parsedId.success) return errorResponse(400, `invalid stream id: ${match[1]}`);
   const id = parsedId.data;
-  if (!isGet && !sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
 
   try {
     if (action === undefined) {

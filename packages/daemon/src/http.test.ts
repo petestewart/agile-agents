@@ -1828,6 +1828,21 @@ describe('T160 cockpit routes', () => {
     expect(long.status).toBe(400);
   });
 
+  test('T531: a cross-origin write with a bad id is 403, not 400', async () => {
+    const foreign = await fetch(url('/api/streams/not-an-id/say'), {
+      method: 'POST',
+      headers: { origin: 'http://evil.example', 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'hello' }),
+    });
+    expect(foreign.status).toBe(403);
+    const local = await fetch(url('/api/streams/not-an-id/say'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'hello' }),
+    });
+    expect(local.status).toBe(400);
+  });
+
   test('T333: POST /api/streams/:id/move moves as human; strict body; a refusal is 400; cross-origin 403', async () => {
     const move = (id: string, body: unknown, headers: Record<string, string> = {}) =>
       fetch(url(`/api/streams/${id}/move`), {

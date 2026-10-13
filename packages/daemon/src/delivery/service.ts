@@ -1386,11 +1386,17 @@ export function mergedOutside(repoRoot: string, branch: string, target: string):
   if (git(['merge-base', '--is-ancestor', branch, target], repoRoot, repoRoot).exitCode !== 0) {
     return false;
   }
+  // T531: merged means it had commits of its own. Its reflog says so: one entry is
+  // its creation (it never moved, so an untouched branch forked off a commit a merge
+  // brought in is not "merged"), more is work. With no reflog (expired, or never
+  // kept), a tip off the target's first-parent line is the fallback.
+  const reflog = git(['reflog', 'show', '--format=%H', `refs/heads/${branch}`], repoRoot, repoRoot);
+  const moves = reflog.exitCode === 0 ? reflog.stdout.split('\n').filter(Boolean).length : 0;
+  if (moves > 1) return true;
+  if (moves === 1) return false;
   const tip = git(['rev-parse', `refs/heads/${branch}`], repoRoot, repoRoot).stdout;
   const firstParent = git(['rev-list', '--first-parent', target], repoRoot, repoRoot);
-  if (firstParent.exitCode === 0 && !firstParent.stdout.split('\n').includes(tip)) return true;
-  const reflog = git(['reflog', 'show', '--format=%H', `refs/heads/${branch}`], repoRoot, repoRoot);
-  return reflog.exitCode === 0 && reflog.stdout.split('\n').filter(Boolean).length > 1;
+  return firstParent.exitCode === 0 && !firstParent.stdout.split('\n').includes(tip);
 }
 
 /** The PR body: the node's goal, progress and (T322) the issue it rolls up to. */
