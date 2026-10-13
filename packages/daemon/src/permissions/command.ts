@@ -32,8 +32,6 @@ type CharRole = 'plain' | 'single' | 'double' | 'ansi' | 'quote' | 'escape' | 'e
 interface LexedChar {
   ch: string;
   role: CharRole;
-  /** Its index in the command as written. */
-  at: number;
 }
 
 interface LexedCommand {
@@ -60,46 +58,49 @@ function lexCommand(command: string): LexedCommand {
   let state: 'plain' | 'single' | 'double' | 'ansi' = 'plain';
   // A plain `$` was just read that isn't the second of `$$`.
   let dollar = false;
-  const emit = (ch: string, role: CharRole, at: number) => {
+  const emit = (ch: string, role: CharRole) => {
     dollar = role === 'plain' && ch === '$' && !dollar;
-    chars.push({ ch, role, at });
+    chars.push({ ch, role });
   };
   for (let i = 0; i < command.length; i++) {
     const c = command[i] as string;
     const next = command[i + 1];
     if (state === 'single') {
       if (c === "'") state = 'plain';
-      emit(c, c === "'" ? 'quote' : 'single', i);
+      emit(c, c === "'" ? 'quote' : 'single');
     } else if (state === 'ansi') {
       if (c === '\\' && next !== undefined) {
-        emit(c, 'ansi', i);
-        emit(next, 'ansi', ++i);
+        emit(c, 'ansi');
+        emit(next, 'ansi');
+        i++;
       } else {
         if (c === "'") state = 'plain';
-        emit(c, c === "'" ? 'quote' : 'ansi', i);
+        emit(c, c === "'" ? 'quote' : 'ansi');
       }
     } else if (c === '\\' && next === '\n') {
       i++; // a line continuation: neither character is read
     } else if (state === 'double') {
       if (c === '\\' && next !== undefined && DOUBLE_QUOTE_ESCAPES.has(next)) {
-        emit(c, 'escape', i);
-        emit(next, 'escaped', ++i);
+        emit(c, 'escape');
+        emit(next, 'escaped');
+        i++;
       } else {
         if (c === '"') state = 'plain';
-        emit(c, c === '"' ? 'quote' : 'double', i);
+        emit(c, c === '"' ? 'quote' : 'double');
       }
     } else if (c === '\\') {
       if (next === undefined) {
-        emit(c, 'escaped', i);
+        emit(c, 'escaped');
       } else {
-        emit(c, 'escape', i);
-        emit(next, 'escaped', ++i);
+        emit(c, 'escape');
+        emit(next, 'escaped');
+        i++;
       }
     } else if (c === "'" || c === '"') {
       state = c === '"' ? 'double' : dollar ? 'ansi' : 'single';
-      emit(c, 'quote', i);
+      emit(c, 'quote');
     } else {
-      emit(c, 'plain', i);
+      emit(c, 'plain');
     }
   }
   return { chars, unterminated: state !== 'plain' };
