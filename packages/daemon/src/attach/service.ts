@@ -510,7 +510,11 @@ export class AttachService {
       ...(options.deliveryDelayMs !== undefined ? { delayMs: options.deliveryDelayMs } : {}),
       lineBody: (node, ts) => {
         try {
-          const thread = options.store.readThread(node);
+          // T557: the Director's lines are on its own thread.
+          const thread =
+            node === DIRECTOR_NODE
+              ? options.store.readDirectorThread()
+              : options.store.readThread(node);
           for (let i = thread.length - 1; i >= 0; i--) {
             const e = thread[i];
             if (e?.ts === ts && e.by === 'human') return e.body;
