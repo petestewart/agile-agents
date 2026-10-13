@@ -18,8 +18,15 @@ import {
   nodeRole,
 } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
-import { hasFlag, optionalList, optionalString, requireOption, requirePositional } from '../args';
-import { callRpc } from '../client';
+import {
+  hasFlag,
+  optionalList,
+  optionalString,
+  refuseExtraWords,
+  requireOption,
+  requirePositional,
+} from '../args';
+import { LONG_RPC_TIMEOUT_MS, callRpc, nodeCheck } from '../client';
 import { printFields, printJson, printTable } from '../format';
 import { formatSession } from './attach';
 
@@ -47,6 +54,7 @@ export async function runStreamNew(
 ): Promise<number> {
   const title = requireOption(args.options, 'title');
   const goal = requireOption(args.options, 'goal');
+  refuseExtraWords(args, 0, 'agile node new', '--goal "fix the login bug"');
   const helperOf = optionalString(args.options, 'helper-of');
   const parent = optionalString(args.options, 'parent') ?? helperOf;
   const repo = optionalString(args.options, 'repo');
@@ -55,16 +63,27 @@ export async function runStreamNew(
   // T204: a work or conversation node starts its agent unless --no-start.
   const noStart = hasFlag(args.options, 'no-start');
 
-  const stream = await callRpc<Stream>(socketPath, 'stream.create', {
-    title,
-    goal,
-    ...(project !== undefined ? { project } : {}),
-    ...(labels !== undefined ? { labels } : {}),
-    ...(parent !== undefined ? { parent } : {}),
-    ...(repo !== undefined ? { repo } : {}),
-    ...(helperOf !== undefined ? { helper_of: helperOf } : {}),
-    ...(noStart ? { start: false } : {}),
-  });
+  // T523: unless --no-start, the create waits for the agent's start (worktree, model pick, vendor).
+  const stream = await callRpc<Stream>(
+    socketPath,
+    'stream.create',
+    {
+      title,
+      goal,
+      ...(project !== undefined ? { project } : {}),
+      ...(labels !== undefined ? { labels } : {}),
+      ...(parent !== undefined ? { parent } : {}),
+      ...(repo !== undefined ? { repo } : {}),
+      ...(helperOf !== undefined ? { helper_of: helperOf } : {}),
+      ...(noStart ? { start: false } : {}),
+    },
+    noStart
+      ? {}
+      : {
+          timeoutMs: LONG_RPC_TIMEOUT_MS,
+          check: `\`agile node list${parent !== undefined ? ` --parent ${parent}` : ''}\``,
+        },
+  );
 
   if (json) printJson(stream);
   else {
@@ -303,6 +322,7 @@ export async function runStreamClose(
   json: boolean,
 ): Promise<number> {
   const id = requirePositional(args, 0, 'stream-id');
+  refuseExtraWords(args, 1, 'agile node close', '--note "shipped in the other node"');
   const note = optionalString(args.options, 'note');
   const stream = await callRpc<Stream>(socketPath, 'stream.close', {
     id,
@@ -335,11 +355,13 @@ export async function runStreamSay(
   // Everything after the id is the text, so an unquoted sentence works.
   const text = args.positionals.slice(1).join(' ').trim();
   if (text.length === 0) throw new Error('agile stream say: <text> is required');
-  const entry = await callRpc<ThreadEntry>(socketPath, 'stream.thread_append', {
-    id,
-    kind: 'line',
-    body: text,
-  });
+  // T523: a resting agent whose CLI was updated in place is restarted with the line.
+  const entry = await callRpc<ThreadEntry>(
+    socketPath,
+    'stream.thread_append',
+    { id, kind: 'line', body: text },
+    { timeoutMs: LONG_RPC_TIMEOUT_MS, check: nodeCheck(id) },
+  );
   if (json) {
     printJson(entry);
     return 0;
@@ -380,10 +402,12 @@ export async function runStreamAddRepo(
 ): Promise<number> {
   const id = requirePositional(args, 0, 'node-id');
   const repo = requirePositional(args, 1, 'repo');
+  // T523: stops the agent, cuts a worktree and starts the agent again.
   const result = await callRpc<{ node: Stream; parts: Stream[] }>(
     socketPath,
     switching ? 'node.switch_repo' : 'node.add_repo',
     { id, repo },
+    { timeoutMs: LONG_RPC_TIMEOUT_MS, check: nodeCheck(id) },
   );
   if (json) {
     printJson(result);
@@ -457,11 +481,13 @@ export async function runStreamLink(
   const remove = hasFlag(args.options, 'remove');
   const key = remove ? null : requirePositional(args, 1, 'issue-key');
   const system = optionalString(args.options, 'system');
-  const node = await callRpc<Stream>(socketPath, 'node.link', {
-    id,
-    key,
-    ...(system !== undefined ? { system } : {}),
-  });
+  // T523: the tracker's API answers in its own time.
+  const node = await callRpc<Stream>(
+    socketPath,
+    'node.link',
+    { id, key, ...(system !== undefined ? { system } : {}) },
+    { timeoutMs: LONG_RPC_TIMEOUT_MS, check: nodeCheck(id) },
+  );
   if (json) {
     printJson(node);
     return 0;
@@ -482,10 +508,12 @@ export async function runStreamImportChildren(
   json: boolean,
 ): Promise<number> {
   const id = requirePositional(args, 0, 'node-id');
+  // T523: the tracker's API, page by page, then one node per issue.
   const result = await callRpc<{ created: Stream[]; skipped: string[] }>(
     socketPath,
     'node.import_children',
     { id },
+    { timeoutMs: LONG_RPC_TIMEOUT_MS, check: `\`agile node list --parent ${id}\`` },
   );
   if (json) {
     printJson(result);

@@ -11,7 +11,7 @@
 
 import type { ParsedArgs } from '../args';
 import { requirePositional } from '../args';
-import { callRpc } from '../client';
+import { LONG_RPC_TIMEOUT_MS, callRpc, nodeCheck } from '../client';
 import { printJson } from '../format';
 
 /** Mirrors the daemon's `LandOutcome` (`delivery/service.ts`). */
@@ -27,7 +27,14 @@ export async function runLand(
   json: boolean,
 ): Promise<number> {
   const stream = requirePositional(args, 0, 'stream-id');
-  const outcome = await callRpc<LandOutcome>(socketPath, 'delivery.deliver', { stream });
+  // T523: ship checks, `git push` with its hooks, the GitHub API and settle
+  // can outlast any short wait, and the daemon merges whether we wait or not.
+  const outcome = await callRpc<LandOutcome>(
+    socketPath,
+    'delivery.deliver',
+    { stream },
+    { timeoutMs: LONG_RPC_TIMEOUT_MS, check: nodeCheck(stream) },
+  );
 
   if (json) {
     printJson(outcome);

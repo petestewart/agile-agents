@@ -17,7 +17,7 @@
 import { EFFORT_LEVELS, type SessionRef, type Stream } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { optionalString, requirePositional } from '../args';
-import { callRpc } from '../client';
+import { LONG_RPC_TIMEOUT_MS, callRpc, nodeCheck } from '../client';
 import { printJson } from '../format';
 
 interface ReviewResult {
@@ -39,13 +39,19 @@ export async function runReview(
     throw new Error(`--effort must be one of ${EFFORT_LEVELS.join(', ')}, got ${effort}`);
   }
 
-  const result = await callRpc<ReviewResult>(socketPath, 'attach.start', {
-    stream,
-    role: 'reviewer',
-    ...(vendor !== undefined ? { vendor } : {}),
-    ...(model !== undefined ? { model } : {}),
-    ...(effort !== undefined ? { effort } : {}),
-  });
+  // T523: as `attach`, a start that can take minutes.
+  const result = await callRpc<ReviewResult>(
+    socketPath,
+    'attach.start',
+    {
+      stream,
+      role: 'reviewer',
+      ...(vendor !== undefined ? { vendor } : {}),
+      ...(model !== undefined ? { model } : {}),
+      ...(effort !== undefined ? { effort } : {}),
+    },
+    { timeoutMs: LONG_RPC_TIMEOUT_MS, check: nodeCheck(stream) },
+  );
 
   if (json) {
     printJson(result.session);

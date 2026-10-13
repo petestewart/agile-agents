@@ -27,7 +27,7 @@ import {
 } from '@agile-agents/shared';
 import type { ParsedArgs } from '../args';
 import { optionalString, requirePositional } from '../args';
-import { callRpc } from '../client';
+import { LONG_RPC_TIMEOUT_MS, callRpc } from '../client';
 import { printFields, printJson } from '../format';
 
 interface PolicyView {
@@ -390,10 +390,14 @@ export async function runPolicyTry(
 ): Promise<number> {
   requirePositional(args, 0, 'task text');
   const text = args.positionals.join(' ');
-  const result = await callRpc<ModelPolicyTryResult>(socketPath, 'policy.try', {
-    ...layerParams(args),
-    text,
-  });
+  // T523: Jev alone may take 25 s. A try starts and writes nothing, so a
+  // timeout has no work left to check on: the plain message is the truth.
+  const result = await callRpc<ModelPolicyTryResult>(
+    socketPath,
+    'policy.try',
+    { ...layerParams(args), text },
+    { timeoutMs: LONG_RPC_TIMEOUT_MS },
+  );
   if (json) {
     printJson(result);
     return 0;

@@ -53,16 +53,17 @@ describe('parseHookArgs', () => {
   // T136 (QA rough edge 2): the usage line stopped presenting
   // `--fail-closed` (the default since T009) as the flag you need, and
   // names the real opt-out instead.
+  // T523: bare `agile` is help, printed to stdout.
   test('the usage line names --fail-open, not --fail-closed', async () => {
-    const errors: string[] = [];
-    const original = console.error;
-    console.error = (msg: string) => errors.push(String(msg));
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (msg: string) => lines.push(String(msg));
     try {
       expect(await runCli([])).toBe(0);
     } finally {
-      console.error = original;
+      console.log = original;
     }
-    const hookLine = errors
+    const hookLine = lines
       .join('\n')
       .split('\n')
       .find((line) => line.trim().startsWith('hook <event>'));

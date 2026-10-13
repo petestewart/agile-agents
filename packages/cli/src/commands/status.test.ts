@@ -4,9 +4,12 @@
  * with the subsystems behind them.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { writeFileSync } from 'node:fs';
+import { type Server, createServer } from 'node:net';
 import { join } from 'node:path';
+import { resolveHomePaths } from '@agile-agents/daemon';
 import { type TestDaemon, startTestDaemon } from '../test-support';
-import { fetchStatus, printStatusHuman, runStatus } from './status';
+import { fetchStatus, needsYouCount, printStatusHuman, runStatus } from './status';
 import { runStreamList } from './stream';
 
 let daemon: TestDaemon;
@@ -174,5 +177,100 @@ describe('runStatus', () => {
       console.error = originalError;
       console.log = originalLog;
     }
+  });
+});
+
+/**
+ * T523 (CLI audit C4): `needs you` is the cockpit's Needs me count, every
+ * `inbox.list` item, not only pending gates and open questions.
+ */
+describe('needs you (T523)', () => {
+  test('counts what the inbox lists: a proposal counts though no gate or question is open', async () => {
+    await daemon.rulesService.create('human', { text: 'never force-push main' });
+    const status = await fetchStatus(daemon.socketPath);
+    expect(status.gates).toEqual([]);
+    expect(status.questions).toEqual([]);
+    expect(status.inbox?.map((i) => i.kind)).toEqual(['rule_accept']);
+    expect(needsYouCount(status)).toBe(1);
+    const lines = await capture(async () => printStatusHuman(status));
+    expect(lines.find((l) => l.startsWith('needs you'))).toMatch(/^needs you\s+1$/);
+  });
+
+  test('a question counts once, as the cockpit shows it once', async () => {
+    await seedQuestion();
+    const status = await fetchStatus(daemon.socketPath);
+    expect(status.inbox).toHaveLength(1);
+    expect(needsYouCount(status)).toBe(1);
+  });
+
+  test('a daemon that gave no inbox falls back to pending gates + open questions', async () => {
+    await seedQuestion();
+    const { inbox: _inbox, ...status } = await fetchStatus(daemon.socketPath);
+    expect(needsYouCount(status)).toBe(1);
+  });
+});
+
+/** T523 (CLI audit C5): a daemon that took the call and didn't answer is not "not running". */
+describe('a daemon that does not answer in time (T523)', () => {
+  let silent: Server | undefined;
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => (silent ? silent.close(() => resolve()) : resolve()));
+    silent = undefined;
+  });
+
+  test('says so with its pid, and exits 1', async () => {
+    const socketPath = join(daemon.home, 'busy.sock');
+    silent = createServer((socket) => {
+      socket.resume();
+    });
+    await new Promise<void>((resolve) => silent?.listen(socketPath, resolve));
+    // The pidfile names a live process: this one.
+    const paths = resolveHomePaths();
+    writeFileSync(paths.pidPath, `${process.pid}\n`);
+
+    const errors: string[] = [];
+    const logs: string[] = [];
+    const originalError = console.error;
+    const originalLog = console.log;
+    console.error = (msg: string) => errors.push(String(msg));
+    console.log = (msg: string) => logs.push(String(msg));
+    try {
+      expect(await runStatus(socketPath, false, { timeoutMs: 100 })).toBe(1);
+      const text = errors.join('\n');
+      expect(text).toContain(
+        `agiled (pid ${process.pid}) did not answer within 100 ms: it is running, but busy or stuck. Its log: ${paths.logPath}`,
+      );
+      expect(text).not.toContain('not running');
+
+      expect(await runStatus(socketPath, true, { timeoutMs: 100 })).toBe(1);
+      expect(JSON.parse(logs.join('\n'))).toMatchObject({
+        running: true,
+        pid: process.pid,
+        unansweredAfterMs: 100,
+      });
+    } finally {
+      console.error = originalError;
+      console.log = originalLog;
+    }
+  });
+
+  test('with no live pid in the pidfile it names the socket, not a pid', async () => {
+    const socketPath = join(daemon.home, 'busy.sock');
+    silent = createServer((socket) => {
+      socket.resume();
+    });
+    await new Promise<void>((resolve) => silent?.listen(socketPath, resolve));
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (msg: string) => errors.push(String(msg));
+    try {
+      expect(await runStatus(socketPath, false, { timeoutMs: 100 })).toBe(1);
+    } finally {
+      console.error = originalError;
+    }
+    expect(errors.join('\n')).toContain(
+      `something at ${socketPath} took the call but did not answer within 100 ms, and ${resolveHomePaths().pidPath} names no live agiled`,
+    );
   });
 });
