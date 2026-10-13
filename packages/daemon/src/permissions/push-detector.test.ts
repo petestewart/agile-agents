@@ -471,6 +471,11 @@ describe('T525: a push through a configured git alias', () => {
       why: 'a builtin in another case runs the builtin on a case-insensitive filesystem',
     },
     {
+      command: 'git HTTP-PUSH https://x refs/heads/main',
+      expect: 'unknown',
+      why: 'so does push plumbing',
+    },
+    {
       command: 'git p.q origin main',
       expect: 'unknown',
       why: 'an alias subsection git matches ignoring case',

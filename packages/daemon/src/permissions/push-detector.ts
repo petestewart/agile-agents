@@ -306,9 +306,10 @@ function expandAliases(
     if (GIT_BUILTIN_SUBCOMMANDS.has(sub) || FAIL_CLOSED_SUBCOMMANDS.has(sub)) {
       return { args, configs };
     }
-    if (GIT_BUILTIN_SUBCOMMANDS.has(sub.toLowerCase())) {
+    const lower = sub.toLowerCase();
+    if (GIT_BUILTIN_SUBCOMMANDS.has(lower) || FAIL_CLOSED_SUBCOMMANDS.has(lower)) {
       return {
-        unreadable: `\`git ${sub}\` runs \`git ${sub.toLowerCase()}\` on a case-insensitive filesystem`,
+        unreadable: `\`git ${sub}\` runs \`git ${lower}\` on a case-insensitive filesystem`,
       };
     }
     if (!ALIAS_NAME.test(sub)) {
