@@ -901,6 +901,22 @@ describe('T166: a branch merged outside `land`', () => {
     expect(landing.preflight(stream.id).merged).toBe(true);
   });
 
+  test('T531: an untouched branch forked off a commit a merge brought in is "nothing to merge"', async () => {
+    // A side branch merged --no-ff: its commit is in main, off main's first-parent line.
+    git(['checkout', '-q', '-b', 'side']);
+    writeFileSync(join(repo, 'side.txt'), 's\n');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'side work']);
+    git(['checkout', '-q', 'main']);
+    git(['merge', '-q', '--no-ff', '-m', 'merge side', 'side']);
+    const worktree = join(repo, '.worktrees', 's-off-side');
+    git(['worktree', 'add', '-q', '-b', 's-off-side', worktree, 'side']);
+    const stream = await makeStream({ branch: 's-off-side', worktree });
+    const pre = landing.preflight(stream.id);
+    expect(pre.merged).toBeUndefined();
+    expect(pre.reason).toMatch(/nothing to merge/);
+  });
+
   test('a branch with no commits of its own stays "nothing to land" and cannot be marked', async () => {
     const worktree = join(repo, '.worktrees', 's-empty');
     git(['worktree', 'add', '-q', '-b', 's-empty', worktree, 'main']);

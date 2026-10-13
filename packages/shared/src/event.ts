@@ -93,7 +93,8 @@ export const EVENT_KINDS = [
   //    or {source: 'eval', rule, rules, questions, latency_ms, outcome?, error?}
   'classifier_call',
 
-  // -- land --  none yet; T141 adds `land_*` with its emitter.
+  // -- land --  none: a land is `stream_updated` (human `landed`) plus the
+  // delivery state (T531). `needsFsync` keeps the `land_` prefix for §7.4.
 
   // -- home config + generic store writes --
   // `repos.yaml` / `vendors.yaml` / the permission policy, and the generic
