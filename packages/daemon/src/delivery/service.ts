@@ -191,11 +191,68 @@ export interface DeliveryServiceOptions {
   onRefused?: (streamId: string, key: string, words: string) => unknown;
 }
 
+/** T552: what a batch of `preflight`s reads once and shares (`DeliveryService.batchReads`). */
+interface BatchReads {
+  /** `<repo>\0<target>` → the target's checkouts, each with its `git status`. */
+  checkouts: Map<string, Checkout[]>;
+  /** `<repo>\0<target>` → whether the target branch exists. */
+  targets: Map<string, boolean>;
+  streams?: Stream[];
+}
+
 export class DeliveryService {
   private readonly diffRules: DiffRules;
+  private batch: BatchReads | undefined;
 
   constructor(private readonly options: DeliveryServiceOptions) {
     this.diffRules = options.diffRules ?? ALLOW_ALL_DIFF_RULES;
+  }
+
+  /**
+   * T552: runs `fn` with the reads several `preflight`s share made once: a
+   * target's `git worktree list` and its checkouts' `git status`, whether the
+   * target exists, and the node list. For the merge-state check, which asks
+   * about every ready node at once. Synchronous, so nothing the daemon writes
+   * lands between the reads and their use.
+   */
+  batchReads<T>(fn: () => T): T {
+    if (this.batch !== undefined) return fn();
+    this.batch = { checkouts: new Map(), targets: new Map() };
+    try {
+      return fn();
+    } finally {
+      this.batch = undefined;
+    }
+  }
+
+  /** `worktreesOn`, read once per target in a batch. */
+  private checkoutsOn(repoRoot: string, target: string): Checkout[] {
+    const memo = this.batch?.checkouts;
+    const key = `${repoRoot}\0${target}`;
+    const hit = memo?.get(key);
+    if (hit !== undefined) return hit;
+    const found = worktreesOn(repoRoot, target);
+    memo?.set(key, found);
+    return found;
+  }
+
+  /** `branchExists` for a target, read once per target in a batch. */
+  private targetExists(repoRoot: string, target: string): boolean {
+    const memo = this.batch?.targets;
+    const key = `${repoRoot}\0${target}`;
+    const hit = memo?.get(key);
+    if (hit !== undefined) return hit;
+    const found = branchExists(repoRoot, target);
+    memo?.set(key, found);
+    return found;
+  }
+
+  /** Every node, archived ones too (for `waits_on`), listed once in a batch. */
+  private everyStream(): Stream[] {
+    const list = () => this.options.streams.list({ include_archived: true });
+    if (this.batch === undefined) return list();
+    this.batch.streams ??= list();
+    return this.batch.streams;
   }
 
   async land(streamId: string, options: LandOptions = {}): Promise<LandOutcome> {
@@ -649,7 +706,7 @@ export class DeliveryService {
           reason: `the last merge into ${conflict.target} conflicted in ${conflict.files.join(', ')}; Resolve, or fix the branch by hand, then merge again`,
         };
       }
-      if (!branchExists(repoRoot, target)) {
+      if (!this.targetExists(repoRoot, target)) {
         return {
           ready: false,
           branch,
@@ -679,12 +736,12 @@ export class DeliveryService {
           reason: nothingToMerge(branch, target),
         };
       }
-      const dirty = dirtyCheckoutReason(target, worktreesOn(repoRoot, target));
+      const dirty = dirtyCheckoutReason(target, this.checkoutsOn(repoRoot, target));
       if (dirty !== undefined) return { ready: false, branch, target, ahead, reason: dirty };
       // T412: a direct merge waits for what the node waits on (P8), as `land` does, so
       // the header and the Delivery panel don't offer a Merge that would be held.
       if ((stream.delivery_state?.mode ?? this.resolveMode(stream, repoEntry)) === 'direct') {
-        const open = openWaits(stream, this.options.streams.list({ include_archived: true }));
+        const open = openWaits(stream, this.everyStream());
         if (open.length > 0) {
           return { ready: false, branch, target, ahead, reason: `waits on ${open.join(', ')}` };
         }
@@ -1307,8 +1364,29 @@ export function mainBranch(entry: RepoEntry, repoRoot: string): string {
   return entry.main_branch ?? entry.target_branch ?? defaultBranch(repoRoot);
 }
 
-/** The repo's default branch: `origin/HEAD`, else whichever of `main`/`master` exists, else `main`. */
-export function defaultBranch(repoRoot: string): string {
+/** T552: how long a repo's default branch is remembered (`defaultBranch`). */
+export const DEFAULT_BRANCH_TTL_MS = 30_000;
+
+const defaultBranches = new Map<string, { branch: string; at: number }>();
+
+/**
+ * The repo's default branch: `origin/HEAD`, else whichever of `main`/`master` exists, else `main`.
+ * T552: an answer git gave is remembered per repo for `DEFAULT_BRANCH_TTL_MS` (the frame, the
+ * node page and the sync loops ask it often); the `main` fallback is asked again each time.
+ */
+export function defaultBranch(repoRoot: string, now: number = Date.now()): string {
+  const hit = defaultBranches.get(repoRoot);
+  if (hit !== undefined && now - hit.at < DEFAULT_BRANCH_TTL_MS) return hit.branch;
+  const found = readDefaultBranch(repoRoot);
+  if (found === undefined) {
+    defaultBranches.delete(repoRoot);
+    return 'main';
+  }
+  defaultBranches.set(repoRoot, { branch: found, at: now });
+  return found;
+}
+
+function readDefaultBranch(repoRoot: string): string | undefined {
   const head = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoRoot, repoRoot);
   if (head.exitCode === 0 && head.stdout.startsWith('origin/')) {
     return head.stdout.slice('origin/'.length);
@@ -1316,7 +1394,7 @@ export function defaultBranch(repoRoot: string): string {
   for (const candidate of ['main', 'master']) {
     if (branchExists(repoRoot, candidate)) return candidate;
   }
-  return 'main';
+  return undefined;
 }
 
 /** A worktree with the target checked out, and its uncommitted tracked paths. */

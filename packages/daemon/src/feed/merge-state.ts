@@ -14,6 +14,10 @@
  *
  * T410: the same check measures a ready node's change ("3 files · +120 −14"),
  * so its Merge card says how much it merges.
+ *
+ * T552: the nodes due a check are checked together, in one scheduled run
+ * inside `batch`, so nodes on one target share its git reads, and a run
+ * that changed answers pushes the frame once.
  */
 
 import type { Stream } from '@agile-agents/shared';
@@ -34,6 +38,8 @@ export interface NothingToMergeCacheOptions {
   now?: () => number;
   /** Runs a check off the frame's path; `setTimeout(fn, 0)` by default. */
   schedule?: (fn: () => void) => void;
+  /** T552: wraps one run's checks so they share reads (`DeliveryService.batchReads`). */
+  batch?: (fn: () => void) => void;
   onChange?: () => void;
 }
 
@@ -78,10 +84,12 @@ function signature(stream: Stream): string {
 
 export class NothingToMergeCache {
   private readonly cache = new Map<string, Cached>();
-  private readonly queued = new Set<string>();
+  /** Node id → the signature it was queued under, for the next run. */
+  private readonly queued = new Map<string, string>();
   private readonly ttlMs: number;
   private readonly now: () => number;
   private readonly schedule: (fn: () => void) => void;
+  private readonly batch: (fn: () => void) => void;
   private readonly preflight: (streamId: string) => MergePreflight;
   private readonly stat: ((streamId: string) => DiffStat | undefined) | undefined;
   onChange: (() => void) | undefined;
@@ -92,6 +100,7 @@ export class NothingToMergeCache {
     this.ttlMs = options.ttlMs ?? NOTHING_TO_MERGE_TTL_MS;
     this.now = options.now ?? Date.now;
     this.schedule = options.schedule ?? ((fn) => setTimeout(fn, 0));
+    this.batch = options.batch ?? ((fn) => fn());
     this.onChange = options.onChange;
   }
 
@@ -126,39 +135,59 @@ export class NothingToMergeCache {
 
   private queue(id: string, sig: string): void {
     if (this.queued.has(id)) return;
-    this.queued.add(id);
-    this.schedule(() => {
-      this.queued.delete(id);
-      let value = false;
-      let merged = false;
-      let stat: DiffStat | undefined;
-      try {
-        const pre = this.preflight(id);
-        value = pre.ahead === 0 && pre.merged !== true && pre.conflicts === undefined;
-        merged = pre.merged === true;
-        if (this.stat !== undefined && (pre.ahead ?? 0) > 0) stat = this.stat(id);
-      } catch {
-        // A node that can't be checked keeps its Merge: the click says why.
+    const first = this.queued.size === 0;
+    this.queued.set(id, sig);
+    if (first) this.schedule(() => this.run());
+  }
+
+  /** Checks every queued node in one batch; a changed answer pushes the frame once. */
+  private run(): void {
+    const due = [...this.queued];
+    this.queued.clear();
+    let changed = false;
+    const checkAll = (): void => {
+      for (const [id, sig] of due) {
+        if (this.check(id, sig)) changed = true;
       }
-      const before = this.cache.get(id);
-      this.cache.set(id, {
-        sig,
-        value,
-        ...(merged ? { merged: true as const } : {}),
-        ...(stat !== undefined ? { stat } : {}),
-        at: this.now(),
-      });
-      if (
-        (before?.value ?? false) !== value ||
-        (before?.merged ?? false) !== merged ||
-        !sameStat(before?.stat, stat)
-      ) {
-        try {
-          this.onChange?.();
-        } catch {
-          // A failed re-push is the listener's problem, not the cache's.
-        }
-      }
+    };
+    try {
+      this.batch(checkAll);
+    } catch {
+      // The batch wrapper failed before or after the checks; whatever ran is cached.
+    }
+    if (!changed) return;
+    try {
+      this.onChange?.();
+    } catch {
+      // A failed re-push is the listener's problem, not the cache's.
+    }
+  }
+
+  /** One node's check; true when its answer changed. */
+  private check(id: string, sig: string): boolean {
+    let value = false;
+    let merged = false;
+    let stat: DiffStat | undefined;
+    try {
+      const pre = this.preflight(id);
+      value = pre.ahead === 0 && pre.merged !== true && pre.conflicts === undefined;
+      merged = pre.merged === true;
+      if (this.stat !== undefined && (pre.ahead ?? 0) > 0) stat = this.stat(id);
+    } catch {
+      // A node that can't be checked keeps its Merge: the click says why.
+    }
+    const before = this.cache.get(id);
+    this.cache.set(id, {
+      sig,
+      value,
+      ...(merged ? { merged: true as const } : {}),
+      ...(stat !== undefined ? { stat } : {}),
+      at: this.now(),
     });
+    return (
+      (before?.value ?? false) !== value ||
+      (before?.merged ?? false) !== merged ||
+      !sameStat(before?.stat, stat)
+    );
   }
 }

@@ -737,6 +737,7 @@ function resolveFeedContext(options: HttpServerOptions): FeedContext | undefined
           mergeState: new NothingToMergeCache({
             preflight: (id) => options.landing?.preflight(id) ?? {},
             stat: (id) => options.landing?.diffStat(id),
+            batch: (fn) => (options.landing ? options.landing.batchReads(fn) : fn()),
           }),
         }
       : {}),
