@@ -3613,7 +3613,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T519 The composer keeps everything you write
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** worker
 - **Scope:** UI audit 2026-10-13 U1–U3, checked by the manager. (1) The composer still caps a message at 800 (`Composer.tsx` default `maxLength = 800`; review's `MESSAGE_MAX = THREAD_BODY_MAX_CHARS` in `lib/review.ts`) while the daemon accepts `HUMAN_LINE_MAX_CHARS` (4,000) for a line you write since T437; PLAN's T437 says the composer takes 4,000. Use the shared constant on the node page, the Director and review's "Add to message". (2) `send()` in `StreamPage.tsx` reads the draft, awaits the request (seconds when it starts the agent) and then clears the whole draft, so anything typed meanwhile is lost: clear only what was sent, keep the rest. (3) `useReviewUpkeep` (`lib/review.ts`) drops kept drafts and review comments for `closed` nodes on every frame, but since T471 a closed node's composer says "Write to reopen it…", so typing there is erased by the next push: keep drafts for nodes that can still be written to (closed); drop them only for nodes that can't (merged and deleted), per T436's intent.
 - **Acceptance Criteria:** A 3,000-character message sends from the node page and the Director; review's add-to-message allows up to 4,000 minus what's there; text typed while a send is in flight survives it (unit test with a held request); a closed node's draft survives a pushed frame, a merged or deleted node's still goes.
@@ -3621,7 +3621,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T520 A node's page never shows another node's results
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge 39c97eda on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** UI audit U4 and U8, checked by the manager. (1) `<StreamPage id={selected} />` has no `key` (`App.tsx`), so one instance serves every node: the `[id]` reset effect clears state at switch time, but a slow call started on node A (Merge, Start/Stop, a send) completes afterwards into the page now showing B (A's spinner, A's refusal and fix button, A's result making B's Merge show, A's `load()` flashing B back to the skeleton). Key the page by node, or guard every completion with the current id; keep whatever per-node state the reset effect deliberately carries over (check its comments) working. (2) `refresh()` in `lib/feed-context.tsx` sets whatever `GET /api/cockpit` returns, with no ordering against pushed `/ws` frames or other refreshes, so a slow refresh can overwrite a newer frame: drop a refresh response when a frame arrived after the request was sent, and keep only the latest refresh (as `StreamPage.load`'s `loadSeq` does).
 - **Acceptance Criteria:** Unit/component tests: a held Merge on A then a switch to B leaves B's header, Delivery panel and composer untouched when A's call resolves; a refresh response older than a received frame is ignored. Existing e2e for the node page still pass.
@@ -3645,7 +3645,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T523 CLI: long verbs wait, help is help, free text is kept
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** Done (merge 40ac93f7 on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** CLI audit C1–C5, checked by the manager. (C1) `callRpc` defaults to a 5 s timeout (`packages/cli/src/client.ts`); `agile land`/`deliver` (ship checks through the classifier with a 25 s deadline, `git push` with pre-push hooks, the GitHub API, settle) and `policy try` (Jev, 25 s) use it, so the CLI exits 1 "timed out" while the daemon finishes the merge. Give every long verb (land/deliver, resolve, attach, policy try; check the rest) a long timeout the way T155 did for `rules test`. (C2) `agile --help`/`help`/`-h` print usage to stderr and exit 1: print to stdout, exit 0, and support `<verb> --help` where usage exists. (C3) `parseArgs` turns any `--word` in free text into an option eating the next word, so `agile answer Q-1 use --no-verify then push` sends "use push": free-text verbs (`answer`, `node say`, `director say`, others found) keep the rest of the line verbatim apart from their known options, or refuse unknown options with a clear error. (C4) `agile status` "needs you" counts gates + questions while the cockpit counts `inbox.list`: count the inbox like the cockpit. (C5) `agile status` reports a daemon that timed out as "not running": say it didn't answer in time, with its pid.
 - **Acceptance Criteria:** CLI tests for each item; usage text lists only commands that exist; `agile --help` exit 0 on stdout.
@@ -3669,7 +3669,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T526 The hook settles a held call from its gate before asking the classifier
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge 90ff6ded on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** §10 triage (E50): `hook/service.ts` calls `classifierTier` before `route()` looks for an existing gate for the call's fingerprint, so each retry of a held call is a paid classifier call, and after approval the retry is re-banded (a deny-band answer refuses what the human approved; an allow-band answer passes it with the approval unspent). Compute the fingerprint first: approved and unspent → spend and allow; pending → deny "held"; denied → deny; only with no gate ask the classifier.
 - **Acceptance Criteria:** Route → retry while pending → approve → retry makes exactly one `FakeClassifier` call; the post-approval retry is allowed even if the fake now scores high, and the approval is spent.
@@ -3727,7 +3727,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T533 A second daemon start changes nothing before it holds the lock
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** worker
 - **Scope:** Daemon audit D1: every startup mutation (`routedEvents.recover`, `attachService.endOrphansAtStart`, `stampExistingProjects`, `wakePending`, `migrateHome`, timers) runs in `daemon.ts` before `acquireLock`. A second `agile daemon start` (or `--foreground`, which skips the pidfile check) marks the live daemon's running sessions `stopped` and its nodes `idle`, may wake agents, and only then fails with `LockError`; afterwards the next say/wake starts a second agent in the same worktree. Take the lock right after config discovery, before the store opens (its temp-file sweep is a mutation too); keep the port-bind/pidfile ordering the lifecycle tests rely on; on a failed start stop anything already started.
 - **Acceptance Criteria:** With a live daemon holding a running session, a second start fails with the lock error and leaves the session `running`, the node's statuses and its thread unchanged, and starts no agent; existing lifecycle tests green.
@@ -3735,7 +3735,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T534 Git on a missing directory fails cleanly instead of throwing
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** worker
 - **Scope:** Daemon audit D6, D9: Bun's `spawnSync` throws ENOENT when `cwd` doesn't exist, so `git()`, `gitWrite()` and `removeWorktreeSafely` (`delivery/git.ts`) throw for a node whose worktree directory is gone. `land()` then throws after `update-ref` has already merged (a merge-together group's other members stay open with `ready`; retro, main-sync and settle are skipped), `prepareMerge`'s `finally` masks the real refusal and leaks its temp dir, and the overlap and main-sync sweeps (`sync/overlap.ts`, `sync/main-sync.ts`) stop at the first such node every 60 s (main-sync records `lastMain` first, so later nodes never sync for that move). Make the helpers return a failed result (or `removed: false`) for a missing `cwd`, as `diff()` and `trash.dirty()` already guard, and give each node in the sweeps its own try.
 - **Acceptance Criteria:** A land of a merge-together group whose first member's worktree dir is missing finishes: both landed, no throw; the sweeps process every node after a missing one; `prepareMerge` with a failed temp worktree reports the real refusal.
@@ -3751,7 +3751,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T536 The daemon's own git writes never run repo hooks
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** worker
 - **Scope:** Daemon audit D4 (security, reproduced): D11's "no repo hook runs daemon-side" is enforced in `createWorktree` and T343's read env, but `gitWrite` (`delivery/git.ts`) sets no `core.hooksPath`, and it runs main-sync's `git merge` in each node's worktree (`sync/main-sync.ts`), land's temp-worktree add and merge (`delivery/service.ts`), and `resumeParked`'s `git worktree add` (`streams/repo-in-place.ts`). In a repo with a tracked hooks dir (`core.hooksPath=.githooks`, husky), an engineer commits `.githooks/post-merge` on its branch and the next main move runs it as the daemon, outside every gate and sandbox. Pass `-c core.hooksPath=<the empty no-hooks dir createWorktree uses>` on every daemon git write (and `-c core.fsmonitor=false` where cheap); find every other daemon git write that bypasses `gitWrite` and cover it too.
 - **Acceptance Criteria:** The audit's scenario (a tracked `post-merge` committed on a node's branch, then main-sync and a land) runs no hook: test with a marker file; a grep shows no daemon git write path without the override.
@@ -3857,7 +3857,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T547 The store doesn't re-parse a file that hasn't changed
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** worker
 - **Scope:** Perf P2 (drives P7, P14, P16), checked by the manager: `yaml.parse` is ≈93% of every store read and nothing is cached, so `listStreams` at 300 nodes is ≈200 ms and an idle daemon with 300 nodes uses ≈12% of a core (the PR poller, tracker, gate, overlap and main-sync ticks each re-list everything). Add an instance-level cache in `StateStore` keyed by absolute path, validated by `statSync(path, {bigint: true})` (`ino:size:mtimeNs:ctimeNs`; atomic writes rename a new inode in), holding the **validated** value per validator and returning `structuredClone` of it. Apply it to `readRecord` (streams, knowledge, projects, director), agents, policy/repos/home config, and `readEntityFile` (gates, questions, plans, proposals, contracts, cards). Never cache a failure (a corrupt file is refused with path and line on every read); drop the entry on remove/delete; bound it (LRU ≈20k). Keep the `yaml` parser (no `Bun.YAML` swap: its errors and dialect differ).
 - **Acceptance Criteria:** `store.test.ts`: a second `listStreams` with nothing changed doesn't re-parse (test seam count); an external same-size rewrite is picked up; mutating a returned record doesn't change the next read; a corrupt file throws path:line on every read; a deleted file leaves the list. The full `bun test` stays green (manager runs it).
@@ -3934,6 +3934,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-10-13 (T520 worker): with the node page keyed by node, a call still running when you leave a node and come back (A→B→A) is idle again on return: its refusal or error words aren't shown, its effect arrives with the next frame (as leaving for Needs me already did). A per-node in-flight registry would keep them; not done. (T523 worker): `agile` free-text verbs now refuse unknown `--options` (quote or use `--`); long verbs wait up to 10 min and say where to check if they stop waiting.
 - 2026-10-13 (T525 worker, confirmed by the manager, for Pete): env prefixes that change what a command loads pass the engineer table: `HOME=. git status` (a `./.gitconfig` the agent wrote, `core.fsmonitor` runs a program), `PATH=. ls`, `LD_PRELOAD=./x.so ls`, `BASH_ENV=./x bash -c ls` are allowed (`GIT_CONFIG_GLOBAL=`, `GIT_SSH_COMMAND=` are held). This is the same class as the agent running code it wrote through the repo's own tests, which the gate allows by design; only a process sandbox closes it. Pete to decide whether the table should hold these prefixes anyway. T525 itself fails closed on them for an alias. Also from T525: `git subtree push` (and `p4 submit`, `svn dcommit`) push without the `push` subcommand and aren't caught; the ACP tier remembers upstream/HEAD for the whole session, so a later bare `git push` can be checked against a stale branch.
 - 2026-10-13 (T524 worker): T457's ACP read routing never worked in a real daemon: `attach/service.ts` passed `gates.request`/`gates.consume` unbound, so every route threw and the request stayed pending (unit tests passed the service directly). Fixed in T524 with an end-to-end Cursor test. For Pete: ACP carries no refusal reason, so a hook-less agent sees a generic refusal rather than "wait for the human" (a line in hook-less vendors' briefs would help); old `bus/inbox/human/` files stay on disk unread.
 - 2026-10-13 (T516 worker, residual, for later tickets): a quote inside a `#` comment, and heredoc bodies, can still throw off the parser's quote reading; `sh -c "…" > /etc/x` drops the outer redirect when the parser looks inside; bash's `${var@P}` and arithmetic array subscripts run a stored command with no `$(`. Its fifth (the coordinator never runs the unsafe-construct check) was a live hole: T555.
