@@ -1247,12 +1247,22 @@ export class StateStore {
     });
   }
 
-  /** Appends one validated entry to `threads/<stream>.jsonl`. */
-  async appendThreadEntry(streamId: string, entry: unknown): Promise<ThreadEntry> {
+  /**
+   * Appends one validated entry to `threads/<stream>.jsonl`. T539: `entry`
+   * may be built from the node's last line time inside the write lock, so
+   * two appends started in the same tick still get distinct `ts` (a line's
+   * identity, T503).
+   */
+  async appendThreadEntry(
+    streamId: string,
+    entry: unknown | ((lastAt: string | undefined) => unknown),
+  ): Promise<ThreadEntry> {
     return this.mutate(() => {
       const streamRel = this.streamRelPath(streamId);
       if (!fileExists(this.abs(streamRel))) throw new NotFoundError('Stream', streamId);
-      const validated = validateThreadEntry(entry);
+      const validated = validateThreadEntry(
+        typeof entry === 'function' ? entry(this.threadUpdatedAt(streamId)) : entry,
+      );
       this.assertThreadPlace(streamId, validated);
       const relPath = this.threadRelPath(streamId);
       appendJsonlLine(this.abs(relPath), validated);
