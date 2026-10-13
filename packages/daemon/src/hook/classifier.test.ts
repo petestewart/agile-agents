@@ -196,6 +196,45 @@ describe('§6.3 bands', () => {
     expect(third.hookSpecificOutput?.permissionDecision).toBe('deny');
   });
 
+  test('T526: a held call is settled by its gate before the classifier is asked again', async () => {
+    const rule = classifierRule();
+    ruleSet = [rule];
+    const fake = new FakeClassifier([answer(rule.id, 0.6)]);
+    const hook = await svc(fake);
+    expect((await hook.preToolUse(call())).hookSpecificOutput?.permissionDecision).toBe('deny');
+    // The retry while the card waits is held by the card, with no second (paid) call.
+    const waiting = await hook.preToolUse(call());
+    expect(waiting.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(waiting.hookSpecificOutput?.permissionDecisionReason).toContain('held for the human');
+    expect(fake.calls).toHaveLength(1);
+    expect(gates.list().filter((g) => g.gate === 'classifier_review')).toHaveLength(1);
+    const gate = gates.list().find((g) => g.gate === 'classifier_review');
+    await gates.respond(gate?.id as HilId, 'approve', 'human');
+    // The classifier would now deny it outright; the human's yes stands, and is spent.
+    fake.setScript([answer(rule.id, 0.95)]);
+    const approved = await hook.preToolUse(call());
+    expect(approved.hookSpecificOutput?.permissionDecision).toBe('allow');
+    expect(fake.calls).toHaveLength(1);
+    expect(gates.get(gate?.id as HilId).consumed_at).toBeDefined();
+  });
+
+  test('T526: a denied call is refused by its gate with no classifier call', async () => {
+    const rule = classifierRule();
+    ruleSet = [rule];
+    const fake = new FakeClassifier([answer(rule.id, 0.6)]);
+    const hook = await svc(fake);
+    await hook.preToolUse(call());
+    const gate = gates.list().find((g) => g.gate === 'classifier_review');
+    await gates.respond(gate?.id as HilId, 'deny', 'human', 'not now');
+    fake.setScript([answer(rule.id, 0.05)]);
+    const retry = await hook.preToolUse(call());
+    expect(retry.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(retry.hookSpecificOutput?.permissionDecisionReason).toContain(
+      'The human denied this call',
+    );
+    expect(fake.calls).toHaveLength(1);
+  });
+
   /**
    * T153: the deny is recorded as `resolved_violation`, not `violated`.
    * The hook already counted this call as a firing when it routed it, so
