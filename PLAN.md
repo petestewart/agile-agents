@@ -3610,6 +3610,46 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 - **Acceptance Criteria:** Tests: a reviewer's `mcp__github__create_issue` (any non-daemon MCP tool) through the Claude hook and the Codex hook gets the ACP tier's verdict for `other` (deny/hil, not allow); the daemon's own MCP tools keep their current verdicts; an engineer's verdicts are unchanged unless the report justifies it.
 - **Validation Steps:** `bun test packages/daemon/src/hook packages/daemon/src/permissions`; `bun run typecheck && bun run lint`.
 
+### Ticket: T519 The composer keeps everything you write
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** UI audit 2026-10-13 U1–U3, checked by the manager. (1) The composer still caps a message at 800 (`Composer.tsx` default `maxLength = 800`; review's `MESSAGE_MAX = THREAD_BODY_MAX_CHARS` in `lib/review.ts`) while the daemon accepts `HUMAN_LINE_MAX_CHARS` (4,000) for a line you write since T437; PLAN's T437 says the composer takes 4,000. Use the shared constant on the node page, the Director and review's "Add to message". (2) `send()` in `StreamPage.tsx` reads the draft, awaits the request (seconds when it starts the agent) and then clears the whole draft, so anything typed meanwhile is lost: clear only what was sent, keep the rest. (3) `useReviewUpkeep` (`lib/review.ts`) drops kept drafts and review comments for `closed` nodes on every frame, but since T471 a closed node's composer says "Write to reopen it…", so typing there is erased by the next push: keep drafts for nodes that can still be written to (closed); drop them only for nodes that can't (merged and deleted), per T436's intent.
+- **Acceptance Criteria:** A 3,000-character message sends from the node page and the Director; review's add-to-message allows up to 4,000 minus what's there; text typed while a send is in flight survives it (unit test with a held request); a closed node's draft survives a pushed frame, a merged or deleted node's still goes.
+- **Validation Steps:** `bun test packages/ui`; `bun run typecheck && bun run lint`; `bun run test:e2e` (composer specs).
+
+### Ticket: T520 A node's page never shows another node's results
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** UI audit U4 and U8, checked by the manager. (1) `<StreamPage id={selected} />` has no `key` (`App.tsx`), so one instance serves every node: the `[id]` reset effect clears state at switch time, but a slow call started on node A (Merge, Start/Stop, a send) completes afterwards into the page now showing B (A's spinner, A's refusal and fix button, A's result making B's Merge show, A's `load()` flashing B back to the skeleton). Key the page by node, or guard every completion with the current id; keep whatever per-node state the reset effect deliberately carries over (check its comments) working. (2) `refresh()` in `lib/feed-context.tsx` sets whatever `GET /api/cockpit` returns, with no ordering against pushed `/ws` frames or other refreshes, so a slow refresh can overwrite a newer frame: drop a refresh response when a frame arrived after the request was sent, and keep only the latest refresh (as `StreamPage.load`'s `loadSeq` does).
+- **Acceptance Criteria:** Unit/component tests: a held Merge on A then a switch to B leaves B's header, Delivery panel and composer untouched when A's call resolves; a refresh response older than a received frame is ignored. Existing e2e for the node page still pass.
+- **Validation Steps:** `bun test packages/ui`; `bun run typecheck && bun run lint`; `bun run test:e2e`.
+
+### Ticket: T521 Cockpit errors and focus say what happened
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** UI audit U5, U9–U12, checked against `design/cockpit-ui.md` §5/§7: (U5) a failed inline rename (`NodeHeader.tsx`) shows only as a hover tooltip — keep the input open with the draft and the error under it, as `GoalCard` does; (U9) the Knowledge screen (`Rules.tsx`) never re-reads after the socket reconnects — re-read on `connected` as `useSteps` does; (U10) a failed repo-norms read (`Lenses.tsx`) renders the empty state — show the error with Try again; (U11) a Needs me notification for a project root opens its Overview (`use-notify.ts`) — open the chat tab, as T403 and `use-unread.ts` do; (U12) after Move to trash focus falls to `<body>` — move it to the next sensible place per §7 "Focus after an action".
+- **Acceptance Criteria:** One test per item where the repo has a pattern for it (component/unit tests; e2e only where a spec already covers the area); no visual change beyond the error/focus states.
+- **Validation Steps:** `bun test packages/ui`; `bun run typecheck && bun run lint`; `bun run test:e2e`.
+
+### Ticket: T522 Ask and Turn into work are safe to retry
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** UI audit U6, U7. (U6) `Ask.tsx` creates the node then attaches its session; if the attach fails the dialog stays open with the question and the next Ask creates a second node. Treat an attach failure as `NewStream` does: say the node was made but its agent didn't start, close, open the node. (U7) `TurnIntoWork.tsx` runs five writes (move, update, project update, add repo, say) under one catch with a "nothing was started" message; a failure after the move leaves the node moved, and Retry moves it up another level. Make Retry skip steps already done (compare the node's current parent, goal, repos) and word the error by the step that failed.
+- **Acceptance Criteria:** Tests: an attach failure after a successful create leaves exactly one node and opens it; a Turn into work that fails at add-repo reports that step, and Retry finishes without moving the node again.
+- **Validation Steps:** `bun test packages/ui`; `bun run typecheck && bun run lint`; `bun run test:e2e` for Ask / Turn into work specs.
+
+### Ticket: T523 CLI: long verbs wait, help is help, free text is kept
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** CLI audit C1–C5, checked by the manager. (C1) `callRpc` defaults to a 5 s timeout (`packages/cli/src/client.ts`); `agile land`/`deliver` (ship checks through the classifier with a 25 s deadline, `git push` with pre-push hooks, the GitHub API, settle) and `policy try` (Jev, 25 s) use it, so the CLI exits 1 "timed out" while the daemon finishes the merge. Give every long verb (land/deliver, resolve, attach, policy try; check the rest) a long timeout the way T155 did for `rules test`. (C2) `agile --help`/`help`/`-h` print usage to stderr and exit 1: print to stdout, exit 0, and support `<verb> --help` where usage exists. (C3) `parseArgs` turns any `--word` in free text into an option eating the next word, so `agile answer Q-1 use --no-verify then push` sends "use push": free-text verbs (`answer`, `node say`, `director say`, others found) keep the rest of the line verbatim apart from their known options, or refuse unknown options with a clear error. (C4) `agile status` "needs you" counts gates + questions while the cockpit counts `inbox.list`: count the inbox like the cockpit. (C5) `agile status` reports a daemon that timed out as "not running": say it didn't answer in time, with its pid.
+- **Acceptance Criteria:** CLI tests for each item; usage text lists only commands that exist; `agile --help` exit 0 on stdout.
+- **Validation Steps:** `bun test packages/cli`; `bun run typecheck && bun run lint`.
+
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
 Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `plan/`, `review/` rounds, `sync/` (shelved on a branch), `feed/stories.ts`, `runner/pipeline-glue.ts`, sprint parts of `merge/`, `bus/` unless the thread reuses it. CLI: `run`, `send`, `halt`, `approve`, `sync`. Shared: `Ticket`, `Sprint`, `Stanza`, `Message`, `Halt`, `Quota`, `Review`, `Qa`, `Oracle`, `Kb`, `Ledger`. Briefs: all but `worker.md`, `reviewer.md`, `lessons.md`. UI: `plan/`, `sprint/`, `review/`, `OraclePanel`. State: the `agile-state` orphan branch and per-repo `.agile/`.
