@@ -16,8 +16,8 @@
  * read differently), as GitHub does.
  */
 
-import { THREAD_BODY_MAX_CHARS } from '@agile-agents/shared';
-import { useEffect, useSyncExternalStore } from 'react';
+import { HUMAN_LINE_MAX_CHARS } from '@agile-agents/shared';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { DiffFile, DiffRow } from './chat';
 import { KeptDrafts, type StorageLike, composerDrafts, sessionStore } from './drafts';
 import { useOptionalFeed } from './feed-context';
@@ -205,14 +205,14 @@ function formatWith(
  * The review as one message: a heading, then one numbered item per comment
  * in reading order — `path:line`, the line quoted as code, the comment.
  *
- * It fits in `max` characters (a thread line's cap by default) by clipping
- * the quotes shorter, then leaving them out (the path and line still point
- * at them); `fits` is false only when even that is too long.
+ * It fits in `max` characters (by default the cap on a line you write,
+ * T519) by clipping the quotes shorter, then leaving them out (the path and
+ * line still point at them); `fits` is false only when even that is too long.
  */
 export function formatReview(
   comments: readonly ReviewComment[],
   files: readonly DiffFile[],
-  max: number = THREAD_BODY_MAX_CHARS,
+  max: number = HUMAN_LINE_MAX_CHARS,
 ): { text: string; fits: boolean } {
   const ordered = orderComments(comments, files);
   let text = '';
@@ -225,8 +225,11 @@ export function formatReview(
 
 // ---------------------------------------------------------------- the draft
 
-/** A thread line's cap: what the review and the draft share. */
-export const MESSAGE_MAX = THREAD_BODY_MAX_CHARS;
+/**
+ * What the review and the draft share: T519 (audit U1), the cap on a line
+ * you write (T437), the composer's own, not the daemon's 800 for its lines.
+ */
+export const MESSAGE_MAX = HUMAN_LINE_MAX_CHARS;
 
 /** The review after whatever is already in the composer, a blank line between. */
 export function appendToDraft(draft: string, text: string): string {
@@ -459,37 +462,45 @@ export function unsentReviewQuestion(input: {
 }
 
 /**
- * T436: which kept drafts and reviews belong to nodes that are finished
- * (merged or closed) or deleted — they can't be sent any more. A node the
- * frame doesn't name yet (just created) is left alone.
+ * T436: which kept drafts and reviews belong to nodes that can't be written
+ * to any more: merged, or deleted (in the trash, or gone: a frame before
+ * listed it, `listedBefore`, and this one lists it nowhere, as when its
+ * parent's delete took it or it was deleted forever). A node no frame has
+ * named yet (just created) is left alone. T519 (audit U3): a closed node
+ * keeps its draft and comments: since T471 a message reopens it ("Write to
+ * reopen it…"), so what you type there is meant to be sent.
  */
-export function finishedIds(
+export function unwritableIds(
   ids: readonly string[],
   rows: ReadonlyArray<{ id: string; human_status: string }>,
   archived: ReadonlyArray<{ id: string }> = [],
+  listedBefore: ReadonlySet<string> = new Set(),
 ): string[] {
-  const done = new Set(
-    rows.filter((r) => r.human_status === 'landed' || r.human_status === 'closed').map((r) => r.id),
-  );
-  for (const row of archived) done.add(row.id);
-  return ids.filter((id) => done.has(id));
+  const listed = new Set(rows.map((r) => r.id));
+  const drop = new Set(rows.filter((r) => r.human_status === 'landed').map((r) => r.id));
+  for (const row of archived) drop.add(row.id);
+  for (const id of listedBefore) if (!listed.has(id)) drop.add(id);
+  return ids.filter((id) => drop.has(id));
 }
 
 /**
  * T436: mounted once in `App`. While any review comment is unsent, leaving
  * the page (closing the tab, a reload) asks first — the browser's own
  * "Leave site?" (a reload keeps them all the same). And a node that is
- * merged, closed or deleted drops its kept draft and comments.
+ * merged or deleted drops its kept draft and comments (`unwritableIds`).
  */
 export function useReviewUpkeep(): void {
   const cockpit = useOptionalFeed()?.cockpit;
+  // The nodes the last frame listed: one missing from the next is gone.
+  const listed = useRef<ReadonlySet<string>>(new Set());
   useEffect(() => {
     if (!cockpit) return;
     const ids = [...new Set([...reviews.nodes(), ...composerDrafts.ids()])];
-    for (const id of finishedIds(ids, cockpit.streams, cockpit.archived ?? [])) {
+    for (const id of unwritableIds(ids, cockpit.streams, cockpit.archived ?? [], listed.current)) {
       reviews.set(id, { comments: [] });
       composerDrafts.set(id, undefined);
     }
+    listed.current = new Set(cockpit.streams.map((r) => r.id));
   }, [cockpit]);
   useEffect(() => {
     const onLeave = (event: BeforeUnloadEvent): void => {

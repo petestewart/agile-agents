@@ -396,6 +396,14 @@ keeps a hollow dot's ring (stopped, waiting).
   the main chat and Needs me too. A send that
   fails says so under the composer ("Couldn’t reach the daemon; your
   message wasn’t sent."), keeps the draft and offers Retry.
+  T519 (audit U1–U3): a message runs to 4,000 characters
+  (`HUMAN_LINE_MAX_CHARS`, as the daemon counts it: the trimmed text's
+  length), on a node, the Director and a review's Add to message alike;
+  nothing typed or pasted is cut: from 3,400 a count shows under the box,
+  and past the cap Send is off with "Shorten it, or send the key point." A
+  send takes off only what it sent, so what you type while it goes stays in
+  the box; a closed node's draft is kept like an open one's (a message
+  reopens it).
   T447 (audit r7 #15): the composer holds the draft (`DraftComposer`), so a
   keystroke re-renders the composer, not the page and its chat; and a long
   thread renders its newest 80 rows, with a "Show 80 earlier messages" row
@@ -465,8 +473,9 @@ keeps a hollow dot's ring (stopped, waiting).
   composer; the Changes tab's count is the unsent comments, with a comment
   glyph (T426). T436: the comments are kept per node in this tab's
   `sessionStorage`, so a reload keeps them; leaving the page while one is
-  unsent asks first (`beforeunload`); a merged, closed or deleted node's are
-  dropped. Merge (the header's or a card's) asks "1 review comment on
+  unsent asks first (`beforeunload`); a merged or deleted node's are
+  dropped (T519: a closed node's stay, since a message reopens it). Merge
+  (the header's or a card's) asks "1 review comment on
   <node> isn't sent. Merge anyway?" with **Add to message** as the other
   button (the review joins the node's draft and its chat opens); that
   question stands in for the first-Merge one.
