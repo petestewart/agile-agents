@@ -350,3 +350,42 @@ describe('quiet events (T504, D65)', () => {
     }
   });
 });
+
+describe('T557: the Director is told the whole line', () => {
+  test('a long operator line reaches a live Director whole, once; a daemon notice is as emitted', async () => {
+    const long = `${'word '.repeat(600).trim()} END`;
+    const lines = new Map([['2026-10-13T17:00:00.000Z', long]]);
+    const { prompts, target } = fakeTarget();
+    const delivery = new SessionDelivery({
+      events,
+      target: () => target,
+      delayMs: 5,
+      lineBody: (to, ts) => (to === 'director' ? lines.get(ts) : undefined),
+    });
+    await events.emit({
+      type: 'director_request',
+      payload: { body: long.slice(0, 800) },
+      by: 'human',
+      ref: '2026-10-13T17:00:00.000Z',
+      routing: [{ node: 'director', because: 'self' }],
+    });
+    expect(await delivery.flushWhenReady('director')).toBe(true);
+    await until(() => events.pendingFor('director').length === 0);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain(long);
+    expect(prompts[0]?.split('END').length).toBe(2);
+
+    await events.emit({
+      type: 'director_request',
+      payload: { body: 'stuck Checkout: no turn for 2h' },
+      by: 'daemon',
+      ref: '2026-10-13T17:00:00.000Z',
+      routing: [{ node: 'director', because: 'self' }],
+    });
+    expect(await delivery.flushWhenReady('director')).toBe(true);
+    await until(() => events.pendingFor('director').length === 0);
+    expect(prompts[1]).toContain('stuck Checkout: no turn for 2h');
+    expect(prompts[1]).not.toContain('word word');
+    delivery.stop();
+  });
+});
