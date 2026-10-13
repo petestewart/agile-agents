@@ -3701,7 +3701,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T530 The scrubber redacts an unterminated key block only when a key follows
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge e7a797f6 on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** §10 triage (E46): `classifier/scrub.ts` redacts to the end of the text after any `BEGIN … PRIVATE KEY` marker with no footer, so a marker in a comment or fixture blanks everything after it from the classifier's view. Require a key-shaped body (e.g. two or more lines of 40+ base64 chars) before that fallthrough; keep a truncated real key redacted.
 - **Acceptance Criteria:** A marker followed by 50 lines of code redacts the marker line only; a truncated real key with no footer is still redacted to the end; existing scrub tests green.
