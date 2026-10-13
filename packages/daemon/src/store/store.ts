@@ -13,7 +13,15 @@
  * reasoning about interleaving.
  */
 
-import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { dirname, isAbsolute, join, normalize, parse, relative, resolve, sep } from 'node:path';
 import {
   type AgentId,
@@ -1239,6 +1247,11 @@ export class StateStore {
       removeFile(this.abs(this.threadRelPath(id)));
       removeFile(this.abs(this.cardRelPath(id)));
       removeFile(this.abs(this.deliveryQueueRelPath(id)));
+      // T538: its docs (`streams/<id>.docs/`, DocsService) go with it.
+      rmSync(this.abs(join('streams', `${this.streamIdSegment(id)}.docs`)), {
+        recursive: true,
+        force: true,
+      });
       removeFile(this.abs(relPath));
       this.threadAt.delete(id);
       this.answers.delete(id);

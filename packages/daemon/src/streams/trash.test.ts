@@ -195,6 +195,31 @@ describe('T471: Delete forever', () => {
     expect(branchExists(gone.branch as string)).toBe(false);
   });
 
+  test('T538: work parked going back to talk goes too, and the preview lists it; so does the docs dir', async () => {
+    const node = await worked('Add CSV', true);
+    // Back to talk (T473): repo, branch and worktree move to `parked`, kept on disk.
+    const talking = await store.updateStream('daemon', node.id, (before) => {
+      const { repo: _r, branch: _b, worktree: _w, ...rest } = before;
+      return {
+        ...rest,
+        parked: { repo: 'demo', branch: node.branch as string, worktree: node.worktree as string },
+      };
+    });
+    expect(talking.repo).toBeUndefined();
+    const docs = join(home, 'streams', `${node.id}.docs`);
+    mkdirSync(docs, { recursive: true });
+    writeFileSync(join(docs, 'notes.md'), '# notes\n');
+    await streams.archiveTree('human', node.id);
+    expect(trash.preview(node.id).branches).toEqual([
+      { node: node.id, title: 'Add CSV', branch: node.branch as string, unmerged: 1 },
+    ]);
+    const result = await trash.purge(node.id, { deleteBranches: true });
+    expect(result.deleted).toEqual([node.id]);
+    expect(existsSync(node.worktree as string)).toBe(false);
+    expect(branchExists(node.branch as string)).toBe(false);
+    expect(existsSync(docs)).toBe(false);
+  });
+
   test('the preview names a worktree with uncommitted changes; Empty trash takes every trash root', async () => {
     const dirty = await worked('Half done', false);
     writeFileSync(join(dirty.worktree as string, 'README.md'), '# changed\n');

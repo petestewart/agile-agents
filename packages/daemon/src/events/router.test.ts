@@ -241,13 +241,15 @@ describe('T446: autonomy_applied, a record', () => {
   });
 
   test('recover re-adds a lost delivery as recorded, not pending', async () => {
-    const e = await routeAndEmit(events, applied, tree);
-    rmSync(join(root, 'events', 'queue', `${shop.id}.jsonl`));
+    // The Director's queue: the tree here is in memory only, and since T538 `recover`
+    // skips a node with no record (deleted forever); the Director never has one.
+    const e = await routeAndEmit(events, { ...applied, director: true }, tree);
+    rmSync(join(root, 'events', 'queue', `${DIRECTOR_NODE}.jsonl`));
     const after = new RoutedEventService(StateStore.open(root));
-    expect(after.activityFor(shop.id)).toEqual([]);
+    expect(after.activityFor(DIRECTOR_NODE)).toEqual([]);
     expect(await after.recover()).toBe(1);
-    expect(after.pendingFor(shop.id)).toEqual([]);
-    expect(after.activityFor(shop.id).map((a) => [a.event.id, a.status])).toEqual([
+    expect(after.pendingFor(DIRECTOR_NODE)).toEqual([]);
+    expect(after.activityFor(DIRECTOR_NODE).map((a) => [a.event.id, a.status])).toEqual([
       [e.id, 'recorded'],
     ]);
   });

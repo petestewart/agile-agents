@@ -24,6 +24,7 @@
  */
 
 import {
+  DIRECTOR_NODE,
   type Delivery,
   type EventDeliveryStatus,
   RECORD_ONLY_EVENT_TYPES,
@@ -266,12 +267,26 @@ export class RoutedEventService {
     );
   }
 
-  /** Re-adds `pending` for any routed node whose queue never got the event. Returns how many. */
+  /**
+   * Re-adds `pending` for any routed node whose queue never got the event.
+   * Returns how many. T538: a node deleted forever has no record (its queue
+   * went with it, its events stay in the log): it gets no queue back.
+   */
   async recover(): Promise<number> {
     const missing: { event: string; node: string; status: 'pending' | 'recorded' }[] = [];
     const seen = new Map<string, Set<string>>();
+    const gone = new Map<string, boolean>();
+    const deleted = (node: string): boolean => {
+      let is = gone.get(node);
+      if (is === undefined) {
+        is = node !== DIRECTOR_NODE && !this.store.hasStream(node);
+        gone.set(node, is);
+      }
+      return is;
+    };
     for (const event of this.index().list) {
       for (const { node } of event.routing) {
+        if (deleted(node)) continue;
         let ids = seen.get(node);
         if (ids === undefined) {
           ids = new Set(this.store.readDeliveries(node).map((d) => d.event));
