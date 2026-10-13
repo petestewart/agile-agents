@@ -3815,7 +3815,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T555 A coordinator's command never runs a substitution
 - **Priority:** P0
-- **Status:** In Progress
+- **Status:** Done (merge 40e92431 on claude/phase-16, 2026-10-13)
 - **Owner:** manager
 - **Scope:** Found by the manager while reviewing T516 (its residual 5), reproduced with a coordinator's real read scope: P20 has the coordinator's table decide alone, skipping the never-without-human list, and that list is the only caller of `hasUnsafeShellConstruct`. So at both tiers a coordinator is allowed `echo $(touch pwned)`, `` git log `rm -rf src` `` and `wc -l $(git push origin main)` (the last caught only while the built-in push rule is in scope): command substitution, backticks and an unbalanced quote run whatever is inside. The coordinator's table denies them (its denies are never human prompts, P20).
 - **Acceptance Criteria:** For a coordinator, at the ACP tier and through the hook: `$( )`, backticks, `eval`, an unbalanced quote and T516's escape and continuation forms are denied; every existing coordinator allow (read-only git, `ls`, writes into its session dir) is unchanged; engineer and reviewer verdicts unchanged.
