@@ -119,6 +119,16 @@ describe('plans and contracts (T281)', () => {
     const card = inbox.list().find((i) => i.kind === 'plan_approve');
     expect(card?.id).toBe(node.id);
     expect(card?.detail ?? card?.context).toContain(CONTRACT_BODY);
+    // T514: the card's parts and contracts, one line each, as well as the CLI's line.
+    expect(card?.plan).toEqual({
+      revised: false,
+      owners: [
+        'api: add salePrice owns `prices.ts`',
+        'web: show salePrice owns `shop.html`',
+        'docs: changelog owns `CHANGELOG.md`',
+      ],
+      contracts: [`GET /price/:id: ${CONTRACT_BODY}`],
+    });
 
     const approved = await plans.approve(node.id, 'human');
     expect(approved).toMatchObject({ status: 'approved', version: 1, approved_by: 'human' });
@@ -295,6 +305,10 @@ describe('plans and contracts (T281)', () => {
     const card = inbox.list().find((i) => i.kind === 'plan_approve');
     expect(card?.detail ?? card?.context).toContain(
       'owns `prices.ts`, `sale.ts` (was `prices.ts`)',
+    );
+    expect(card?.plan?.revised).toBe(true);
+    expect(card?.plan?.owners[0]).toBe(
+      'api: add salePrice owns `prices.ts`, `sale.ts` (was `prices.ts`)',
     );
 
     await plans.approve(node.id);

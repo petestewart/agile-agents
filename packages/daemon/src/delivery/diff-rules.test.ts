@@ -169,6 +169,8 @@ describe('ClassifierDiffRules (§8.2)', () => {
     expect(gate?.gate).toBe('classifier_review');
     expect(gate?.stream).toBe(stream.id);
     expect(gate?.call?.tool).toBe('land');
+    // T514: the card's probability, on the record.
+    expect(gate?.probability).toBe(0.6);
     expect(rules.get(rule.id).stats).toMatchObject({ fired: 1, routed: 1 });
     // T371: the reason is for the operator: no gate id in it.
     expect(verdict.reason).toBe(

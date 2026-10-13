@@ -414,6 +414,9 @@ describe('the land gate (repos.yaml `land_gate: true`)', () => {
     const gate: HilRequest = gatedOutcome.gate;
     expect(gate.gate).toBe('land');
     expect(gate.summary).toBe('land gated into main');
+    // T514: the card reads the branch and target from the record, not the summary.
+    expect(gate.branch).toBe('stream/01k2abcdefghjkmnpqrstvwxyz-gated');
+    expect(gate.target).toBe('main');
     expect(gate.stream).toBe(stream.id);
     expect(gate.status).toBe('pending');
     expect(gatedOutcome.line).toBe(`gate raised: ${gate.id}`);

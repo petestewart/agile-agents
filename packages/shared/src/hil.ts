@@ -166,6 +166,15 @@ export const HilRequestSchema = z
      * data: the daemon derives it from the path it resolved.
      */
     read_root: ReadRootSchema.optional(),
+    /**
+     * T514: a `land` gate's branch and the branch it merges into, which
+     * `summary` puts in words ("land <branch> into <target>"), so its card
+     * reads them from here.
+     */
+    branch: z.string().min(1).optional(),
+    target: z.string().min(1).optional(),
+    /** T514: a ship check's classifier probability that the diff breaks `rule` (`delivery/diff-rules.ts`). */
+    probability: z.number().finite().optional(),
     /** T138: set when an approved gate's one allowed retry has been spent — the allowance is once, not standing. */
     consumed_at: z.string().datetime().optional(),
     decision: HilDecisionSchema.optional(),

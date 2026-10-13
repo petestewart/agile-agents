@@ -117,6 +117,11 @@ export interface GateRequestContext {
   rule?: KnowledgeId;
   /** T457: a held Ask read: the dir an "Always for this project" answer adds (`HilRequest.read_root`). */
   readRoot?: string;
+  /** T514: a land gate's branch and target (`HilRequest.branch`/`target`), for its card. */
+  branch?: string;
+  target?: string;
+  /** T514: a ship check's classifier probability (`HilRequest.probability`), for its card. */
+  probability?: number;
 }
 
 /**
@@ -255,6 +260,9 @@ export class GateService {
       ...(ctx.session !== undefined ? { session: ctx.session } : {}),
       ...(ctx.rule !== undefined ? { rule: ctx.rule } : {}),
       ...(ctx.readRoot !== undefined ? { read_root: ctx.readRoot } : {}),
+      ...(ctx.branch !== undefined ? { branch: ctx.branch } : {}),
+      ...(ctx.target !== undefined ? { target: ctx.target } : {}),
+      ...(ctx.probability !== undefined ? { probability: ctx.probability } : {}),
     };
 
     let record: HilRequest = base; // plain human

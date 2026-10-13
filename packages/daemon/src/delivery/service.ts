@@ -1085,6 +1085,8 @@ export class DeliveryService {
       stream: stream.id,
       // T371: the short branch; the card names the node by its title.
       summary: `land ${branchLabel(branch)} into ${target}`,
+      branch,
+      target,
     });
     if (gate.status === 'resolved' && gate.decision === 'approve') return undefined;
     if (gate.status === 'resolved') {

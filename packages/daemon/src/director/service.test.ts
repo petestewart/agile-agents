@@ -209,6 +209,7 @@ describe('T300: the Director', () => {
     expect(inbox.list().find((i) => i.kind === 'proposal')).toMatchObject({
       id: card?.id,
       stream: node.id,
+      proposal: { principal: 'director', change: 'restart_node' },
     });
 
     // The Director is woken with the stuck node, and its brief carries the digest.

@@ -8,9 +8,17 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type Stream, ulid, validateInboxItem } from '@agile-agents/shared';
+import {
+  type AutonomyProposal,
+  type KnowledgeId,
+  type Policy,
+  type Stream,
+  ulid,
+  validateInboxItem,
+} from '@agile-agents/shared';
 import { GateService } from '../gates/service';
 import { runInit } from '../init';
+import { KnowledgeService } from '../knowledge/service';
 import { ProjectService } from '../projects/service';
 import { QuestionService } from '../questions/service';
 import { StateStore } from '../store';
@@ -217,6 +225,138 @@ describe('InboxService.list', () => {
     expect(inbox.list().some((i) => i.id === gate.id && i.kind === 'gate')).toBe(true);
     await gates.respond(gate.id, 'approve', 'human');
     expect(inbox.list().some((i) => i.id === gate.id)).toBe(false);
+  });
+
+  test('T514: a gate item carries its parts; its context is the CLI line it always was', async () => {
+    const policy: Policy = {
+      gates: { land: 'human', classifier_review: 'human' },
+      breaker_signals: [],
+    };
+    const routed = await gates.request('classifier_review', {
+      policy,
+      stream: child.id,
+      summary: 'editing a dependency manifest is never automatic',
+      call: { tool: 'Edit', path: '/tmp/wt/package.json', fingerprint: '0123456789abcdef' },
+    });
+    const land = await gates.request('land', {
+      policy,
+      stream: root.id,
+      summary: 'land parser into main',
+      branch: 'stream/01k2abcdefghjkmnpqrstvwxyz-parser',
+      target: 'main',
+    });
+    const items = inbox.list();
+    const routedItem = items.find((i) => i.id === routed.id);
+    expect(routedItem?.context).toBe(
+      'classifier_review: edit /tmp/wt/package.json — editing a dependency manifest is never automatic',
+    );
+    expect(routedItem?.gate).toEqual({
+      name: 'classifier_review',
+      call: 'edit /tmp/wt/package.json',
+      reason: 'editing a dependency manifest is never automatic',
+    });
+    const landItem = items.find((i) => i.id === land.id);
+    expect(landItem?.context).toBe('land: land parser into main');
+    expect(landItem?.gate).toEqual({
+      name: 'land',
+      reason: 'land parser into main',
+      branch: 'stream/01k2abcdefghjkmnpqrstvwxyz-parser',
+      target: 'main',
+    });
+    for (const item of [routedItem, landItem]) expect(validateInboxItem(item).kind).toBe('gate');
+  });
+
+  test("T514: a rule-routed gate names its rule and reads the rule's own text", async () => {
+    const rules = new KnowledgeService({ store, streams });
+    const rule = await rules.create('human', {
+      name: 'tests-with-src',
+      text: 'Every change under src/ comes with a test',
+    });
+    const withRules = new InboxService({ streams, questions, gates, rules });
+    const policy: Policy = { gates: { classifier_review: 'human' }, breaker_signals: [] };
+    const shipCheck = await gates.request('classifier_review', {
+      policy,
+      stream: child.id,
+      summary: `tests-with-src: ${rule.text} (probability 0.55)`,
+      call: {
+        tool: 'land',
+        path: 'stream/x → main',
+        fingerprint: 'fedcba9876543210',
+        origin: 'diff_rules',
+      },
+      rule: rule.id as KnowledgeId,
+      probability: 0.55,
+    });
+    // A rule no longer on record: its id, and the summary whole.
+    const gone = `K-${ulid()}` as KnowledgeId;
+    const orphan = await gates.request('classifier_review', {
+      policy,
+      stream: child.id,
+      summary: `${gone}: No deletes`,
+      call: { tool: 'Bash', command: 'rm x', fingerprint: '0123456789abcdef' },
+      rule: gone,
+    });
+    const items = withRules.list();
+    const ship = items.find((i) => i.id === shipCheck.id);
+    expect(ship?.context).toBe(
+      `classifier_review: land stream/x → main — tests-with-src: ${rule.text} (probability 0.55)`,
+    );
+    expect(ship?.gate).toEqual({
+      name: 'classifier_review',
+      call: 'land stream/x → main',
+      reason: rule.text,
+      rule: { id: rule.id, name: 'tests-with-src' },
+      probability: 0.55,
+    });
+    expect(items.find((i) => i.id === orphan.id)?.gate).toEqual({
+      name: 'classifier_review',
+      call: 'bash: rm x',
+      reason: `${gone}: No deletes`,
+      rule: { id: gone },
+    });
+    expect(validateInboxItem(ship).gate?.rule?.name).toBe('tests-with-src');
+  });
+
+  test('T514: a proposal item carries who proposes it, its summary and its change', () => {
+    const proposal = (fields: Partial<AutonomyProposal>): AutonomyProposal => ({
+      id: `AP-${ulid()}`,
+      node: child.id,
+      principal: 'coordinator',
+      by: 'agent:01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      change: { action: 'start_node', node: child.id },
+      summary: 'Start parser',
+      status: 'open',
+      created_at: new Date().toISOString(),
+      ...fields,
+    });
+    const start = proposal({});
+    // A Director proposal sits on the node it is about (T302); this one makes a project.
+    const project = proposal({
+      principal: 'director',
+      change: { action: 'create_project', name: 'Wishes' },
+      summary: 'Create the project Wishes',
+    });
+    const withProposals = new InboxService({
+      streams,
+      questions,
+      gates,
+      proposals: { listOpen: () => [start, project] },
+    });
+    const items = withProposals.list();
+    const startItem = items.find((i) => i.id === start.id);
+    expect(startItem?.context).toBe('coordinator proposes: Start parser');
+    expect(startItem?.proposal).toEqual({
+      principal: 'coordinator',
+      summary: 'Start parser',
+      change: 'start_node',
+    });
+    expect(items.find((i) => i.id === project.id)?.proposal).toEqual({
+      principal: 'director',
+      summary: 'Create the project Wishes',
+      change: 'create_project',
+      new_project: true,
+    });
+    expect(validateInboxItem(startItem).proposal?.change).toBe('start_node');
   });
 
   test('blocked and done streams with human.status open are items; landed ones are not', async () => {
