@@ -2846,6 +2846,98 @@ describe('T383 GET /api/events pages', () => {
   });
 });
 
+// --- T515: a routed event pushes the frame, once with the log line of its change ---
+
+describe('T515 a routed event pushes the cockpit frame', () => {
+  let home: string;
+  let cockpit: HttpServerHandle;
+  let store: StateStore;
+  let streams: StreamService;
+  let events: RoutedEventService;
+  let node: Stream;
+
+  beforeEach(async () => {
+    home = mkdtempSync(join(tmpdir(), 'agile-http-push-'));
+    const init = runInit(home);
+    store = StateStore.open(init.stateRoot);
+    streams = new StreamService(store);
+    events = new RoutedEventService(store);
+    // Before the start, so its log lines are history, not pushes.
+    node = await streams.create('human', { title: 's', goal: 'g' });
+    cockpit = startHttpServer({
+      port: 0,
+      version: '0.0.0-test',
+      stateRoot: init.stateRoot,
+      startedAt: Date.now(),
+      store,
+      gates: new GateService(store),
+      streams,
+      events,
+      feedPollIntervalMs: 20,
+    });
+  });
+
+  afterEach(async () => {
+    await cockpit.stop();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  /** Every frame type the socket gets, in order, from its first cockpit frame on. */
+  const listen = async (): Promise<{ ws: WebSocket; kinds: string[] }> => {
+    const kinds: string[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${cockpit.port}/ws`);
+    ws.onmessage = (event) => {
+      const frame = JSON.parse(event.data as string) as { type: string };
+      if (frame.type === 'cockpit' || kinds.length > 0) kinds.push(frame.type);
+    };
+    const deadline = Date.now() + 5000;
+    while (kinds.length === 0 && Date.now() < deadline) await Bun.sleep(10);
+    expect(kinds).toEqual(['cockpit']);
+    return { ws, kinds };
+  };
+  /** A routed event, as a line on `id`'s thread: no audit line. */
+  const line = (id: string) =>
+    events.emit({
+      type: 'human_line',
+      subject: id,
+      payload: { body: 'hi' },
+      by: 'human',
+      routing: [{ node: id, because: 'self' }],
+    });
+
+  test('an event with no audit line reaches an open socket as a frame push', async () => {
+    const { ws, kinds } = await listen();
+    try {
+      const logged = store.listEvents().length;
+      await line(node.id);
+      expect(store.listEvents()).toHaveLength(logged);
+      const deadline = Date.now() + 5000;
+      while (kinds.length < 2 && Date.now() < deadline) await Bun.sleep(10);
+      expect(kinds).toEqual(['cockpit', 'cockpit']);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test('one change that writes a log line and emits an event is one push', async () => {
+    const { ws, kinds } = await listen();
+    try {
+      await streams.update('human', node.id, { title: 'renamed' });
+      await line(node.id);
+      // Well past the poll interval and the push's wait: a second push has arrived by now.
+      await Bun.sleep(600);
+      // The log line goes out first, then the one frame.
+      expect(kinds).toEqual(['cockpit', 'event', 'cockpit']);
+      // A burst of events is one push too.
+      await Promise.all([line(node.id), line(node.id), line(node.id)]);
+      await Bun.sleep(600);
+      expect(kinds).toEqual(['cockpit', 'event', 'cockpit', 'cockpit']);
+    } finally {
+      ws.close();
+    }
+  });
+});
+
 describe('T481 harness update routes (D50)', () => {
   let home: string;
   let cockpit: HttpServerHandle;
