@@ -4,8 +4,9 @@
  * (snapshot, inbox, streams, rules, questions, gates, settings) plus a
  * `/ws` that sends `hello` + snapshot and then tails `log/events.jsonl` as
  * `{type:'event'}` frames, and pushes the cockpit frame after each change
- * (log lines or a routed event, T515). Every write route is same-origin only
- * (`isSameOriginRequest`) and records the actor as `human`. Without a
+ * (log lines or a routed event, T515). Every request must name a loopback
+ * `Host` (T517). Every write route, and `/ws`, is same-origin only
+ * (`isSameOriginRequest`); a write records the actor as `human`. Without a
  * store the feed routes 503 and `/ws` sends only the hello frame.
  */
 
@@ -356,10 +357,10 @@ function isSameOriginRequest(req: Request, port: number): boolean {
 }
 
 /**
- * T362: the request's `Host` names this machine (or is absent). The
- * filesystem routes add this to the same-origin check: a page that
+ * T362: the request's `Host` names this machine (or is absent). A page that
  * DNS-rebinds its own name to 127.0.0.1 is same-origin to the browser, but
- * its requests still carry that name as `Host`.
+ * its requests still carry that name as `Host`. T517: checked for every
+ * request at the top of `startHttpServer`'s `fetch`, not per route.
  */
 function isLoopbackHost(req: Request): boolean {
   const host = req.headers.get('host');
@@ -1783,7 +1784,7 @@ async function handleRepoRoute(
       );
     }
     if (name === 'clone' && ('url' in body || !Object.hasOwn(feed.store.getRepos(), 'clone'))) {
-      return handleRepoClone(req, feed, body, list, noTimeout);
+      return handleRepoClone(feed, body, list, noTimeout);
     }
     try {
       await setRepoSettings(feed.store, name, body, {
@@ -1834,15 +1835,13 @@ function samePath(a: string, b: string): boolean {
   }
 }
 
-/** T362: `POST /api/repos/clone`, after the same-origin check. */
+/** T362: `POST /api/repos/clone`, after the same-origin check (T517: and the loopback `Host`). */
 async function handleRepoClone(
-  req: Request,
   feed: FeedContext,
   body: Record<string, unknown>,
   list: () => Promise<unknown[]>,
   noTimeout: () => void,
 ): Promise<Response> {
-  if (!isLoopbackHost(req)) return errorResponse(403, 'cross-origin request rejected');
   noTimeout();
   try {
     const cloned = await cloneRepo(feed.store, body, {
@@ -1863,9 +1862,9 @@ async function handleRepoClone(
  *       default the home folder), each flagged `git` when it is a git toplevel, with `parent`
  *       and `home` to navigate by (`DirListing`); a missing folder is 404, any other refusal 400
  *
- * A read, but it shows the filesystem: same-origin only, and only on a
- * loopback `Host` (a DNS-rebound page is same-origin to the browser and a
- * GET carries no `Origin`).
+ * A read, but it shows the filesystem: same-origin only (and, as every
+ * request since T517, only on a loopback `Host`: a DNS-rebound page is
+ * same-origin to the browser and a GET carries no `Origin`).
  */
 function handleFsRoute(
   req: Request,
@@ -1874,9 +1873,7 @@ function handleFsRoute(
   sameOrigin: () => boolean,
 ): Response | undefined {
   if (url.pathname !== '/api/fs/dirs' || req.method !== 'GET') return undefined;
-  if (!sameOrigin() || !isLoopbackHost(req)) {
-    return errorResponse(403, 'cross-origin request rejected');
-  }
+  if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
   const prefix = url.searchParams.get('prefix');
   try {
     return jsonResponse(
@@ -2471,6 +2468,16 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         const url = new URL(req.url);
         const sameOrigin = () => isSameOriginRequest(req, srv.port ?? options.port);
 
+        // T517: a page whose own name DNS-rebinds to 127.0.0.1 is same-origin
+        // to the browser, so it reads every GET's response, and those GETs
+        // carry no `Origin` for `isSameOriginRequest` to refuse. Its
+        // requests still name it in `Host`. agiled binds loopback only, so
+        // every real client (the cockpit, the tests and e2e harnesses) names
+        // it 127.0.0.1, localhost or [::1]: anything else is refused, on
+        // every path. The static bundle holds nothing secret, but `/health`
+        // names the home, and one check up front covers a route added later.
+        if (!isLoopbackHost(req)) return errorResponse(403, 'cross-origin request rejected');
+
         if (url.pathname === '/health') {
           const payload: HealthPayload = {
             version: options.version,
@@ -2743,6 +2750,16 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         }
 
         if (url.pathname === '/ws') {
+          // T517: CORS does not cover a WebSocket, so without this any page
+          // the operator has open could read every frame (snapshot, inbox,
+          // repo paths, the live log). A browser always sends `Origin` on
+          // the handshake (RFC 6455 §4.1), so the write routes' check refuses
+          // another site's page (and `Origin: null`). No `Origin` means a
+          // client that is not a browser (the tests; the CLI reads the home,
+          // not `/ws`), on this machine since the daemon binds loopback, and
+          // one that could read the home anyway. The loopback `Host` was
+          // checked above.
+          if (!sameOrigin()) return errorResponse(403, 'cross-origin request rejected');
           if (srv.upgrade(req)) {
             return undefined;
           }

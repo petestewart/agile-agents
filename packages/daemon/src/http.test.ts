@@ -111,6 +111,60 @@ describe('WebSocket /ws', () => {
     expect(frame.version).toBe('0.0.0-test');
     expect(frame.stateRoot).toBe('/tmp/fake-state-root');
   });
+
+  /** The frames a client sending `headers` gets: it closes after the first, or on a refusal. */
+  const framesFor = (headers: Record<string, string>) =>
+    new Promise<string[]>((resolve) => {
+      const frames: string[] = [];
+      const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, { headers });
+      ws.onmessage = (event) => {
+        frames.push(event.data as string);
+        ws.close();
+      };
+      ws.onerror = () => {};
+      ws.onclose = () => resolve(frames);
+    });
+
+  /** The handshake's status, read with `fetch` (a WebSocket client hides a refusal's code). */
+  const handshakeStatus = async (headers: Record<string, string>) =>
+    (
+      await fetch(`http://127.0.0.1:${server.port}/ws`, {
+        headers: {
+          connection: 'Upgrade',
+          upgrade: 'websocket',
+          'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+          'sec-websocket-version': '13',
+          ...headers,
+        },
+      })
+    ).status;
+
+  test('T517: another site, a null Origin, another local port or a non-loopback Host is 403 and gets no frames', async () => {
+    const refused: Record<string, string>[] = [
+      { origin: 'http://evil.example' },
+      { origin: 'null' },
+      { origin: `http://127.0.0.1:${server.port + 1}` },
+      { origin: `http://localhost:${server.port}`, 'sec-fetch-site': 'cross-site' },
+      // A DNS-rebound page, and the same name from a client sending no Origin.
+      { origin: `http://evil.example:${server.port}`, host: `evil.example:${server.port}` },
+      { host: `evil.example:${server.port}` },
+    ];
+    for (const headers of refused) {
+      expect(await handshakeStatus(headers)).toBe(403);
+      expect(await framesFor(headers)).toEqual([]);
+    }
+  });
+
+  test("T517: the cockpit's own origin, by either loopback name, still connects", async () => {
+    for (const name of ['127.0.0.1', 'localhost']) {
+      const frames = await framesFor({
+        origin: `http://${name}:${server.port}`,
+        host: `${name}:${server.port}`,
+        'sec-fetch-site': 'same-origin',
+      });
+      expect(frames.map((f) => (JSON.parse(f) as { type: string }).type)).toEqual(['hello']);
+    }
+  });
 });
 
 // --- Tests against a real .agile/ state root (T020: snapshot, live tail, HIL actions) ---
@@ -173,6 +227,45 @@ describe('T160 cockpit routes', () => {
   });
 
   const url = (path: string) => `http://127.0.0.1:${cockpit.port}${path}`;
+
+  test('T517: a DNS-rebound Host gets 403 on every path; each loopback name still reads', async () => {
+    const stream = await streams.create('human', { title: 'secret work', goal: 'g' });
+    await streams.appendThread('human', stream.id, { kind: 'line', body: 'the token is hunter2' });
+    const paths = [`/api/streams/${stream.id}`, '/api/snapshot', '/api/cockpit', '/health', '/'];
+    // What a rebound page's same-origin read sends: its own name, no `Origin`.
+    const rebound = { host: `evil.example:${cockpit.port}`, 'sec-fetch-site': 'same-origin' };
+    for (const path of paths) {
+      const res = await fetch(url(path), { headers: rebound });
+      expect(res.status).toBe(403);
+      expect(await res.text()).not.toContain('hunter2');
+    }
+    for (const name of ['127.0.0.1', 'localhost', '[::1]']) {
+      const res = await fetch(url(`/api/streams/${stream.id}`), {
+        headers: { host: `${name}:${cockpit.port}` },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('hunter2');
+    }
+    // A rebound write is refused before the same-origin check would see it.
+    const write = await fetch(url(`/api/streams/${stream.id}/say`), {
+      method: 'POST',
+      headers: { ...rebound, 'content-type': 'application/json' },
+      body: JSON.stringify({ body: 'x' }),
+    });
+    expect(write.status).toBe(403);
+    // And `/ws` refuses the same name, with or without its `Origin`.
+    const ws = await fetch(url('/ws'), {
+      headers: {
+        ...rebound,
+        origin: `http://evil.example:${cockpit.port}`,
+        connection: 'Upgrade',
+        upgrade: 'websocket',
+        'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        'sec-websocket-version': '13',
+      },
+    });
+    expect(ws.status).toBe(403);
+  });
 
   test('GET /api/cockpit carries the tree rows with their status pair and the inbox', async () => {
     const root = await streams.create('human', { title: 'root', goal: 'g' });
