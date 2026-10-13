@@ -140,6 +140,30 @@ describe('a reviewer cannot write in the worktree (§4.2)', () => {
     }
   });
 
+  test("T518: another MCP server's tool is denied; the daemon's own verbs still run", async () => {
+    await register('01ARZ3NDEKTSV4RRFFQ69GR001', 'reviewer');
+    await register('worker-1', 'worker');
+    const svc = service();
+    const call = (agent: string, tool: string) =>
+      svc.preToolUse({
+        cwd: worktree,
+        tool_name: tool,
+        tool_input: { owner: 'o', repo: 'r', title: 'x', body: 'y' },
+        agile_agent: agent,
+      });
+
+    const denied = await call('01ARZ3NDEKTSV4RRFFQ69GR001', 'mcp__github__create_issue');
+    expect(denied.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(denied.hookSpecificOutput.permissionDecisionReason).toMatch(
+      /unknown tool kind \(mcp__github__create_issue\) — safe default deny/,
+    );
+    const own = await call('01ARZ3NDEKTSV4RRFFQ69GR001', 'mcp__agile__finding');
+    expect(own.hookSpecificOutput.permissionDecision).toBe('allow');
+    // A worker's MCP calls are not gated here (T518 left the engineer as it was).
+    const worker = await call('worker-1', 'mcp__github__create_issue');
+    expect(worker.hookSpecificOutput.permissionDecision).toBe('allow');
+  });
+
   test('the same worktree, the same tool, a worker entry: allowed — the gate is the role', async () => {
     await register('worker-1', 'worker');
     const svc = service();

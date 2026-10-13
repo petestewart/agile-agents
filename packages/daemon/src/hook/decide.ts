@@ -8,9 +8,10 @@
  *   2. big raw Read/Grep (over `limits.maxReadBytes`/`maxGrepBytes`) → deny;
  *   2b. repo visibility (P13): a private repo's path outside the listed
  *      projects, or a write into any repo but the node's own → deny;
- *   3. role × tool policy through `decidePermission` for edit-kind tools and
- *      `Bash` (`hil` → `ask`, `deny` → `deny`), so every role's policy is
- *      enforced at the hook, not only at the ACP tier;
+ *   3. role × tool policy through `decidePermission` for edit-kind tools,
+ *      `Bash` and, for a read-only role, MCP tools (`hil` → `ask`, `deny` →
+ *      `deny`), so every role's policy is enforced at the hook, not only at
+ *      the ACP tier;
  *   4. pattern rules in scope;
  *   5. else allow.
  *
@@ -116,7 +117,8 @@ function buildAdditionalContext(messages: HookDecisionContext['inbox']): string 
 }
 
 // Role × tool policy: `decidePermission`'s pipeline (classify →
-// never-without-human → role table), for edit-kind tools and `Bash`.
+// never-without-human → role table), for edit-kind tools, `Bash` and a
+// read-only role's MCP tools.
 
 /** Claude's own file-edit tool names. */
 const EDIT_TOOL_NAMES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -138,6 +140,22 @@ function claudeToolKind(payload: ClaudePreToolUsePayload): AcpToolKind | undefin
   if (payload.tool_input?.kind === 'edit') return 'edit';
   if (payload.tool_name === 'Bash') return 'execute';
   return undefined;
+}
+
+/**
+ * T518: an MCP tool as Claude and Codex name it at the hook (`mcp__<server>__<tool>`)
+ * is kind `other` for a read-only role, the kind the vendor reports it as over ACP.
+ * The role table then decides it as the ACP tier does: the daemon's own verbs
+ * (`isDaemonVerb`) pass, any other server's tool gets the reviewer's safe default
+ * deny. An engineer's or coordinator's MCP call is not gated here, although the ACP
+ * tier denies kind `other` for them too (open for Pete).
+ */
+function readOnlyMcpToolKind(
+  ctx: HookDecisionContext,
+  payload: ClaudePreToolUsePayload,
+): AcpToolKind | undefined {
+  if (permissionRoleFor(ctx.role) !== 'reviewer') return undefined;
+  return payload.tool_name?.startsWith('mcp__') === true ? 'other' : undefined;
 }
 
 /** Just enough of `tool_input` for `classifyPermissionRequest` to read the command or path back. */
@@ -214,7 +232,7 @@ function roleToolVerdict(
       reason: `${payload.tool_name} denied: a coordinator has no network access (P20)`,
     };
   }
-  const kind = claudeToolKind(payload);
+  const kind = claudeToolKind(payload) ?? readOnlyMcpToolKind(ctx, payload);
   if (kind === undefined) return undefined;
 
   // T506: an edit naming several files (Codex's `apply_patch`) checks every one, as
