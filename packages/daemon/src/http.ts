@@ -2812,11 +2812,15 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
   // repo's remote read in the background (T362), a finished node's "nothing
   // to merge" (T380), an update item (T481). Coalesced over
   // `FRAME_PUSH_DELAY_MS`, and lines not yet tailed are read first, so one
-  // change that writes a log line and emits an event is one push.
+  // change that writes a log line and emits an event is one push. T546: with
+  // no cockpit open nothing is built (a socket that opens later is sent a
+  // fresh frame by `open`).
   let framePush: ReturnType<typeof setTimeout> | undefined;
+  const watched = (): boolean => server.subscriberCount(FEED_WS_TOPIC) > 0;
   const pushFrame = (): void => {
     const streams = feed?.streams;
     if (feed === undefined || streams === undefined || framePush !== undefined) return;
+    if (!watched()) return;
     framePush = setTimeout(() => {
       try {
         // Log lines not yet read go out first; the push they ask for is this
@@ -2826,6 +2830,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         console.error(messageOf(err));
       }
       framePush = undefined;
+      // The last socket may have closed while this waited.
+      if (!watched()) return;
       try {
         server.publish(FEED_WS_TOPIC, JSON.stringify(cockpitFrame(feed, streams)));
       } catch (err) {

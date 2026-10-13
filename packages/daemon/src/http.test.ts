@@ -3012,6 +3012,35 @@ describe('T515 a routed event pushes the cockpit frame', () => {
     }
   });
 
+  test('T546: with no socket open no frame is built; one that opens later gets the current frame', async () => {
+    let built = 0;
+    const list = streams.list.bind(streams);
+    streams.list = ((...args: Parameters<StreamService['list']>) => {
+      built += 1;
+      return list(...args);
+    }) as StreamService['list'];
+    await streams.update('human', node.id, { title: 'renamed' });
+    await line(node.id);
+    // Well past the poll interval and the push's wait.
+    await Bun.sleep(300);
+    expect(built).toBe(0);
+    let title: string | undefined;
+    const ws = new WebSocket(`ws://127.0.0.1:${cockpit.port}/ws`);
+    ws.onmessage = (event) => {
+      const frame = JSON.parse(event.data as string) as CockpitFrame | { type: string };
+      if (frame.type === 'cockpit')
+        title = (frame as CockpitFrame).streams.find((s) => s.id === node.id)?.title;
+    };
+    try {
+      const deadline = Date.now() + 5000;
+      while (title === undefined && Date.now() < deadline) await Bun.sleep(10);
+      expect(title).toBe('renamed');
+      expect(built).toBeGreaterThan(0);
+    } finally {
+      ws.close();
+    }
+  });
+
   test('one change that writes a log line and emits an event is one push', async () => {
     const { ws, kinds } = await listen();
     try {
