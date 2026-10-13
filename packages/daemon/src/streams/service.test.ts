@@ -304,6 +304,33 @@ describe('thread', () => {
     expect(second.entries.map((e) => e.body)).toEqual(['line 1', 'line 2']);
   });
 
+  test('T539: appends started in the same tick get distinct, increasing ts; a reply anchors to its line', async () => {
+    const stream = await newStream();
+    await streams.appendThread('human', stream.id, { kind: 'line', body: 'first' });
+    // Not awaited one by one: worker and reviewer exits under `stop()`, model and effort picks.
+    const appended = await Promise.all(
+      ['A', 'B', 'C'].map((body) =>
+        streams.appendThread('daemon', stream.id, { kind: 'event', body }),
+      ),
+    );
+    const ts = appended.map((e) => e.ts);
+    expect(new Set(ts).size).toBe(3);
+    expect([...ts].sort()).toEqual(ts);
+    const lines = streams.readThread(stream.id, { limit: 100 }).entries;
+    expect(new Set(lines.map((l) => l.ts)).size).toBe(lines.length);
+    // A reply on B is in B's thread, not A's.
+    const b = appended[1];
+    if (b === undefined) throw new Error('no B');
+    const reply = await streams.appendThread('human', stream.id, {
+      kind: 'line',
+      body: 'about B',
+      anchor: { entry: b.ts },
+    });
+    expect(reply.anchor?.entry).toBe(b.ts);
+    expect(reply.thread).toBe(reply.ts);
+    expect(reply.ts > (appended[2]?.ts ?? '')).toBe(true);
+  });
+
   test('an agent author carries its session id; a bare agent principal cannot write', async () => {
     const stream = await newStream();
     const session = ulid();

@@ -888,23 +888,26 @@ export class StreamService {
         `thread body is ${input.body.length} characters; the cap is ${max} — write the detail to a file and pass it as "ref"`,
       );
     }
-    // T503: a line's `ts` names it (a thread's anchor and id are one), so each comes after the
-    // node's last line and after what it is in or on: the same millisecond is not after.
-    const ts = after([this.store.threadUpdatedAt(id), input.anchor?.entry ?? input.thread]);
-    return this.store.appendThreadEntry(id, {
-      ts,
-      by,
-      kind: input.kind,
-      body: input.body,
-      ...(input.ref !== undefined ? { ref: input.ref } : {}),
-      ...(input.agent_only ? { agent_only: true } : {}),
-      ...(input.op !== undefined ? { op: input.op } : {}),
-      // T503: a thread's first reply names itself; the store checks both against the node.
-      ...(input.anchor !== undefined
-        ? { thread: ts, anchor: input.anchor }
-        : input.thread !== undefined
-          ? { thread: input.thread }
-          : {}),
+    return this.store.appendThreadEntry(id, (lastAt: string | undefined) => {
+      // T503: a line's `ts` names it (a thread's anchor and id are one), so each comes after the
+      // node's last line and after what it is in or on: the same millisecond is not after.
+      // T539: `lastAt` is read inside the store's write lock, so concurrent appends are ordered.
+      const ts = after([lastAt, input.anchor?.entry ?? input.thread]);
+      return {
+        ts,
+        by,
+        kind: input.kind,
+        body: input.body,
+        ...(input.ref !== undefined ? { ref: input.ref } : {}),
+        ...(input.agent_only ? { agent_only: true } : {}),
+        ...(input.op !== undefined ? { op: input.op } : {}),
+        // T503: a thread's first reply names itself; the store checks both against the node.
+        ...(input.anchor !== undefined
+          ? { thread: ts, anchor: input.anchor }
+          : input.thread !== undefined
+            ? { thread: input.thread }
+            : {}),
+      };
     });
   }
 
