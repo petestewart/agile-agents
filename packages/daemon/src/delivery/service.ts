@@ -1351,13 +1351,15 @@ function uncommittedPaths(repoRoot: string, worktreePath: string): string[] {
 
 /**
  * Approving a `land` gate performs the merge (the gate is raised before
- * it). Wraps `GateService.respond` so the gate service needn't know what
- * any gate kind does; wired by `daemon.ts`.
+ * it). Listens on `GateService.onResolved` (T527: a timeout's or a
+ * delegate's approval lands too) so the gate service needn't know what any
+ * gate kind does; wired by `daemon.ts`.
  */
-export function wireLandGateResolution(gates: GateService, landing: DeliveryService): void {
-  const respond = gates.respond.bind(gates);
-  gates.respond = async (id, decision, by, note) => {
-    const resolved = await respond(id, decision, by, note);
+export function wireLandGateResolution(
+  gates: Pick<GateService, 'onResolved'>,
+  landing: DeliveryService,
+): void {
+  gates.onResolved(async (resolved) => {
     if (resolved.gate === 'land' && resolved.decision === 'approve') {
       await landing.land(resolved.stream, { gateApproved: true });
     }
@@ -1373,8 +1375,7 @@ export function wireLandGateResolution(gates: GateService, landing: DeliveryServ
     ) {
       await landing.land(resolved.stream);
     }
-    return resolved;
-  };
+  });
 }
 
 /**

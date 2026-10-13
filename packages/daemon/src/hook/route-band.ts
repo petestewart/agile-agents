@@ -268,16 +268,16 @@ export interface GateDecisionDelivery {
   deliverGateDecision(sessionId: string, gate: HilRequest): Promise<void>;
 }
 
-/** A decided `classifier_review` gate is delivered to the waiting session as a prompt. */
-export function wireGateDecisionDelivery(gates: GateService, attach: GateDecisionDelivery): void {
-  const respond = gates.respond.bind(gates);
-  gates.respond = async (id, decision, by, note) => {
-    const resolved = await respond(id, decision, by, note);
+/** A decided `classifier_review` gate is delivered to the waiting session as a prompt (T527: however it was decided). */
+export function wireGateDecisionDelivery(
+  gates: Pick<GateService, 'onResolved'>,
+  attach: GateDecisionDelivery,
+): void {
+  gates.onResolved(async (resolved) => {
     if (resolved.gate === 'classifier_review' && resolved.session !== undefined) {
       await attach.deliverGateDecision(resolved.session, resolved);
     }
-    return resolved;
-  };
+  });
 }
 
 /** The write side of `KnowledgeService` the routed-answer statistic needs. */
@@ -291,12 +291,10 @@ export interface RouteStatsRules {
  * the firing).
  */
 export function wireClassifierRouteStats(
-  gates: { respond: GateService['respond'] },
+  gates: Pick<GateService, 'onResolved'>,
   rules: RouteStatsRules,
 ): void {
-  const respond = gates.respond.bind(gates as GateService);
-  gates.respond = async (id, decision, by, note) => {
-    const resolved = await respond(id, decision, by, note);
+  gates.onResolved(async (resolved) => {
     if (
       resolved.gate === 'classifier_review' &&
       resolved.decision === 'deny' &&
@@ -308,6 +306,5 @@ export function wireClassifierRouteStats(
         // Telemetry: never fail a decision the human already made.
       }
     }
-    return resolved;
-  };
+  });
 }
