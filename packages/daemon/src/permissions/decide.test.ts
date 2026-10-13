@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
+import { ulid, validateKnowledgeItem } from '@agile-agents/shared';
+import { BUILTIN_KNOWLEDGE } from '../knowledge/builtins';
 import { decidePermission } from './decide';
 import type { AcpPermissionRequestParams, PermissionRole } from './types';
 
@@ -490,6 +492,120 @@ describe('decidePermission — a lone & ends a command', () => {
         'allow',
       ]);
     }
+  });
+});
+
+/**
+ * T516 (security audit S1, S2): bash reads `\"` outside quotes as a literal
+ * `"`, and runs the command in `>(…)`. The gate read the first as an open
+ * quote that swallowed `;`, `&&` and `&` (so `echo \"; git push origin main`
+ * was one `echo`), and the second as a write to a file named `(git`. Each
+ * row goes through `decidePermission` with the shipped built-ins in scope,
+ * as on a real stream: a plain push to `main` is theirs to stop (§5.4).
+ */
+describe('decidePermission — T516 escapes and process substitution read as bash reads them', () => {
+  const builtins = BUILTIN_KNOWLEDGE.filter((spec) => spec.status === 'accepted').map((spec) =>
+    validateKnowledgeItem({
+      id: `K-${ulid()}`,
+      name: spec.name,
+      kind: 'standard',
+      text: spec.text,
+      scope: { kind: 'global' },
+      status: spec.status,
+      enforcement: 'action',
+      check: { by: 'pattern', pattern: spec.pattern },
+      critical: spec.critical,
+      source: { by: 'builtin' },
+      stats: {},
+      created_at: new Date().toISOString(),
+    }),
+  );
+  const session = '/home/u/.agile/sessions/01J9AAAAAAAAAAAAAAAAAAAAAA';
+  const verdict = (role: PermissionRole, command: string) =>
+    decidePermission({
+      role,
+      worktreePath: role === 'coordinator' ? session : WORKTREE,
+      request: request('execute', { command }),
+      patternRules: builtins,
+      protectedBranches: ['main', 'master'],
+      upstreamBranch: () => 'origin/tkt/TKT-0001-x',
+      headBranch: () => 'tkt/TKT-0001-x',
+    }).kind;
+
+  const BYPASSES = [
+    // The ticket's table.
+    'echo \\"; git push origin main',
+    "echo \\'; git push origin main",
+    'echo \\"; rm -rf /tmp/x',
+    'echo \\" && git push origin HEAD:main',
+    'cat >(git push origin main)',
+    'echo hi >(rm -rf x)',
+    'tee >(sh)',
+    // The same holes, other spellings.
+    'echo \\"& git push origin main',
+    'echo \\" | git push origin main',
+    'echo \\>& git push origin main',
+    'git push origin ma\\in',
+    'git push origin \\\nmain',
+    "echo $'\\'' ; git push origin main ; echo ''",
+    'echo $\\\n(git push origin main)',
+    'cat x>(git push origin main)',
+    'echo a 2>(git push origin main)',
+    'cat 0<(git push origin main)',
+    'cat <(git push origin main)',
+    'cat =(git push origin main)',
+    'cd ./x>({touch,y})',
+    "bash -c 'cat >(git push origin main)'",
+    'sh -c "echo hi" >(git push origin main)',
+    "sh -c '' >(git push origin main)",
+  ];
+
+  // Allowed before T516 and after, for both roles; `echo a\;b` is one
+  // command now (it was two, and denied on `b`).
+  const CONTROLS = [
+    'echo "a;b"',
+    "echo 'a;b'",
+    'echo a\\;b',
+    'grep "\\"" file',
+    "printf '%s\\n' x",
+    'echo a > out.txt',
+  ];
+
+  test('no bypass is allowed: engineer, coordinator, reviewer', () => {
+    for (const command of BYPASSES) {
+      for (const role of ['engineer', 'coordinator', 'reviewer'] as const) {
+        expect([role, command, verdict(role, command)]).not.toEqual([role, command, 'allow']);
+      }
+    }
+  });
+
+  test('the controls stay allowed for the engineer and the coordinator', () => {
+    for (const command of CONTROLS) {
+      for (const role of ['engineer', 'coordinator'] as const) {
+        expect([role, command, verdict(role, command)]).toEqual([role, command, 'allow']);
+      }
+    }
+  });
+
+  test('a split chain is checked atom by atom: the push rule and the never list see their atom', () => {
+    const engineer = (command: string) =>
+      decidePermission({
+        role: 'engineer',
+        worktreePath: WORKTREE,
+        request: request('execute', { command }),
+        patternRules: builtins,
+        protectedBranches: ['main', 'master'],
+      });
+    const push = engineer('echo \\"; git push origin main');
+    expect(push.kind).toBe('deny');
+    expect(push.kind === 'deny' ? push.ruleViolated : undefined).toBe(builtins[0]?.id);
+    expect(engineer('echo \\"; rm -rf /tmp/x').kind).toBe('hil');
+    expect(engineer('cat >(git push origin main)').kind).toBe('deny');
+  });
+
+  test('an escaped path is the path bash opens', () => {
+    expect(verdict('engineer', 'cat .\\./.\\./.\\./etc/passwd')).toBe('deny');
+    expect(verdict('engineer', 'echo x > .\\./.\\./.\\./x')).toBe('deny');
   });
 });
 

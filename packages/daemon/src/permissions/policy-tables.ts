@@ -905,7 +905,9 @@ function* walkCwds(
   for (const [i, atom] of atoms.entries()) {
     const here = atom.delimiterBefore === '&&' && atom.nested !== true ? current : all;
     current = here;
-    if (atom.tokens[0] !== 'cd') {
+    // T516: a `cd` with a process substitution (`cd ./x>({touch,y})`) runs a
+    // command too: it goes to the role's own check, which denies it.
+    if (atom.tokens[0] !== 'cd' || cmd.runsProcessSubstitution(atom)) {
       yield { atom, cwds: here };
       continue;
     }
@@ -971,13 +973,14 @@ function engineerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
     const inputs = verifyBenignPaths(cmd.inputRedirectTargets(atom.tokens), ctx, true, cwds);
     if (isHeldRead(inputs)) held ??= inputs;
     else if (inputs.action !== 'allow') return inputs;
-    if (cmd.hasRedirectionOrTee(atom.tokens)) {
+    if (cmd.runsProcessSubstitution(atom) || cmd.hasRedirectionOrTee(atom.tokens)) {
       // Every non-benign redirection target (`>`, `1>`, `2>`, `&>`, a second
       // `>`, ...) must resolve inside the worktree. `tee`, an unresolvable
-      // target and `<(...)` have no path to verify and deny outright.
+      // target and `<(...)`/`>(...)` have no path to verify and deny outright
+      // (T516: `>(cmd)` is no file named `(cmd)`: bash runs `cmd`).
       // Benign targets (`/dev/null`, `&1`, `&-`) are not writes.
       const hasTee = atom.tokens.includes('tee');
-      const hasProcessSub = atom.tokens.some((t) => t.startsWith('<('));
+      const hasProcessSub = cmd.runsProcessSubstitution(atom);
       const unresolved = cmd.hasUnresolvedRedirection(atom.tokens);
       if (hasTee || hasProcessSub || unresolved) {
         return deny('redirected output escapes the worktree (or uses tee/process substitution)');
@@ -1148,8 +1151,9 @@ function reviewerExecuteVerdict(command: string, ctx: PolicyContext): PolicyVerd
       return deny('reviewer role denies xargs: it runs a command on paths no check can see');
     }
     // Benign redirects write nothing (`git diff 2>/dev/null` is a read);
-    // any other redirection or tee is a write primitive.
-    if (cmd.hasWritingRedirectionOrTee(atom.tokens)) {
+    // any other redirection, tee or process substitution (T516: mid-word too)
+    // is a write primitive.
+    if (cmd.runsProcessSubstitution(atom) || cmd.hasWritingRedirectionOrTee(atom.tokens)) {
       return deny('reviewer role denies exec with redirection/tee — those are write primitives');
     }
     // T457: its reads keep to the read scope, as a coordinator's do (the
@@ -1195,14 +1199,16 @@ function reviewerVerdict(classified: PermissionRequest, ctx: PolicyContext): Pol
  * unresolvable target deny.
  */
 function coordinatorRedirectVerdict(
-  tokens: string[],
+  atom: cmd.CommandAtom,
   ctx: PolicyContext,
   cwd: string = ctx.worktreePath,
 ): PolicyVerdict {
-  if (!cmd.hasWritingRedirectionOrTee(tokens)) return ALLOW;
-  if (tokens.includes('tee') || tokens.some((t) => t.startsWith('<('))) {
+  const { tokens } = atom;
+  // T516: before the redirect check, which can't see a mid-word `x>(cmd)`.
+  if (tokens.includes('tee') || cmd.runsProcessSubstitution(atom)) {
     return deny('coordinator role denies tee/process substitution — write files with Write');
   }
+  if (!cmd.hasWritingRedirectionOrTee(tokens)) return ALLOW;
   if (cmd.hasUnresolvedRedirection(tokens)) {
     return deny('coordinator role denies a redirect it cannot resolve');
   }
@@ -1304,7 +1310,7 @@ function coordinatorExecuteVerdict(command: string, ctx: PolicyContext): PolicyV
       return deny('coordinator role denies xargs: it runs a command on paths no check can see');
     }
     for (const cwd of cwds) {
-      const redirect = coordinatorRedirectVerdict(atom.tokens, ctx, cwd);
+      const redirect = coordinatorRedirectVerdict(atom, ctx, cwd);
       if (redirect.action !== 'allow') return redirect;
       const reads = scopedReads(atom.tokens, ctx, cwd);
       if (isHeldRead(reads)) hold(reads);
