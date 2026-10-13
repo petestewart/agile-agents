@@ -8,10 +8,11 @@
  * `runDaemonForeground` serves) with its stdio redirected to
  * `<home>/log/agiled.log`. The child writes the pidfile itself — it holds
  * the per-home lock (`daemon/lock.ts`), so the pidfile and the lock are one
- * file and cannot disagree. The parent waits for that file to appear, prints
- * the pid, and exits; closing the terminal does not take the daemon with it
- * (`detached: true` puts the child in its own process group, so a terminal
- * SIGHUP never reaches it).
+ * file and cannot disagree. The parent waits for that file to name the pid
+ * (T533: the child takes the lock first, as `starting <pid>`, and publishes
+ * the bare pid once its port is bound), prints the pid, and exits; closing
+ * the terminal does not take the daemon with it (`detached: true` puts the
+ * child in its own process group, so a terminal SIGHUP never reaches it).
  *
  * A second `start` is a no-op that prints the running pid.
  */
