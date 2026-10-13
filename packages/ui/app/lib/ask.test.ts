@@ -11,6 +11,7 @@ import {
   keepsTitle,
   sendUpTarget,
   takeComposerFocus,
+  turnFailure,
 } from './ask';
 import type { CockpitProjectRow, CockpitStreamRow } from './feed-types';
 
@@ -143,6 +144,19 @@ describe('askHint', () => {
     );
     expect(askHint({ value: 'a', title: 'api part', role: 'work', depth: 1 })).toBe(
       'A conversation under api part: its own thread, so api part’s work goes on undisturbed.',
+    );
+  });
+});
+
+describe('turnFailure (T522)', () => {
+  test('names the step that failed and what is already done', () => {
+    expect(turnFailure('repo', new Set(['move', 'goal']), 'Repo api is busy.')).toBe(
+      'Couldn’t give it the repository: Repo api is busy. Already done: moved, goal saved; Retry carries on from here.',
+    );
+  });
+  test('with nothing done, says only what failed', () => {
+    expect(turnFailure('move', new Set(), 'Couldn’t reach the daemon.')).toBe(
+      'Couldn’t move it next to its parent: Couldn’t reach the daemon.',
     );
   });
 });

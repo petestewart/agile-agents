@@ -178,3 +178,39 @@ export function takeComposerFocus(id: string): boolean {
   focusOnArrival = undefined;
   return true;
 }
+
+/**
+ * T522 (audit U7): Turn into work's writes, in order. Each one done stays
+ * done across a Retry: the node is never moved up a second level, nor its
+ * repository added twice.
+ */
+export type TurnStep = 'move' | 'goal' | 'project' | 'repo' | 'start';
+
+const TURN_STEP_FAILED: Record<TurnStep, string> = {
+  move: 'Couldn’t move it next to its parent',
+  goal: 'Couldn’t save its goal',
+  project: 'Couldn’t add the repository to the project',
+  repo: 'Couldn’t give it the repository',
+  start: 'Couldn’t start its agent',
+};
+
+const TURN_STEP_DONE: Record<TurnStep, string> = {
+  move: 'moved',
+  goal: 'goal saved',
+  project: 'repository added to the project',
+  repo: 'repository given',
+  start: 'agent started',
+};
+
+/**
+ * T522: what a Turn into work that stopped at `step` says: the step, what
+ * was already done (kept, so Retry picks up from here), and why.
+ */
+export function turnFailure(step: TurnStep, done: ReadonlySet<TurnStep>, why: string): string {
+  const kept = (Object.keys(TURN_STEP_DONE) as TurnStep[])
+    .filter((s) => done.has(s))
+    .map((s) => TURN_STEP_DONE[s]);
+  const so =
+    kept.length > 0 ? ` Already done: ${kept.join(', ')}; Retry carries on from here.` : '';
+  return `${TURN_STEP_FAILED[step]}: ${why}${so}`;
+}

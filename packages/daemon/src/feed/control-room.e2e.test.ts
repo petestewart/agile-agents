@@ -11438,6 +11438,142 @@ describe('Ask picks the model (Playwright e2e, T472)', () => {
   );
 });
 
+describe('Ask and Turn into work are safe to retry (Playwright e2e, T522)', () => {
+  browserTest(
+    "an Ask whose agent doesn't start still makes one node, says so, and opens it",
+    async () => {
+      const cockpit = await startStreamCockpit([]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+        });
+        const p = await openPage();
+        page = p;
+        await p.route('**/api/streams/*/attach', (route) =>
+          route.fulfill({
+            status: 500,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: 'the vendor would not start' }),
+          }),
+        );
+        await p.goto(`${cockpit.base}/?node=${shop.root}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${shop.root}"]`).waitFor();
+        await p.keyboard.press('a');
+        const ask = p.locator('[data-testid="ask"]');
+        await ask.waitFor({ state: 'visible' });
+        await waitForText(
+          p,
+          '[data-testid="ask"] [data-testid="composer-model"]',
+          'Claude Opus 5.5 · low',
+        );
+        await ask.locator('[data-testid="composer-model"]').click();
+        const popover = p.locator('[data-testid="model-popover"]');
+        await popover.locator('[data-model="claude-sonnet-4-6"]').click();
+        await p.waitForTimeout(300);
+        await ask.locator('[data-testid="composer-model"]').click();
+        await popover.waitFor({ state: 'detached' });
+        await waitForText(
+          p,
+          '[data-testid="ask"] [data-testid="composer-model"]',
+          'Claude Sonnet 4.6 · low',
+        );
+        await ask.locator('[data-testid="ask-input"]').fill('How are prices stored?');
+        await ask.locator('[data-testid="ask-send"]').click();
+        // It closes on the node it made, and says its agent didn't start.
+        await ask.waitFor({ state: 'detached' });
+        await waitForText(
+          p,
+          '[data-testid="toast"] .cr-toast-title',
+          'The node was made, but its agent didn’t start',
+        );
+        const made = cockpit.streams.list().filter((x) => x.goal === 'How are prices stored?');
+        expect(made).toHaveLength(1);
+        await p.locator(`[data-testid="stream-page"][data-stream="${made[0]?.id}"]`).waitFor();
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  browserTest(
+    'a Turn into work that fails adding the repository says so, and Retry finishes without moving it again',
+    async () => {
+      const reply = 'Stream the upload in chunks.';
+      const cockpit = await startStreamCockpit([
+        {
+          turns: [[{ type: 'agent_text', text: reply }, { type: 'end_turn' }]],
+          steps: [{ type: 'end_turn' }],
+        },
+        { steps: [{ type: 'end_turn' }] },
+      ]);
+      let page: Page | undefined;
+      try {
+        const shop = await new ProjectService(cockpit.store, cockpit.streams).create({
+          name: 'shop',
+          repos: ['demo'],
+        });
+        // A conversation under a work node: Turn into work offers "Next to" it.
+        const work = await finishedNode(cockpit, 'Add CSV import', 's-t522', shop.root);
+        const convo = await cockpit.streams.create('human', {
+          title: 'Why buffer the file?',
+          goal: 'why does the importer read the whole file?',
+          project: shop.id,
+          parent: work,
+        });
+        const p = await openPage();
+        page = p;
+        let refuse = true;
+        await p.route(`**/api/streams/${convo.id}/add-repo`, (route) =>
+          refuse
+            ? route.fulfill({
+                status: 500,
+                contentType: 'application/json',
+                body: JSON.stringify({ error: 'the repo is busy' }),
+              })
+            : route.continue(),
+        );
+        await p.goto(`${cockpit.base}/?node=${convo.id}`);
+        await p.locator(`[data-testid="stream-page"][data-stream="${convo.id}"]`).waitFor();
+        await p.locator('[data-testid="attach"]').click();
+        await p
+          .locator('[data-testid="thread-entry"][data-by="agent"]', { hasText: reply })
+          .waitFor();
+        await p.locator('[data-testid="header-turn-into-work"]').click();
+        const goal = p.locator('[data-testid="turn-into-work-goal"]');
+        await waitUntilAsync('the drafted goal', async () => (await goal.inputValue()) === reply);
+        await p.locator('[data-testid="turn-into-work-repo"]').click();
+        await p.locator('[data-testid="turn-into-work-repo-option"][data-repo="demo"]').click();
+        await goal.press('Enter');
+        // It moved next to its parent, then stopped at the repository, and says so.
+        const failed = p.locator('[data-testid="turn-into-work-error"]');
+        await waitUntilAsync('the step named', async () =>
+          ((await failed.count()) > 0 ? ((await failed.textContent()) ?? '') : '').startsWith(
+            'Couldn’t give it the repository',
+          ),
+        );
+        expect(await failed.textContent()).toContain('Already done: moved, goal saved');
+        await waitUntil(
+          'moved next to its parent',
+          () => cockpit.streams.get(convo.id).parent === shop.root,
+        );
+        refuse = false;
+        await goal.press('Enter');
+        await p.locator('[data-testid="turn-into-work"]').waitFor({ state: 'detached' });
+        await waitUntil('the work node', () => cockpit.streams.get(convo.id).repo === 'demo');
+        // Still next to its old parent: Retry didn't move it up again.
+        expect(cockpit.streams.get(convo.id).parent).toBe(shop.root);
+      } finally {
+        await teardown([page]);
+        await cockpit.stop();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe('Talk and work are one kind of node (Playwright e2e, T473)', () => {
   browserTest(
     'New node opens on Talk or Work; a work node goes back to talk and back to work on the same branch',
