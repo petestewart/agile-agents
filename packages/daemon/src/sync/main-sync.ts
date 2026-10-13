@@ -83,7 +83,7 @@ export class MainSync {
         if (s.id === except || s.repo !== repo || !isLiveWorkNode(s, all)) continue;
         // T288: a helper follows its parent's branch; main reaches it through the parent.
         if (s.helper_of !== undefined) continue;
-        out.set(s.id, await this.syncNode(s));
+        out.set(s.id, await this.syncNodeOrDefer(s));
       }
       if (opts.announce !== false) await this.announce(repo, out, except);
       return out;
@@ -145,20 +145,25 @@ export class MainSync {
   /** The periodic check: main moved outside the app, and deferred nodes that may be ready now. */
   async sweep(): Promise<void> {
     for (const repo of Object.keys(this.options.repos())) {
-      const before = this.lastMain.get(repo);
-      const now = this.readMain(repo);
-      if (now === undefined) continue;
-      // The first sweep reconciles (nodes left behind across a restart); a
-      // node already containing main is a no-op.
-      if (before === undefined || before !== now) {
-        await this.mainMoved(repo, undefined, { announce: before !== undefined });
+      // T534: a repo whose pass throws never skips the repos after it.
+      try {
+        const before = this.lastMain.get(repo);
+        const now = this.readMain(repo);
+        if (now === undefined) continue;
+        // The first sweep reconciles (nodes left behind across a restart); a
+        // node already containing main is a no-op.
+        if (before === undefined || before !== now) {
+          await this.mainMoved(repo, undefined, { announce: before !== undefined });
+        }
+      } catch (err) {
+        console.error(`main sync sweep of ${repo} failed:`, err);
       }
     }
     for (const id of [...this.deferred]) {
       await this.serial(async () => {
         const s = this.find(id);
         if (s === undefined) this.deferred.delete(id);
-        else await this.syncNode(s);
+        else await this.syncNodeOrDefer(s);
       });
     }
   }
@@ -186,6 +191,20 @@ export class MainSync {
   private recordMain(repo: string): void {
     const sha = this.readMain(repo);
     if (sha !== undefined) this.lastMain.set(repo, sha);
+  }
+
+  /**
+   * T534: one node whose sync throws never stops a pass. It is logged and
+   * deferred, so the next sweep retries it: main is already recorded as
+   * seen, and nothing else would come back to it for this move.
+   */
+  private async syncNodeOrDefer(s: Stream): Promise<SyncOutcome> {
+    try {
+      return await this.syncNode(s);
+    } catch (err) {
+      console.error(`main sync of ${s.id} failed:`, err);
+      return this.defer(s.id, 'failed');
+    }
   }
 
   private async syncNode(s: Stream, opts: { turnOver?: boolean } = {}): Promise<SyncOutcome> {

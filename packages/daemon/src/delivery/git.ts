@@ -17,6 +17,7 @@
  * "too many open files") and authored by a fixed daemon identity.
  */
 
+import { existsSync } from 'node:fs';
 import { sandboxedSubprocessEnv } from '../subprocess-env';
 
 const textDecoder = new TextDecoder();
@@ -43,18 +44,42 @@ function daemonEnv(repoRoot: string): Record<string, string> {
   };
 }
 
-function spawnGit(argv: string[], cwd: string, env: Record<string, string>): GitResult {
-  const result = Bun.spawnSync(argv, { cwd, env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
-  return {
-    exitCode: result.exitCode,
-    stdout: textDecoder.decode(result.stdout).trim(),
-    stderr: textDecoder.decode(result.stderr).trim(),
-  };
+/**
+ * T534: never throws. Bun's `spawnSync` throws (ENOENT, "posix_spawn 'git'")
+ * when `cwd` is gone, as a node's worktree can be; that is git's own exit
+ * 128 here, in git's words, before `env` makes any dir. Any other spawn
+ * failure is a failed result too.
+ */
+function spawnGit(argv: string[], cwd: string, env: () => Record<string, string>): GitResult {
+  if (!existsSync(cwd)) {
+    return {
+      exitCode: 128,
+      stdout: '',
+      stderr: `fatal: cannot change to '${cwd}': No such file or directory`,
+    };
+  }
+  try {
+    const result = Bun.spawnSync(argv, {
+      cwd,
+      env: env(),
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    return {
+      exitCode: result.exitCode,
+      stdout: textDecoder.decode(result.stdout).trim(),
+      stderr: textDecoder.decode(result.stderr).trim(),
+    };
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    return { exitCode: 128, stdout: '', stderr: `fatal: could not run git in '${cwd}': ${why}` };
+  }
 }
 
 /** Read-only and plumbing commands (log, diff, rev-parse, worktree, ...). */
 export function git(args: string[], cwd: string, repoRoot: string): GitResult {
-  return spawnGit(['git', ...args], cwd, sandboxedSubprocessEnv(repoRoot, 'git'));
+  return spawnGit(['git', ...args], cwd, () => sandboxedSubprocessEnv(repoRoot, 'git'));
 }
 
 /**
@@ -64,7 +89,7 @@ export function git(args: string[], cwd: string, repoRoot: string): GitResult {
  * instead of waiting on a terminal the daemon doesn't have.
  */
 export function gitNetwork(args: string[], cwd: string): GitResult {
-  return spawnGit(['git', ...args], cwd, networkGitEnv(process.env));
+  return spawnGit(['git', ...args], cwd, () => networkGitEnv(process.env));
 }
 
 const NETWORK_ENV_NAMES = new Set([
@@ -158,11 +183,11 @@ export function runGit(args: string[], cwd: string, repoRoot: string): string {
 }
 
 /**
- * Merge and commit: unsigned and daemon-authored. Never throws on a
- * non-zero exit (a conflict is an outcome the caller inspects).
+ * Merge and commit: unsigned and daemon-authored. Never throws: a conflict
+ * is an outcome the caller inspects, and so is a missing `cwd` (T534).
  */
 export function gitWrite(args: string[], cwd: string, repoRoot: string): GitResult {
-  return spawnGit(['git', '-c', 'commit.gpgsign=false', ...args], cwd, daemonEnv(repoRoot));
+  return spawnGit(['git', '-c', 'commit.gpgsign=false', ...args], cwd, () => daemonEnv(repoRoot));
 }
 
 export interface RemoveWorktreeResult {
@@ -176,8 +201,17 @@ export interface RemoveWorktreeResult {
  * it (never force past real work); untracked files only get `--force`,
  * since a plain remove refuses a non-empty dir. A failed status read is
  * reported like a failed removal: the contract is "is it gone now".
+ *
+ * T534: a directory already gone holds no work and counts as removed.
+ * `prune` drops git's record of it, which frees its branch (and of any
+ * other worktree whose dir is gone, as every land's cleanup already does).
  */
 export function removeWorktreeSafely(repoRoot: string, worktreePath: string): RemoveWorktreeResult {
+  if (!existsSync(worktreePath)) {
+    git(['worktree', 'prune'], repoRoot, repoRoot);
+    return { removed: true };
+  }
+
   const status = git(['status', '--porcelain=v1', '--untracked-files=all'], worktreePath, repoRoot);
   if (status.exitCode !== 0) {
     return { removed: false, reason: `could not read worktree status: ${status.stderr}` };

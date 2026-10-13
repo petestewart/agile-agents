@@ -3,7 +3,16 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describeGitNetworkFailure, git, gitNetwork, gitWrite, networkGitEnv, runGit } from './git';
+import {
+  GitCommandError,
+  describeGitNetworkFailure,
+  git,
+  gitNetwork,
+  gitWrite,
+  networkGitEnv,
+  removeWorktreeSafely,
+  runGit,
+} from './git';
 
 let repoRoot: string;
 
@@ -89,6 +98,49 @@ describe('T034: git()/gitWrite()/runGit() spawn with a sandboxed HOME, never the
         process.env.GIT_CONFIG_GLOBAL = original;
       }
     }
+  });
+});
+
+describe('T534: a directory that is gone is a failed result, never a throw', () => {
+  test("git, gitWrite and gitNetwork answer in git's own words; runGit throws its own error", () => {
+    const gone = join(repoRoot, '.worktrees', 'gone');
+    const missing = `fatal: cannot change to '${gone}': No such file or directory`;
+    for (const result of [
+      git(['status', '--porcelain'], gone, repoRoot),
+      gitWrite(['merge', '--no-edit', 'main'], gone, repoRoot),
+      gitNetwork(['fetch', 'origin'], gone),
+    ]) {
+      expect(result).toEqual({ exitCode: 128, stdout: '', stderr: missing });
+    }
+    expect(() => runGit(['rev-parse', 'HEAD'], gone, repoRoot)).toThrow(GitCommandError);
+    expect(existsSync(gone)).toBe(false);
+  });
+
+  test('a repo root that is gone is not made again by the sandbox', () => {
+    const goneRoot = join(repoRoot, 'deleted-repo');
+    expect(git(['status'], goneRoot, goneRoot).exitCode).toBe(128);
+    expect(existsSync(goneRoot)).toBe(false);
+  });
+
+  test('a cwd that is a file, not a dir, fails too', () => {
+    const file = join(repoRoot, 'README.md');
+    const result = git(['status'], file, repoRoot);
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  test("removeWorktreeSafely: a worktree whose dir was deleted is dropped from git's list; its branch stays", () => {
+    const wt = join(repoRoot, '.worktrees', 'deleted');
+    rawGit(['worktree', 'add', '-q', '-b', 'deleted', wt, 'main'], repoRoot);
+    rmSync(wt, { recursive: true, force: true });
+    expect(removeWorktreeSafely(repoRoot, wt)).toEqual({ removed: true });
+    expect(runGit(['worktree', 'list', '--porcelain'], repoRoot, repoRoot)).not.toContain(wt);
+    expect(git(['rev-parse', '--verify', 'refs/heads/deleted'], repoRoot, repoRoot).exitCode).toBe(
+      0,
+    );
+    // A path git never had is gone too.
+    expect(removeWorktreeSafely(repoRoot, join(repoRoot, '.worktrees', 'never'))).toEqual({
+      removed: true,
+    });
   });
 });
 

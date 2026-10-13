@@ -343,6 +343,65 @@ describe('conflict (acceptance: blocked, conflict files on the thread, worktree 
   });
 });
 
+describe('T534: a worktree directory that is gone never breaks a land', () => {
+  test('a merge-together group whose first member has no worktree dir lands both, without a throw', async () => {
+    const a = branchWithWork('s-a', 'a.txt', 'a\n');
+    const b = branchWithWork('s-b', 'b.txt', 'b\n');
+    const sa = await makeStream({ title: 'A', ...a, merge_together: 'grp' });
+    const sb = await makeStream({ title: 'B', ...b, merge_together: 'grp' });
+    rmSync(a.worktree, { recursive: true, force: true }); // deleted outside the daemon
+
+    const outcome = await landing.land(sa.id);
+    expect(outcome.status).toBe('landed');
+    expect(git(['show', 'main:a.txt'])).toBe('a');
+    expect(git(['show', 'main:b.txt'])).toBe('b');
+    expect(streams.get(sa.id).human.status).toBe('landed');
+    expect(streams.get(sb.id).human.status).toBe('landed');
+    expect(streams.get(sb.id).delivery_state?.status).toBe('merged');
+    // Git forgot the deleted worktree; B's was removed as usual; both branches stay.
+    expect(git(['worktree', 'list', '--porcelain'])).not.toContain(a.worktree);
+    expect(existsSync(b.worktree)).toBe(false);
+    expect(git(['rev-parse', '--verify', 'refs/heads/s-a']).length).toBe(40);
+    expect(threadBodies(sa.id).some((line) => line.includes(' kept: '))).toBe(false);
+  });
+
+  test('a second checkout of the target whose dir is gone neither refuses nor breaks the land', async () => {
+    const stale = join(repo, '.worktrees', 'main-again');
+    git(['worktree', 'add', '-q', '--force', stale, 'main']);
+    rmSync(stale, { recursive: true, force: true });
+    const work = branchWithWork('s-stale', 'st.txt', 'st\n');
+    const stream = await makeStream(work);
+    expect(landing.preflight(stream.id).ready).toBe(true);
+    const outcome = await landing.land(stream.id);
+    expect(outcome.status).toBe('landed');
+    expect(git(['show', 'main:st.txt'])).toBe('st');
+    // The operator's own checkout on main was still brought along.
+    expect(existsSync(join(repo, 'st.txt'))).toBe(true);
+  });
+
+  test('a temp worktree that git could not add reports the real refusal, not a throw', async () => {
+    // A branch with work and no worktree, then a git dir where no worktree can be added.
+    git(['checkout', '-q', '-b', 's-nowt']);
+    writeFileSync(join(repo, 'n.txt'), 'n\n');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'work on s-nowt']);
+    git(['checkout', '-q', 'main']);
+    rmSync(join(repo, '.git', 'worktrees'), { recursive: true, force: true });
+    writeFileSync(join(repo, '.git', 'worktrees'), 'not a directory\n');
+    const mainBefore = git(['rev-parse', 'refs/heads/main']);
+    const stream = await makeStream({ branch: 's-nowt' });
+
+    // No throw from prepareMerge's cleanup of the `target` dir git never made,
+    // so its `finally` ran to the end (the temp dir's removal is its last step).
+    const outcome = await landing.land(stream.id);
+    expect(outcome.status).toBe('blocked');
+    expect(outcome.line).toContain('could not create leading directories');
+    expect(outcome.line).not.toContain('ENOENT');
+    expect(git(['rev-parse', 'refs/heads/main'])).toBe(mainBefore);
+    expect(streams.get(stream.id).human.status).toBe('open');
+  });
+});
+
 describe('T176: after a conflict — preflight, the Resolve prompt, and the re-land', () => {
   test('preflight names the files; the prompt says merge, resolve, test, commit; a resolved branch lands', async () => {
     const work = branchWithWork('s-resolve', 'shared.txt', 'from the stream\n');

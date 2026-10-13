@@ -122,7 +122,13 @@ export class OverlapTracker {
   async recomputeAll(): Promise<void> {
     const all = this.options.streams.list();
     for (const s of all) {
-      if (isLiveWorkNode(s, all)) await this.recompute(s.id);
+      if (!isLiveWorkNode(s, all)) continue;
+      // T534: one node failing never stops the sweep for the nodes after it.
+      try {
+        await this.recompute(s.id);
+      } catch (err) {
+        console.error(`overlap recompute of ${s.id} failed:`, err);
+      }
     }
   }
 
