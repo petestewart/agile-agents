@@ -188,6 +188,28 @@ describe('cloneRepo (T362)', () => {
     });
   });
 
+  test("T536: a clone runs no hook, not even a template's post-checkout", async () => {
+    const source = bareRepo('shop');
+    const marker = join(scratch, 'hooks-ran');
+    const template = join(scratch, 'template');
+    mkdirSync(join(template, 'hooks'), { recursive: true });
+    for (const hook of ['post-checkout', 'reference-transaction']) {
+      writeFileSync(join(template, 'hooks', hook), `#!/bin/sh\necho ${hook} >> '${marker}'\n`, {
+        mode: 0o755,
+      });
+    }
+    const env = { ...process.env, GIT_TEMPLATE_DIR: template };
+    // The template's hooks are live: a plain clone runs them.
+    const plain = Bun.spawnSync(['git', 'clone', '-q', source, join(scratch, 'plain')], { env });
+    expect(plain.exitCode).toBe(0);
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+
+    const result = await cloneRepo(store, { url: source }, { home, env });
+    expect(existsSync(join(result.path, 'README.md'))).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test('an explicit dest, including an empty existing folder', async () => {
     const source = bareRepo('shop');
     mkdirSync(join(scratch, 'empty'));

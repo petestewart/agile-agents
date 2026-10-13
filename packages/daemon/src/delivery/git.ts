@@ -15,6 +15,10 @@
  * `gitWrite` is for anything that can create a commit: unsigned (`-c
  * commit.gpgsign=false` before the verb; the signing hook has failed with
  * "too many open files") and authored by a fixed daemon identity.
+ *
+ * T536 (D11): no repo hook runs daemon-side. Every call here carries
+ * `NO_HOOKS_GIT_CONFIG` before its verb, so do worktree creation
+ * (`runner/worktrees.ts`) and a clone (`store/clone.ts`).
  */
 
 import { existsSync } from 'node:fs';
@@ -27,6 +31,24 @@ export interface GitResult {
   stdout: string;
   stderr: string;
 }
+
+/**
+ * T536 (D11): the `-c` pairs every daemon git call carries before its verb.
+ * A command-line `-c` beats every config file, so neither `$GIT_DIR/hooks`
+ * nor a hooks dir the repo configures (`core.hooksPath=.githooks`, husky)
+ * is read. Such a dir is tracked: an agent can commit a hook to it, and a
+ * merge, checkout, `worktree add`, ref update or push the daemon runs would
+ * run that hook outside every gate and sandbox. `/dev/null` is not a
+ * directory, so no hook is ever found under it (T343's read-only env uses
+ * the same); an empty dir inside the checkout could be filled by a landed
+ * commit. `core.fsmonitor=false`: no fsmonitor program runs either.
+ */
+export const NO_HOOKS_GIT_CONFIG: readonly string[] = [
+  '-c',
+  'core.hooksPath=/dev/null',
+  '-c',
+  'core.fsmonitor=false',
+];
 
 /** Fixed identity for every commit this module makes. */
 export const DAEMON_GIT_AUTHOR = {
@@ -79,7 +101,9 @@ function spawnGit(argv: string[], cwd: string, env: () => Record<string, string>
 
 /** Read-only and plumbing commands (log, diff, rev-parse, worktree, ...). */
 export function git(args: string[], cwd: string, repoRoot: string): GitResult {
-  return spawnGit(['git', ...args], cwd, () => sandboxedSubprocessEnv(repoRoot, 'git'));
+  return spawnGit(['git', ...NO_HOOKS_GIT_CONFIG, ...args], cwd, () =>
+    sandboxedSubprocessEnv(repoRoot, 'git'),
+  );
 }
 
 /**
@@ -89,7 +113,7 @@ export function git(args: string[], cwd: string, repoRoot: string): GitResult {
  * instead of waiting on a terminal the daemon doesn't have.
  */
 export function gitNetwork(args: string[], cwd: string): GitResult {
-  return spawnGit(['git', ...args], cwd, () => networkGitEnv(process.env));
+  return spawnGit(['git', ...NO_HOOKS_GIT_CONFIG, ...args], cwd, () => networkGitEnv(process.env));
 }
 
 const NETWORK_ENV_NAMES = new Set([
@@ -187,7 +211,9 @@ export function runGit(args: string[], cwd: string, repoRoot: string): string {
  * is an outcome the caller inspects, and so is a missing `cwd` (T534).
  */
 export function gitWrite(args: string[], cwd: string, repoRoot: string): GitResult {
-  return spawnGit(['git', '-c', 'commit.gpgsign=false', ...args], cwd, () => daemonEnv(repoRoot));
+  return spawnGit(['git', ...NO_HOOKS_GIT_CONFIG, '-c', 'commit.gpgsign=false', ...args], cwd, () =>
+    daemonEnv(repoRoot),
+  );
 }
 
 export interface RemoveWorktreeResult {

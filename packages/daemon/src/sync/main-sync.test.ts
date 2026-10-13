@@ -1,7 +1,7 @@
 /** T226: sync after merge against a real temp git repo and state home; no vendor, no network. */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RoutedEvent } from '@agile-agents/shared';
@@ -270,6 +270,41 @@ describe('T534: one node never stops a sync pass', () => {
     await sync.sweep();
     expect(streams.get(one.id).delivery_state?.status).toBe('conflict');
     expect(streams.get(one.id).land_conflict?.files).toEqual(['a.ts']);
+  });
+});
+
+describe('T536: a sync merge runs no repo hook', () => {
+  test('D4: a post-merge an agent committed into a tracked core.hooksPath does not run', async () => {
+    const marker = `${repo}-hooks-ran`;
+    try {
+      sh(['config', 'core.hooksPath', '.githooks'], repo);
+      const two = await workNode('two');
+      mkdirSync(join(two.wt, '.githooks'));
+      for (const hook of [
+        'pre-merge-commit',
+        'commit-msg',
+        'post-merge',
+        'reference-transaction',
+      ]) {
+        writeFileSync(join(two.wt, '.githooks', hook), `#!/bin/sh\necho ${hook} >> '${marker}'\n`, {
+          mode: 0o755,
+        });
+      }
+      sh(['-c', 'core.hooksPath=/dev/null', 'add', '-A'], two.wt);
+      sh(['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'agent work'], two.wt);
+      sh(['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '--allow-empty', '-m', 'main'], repo);
+      // The hooks are live in that worktree: plain git runs them.
+      sh(['update-ref', 'refs/heads/control', 'HEAD'], two.wt);
+      expect(readFileSync(marker, 'utf8')).toContain('reference-transaction');
+      rmSync(marker);
+
+      const out = await sync.mainMoved('api');
+      expect(out.get(two.id)).toEqual({ status: 'synced', pushed: false });
+      expect(mainIsIn(two.wt)).toBe(true);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(marker, { force: true });
+    }
   });
 });
 

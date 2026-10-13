@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -163,10 +163,27 @@ describe('T113: hardened worktree creation', () => {
     expect(result.branch).toBe('legacy-branch');
   });
 
-  test('repo hooks do not run during the checkout', async () => {
+  test('repo hooks do not run during the checkout, nor on the branch claim (T536)', async () => {
     const marker = join(repo, 'hook-ran.txt');
-    for (const hook of ['pre-checkout', 'post-checkout']) {
+    for (const hook of ['pre-checkout', 'post-checkout', 'reference-transaction']) {
       const file = join(repo, '.git', 'hooks', hook);
+      writeFileSync(file, `#!/bin/sh\necho ${hook} >> ${marker}\n`, { mode: 0o755 });
+    }
+    // The hooks are live: plain git runs them.
+    git(['update-ref', 'refs/heads/control', 'HEAD']);
+    expect(readFileSync(marker, 'utf8')).toContain('reference-transaction');
+    rmSync(marker);
+    const result = await createWorktree(repo, name);
+    expect(existsSync(result.path)).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test('T536: a hooks dir the repo configures is not read either', async () => {
+    const marker = join(repo, 'hook-ran.txt');
+    git(['config', 'core.hooksPath', '.githooks']);
+    mkdirSync(join(repo, '.githooks'));
+    for (const hook of ['post-checkout', 'reference-transaction']) {
+      const file = join(repo, '.githooks', hook);
       writeFileSync(file, `#!/bin/sh\necho ${hook} >> ${marker}\n`, { mode: 0o755 });
     }
     const result = await createWorktree(repo, name);

@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HilRequest, Stream } from '@agile-agents/shared';
@@ -399,6 +399,63 @@ describe('T534: a worktree directory that is gone never breaks a land', () => {
     expect(outcome.line).not.toContain('ENOENT');
     expect(git(['rev-parse', 'refs/heads/main'])).toBe(mainBefore);
     expect(streams.get(stream.id).human.status).toBe('open');
+  });
+});
+
+describe('T536: a land runs no repo hook', () => {
+  const HOOKS = [
+    'pre-merge-commit',
+    'prepare-commit-msg',
+    'commit-msg',
+    'post-merge',
+    'post-checkout',
+    'reference-transaction',
+  ];
+  let marker: string;
+  beforeEach(() => {
+    marker = `${repo}-hooks-ran`;
+  });
+  afterEach(() => rmSync(marker, { force: true }));
+
+  function armHooks(dir: string): void {
+    mkdirSync(dir, { recursive: true });
+    for (const hook of HOOKS) {
+      writeFileSync(join(dir, hook), `#!/bin/sh\necho ${hook} >> '${marker}'\n`, { mode: 0o755 });
+    }
+  }
+
+  /** Plain git runs the armed hooks (the fixture is live), then the marker is cleared. */
+  function provesLive(cwd: string): void {
+    git(['update-ref', 'refs/heads/control', 'HEAD'], cwd);
+    expect(readFileSync(marker, 'utf8')).toContain('reference-transaction');
+    rmSync(marker);
+  }
+
+  test('D4: hooks an agent committed into a tracked core.hooksPath run neither in the merge nor in the operator checkout', async () => {
+    git(['config', 'core.hooksPath', '.githooks']);
+    const worktree = join(repo, '.worktrees', 's-hooks');
+    git(['worktree', 'add', '-q', '-b', 's-hooks', worktree, 'main']);
+    armHooks(join(worktree, '.githooks'));
+    git(['-c', 'core.hooksPath=/dev/null', 'add', '-A'], worktree);
+    git(['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'agent work'], worktree);
+    provesLive(worktree);
+    const stream = await makeStream({ branch: 's-hooks', worktree });
+
+    const outcome = await landing.land(stream.id);
+    expect(outcome.status).toBe('landed');
+    // The operator's checkout on main was brought along: the hooks now sit in its tracked dir.
+    expect(existsSync(join(repo, '.githooks', 'post-merge'))).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("hooks in the repo's own git dir do not run on a land", async () => {
+    const work = branchWithWork('s-gitdir', 'g.txt', 'g\n');
+    armHooks(join(repo, '.git', 'hooks'));
+    provesLive(repo);
+    const stream = await makeStream(work);
+    const outcome = await landing.land(stream.id);
+    expect(outcome.status).toBe('landed');
+    expect(existsSync(marker)).toBe(false);
   });
 });
 

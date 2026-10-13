@@ -144,6 +144,128 @@ describe('T534: a directory that is gone is a failed result, never a throw', () 
   });
 });
 
+/** Every hook a merge, commit, checkout, ref update, push or gc can run. */
+const HOOKS = [
+  'pre-commit',
+  'prepare-commit-msg',
+  'commit-msg',
+  'post-commit',
+  'pre-merge-commit',
+  'post-merge',
+  'post-checkout',
+  'post-rewrite',
+  'reference-transaction',
+  'pre-push',
+  'pre-auto-gc',
+];
+
+/** Each hook appends its name to `marker` when it runs. */
+function armHooks(dir: string, marker: string): void {
+  mkdirSync(dir, { recursive: true });
+  for (const hook of HOOKS) {
+    writeFileSync(join(dir, hook), `#!/bin/sh\necho ${hook} >> '${marker}'\n`, { mode: 0o755 });
+  }
+}
+
+/** Raw git for the fixture itself: never runs a hook. */
+function quietGit(args: string[], cwd: string): void {
+  rawGit(['-c', 'core.hooksPath=/dev/null', ...args], cwd);
+}
+
+describe('T536: no repo hook runs on a daemon git call', () => {
+  let marker: string;
+  let bare: string;
+
+  beforeEach(() => {
+    marker = join(repoRoot, '..', `${repoRoot.split('/').pop()}-hooks-ran`);
+    bare = mkdtempSync(join(tmpdir(), 'agile-landing-git-bare-'));
+    rawGit(['init', '-q', '--bare', '-b', 'main', bare], repoRoot);
+    rawGit(['remote', 'add', 'origin', bare], repoRoot);
+  });
+
+  afterEach(() => {
+    rmSync(marker, { force: true });
+    rmSync(bare, { recursive: true, force: true });
+  });
+
+  const ran = () => (existsSync(marker) ? readFileSync(marker, 'utf8').trim().split('\n') : []);
+
+  test("hooks in the repo's git dir: worktree add, merge, commit, ref updates, reset, push, fetch", () => {
+    quietGit(['checkout', '-q', '-b', 'feature'], repoRoot);
+    writeFileSync(join(repoRoot, 'f.txt'), 'f\n');
+    quietGit(['add', '-A'], repoRoot);
+    quietGit(['commit', '-q', '-m', 'feature'], repoRoot);
+    quietGit(['checkout', '-q', 'main'], repoRoot);
+    armHooks(join(repoRoot, '.git', 'hooks'), marker);
+    // The fixture's hooks are live: plain git runs them.
+    rawGit(['update-ref', 'refs/heads/control', 'HEAD'], repoRoot);
+    expect(ran()).toContain('reference-transaction');
+    rmSync(marker);
+
+    const wt = join(repoRoot, '.worktrees', 'land');
+    const steps = [
+      git(['worktree', 'add', '--detach', wt, 'main'], repoRoot, repoRoot),
+      gitWrite(['merge', '--no-ff', '-m', 'land feature', 'feature'], wt, repoRoot),
+      gitWrite(['commit', '--allow-empty', '-m', 'empty'], wt, repoRoot),
+      git(['update-ref', 'refs/heads/main', 'HEAD'], wt, repoRoot),
+      gitWrite(['reset', '--hard', 'main'], repoRoot, repoRoot),
+      git(['branch', '-D', 'control'], repoRoot, repoRoot),
+      gitNetwork(['push', '-q', 'origin', 'main'], repoRoot),
+      gitNetwork(['fetch', '-q', 'origin', 'main'], repoRoot),
+      git(['worktree', 'remove', wt], repoRoot, repoRoot),
+    ];
+    expect(steps.map((r) => r.exitCode)).toEqual(steps.map(() => 0));
+    expect(runGit(['show', 'main:f.txt'], repoRoot, repoRoot)).toBe('f');
+    expect(ran()).toEqual([]);
+  });
+
+  test('D4: a hook an agent commits into a tracked core.hooksPath never runs on a sync merge or a push', () => {
+    quietGit(['config', 'core.hooksPath', '.githooks'], repoRoot);
+    const wt = join(repoRoot, '.worktrees', 'agent');
+    quietGit(['worktree', 'add', '-q', '-b', 'agent', wt, 'main'], repoRoot);
+    // The agent, in its worktree, commits hooks on its own branch.
+    armHooks(join(wt, '.githooks'), marker);
+    quietGit(['add', '-A'], wt);
+    quietGit(['commit', '-q', '-m', 'agent work'], wt);
+    // Main moves on.
+    writeFileSync(join(repoRoot, 'b.txt'), 'b\n');
+    quietGit(['add', '-A'], repoRoot);
+    quietGit(['commit', '-q', '-m', 'main moves'], repoRoot);
+    rawGit(['update-ref', 'refs/heads/control', 'HEAD'], wt);
+    expect(ran()).toContain('reference-transaction');
+    rmSync(marker);
+
+    // What MainSync.syncNode runs, then its push of a PR branch.
+    const merge = gitWrite(['merge', '--no-edit', '-m', 'sync main', 'main'], wt, repoRoot);
+    expect(merge.exitCode).toBe(0);
+    expect(gitNetwork(['push', '-q', 'origin', 'HEAD:refs/heads/agent'], wt).exitCode).toBe(0);
+    expect(ran()).toEqual([]);
+  });
+
+  test('a hook committed under the checkout (where an empty hooks dir could live) never runs', () => {
+    const inRepo = join(repoRoot, '.agile-daemon-cache', 'git', 'no-hooks');
+    armHooks(inRepo, marker);
+    quietGit(['add', '-f', '-A'], repoRoot);
+    quietGit(['commit', '-q', '-m', 'landed: hooks inside the checkout'], repoRoot);
+    quietGit(['branch', 'feature'], repoRoot);
+    rawGit(
+      ['-c', `core.hooksPath=${inRepo}`, 'update-ref', 'refs/heads/control', 'HEAD'],
+      repoRoot,
+    );
+    expect(ran()).toContain('reference-transaction');
+    rmSync(marker);
+
+    quietGit(['checkout', '-q', 'feature'], repoRoot);
+    writeFileSync(join(repoRoot, 'f.txt'), 'f\n');
+    quietGit(['add', '-A'], repoRoot);
+    quietGit(['commit', '-q', '-m', 'feature'], repoRoot);
+    quietGit(['checkout', '-q', 'main'], repoRoot);
+    const merge = gitWrite(['merge', '--no-ff', '-m', 'land', 'feature'], repoRoot, repoRoot);
+    expect(merge.exitCode).toBe(0);
+    expect(ran()).toEqual([]);
+  });
+});
+
 describe("T231: gitNetwork() uses the operator's real credential setup", () => {
   let realHome: string;
   let saved: Record<string, string | undefined>;

@@ -7,7 +7,8 @@
 
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { DAEMON_CACHE_DIR, sandboxedSubprocessEnv } from '../subprocess-env';
+import { NO_HOOKS_GIT_CONFIG } from '../delivery/git';
+import { sandboxedSubprocessEnv } from '../subprocess-env';
 
 interface GitResult {
   exitCode: number;
@@ -39,8 +40,10 @@ export function slugify(title: string, maxLen = 40): string {
 // Hardened creation (D11, after KiroCrew's worktree handler). No shell:
 // every git call is an argv array. It guarantees:
 //
-//   1. No repo hook runs during checkout (`core.hooksPath` points at an
-//      empty dir), so a committed `post-checkout` can't execute daemon-side.
+//   1. No repo hook runs: every git call here carries `NO_HOOKS_GIT_CONFIG`
+//      (T536: `core.hooksPath=/dev/null`, where no hook file can exist), so
+//      a committed `post-checkout` can't execute daemon-side, nor a
+//      `reference-transaction` on the branch claim.
 //   2. Repos with filter drivers are refused: a `filter=` attribute runs
 //      `filter.<n>.smudge` on checkout, which `core.hooksPath` doesn't cover.
 //   3. The branch is claimed atomically (`update-ref` with the zero oid as
@@ -50,9 +53,6 @@ export function slugify(title: string, maxLen = 40): string {
 
 /** All-zero object id: `git update-ref`'s "the ref must not exist" expected-old value. */
 const ZERO_OID = '0'.repeat(40);
-
-/** Where `core.hooksPath` points during checkout: created empty, kept empty. */
-const NO_HOOKS_DIR = join(DAEMON_CACHE_DIR, 'git', 'no-hooks');
 
 /** A create that git (or this module's own preconditions) refused, carrying the reason. */
 export class WorktreeRefusedError extends Error {
@@ -87,7 +87,7 @@ export class WorktreeRefusedError extends Error {
  * the exit status is always the child's own.
  */
 function runGit(args: string[], cwd: string): GitResult {
-  const result = Bun.spawnSync(['git', ...args], {
+  const result = Bun.spawnSync(['git', ...NO_HOOKS_GIT_CONFIG, ...args], {
     cwd,
     env: sandboxedSubprocessEnv(cwd, 'git'),
     stdin: 'ignore',
@@ -265,13 +265,8 @@ export async function createWorktree(
 
   await ensureWorktreesIgnored(repoRoot);
   mkdirSync(join(repoRoot, '.worktrees'), { recursive: true });
-  const hooksPath = join(repoRoot, NO_HOOKS_DIR);
-  mkdirSync(hooksPath, { recursive: true });
 
-  const add = runGit(
-    ['-c', `core.hooksPath=${hooksPath}`, 'worktree', 'add', '--', path, branch],
-    repoRoot,
-  );
+  const add = runGit(['worktree', 'add', '--', path, branch], repoRoot);
   if (add.exitCode !== 0) {
     // Release the claim so a retry isn't blocked by our own half-made state.
     rmSync(path, { recursive: true, force: true });
