@@ -3599,7 +3599,8 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 - **Status:** Todo
 - **Owner:** worker
 - **Scope:** Security audit S3: `/ws` calls `srv.upgrade(req)` with no Origin or Host check (`packages/daemon/src/http.ts`, the `/ws` branch). WebSockets aren't covered by CORS, so any web page the operator has open could connect to `ws://127.0.0.1:<port>/ws` and read the snapshot, inbox, questions, repo paths and the live event stream (read-only: no write channel; the classifier key isn't in those frames). Apply the same `isSameOriginRequest` and `isLoopbackHost` checks the write routes and `/api/fs/dirs` use before upgrading; refuse with 403 otherwise. The cockpit (same origin) and the CLI (check how `agile tail`/`status` connect, if they use `/ws`) must keep working.
-- **Acceptance Criteria:** An upgrade with a foreign `Origin` gets 403 and no frames; one with a non-loopback `Host` gets 403; the cockpit's own origin and a no-`Origin` client the CLI uses (if any, decided from the code and explained in a comment) still connect.
+- **Scope addition (2026-10-13, daemon audit D5, reproduced):** every `/api/*` GET answers a request whose `Host` isn't loopback, so a DNS-rebinding page can read threads and diffs. The loopback-Host check goes at the top of `fetch` for `/api/*` and `/ws`.
+- **Acceptance Criteria:** A rebound `Host` gets 403 on a GET route and on `/ws`; an upgrade with a foreign `Origin` gets 403 and no frames; one with a non-loopback `Host` gets 403; the cockpit's own origin and a no-`Origin` client the CLI uses (if any, decided from the code and explained in a comment) still connect.
 - **Validation Steps:** `bun test packages/daemon/src/http packages/cli`; `bun run test:integration`; `bun run test:e2e` (the cockpit's live view).
 
 ### Ticket: T518 Read-only roles can't call other MCP servers' tools through the hook
@@ -3721,6 +3722,88 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 - **Scope:** CI annotations (seen by the triage): `ubuntu-latest` moves to Ubuntu 26 from 2026-10-19 and `actions/checkout@v4` runs on deprecated Node 20 (`.github/workflows/ci.yml`). Pin `runs-on` to the current image explicitly and bump `actions/checkout` to the current major, so the stack's CI doesn't change under Pete's review.
 - **Acceptance Criteria:** CI green on the bump commit with no deprecation annotation for checkout.
 - **Validation Steps:** CI on the pushed commit.
+
+The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that fails on today's code (`scratchpad/audit/daemon-scratch/`, write-up `daemon.md`); the manager re-ran them. D3 is T524; D5 joined T517.
+
+### Ticket: T533 A second daemon start changes nothing before it holds the lock
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Daemon audit D1: every startup mutation (`routedEvents.recover`, `attachService.endOrphansAtStart`, `stampExistingProjects`, `wakePending`, `migrateHome`, timers) runs in `daemon.ts` before `acquireLock`. A second `agile daemon start` (or `--foreground`, which skips the pidfile check) marks the live daemon's running sessions `stopped` and its nodes `idle`, may wake agents, and only then fails with `LockError`; afterwards the next say/wake starts a second agent in the same worktree. Take the lock right after config discovery, before the store opens (its temp-file sweep is a mutation too); keep the port-bind/pidfile ordering the lifecycle tests rely on; on a failed start stop anything already started.
+- **Acceptance Criteria:** With a live daemon holding a running session, a second start fails with the lock error and leaves the session `running`, the node's statuses and its thread unchanged, and starts no agent; existing lifecycle tests green.
+- **Validation Steps:** `bun test packages/daemon/src/daemon.test.ts packages/daemon/src/lock.test.ts packages/cli`; `bun run typecheck && bun run lint`; `bun run test:integration`.
+
+### Ticket: T534 Git on a missing directory fails cleanly instead of throwing
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Daemon audit D6, D9: Bun's `spawnSync` throws ENOENT when `cwd` doesn't exist, so `git()`, `gitWrite()` and `removeWorktreeSafely` (`delivery/git.ts`) throw for a node whose worktree directory is gone. `land()` then throws after `update-ref` has already merged (a merge-together group's other members stay open with `ready`; retro, main-sync and settle are skipped), `prepareMerge`'s `finally` masks the real refusal and leaks its temp dir, and the overlap and main-sync sweeps (`sync/overlap.ts`, `sync/main-sync.ts`) stop at the first such node every 60 s (main-sync records `lastMain` first, so later nodes never sync for that move). Make the helpers return a failed result (or `removed: false`) for a missing `cwd`, as `diff()` and `trash.dirty()` already guard, and give each node in the sweeps its own try.
+- **Acceptance Criteria:** A land of a merge-together group whose first member's worktree dir is missing finishes: both landed, no throw; the sweeps process every node after a missing one; `prepareMerge` with a failed temp worktree reports the real refusal.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/sync`; `bun run typecheck && bun run lint`.
+
+### Ticket: T535 An agent never starts in a recreated or merged node's worktree path
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Daemon audit D2 (reproduced end to end): `attachSession` (`attach/service.ts`) uses `stream.worktree` with no existence check, and `subprocess-env.ts` `mkdirSync`s a cache dir under it, so a node whose worktree is gone gets a plain directory recreated under `<repo>/.worktrees/`, where git resolves to the operator's main checkout on `main`, and the agent works there. Routes there: Switch repo's `closeEmptyPart` (removes the worktree and branch but keeps both on the record) then writing to that closed part (T471 reopens it); `agile attach`/`review` on a merged node (`finishLanded` keeps `worktree`; `attach()` has no open-node check); a worktree deleted by hand. Before starting: if the worktree path is missing, re-add it from the branch with `createWorktree`'s no-hooks config when the branch exists, else refuse with a clear error; refuse attach/review on landed or archived nodes; clear `worktree` (and a deleted `branch`) in `closeEmptyPart` and `finishLanded`.
+- **Acceptance Criteria:** A node whose worktree dir was deleted restarts in a real worktree of its branch (`.git` file present, `git rev-parse --abbrev-ref HEAD` is its branch), or is refused when the branch is gone; nothing is created under the main checkout; attach on a landed node is refused; Switch repo's closed part has no stale worktree path.
+- **Validation Steps:** `bun test packages/daemon/src/attach packages/daemon/src/streams packages/daemon/src/delivery`; `bun run typecheck && bun run lint`; `bun run test:integration`.
+
+### Ticket: T536 The daemon's own git writes never run repo hooks
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Daemon audit D4 (security, reproduced): D11's "no repo hook runs daemon-side" is enforced in `createWorktree` and T343's read env, but `gitWrite` (`delivery/git.ts`) sets no `core.hooksPath`, and it runs main-sync's `git merge` in each node's worktree (`sync/main-sync.ts`), land's temp-worktree add and merge (`delivery/service.ts`), and `resumeParked`'s `git worktree add` (`streams/repo-in-place.ts`). In a repo with a tracked hooks dir (`core.hooksPath=.githooks`, husky), an engineer commits `.githooks/post-merge` on its branch and the next main move runs it as the daemon, outside every gate and sandbox. Pass `-c core.hooksPath=<the empty no-hooks dir createWorktree uses>` on every daemon git write (and `-c core.fsmonitor=false` where cheap); find every other daemon git write that bypasses `gitWrite` and cover it too.
+- **Acceptance Criteria:** The audit's scenario (a tracked `post-merge` committed on a node's branch, then main-sync and a land) runs no hook: test with a marker file; a grep shows no daemon git write path without the override.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/sync packages/daemon/src/streams`; `bun run typecheck && bun run lint`.
+
+### Ticket: T537 Answering a question doesn't reopen a finished node or clear another wait
+- **Priority:** P1
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Daemon audit D7 (reproduced): `QuestionService.answer` (and `reply`) in `questions/service.ts` always writes `human: {status: 'open'}`, so answering reopens a closed or merged node (a coordinator's `answer_child`, `agile answer`) and clears `waiting_on_you` while another question on the node is still open (`settle`/`withdraw` check `listOpen()`; `answer` doesn't). Move `waiting_on_you` to `open` only when no other question on the node is open; never touch `closed` or `landed`.
+- **Acceptance Criteria:** The audit's two failing cases pass (closed stays closed; with two open questions answering one leaves `waiting_on_you`); landed stays landed; the single-question case still goes to `open`.
+- **Validation Steps:** `bun test packages/daemon/src/questions packages/daemon/src/attach`; `bun run typecheck && bun run lint`.
+
+### Ticket: T538 Delete forever is forever
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Daemon audit D8, D12: (1) `RoutedEventService.recover()` (`events/service.ts`) re-creates `events/queue/<id>.jsonl` with pending lines for a node deleted forever (its events stay in `log.jsonl`); skip entries whose node has no record (the Director excepted). (2) `TrashService.preview`/`purge` (`streams/trash.ts`) read only `node.worktree`/`node.branch`, not T473's `parked` repo, branch and worktree, and leave `streams/<id>.docs/`; and a second `toTalk` (`streams/repo-in-place.ts`) overwrites an existing `parked` entry for another repo, orphaning it. Include `parked` in preview and purge, remove the docs dir, and don't lose a parked entry on a second Back to talk (keep one per repo, or refuse while another is parked — choose from the T473 design notes and say why).
+- **Acceptance Criteria:** After delete forever and a restart, no queue file for the node; a node sent back to talk then deleted forever leaves no worktree, branch or docs dir, and the preview lists them first; a second Back to talk keeps (or refuses, per the choice) the first parked repo.
+- **Validation Steps:** `bun test packages/daemon/src/events packages/daemon/src/streams`; `bun run typecheck && bun run lint`.
+
+### Ticket: T539 Thread lines get unique timestamps under concurrent appends
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Daemon audit D10 (reproduced): `streams/service.ts` computes a line's `ts` (its identity: anchor, thread and move key, T503/T504) from `store.threadUpdatedAt(id)` outside the store mutex, so two appends started in the same tick (worker and reviewer exits under `stop()`, model and effort picks at session start, two flushes from one stdout chunk) get the same millisecond; `assertThreadPlace` then picks the first line with that ts and UI keys collide. Assign `ts` inside the store's serialized append (strictly greater than the last).
+- **Acceptance Criteria:** Two appends started in one tick get distinct, increasing ts (the audit's test); replies anchor to the right line.
+- **Validation Steps:** `bun test packages/daemon/src/streams packages/daemon/src/store`; `bun run typecheck && bun run lint`.
+
+### Ticket: T540 An ended session doesn't strand its gate or question
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Daemon audit D11, D16. (1) A worker's turn ends on a `classifier_review` gate (node `question`/`waiting_on_you`), then its session goes (restart, vendor exit); approving the card writes one thread line, the node stays waiting with no Needs me item, nothing wakes it, and a new session can't spend the approval (it's keyed to the old session). In `deliverGateDecision`'s no-handle branch reset the statuses as `answer()` does and emit a routed event so the wake policy can start a session; when a session ends, expire or supersede its pending route-band gates. (2) Closing a node whose agent sits idle on a question or gate leaves the vendor process alive until the daemon stops (`onNodeUpdated` → `endResting` acts only on `resting`); end those sessions too.
+- **Acceptance Criteria:** Tests for both: approve-after-session-end leaves the node woken/open with no stale waiting; closing a node with an agent idle on a question ends that session.
+- **Validation Steps:** `bun test packages/daemon/src/attach packages/daemon/src/hook packages/daemon/src/gates`; `bun run typecheck && bun run lint`.
+
+### Ticket: T541 Plan approval survives a deleted part; the CLI can't archive a root
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Daemon audit D13, D14. (1) Approving a plan (`coordination/plans.ts`) saves it `approved`, then throws NotFoundError fanning out to a part that was deleted forever, so later parts never get `plan_changed` and a retry says the plan isn't a draft: skip owners that no longer exist and fan out without throwing. (2) `agile stream archive` (`streams/rpc.ts`) allows archiving a project root, which then can be neither restored (`unarchiveTree` refuses roots) nor deleted (`TrashService.roots()` skips parentless nodes): refuse a root there as the cockpit does. Whether the CLI should archive the whole subtree like the cockpit stays Pete's call (`design/cockpit-ui-followups.md`); log the audit's evidence (children's agents keep running, delete forever on the parent refuses) for him in §10, don't change it.
+- **Acceptance Criteria:** A plan naming a purged part approves, notifies the remaining parts and starts the waiting ones; `agile stream archive <root>` refuses with a clear message.
+- **Validation Steps:** `bun test packages/daemon/src/coordination packages/daemon/src/streams packages/cli`; `bun run typecheck && bun run lint`.
+
+### Ticket: T542 Daemon robustness: one land at a time, one card per call, no fatal rejection, no torn line
+- **Priority:** P2
+- **Status:** Todo
+- **Owner:** worker
+- **Scope:** Daemon audit D15, D17, D18, D19. (D15) `DeliveryService.land()` has several awaits (ship check up to 25 s, reviewer) before merging and no per-node in-flight guard: a click racing `agile land` merges twice or opens two PRs — add a per-node promise lock over land/push/markLanded. (D17) `hook/route-band.ts` reads matching gates then awaits `gates.request`, so two parallel identical calls raise two cards — serialize per session and fingerprint. (D18) `void this.onTurnEnd(...)` (`attach/service.ts`) and the Director's `void handle.exited.then(...)` have no catch, and Bun exits on an unhandled rejection — catch and log them, and install a logging `unhandledRejection` handler with the shutdown signals. (D19) a failed JSONL append (`store/fs.ts`, ENOSPC or a crash) can leave a partial line the next append joins, and `readJsonlValidated` then refuses the whole file — record the size before appending and truncate back on a write error.
+- **Acceptance Criteria:** One test per item: two concurrent lands → one merge, the other refused or awaited; two parallel identical routed calls → one gate; a rejected `onTurnEnd` logs and the daemon keeps running; a simulated append failure leaves the file readable.
+- **Validation Steps:** `bun test packages/daemon/src/delivery packages/daemon/src/hook packages/daemon/src/attach packages/daemon/src/store`; `bun run typecheck && bun run lint`.
 
 ## 8. Deleted (must be gone from `main` by the end of Phase 6)
 
