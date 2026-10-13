@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -14,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type KnowledgeItemInput, ulid } from '@agile-agents/shared';
 import { runInit } from '../init';
+import { buildEvent } from './events';
 import { NotFoundError, StateStore } from './store';
 
 let repo: string;
@@ -188,6 +190,78 @@ describe('Policy singleton', () => {
     });
     expect(store.getPolicy().gates.land).toBe('human_timeout:1h');
     expect(store.listEvents()[0]?.kind).toBe('policy_put');
+  });
+});
+
+describe('T551: the event log read from its tail', () => {
+  const eventsPath = () => join(stateRoot, 'log', 'events.jsonl');
+  const n = (events: readonly { data?: unknown }[]) =>
+    events.map((e) => (e.data as { n?: number }).n);
+  async function logged(store: StateStore, from: number, count: number): Promise<void> {
+    for (let i = from; i < from + count; i++) {
+      await store.appendEvent(buildEvent('tool_call', { data: { n: i } }));
+    }
+  }
+
+  test("over a log longer than the limit, the tail is the full read's newest events, a partial last line too", async () => {
+    const store = StateStore.open(stateRoot);
+    await logged(store, 0, 50);
+    const full = store.listEvents();
+    expect(full).toHaveLength(50);
+    for (const limit of [1, 10, 49, 50, 200]) {
+      expect(store.listEvents(undefined, limit)).toEqual(full.slice(-limit));
+    }
+    // A line still being written: the seam leaves it out, for the tailer to deliver.
+    const next = `${JSON.stringify(buildEvent('tool_call', { data: { n: 50 } }))}\n`;
+    appendFileSync(eventsPath(), next.slice(0, 20));
+    const seam = statSync(eventsPath()).size;
+    expect(store.listEvents(seam, 10)).toEqual(full.slice(-10));
+    expect(store.listEvents(seam)).toEqual(full);
+    appendFileSync(eventsPath(), next.slice(20));
+    expect(n(store.listEvents(undefined, 3))).toEqual([48, 49, 50]);
+    expect(n(store.listEvents(seam, 3))).toEqual([47, 48, 49]);
+  });
+
+  test('a corrupt line in the tail is refused with the path and its line number', async () => {
+    const store = StateStore.open(stateRoot);
+    await logged(store, 0, 30);
+    appendFileSync(eventsPath(), 'not json\n');
+    await logged(store, 30, 5);
+    const at = `corrupt event log file ${eventsPath()}:31: `;
+    expect(() => store.listEvents(undefined, 10)).toThrow(at);
+    expect(() => store.listEvents()).toThrow(at);
+    // Five events after it: a tail of five never reads it.
+    expect(n(store.listEvents(undefined, 5))).toEqual([30, 31, 32, 33, 34]);
+    // JSON, but not an event: refused the same way.
+    appendFileSync(eventsPath(), '{"kind":"nope"}\n');
+    expect(() => store.listEvents(undefined, 1)).toThrow(`${eventsPath()}:37: `);
+  });
+
+  test('trade-off: a corrupt line further back no longer refuses a tail read; a full read still does', async () => {
+    const store = StateStore.open(stateRoot);
+    appendFileSync(eventsPath(), '{"torn": \n');
+    await logged(store, 0, 20);
+    expect(n(store.listEvents(undefined, 3))).toEqual([17, 18, 19]);
+    expect(() => store.listEvents()).toThrow(`corrupt event log file ${eventsPath()}:1: `);
+  });
+
+  test("forEachEvent streams one kind's events and parses only the lines that carry it", async () => {
+    const store = StateStore.open(stateRoot);
+    const decision = (d: string) =>
+      store.appendEvent(buildEvent('hook_decision', { data: { decision: d } }));
+    await decision('allow');
+    // Not one: a corrupt line without the kind, and the kind's mark inside another event's data.
+    appendFileSync(eventsPath(), 'not json\n');
+    await store.appendEvent(buildEvent('tool_call', { data: { kind: 'hook_decision' } }));
+    await decision('deny');
+    const seen: string[] = [];
+    store.forEachEvent('hook_decision', (event) => seen.push(String(event.data.decision)));
+    expect(seen).toEqual(['allow', 'deny']);
+    // A corrupt line that carries the kind is refused, with its line number.
+    appendFileSync(eventsPath(), '{"ts":"x","kind":"hook_decision",\n');
+    expect(() => store.forEachEvent('hook_decision', () => {})).toThrow(
+      `corrupt event log file ${eventsPath()}:5: `,
+    );
   });
 });
 

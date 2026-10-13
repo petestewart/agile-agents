@@ -4,7 +4,7 @@
  * carry went with the subsystem behind it.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { type SessionRef, ulid } from '@agile-agents/shared';
@@ -391,6 +391,39 @@ describe('T404: the recent events a connect sends', () => {
     // The snapshot takes them as they are, up to its own limit; it does not read the log.
     const snapshot = buildSnapshot(store, gates, 2, undefined, undefined, undefined, recent.list());
     expect(n(snapshot.events)).toEqual([3, 4]);
+  });
+
+  test("T551: over a log longer than the limit, load keeps the full read's newest events, a partial last line too", async () => {
+    const path = join(stateRoot, 'log', 'events.jsonl');
+    for (let i = 0; i < 40; i++) {
+      await store.appendEvent(buildEvent('tool_call', { data: { n: i } }));
+    }
+    const complete = statSync(path).size;
+    const next = `${JSON.stringify(buildEvent('tool_call', { data: { n: 40 } }))}\n`;
+    appendFileSync(path, next.slice(0, 30));
+    const seam = statSync(path).size;
+    const recent = new RecentEvents(15);
+    recent.load(store, seam);
+    expect(recent.list()).toEqual(store.listEvents(complete).slice(-15));
+    expect(n(recent.list())).toEqual(Array.from({ length: 15 }, (_, i) => 25 + i));
+    // The snapshot without `recent` reads the same tail.
+    expect(buildSnapshot(store, gates, 15, undefined, undefined, seam).events).toEqual(
+      recent.list(),
+    );
+  });
+
+  test('T551: boot reads the tail of a long log, not its history', () => {
+    const path = join(stateRoot, 'log', 'events.jsonl');
+    // A corrupt first line and 8 MB of events after it: neither load nor a
+    // snapshot reaches it (the trade-off: a full read still refuses it).
+    const line = `${JSON.stringify(buildEvent('tool_call', { data: { title: 'bun test packages/daemon/src/knowledge' } }))}\n`;
+    writeFileSync(path, `not json\n${line.repeat(Math.ceil((8 * 1024 * 1024) / line.length))}`);
+    const size = statSync(path).size;
+    const recent = new RecentEvents();
+    recent.load(store, size);
+    expect(recent.list()).toHaveLength(200);
+    expect(buildSnapshot(store, gates).events).toHaveLength(200);
+    expect(() => store.listEvents()).toThrow(`corrupt event log file ${path}:1: `);
   });
 
   test('a line that is not an event is reported and left out', () => {

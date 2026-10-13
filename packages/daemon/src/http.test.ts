@@ -2465,9 +2465,9 @@ describe('T160 cockpit routes', () => {
     await put();
     let reads = 0;
     const listEvents = store.listEvents.bind(store);
-    store.listEvents = (endOffset?: number) => {
+    store.listEvents = (endOffset?: number, limit?: number) => {
       reads += 1;
-      return listEvents(endOffset);
+      return listEvents(endOffset, limit);
     };
     const quick = startHttpServer({
       port: 0,
@@ -2503,6 +2503,11 @@ describe('T160 cockpit routes', () => {
         second = await snapshotOf();
       }
       expect(second.filter((e) => e.agent === agentId)).toHaveLength(2);
+      // T551: `GET /api/snapshot` sends the same events, without reading the log either.
+      const viaHttp = (await (
+        await fetch(`http://127.0.0.1:${quick.port}/api/snapshot`)
+      ).json()) as { events: Event[] };
+      expect(viaHttp.events.filter((e) => e.agent === agentId)).toHaveLength(2);
       expect(reads).toBe(1);
     } finally {
       store.listEvents = listEvents;

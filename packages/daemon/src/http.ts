@@ -2539,8 +2539,17 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
         if (url.pathname === '/api/snapshot') {
           if (!feed) return errorResponse(503, 'state store not initialised (run `agile init`)');
+          // T551: the events kept since boot, as a `/ws` connect sends; the log's tail without them.
           return jsonResponse(
-            buildSnapshot(feed.store, feed.gates, undefined, feed.questions, options.repoRoot),
+            buildSnapshot(
+              feed.store,
+              feed.gates,
+              undefined,
+              feed.questions,
+              options.repoRoot,
+              undefined,
+              recent?.list(),
+            ),
           );
         }
 
