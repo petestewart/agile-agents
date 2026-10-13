@@ -3677,7 +3677,7 @@ Sources: read-only audits on 2026-10-13 (the §10 log triaged against current co
 
 ### Ticket: T527 One "gate resolved" hook; stale diff gates are superseded
 - **Priority:** P2
-- **Status:** Todo
+- **Status:** Done (merge 9ce56baf on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** §10 triage (E34b, E44, E51): gate resolution is observed by four monkey-patches of `GateService.respond` (`delivery/service.ts`, `questions/supersede.ts`, `hook/route-band.ts` ×2), so a resolution through `tick` (timeout) or a delegate skips all four. Add `GateService.onResolved(listener)` called from every resolution path and move the four onto it. Add `supersede(id, reason)` (resolved with no decision, leaves Needs me) and use it when `ClassifierDiffRules.route` raises a gate for a new diff: the node's older pending `diff_rules` gates go.
 - **Acceptance Criteria:** A timeout resolution triggers delivery, question supersession, rule stats and land exactly as a human `respond` does (one test per listener); routing a second, changed diff leaves one card; responding to a superseded gate is refused.
@@ -3727,7 +3727,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T533 A second daemon start changes nothing before it holds the lock
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done (merge 9428b24e on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Daemon audit D1: every startup mutation (`routedEvents.recover`, `attachService.endOrphansAtStart`, `stampExistingProjects`, `wakePending`, `migrateHome`, timers) runs in `daemon.ts` before `acquireLock`. A second `agile daemon start` (or `--foreground`, which skips the pidfile check) marks the live daemon's running sessions `stopped` and its nodes `idle`, may wake agents, and only then fails with `LockError`; afterwards the next say/wake starts a second agent in the same worktree. Take the lock right after config discovery, before the store opens (its temp-file sweep is a mutation too); keep the port-bind/pidfile ordering the lifecycle tests rely on; on a failed start stop anything already started.
 - **Acceptance Criteria:** With a live daemon holding a running session, a second start fails with the lock error and leaves the session `running`, the node's statuses and its thread unchanged, and starts no agent; existing lifecycle tests green.
@@ -3743,7 +3743,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T535 An agent never starts in a recreated or merged node's worktree path
 - **Priority:** P1
-- **Status:** Todo
+- **Status:** In Progress
 - **Owner:** worker
 - **Scope:** Daemon audit D2 (reproduced end to end): `attachSession` (`attach/service.ts`) uses `stream.worktree` with no existence check, and `subprocess-env.ts` `mkdirSync`s a cache dir under it, so a node whose worktree is gone gets a plain directory recreated under `<repo>/.worktrees/`, where git resolves to the operator's main checkout on `main`, and the agent works there. Routes there: Switch repo's `closeEmptyPart` (removes the worktree and branch but keeps both on the record) then writing to that closed part (T471 reopens it); `agile attach`/`review` on a merged node (`finishLanded` keeps `worktree`; `attach()` has no open-node check); a worktree deleted by hand. Before starting: if the worktree path is missing, re-add it from the branch with `createWorktree`'s no-hooks config when the branch exists, else refuse with a clear error; refuse attach/review on landed or archived nodes; clear `worktree` (and a deleted `branch`) in `closeEmptyPart` and `finishLanded`.
 - **Acceptance Criteria:** A node whose worktree dir was deleted restarts in a real worktree of its branch (`.git` file present, `git rev-parse --abbrev-ref HEAD` is its branch), or is refused when the branch is gone; nothing is created under the main checkout; attach on a landed node is refused; Switch repo's closed part has no stale worktree path.
@@ -3857,7 +3857,7 @@ The daemon audit (2026-10-13) reproduced each P1 below with a scratch test that 
 
 ### Ticket: T547 The store doesn't re-parse a file that hasn't changed
 - **Priority:** P1
-- **Status:** In Progress
+- **Status:** Done (merge 8a406d4e on claude/phase-16, 2026-10-13)
 - **Owner:** worker
 - **Scope:** Perf P2 (drives P7, P14, P16), checked by the manager: `yaml.parse` is ≈93% of every store read and nothing is cached, so `listStreams` at 300 nodes is ≈200 ms and an idle daemon with 300 nodes uses ≈12% of a core (the PR poller, tracker, gate, overlap and main-sync ticks each re-list everything). Add an instance-level cache in `StateStore` keyed by absolute path, validated by `statSync(path, {bigint: true})` (`ino:size:mtimeNs:ctimeNs`; atomic writes rename a new inode in), holding the **validated** value per validator and returning `structuredClone` of it. Apply it to `readRecord` (streams, knowledge, projects, director), agents, policy/repos/home config, and `readEntityFile` (gates, questions, plans, proposals, contracts, cards). Never cache a failure (a corrupt file is refused with path and line on every read); drop the entry on remove/delete; bound it (LRU ≈20k). Keep the `yaml` parser (no `Bun.YAML` swap: its errors and dialect differ).
 - **Acceptance Criteria:** `store.test.ts`: a second `listStreams` with nothing changed doesn't re-parse (test seam count); an external same-size rewrite is picked up; mutating a returned record doesn't change the next read; a corrupt file throws path:line on every read; a deleted file leaves the list. The full `bun test` stays green (manager runs it).
@@ -3934,6 +3934,7 @@ Daemon: `em/`, `architect/`, `oracle/`, `qa/`, `halts/`, `quota/`, `handoff/`, `
 
 ## 10. Discovered Issues Log
 
+- 2026-10-13 (T547 worker): the store's parse cache measured `listStreams` at 300 nodes 315 → 18 ms and `feed/snapshot.test.ts` 11.7 → 4.4 s. It keys on `ino:size:mtimeNs:ctimeNs` and, for a file read within 3 s of its ctime, also compares the text (git's "racily clean"), because ext4 reuses inode numbers on alternate atomic writes and older kernels have coarse ctime. On a network-mounted home (NFS attribute caching) a write from another host can be missed for up to the attribute cache time. (T533 worker): while the daemon starts, `agiled.pid` reads `starting <pid>` (the lock, not yet the pidfile) for under a second; `kill $(cat agiled.pid)` in that window gets a non-pid.
 - 2026-10-13 (T531, for Pete): design §7.4 says gate and land events are fsynced, but no `land_*` event kind was ever added: a land is recorded as `stream_updated` (human `landed`) plus the delivery state, and neither is fsynced (the triage's "merges fsync through the routed `pr_merged` event" is wrong: the routed log isn't fsynced either). The `land_` prefix in `needsFsync` is kept for §7.4. Pete to say whether a land should be fsynced (e.g. fsync the `stream_updated` that sets `landed`).
 - 2026-10-13 (T536 worker, accepted by the manager, for Pete): every daemon git call now carries `-c core.hooksPath=/dev/null -c core.fsmonitor=false`. The worker chose `/dev/null` over the in-repo empty `.agile-daemon-cache/git/no-hooks` dir createWorktree used, because a commit can fill that dir (`git add -f`), and a land's `reset --hard` of the operator checkout then writes the hook there (reproduced). T343's read env already used `/dev/null`. `design/cockpit-design.md` §8 (the D11 bullet) is reworded to match. With fsmonitor off, the daemon's `git status` is slower in huge repos that rely on it. (T534 worker): a plain directory left where a node's worktree was makes git walk up to the operator's main checkout; T535 should check `<worktree>/.git` before any write.
 - 2026-10-13 (T541, for Pete, daemon audit D14): `agile stream archive <id>` (RPC `stream.archive`) archives one node: its children stay unarchived and their agents keep running, and Delete forever on the parent then refuses ("X under it is not in the trash"). The cockpit's Delete archives the subtree. Whether the CLI should match is Pete's call (`design/cockpit-ui-followups.md`); T541 only refuses a project root there.
